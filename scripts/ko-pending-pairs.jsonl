@@ -1,0 +1,1145 @@
+{"k":"errors.browser.webview.create_failed","en":"The in-app browser page could not be created. Try again.","zh":"无法创建内置浏览器页面，请重试。"}
+{"k":"errors.browser.webview.unavailable","en":"The in-app browser is unavailable in this environment.","zh":"当前环境无法使用内置浏览器。"}
+{"k":"errors.browser.webview.operation_failed","en":"The in-app browser operation failed. Try again.","zh":"内置浏览器操作失败，请重试。"}
+{"k":"errors.browser.navigation.invalid","en":"This address cannot be opened.","zh":"无法打开该地址。"}
+{"k":"errors.browser.download.unsupported","en":"This download cannot be saved.","zh":"该下载无法另存为。"}
+{"k":"errors.browser.download.cancelled","en":"Save cancelled.","zh":"已取消保存。"}
+{"k":"errors.browser.local_html.grant_failed","en":"This local HTML file could not be authorized.","zh":"无法授权打开该本地 HTML。"}
+{"k":"errors.browser.page.limit_reached","en":"Too many pages are open. Close some tabs first.","zh":"打开的网页过多，请先关闭部分标签。"}
+{"k":"errors.browser.bookmark.limit_reached","en":"Too many bookmarks. Remove some first.","zh":"书签过多，请先删除部分书签。"}
+{"k":"errors.browser.bookmark.invalid","en":"This site cannot be added to the start page.","zh":"无法将这个网站加入门户页。"}
+{"k":"errors.workflow-model-binding.binding-duplicate","en":"Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.","zh":"执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。"}
+{"k":"errors.workflow-model-binding.option-unsupported","en":"This model does not support that setting. Choose another option and try again.","zh":"当前模型不支持这项配置，请重新选择后重试。"}
+{"k":"errors.SCHEDULED_COORDINATOR_UNAVAILABLE","en":"The scheduled task service is unavailable. Try again.","zh":"定时任务运行服务暂不可用，请重试。"}
+{"k":"errors.SCHEDULED_NOT_FOUND","en":"The scheduled run to resume no longer exists. Refresh and try again.","zh":"待恢复的定时任务执行已不存在，请刷新后重试。"}
+{"k":"errors.SCHEDULED_STORAGE_FAILED","en":"The scheduled run state could not be updated. Try again.","zh":"无法更新定时任务执行状态，请重试。"}
+{"k":"errors.git.version-unsupported","en":"Git {{installedVersion}} is too old. Git {{minimumVersion}} or later is required.","zh":"当前 Git 版本 {{installedVersion}} 过低，需要 Git {{minimumVersion}} 或更高版本。"}
+{"k":"errors.git.version-unavailable","en":"The installed Git version could not be identified. Repair or reinstall Git and try again.","zh":"无法识别当前 Git 版本，请修复或重新安装 Git 后重试。"}
+{"k":"errors.git.workspace-outside-project","en":"The selected worktree does not belong to this project.","zh":"所选 Worktree 不属于当前项目。"}
+{"k":"errors.git.ref-changed","en":"Repository state changed. Refresh and try again.","zh":"仓库状态已变化，请刷新后重试。"}
+{"k":"errors.git.repository-locked","en":"Another repository write operation is running.","zh":"仓库正在执行其他写操作。"}
+{"k":"errors.git.workspace-locked","en":"Another workspace write operation is running.","zh":"当前工作空间正在执行其他写操作。"}
+{"k":"errors.git.operation-in-progress","en":"A Git workflow is still in progress. Complete or abort it and try again.","zh":"当前 Git 流程尚未结束，请完成或中止后重试。"}
+{"k":"errors.git.branch-required","en":"The current workspace has no checked-out branch. Select a branch first.","zh":"当前工作区未检出分支，请先选择分支。"}
+{"k":"errors.git.head-required","en":"The repository does not have a usable HEAD commit yet.","zh":"当前仓库还没有可用的 HEAD Commit。"}
+{"k":"errors.git.nothing-to-stash","en":"There are no changes to stash.","zh":"没有可保存到 Stash 的更改。"}
+{"k":"errors.git.stash-not-found","en":"The selected stash no longer exists.","zh":"所选 Stash 已不存在。"}
+{"k":"errors.git.remote-not-found","en":"The selected remote no longer exists.","zh":"所选远程仓库已不存在。"}
+{"k":"errors.git.branch-not-found","en":"The selected branch no longer exists.","zh":"所选分支已不存在。"}
+{"k":"errors.git.tag-not-found","en":"The selected tag no longer exists.","zh":"所选标签已不存在。"}
+{"k":"errors.git.runtime-branch-push-forbidden","en":"Runtime-internal branches cannot be pushed directly.","zh":"运行时内部分支不能直接推送。"}
+{"k":"errors.git.non-fast-forward","en":"The remote contains commits that are not available locally. Push was rejected.","zh":"远程包含本地尚未获取的提交，推送已拒绝。"}
+{"k":"errors.git.authentication-failed","en":"Remote authentication failed. Check your credentials or sign in again.","zh":"远程仓库身份验证失败，请检查凭据或重新登录。"}
+{"k":"errors.git.permission-denied","en":"The current credentials do not have permission to access this remote repository.","zh":"当前凭据没有访问远程仓库的权限。"}
+{"k":"errors.git.remote-repository-not-found","en":"The remote repository does not exist or is not visible to the current credentials.","zh":"远程仓库不存在，或当前凭据无权查看。"}
+{"k":"errors.git.remote-host-unreachable","en":"The remote host could not be resolved. Check the remote URL and network connection.","zh":"无法解析远程仓库主机，请检查远程地址和网络。"}
+{"k":"errors.git.remote-unreachable","en":"The remote repository could not be reached. Check the network, proxy, or remote service.","zh":"无法连接远程仓库，请检查网络、代理或远程服务状态。"}
+{"k":"errors.git.remote-rejected","en":"The remote repository rejected this push. Follow the reason below to resolve it.","zh":"远程仓库拒绝了这次推送，请根据下方原因处理。"}
+{"k":"errors.git.fetch-failed","en":"Fetch failed. Use the Git reason below to check the remote URL, credentials, or network.","zh":"Fetch 失败，请根据下方 Git 返回原因检查远程地址、凭据或网络。"}
+{"k":"errors.git.pull-failed","en":"Pull failed. Follow the Git reason below to resolve it.","zh":"Pull 失败，请根据下方 Git 返回原因处理。"}
+{"k":"errors.git.push-failed","en":"Push failed. Use the Git reason below to check the remote URL, credentials, or permissions.","zh":"Push 失败，请根据下方 Git 返回原因检查远程地址、凭据或权限。"}
+{"k":"errors.git.push-tag-failed","en":"The tag push failed. Follow the Git reason below to resolve it.","zh":"标签推送失败，请根据下方 Git 返回原因处理。"}
+{"k":"errors.git.stash-create-failed","en":"The stash could not be created. Follow the Git reason below to resolve it.","zh":"Stash 保存失败，请根据下方 Git 返回原因处理。"}
+{"k":"errors.git.stash-apply-failed","en":"The stash could not be applied. Follow the Git reason below to resolve it.","zh":"Stash 应用失败，请根据下方 Git 返回原因处理。"}
+{"k":"errors.git.pull-conflict","en":"Pull produced conflicts. Resolve them or abort the operation.","zh":"Pull 产生冲突，请先处理冲突或中止操作。"}
+{"k":"errors.git.stash-apply-conflict","en":"Applying the stash produced conflicts. The stash was preserved.","zh":"应用 Stash 产生冲突，Stash 已保留。"}
+{"k":"errors.git.operation-state-mismatch","en":"The Git workflow state changed. Wait for the view to synchronize and try again.","zh":"Git 当前流程状态已变化，请等待界面同步后重试。"}
+{"k":"errors.git.conflict-paths-query-failed","en":"The current conflicted files could not be read.","zh":"无法读取当前冲突文件。"}
+{"k":"errors.git.conflict-stage-failed","en":"The current conflicted files could not be staged. Follow the Git reason below.","zh":"无法暂存当前冲突文件，请根据下方 Git 原因处理。"}
+{"k":"errors.git.merge-continue-failed","en":"The merge could not be completed. Follow the Git reason below.","zh":"完成 Merge 失败，请根据下方 Git 原因处理。"}
+{"k":"errors.git.merge-abort-failed","en":"The merge could not be aborted. Follow the Git reason below.","zh":"放弃 Merge 失败，请根据下方 Git 原因处理。"}
+{"k":"errors.git.rebase-continue-failed","en":"The rebase could not continue. Follow the Git reason below.","zh":"继续 Rebase 失败，请根据下方 Git 原因处理。"}
+{"k":"errors.git.rebase-skip-failed","en":"The current commit could not be skipped. Follow the Git reason below.","zh":"跳过当前 Commit 失败，请根据下方 Git 原因处理。"}
+{"k":"errors.git.rebase-abort-failed","en":"The rebase could not be aborted. Follow the Git reason below.","zh":"放弃 Rebase 失败，请根据下方 Git 原因处理。"}
+{"k":"errors.git.worktree-not-found","en":"The selected worktree no longer exists. Wait for the list to synchronize and try again.","zh":"所选 Worktree 已不存在，请等待列表同步后重试。"}
+{"k":"errors.git.worktree-current-remove-forbidden","en":"The worktree currently in use cannot be removed.","zh":"不能删除当前正在使用的 Worktree。"}
+{"k":"errors.git.worktree-remove-dirty","en":"The worktree has uncommitted or untracked changes and was not removed. Resolve those changes first.","zh":"Worktree 含有未提交或未跟踪的更改，未执行删除。请先处理这些更改。"}
+{"k":"errors.git.worktree-remove-failed","en":"The worktree could not be removed. Follow the Git reason below.","zh":"删除 Worktree 失败，请根据下方 Git 原因处理。"}
+{"k":"errors.git.diff-too-large","en":"This file is too large to display its diff in the app.","zh":"文件过大，无法在应用内显示差异。"}
+{"k":"errors.git.binary-diff-unsupported","en":"Binary file content diffs are not supported yet.","zh":"二进制文件暂不支持内容差异预览。"}
+{"k":"errors.git.text-encoding-unsupported","en":"This file encoding is not supported by the diff viewer.","zh":"该文件编码暂不支持差异预览。"}
+{"k":"errors.git.comparison-source-unsupported","en":"This file comparison source is not supported.","zh":"不支持此文件比较来源。"}
+{"k":"errors.git.commit-not-found","en":"The selected commit does not exist or is no longer reachable.","zh":"所选提交不存在或已不再可达。"}
+{"k":"errors.git.commit-detail-query-failed","en":"The commit details could not be loaded.","zh":"提交详情加载失败。"}
+{"k":"errors.git.commit-diff-query-failed","en":"The commit file changes could not be loaded.","zh":"提交文件变化加载失败。"}
+{"k":"errors.git.commit-relation-query-failed","en":"Commit relation analysis failed.","zh":"提交关系分析失败。"}
+{"k":"errors.git.commit-selection-too-small","en":"Select at least one commit.","zh":"请至少选择一个提交。"}
+{"k":"errors.git.commit-selection-limit","en":"Up to 32 commits can be reviewed at once.","zh":"一次最多汇总 32 个提交。"}
+{"k":"errors.git.commit-review-query-failed","en":"Unable to aggregate the selected commit patches.","zh":"无法汇总所选提交的变更。"}
+{"k":"errors.git.commit-review-topology-query-failed","en":"Unable to determine the history relationship between the selected commits.","zh":"无法确认所选提交之间的历史关系。"}
+{"k":"errors.git.commit-review-patch-identity-failed","en":"Unable to identify whether cross-branch commits contain equivalent changes.","zh":"无法识别跨分支提交是否包含等价变更。"}
+{"k":"errors.git.commit-review-worker-failed","en":"The commit review worker stopped unexpectedly.","zh":"提交变更汇总任务异常终止。"}
+{"k":"errors.git.commit-reachability-query-failed","en":"Unable to read the commit's current reachability.","zh":"无法读取该提交的当前归属。"}
+{"k":"errors.git.diff-review-session-expired","en":"This diff review session expired. Reopen it from commit history.","zh":"该 Diff 审阅会话已过期，请从提交历史重新打开。"}
+{"k":"errors.git.operation-failed","en":"The Git operation failed.","zh":"Git 操作失败。"}
+{"k":"errors.github.gh-not-installed","en":"GitHub CLI is not installed.","zh":"尚未安装 GitHub CLI。"}
+{"k":"errors.github.not-authenticated","en":"GitHub CLI is not authenticated.","zh":"GitHub CLI 尚未登录。"}
+{"k":"errors.github.repository-unresolved","en":"The current GitHub repository could not be resolved.","zh":"无法确定当前 GitHub 仓库。"}
+{"k":"errors.github.permission-denied","en":"The current GitHub account does not have permission for this operation.","zh":"当前 GitHub 账号没有执行此操作的权限。"}
+{"k":"errors.github.rate-limited","en":"The GitHub API rate limit was reached. Try again later.","zh":"GitHub API 请求次数已达上限，请稍后重试。"}
+{"k":"errors.github.repository-not-found","en":"The GitHub repository does not exist or is not accessible to this account.","zh":"GitHub 仓库不存在或当前账号无权访问。"}
+{"k":"errors.github.invalid-json","en":"GitHub CLI returned data that could not be read.","zh":"GitHub CLI 返回了无法识别的数据。"}
+{"k":"errors.github.output-too-large","en":"GitHub returned too much data to process in the app.","zh":"GitHub 返回的数据过大，无法在应用内处理。"}
+{"k":"errors.github.pr-list-failed","en":"Pull requests could not be loaded.","zh":"Pull Request 列表加载失败。"}
+{"k":"errors.github.pr-detail-failed","en":"Pull request details could not be loaded.","zh":"Pull Request 详情加载失败。"}
+{"k":"errors.github.pr-number-invalid","en":"The pull request number is invalid.","zh":"Pull Request 编号无效。"}
+{"k":"errors.github.pr-revision-invalid","en":"The pull request file revision is invalid.","zh":"Pull Request 文件版本标识无效。"}
+{"k":"errors.github.pr-file-content-failed","en":"The pull request file content could not be loaded.","zh":"Pull Request 文件内容加载失败。"}
+{"k":"errors.github.pr-file-content-unavailable","en":"The file is missing from both pull request versions.","zh":"Pull Request 的两个版本中都找不到该文件。"}
+{"k":"errors.github.issue-list-failed","en":"Issues could not be loaded.","zh":"Issue 列表加载失败。"}
+{"k":"errors.github.issue-detail-failed","en":"Issue details could not be loaded.","zh":"Issue 详情加载失败。"}
+{"k":"errors.github.capability-failed","en":"GitHub CLI status detection failed.","zh":"GitHub CLI 状态检测失败。"}
+{"k":"errors.github.login-start-failed","en":"GitHub browser login could not be started.","zh":"无法启动 GitHub 网页登录。"}
+{"k":"errors.github.operation-not-found","en":"The GitHub operation has ended or no longer exists.","zh":"GitHub 操作已结束或不存在。"}
+{"k":"errors.github.operation-failed","en":"The GitHub operation failed.","zh":"GitHub 操作失败。"}
+{"k":"errors.github.repository-mismatch","en":"The repository mapping changed. Detect it again and retry.","zh":"仓库映射已经变化，请重新检测后重试。"}
+{"k":"errors.github.pr-head-invalid","en":"The head branch name is invalid.","zh":"Head 分支名称无效。"}
+{"k":"errors.github.pr-base-invalid","en":"The base branch name is invalid.","zh":"Base 分支名称无效。"}
+{"k":"errors.github.pr-head-equals-base","en":"Head and base must be different branches.","zh":"Head 和 Base 不能是同一分支。"}
+{"k":"errors.github.pr-head-not-found","en":"The local head branch does not exist.","zh":"本地 Head 分支不存在。"}
+{"k":"errors.github.pr-base-not-found","en":"The base branch does not exist locally or on the mapped remote.","zh":"本地或远程 Base 分支不存在。"}
+{"k":"errors.github.pr-no-commits-ahead","en":"The head branch has no commits ahead of the base branch.","zh":"Head 分支没有领先 Base 的提交。"}
+{"k":"errors.github.pr-head-query-failed","en":"The published state of the head branch could not be checked.","zh":"无法确认 Head 分支是否已经发布。"}
+{"k":"errors.github.pr-head-not-published","en":"Explicitly push the head branch first.","zh":"请先显式推送 Head 分支。"}
+{"k":"errors.github.pr-already-exists","en":"These branches already have an open pull request.","zh":"这些分支已经存在打开的 Pull Request。"}
+{"k":"errors.github.pr-title-invalid","en":"Enter a valid single-line pull request title.","zh":"请输入有效的单行 Pull Request 标题。"}
+{"k":"errors.github.pr-body-invalid","en":"The pull request body is invalid or too long.","zh":"Pull Request 正文无效或过长。"}
+{"k":"errors.github.pr-create-start-failed","en":"The pull request creation operation could not be started.","zh":"无法启动 Pull Request 创建操作。"}
+{"k":"errors.github.pr-create-failed","en":"The pull request could not be created.","zh":"Pull Request 创建失败。"}
+{"k":"errors.github.pr-create-invalid-output","en":"The create command did not return a recognizable pull request URL.","zh":"创建命令没有返回可识别的 Pull Request 链接。"}
+{"k":"errors.agent.already-exists","en":"Agent {{agentType}} already exists.","zh":"Agent {{agentType}} 已存在。"}
+{"k":"errors.agent.not-configured","en":"Agent {{agentType}} is not configured.","zh":"Agent {{agentType}} 尚未配置。"}
+{"k":"errors.agent.display-name-required","en":"Enter an Agent name.","zh":"请填写 Agent 名称。"}
+{"k":"errors.agent.command-required","en":"Enter an Agent launch command.","zh":"请填写 Agent 启动命令。"}
+{"k":"errors.acp.composer-history-stale","en":"Input history has changed. Clear the input and try again.","zh":"输入历史已更新，请清空输入后重试。"}
+{"k":"errors.acp.composer-history-not-found","en":"This history entry is no longer available.","zh":"该条输入历史已不可用。"}
+{"k":"errors.acp.composer-history-query-failed","en":"Could not load input history. Please try again.","zh":"输入历史加载失败，请重试。"}
+{"k":"errors.acp.turn-execution-failed","en":"This message could not be processed. Try again.","zh":"本次消息处理失败，请重试。"}
+{"k":"errors.acp.session-request-failed","en":"The session could not be prepared. Try again.","zh":"会话准备失败，请重试。"}
+{"k":"errors.acp.missing-provider","en":"The current node is missing provider configuration.","zh":"当前节点缺少 provider 配置。"}
+{"k":"errors.acp.session-config-value-unavailable","en":"The selected session configuration is no longer available. Choose another value from the latest list.","zh":"所选会话配置已不可用，请从最新列表中重新选择。"}
+{"k":"errors.acp.invalid-conversation-branch-id","en":"This Agent conversation link is invalid or no longer available.","zh":"该 Agent 会话链接无效或已失效。"}
+{"k":"errors.acp.session-query-failed","en":"The conversation could not be loaded. Try again.","zh":"会话内容加载失败，请重试。"}
+{"k":"errors.acp.activity-detail-query-failed","en":"Activity details could not be loaded. Try again.","zh":"活动详情加载失败，请重试。"}
+{"k":"errors.acp.tool-detail-query-failed","en":"Tool details could not be loaded. Try again.","zh":"工具详情加载失败，请重试。"}
+{"k":"errors.acp.adapter-exited","en":"The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.","zh":"Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。"}
+{"k":"errors.acp.adapter-exited-with-code","en":"The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.","zh":"Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。"}
+{"k":"errors.acp.adapter-start-failed","en":"The Agent could not be started: {{osError}}","zh":"无法启动 Agent：{{osError}}"}
+{"k":"errors.acp.doctor-timeout","en":"Agent environment check timed out during {{method}}.","zh":"Agent 环境诊断在 {{method}} 阶段超时。"}
+{"k":"errors.app.task-join-failed","en":"Background task failed.","zh":"后台任务执行失败。"}
+{"k":"errors.app.unexpected","en":"The operation failed. Please try again. {{message}}","zh":"操作失败，请重试。{{message}}"}
+{"k":"errors.avatar.unsupported-image-type","en":"Choose a PNG, JPEG, or WebP image.","zh":"请选择 PNG、JPEG 或 WebP 图片。"}
+{"k":"errors.avatar.invalid-image-data","en":"The image data is invalid. Choose another image.","zh":"图片数据无效，请重新选择。"}
+{"k":"errors.avatar.image-too-large","en":"The processed avatar is too large. Crop it again.","zh":"处理后的头像文件过大，请重新裁剪。"}
+{"k":"errors.avatar.source-image-too-large","en":"The source image must be 10 MB or smaller.","zh":"原图不能超过 10 MB。"}
+{"k":"errors.avatar.crop-failed","en":"Avatar cropping failed. Please try again.","zh":"头像裁剪失败，请重试。"}
+{"k":"errors.avatar.recent-not-found","en":"That recent avatar is no longer available. Upload it again.","zh":"最近头像已不存在，请重新上传。"}
+{"k":"errors.avatar.load-failed","en":"Avatar settings could not be loaded.","zh":"头像设置加载失败。"}
+{"k":"errors.avatar.save-failed","en":"Avatar could not be saved.","zh":"头像保存失败。"}
+{"k":"errors.wallpaper.source-unavailable","en":"The selected wallpaper file is unavailable. Choose it again.","zh":"所选壁纸文件已不可用，请重新选择。"}
+{"k":"errors.wallpaper.source-path-invalid","en":"The selected wallpaper path is invalid. Choose it again.","zh":"所选壁纸路径无效，请重新选择。"}
+{"k":"errors.wallpaper.source-too-large","en":"The wallpaper source file must be 32 MB or smaller.","zh":"壁纸源文件不能超过 32 MB。"}
+{"k":"errors.wallpaper.unsupported-image-type","en":"Choose a PNG, JPEG, or WebP image.","zh":"请选择 PNG、JPEG 或 WebP 图片。"}
+{"k":"errors.wallpaper.invalid-image-data","en":"The wallpaper image is invalid. Choose another image.","zh":"壁纸图片无效，请重新选择。"}
+{"k":"errors.wallpaper.dimensions-too-large","en":"The wallpaper must be at most 4096 × 4096 and 16 megapixels.","zh":"壁纸尺寸不能超过 4096 × 4096 或 1600 万像素。"}
+{"k":"errors.wallpaper.image-processing-failed","en":"The wallpaper could not be processed. Try another image.","zh":"壁纸处理失败，请更换图片后重试。"}
+{"k":"errors.wallpaper.recent-not-found","en":"That recent wallpaper no longer exists. Import it again.","zh":"最近壁纸已不存在，请重新导入。"}
+{"k":"errors.wallpaper.load-failed","en":"Wallpaper settings could not be loaded.","zh":"壁纸设置加载失败。"}
+{"k":"errors.wallpaper.save-failed","en":"The wallpaper could not be saved.","zh":"壁纸保存失败。"}
+{"k":"errors.wallpaper.store-version-unsupported","en":"This wallpaper settings version is not supported.","zh":"壁纸设置版本暂不受支持。"}
+{"k":"errors.personalization.wallpaper-invalid","en":"The wallpaper selection is invalid. The theme wallpaper has been restored.","zh":"当前壁纸选择无效，已恢复主题壁纸。"}
+{"k":"errors.personalization.wallpaper-opacity-invalid","en":"Wallpaper visibility must be between 20% and 100%.","zh":"壁纸可见度必须在 20% 到 100% 之间。"}
+{"k":"errors.skill.already-exists","en":"SKILL {{skillName}} already exists at {{directoryPath}}.","zh":"SKILL {{skillName}} 已存在于 {{directoryPath}}。"}
+{"k":"errors.skill.sync-conflict","en":"SKILL {{skillName}} sync conflict: {{conflicts}}","zh":"SKILL {{skillName}} 同步冲突：{{conflicts}}"}
+{"k":"errors.profile.readonly-built-in","en":"Built-in roles cannot be updated or deleted directly. Save them as a new role instead.","zh":"内置角色不可直接修改或删除，请另存为新角色。"}
+{"k":"errors.profile.built-in-scope-unsupported","en":"Built-in scope is reserved for internal roles.","zh":"不能直接创建或保存为内置角色。"}
+{"k":"errors.profile.dynamic-template-invalid","en":"The dynamic template is invalid: {{reason}}","zh":"动态模板无效：{{reason}}"}
+{"k":"errors.profile.delete-confirmation-required","en":"This role is still referenced by {{templateCount}} workflow templates, {{taskCount}} task workflows, and {{runCount}} resumable run snapshots. Related workflows must be repaired after deletion.","zh":"当前角色仍被 {{templateCount}} 个工作流模板、{{taskCount}} 个任务工作流和 {{runCount}} 个可继续运行快照引用。删除后需要修复关联工作流。"}
+{"k":"errors.profile.import.read-failed","en":"Failed to read file","zh":"文件读取失败"}
+{"k":"errors.profile.import.invalid-frontmatter","en":"Invalid front matter","zh":"Front matter 格式无效"}
+{"k":"errors.profile.import.empty-file","en":"Empty file or no usable content","zh":"空文件或无有效内容"}
+{"k":"errors.profile.import.missing-name","en":"Could not determine a role name","zh":"无法确定角色名称"}
+{"k":"errors.profile.import.create-failed","en":"Failed to create role","zh":"角色创建失败"}
+{"k":"errors.profile.import.folder-not-found","en":"Selected folder could not be found","zh":"找不到所选文件夹"}
+{"k":"errors.profile.import.folder-not-directory","en":"Selected path is not a folder","zh":"所选路径不是文件夹"}
+{"k":"errors.profile.import.folder-read-failed","en":"Selected folder could not be read completely","zh":"无法完整读取所选文件夹"}
+{"k":"errors.profile.import.no-markdown-files","en":"No Markdown files found in the selected folder","zh":"所选文件夹中没有 Markdown 文件"}
+{"k":"errors.manual-check.invalid-outcome","en":"Manual check outcome is invalid.","zh":"人工 check 结果无效。"}
+{"k":"errors.runtime.conversation-not-available","en":"The workflow is running, so a normal message cannot be sent yet.","zh":"工作流正在运行，暂时不能发送普通消息。"}
+{"k":"errors.runtime.continue-not-available","en":"This node no longer needs to be continued. It may already be active or no longer resumable.","zh":"当前节点不需要继续，可能已经恢复或不再可继续。"}
+{"k":"errors.runtime.continue-already-active","en":"The workflow is already resuming. Please wait.","zh":"工作流正在恢复，请稍候。"}
+{"k":"errors.runtime.continue-launch-failed","en":"The workflow could not be resumed. Check its current state and try again.","zh":"工作流恢复失败，请检查当前状态后重试。"}
+{"k":"errors.runtime.continue-launch-channel-closed","en":"The workflow resume did not start. Try again.","zh":"工作流恢复未能启动，请重试。"}
+{"k":"errors.conversation.task-not-found","en":"This conversation could not be found.","zh":"找不到该会话。"}
+{"k":"errors.conversation.session-superseded","en":"This session was continued by {{nodeId}} / {{attemptId}}. Continue in that attempt.","zh":"此会话已由 {{nodeId}} / {{attemptId}} 接续，请前往该 attempt 继续。"}
+{"k":"errors.conversation.task-running","en":"This conversation is still running. Stop it before deleting.","zh":"该会话仍在运行，请先停止后再删除。"}
+{"k":"errors.conversation.task-delete-failed","en":"Failed to delete conversation: {{message}}","zh":"删除会话失败：{{message}}"}
+{"k":"errors.conversation.workspace-not-found","en":"This workspace could not be found.","zh":"找不到该工作空间。"}
+{"k":"errors.conversation.session-restore-unsupported","en":"This Agent cannot restore an existing session.","zh":"当前 Agent 不支持恢复已有会话。"}
+{"k":"errors.conversation.session-restore-reference-missing","en":"This session is missing its Provider session reference.","zh":"当前会话缺少可恢复的 Provider 会话引用。"}
+{"k":"errors.conversation.history-sync-unsupported","en":"This Agent cannot synchronize the full history of an existing session.","zh":"当前 Agent 不支持同步已有会话的完整历史。"}
+{"k":"errors.conversation.prompt-empty","en":"Enter a message to send.","zh":"请输入要发送的内容。"}
+{"k":"errors.conversation.prompt-quote-invalid","en":"The quoted text is invalid. Remove it and quote the message again.","zh":"引用数据无效，请删除后重新引用。"}
+{"k":"errors.conversation.prompt-quote-limit-exceeded","en":"Quoted text cannot exceed {{maxChars}} characters in total.","zh":"引用内容总长度不能超过 {{maxChars}} 个字符。"}
+{"k":"errors.conversation.prompt-quote-count-exceeded","en":"A message can contain at most {{maxQuotes}} quotes.","zh":"单条消息最多包含 {{maxQuotes}} 条引用。"}
+{"k":"errors.conversation.prompt-quote-metadata-too-long","en":"The quote identifier is too long. Remove the quote and select it again.","zh":"引用标识过长，请删除后重新引用。"}
+{"k":"errors.conversation.prompt-role-invalid","en":"The role data is invalid. Select the role again before sending.","zh":"角色数据无效，请重新选择角色后再发送。"}
+{"k":"errors.conversation.prompt-role-metadata-too-long","en":"The role identifier is too long. Select the role again before sending.","zh":"角色标识过长，请重新选择角色后再发送。"}
+{"k":"errors.conversation.prompt-role-limit-exceeded","en":"The role definition cannot exceed {{maxChars}} characters.","zh":"角色定义不能超过 {{maxChars}} 个字符。"}
+{"k":"errors.conversation.prompt-queue-full","en":"The pending queue is full. It can hold up to 10 prompts.","zh":"待发送队列已满，最多可保留 10 条。"}
+{"k":"errors.conversation.prompt-queue-item-not-found","en":"This queued prompt no longer exists.","zh":"这条待发送内容已不存在。"}
+{"k":"errors.conversation.prompt-queue-item-dispatching","en":"This prompt is being sent and cannot be changed right now.","zh":"这条内容正在发送，暂时无法操作。"}
+{"k":"errors.conversation.prompt-queue-empty","en":"The pending queue is empty.","zh":"待发送队列为空。"}
+{"k":"errors.conversation.prompt-queue-revision-conflict","en":"The pending order changed. Try again after the list updates.","zh":"待发送顺序已发生变化，请在列表更新后重试。"}
+{"k":"errors.conversation.prompt-queue-invalid-order","en":"The pending order is invalid. Try again.","zh":"待发送顺序无效，请重试。"}
+{"k":"errors.conversation.prompt-queue-session-busy","en":"Stop the active session before using a queued prompt manually.","zh":"当前会话仍在运行，请停止后再手动使用。"}
+{"k":"errors.conversation.prompt-session-busy","en":"The previous message is still processing. Wait or stop the current response first.","zh":"上一条消息仍在处理中，请稍候或先停止当前回复。"}
+{"k":"errors.conversation.prompt-submission-conflict","en":"This message identifier is already associated with different content. Send it again.","zh":"这条消息的发送标识已被其他内容使用，请重新发送。"}
+{"k":"errors.conversation.prompt-submission-missing","en":"The accepted message content could not be read. Send it again.","zh":"已接纳的消息内容无法读取，请重新发送。"}
+{"k":"errors.conversation.prompt-queue-storage-failed","en":"The pending queue could not be saved. Try again.","zh":"待发送队列保存失败，请重试。"}
+{"k":"errors.workflow.agent-doctor-failed","en":"Agent {{agentType}} has not passed doctor.","zh":"Agent {{agentType}} 未通过 doctor。"}
+{"k":"errors.workflow.agent-doctor-required","en":"Agent {{agentType}} must pass doctor first.","zh":"Agent {{agentType}} 需要先通过 doctor。"}
+{"k":"errors.workflow.permission-mode-unsupported","en":"Agent {{agentType}} does not support permission mode {{permissionMode}}.","zh":"Agent {{agentType}} 不支持权限模式 {{permissionMode}}。"}
+{"k":"errors.workflow.missing-end-node","en":"Workflow must include an end node.","zh":"工作流必须包含结束节点。"}
+{"k":"errors.workflow.unreachable-node","en":"Node {{nodeId}} is unreachable and must be connected to the workflow.","zh":"节点 {{nodeId}} 不可达，请把它接入当前工作流。"}
+{"k":"errors.workflow.success-new-round-target","en":"{{from}} success edge cannot target new round.","zh":"{{from}} 的 success 边不能指向 new round。"}
+{"k":"errors.workflow.missing-new-round-entry","en":"{{from}} edge targeting new round must choose the next round start.","zh":"{{from}} 指向 new round 的边必须选择下一轮 Round 起点。"}
+{"k":"errors.workflow.invalid-new-round-entry","en":"{{from}} edge targeting new round selected missing start node {{entry}}.","zh":"{{from}} 指向 new round 的边选择了不存在的起点 {{entry}}。"}
+{"k":"errors.workflow.duplicate-id","en":"Workflow template {{workflowName}} uses workflow.id {{workflowId}}, which duplicates {{conflicts}}. Update the JSON and try again.","zh":"工作流模板 {{workflowName}} 的 workflow.id（{{workflowId}}）与 {{conflicts}} 重复，请修改 JSON 后重试。"}
+{"k":"errors.workflow.ai-dynamic-invalid-workflow","en":"AI-DYNAMIC references invalid workflow {{workflowName}}: {{reason}}.","zh":"AI-DYNAMIC 节点关联的工作流 {{workflowName}} 无效：{{reason}}。"}
+{"k":"errors.workflow.model-blank","en":"Model for node {{nodeId}} cannot be blank.","zh":"节点 {{nodeId}} 的模型不能为空。"}
+{"k":"errors.workflow.dynamic-fixed-model-blank","en":"Fixed model for AI-DYNAMIC node {{nodeId}} cannot be blank.","zh":"AI-DYNAMIC 节点 {{nodeId}} 的固定模型不能为空。"}
+{"k":"errors.workflow.dynamic-agents-empty","en":"Available agents for AI-DYNAMIC node {{nodeId}} cannot be empty.","zh":"AI-DYNAMIC 节点 {{nodeId}} 的可选 agent 列表不能为空。"}
+{"k":"errors.workflow.dynamic-agent-duplicate","en":"Agent {{provider}} is duplicated in AI-DYNAMIC node {{nodeId}}.","zh":"AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 重复。"}
+{"k":"errors.workflow.dynamic-agent-model-blank","en":"Model for agent {{provider}} in AI-DYNAMIC node {{nodeId}} cannot be blank.","zh":"AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 模型不能为空。"}
+{"k":"errors.workflow.agent-model-blank","en":"Model for agent {{provider}} cannot be blank.","zh":"Agent {{provider}} 的模型不能为空。"}
+{"k":"errors.workflow.invalid","en":"Workflow configuration is invalid.","zh":"工作流配置无效。"}
+{"k":"errors.workspace.path-invalid-utf8","en":"Selected workspace path is not valid UTF-8.","zh":"选择的工作空间路径不是有效 UTF-8。"}
+{"k":"errors.workspace.path-resolve-failed","en":"Failed to resolve selected workspace path.","zh":"无法解析选择的工作空间路径。"}
+{"k":"errors.workspace.path-not-found","en":"The workspace does not exist or was moved: {{workspacePath}}. Check the folder location and try again.","zh":"工作空间不存在或已被移动：{{workspacePath}}。请确认目录位置后重试。"}
+{"k":"errors.workspace.path-not-directory","en":"The workspace path is not a folder: {{workspacePath}}. Select the workspace again.","zh":"工作空间路径不是文件夹：{{workspacePath}}。请重新选择工作空间。"}
+{"k":"errors.workspace.path-inaccessible","en":"The workspace cannot be accessed: {{workspacePath}}. Check the drive, network location, or folder permissions and try again.","zh":"无法访问工作空间：{{workspacePath}}。请检查磁盘连接、网络位置或目录权限后重试。"}
+{"k":"errors.workspace.not-found","en":"The workspace could not be found.","zh":"找不到对应的工作空间。"}
+{"k":"errors.workspace.recent-minimum-required","en":"Keep at least one recent workspace.","zh":"至少保留一个最近工作空间。"}
+{"k":"errors.workspace.recent-current-locked","en":"The current workspace is in use and cannot be removed from recent workspaces.","zh":"当前工作空间正在使用，不能从最近列表移除。"}
+{"k":"errors.updater.invalid-url","en":"Invalid update URL.","zh":"更新地址无效。"}
+{"k":"errors.updater.check-failed","en":"Failed to check for updates: {{message}}","zh":"检查更新失败：{{message}}"}
+{"k":"errors.updater.install-failed","en":"Failed to install update: {{message}}","zh":"安装更新失败：{{message}}"}
+{"k":"errors.updater.context-unavailable","en":"Cannot check for updates without a workspace selected.","zh":"无法获取更新上下文，请先选择工作空间。"}
+{"k":"errors.updater.no-update","en":"No update is available.","zh":"当前没有可安装更新。"}
+{"k":"errors.multica.not-configured","en":"Multica is not configured. Complete setup in Settings first.","zh":"尚未配置 Multica，请先在设置中完成接入。"}
+{"k":"errors.multica.invalid-address","en":"Invalid connection address: must be a valid http(s) URL.","zh":"连接地址无效：必须是合法的 http(s) 地址。"}
+{"k":"errors.multica.connect-cancelled","en":"Connection cancelled.","zh":"已取消连接。"}
+{"k":"errors.multica.auth-failed","en":"Multica authentication failed: {{message}}","zh":"Multica 鉴权失败：{{message}}"}
+{"k":"errors.multica.network-failed","en":"Multica network request failed: {{message}}","zh":"Multica 网络请求失败：{{message}}"}
+{"k":"errors.multica.register-failed","en":"Daemon registration failed: {{message}}","zh":"Daemon 注册失败：{{message}}"}
+{"k":"errors.multica.claim-conflict","en":"This task has already been claimed by another daemon.","zh":"该任务已被其他 Daemon 领取。"}
+{"k":"errors.multica.task-not-found","en":"This multica task could not be found.","zh":"找不到该 Multica 任务。"}
+{"k":"errors.multica.runtime-offline","en":"Runtime is not ready. Please try again shortly.","zh":"运行时未就绪，请稍后重试。"}
+{"k":"errors.multica.session-resume-failed","en":"Session resume failed. A fresh run will be started.","zh":"会话恢复失败，将以全新任务重跑。"}
+{"k":"errors.multica.workspace-already-bound","en":"This workspace is already bound.","zh":"该工作空间已绑定。"}
+{"k":"errors.multica.workspace-not-found","en":"This workspace binding could not be found.","zh":"找不到该工作空间绑定。"}
+{"k":"workflowEditor.title","en":"Workflow Editor","zh":"工作流编辑器"}
+{"k":"workflowEditor.subtitle","en":"Create nodes and edges on the canvas, then bind each node to an agent.","zh":"通过画布创建节点和边，并为每个节点绑定 Agent。"}
+{"k":"workflowEditor.canvas","en":"Canvas","zh":"画布"}
+{"k":"workflowEditor.undo","en":"Undo","zh":"撤销"}
+{"k":"workflowEditor.redo","en":"Redo","zh":"重做"}
+{"k":"workflowEditor.defaultTemplate","en":"Default Template","zh":"默认模板"}
+{"k":"workflowEditor.saveWorkflow","en":"Save Workflow","zh":"保存工作流"}
+{"k":"workflowEditor.inspector","en":"Inspector","zh":"配置面板"}
+{"k":"workflowEditor.addNode","en":"Add Node","zh":"新增节点"}
+{"k":"workflowEditor.addWorkerNode","en":"Agent node","zh":"Agent 节点"}
+{"k":"workflowEditor.addAiDynamicNode","en":"AI Dynamic Node","zh":"AI 动态节点"}
+{"k":"workflowEditor.deleteNode","en":"Delete Node","zh":"删除节点"}
+{"k":"workflowEditor.addEndTarget","en":"Add End node","zh":"添加结束节点"}
+{"k":"workflowEditor.addNewRoundTarget","en":"Add New Round node","zh":"添加新 Round 节点"}
+{"k":"workflowEditor.endTarget","en":"End node","zh":"结束节点"}
+{"k":"workflowEditor.newRoundTarget","en":"New Round node","zh":"New Round 节点"}
+{"k":"workflowEditor.quickAddSuccessor","en":"Quick add successor","zh":"快速新增后继"}
+{"k":"workflowEditor.deleteEdge","en":"Delete Edge","zh":"删除边"}
+{"k":"workflowEditor.noAgents","en":"Configure an agent and pass doctor in Agent Management first.","zh":"请先在 Agent 管理页配置并通过 doctor 检查。"}
+{"k":"workflowEditor.noDoctorReadyAgents","en":"No doctor-ready agents yet. Run doctor in Agent Management first.","zh":"暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。"}
+{"k":"workflowEditor.agentDoctorUnavailable","en":"Agent has not passed doctor","zh":"Agent 未通过 doctor"}
+{"k":"workflowEditor.profileCatalogLoading","en":"Loading profile catalog","zh":"正在加载角色目录"}
+{"k":"workflowEditor.profileCatalogLoadingDescription","en":"The workflow can be saved after the profile catalog is ready.","zh":"角色目录就绪后才能保存工作流。"}
+{"k":"workflowEditor.profileCatalogLoadFailed","en":"Profile catalog failed to load","zh":"角色目录加载失败"}
+{"k":"workflowEditor.profileCatalogRetry","en":"Reload","zh":"重新加载"}
+{"k":"workflowEditor.selectHint","en":"Select a node or edge on the canvas to configure it.","zh":"选择画布中的节点或边进行配置。"}
+{"k":"workflowEditor.terminalSelectionHint","en":"Terminal nodes need no configuration and can be removed with the delete action above the canvas.","zh":"终点节点无需配置，可通过画布上方的删除操作移除。"}
+{"k":"workflowEditor.currentSelection","en":"Current Selection","zh":"当前选择"}
+{"k":"workflowEditor.currentSelectionHelp","en":"Node and edge configuration appears here first.","zh":"节点和边的配置优先显示在这里。"}
+{"k":"workflowEditor.workflowSettings","en":"Workflow Settings","zh":"工作流设置"}
+{"k":"workflowEditor.validationSummary","en":"{{count}} issues need attention","zh":"发现 {{count}} 个待处理问题"}
+{"k":"workflowEditor.moreValidationIssues","en":"{{count}} more issues remain in the configuration.","zh":"另有 {{count}} 个问题，请继续检查对应配置。"}
+{"k":"workflowEditor.workflowControls","en":"Workflow Controls","zh":"工作流控制"}
+{"k":"workflowEditor.workflowControlsHelp","en":"Blank means unlimited. The workflow fails when a limit is exceeded.","zh":"未填写表示不限制；限制超出后当前工作流失败。"}
+{"k":"workflowEditor.maxAttempts","en":"Max Attempts","zh":"Attempt 最大次数"}
+{"k":"workflowEditor.maxAttemptsHelp","en":"Counts repair transitions caused by failure outcomes within a round. For example, 1 allows one repair loop; success transitions after repair do not consume it.","zh":"每个 Round 内按 failure 触发的修复跳转计数。比如 1 表示允许一次修复循环；修复后的 success 前进不消耗次数。"}
+{"k":"workflowEditor.maxRounds","en":"Max Rounds","zh":"Round 最大次数"}
+{"k":"workflowEditor.maxRoundsHelp","en":"Limits how many new rounds $new-round can open. The initial round is not counted.","zh":"限制 $new-round 可打开的新 Round 数；初始 Round 不计入。"}
+{"k":"workflowEditor.nodeConfig","en":"Node Config","zh":"节点配置"}
+{"k":"workflowEditor.modelConfig","en":"Model Configuration","zh":"模型配置"}
+{"k":"workflowEditor.syncToOtherNodes","en":"Sync to other nodes","zh":"同步至其他节点"}
+{"k":"workflowEditor.syncDialogTitle","en":"Sync model configuration","zh":"同步模型配置"}
+{"k":"workflowEditor.syncDialogDescription","en":"Within the current workflow only, apply this node's agent, model, permission, and all configuration options to other worker nodes in one operation.","zh":"仅在当前工作流内，将当前节点的 Agent、模型、权限和全部配置项一次性应用到其他普通节点。"}
+{"k":"workflowEditor.syncOverwriteConfigured","en":"Overwrite configured nodes","zh":"覆盖已配置节点"}
+{"k":"workflowEditor.syncOverwriteDescription","en":"By default, only unconfigured nodes are filled. Enable this to replace existing model configuration too.","zh":"默认只填充未配置节点。开启后也会替换已有模型配置。"}
+{"k":"workflowEditor.syncFillCount","en":"Fill","zh":"填充"}
+{"k":"workflowEditor.syncOverwriteCount","en":"Overwrite","zh":"覆盖"}
+{"k":"workflowEditor.syncSkipCount","en":"Skip","zh":"跳过"}
+{"k":"workflowEditor.syncConfirm","en":"Apply sync","zh":"应用同步"}
+{"k":"workflowEditor.edgeConfig","en":"Edge Config","zh":"边配置"}
+{"k":"workflowEditor.nodeId","en":"Node ID","zh":"节点 ID"}
+{"k":"workflowEditor.agent","en":"Agent","zh":"Agent"}
+{"k":"workflowEditor.selectAgent","en":"Select agent","zh":"选择 Agent"}
+{"k":"workflowEditor.model","en":"Model","zh":"模型"}
+{"k":"workflowEditor.selectModel","en":"Select model","zh":"选择模型"}
+{"k":"workflowEditor.profile","en":"Profile","zh":"角色"}
+{"k":"workflowEditor.permissionMode","en":"Permission mode","zh":"权限模式"}
+{"k":"workflowEditor.permissionModeUnspecified","en":"Unspecified","zh":"不指定"}
+{"k":"workflowEditor.selectProfile","en":"Search and select a profile","zh":"搜索并选择角色"}
+{"k":"workflowEditor.clearProfile","en":"Clear profile","zh":"清空角色"}
+{"k":"workflowEditor.noProfiles","en":"No profiles available","zh":"暂无可选角色"}
+{"k":"workflowEditor.profileHelp","en":"Profiles are managed in Context Management. The runtime provides the selected profile content to the AI.","zh":"Profile 可在上下文管理的角色管理中维护，节点运行时会把角色正文提供给 AI。"}
+{"k":"workflowEditor.manageProfiles","en":"Manage Profiles","zh":"管理角色"}
+{"k":"workflowEditor.goal","en":"Goal","zh":"节点目标"}
+{"k":"workflowEditor.resultMode","en":"Node result mode","zh":"节点结果判定方式"}
+{"k":"workflowEditor.resultModeDescription","en":"AI output validation and manual check are mutually exclusive; enabling either one disables the other.","zh":"AI 输出验证和人工 check 互斥；开启其中一个会自动关闭另一个。"}
+{"k":"workflowEditor.resultModeNone","en":"Disabled","zh":"不启用"}
+{"k":"workflowEditor.manualCheck","en":"Manual check","zh":"人工 check"}
+{"k":"workflowEditor.manualCheckDescription","en":"After the ACP session finishes, the user chooses Success or Failure as the node outcome.","zh":"ACP 会话结束后由用户点击“成功”或“失败”决定该节点结果。"}
+{"k":"workflowEditor.enabled","en":"Enabled","zh":"已开启"}
+{"k":"workflowEditor.disabled","en":"Disabled","zh":"未开启"}
+{"k":"workflowEditor.outputValidation","en":"AI Output Validation","zh":"AI 输出验证"}
+{"k":"workflowEditor.outputValidationDescription","en":"Require the AI to return constrained JSON, then use the success expression to decide success or failure. Invalid schema output is repaired with hidden follow-ups.","zh":"要求 AI 按约束输出 JSON，并用成功表达式自动判断该节点是成功还是失败；schema 不合法会自动隐藏追问修复。"}
+{"k":"workflowEditor.outputArtifact","en":"Output artifact key","zh":"输出产物 Key"}
+{"k":"workflowEditor.outputSchema","en":"JSON output constraint","zh":"JSON 输出约束"}
+{"k":"workflowEditor.outputSchemaPlaceholder","en":"Example: {\"reason\":\"String\",\"result\":\"boolean\"}. Use nested objects or arrays for nested output.","zh":"示例：{\"reason\":\"String\",\"result\":\"boolean\"}，嵌套输出可使用对象和数组。"}
+{"k":"workflowEditor.outputSchemaHelp","en":"Define the final JSON shape for the AI, for example {\"reason\":\"String\",\"result\":\"boolean\"}. Nested objects and arrays are supported, for example {\"xx\":{\"yy\":[{\"zz\":\"boolean\"}]}}.","zh":"填写给 AI 的最终 JSON 输出结构，例如 {\"reason\":\"String\",\"result\":\"boolean\"}。支持嵌套对象和数组，例如 {\"xx\":{\"yy\":[{\"zz\":\"boolean\"}]}}。"}
+{"k":"workflowEditor.outputSchemaBeautify","en":"Beautify JSON","zh":"美化 JSON"}
+{"k":"workflowEditor.outputSchemaInvalid","en":"Invalid JSON; fix it before it is written to the workflow.","zh":"JSON 格式无效，修正后才会写入工作流。"}
+{"k":"workflowEditor.allowedWorkflows","en":"Allowed Workflows","zh":"允许调用的工作流"}
+{"k":"workflowEditor.allowedWorkflowsHelp","en":"Restrict which workflow templates AI-DYNAMIC can invoke internally. Leaving this empty means no child workflow can be invoked.","zh":"限制 AI-DYNAMIC 内部可调用的工作流模板。留空表示不允许调用任何子工作流。"}
+{"k":"workflowEditor.selectAllowedWorkflows","en":"Select callable workflows","zh":"选择可调用工作流"}
+{"k":"workflowEditor.searchWorkflows","en":"Search workflows","zh":"搜索工作流"}
+{"k":"workflowEditor.allowedProfiles","en":"Available profiles","zh":"可用角色列表"}
+{"k":"workflowEditor.allowedProfilesHelp","en":"Restrict which profiles internal AI-DYNAMIC nodes may use. Leave empty to expose all profiles; once selected, only those profiles may be used.","zh":"限制 AI-DYNAMIC 内部节点可选的角色。留空表示提供所有角色；选中后仅允许使用这些角色。"}
+{"k":"workflowEditor.selectAllowedProfiles","en":"Select available profiles","zh":"选择可用角色"}
+{"k":"workflowEditor.searchProfiles","en":"Search profiles","zh":"搜索角色"}
+{"k":"workflowEditor.globalGoal","en":"Global goal","zh":"全局 goal"}
+{"k":"workflowEditor.globalGoalHelp","en":"Append one shared goal to every internal AI-DYNAMIC node. At runtime each node goal becomes “global goal + divider + original goal”.","zh":"为 AI-DYNAMIC 内部所有节点追加统一目标。运行时会把每个节点的 goal 组装成“全局 goal + 分割线 + 原始 goal”。"}
+{"k":"workflowEditor.globalGoalPlaceholder","en":"Enter a shared goal appended to every internal node","zh":"输入会附加到每个内部节点上的统一目标"}
+{"k":"workflowEditor.noWorkflowTemplates","en":"No workflows available.","zh":"暂无可选工作流。"}
+{"k":"workflowEditor.selectableWorkflows","en":"Selectable workflows","zh":"可选择的工作流"}
+{"k":"workflowEditor.unselectableWorkflows","en":"Unavailable workflows","zh":"不可选择的工作流"}
+{"k":"workflowEditor.emptyWorkflowId","en":"Empty workflow.id","zh":"空 workflow.id"}
+{"k":"workflowEditor.unselectableWorkflowEmptyId","en":"workflow.id is empty","zh":"workflow.id 为空"}
+{"k":"workflowEditor.unselectableWorkflowDuplicateId","en":"workflow.id is duplicated: {{workflow}}","zh":"workflow.id 与其他工作流重复：{{workflow}}"}
+{"k":"workflowEditor.unselectableWorkflowNestedDynamic","en":"Contains AI-DYNAMIC while nested dynamic is disabled","zh":"包含 AI-DYNAMIC，当前未允许嵌套"}
+{"k":"workflowEditor.workflowContainsAiDynamic","en":"Contains AI-DYNAMIC","zh":"包含 AI-DYNAMIC"}
+{"k":"workflowEditor.dynamicControl","en":"Dynamic Control Limits","zh":"动态控制限制"}
+{"k":"workflowEditor.dynamicAgentStrategy","en":"Dynamic node agent strategy","zh":"动态节点 Agent 策略"}
+{"k":"workflowEditor.dynamicAgentStrategyHelp","en":"Choose how AI-DYNAMIC selects the agent for internal nodes. Fixed agent always uses one agent. Dynamic agent lets the bootstrap node choose agents according to the guidance below.","zh":"决定 AI-DYNAMIC 如何为内部节点选择 Agent。固定 Agent 会统一使用一个 Agent，动态 Agent 会先根据下面的说明决定内部节点该用哪个 Agent。"}
+{"k":"workflowEditor.dynamicAgentStrategyFixed","en":"Fixed agent","zh":"固定 Agent"}
+{"k":"workflowEditor.dynamicAgentStrategyDynamic","en":"Dynamic agent","zh":"动态 Agent"}
+{"k":"workflowEditor.dynamicFixedAgentHelp","en":"In fixed mode, every internal AI-DYNAMIC node that needs an agent will use this agent.","zh":"固定模式下，AI-DYNAMIC 内部所有需要 Agent 的节点都会使用这里选中的 Agent。"}
+{"k":"workflowEditor.dynamicBootstrapAgent","en":"Bootstrap agent","zh":"初始分发节点 Agent"}
+{"k":"workflowEditor.dynamicBootstrapAgentHelp","en":"In dynamic mode, the bootstrap node uses this agent first to plan and route later internal nodes.","zh":"动态模式下，bootstrap 节点先使用这个 Agent 来拆解任务并决定后续内部节点。"}
+{"k":"workflowEditor.dynamicBootstrapModel","en":"Bootstrap model","zh":"初始分发节点模型"}
+{"k":"workflowEditor.dynamicBootstrapModelHelp","en":"Model used by the bootstrap node in dynamic mode. Uses the agent default model when not selected.","zh":"动态模式下 bootstrap 节点使用的模型。不选则使用 Agent 的默认模型。"}
+{"k":"workflowEditor.dynamicAcceptanceModel","en":"Acceptance model","zh":"验收节点模型"}
+{"k":"workflowEditor.dynamicAcceptanceModelHelp","en":"Model used by the bootstrap Agent for merge / acceptance. Uses that Agent's default model when not selected.","zh":"初始分发 Agent 执行 merge / acceptance 时使用的模型。不选则使用该 Agent 的默认模型。"}
+{"k":"workflowEditor.dynamicControlPermission","en":"Permission mode","zh":"权限模式"}
+{"k":"workflowEditor.dynamicControlPermissionHelp","en":"Native ACP permission mode shared by bootstrap, merge, and acceptance.","zh":"初始分发、merge 和 acceptance 共用的原生 ACP 权限模式。"}
+{"k":"workflowEditor.dynamicFixedModelHelp","en":"Model used by all internal nodes in fixed mode. Uses the agent default model when not selected.","zh":"固定模式下所有内部节点使用的模型。不选则使用 Agent 的默认模型。"}
+{"k":"workflowEditor.clearModel","en":"Clear model","zh":"清空模型选择"}
+{"k":"workflowEditor.dynamicAgentRoutingPrompt","en":"Agent routing guidance","zh":"Agent 决策指南"}
+{"k":"workflowEditor.dynamicAgentRoutingPromptHelp","en":"Optional. Explain which Agent should handle each worker task. Workers output only the Agent; model and permission come from that Agent's saved configuration.","zh":"可选。用于说明不同 worker 任务应选择哪个 Agent。worker 只输出 Agent，模型和权限使用该 Agent 的预先配置。"}
+{"k":"workflowEditor.dynamicAgentRoutingPromptPlaceholder","en":"Example: use Claude for development and Codex for testing and verification","zh":"示例：开发任务使用 Claude，测试和验证任务使用 Codex"}
+{"k":"workflowEditor.dynamicAvailableAgents","en":"Available dynamic agents","zh":"可选的动态 Agent"}
+{"k":"workflowEditor.dynamicAvailableAgentsHelp","en":"AI-DYNAMIC workers can only choose these Agents and use each Agent's configured model and native permission mode.","zh":"AI-DYNAMIC worker 只能选择这里启用的 Agent，并直接使用为该 Agent 配置的模型和原生权限模式。"}
+{"k":"workflowEditor.maxDynamicNodes","en":"Max Dynamic Nodes","zh":"动态节点上限"}
+{"k":"workflowEditor.maxDynamicNodesHelp","en":"Limit how many internal nodes this AI-DYNAMIC run may create in total.","zh":"限制这次 AI-DYNAMIC 运行最多可以创建多少个内部节点。"}
+{"k":"workflowEditor.maxFanout","en":"Max Fanout","zh":"Fanout 上限"}
+{"k":"workflowEditor.maxFanoutHelp","en":"Limit how many branch nodes a single fanout may create at once.","zh":"限制单次 fanout 最多可以同时派生多少个分支节点。"}
+{"k":"workflowEditor.maxDepth","en":"Max Depth","zh":"深度上限"}
+{"k":"workflowEditor.maxDepthHelp","en":"Limit how deep the internal node chain may grow.","zh":"限制内部节点链路最多可以向下扩展多少层。"}
+{"k":"workflowEditor.maxParallel","en":"Max Parallel","zh":"并行上限"}
+{"k":"workflowEditor.maxParallelHelp","en":"Limit how many internal nodes may run concurrently.","zh":"限制 AI-DYNAMIC 内部同一时刻最多允许多少个节点并行运行。"}
+{"k":"workflowEditor.maxGroupDepth","en":"Group Depth","zh":"Group 深度"}
+{"k":"workflowEditor.maxGroupDepthHelp","en":"Limit how deeply fanout groups may nest.","zh":"限制 fanout group 的嵌套层数。"}
+{"k":"workflowEditor.maxWorkflowInvocations","en":"Max Workflow Invocations","zh":"Workflow 调用上限"}
+{"k":"workflowEditor.maxWorkflowInvocationsHelp","en":"Limit how many child workflow invocations internal nodes may perform.","zh":"限制内部节点最多可以调用多少次子工作流。"}
+{"k":"workflowEditor.allowNestedDynamic","en":"Allow nested AI-DYNAMIC","zh":"允许嵌套 AI-DYNAMIC"}
+{"k":"workflowEditor.allowNestedDynamicHelp","en":"When enabled, child workflows invoked inside AI-DYNAMIC may themselves contain AI-DYNAMIC.","zh":"开启后，AI-DYNAMIC 内部被调用的子工作流中也可以继续包含 AI-DYNAMIC。"}
+{"k":"workflowEditor.successExpression","en":"Success expression","zh":"成功表达式"}
+{"k":"workflowEditor.successExpressionHelp","en":"Define how the node is considered successful, for example $.result == true or $.result==\"true\". Nested paths and array indexes are supported, for example $.xx.yy[0].zz. Save validates that the path exists in the JSON output constraint.","zh":"填写用于判断节点成功的表达式，例如 $.result == true 或 $.result==\"true\"。支持多级路径和数组下标，例如 $.xx.yy[0].zz。保存时会校验路径是否存在于 JSON 输出约束中。"}
+{"k":"workflowEditor.saveErrorInvalidExpression","en":"{{node}} has an invalid success expression.","zh":"{{node}} 的成功表达式格式无效。"}
+{"k":"workflowEditor.saveErrorLegacySchema","en":"{{node}} still uses legacy JSON Schema. Use the simplified output shape instead.","zh":"{{node}} 的 JSON 输出约束仍是旧 JSON Schema，请改为简化输出结构。"}
+{"k":"workflowEditor.saveErrorMissingPath","en":"{{node}} success expression path is not declared in the JSON output constraint.","zh":"{{node}} 的成功表达式路径未在 JSON 输出约束中声明。"}
+{"k":"workflowEditor.validationDialogTitle","en":"Workflow cannot be saved","zh":"工作流无法保存"}
+{"k":"workflowEditor.validationDialogDescription","en":"Fix these issues first. After closing, invalid fields are highlighted in red.","zh":"请先处理以下问题。关闭弹窗后，对应字段会以红色标出。"}
+{"k":"workflowEditor.validationDialogClose","en":"Review and fix","zh":"查看并修正"}
+{"k":"workflowEditor.unnamedNode","en":"Unnamed node","zh":"未命名节点"}
+{"k":"workflowEditor.entryBadge","en":"Entry","zh":"入口"}
+{"k":"workflowEditor.validationWorkflowIdRequired","en":"Workflow ID is required.","zh":"工作流 ID 不能为空。"}
+{"k":"workflowEditor.validationEntryRequired","en":"Entry node is required.","zh":"入口节点不能为空。"}
+{"k":"workflowEditor.validationEntryMissingTarget","en":"Entry node {{node}} does not exist.","zh":"入口节点 {{node}} 不存在。"}
+{"k":"workflowEditor.validationEntryCandidateMissing","en":"Workflow must have exactly one entry node with no incoming edge.","zh":"工作流必须存在且只能存在一个没有入边的入口节点。"}
+{"k":"workflowEditor.validationEntryCandidateMultiple","en":"Workflow has multiple entry nodes: {{entries}}. Connect the graph so there is exactly one entry.","zh":"工作流存在多个入口节点：{{entries}}。请通过连线收敛为唯一入口。"}
+{"k":"workflowEditor.validationNodesRequired","en":"Workflow requires at least one node.","zh":"工作流至少需要一个节点。"}
+{"k":"workflowEditor.validationEndNodeRequired","en":"Workflow must include an end node.","zh":"工作流必须包含结束节点。"}
+{"k":"workflowEditor.validationMaxAttemptsPositive","en":"Max attempts must be greater than 0.","zh":"Attempt 最大次数必须大于 0。"}
+{"k":"workflowEditor.validationMaxRoundsPositive","en":"Max rounds must be greater than 0.","zh":"Round 最大次数必须大于 0。"}
+{"k":"workflowEditor.validationNodeIdRequired","en":"{{node}} node ID is required.","zh":"{{node}} 节点 ID 不能为空。"}
+{"k":"workflowEditor.validationReservedNodeId","en":"{{node}} uses a reserved node ID.","zh":"{{node}} 使用了系统保留节点 ID。"}
+{"k":"workflowEditor.validationDuplicateNodeId","en":"{{node}} node ID is duplicated.","zh":"{{node}} 节点 ID 重复。"}
+{"k":"workflowEditor.validationUnreachableNode","en":"{{node}} has no incoming edge and cannot be reached from the entry node.","zh":"{{node}} 没有入边，无法从入口节点到达。"}
+{"k":"workflowEditor.validationDanglingNode","en":"{{node}} has no outgoing edge and cannot continue or end the workflow.","zh":"{{node}} 没有出边，无法继续执行或结束。"}
+{"k":"workflowEditor.validationNodeProviderRequired","en":"{{node}} node is not associated with an agent.","zh":"{{node}} 节点未关联 Agent。"}
+{"k":"workflowEditor.validationNodeProviderUnavailable","en":"{{node}} node agent has not passed doctor.","zh":"{{node}} 节点关联的 Agent 未通过 doctor。"}
+{"k":"workflowEditor.validationSlotRequired","en":"{{node}} node is missing an execution slot.","zh":"{{node}} 节点缺少执行槽位。"}
+{"k":"workflowEditor.validationSlotDuplicate","en":"{{node}} node has a duplicate execution slot.","zh":"{{node}} 节点的执行槽位重复。"}
+{"k":"workflowEditor.validationModelUnavailable","en":"{{node}} node model does not belong to the current agent.","zh":"{{node}} 节点选择的模型不属于当前 Agent。"}
+{"k":"workflowEditor.validationConfigOptionUnavailable","en":"{{node}} node configuration option {{option}} does not belong to the current agent.","zh":"{{node}} 节点的配置项 {{option}} 不属于当前 Agent。"}
+{"k":"workflowEditor.validationPermissionModeUnavailable","en":"{{node}} node permission mode does not belong to the current agent.","zh":"{{node}} 节点的权限模式不属于当前 Agent。"}
+{"k":"workflowEditor.validationNodeProfileRequired","en":"{{node}} node is not associated with a role.","zh":"{{node}} 节点未关联角色。"}
+{"k":"workflowEditor.validationNodeProfileVisibilityChanged","en":"{{node}} node associated role no longer exists; reset it.","zh":"{{node}} 节点关联的角色不存在或已删除，请重新设置。"}
+{"k":"workflowEditor.validationNodeGoalRequired","en":"{{node}} node goal is required.","zh":"{{node}} 节点目标不能为空。"}
+{"k":"workflowEditor.validationDynamicAvailableAgentsRequired","en":"{{node}} requires at least one available agent.","zh":"{{node}} 至少需要选择一个可用 agent。"}
+{"k":"workflowEditor.validationDynamicAgentDuplicated","en":"{{node}} selected dynamic agent {{agent}} more than once.","zh":"{{node}} 重复选择了动态 Agent {{agent}}。"}
+{"k":"workflowEditor.validationDynamicAgentModelRequiredWithoutRouting","en":"{{node}} requires a model for dynamic agent {{agent}} when routing guidance is empty.","zh":"{{node}} 未填写决策指南时，动态 Agent {{agent}} 必须选择模型。"}
+{"k":"workflowEditor.validationOutputArtifactRequired","en":"{{node}} output artifact key is required.","zh":"{{node}} 的输出产物 Key 不能为空。"}
+{"k":"workflowEditor.validationSuccessExpressionRequired","en":"{{node}} requires a success expression when output validation is enabled.","zh":"{{node}} 启用输出验证后必须填写成功表达式。"}
+{"k":"workflowEditor.validationResultModeExclusive","en":"{{node}} cannot enable AI output validation and manual check at the same time.","zh":"{{node}} 不能同时启用 AI 输出验证和人工 check。"}
+{"k":"workflowEditor.validationDynamicLimitPositive","en":"{{node}} {{field}} must be greater than 0.","zh":"{{node}} 的 {{field}} 必须大于 0。"}
+{"k":"workflowEditor.validationAllowedWorkflowRequired","en":"{{node}} allowed workflow is required.","zh":"{{node}} 的 allowed workflow 不能为空。"}
+{"k":"workflowEditor.validationAllowedWorkflowDuplicated","en":"{{node}} selected workflow {{workflow}} more than once.","zh":"{{node}} 重复选择了工作流 {{workflow}}。"}
+{"k":"workflowEditor.validationAllowedWorkflowMissing","en":"{{node}} selected workflow {{workflow}} does not exist.","zh":"{{node}} 选择的工作流 {{workflow}} 不存在。"}
+{"k":"workflowEditor.validationAllowedWorkflowIdNotUnique","en":"{{node}} selected workflow ID {{workflow}} is duplicated by another workflow. Update the workflow definition ID first.","zh":"{{node}} 选择的工作流 ID {{workflow}} 与其他工作流重复，请先修改工作流定义中的 ID。"}
+{"k":"workflowEditor.validationAllowedWorkflowNestedDynamic","en":"{{node}} cannot call workflow {{workflow}} because it contains AI-DYNAMIC.","zh":"{{node}} 不允许调用包含 AI-DYNAMIC 的工作流 {{workflow}}。"}
+{"k":"workflowEditor.validationAllowedProfileRequired","en":"{{node}} contains a blank profile in available profiles.","zh":"{{node}} 的可用角色列表存在空角色。"}
+{"k":"workflowEditor.validationAllowedProfileDuplicated","en":"{{node}} repeats available profile {{profile}}.","zh":"{{node}} 的可用角色 {{profile}} 重复。"}
+{"k":"workflowEditor.validationAllowedProfileMissing","en":"{{node}} references unavailable profile {{profile}}.","zh":"{{node}} 的可用角色 {{profile}} 不存在。"}
+{"k":"workflowEditor.validationGlobalGoalBlank","en":"{{node}} global goal cannot be blank.","zh":"{{node}} 的全局 goal 不能为空白。"}
+{"k":"workflowEditor.validationEdgeSourceRequired","en":"Edge {{index}} is missing a source node.","zh":"第 {{index}} 条边缺少来源节点。"}
+{"k":"workflowEditor.validationEdgeSourceMissing","en":"Edge source node {{node}} does not exist.","zh":"边的来源节点 {{node}} 不存在。"}
+{"k":"workflowEditor.validationEdgeTargetRequired","en":"Edge {{index}} is missing a target node.","zh":"第 {{index}} 条边缺少目标节点。"}
+{"k":"workflowEditor.validationEdgeTargetMissing","en":"Edge target node {{node}} does not exist.","zh":"边的目标节点 {{node}} 不存在。"}
+{"k":"workflowEditor.validationEdgeOutcomeRequired","en":"Edge {{index}} has an invalid outcome.","zh":"第 {{index}} 条边类型无效。"}
+{"k":"workflowEditor.validationFailureOutcomeRequiresResultDecision","en":"{{node}} can only have a failure branch when AI output validation or manual check is enabled.","zh":"{{node}} 只有开启 AI 输出验证或人工 check 后才能配置失败分支。"}
+{"k":"workflowEditor.validationDuplicateEdgeOutcome","en":"{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.","zh":"{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。"}
+{"k":"workflowEditor.validationSuccessNewRoundTarget","en":"{{node}} success edge cannot target new round.","zh":"{{node}} 的 success 边不能指向 new round。"}
+{"k":"workflowEditor.validationNewRoundEntryRequired","en":"{{node}} edge targeting new round must choose the next round start.","zh":"{{node}} 指向 new round 的边必须选择下一轮 Round 起点。"}
+{"k":"workflowEditor.validationNewRoundEntryMissing","en":"{{node}} edge targeting new round selected missing start node {{entry}}.","zh":"{{node}} 指向 new round 的边选择了不存在的起点 {{entry}}。"}
+{"k":"workflowEditor.validationTerminalEdgeSource","en":"Terminal node {{node}} cannot be an edge source.","zh":"终止节点 {{node}} 不能作为边的来源。"}
+{"k":"workflowEditor.validationContinueTerminalTarget","en":"Edge {{index}} continue session cannot target a terminal node.","zh":"第 {{index}} 条边的 continue session 不能指向终止节点。"}
+{"k":"workflowEditor.nodeLabels.plan","en":"Plan","zh":"方案"}
+{"k":"workflowEditor.nodeLabels.dev","en":"Development","zh":"开发"}
+{"k":"workflowEditor.nodeLabels.review","en":"Review","zh":"审查"}
+{"k":"workflowEditor.nodeLabels.test","en":"Test","zh":"测试"}
+{"k":"workflowEditor.nodeLabels.accept","en":"Acceptance","zh":"验收"}
+{"k":"workflowEditor.nodeLabels.cleanup","en":"Cleanup","zh":"清理"}
+{"k":"workflowEditor.nodeLabels.aiDynamic","en":"AI Dynamic Node","zh":"AI 动态节点"}
+{"k":"workflowEditor.nodeLabels.end","en":"End","zh":"结束"}
+{"k":"workflowEditor.nodeLabels.newRound","en":"New Round","zh":"新 Round"}
+{"k":"workflowEditor.edgeLabels.success","en":"Success","zh":"成功"}
+{"k":"workflowEditor.edgeLabels.failure","en":"Failure","zh":"失败"}
+{"k":"workflowEditor.successPath","en":"Success Field Path","zh":"成功字段路径"}
+{"k":"workflowEditor.successEquals","en":"Expected Value","zh":"期望值"}
+{"k":"workflowEditor.edgeOutcome","en":"Edge Type","zh":"边类型"}
+{"k":"workflowEditor.edgeTarget","en":"Target","zh":"目标"}
+{"k":"workflowEditor.newRoundEntry","en":"New Round Start","zh":"新 Round 起点"}
+{"k":"workflowEditor.newRoundEntryHelp","en":"Choose where the next round starts; $entry means the current workflow entry.","zh":"选择下一轮 Round 的起点；$entry 表示当前工作流的起点。"}
+{"k":"workflowEditor.selectNewRoundEntry","en":"Select start","zh":"选择起点"}
+{"k":"workflowEditor.sessionMode","en":"Session","zh":"Session"}
+{"k":"workflowEditor.enable","en":"Enable","zh":"启用"}
+{"k":"workflowEditor.disable","en":"Disable","zh":"关闭"}
+{"k":"workflowEditor.defaultNodeGoal","en":"Describe what this node should accomplish.","zh":"描述该节点需要完成的任务。"}
+{"k":"sourceControl.title","en":"Source Control","zh":"源码管理"}
+{"k":"sourceControl.description","en":"Inspect and manage Git state for this workspace","zh":"查看并管理当前工作空间的 Git 状态"}
+{"k":"sourceControl.loading","en":"Reading Git status…","zh":"正在读取 Git 状态…"}
+{"k":"sourceControl.loadFailed","en":"Unable to read this repository","zh":"无法读取当前仓库"}
+{"k":"sourceControl.gitNotInstalled","en":"Git is not installed","zh":"尚未安装 Git"}
+{"k":"sourceControl.gitNotInstalledDescription","en":"Install system Git to use source control, then check again.","zh":"安装系统 Git 后即可使用源码管理；安装完成后请重新检测。"}
+{"k":"sourceControl.openGitDownload","en":"Open Git downloads","zh":"打开 Git 下载页面"}
+{"k":"sourceControl.checkAgain","en":"Check again","zh":"重新检测"}
+{"k":"sourceControl.repositoryRequired","en":"This folder is not a Git repository","zh":"当前文件夹不是 Git 仓库"}
+{"k":"sourceControl.repositoryRequiredDescription","en":"Initialization only creates the Git repository. It does not stage or commit existing files.","zh":"初始化只会创建 Git 仓库，不会自动暂存或提交当前文件。"}
+{"k":"sourceControl.initializeRepository","en":"Initialize repository","zh":"初始化仓库"}
+{"k":"sourceControl.initializingRepository","en":"Initializing…","zh":"正在初始化…"}
+{"k":"sourceControl.capability.version-unsupported.title","en":"Git is out of date","zh":"Git 版本过低"}
+{"k":"sourceControl.capability.version-unsupported.description","en":"The installed version is {{installedVersion}}. Source control requires Git {{minimumVersion}} or later.","zh":"当前版本为 {{installedVersion}}，源码管理需要 Git {{minimumVersion}} 或更高版本。"}
+{"k":"sourceControl.capability.version-unavailable.title","en":"Git version could not be identified","zh":"无法识别 Git 版本"}
+{"k":"sourceControl.capability.version-unavailable.description","en":"The installed Git could not be identified reliably. Repair or reinstall Git and try again.","zh":"当前 Git 无法可靠识别，请修复或重新安装 Git 后重试。"}
+{"k":"sourceControl.capability.head-required.title","en":"The repository has no initial commit","zh":"Git 仓库还没有首次提交"}
+{"k":"sourceControl.capability.head-required.description","en":"Select files in Changes, stage them, and create the initial commit.","zh":"可以先在“更改”中选择文件、暂存并创建首次提交。"}
+{"k":"sourceControl.capability.worktree-required.title","en":"This Git version does not support worktrees","zh":"当前 Git 不支持 Worktree"}
+{"k":"sourceControl.capability.worktree-required.description","en":"Update system Git and check again.","zh":"请更新系统 Git 后重新检测。"}
+{"k":"sourceControl.capability.repository-unavailable.title","en":"The Git repository is unavailable","zh":"Git 仓库暂时不可用"}
+{"k":"sourceControl.capability.repository-unavailable.description","en":"Repository metadata could not be read. Check directory permissions or Git state and try again.","zh":"仓库元数据无法读取，请检查目录权限或 Git 状态后重试。"}
+{"k":"sourceControl.operationFailed","en":"Git operation failed","zh":"Git 操作失败"}
+{"k":"sourceControl.diff","en":"Git file diff","zh":"Git 文件差异"}
+{"k":"sourceControl.detached","en":"Detached HEAD","zh":"分离 HEAD"}
+{"k":"sourceControl.locked","en":"This workspace is in use by {{operation}}","zh":"当前工作空间正由 {{operation}} 使用"}
+{"k":"sourceControl.changes","en":"Changes","zh":"更改"}
+{"k":"sourceControl.history","en":"History","zh":"历史"}
+{"k":"sourceControl.historyLoading","en":"Loading commit history…","zh":"正在加载提交历史…"}
+{"k":"sourceControl.repository","en":"Repository","zh":"仓库"}
+{"k":"sourceControl.conflicts","en":"Conflicts","zh":"冲突"}
+{"k":"sourceControl.staged","en":"Staged","zh":"已暂存"}
+{"k":"sourceControl.unstaged","en":"Unstaged","zh":"未暂存"}
+{"k":"sourceControl.untracked","en":"Untracked","zh":"未跟踪"}
+{"k":"sourceControl.stage","en":"Stage","zh":"暂存"}
+{"k":"sourceControl.unstage","en":"Unstage","zh":"取消暂存"}
+{"k":"sourceControl.stageAll","en":"Stage all","zh":"全部暂存"}
+{"k":"sourceControl.unstageAll","en":"Unstage all","zh":"全部取消暂存"}
+{"k":"sourceControl.clean","en":"Working tree is clean","zh":"工作区没有变更"}
+{"k":"sourceControl.commitSubject","en":"Commit subject","zh":"提交主题"}
+{"k":"sourceControl.commitBody","en":"Commit body (optional)","zh":"提交正文（可选）"}
+{"k":"sourceControl.stagedCount","en":"{{count}} staged files","zh":"已暂存 {{count}} 个文件"}
+{"k":"sourceControl.commit","en":"Commit","zh":"提交"}
+{"k":"sourceControl.loadMore","en":"Load more commits","zh":"加载更多提交"}
+{"k":"sourceControl.newerCommits","en":"Newer","zh":"较新"}
+{"k":"sourceControl.olderCommits","en":"Older","zh":"较早"}
+{"k":"sourceControl.historyCurrentPage","en":"Page {{page}}","zh":"第 {{page}} 页"}
+{"k":"sourceControl.selectCommit","en":"Select commit {{oid}}","zh":"选择提交 {{oid}}"}
+{"k":"sourceControl.selectedCommitCount","en":"{{count}} commits selected","zh":"已选择 {{count}} 个提交"}
+{"k":"sourceControl.runtimeCheckpoint","en":"Runtime checkpoint","zh":"运行检查点"}
+{"k":"sourceControl.commits","en":"Commits","zh":"提交"}
+{"k":"sourceControl.commitList","en":"Commit list","zh":"提交列表"}
+{"k":"sourceControl.commitReview","en":"Commit changes","zh":"提交变更"}
+{"k":"sourceControl.commitReviewLoading","en":"Aggregating file changes from the selected commits…","zh":"正在聚合所选提交的文件变化…"}
+{"k":"sourceControl.commitReviewCount","en":"Final changes from {{count}} commits","zh":"{{count}} 个提交的最终变化"}
+{"k":"sourceControl.changedFileCount","en":"{{count}} changed files","zh":"{{count}} 个变更文件"}
+{"k":"sourceControl.selectCommitHint","en":"Select a commit to inspect its changed files","zh":"选择提交后在这里查看变更文件"}
+{"k":"sourceControl.copyShortSha","en":"Copy short SHA (8 chars)","zh":"复制短 SHA（8 位）"}
+{"k":"sourceControl.copyFullSha","en":"Copy full SHA","zh":"复制完整 SHA"}
+{"k":"sourceControl.commitReachability","en":"View commit reachability","zh":"查看提交归属"}
+{"k":"sourceControl.commitReachabilityDescription","en":"Shows refs that currently contain this commit and its verifiable path relative to the current branch.","zh":"展示当前仍包含该提交的引用，以及它相对当前分支的可验证路径。"}
+{"k":"sourceControl.containingRefs","en":"Containing branches and tags","zh":"包含该提交的分支与标签"}
+{"k":"sourceControl.noContainingRefs","en":"No current ref contains this commit","zh":"当前没有引用包含该提交"}
+{"k":"sourceControl.targetPath","en":"Relative to current branch","zh":"相对当前分支"}
+{"k":"sourceControl.firstMerge","en":"First merge into the mainline","zh":"首次进入主线的 Merge 提交"}
+{"k":"sourceControl.parents","en":"Parents","zh":"父提交"}
+{"k":"sourceControl.rootCommit","en":"Root commit (no parents)","zh":"Root 提交（无父提交）"}
+{"k":"sourceControl.previousFile","en":"Previous file","zh":"上一个文件"}
+{"k":"sourceControl.nextFile","en":"Next file","zh":"下一个文件"}
+{"k":"sourceControl.targetPaths.tip","en":"Current branch tip","zh":"当前分支顶端"}
+{"k":"sourceControl.targetPaths.direct","en":"On the first-parent mainline","zh":"位于第一父主线"}
+{"k":"sourceControl.targetPaths.merged","en":"Entered through a merge","zh":"通过 Merge 进入主线"}
+{"k":"sourceControl.targetPaths.not-contained","en":"Not yet contained by the current branch","zh":"尚未进入当前分支"}
+{"k":"sourceControl.branches","en":"Branches","zh":"分支"}
+{"k":"sourceControl.tags","en":"Tags","zh":"标签"}
+{"k":"sourceControl.worktrees","en":"Worktrees","zh":"Worktree"}
+{"k":"sourceControl.stashes","en":"Stashes","zh":"Stash"}
+{"k":"sourceControl.fetch","en":"Fetch","zh":"Fetch"}
+{"k":"sourceControl.pull","en":"Pull","zh":"Pull"}
+{"k":"sourceControl.push","en":"Push","zh":"Push"}
+{"k":"sourceControl.remote","en":"Remote","zh":"远程仓库"}
+{"k":"sourceControl.name","en":"Name","zh":"名称"}
+{"k":"sourceControl.startPoint","en":"Start point","zh":"起点"}
+{"k":"sourceControl.worktreePath","en":"Worktree path","zh":"Worktree 路径"}
+{"k":"sourceControl.newBranchOptional","en":"New branch (optional)","zh":"新分支（可选）"}
+{"k":"sourceControl.tagStyle","en":"Tag style","zh":"标签类型"}
+{"k":"sourceControl.annotated","en":"Annotated","zh":"附注标签"}
+{"k":"sourceControl.lightweight","en":"Lightweight","zh":"轻量标签"}
+{"k":"sourceControl.messageOptional","en":"Message (optional)","zh":"说明（可选）"}
+{"k":"sourceControl.pullStrategy","en":"Pull strategy","zh":"Pull 策略"}
+{"k":"sourceControl.ffOnly","en":"Fast-forward only (recommended)","zh":"仅快进（推荐）"}
+{"k":"sourceControl.merge","en":"Merge","zh":"Merge"}
+{"k":"sourceControl.rebase","en":"Rebase","zh":"Rebase"}
+{"k":"sourceControl.prune","en":"Remove records for branches deleted on the remote","zh":"移除远端已删除的分支记录"}
+{"k":"sourceControl.pruneDescription","en":"Local branches and working-tree files are not deleted.","zh":"不会删除本地分支或工作区文件。"}
+{"k":"sourceControl.checkoutAfterCreate","en":"Switch to the new branch after creation","zh":"创建后切换到新分支"}
+{"k":"sourceControl.includeUntracked","en":"Include untracked files","zh":"包含未跟踪文件"}
+{"k":"sourceControl.restoreIndex","en":"Restore staged state","zh":"恢复暂存状态"}
+{"k":"sourceControl.repositoryActions","en":"Create repository resource","zh":"新建仓库资源"}
+{"k":"sourceControl.changeActions","en":"More change actions","zh":"更多更改操作"}
+{"k":"sourceControl.createBranch","en":"Create branch","zh":"新建分支"}
+{"k":"sourceControl.createTag","en":"Create tag","zh":"新建标签"}
+{"k":"sourceControl.createWorktree","en":"Create worktree","zh":"新建 Worktree"}
+{"k":"sourceControl.removeWorktree","en":"Remove worktree","zh":"删除 Worktree"}
+{"k":"sourceControl.removingWorktree","en":"Removing worktree…","zh":"正在删除 Worktree…"}
+{"k":"sourceControl.worktreeActions","en":"Actions for {{path}}","zh":"{{path}} 的操作"}
+{"k":"sourceControl.createStash","en":"Create stash","zh":"保存到 Stash"}
+{"k":"sourceControl.dismissOperationResult","en":"Dismiss operation result","zh":"关闭操作结果"}
+{"k":"sourceControl.switchBranch","en":"Switch branch","zh":"切换分支"}
+{"k":"sourceControl.rename","en":"Rename","zh":"重命名"}
+{"k":"sourceControl.pushTag","en":"Push tag","zh":"推送标签"}
+{"k":"sourceControl.apply","en":"Apply","zh":"应用"}
+{"k":"sourceControl.operationKinds.fetch","en":"Fetching remote updates…","zh":"正在获取远程更新…"}
+{"k":"sourceControl.operationKinds.pull","en":"Pulling and integrating updates…","zh":"正在拉取并整合更新…"}
+{"k":"sourceControl.operationKinds.push","en":"Pushing branch…","zh":"正在推送分支…"}
+{"k":"sourceControl.operationKinds.push-tag","en":"Pushing tag…","zh":"正在推送标签…"}
+{"k":"sourceControl.operationKinds.stash-create","en":"Creating stash…","zh":"正在保存 Stash…"}
+{"k":"sourceControl.operationKinds.stash-apply","en":"Applying stash…","zh":"正在应用 Stash…"}
+{"k":"sourceControl.operationKinds.merge-continue","en":"Completing merge…","zh":"正在完成 Merge…"}
+{"k":"sourceControl.operationKinds.merge-abort","en":"Aborting merge…","zh":"正在放弃 Merge…"}
+{"k":"sourceControl.operationKinds.rebase-continue","en":"Continuing rebase…","zh":"正在继续 Rebase…"}
+{"k":"sourceControl.operationKinds.rebase-skip","en":"Skipping current commit…","zh":"正在跳过当前 Commit…"}
+{"k":"sourceControl.operationKinds.rebase-abort","en":"Aborting rebase…","zh":"正在放弃 Rebase…"}
+{"k":"sourceControl.operationNames.fetch","en":"Fetch","zh":"Fetch"}
+{"k":"sourceControl.operationNames.pull","en":"Pull","zh":"Pull"}
+{"k":"sourceControl.operationNames.push","en":"Push","zh":"Push"}
+{"k":"sourceControl.operationNames.push-tag","en":"Push tag","zh":"推送标签"}
+{"k":"sourceControl.operationNames.stash-create","en":"Save stash","zh":"保存 Stash"}
+{"k":"sourceControl.operationNames.stash-apply","en":"Apply stash","zh":"应用 Stash"}
+{"k":"sourceControl.operationNames.merge-continue","en":"Complete merge","zh":"完成 Merge"}
+{"k":"sourceControl.operationNames.merge-abort","en":"Abort merge","zh":"放弃 Merge"}
+{"k":"sourceControl.operationNames.rebase-continue","en":"Continue rebase","zh":"继续 Rebase"}
+{"k":"sourceControl.operationNames.rebase-skip","en":"Skip current commit","zh":"跳过当前 Commit"}
+{"k":"sourceControl.operationNames.rebase-abort","en":"Abort rebase","zh":"放弃 Rebase"}
+{"k":"sourceControl.operationResults.succeeded","en":"{{operation}} completed","zh":"{{operation}} 已完成"}
+{"k":"sourceControl.operationResults.failed","en":"{{operation}} failed","zh":"{{operation}} 失败"}
+{"k":"sourceControl.operationResults.cancelled","en":"{{operation}} cancelled","zh":"{{operation}} 已取消"}
+{"k":"sourceControl.operationResults.conflicted","en":"{{operation}} has conflicts","zh":"{{operation}} 产生冲突"}
+{"k":"sourceControl.conflictWorkflow.mergeInProgress","en":"Merge in progress","zh":"Merge 进行中"}
+{"k":"sourceControl.conflictWorkflow.rebaseInProgress","en":"Rebase in progress","zh":"Rebase 进行中"}
+{"k":"sourceControl.conflictWorkflow.completeMerge","en":"Complete merge","zh":"完成 Merge"}
+{"k":"sourceControl.conflictWorkflow.continueRebase","en":"Continue rebase","zh":"继续 Rebase"}
+{"k":"sourceControl.conflictWorkflow.skipCommit","en":"Skip current commit","zh":"跳过当前 Commit"}
+{"k":"sourceControl.conflictWorkflow.abortMerge","en":"Abort merge","zh":"放弃 Merge"}
+{"k":"sourceControl.conflictWorkflow.abortRebase","en":"Abort rebase","zh":"放弃 Rebase"}
+{"k":"sourceControl.conflictWorkflow.moreActions","en":"More conflict workflow actions","zh":"更多冲突流程操作"}
+{"k":"sourceControl.conflictWorkflow.confirm.continue.title","en":"Continue {{operation}}?","zh":"确认继续 {{operation}}？"}
+{"k":"sourceControl.conflictWorkflow.confirm.continue.description","en":"Only the current conflicted files will be staged before continuing. Confirm their contents are correct; ordinary non-conflict changes will not be staged.","zh":"将只暂存当前所有冲突文件并继续。请先确认冲突内容已经正确处理；普通未冲突改动不会被暂存。"}
+{"k":"sourceControl.conflictWorkflow.confirm.abort.title","en":"Abort {{operation}}?","zh":"确认放弃 {{operation}}？"}
+{"k":"sourceControl.conflictWorkflow.confirm.abort.description","en":"Git will abort the current {{operation}} and attempt to restore the state from before it began.","zh":"Git 将中止当前 {{operation}} 并尽可能恢复到操作开始前的状态。"}
+{"k":"sourceControl.conflictWorkflow.confirm.skip.title","en":"Skip the current commit?","zh":"确认跳过当前 Commit？"}
+{"k":"sourceControl.conflictWorkflow.confirm.skip.description","en":"Changes from commit {{sha}} {{subject}} will not be applied. Rebase will continue with the next commit.","zh":"当前 Commit {{sha}} {{subject}} 的改动将不会应用，Rebase 会继续处理下一个 Commit。"}
+{"k":"sourceControl.actions.fetch.title","en":"Fetch","zh":"Fetch"}
+{"k":"sourceControl.actions.fetch.description","en":"Fetch remote refs without modifying the working tree.","zh":"获取远程引用，不修改当前工作区。"}
+{"k":"sourceControl.actions.pull.title","en":"Pull","zh":"Pull"}
+{"k":"sourceControl.actions.pull.description","en":"Pull from the current upstream using the selected strategy.","zh":"从当前 upstream 拉取并按所选策略整合。"}
+{"k":"sourceControl.actions.push.title","en":"Push","zh":"Push"}
+{"k":"sourceControl.actions.push.description","en":"Push the current branch and set upstream on its first push.","zh":"推送当前分支；首次推送会设置 upstream。"}
+{"k":"sourceControl.actions.branch-create.title","en":"Create branch","zh":"新建分支"}
+{"k":"sourceControl.actions.branch-create.description","en":"Create a local branch from the selected start point.","zh":"从指定起点创建本地分支。"}
+{"k":"sourceControl.actions.branch-rename.title","en":"Rename branch","zh":"重命名分支"}
+{"k":"sourceControl.actions.branch-rename.description","en":"Rename {{target}}.","zh":"将 {{target}} 重命名为新名称。"}
+{"k":"sourceControl.actions.branch-delete.title","en":"Delete branch","zh":"删除分支"}
+{"k":"sourceControl.actions.branch-delete.description","en":"Delete local branch {{target}} only if it is already merged.","zh":"仅删除已经合并的本地分支 {{target}}。"}
+{"k":"sourceControl.actions.tag-create.title","en":"Create tag","zh":"新建标签"}
+{"k":"sourceControl.actions.tag-create.description","en":"Create a local tag on the selected commit.","zh":"在指定提交上创建本地标签。"}
+{"k":"sourceControl.actions.tag-delete.title","en":"Delete tag","zh":"删除标签"}
+{"k":"sourceControl.actions.tag-delete.description","en":"Delete local tag {{target}} without deleting its remote copy.","zh":"删除本地标签 {{target}}，不会删除远程标签。"}
+{"k":"sourceControl.actions.push-tag.title","en":"Push tag","zh":"推送标签"}
+{"k":"sourceControl.actions.push-tag.description","en":"Explicitly push local tag {{target}} to a remote.","zh":"将本地标签 {{target}} 显式推送到远程。"}
+{"k":"sourceControl.actions.worktree-create.title","en":"Create worktree","zh":"新建 Worktree"}
+{"k":"sourceControl.actions.worktree-create.description","en":"Create a linked worktree at the selected path.","zh":"在指定路径创建关联工作区。"}
+{"k":"sourceControl.actions.worktree-remove.title","en":"Remove worktree","zh":"删除 Worktree"}
+{"k":"sourceControl.actions.worktree-remove.description","en":"Remove this worktree registration and working directory. Its branch is preserved, and a worktree with uncommitted or untracked changes is never force-removed.","zh":"从仓库登记中删除此 Worktree 及其工作目录。不会删除关联分支；存在未提交或未跟踪更改时不会强制删除。"}
+{"k":"sourceControl.actions.stash-create.title","en":"Create stash","zh":"保存到 Stash"}
+{"k":"sourceControl.actions.stash-create.description","en":"Save current changes; untracked files are excluded by default.","zh":"保存当前更改，不会自动包含未跟踪文件。"}
+{"k":"sourceControl.actions.stash-apply.title","en":"Apply stash","zh":"应用 Stash"}
+{"k":"sourceControl.actions.stash-apply.description","en":"Apply {{target}} and preserve the stash entry.","zh":"应用 {{target}} 并保留该 Stash。"}
+{"k":"sourceControl.githubPending","en":"GitHub capability detection will appear here","zh":"GitHub 能力检测将在此处显示"}
+{"k":"sourceControl.githubDetecting","en":"Detecting GitHub CLI…","zh":"正在检测 GitHub CLI…"}
+{"k":"sourceControl.githubDetectionFailed","en":"GitHub CLI status detection failed","zh":"GitHub CLI 状态检测失败"}
+{"k":"sourceControl.githubNotInstalled","en":"GitHub CLI is required","zh":"需要安装 GitHub CLI"}
+{"k":"sourceControl.githubNotInstalledDescription","en":"Install it to view pull requests and issues here. Local Git features remain available.","zh":"安装后可在此查看 Pull Request 和 Issue；本地 Git 功能不受影响。"}
+{"k":"sourceControl.openInstallPage","en":"Open install page","zh":"打开安装页面"}
+{"k":"sourceControl.detectAgain","en":"Detect again","zh":"重新检测"}
+{"k":"sourceControl.githubNotAuthenticated","en":"GitHub CLI is not authenticated","zh":"GitHub CLI 尚未登录"}
+{"k":"sourceControl.githubLoginDescription","en":"Authorization completes in your browser. The app never reads or stores your GitHub token.","zh":"授权将在浏览器中完成，应用不会读取或保存 GitHub token。"}
+{"k":"sourceControl.loginWithBrowser","en":"Sign in with browser","zh":"浏览器登录"}
+{"k":"sourceControl.githubLoginWaiting","en":"Waiting for browser authorization…","zh":"等待浏览器完成授权…"}
+{"k":"sourceControl.githubRepositoryUnresolved","en":"GitHub repository could not be resolved","zh":"无法确定 GitHub 仓库"}
+{"k":"sourceControl.githubRepositoryUnresolvedDescription","en":"Check that the current branch upstream or origin points to a GitHub repository.","zh":"请检查当前分支 upstream 或 origin 是否指向 GitHub 仓库。"}
+{"k":"sourceControl.pullRequests","en":"Pull Requests","zh":"Pull Requests"}
+{"k":"sourceControl.issues","en":"Issues","zh":"Issues"}
+{"k":"sourceControl.open","en":"Open","zh":"打开"}
+{"k":"sourceControl.closed","en":"Closed","zh":"已关闭"}
+{"k":"sourceControl.githubSearch","en":"Search titles and bodies…","zh":"搜索标题和正文…"}
+{"k":"sourceControl.githubDetailLoading","en":"Loading pull request details…","zh":"正在加载 Pull Request 详情…"}
+{"k":"sourceControl.noPullRequests","en":"No matching pull requests","zh":"没有匹配的 Pull Request"}
+{"k":"sourceControl.noIssues","en":"No matching issues","zh":"没有匹配的 Issue"}
+{"k":"sourceControl.openOnGitHub","en":"Open on GitHub","zh":"在 GitHub 中打开"}
+{"k":"sourceControl.openInBuiltInBrowser","en":"Open in built-in browser","zh":"在内置浏览器中打开"}
+{"k":"sourceControl.noDescription","en":"No description.","zh":"没有正文。"}
+{"k":"sourceControl.createPullRequest","en":"Create pull request","zh":"创建 Pull Request"}
+{"k":"sourceControl.createPullRequestDescription","en":"Choose the comparison branches, then review the title and body.","zh":"选择比较分支，确认标题和正文后创建。"}
+{"k":"sourceControl.headBranch","en":"Head branch","zh":"Head 分支"}
+{"k":"sourceControl.baseBranch","en":"Base branch","zh":"Base 分支"}
+{"k":"sourceControl.pullRequestTitle","en":"Title","zh":"标题"}
+{"k":"sourceControl.pullRequestBody","en":"Body","zh":"正文"}
+{"k":"sourceControl.createAsDraft","en":"Create as draft","zh":"创建为 Draft"}
+{"k":"sourceControl.checkAndCreatePullRequest","en":"Check and create","zh":"检查并创建"}
+{"k":"sourceControl.pullRequestHeadNotPublished","en":"Branch {{head}} has not been published to {{remote}}.","zh":"分支 {{head}} 尚未发布到 {{remote}}。"}
+{"k":"sourceControl.pushHeadFirst","en":"Push branch first","zh":"先推送分支"}
+{"k":"sourceControl.pullRequestAlreadyExists","en":"These branches already have open pull request #{{number}}.","zh":"这些分支已有打开的 Pull Request #{{number}}。"}
+{"k":"sourceControl.creatingPullRequest","en":"Creating pull request…","zh":"正在创建 Pull Request…"}
+{"k":"sourceControl.pullRequestCreated","en":"Pull request created.","zh":"Pull Request 已创建。"}
+{"k":"sourceControl.overview","en":"Overview","zh":"概览"}
+{"k":"sourceControl.githubChangedFiles","en":"Files ({{count}})","zh":"文件（{{count}}）"}
+{"k":"sourceControl.noChangedFiles","en":"No changed files are available","zh":"没有可查看的变更文件"}
+{"k":"settings.title","en":"Settings","zh":"设置"}
+{"k":"settings.path","en":"{{appName}} › Settings","zh":"{{appName}} › 设置"}
+{"k":"settings.appearance","en":"Appearance","zh":"外观"}
+{"k":"settings.language","en":"Language","zh":"语言"}
+{"k":"settings.typography","en":"Typography","zh":"字体"}
+{"k":"settings.advanced","en":"Advanced","zh":"高级"}
+{"k":"settings.light","en":"Light","zh":"浅色"}
+{"k":"settings.dark","en":"Dark","zh":"深色"}
+{"k":"settings.system","en":"System","zh":"跟随系统"}
+{"k":"settings.syncWithOs","en":"Sync with OS","zh":"跟随系统"}
+{"k":"settings.syncWithOsDescription","en":"Automatically switch when your system changes light or dark mode.","zh":"系统浅色或深色变化时自动切换主题。"}
+{"k":"settings.colorScheme","en":"Color scheme","zh":"明暗模式"}
+{"k":"settings.colorSchemeDescription","en":"Choose system, light, or dark within the same design style.","zh":"同一设计风格内选择跟随系统、浅色或深色。"}
+{"k":"settings.schemeSystem","en":"System","zh":"跟随系统"}
+{"k":"settings.schemeLight","en":"Light","zh":"浅色"}
+{"k":"settings.schemeDark","en":"Dark","zh":"深色"}
+{"k":"settings.visualQuality","en":"Visual quality","zh":"视觉效果"}
+{"k":"settings.visualQualityDescription","en":"Full preserves the material; Performance reduces blur and shadow cost.","zh":"完整效果保留主题材质，性能优先会降低模糊与阴影开销。"}
+{"k":"settings.visualQualityFull","en":"Full","zh":"完整效果"}
+{"k":"settings.visualQualityPerformance","en":"Performance","zh":"性能优先"}
+{"k":"settings.lightThemes","en":"Light","zh":"浅色"}
+{"k":"settings.darkThemes","en":"Dark","zh":"深色"}
+{"k":"settings.currentTheme","en":"Current theme","zh":"当前主题"}
+{"k":"settings.lightDefaultTheme","en":"Light default theme","zh":"浅色默认主题"}
+{"k":"settings.darkDefaultTheme","en":"Dark default theme","zh":"深色默认主题"}
+{"k":"settings.activeTheme","en":"Active now","zh":"当前生效"}
+{"k":"settings.chooseTheme","en":"Choose theme","zh":"选择主题"}
+{"k":"settings.chooseLightTheme","en":"Choose light theme","zh":"选择浅色主题"}
+{"k":"settings.chooseDarkTheme","en":"Choose dark theme","zh":"选择深色主题"}
+{"k":"settings.themeDrawerTitle","en":"Choose theme","zh":"选择主题"}
+{"k":"settings.themeDefaultLight","en":"Porcelain","zh":"瓷白"}
+{"k":"settings.themeTechGray","en":"Tech Gray","zh":"科技灰"}
+{"k":"settings.themeGoldDark","en":"Graphite Dark","zh":"石墨深色"}
+{"k":"settings.themeBlack","en":"Terminal Black","zh":"终端黑"}
+{"k":"settings.fontDefault","en":"Default font","zh":"默认字体"}
+{"k":"settings.fontDefaultDescription","en":"Use the ordered font fallback defined by the current theme.","zh":"使用当前主题定义的有序字体回退。"}
+{"k":"settings.editorFontDefault","en":"Default font","zh":"默认字体"}
+{"k":"settings.editorFontDefaultDescription","en":"Bundled for consistent code editing and diff rendering.","zh":"应用内置，作为代码编辑与差异查看的稳定默认字体。"}
+{"k":"settings.fontPreview","en":"Font preview","zh":"字体预览"}
+{"k":"settings.uiTypography","en":"Interface UI","zh":"界面 UI"}
+{"k":"settings.uiTypographyDescription","en":"Sidebar, settings, chat prose, and regular Markdown.","zh":"侧栏、设置、聊天正文和普通 Markdown。"}
+{"k":"settings.editorTypography","en":"Editor","zh":"编辑器"}
+{"k":"settings.editorTypographyDescription","en":"File viewing and editing, run artifacts, and all diff views.","zh":"文件查看与编辑、运行产物及所有差异视图。"}
+{"k":"settings.uiFontSize","en":"UI font size","zh":"UI 字号"}
+{"k":"settings.uiFontSizeDescription","en":"Adjust the base font size used across the app interface.","zh":"调整应用界面使用的基准字号。"}
+{"k":"settings.editorFontSize","en":"Editor font size","zh":"编辑器字号"}
+{"k":"settings.editorFontSizeDescription","en":"Adjust text in CodeMirror file and diff views.","zh":"调整 CodeMirror 文件与差异视图中的字号。"}
+{"k":"settings.resetFontSize","en":"Restore default font size","zh":"恢复默认字号"}
+{"k":"settings.localFonts","en":"Custom font stack","zh":"自定义字体栈"}
+{"k":"settings.chooseLocalFont","en":"Add or remove fonts","zh":"添加或取消字体"}
+{"k":"settings.localFontsDescription","en":"{{count}} local fonts loaded. Earlier fonts have higher priority.","zh":"已载入 {{count}} 个本机字体；越靠前优先级越高。"}
+{"k":"settings.selectedFontStack","en":"Selected font priority","zh":"已选字体优先级"}
+{"k":"settings.searchFonts","en":"Search fonts…","zh":"搜索字体…"}
+{"k":"settings.noFontsFound","en":"No matching fonts","zh":"没有匹配的字体"}
+{"k":"settings.moveFontUp","en":"Increase font priority","zh":"提高字体优先级"}
+{"k":"settings.moveFontDown","en":"Decrease font priority","zh":"降低字体优先级"}
+{"k":"settings.removeFont","en":"Remove font","zh":"移除字体"}
+{"k":"settings.clientVersion","en":"Client version: {{version}}","zh":"客户端版本：{{version}}"}
+{"k":"settings.tabs.general","en":"General","zh":"通用"}
+{"k":"settings.tabs.appearance","en":"Appearance","zh":"个性化"}
+{"k":"settings.tabs.advanced","en":"Advanced","zh":"高级"}
+{"k":"settings.browser.title","en":"Browser","zh":"浏览器"}
+{"k":"settings.browser.searchEngine","en":"Search engine","zh":"搜索引擎"}
+{"k":"settings.browser.searchEngineDescription","en":"Use the selected search engine when the address bar input is not a URL.","zh":"地址栏输入的内容不是网址时，用所选搜索引擎搜索。"}
+{"k":"settings.browser.openLocalLinks","en":"Open localhost in the built-in browser","zh":"在内置浏览器中打开 localhost"}
+{"k":"settings.browser.openLocalLinksDescription","en":"Localhost addresses in chats and documents open in the built-in browser. When off, they open in the system browser.","zh":"对话和文档里的本机服务地址会在内置浏览器打开。关闭后改用系统浏览器。"}
+{"k":"settings.browser.openWebLinks","en":"Open websites in the built-in browser","zh":"在内置浏览器中打开网站"}
+{"k":"settings.browser.openWebLinksDescription","en":"Websites in chats and documents open in the built-in browser. When off, they open in the system browser.","zh":"对话和文档里的普通网站会在内置浏览器打开。关闭后改用系统浏览器。"}
+{"k":"settings.im.title","en":"IM remote intervention and notifications","zh":"IM 远程干预与通知"}
+{"k":"settings.im.enabled","en":"Enabled","zh":"启用"}
+{"k":"settings.im.privateBinding","en":"Private chat: {{name}}","zh":"一对一私聊：{{name}}"}
+{"k":"settings.im.notificationKinds","en":"Notification types","zh":"通知类型"}
+{"k":"settings.im.notificationGroups.needsAction","en":"Needs your action","zh":"需要你处理"}
+{"k":"settings.im.notificationGroups.results","en":"Execution results","zh":"执行结果提醒"}
+{"k":"settings.im.notificationsSave","en":"Save notifications","zh":"保存通知设置"}
+{"k":"settings.im.notificationsDiscard","en":"Discard changes","zh":"放弃修改"}
+{"k":"settings.im.configurationHint","en":"Authorization, recipient, and configuration","zh":"授权、接收账号与配置管理"}
+{"k":"settings.im.configurationMenu","en":"Configuration menu","zh":"配置管理"}
+{"k":"settings.im.reconnect","en":"Reconnect","zh":"重新连接"}
+{"k":"settings.im.delete","en":"Delete configuration","zh":"删除配置"}
+{"k":"settings.im.deleteTitle","en":"Delete {{channel}} configuration?","zh":"删除 {{channel}} 配置？"}
+{"k":"settings.im.deleteDescription","en":"This disables the connection, removes its secret from the OS credential store, and stops pending deliveries.","zh":"将停用连接并从系统凭据存储中删除 secret。待投递消息也会停止发送。"}
+{"k":"settings.im.confirmDelete","en":"Delete","zh":"删除"}
+{"k":"settings.im.scan.title","en":"Connect WeCom by QR code","zh":"扫码接入企业微信"}
+{"k":"settings.im.scan.description","en":"Scan with the WeCom mobile app and confirm authorization.","zh":"使用手机企业微信扫码并确认授权。"}
+{"k":"settings.im.scan.notConfigured","en":"WeCom is not connected. Connect it to configure remote intervention and notifications.","zh":"尚未接入企业微信。接入后可设置远程干预与通知。"}
+{"k":"settings.im.scan.botId","en":"Bot ID: {{id}}","zh":"机器人 ID：{{id}}"}
+{"k":"settings.im.scan.connect","en":"Scan to connect","zh":"扫码接入"}
+{"k":"settings.im.scan.reauthorize","en":"Authorize again","zh":"重新授权"}
+{"k":"settings.im.scan.generating","en":"Generating QR code…","zh":"正在生成二维码…"}
+{"k":"settings.im.scan.waiting","en":"Scan with WeCom and confirm authorization","zh":"请使用企业微信扫码并确认授权"}
+{"k":"settings.im.scan.expiresIn","en":"QR code expires in {{countdown}}","zh":"二维码将在 {{countdown}} 后过期"}
+{"k":"settings.im.scan.waitingBinding","en":"Authorized, waiting for a recipient","zh":"授权完成，等待绑定接收账号"}
+{"k":"settings.im.scan.complete","en":"WeCom is ready","zh":"企业微信已可用"}
+{"k":"settings.im.scan.nextStep","en":"Send the bot a message in WeCom to finish binding the private chat.","zh":"请在企业微信中给机器人发送一条消息，以完成一对一私聊绑定。"}
+{"k":"settings.im.scan.retry","en":"Generate again","zh":"重新生成"}
+{"k":"settings.im.scan.qrCodeLabel","en":"WeCom authorization QR code","zh":"企业微信授权二维码"}
+{"k":"settings.im.channels.wecom.title","en":"WeCom","zh":"企业微信"}
+{"k":"settings.im.status.notConfigured","en":"Not connected","zh":"未接入"}
+{"k":"settings.im.status.waitingBinding","en":"Waiting for binding","zh":"等待绑定"}
+{"k":"settings.im.status.connecting","en":"Connecting","zh":"连接中"}
+{"k":"settings.im.status.reconnecting","en":"Reconnecting","zh":"正在重连"}
+{"k":"settings.im.status.connectionFailed","en":"Connection failed","zh":"连接失败"}
+{"k":"settings.im.status.ready","en":"Ready","zh":"可用"}
+{"k":"settings.im.status.paused","en":"Paused","zh":"已暂停"}
+{"k":"settings.im.status.reauthorize","en":"Authorization required","zh":"需要重新授权"}
+{"k":"settings.im.status.conflict","en":"Connection in use","zh":"连接被占用"}
+{"k":"settings.im.guidance.notConfigured.title","en":"Connect WeCom","zh":"接入企业微信"}
+{"k":"settings.im.guidance.notConfigured.description","en":"Authorize by QR code, then bind a recipient through a private chat.","zh":"扫码授权后，通过一对一私聊绑定接收账号。"}
+{"k":"settings.im.guidance.waitingBinding.title","en":"Bind a recipient","zh":"绑定接收账号"}
+{"k":"settings.im.guidance.waitingBinding.description","en":"Send the bot a message in WeCom. Remote intervention becomes available after the binding is persisted.","zh":"请在企业微信中给机器人发送一条消息。持久绑定完成后即可接收干预。"}
+{"k":"settings.im.guidance.connecting.title","en":"Establishing connection","zh":"正在建立连接"}
+{"k":"settings.im.guidance.connecting.description","en":"Remote intervention resumes automatically when the connection is ready.","zh":"连接建立后会自动恢复远程干预。"}
+{"k":"settings.im.guidance.reconnecting.title","en":"Reconnecting automatically","zh":"正在自动重连"}
+{"k":"settings.im.guidance.reconnecting.description","en":"The bounded retry policy is active. No repeated action is needed.","zh":"系统正在使用有界退避重试，无需重复操作。"}
+{"k":"settings.im.guidance.connectionFailed.title","en":"Connection stopped","zh":"连接已停止"}
+{"k":"settings.im.guidance.connectionFailed.description","en":"Automatic recovery cannot continue. Reconnect to try again.","zh":"自动恢复无法继续，请重新连接。"}
+{"k":"settings.im.guidance.ready.title","en":"WeCom is ready","zh":"企业微信可用"}
+{"k":"settings.im.guidance.ready.description","en":"Remote interventions and enabled notifications are sent to the bound private chat.","zh":"远程干预和已启用的通知会发送到已绑定私聊。"}
+{"k":"settings.im.guidance.paused.title","en":"Remote intervention is paused","zh":"远程干预已暂停"}
+{"k":"settings.im.guidance.paused.description","en":"Notification preferences are preserved and resume when enabled.","zh":"通知偏好会保留，重新启用后继续生效。"}
+{"k":"settings.im.guidance.reauthorize.title","en":"Authorization required","zh":"需要重新授权"}
+{"k":"settings.im.guidance.reauthorize.description","en":"The current credentials are unavailable. Authorize the bot again.","zh":"当前凭据不可用，请重新扫码授权。"}
+{"k":"settings.im.guidance.conflict.title","en":"The bot is connected elsewhere","zh":"机器人正在其他客户端连接"}
+{"k":"settings.im.guidance.conflict.description","en":"Close the other client, then start one real reconnect attempt.","zh":"请先关闭其他客户端，再发起一次真实重连。"}
+{"k":"settings.im.resetBinding.action","en":"Change recipient","zh":"更换接收账号"}
+{"k":"settings.im.resetBinding.title","en":"Change the recipient?","zh":"更换接收账号？"}
+{"k":"settings.im.resetBinding.description","en":"This clears the current private-chat binding while preserving bot authorization, enabled state, and notification preferences. Then message the bot from the new account.","zh":"将清除当前一对一私聊绑定，但保留机器人授权、启用状态和通知偏好。之后请使用新账号给机器人发送消息。"}
+{"k":"settings.im.resetBinding.confirm","en":"Change recipient","zh":"更换账号"}
+{"k":"settings.im.notifications.permission","en":"Permission requests","zh":"权限请求"}
+{"k":"settings.im.notifications.elicitation","en":"Questions","zh":"追问"}
+{"k":"settings.im.notifications.manualCheck","en":"Manual checks","zh":"人工检查"}
+{"k":"settings.im.notifications.runSuccess","en":"Run succeeded","zh":"Run 成功"}
+{"k":"settings.im.notifications.runFailure","en":"Run failed","zh":"Run 失败"}
+{"k":"settings.im.notifications.acpTurnFinished","en":"ACP turn finished","zh":"ACP 回合结束"}
+{"k":"settings.im.errors.IM_CONFIG_INVALID","en":"Enter a valid public identity.","zh":"请填写有效的公开标识。"}
+{"k":"settings.im.errors.CONFIG_INVALID","en":"Enter a valid public identity.","zh":"请填写有效的公开标识。"}
+{"k":"settings.im.errors.IM_CREDENTIAL_REQUIRED","en":"Credentials are required before enabling this channel.","zh":"启用前需要配置凭据。"}
+{"k":"settings.im.errors.IM_CREDENTIAL_INVALID","en":"The credential format is invalid.","zh":"凭据格式无效。"}
+{"k":"settings.im.errors.IM_CREDENTIAL_UNAVAILABLE","en":"The OS credential store is unavailable.","zh":"无法访问系统凭据存储。"}
+{"k":"settings.im.errors.CREDENTIAL_UNAVAILABLE","en":"The OS credential store is unavailable.","zh":"无法访问系统凭据存储。"}
+{"k":"settings.im.errors.IM_AUTHENTICATION_REQUIRED","en":"The platform rejected these credentials.","zh":"平台拒绝了当前凭据。"}
+{"k":"settings.im.errors.AUTHENTICATION_REQUIRED","en":"The platform rejected these credentials.","zh":"平台拒绝了当前凭据。"}
+{"k":"settings.im.errors.IM_RATE_LIMITED","en":"The platform is rate limiting requests. Try again later.","zh":"平台请求过于频繁，请稍后重试。"}
+{"k":"settings.im.errors.RATE_LIMITED","en":"The platform is rate limiting requests. Try again later.","zh":"平台请求过于频繁，请稍后重试。"}
+{"k":"settings.im.errors.IM_NETWORK_UNAVAILABLE","en":"The IM platform is unreachable.","zh":"无法连接 IM 平台。"}
+{"k":"settings.im.errors.NETWORK_UNAVAILABLE","en":"The IM platform is unreachable.","zh":"无法连接 IM 平台。"}
+{"k":"settings.im.errors.IM_PROTOCOL_INVALID","en":"The platform returned an unrecognized response.","zh":"平台返回了无法识别的响应。"}
+{"k":"settings.im.errors.PROTOCOL_INVALID","en":"The platform returned an unrecognized response.","zh":"平台返回了无法识别的响应。"}
+{"k":"settings.im.errors.IM_PRIVATE_BINDING_REQUIRED","en":"Start a private chat with the bot first.","zh":"请先与机器人建立一对一私聊。"}
+{"k":"settings.im.errors.PRIVATE_BINDING_REQUIRED","en":"Start a private chat with the bot first.","zh":"请先与机器人建立一对一私聊。"}
+{"k":"settings.im.errors.IM_ACTOR_MISMATCH","en":"The current user is not the authorized user.","zh":"当前操作用户不是已授权用户。"}
+{"k":"settings.im.errors.ACTOR_MISMATCH","en":"The current user is not the authorized user.","zh":"当前操作用户不是已授权用户。"}
+{"k":"settings.im.errors.IM_CONVERSATION_MISMATCH","en":"This is not the bound private chat.","zh":"当前会话不是已绑定私聊。"}
+{"k":"settings.im.errors.CONVERSATION_MISMATCH","en":"This is not the bound private chat.","zh":"当前会话不是已绑定私聊。"}
+{"k":"settings.im.errors.IM_CAPABILITY_UNSUPPORTED","en":"The platform does not support this operation.","zh":"当前平台能力不支持此操作。"}
+{"k":"settings.im.errors.UNSUPPORTED_CAPABILITY","en":"The platform does not support this operation.","zh":"当前平台能力不支持此操作。"}
+{"k":"settings.im.errors.IM_STORAGE_UNAVAILABLE","en":"The IM delivery store is unavailable.","zh":"无法访问 IM 投递存储。"}
+{"k":"settings.im.errors.STORAGE_UNAVAILABLE","en":"The IM delivery store is unavailable.","zh":"无法访问 IM 投递存储。"}
+{"k":"settings.im.errors.IM_CONNECTION_CONFLICT","en":"This bot is connected by another client. Close the other connection and try again.","zh":"该机器人已在其他客户端连接，请关闭另一处连接后重试。"}
+{"k":"settings.im.errors.IM_SCAN_CANCELLED","en":"QR authorization was cancelled.","zh":"扫码授权已取消。"}
+{"k":"settings.im.errors.IM_SCAN_EXPIRED","en":"The QR code expired. Generate a new one.","zh":"二维码已过期，请重新生成。"}
+{"k":"settings.im.errors.IM_SCAN_TIMEOUT","en":"QR authorization timed out. Generate a new code.","zh":"扫码授权已超时，请重新生成。"}
+{"k":"settings.im.errors.IM_SCAN_NETWORK_UNAVAILABLE","en":"The WeCom authorization service is temporarily unreachable.","zh":"暂时无法连接企业微信授权服务。"}
+{"k":"settings.im.errors.IM_SCAN_PROTOCOL_INVALID","en":"The WeCom authorization response was invalid. Generate a new code.","zh":"企业微信授权响应无效，请重新生成。"}
+{"k":"settings.im.errors.IM_SCAN_SESSION_INVALID","en":"The QR session is invalid. Reopen it.","zh":"扫码会话无效，请重新打开。"}
+{"k":"settings.im.errors.IM_SCAN_SESSION_CONFLICT","en":"QR authorization is already in progress.","zh":"扫码授权正在处理中。"}
+{"k":"settings.im.errors.IM_STALE_GENERATION","en":"The connection state changed. Retry from the latest state.","zh":"连接状态已更新，请根据最新状态重试。"}
+{"k":"settings.im.errors.IM_RUNTIME_UNAVAILABLE","en":"The IM runtime is not ready.","zh":"IM 运行时尚未就绪。"}
+{"k":"settings.im.errors.IM_CHANNEL_CLEANUP_PENDING","en":"The configuration was deleted. Local cleanup will retry in the background.","zh":"配置已删除，本地清理将在后台自动重试。"}
+{"k":"settings.im.errors.IM_OPERATION_FAILED","en":"The operation failed. Try again.","zh":"操作失败，请重试。"}
+{"k":"settings.avatar.title","en":"Avatars","zh":"头像"}
+{"k":"settings.avatar.agent.title","en":"Agent avatar","zh":"Agent 头像"}
+{"k":"settings.avatar.agent.description","en":"Shown beside Agent responses.","zh":"展示在 Agent 回复旁。"}
+{"k":"settings.avatar.user.title","en":"Personal avatar","zh":"个人头像"}
+{"k":"settings.avatar.user.description","en":"Shown beside your messages.","zh":"展示在你的消息旁。"}
+{"k":"settings.avatar.openMenu","en":"Set {{type}}","zh":"设置{{type}}"}
+{"k":"settings.avatar.recent","en":"Use a recent avatar","zh":"使用最近头像"}
+{"k":"settings.avatar.useRecent","en":"Use this recent avatar","zh":"使用此最近头像"}
+{"k":"settings.avatar.noRecent","en":"No recent avatars","zh":"暂无最近头像"}
+{"k":"settings.avatar.upload","en":"Upload avatar","zh":"上传头像"}
+{"k":"settings.avatar.remove","en":"Restore theme {{type}}","zh":"恢复主题{{type}}"}
+{"k":"settings.avatar.shape","en":"Avatar frame","zh":"头像框"}
+{"k":"settings.avatar.followThemeShape","en":"Follow theme","zh":"跟随主题"}
+{"k":"settings.avatar.circle","en":"Circle","zh":"圆形"}
+{"k":"settings.avatar.square","en":"Square","zh":"方形"}
+{"k":"settings.avatar.cropTitle","en":"Crop {{type}}","zh":"裁剪{{type}}"}
+{"k":"settings.avatar.cropDescription","en":"Drag the image to position it and use zoom to adjust the framing.","zh":"拖动图片调整位置，并使用缩放控制取景范围。"}
+{"k":"settings.avatar.zoom","en":"Zoom","zh":"缩放"}
+{"k":"settings.avatar.apply","en":"Apply avatar","zh":"应用头像"}
+{"k":"settings.avatar.errors.fallback","en":"Avatar processing failed. Please try again.","zh":"头像处理失败，请重试。"}
+{"k":"settings.avatar.errors.avatar.unsupported-image-type","en":"Choose a PNG, JPEG, or WebP image.","zh":"请选择 PNG、JPEG 或 WebP 图片。"}
+{"k":"settings.avatar.errors.avatar.invalid-image-data","en":"The image data is invalid. Choose another image.","zh":"图片数据无效，请重新选择。"}
+{"k":"settings.avatar.errors.avatar.source-image-too-large","en":"The source image must be 10 MB or smaller.","zh":"原图不能超过 10 MB。"}
+{"k":"settings.avatar.errors.avatar.crop-failed","en":"Avatar cropping failed. Please try again.","zh":"头像裁剪失败，请重试。"}
+{"k":"settings.wallpaper.title","en":"Wallpaper","zh":"壁纸"}
+{"k":"settings.wallpaper.chooseTitle","en":"Desktop wallpaper","zh":"桌面壁纸"}
+{"k":"settings.wallpaper.description","en":"A custom wallpaper overrides the theme wallpaper and adapts to the client size.","zh":"自定义壁纸会覆盖主题包壁纸，并随客户端尺寸自适应。"}
+{"k":"settings.wallpaper.choose","en":"Choose wallpaper","zh":"选择壁纸"}
+{"k":"settings.wallpaper.recent","en":"Recently used","zh":"最近使用"}
+{"k":"settings.wallpaper.useRecent","en":"Use this recent wallpaper","zh":"使用此最近壁纸"}
+{"k":"settings.wallpaper.noRecent","en":"No recent wallpapers","zh":"暂无最近壁纸"}
+{"k":"settings.wallpaper.import","en":"Import new wallpaper","zh":"导入新壁纸"}
+{"k":"settings.wallpaper.restoreTheme","en":"Restore theme wallpaper","zh":"恢复主题壁纸"}
+{"k":"settings.wallpaper.visibility","en":"Wallpaper visibility","zh":"壁纸可见度"}
+{"k":"settings.wallpaper.previewTitle","en":"Wallpaper preview","zh":"壁纸预览"}
+{"k":"settings.wallpaper.expandPreview","en":"Expand wallpaper preview","zh":"放大壁纸预览"}
+{"k":"settings.wallpaper.collapsePreview","en":"Collapse wallpaper preview","zh":"缩小壁纸预览"}
+{"k":"settings.wallpaper.customActive","en":"Custom wallpaper","zh":"自定义壁纸"}
+{"k":"settings.wallpaper.themeActive","en":"Theme wallpaper","zh":"主题壁纸"}
+{"k":"settings.wallpaper.themeEmpty","en":"The current theme has no wallpaper","zh":"当前主题没有壁纸"}
+{"k":"settings.useLocalClaude.label","en":"Use local Claude","zh":"使用本地 Claude"}
+{"k":"settings.useLocalClaude.tooltip","en":"If enabled, prioritizes the locally installed Claude executable. May have compatibility issues. If disabled, uses the Claude bundled with the SDK.","zh":"如果打开，优先本地查找 Claude，可能会有兼容性问题，如果关闭，使用 SDK 携带的 Claude"}
+{"k":"settings.useLocalClaude.notFound","en":"Local Claude not found, using SDK bundled version","zh":"未找到本地 Claude，将使用 SDK 内置版本"}
+{"k":"settings.verboseLogging.label","en":"Verbose runtime logging","zh":"记录详细日志"}
+{"k":"settings.verboseLogging.description","en":"When enabled, runtime.log records DEBUG-level diagnostics. When disabled, it only records normal INFO-level runtime logs.","zh":"开启后 runtime.log 会记录 DEBUG 级别日志，关闭后仅记录常规信息级日志。"}
+{"k":"settings.metrics.title","en":"Metrics Reporting","zh":"指标上报"}
+{"k":"settings.metrics.enable","en":"Enable metrics reporting","zh":"开启指标上报"}
+{"k":"settings.metrics.enableDescription","en":"When enabled, the client reports heartbeat and node execution metrics from application and task lifecycle events.","zh":"开启后，客户端会按应用与任务生命周期事件上报心跳和节点执行指标到配置的服务器。"}
+{"k":"settings.metrics.baseUrl","en":"Reporting server URL","zh":"上报服务地址"}
+{"k":"settings.metrics.heartbeatEndpoint","en":"Heartbeat endpoint","zh":"心跳接口地址"}
+{"k":"settings.metrics.nodeMetricsEndpoint","en":"Node metrics endpoint","zh":"节点详情接口地址"}
+{"k":"settings.metrics.apiKey","en":"API Key","zh":"API Key"}
+{"k":"settings.metrics.apiKeySet","en":"(Already set)","zh":"(已设置)"}
+{"k":"settings.metrics.save","en":"Save","zh":"保存"}
+{"k":"settings.updater.title","en":"Updates","zh":"更新"}
+{"k":"settings.updater.currentUrl","en":"Update URL","zh":"更新地址"}
+{"k":"settings.updater.editUrl","en":"Edit URL","zh":"修改地址"}
+{"k":"settings.updater.channelLabel","en":"Channel","zh":"渠道"}
+{"k":"settings.updater.builtInUrl","en":"Built-in update URL","zh":"内置更新地址"}
+{"k":"settings.updater.overrideUrl","en":"Override update URL","zh":"覆盖更新地址"}
+{"k":"settings.updater.effectiveUrl","en":"Current update URL","zh":"当前更新地址"}
+{"k":"settings.updater.overridePlaceholder","en":"Leave empty to use built-in URL","zh":"留空使用内置地址"}
+{"k":"settings.updater.saveOverride","en":"Save URL","zh":"保存地址"}
+{"k":"settings.updater.resetToBuiltIn","en":"Use built-in URL","zh":"恢复内置地址"}
+{"k":"settings.updater.checkNow","en":"Check update","zh":"检查更新"}
+{"k":"settings.updater.install","en":"Download and install","zh":"下载并安装"}
+{"k":"settings.updater.lastCheckedAt","en":"Last checked: {{time}}","zh":"上次检查：{{time}}"}
+{"k":"settings.updater.announcement.title","en":"New version {{version}} available","zh":"发现新版本 {{version}}"}
+{"k":"settings.updater.announcement.description","en":"Go to Settings → Advanced → Updates to review and install it.","zh":"可前往 设置 → 高级 → 更新 查看并安装。"}
+{"k":"settings.updater.announcement.dismiss","en":"Close","zh":"关闭"}
+{"k":"settings.updater.announcement.view","en":"View update","zh":"查看更新"}
+{"k":"settings.updater.announcement.dialogTitle","en":"New version {{version}} available","zh":"发现新版本 {{version}}"}
+{"k":"settings.updater.announcement.dialogDescription","en":"A new client version has been detected. Go to Settings → Advanced → Updates to download and install it.","zh":"检测到新的客户端版本。请前往 设置 → 高级 → 更新 完成下载和安装。"}
+{"k":"settings.updater.announcement.goToSettings","en":"Go to Settings","zh":"前往设置更新"}
+{"k":"settings.updater.channel.default","en":"Default","zh":"默认"}
+{"k":"settings.updater.channel.wb","en":"WB","zh":"WB"}
+{"k":"settings.updater.status.idle","en":"Not checked yet","zh":"尚未检查"}
+{"k":"settings.updater.status.checking","en":"Checking","zh":"正在检查"}
+{"k":"settings.updater.status.available","en":"Update available","zh":"发现新版本"}
+{"k":"settings.updater.status.downloading","en":"Downloading update...","zh":"正在下载更新..."}
+{"k":"settings.updater.status.not-available","en":"Up to date","zh":"已是最新版本"}
+{"k":"settings.updater.status.error","en":"Check failed","zh":"检查失败"}
+{"k":"conversation.title","en":"Conversation","zh":"会话"}
+{"k":"conversation.newConversation","en":"New Conversation","zh":"新会话"}
+{"k":"conversation.noConversations","en":"No conversations","zh":"暂无会话"}
+{"k":"conversation.toggleToWorkbench","en":"Switch to Workbench","zh":"切换到工作台"}
+{"k":"conversation.toggleToConversation","en":"Switch to Conversation","zh":"切换到会话"}
+{"k":"conversation.attachmentUnsupportedFile","en":"Unsupported file type: {{names}}","zh":"不支持的文件类型: {{names}}"}
+{"k":"conversation.attachmentCountExceeded","en":"Maximum {{max}} attachments allowed","zh":"最多支持 {{max}} 个附件"}
+{"k":"conversation.attachmentTotalTooLarge","en":"Total attachment size exceeds limit","zh":"附件总大小超过限制"}
+{"k":"conversation.attachmentMaterializeFailed","en":"Could not save attachments. Choose them again before sending.","zh":"附件保存失败，请重新选择后再发送"}
+{"k":"conversation.validation.content.required","en":"Content is required","zh":"内容不能为空"}
+{"k":"conversation.validation.agent.required","en":"Agent is required for AUTO mode","zh":"AUTO 模式需要选择 Agent"}
+{"k":"conversation.validation.direct.agent.required","en":"Agent is required for Direct mode","zh":"Direct 模式需要选择 Agent"}
+{"k":"conversation.validation.direct.agent.not-found","en":"Selected Direct Agent is not configured","zh":"所选 Direct Agent 尚未配置"}
+{"k":"conversation.validation.direct.agent.unavailable","en":"Selected Direct Agent is unavailable","zh":"所选 Direct Agent 当前不可用"}
+{"k":"conversation.validation.direct.model.not-found","en":"Selected model is not supported by this Direct Agent","zh":"所选模型不受当前 Direct Agent 支持"}
+{"k":"conversation.validation.direct.permission.not-found","en":"Selected permission mode is not supported by this Direct Agent","zh":"所选权限模式不受当前 Direct Agent 支持"}
+{"k":"conversation.validation.agent.not-found","en":"Selected Agent is not configured","zh":"所选 Agent 尚未配置"}
+{"k":"conversation.validation.model.not-found","en":"Selected model is not supported by this Agent","zh":"所选模型不受当前 Agent 支持"}
+{"k":"conversation.validation.permission.not-found","en":"Selected permission mode is not supported by this Agent","zh":"所选权限模式不受当前 Agent 支持"}
+{"k":"conversation.validation.workflow.required","en":"Workflow template is required","zh":"需要选择工作流模板"}
+{"k":"conversation.validation.workflow.not-found","en":"Selected workflow template not found","zh":"所选工作流模板不存在"}
+{"k":"conversation.validation.conversation.attachment-count-exceeded","en":"Cannot attach more than 10 files","zh":"附件数量不能超过 10 个"}
+{"k":"conversation.validation.conversation.attachment-too-large","en":"Single file cannot exceed 25 MB","zh":"单个附件不能超过 25 MB"}
+{"k":"conversation.validation.conversation.attachment-total-too-large","en":"Total attachment size cannot exceed 100 MB","zh":"附件总大小不能超过 100 MB"}
+{"k":"conversation.validation.conversation.attachment-unsupported-type","en":"Unsupported file type","zh":"不支持的附件类型"}
+{"k":"conversation.validation.conversation.attachment-not-found","en":"Attachment file not found","zh":"附件文件不存在"}
+{"k":"conversation.validation.conversation.attachment-unreadable","en":"Attachment file is unreadable","zh":"附件文件不可读"}
+{"k":"conversation.sidebar.quickActions","en":"Quick Actions","zh":"快捷操作"}
+{"k":"conversation.sidebar.newChat","en":"New Chat","zh":"快速对话"}
+{"k":"conversation.sidebar.search","en":"Search","zh":"搜索"}
+{"k":"conversation.sidebar.agentManagement","en":"Agent","zh":"Agent"}
+{"k":"conversation.sidebar.contextManagement","en":"Context","zh":"上下文"}
+{"k":"conversation.sidebar.runModeManagement","en":"Run Mode","zh":"运行模式"}
+{"k":"conversation.sidebar.more","en":"More","zh":"更多"}
+{"k":"conversation.sidebar.multicaTaskManagement","en":"Requirements","zh":"需求管理"}
+{"k":"conversation.sidebar.pinned","en":"Pinned","zh":"置顶"}
+{"k":"conversation.sidebar.noPinned","en":"Pinned conversations appear here","zh":"置顶会话会显示在这里"}
+{"k":"conversation.sidebar.noWorkspaces","en":"No workspaces added","zh":"尚未添加工作空间"}
+{"k":"conversation.sidebar.workspaces","en":"Workspaces","zh":"工作空间"}
+{"k":"conversation.sidebar.dragToReorder","en":"Drag to reorder","zh":"拖拽排序"}
+{"k":"conversation.sidebar.unpin","en":"Unpin","zh":"取消置顶"}
+{"k":"conversation.sidebar.pinToTop","en":"Pin to top","zh":"置顶"}
+{"k":"conversation.sidebar.rename","en":"Rename","zh":"重命名"}
+{"k":"conversation.sidebar.delete","en":"Delete","zh":"删除"}
+{"k":"conversation.sidebar.deleteConfirmTitle","en":"Delete conversation?","zh":"删除会话？"}
+{"k":"conversation.sidebar.deleteConfirmDescription","en":"Conversation “{{title}}” will be removed from its task directory under ~/.gold-band. This cannot be undone. When supported, it will be moved to the recycle bin first. Continue?","zh":"会话“{{title}}”将从 ~/.gold-band 对应 task 目录移除，此操作不可撤销。若系统支持，将优先移入回收站。是否继续？"}
+{"k":"conversation.sidebar.deleteConfirmAction","en":"Delete","zh":"确认删除"}
+{"k":"conversation.sidebar.addWorkspace","en":"Add Workspace","zh":"添加工作空间"}
+{"k":"conversation.sidebar.removeWorkspace","en":"Remove Workspace","zh":"移除工作空间"}
+{"k":"conversation.sidebar.removeWorkspaceNamed","en":"Remove workspace {{name}}","zh":"移除工作空间 {{name}}"}
+{"k":"conversation.sidebar.removeWorkspaceTitle","en":"Remove {{name}}?","zh":"移除 {{name}}？"}
+{"k":"conversation.sidebar.removeWorkspaceDescription","en":"This removes the workspace from the sidebar. Files on disk and conversation history will not be deleted.","zh":"这会将该工作空间从侧栏中移除。磁盘上的文件和历史会话不会被删除。"}
+{"k":"conversation.sidebar.removeWorkspaceCancel","en":"Cancel","zh":"取消"}
+{"k":"conversation.sidebar.removeWorkspaceConfirm","en":"Remove","zh":"移除"}
+{"k":"conversation.sidebar.removingWorkspace","en":"Removing…","zh":"正在移除…"}
+{"k":"conversation.sidebar.loadingWorkspaces","en":"Loading workspaces…","zh":"正在加载工作空间…"}
+{"k":"conversation.sidebar.retryWorkspaces","en":"Workspace loading failed. Click to retry","zh":"工作空间加载失败，点击重试"}
+{"k":"conversation.sidebar.loadingConversations","en":"Loading conversations…","zh":"正在加载会话…"}
+{"k":"conversation.sidebar.retryConversations","en":"Conversation loading failed. Click to retry","zh":"会话加载失败，点击重试"}
+{"k":"conversation.sidebar.loadMoreConversations","en":"Load more conversations","zh":"加载更多会话"}
+{"k":"conversation.sidebar.loadingPinned","en":"Loading pinned conversations…","zh":"正在加载置顶会话…"}
+{"k":"conversation.sidebar.retryPinned","en":"Pinned conversations failed to load. Click to retry","zh":"置顶会话加载失败，点击重试"}
+{"k":"conversation.sidebar.loadMorePinned","en":"Load more pinned conversations","zh":"加载更多置顶会话"}
+{"k":"conversation.sidebar.loadingRuns","en":"Loading run history…","zh":"正在加载运行历史…"}
+{"k":"conversation.sidebar.retryRuns","en":"Run history failed to load. Click to retry","zh":"运行历史加载失败，点击重试"}
+{"k":"conversation.sidebar.loadMoreRuns","en":"Load more runs","zh":"加载更多运行记录"}
+{"k":"conversation.sidebar.terminalResult.completed","en":"Completed, not viewed","zh":"已完成，尚未查看"}
+{"k":"conversation.sidebar.terminalResult.stopped","en":"Stopped, not viewed","zh":"已停止，尚未查看"}
+{"k":"conversation.sidebar.terminalResult.failed","en":"Failed, not viewed","zh":"执行异常，尚未查看"}
+{"k":"conversation.sidebar.settings","en":"Settings","zh":"设置"}
+{"k":"conversation.sidebar.multica.sectionTitle","en":"Requirements","zh":"需求"}
+{"k":"conversation.sidebar.multica.emptyTitle","en":"Not connected to Multica","zh":"尚未连接 Multica"}
+{"k":"conversation.sidebar.multica.emptyDescription","en":"Connect to view and claim Multica requirements.","zh":"连接后可在此查看并领取 Multica 需求。"}
+{"k":"conversation.sidebar.multica.connectButton","en":"Connect Multica","zh":"连接 Multica"}
+{"k":"conversation.sidebar.multica.connectionSettings","en":"Connection address settings","zh":"连接地址设置"}
+{"k":"conversation.sidebar.multica.cancelTask","en":"Cancel task","zh":"取消任务"}
+{"k":"conversation.sidebar.multica.executeTask","en":"Run","zh":"执行"}
+{"k":"conversation.sidebar.multica.addWorkspace","en":"Add Workspace","zh":"添加工作空间"}
+{"k":"conversation.sidebar.multica.noWorkspacesBound","en":"No workspaces bound","zh":"尚未绑定工作空间"}
+{"k":"conversation.sidebar.multica.status.queued","en":"Todo","zh":"待办"}
+{"k":"conversation.sidebar.multica.status.running","en":"Running","zh":"进行中"}
+{"k":"conversation.sidebar.multica.status.completed","en":"Done","zh":"已完成"}
+{"k":"conversation.sidebar.multica.status.failed","en":"Failed","zh":"失败"}
+{"k":"conversation.sidebar.multica.dialog.title","en":"Add Workspace","zh":"添加工作空间"}
+{"k":"conversation.sidebar.multica.dialog.remoteWorkspace","en":"Remote workspace","zh":"远程工作空间"}
+{"k":"conversation.sidebar.multica.dialog.provider","en":"Provider","zh":"Provider"}
+{"k":"conversation.sidebar.multica.dialog.add","en":"Add","zh":"添加"}
+{"k":"conversation.sidebar.multica.dialog.needWorkspace","en":"Please select a remote workspace","zh":"请选择远程工作空间"}
+{"k":"conversation.sidebar.multica.dialog.noServerWorkspaces","en":"No bindable workspaces on the server yet. Create one in multica Web first.","zh":"服务端暂无可绑定的工作空间，请先在 multica Web 创建工作空间。"}
+{"k":"conversation.sidebar.multica.dialog.allWorkspacesBound","en":"All remote workspaces are already bound.","zh":"所有远程工作空间均已绑定。"}
+{"k":"conversation.composer.multicaNeedLocalWorkspace","en":"Add a local workspace before running a requirement","zh":"请先添加本地工作空间，再执行需求"}
+{"k":"conversation.composer.multicaBindingTag","en":"Multica · {{title}}","zh":"Multica · {{title}}"}
+{"k":"conversation.composer.removeMulticaBinding","en":"Unbind task","zh":"解除任务绑定"}
+{"k":"conversation.branchPicker.label","en":"Branch","zh":"分支"}
+{"k":"conversation.branchPicker.search","en":"Search {{workspace}} branches","zh":"搜索 {{workspace}} 分支"}
+{"k":"conversation.branchPicker.searchGeneric","en":"Search branches","zh":"搜索分支"}
+{"k":"conversation.branchPicker.loading","en":"Loading branches…","zh":"正在读取分支…"}
+{"k":"conversation.branchPicker.unavailable","en":"No branch","zh":"无分支"}
+{"k":"conversation.branchPicker.versionUnsupportedLabel","en":"Git version unsupported","zh":"Git 版本不受支持"}
+{"k":"conversation.branchPicker.versionUnavailableLabel","en":"Git version could not be identified","zh":"无法识别 Git 版本"}
+{"k":"conversation.branchPicker.versionUnsupportedTitle","en":"Git is out of date","zh":"Git 版本过低"}
+{"k":"conversation.branchPicker.versionUnsupportedDescription","en":"The installed version is {{installedVersion}}. Branch features require Git {{minimumVersion}} or later.","zh":"当前版本为 {{installedVersion}}，分支功能需要 Git {{minimumVersion}} 或更高版本。"}
+{"k":"conversation.branchPicker.versionUnavailableTitle","en":"Git version could not be identified","zh":"无法识别 Git 版本"}
+{"k":"conversation.branchPicker.versionUnavailableDescription","en":"The installed Git could not be identified reliably. Repair or reinstall Git and try again.","zh":"当前 Git 无法可靠识别，请修复或重新安装 Git 后重试。"}
+{"k":"conversation.branchPicker.branches","en":"Branches","zh":"分支"}
+{"k":"conversation.branchPicker.empty","en":"No matching local branches","zh":"没有匹配的本地分支"}
+{"k":"conversation.branchPicker.dirtyFiles","en":"Uncommitted: {{count}} files","zh":"未提交：{{count}} 个文件"}
+{"k":"conversation.branchPicker.checkedOutElsewhere","en":"Checked out in another worktree","zh":"已在其他 Worktree 中检出"}
+{"k":"conversation.branchPicker.createAndCheckout","en":"Create and check out new branch…","zh":"创建并检出新分支…"}
+{"k":"conversation.branchPicker.createTitle","en":"Create and check out a new branch","zh":"创建并检出新分支"}
+{"k":"conversation.branchPicker.createDescription","en":"Create a branch from {{branch}} and switch the current workspace to it.","zh":"从 {{branch}} 创建新分支，并将当前工作区切换到该分支。"}
+{"k":"conversation.branchPicker.locked","en":"Another Git write is running. Branch switching is temporarily unavailable.","zh":"Git 正在执行其他写操作，暂时不能切换分支。"}
+{"k":"conversation.branchPicker.operationInProgress","en":"A {{operation}} is in progress. Complete or abort it before switching branches.","zh":"{{operation}} 正在进行，完成或中止后才能切换分支。"}
+{"k":"conversation.home.greeting.morning","en":"Good morning. What shall we work on?","zh":"早上好，今天想一起做点什么？"}
+{"k":"conversation.home.greeting.lateMorning","en":"Good morning. What shall we work on?","zh":"上午好，今天想一起做点什么？"}
+{"k":"conversation.home.greeting.noon","en":"Good afternoon. What shall we work on?","zh":"中午好，今天想一起做点什么？"}
+{"k":"conversation.home.greeting.afternoon","en":"Good afternoon. What shall we work on?","zh":"下午好，今天想一起做点什么？"}
+{"k":"conversation.home.greeting.evening","en":"Good evening. What shall we work on?","zh":"晚上好，今天想一起做点什么？"}
+{"k":"conversation.home.greeting.lateNight","en":"It's late. What shall we work on?","zh":"夜深了，想一起做点什么？"}
+{"k":"conversation.home.inputPlaceholder","en":"Describe what you need…","zh":"输入你的需求…"}
+{"k":"conversation.home.workspace","en":"Workspace","zh":"工作空间"}
+{"k":"conversation.home.selectWorkspace","en":"Select workspace","zh":"选择工作空间"}
+{"k":"conversation.home.workLocation","en":"Work location","zh":"工作位置"}
+{"k":"conversation.home.workLocationMain","en":"Main workspace","zh":"主工作区"}
+{"k":"conversation.home.workLocationWorktree","en":"worktree","zh":"工作树"}
+{"k":"conversation.home.workLocationNewWorktree","en":"New worktree","zh":"新工作树"}
+{"k":"conversation.home.worktreeTip","en":"Create a copy for parallel work","zh":"创建副本，以便并行工作"}
+{"k":"conversation.home.runMode","en":"Run Mode","zh":"处理模式"}
+{"k":"conversation.home.auto","en":"AUTO","zh":"AUTO"}
+{"k":"conversation.home.direct","en":"Direct","zh":"Direct"}
+{"k":"conversation.home.workflow","en":"Workflow","zh":"工作流"}
+{"k":"conversation.home.selectAgent","en":"Select agent","zh":"选择 Agent"}
+{"k":"conversation.home.selectModel","en":"Select model","zh":"选择模型"}
+{"k":"conversation.home.unspecifiedModel","en":"Unspecified","zh":"不指定"}
+{"k":"conversation.home.unspecifiedPermissionMode","en":"Unspecified","zh":"不指定"}
+{"k":"conversation.home.selectWorkflowTemplate","en":"Select workflow template","zh":"选择工作流模板"}
+{"k":"conversation.home.noAgent","en":"Add an agent in Agent Management first","zh":"请先在 Agent 管理中添加 Agent"}
+{"k":"conversation.home.noWorkflowTemplate","en":"No valid workflow templates","zh":"暂无有效工作流模板"}
+{"k":"conversation.home.dynamicAgent","en":"Dynamic Agent","zh":"动态 Agent"}
+{"k":"conversation.home.attachments","en":"Attachments","zh":"附件"}
+{"k":"conversation.home.addAttachments","en":"Add attachments","zh":"添加附件"}
+{"k":"conversation.home.guideTitle","en":"Configure Run Mode","zh":"配置运行模式"}
+{"k":"conversation.home.guideDescription","en":"Configure your run mode settings including agent and workflow preferences before getting started.","zh":"首次使用需要先配置运行模式，包括 Agent 和工作流设置。"}
+{"k":"conversation.home.configureNow","en":"Configure","zh":"去配置"}
+{"k":"conversation.home.configureAuto","en":"Edit AUTO","zh":"修改 AUTO"}
+{"k":"conversation.home.configureWorkflow","en":"Edit Workflow","zh":"修改工作流"}
+{"k":"conversation.home.includeInterview","en":"Requirement Interview","zh":"需求采访"}
+{"k":"conversation.home.includeGrill","en":"Requirement Grilling","zh":"需求拷问"}
+{"k":"conversation.runtime.justNow","en":"Just now","zh":"刚刚"}
+{"k":"conversation.runtime.sessionSwitcher","en":"Session Switcher","zh":"会话切换"}
+{"k":"conversation.runtime.rerun","en":"Rerun task","zh":"重跑该任务"}
+{"k":"conversation.runtime.rerunConfirmTitle","en":"Stop current run and rerun?","zh":"停止当前 Run 并重跑？"}
+{"k":"conversation.runtime.rerunConfirmDescription","en":"The current run is still active. Rerunning will stop it first, then create a new run. Run history is preserved.","zh":"当前 Run 仍在运行中，重跑会先停止当前 Run，然后创建一个新的 Run。历史 Run 会保留。"}
+{"k":"conversation.runtime.rerunConfirmAction","en":"Stop and rerun","zh":"停止并重跑"}
+{"k":"conversation.runtime.editWorkflow","en":"Edit workflow","zh":"编辑工作流"}
+{"k":"conversation.runtime.viewWorkflow","en":"View workflow","zh":"查看工作流"}
+{"k":"conversation.runtime.openInFileManager","en":"Open directory","zh":"打开目录"}
+{"k":"conversation.runtime.titleEdit","en":"Edit title","zh":"修改标题"}
+{"k":"conversation.runtime.loadingSession","en":"Loading conversation","zh":"正在加载会话"}
+{"k":"conversation.runtime.noActiveSession","en":"No active session","zh":"暂无活跃会话"}
+{"k":"conversation.runtime.activeSessions","en":"Active sessions","zh":"活跃会话"}
+{"k":"conversation.runtime.composerFixWorkflow","en":"Fix workflow","zh":"修改工作流"}
+{"k":"conversation.runtime.composerError","en":"Runtime error","zh":"运行出错"}
+{"k":"conversation.runtime.workflowInvalid","en":"Workflow is invalid, please repair","zh":"工作流无效，请修复后再试"}
+{"k":"conversation.runtime.sessionPaused","en":"Current session is paused and can continue","zh":"当前会话已暂停，可继续运行"}
+{"k":"conversation.runtime.runError","en":"Runtime error occurred","zh":"运行出错"}
+{"k":"conversation.runtime.repairAction","en":"Repair","zh":"修复"}
+{"k":"conversation.runtime.repairWorkflow","en":"Edit workflow","zh":"修改工作流"}
+{"k":"conversation.runtime.runtimeSessionFailed","en":"The current session failed. Review the reason.","zh":"当前会话运行失败，请查看错误原因"}
+{"k":"conversation.runtime.runtimeSessionKilled","en":"The current session was stopped. Review the reason.","zh":"当前会话已终止，请查看错误原因"}
+{"k":"conversation.runtime.pauseReasonProcessInterrupted","en":"Process interrupted","zh":"进程已中断"}
+{"k":"conversation.runtime.pauseReasonRuntimeAbnormal","en":"Runtime abnormal. You can continue.","zh":"运行异常，可继续处理"}
+{"k":"conversation.runtime.pauseReasonErrorBlocked","en":"Error blocked. Resolve it and continue.","zh":"因错误阻塞，处理后可继续"}
+{"k":"conversation.runtime.runtimeErrorBlocked","en":"The current run is blocked by an error. Review the reason.","zh":"当前运行因错误阻塞，请查看错误原因"}
+{"k":"conversation.runtime.pauseReasonWaitingForUserInput","en":"Waiting for user input","zh":"等待用户输入"}
+{"k":"conversation.runtime.pauseReasonFallback","en":"Paused","zh":"已暂停"}
+{"k":"conversation.runtime.sessionConfigThoughtLevelUnsupported","en":"The selected model does not support reasoning effort. Clear the reasoning effort or switch models, then retry.","zh":"当前选择的模型不支持思考强度，请清除思考强度或更换模型后重试"}
+{"k":"conversation.runtime.sessionConfigThoughtLevelValueUnavailable","en":"Reasoning effort {{value}} is unavailable. Available: {{values}}","zh":"思考强度 {{value}} 不可用，可选：{{values}}"}
+{"k":"conversation.runtime.sessionConfigValueUnavailable","en":"Config option {{configId}} does not support value {{value}}. Available: {{values}}","zh":"配置项 {{configId}} 不支持所选值 {{value}}，可选：{{values}}"}
+{"k":"conversation.runtime.sessionConfigValueUnavailableNoValues","en":"Config option {{configId}} does not support value {{value}}. Adjust it and retry.","zh":"配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试"}
+{"k":"conversation.runtime.worktreeCreateFailed","en":"Unable to create a new worktree. Check the repository worktree state and try again.","zh":"无法创建新工作树，请检查当前仓库的工作树状态后重试"}
+{"k":"conversation.runtime.launchingNextNode","en":"Launching next node","zh":"拉起下一节点中"}
+{"k":"conversation.runtime.preparingDevelopmentEnvironment","en":"Preparing development environment…","zh":"正在准备开发环境…"}
+{"k":"conversation.runtime.processingWorkspace","en":"Processing workspace…","zh":"正在处理工作区…"}
+{"k":"conversation.runtime.worktree","en":"worktree","zh":"工作树"}
+{"k":"conversation.runtime.composerRuntimeControlledPlaceholder","en":"This session is being controlled by the runtime, so input is temporarily unavailable","zh":"当前会话由 runtime 运行中，暂不可输入"}
+{"k":"conversation.runtime.composerStoppingPlaceholder","en":"Stopping current session…","zh":"正在停止当前会话…"}
+{"k":"conversation.runtime.composerStoppedPlaceholder","en":"This session has stopped. You can enter any message to continue the run","zh":"当前会话已停止，你可以输入任何内容继续运行"}
+{"k":"conversation.gitRequirement.versionUnsupportedTitle","en":"Git is out of date","zh":"Git 版本过低"}
+{"k":"conversation.gitRequirement.versionUnavailableTitle","en":"Git version could not be identified","zh":"无法识别 Git 版本"}
+{"k":"conversation.gitRequirement.versionUnsupportedDescription","en":"The installed version is {{installedVersion}}. Gold Band Git features require Git {{minimumVersion}} or later.","zh":"当前版本为 {{installedVersion}}，Gold Band 的 Git 功能需要 Git {{minimumVersion}} 或更高版本。"}
+{"k":"conversation.gitRequirement.versionUnavailableDescription","en":"Gold Band could not identify the installed Git version. Repair or reinstall Git, then check again.","zh":"Gold Band 无法识别当前 Git 版本。请修复或重新安装 Git 后重新检测。"}
+{"k":"conversation.gitRequirement.repositoryTitle","en":"This folder is not a Git repository","zh":"当前文件夹还不是 Git 仓库"}
+{"k":"conversation.gitRequirement.headTitle","en":"An initial Git commit is required","zh":"Git 仓库需要首次提交"}
+{"k":"conversation.gitRequirement.autoTitle","en":"Auto mode requires Git","zh":"Auto 模式需要 Git"}
+{"k":"conversation.gitRequirement.workflowTitle","en":"This workflow requires Git","zh":"此工作流需要 Git"}
+{"k":"conversation.gitRequirement.worktreeTitle","en":"A new worktree requires Git","zh":"新工作树需要 Git"}
+{"k":"conversation.gitRequirement.repositoryDescription","en":"After initialization, create the first commit in the Git workspace. Gold Band will not stage or commit the whole folder automatically.","zh":"初始化仓库后还需要在 Git 工作区完成首次提交，Gold Band 不会自动暂存或提交整个目录。"}
+{"k":"conversation.gitRequirement.headDescription","en":"Create the first commit in the Git workspace. Gold Band will not choose or commit files for you.","zh":"请在右侧 Git 工作区完成首次提交。Gold Band 不会替你选择或提交文件。"}
+{"k":"conversation.gitRequirement.autoDescription","en":"Install Git and check again to use Auto mode, or choose a workflow without AI-DYNAMIC.","zh":"安装 Git 并重新检测后即可使用 Auto 模式。你也可以选择其他不包含 AI-DYNAMIC 的工作流。"}
+{"k":"conversation.gitRequirement.workflowDescription","en":"This workflow contains AI-DYNAMIC and requires Git, a valid HEAD, and worktree support.","zh":"此工作流包含 AI-DYNAMIC，需要 Git、有效 HEAD 和 worktree 能力才能运行。"}
+{"k":"conversation.gitRequirement.worktreeDescription","en":"Creating a worktree requires Git, a valid HEAD, and worktree support. Check again after the repository is ready.","zh":"创建工作树需要 Git、有效 HEAD 和 worktree 能力。完成配置后重新检测即可选择新工作树。"}
+{"k":"conversation.gitRequirement.useOtherWorkflow","en":"Use another workflow","zh":"使用其他工作流"}
+{"k":"conversation.gitRequirement.useMainWorkspace","en":"Use main workspace","zh":"使用主工作区"}
+{"k":"conversation.gitRequirement.initialize","en":"Initialize repository","zh":"初始化仓库"}
+{"k":"conversation.gitRequirement.openSourceControl","en":"Open source control","zh":"打开源码管理"}
+{"k":"conversation.gitRequirement.checking","en":"Checking…","zh":"检测中…"}
+{"k":"conversation.gitRequirement.recheck","en":"Check again","zh":"重新检测"}
+{"k":"conversation.search.title","en":"Search Conversations","zh":"搜索会话"}
+{"k":"conversation.search.placeholder","en":"Type to search…","zh":"输入关键词搜索…"}
+{"k":"conversation.search.noResults","en":"No matching conversations","zh":"没有找到匹配的会话"}
+{"k":"conversation.search.failed","en":"Search failed. Please try again","zh":"搜索失败，请稍后重试"}
+{"k":"conversation.search.resultCount","en":"{{count}} results","zh":"{{count}} 个结果"}
+{"k":"conversation.search.openLatestRun","en":"Open latest run","zh":"打开最近 Run"}
+{"k":"conversation.rerun.started","en":"New run created","zh":"已创建新 Run"}
+{"k":"conversation.rerun.stoppedAndStarted","en":"Stopped current run and created new run","zh":"已停止当前 Run 并创建新 Run"}

@@ -9,6 +9,8 @@ use url::Url;
 
 #[cfg(target_os = "macos")]
 use objc2::runtime::NSObjectProtocol;
+#[cfg(target_os = "macos")]
+use objc2::{AnyThread, DefinedClass};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocumentLocationDecision {
@@ -217,7 +219,6 @@ fn attach_macos_document_location_watch(app: &AppHandle, page_id: &str, label: &
     use std::ffi::c_void;
 
     use objc2::msg_send;
-    use objc2::rc::Retained;
     use objc2_foundation::{NSKeyValueObservingOptions, NSString};
     use tauri::webview::PlatformWebview;
 
@@ -266,8 +267,9 @@ fn detach_macos_document_location_watch(app: &AppHandle, label: &str) {
         drop(unsafe { Retained::from_raw(raw) });
         return;
     };
+    let raw = raw as usize;
     let result = webview.with_webview(move |platform: PlatformWebview| {
-        let observer = unsafe { Retained::from_raw(raw) };
+        let observer = unsafe { Retained::from_raw(raw as *mut LocationObserver) };
         let Some(observer) = observer else {
             return;
         };
@@ -286,6 +288,7 @@ fn detach_macos_document_location_watch(app: &AppHandle, label: &str) {
         drop(observer);
     });
     if let Err(error) = result {
+        drop(unsafe { Retained::from_raw(raw as *mut LocationObserver) });
         crate::browser::log_document_location_failure(label, &error);
     }
 }
@@ -379,7 +382,6 @@ impl LocationObserver {
     fn new(app: AppHandle, page_id: String) -> objc2::rc::Retained<Self> {
         use objc2::msg_send;
         use objc2::rc::Retained;
-        use objc2::ClassType;
 
         let this = Self::alloc().set_ivars(LocationObserverIvars { app, page_id });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };

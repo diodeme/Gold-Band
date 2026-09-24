@@ -279,7 +279,7 @@ blob、必须 POST、或另存为拿不到完整字节时，返回结构化错�
 
 Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、另存为。Linux 已知 Wayland 下子 WebView 可能错位，第一版不增加发行版特判；功能在可对齐的环境交付，错位记为已知限制。
 
-平台原生监听代码必须在对应系统的真实 Rust target 上通过编译门禁。macOS 的 `objc2::define_class!` 协议实现必须先把协议导入为标识符，再在宏内引用；不得把限定路径直接写在 `unsafe impl` 的协议位置。PR Checks 使用 macOS runner 编译桌面 crate，避免 Linux / Windows 因条件编译跳过 WKWebView 集成错误。
+平台原生监听代码必须在对应系统的真实 Rust target 上通过编译门禁。macOS 的 `objc2::define_class!` 协议实现必须先把协议导入为标识符，再在宏内引用；`ivars` / `alloc` 所属 trait 必须显式进入作用域。Tauri `with_webview` 的 `Send` 调度边界只携带可发送的整数句柄，在目标 UI 回调内恢复 Objective-C retained pointer；调度失败必须立即释放所有权。PR Checks 使用 macOS runner 编译桌面 crate，避免 Linux / Windows 因条件编译跳过 WKWebView 集成错误。
 
 ## 13. 错误
 

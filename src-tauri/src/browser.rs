@@ -1789,7 +1789,7 @@ pub(crate) fn begin_location_probe(app: &AppHandle, page_id: &str) -> Option<u64
     Some(page.location_probe)
 }
 
-pub(crate) fn log_document_location_failure(label: &str, error: &impl std::fmt::Display) {
+pub(crate) fn log_document_location_failure(label: &str, error: &dyn std::fmt::Display) {
     log_webview_failure("watch-document-location", None, label, error);
 }
 
@@ -2173,7 +2173,7 @@ fn log_webview_failure(
     operation: &'static str,
     page_id: Option<&str>,
     label: &str,
-    error: &impl std::fmt::Display,
+    error: &dyn std::fmt::Display,
 ) {
     warn!(
         target: "gold_band::browser",

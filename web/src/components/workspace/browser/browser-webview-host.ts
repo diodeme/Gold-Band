@@ -116,6 +116,7 @@ class BrowserWebviewHost {
   private startPromise: Promise<void> | null = null;
   private unlisten: (() => void) | null = null;
   private lastBounds = new Map<string, BrowserBounds>();
+  private appliedBounds = new Map<string, BrowserBounds>();
   private visiblePageId: string | null = null;
   private overlayOpen = false;
   private overlayObserver: MutationObserver | null = null;
@@ -163,9 +164,10 @@ class BrowserWebviewHost {
   async ensurePage(page: BrowserPage, bounds: BrowserBounds, visible: boolean) {
     await this.ensureStarted();
     const next = roundBounds(bounds);
-    const previous = this.lastBounds.get(page.pageId) ?? null;
     if (next.width < 2 || next.height < 2) {
-      if (!this.suppressed) await this.hideAll();
+      // A hidden page stays hidden. Resume clears the flag before the placeholder
+      // has a size, and another hide here cancels the show that follows.
+      if (!this.suppressed && this.visiblePageId != null) await this.hideAll();
       return;
     }
     this.lastBounds.set(page.pageId, next);
@@ -178,10 +180,12 @@ class BrowserWebviewHost {
       try {
         await this.createPage(page.pageId, page.url, next);
       } catch (error) {
-        await this.alignRetainedPage(page.pageId, previous, next, visible);
+        await this.alignRetainedPage(page.pageId, next, visible);
         throw error;
       }
-    } else if (!this.suppressed && !boundsEqual(previous, next)) {
+    } else if (!this.suppressed && !boundsEqual(this.nativeBoundsTarget(page.pageId), next)) {
+      // lastBounds also records measurements taken while hidden. Comparing against it
+      // skips the native update when the placeholder is already at that size on return.
       await this.commitBounds(page.pageId, next);
     }
     if (visible && !this.overlayOpen) {
@@ -254,6 +258,7 @@ class BrowserWebviewHost {
       await this.pendingCreates.get(pageId);
       await this.pendingBounds.get(pageId)?.promise;
       this.lastBounds.delete(pageId);
+      this.appliedBounds.delete(pageId);
       this.pendingBounds.delete(pageId);
       await api().browserClosePage?.({ pageId });
     }
@@ -283,6 +288,7 @@ class BrowserWebviewHost {
     await Promise.all([...this.pendingBounds.values()].map((operation) => operation.promise));
     await api().browserDiscardAll?.();
     this.lastBounds.clear();
+    this.appliedBounds.clear();
     this.pendingBounds.clear();
     this.visiblePageId = null;
     browserSessionStore.markDiscarded(live);
@@ -444,6 +450,7 @@ class BrowserWebviewHost {
     this.started = false;
     this.startPromise = null;
     this.lastBounds.clear();
+    this.appliedBounds.clear();
     this.pendingCreates.clear();
     this.pendingNavigations.clear();
     this.pendingBounds.clear();
@@ -457,13 +464,18 @@ class BrowserWebviewHost {
     this.suppressed = false;
   }
 
+  private nativeBoundsTarget(pageId: string): BrowserBounds | null {
+    const pending = this.pendingBounds.get(pageId);
+    if (pending) return pending.queued ?? pending.target;
+    return this.appliedBounds.get(pageId) ?? null;
+  }
+
   private async alignRetainedPage(
     pageId: string,
-    previous: BrowserBounds | null,
     next: BrowserBounds,
     visible: boolean,
   ) {
-    if (this.suppressed || boundsEqual(previous, next)) return;
+    if (this.suppressed || boundsEqual(this.nativeBoundsTarget(pageId), next)) return;
     try {
       await this.commitBounds(pageId, next);
     } catch {
@@ -539,7 +551,11 @@ class BrowserWebviewHost {
       while (target) {
         operation.target = target;
         if (!this.suppressed) {
-          await api().browserSetBounds?.({ pageId, bounds: target });
+          const setBounds = api().browserSetBounds;
+          if (setBounds) {
+            await setBounds({ pageId, bounds: target });
+            this.appliedBounds.set(pageId, target);
+          }
         }
         const queued = operation.queued;
         operation.queued = null;

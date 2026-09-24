@@ -866,6 +866,47 @@ function browserSvgDataUrl(content: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
 }
 
+function browserExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string): import('../types').ExecutionPlanViewVm {
+  const workflow = {
+    version: '0.1',
+    id: 'preview',
+    entry: 'worker',
+    control: {},
+    nodes: [{ id: 'worker', type: 'worker' as const, provider: 'claude-acp', profile: null, goal: 'preview' }],
+    edges: [{ from: 'worker', to: '$end', on: 'success' as const }],
+  };
+  return {
+    projectId,
+    taskId,
+    taskUuid,
+    runId,
+    runMode: 'auto',
+    runStatus: 'running',
+    planRevision: 1,
+    authoringRevision: 1,
+    executionRevision: 1,
+    currentEditable: true,
+    diverged: false,
+    currentRound: 'round-001',
+    currentNode: 'worker',
+    currentAttempt: 'attempt-001',
+    currentWorkflow: workflow,
+    currentModelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [] },
+    currentAutoConfig: {
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: false,
+    },
+    nextWorkflow: workflow,
+    nextModelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [] },
+    nextAutoConfig: {
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: false,
+    },
+  };
+}
+
 export const browserApi: RuntimeApi = {
   readProjectMemory: readBrowserMemory,
   writeProjectMemory: writeBrowserMemory,
@@ -1048,6 +1089,7 @@ export const browserApi: RuntimeApi = {
         ],
         lock: { locked: false, owner: null, operation: null },
         revision: 'browser-preview-revision',
+        syncRevision: 'browser-preview-sync-revision',
       },
       status: {
         snapshotRevision: 'browser-preview-revision',
@@ -1570,6 +1612,65 @@ export const browserApi: RuntimeApi = {
   },
   getWorkflow(taskId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task });
+  },
+  getConversationExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string) {
+    return Promise.resolve(browserExecutionPlan(projectId, taskId, taskUuid, runId));
+  },
+  preflightConversationExecutionPlanSave(command: import('@/types').ExecutionPlanSaveCommandVm) {
+    const locatorMatches = command.expectedRunStatus === 'running'
+      && command.expectedCurrentRound === 'round-001'
+      && command.expectedCurrentNode === 'worker'
+      && command.expectedCurrentAttempt === 'attempt-001';
+    if (!locatorMatches) {
+      return Promise.reject({ code: 'conversation.execution-plan.current-locator-conflict' });
+    }
+    return Promise.resolve({
+      planRevision: command.expectedPlanRevision,
+      authoringRevision: command.expectedAuthoringRevision,
+      executionRevision: 1,
+      runStatus: command.expectedRunStatus,
+      currentRound: 'round-001',
+      currentNode: 'worker',
+      currentAttempt: 'attempt-001',
+      currentEditable: true,
+      diverged: false,
+      blocking: [],
+      affectedNodeIds: [],
+      resumeIdentityRisks: [],
+    });
+  },
+  saveConversationExecutionPlan(command: import('@/types').ExecutionPlanSaveCommandVm) {
+    const planRevision = command.target === 'next' ? command.expectedPlanRevision : command.expectedPlanRevision + 1;
+    const authoringRevision = command.target === 'current' ? command.expectedAuthoringRevision : command.expectedAuthoringRevision + 1;
+    return Promise.resolve({
+      operationId: command.operationId ?? null,
+      complete: true,
+      planRevision,
+      authoringRevision,
+      executionRevision: 1,
+      diverged: false,
+      targets: command.target === 'current-and-next'
+        ? [
+          { target: 'current' as const, committed: true, planRevision },
+          { target: 'next' as const, committed: true, authoringRevision },
+        ]
+        : [{ target: command.target, committed: true, planRevision, authoringRevision }],
+    });
+  },
+  recoverConversationExecutionPlanOperation(projectId: string, taskId: string, taskUuid: string, runId: string, operationId: string) {
+    return Promise.resolve({
+      operationId,
+      complete: true,
+      planRevision: 1,
+      authoringRevision: 1,
+      executionRevision: 1,
+      diverged: false,
+      targets: [{ target: 'current' as const, committed: true }, { target: 'next' as const, committed: true }],
+      projectId,
+      taskId,
+      taskUuid,
+      runId,
+    });
   },
   createTask(input: CreateTaskInput) {
     const task = {

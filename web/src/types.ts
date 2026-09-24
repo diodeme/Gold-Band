@@ -2325,7 +2325,7 @@ export type ConversationPage =
       outerNodeId?: string;
       outerAttemptId?: string;
     }
-  | { kind: 'run-mode-management' }
+  | { kind: 'run-mode-management'; projectId?: string; taskId?: string; taskUuid?: string; runId?: string }
   | { kind: 'multica-tasks' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
@@ -2815,6 +2815,83 @@ export interface ConversationTreeNodeVm {
   runtimeDisplay: RuntimeDisplayVm;
   attempts: ConversationSessionLeafVm[];
   outerNodes?: ConversationTreeNodeVm[];
+}
+
+export type ExecutionPlanSaveTarget = 'current' | 'next' | 'current-and-next';
+
+export interface ExecutionPlanTargetResultVm {
+  target: ExecutionPlanSaveTarget;
+  committed: boolean;
+  planRevision?: number | null;
+  authoringRevision?: number | null;
+  error?: { code: string; context?: Record<string, unknown> } | null;
+}
+
+export interface ExecutionPlanViewVm {
+  projectId: string;
+  taskId: string;
+  taskUuid: string;
+  runId: string;
+  runMode: 'workflow' | 'auto' | string;
+  runStatus: string;
+  runOutcome?: string | null;
+  planRevision: number;
+  authoringRevision: number;
+  executionRevision: number;
+  currentEditable: boolean;
+  diverged: boolean;
+  currentRound?: string | null;
+  currentNode?: string | null;
+  currentAttempt?: string | null;
+  currentWorkflow?: WorkflowDsl | null;
+  currentModelBindings?: WorkflowModelBindings | null;
+  currentAutoConfig?: ConversationAutoConfigVm | null;
+  nextWorkflow?: WorkflowDsl | null;
+  nextModelBindings?: WorkflowModelBindings | null;
+  nextAutoConfig?: ConversationAutoConfigVm | null;
+}
+
+export interface ExecutionPlanSaveCommandVm {
+  projectId: string;
+  taskId: string;
+  taskUuid: string;
+  runId: string;
+  operationId?: string | null;
+  target: ExecutionPlanSaveTarget;
+  expectedPlanRevision: number;
+  expectedAuthoringRevision: number;
+  expectedRunStatus: string;
+  expectedCurrentRound?: string | null;
+  expectedCurrentNode?: string | null;
+  expectedCurrentAttempt?: string | null;
+  workflow?: { workflow: WorkflowDsl; modelBindings: WorkflowModelBindings } | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+}
+
+export interface ExecutionPlanPreflightVm {
+  planRevision: number;
+  authoringRevision: number;
+  executionRevision: number;
+  runStatus: string;
+  runOutcome?: string | null;
+  currentRound?: string | null;
+  currentNode?: string | null;
+  currentAttempt?: string | null;
+  currentEditable: boolean;
+  diverged: boolean;
+  blocking: Array<{ code: string; context?: Record<string, unknown> }>;
+  affectedNodeIds: string[];
+  resumeIdentityRisks: Array<{ code: string; context?: Record<string, unknown> }>;
+}
+
+export interface ExecutionPlanSaveResultVm {
+  operationId?: string | null;
+  complete: boolean;
+  planRevision: number;
+  authoringRevision: number;
+  executionRevision: number;
+  diverged: boolean;
+  targets: ExecutionPlanTargetResultVm[];
 }
 
 export interface ConversationRunVm {

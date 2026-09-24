@@ -3562,6 +3562,7 @@ mod tests {
                     direct_config: Some(config.clone()),
                     direct_preferences: [("claude-acp".to_string(), config)].into(),
                     auto_config: None,
+                    authoring_revision: 0,
                 },
             );
         }
@@ -3891,6 +3892,9 @@ pub struct ConversationRunModeEntry {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub direct_preferences: std::collections::HashMap<String, ConversationDirectConfig>,
     pub auto_config: Option<ConversationAutoConfig>,
+    /// Monotonic revision for the project run-mode authoring used by the next AUTO run.
+    #[serde(default)]
+    pub authoring_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

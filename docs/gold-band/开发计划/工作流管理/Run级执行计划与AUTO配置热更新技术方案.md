@@ -1,6 +1,6 @@
 # Run 级执行计划与 AUTO 配置热更新技术方案
 
-> 状态：待实施  
+> 状态：已实施
 > 适用范围：Workflow Run、AUTO Run、会话右侧工作区、运行模式管理页  
 > 核心目标：让配置修改可以分别作用于当前 Run 的后续执行和下一次 Run，同时保持当前 Attempt 与既有历史不可变。
 
@@ -11,7 +11,7 @@
 1. Task authoring workflow：描述下一次 Run 使用的工作流定义和模型绑定。
 2. Run 创建时冻结的 `workflow.snapshot.json`：描述既有 Run 的可执行工作流。
 3. `NodeState.resolved_config`：描述某个 Attempt 实际使用的运行配置。
-4. AUTO 的项目或工作空间默认配置：用于后续 AUTO Run 或动态节点的配置来源。
+4. 任务 `authoring/auto.json`：该任务下一次 AUTO Run 的配置。项目运行模式只在创建任务时提供默认值，之后不再被会话里的下一次 Run 读写。
 
 当前保存 Workflow 的入口实际更新 Task authoring。既有 Run 的 orchestrator 仍读取 Run 创建时冻结的 `workflow.snapshot.json`，因此保存后的内容只影响下一次 Run，不能让当前 Run 后续分发的新节点使用新配置。AUTO 模式则缺少与 Workflow 对等的 Run 级可执行快照和编辑语义。
 
@@ -28,9 +28,9 @@
   - 仅下一次 Run；
   - 当前 Run + 下一次 Run。
 - 当前 Run 保存成功后，当前 provider invocation 和当前 Attempt 不切换；节点完成后的后继分发读取最新 execution plan。
-- 下一次 Run 保存继续更新 Task/template authoring。
-- AUTO Run 在会话头部提供配置 icon，进入带 Run 上下文的现有运行模式管理页。
-- AUTO 复用现有配置表单、校验和模板能力，不实现第二套表单。
+- 下一次 Run 保存更新该任务的作者态：工作流写 `authoring/workflow.json`，AUTO 写 `authoring/auto.json`。两者都不回写项目运行模式或模板库。
+- AUTO Run 在会话头部提供配置 icon，在右侧工作区 Tab 中打开现有运行模式页的 AUTO 表单，不跳转到运行模式管理页。会话里只编辑具体配置，不提供模板选择。
+- AUTO 复用现有配置表单和校验，不实现第二套表单。模板库只在运行模式页。
 - Current Run 和 Next Run 可以分裂编辑、分别保存，也可以解除分裂。
 - 已发生节点仍存在 `session=continue` 回路时，保护 Agent/provider identity，避免用不同 Agent 继续旧 ACP session。
 
@@ -154,11 +154,12 @@ Run 状态限制：
 - `running`、`paused`：三个目标均可用。
 - `completed`、`killed`：包含 Current 的目标禁用，自动使用仅下一次 Run。
 
-保存后的收敛规则：
+保存后的收敛规则以提交完成后的 `diverged` 为准。工作流比较注入后的下一次 Run 与当前 Run 执行快照；AUTO 比较两份配置。保存结果带回这个值，编辑器不再根据提交了几个目标猜测。
 
-- 仅当前成功：Current 发布新 plan，Next 不变，自动进入分裂状态。
-- 仅下一次成功：Next authoring 更新，Current 不变，自动进入分裂状态。
-- Current+Next 均成功：两边 baseline 同步，保持未分裂。
+- `diverged = false`：两侧事实相同，保持一份草稿。只保存一侧但内容没有产生差异时也保持未分裂。
+- `diverged = true`：进入或保持两个 Tab，并停在本次写入的那一侧。仅当前成功时 Current 发布新 plan、Next 不变；仅下一次成功时 Next authoring 更新、Current 不变。
+- 两侧都写入成功且比较后相同：两边 baseline 同步，回到未分裂。
+- 只有一侧写入成功时仍返回部分提交结果；是否出现两个 Tab 只看写入后的 `diverged`。
 
 如果 Current 已存在独立 plan override，未分裂页面显示明确提示，用户可以主动分裂查看两个事实域；不得静默覆盖任一侧。
 
@@ -178,12 +179,12 @@ Run 状态限制：
 - validation errors；
 - loading、saving、conflict 状态。
 
+切换 Tab 前，先把当前编辑器里尚未写入该侧 draft 的内容放回离开的一侧，再把进入一侧的 draft 灌入编辑器。一侧保存成功不得覆盖另一侧未保存草稿。
+
 保存目标根据当前 Tab 收敛：
 
 - Current Run Tab：仅当前 Run、当前 Run + 下一次 Run。
 - Next Run Tab：仅下一次 Run、当前 Run + 下一次 Run。
-
-一个 Tab 保存成功不得覆盖另一个 Tab 的未保存草稿。
 
 ## 4.3 解除分裂
 
@@ -205,6 +206,7 @@ Run 状态限制：
 - 应用重启后丢弃；
 - 不写入 Task authoring、Run execution plan 或其他 durable workflow 文件；
 - 不允许不同 project/task/run 串用草稿。
+- 重新读取时，与该侧上次 baseline 相同的草稿改用新的 baseline。下一次 Run 因此跟到同一 Task 的共享作者态；当前 Run 只跟到本 Run 的 execution plan。与 baseline 不同的草稿整份保留，工作流和模型绑定不能拆开更新。
 
 ## 5. 当前 Run 生效边界
 
@@ -218,6 +220,9 @@ Current 保存成功后：
 - 当前节点的非身份配置可以修改；
 - 当前节点出口边可以修改；
 - 当前节点完成后的后继分发读取最新 plan；
+- 尚未启动的 AI-DYNAMIC merge / acceptance 在创建节点时按当前 drive 的控制面重新注入 provider、模型和权限。group 上的注入结果保留任务文本和建组投影。固定策略未配置模型时，保留 group 上已经注入的模型。已经启动的调用不改写；
+- 同一次 drive 里，已经开始的 Attempt 继续使用进入该 Attempt 时的 workflow，包括该 Attempt 内的 repair；
+- 后继 Attempt 的 provider 调用使用本次分发临界区读到的同一份 plan，不在锁外另读一份；
 - 未来重新进入该节点的新 Attempt 可以使用新配置。
 
 普通拓扑编辑继续由完整 workflow validation 负责，包括节点新增/删除、边修改、可达性、`$end`、`$new-round`、failure/success branch 和出边合法性。
@@ -328,7 +333,9 @@ runId
 - 阻塞原因；
 - 预期提交 locator。
 
-保存成功返回最新 canonical entity/revision 或 operation ID，前端必须以后端返回结果更新 baseline，不能假设表单输入就是最终状态。
+`get_conversation_execution_plan` 的 view 返回当前 round、node 和 attempt。保存命令原样带回这些值，以及 plan revision、authoring revision 和 Run 状态。缺省或过期都在预检阶段返回 `current-locator-conflict`，不进入发布。
+
+保存成功返回最新 canonical entity/revision 或 operation ID，前端必须以后端返回结果更新 baseline，不能假设表单输入就是最终状态。恢复 operation 同样用返回结果更新已提交目标的 baseline 和 revision。
 
 ## 9. 双目标复合保存
 
@@ -373,7 +380,7 @@ conversation.execution-plan.partial-commit
 conversation.execution-plan.recovery-required
 ```
 
-Conflict 和 partial commit 必须保留本地 draft，并提供重新加载、重新预检或恢复 operation 的明确动作。
+Conflict 和 partial commit 必须保留本地 draft，并提供重新加载、重新预检或恢复 operation 的明确动作。校验失败和 Agent identity 冲突也保留本地 draft，但不提供重新加载：再次保存就是重新校验。Agent identity 错误必须带上 `nodeId`。校验原因已经在配置面板里；只有画布 / 配置面板收成标签时才提供「查看原因」。草稿相对已持久化基线有改动时，保存旁提供「还原」。停止或继续会话不得重载已打开的编辑工作流。
 
 ## 11. 前端交互
 
@@ -391,10 +398,10 @@ Workflow Run 继续在会话右侧工作区打开 `WorkflowEditor`。现有 reso
 - 与 Workflow view/edit 和 Rerun action 同组；
 - stop/continue 继续留在 composer。
 
-点击后进入带完整 Run locator 的现有 `RunModeManagementPage`。页面行为分两类：
+点击后在当前会话的右侧工作区打开 `auto-config` Tab，内容仍是 `RunModeManagementPage`。页面行为分两类：
 
 - 无 Run context 的 `/chat/run-modes`：保持现有项目级运行模式和模板管理行为。
-- 有 Run context：固定为该 Run 的 RunMode，复用现有 Workflow/AUTO 表单，并启用 Current/Next、split/unsplit、preflight 和 CAS 保存。
+- 有 Run context：只出现在右侧 Tab 中，固定为该 Run 的 RunMode，复用现有 AUTO 表单，并启用 Current/Next、split/unsplit、preflight 和 CAS 保存。会话路由和左侧「运行模式」选中态不变。
 
 不新建 AUTO run override 表单，不重复 catalog、模型选择器、模板和 validation 逻辑。
 
@@ -418,12 +425,12 @@ Workflow Run 继续在会话右侧工作区打开 `WorkflowEditor`。现有 reso
   - 保持 `persist_runtime_state` 的 node → round → run 顺序。
 - `src/app/orchestrator.rs`
   - Run 创建时发布初始 plan revision。
-  - 节点完成、后继计算和 dynamic node 创建读取最新 plan。
+  - 节点完成、后继计算和 dynamic node 创建读取最新 plan。后继 Attempt 执行分发临界区带回的那份 workflow。
   - 读锁覆盖控制流收敛，provider 调用不持锁。
 - `src/workflow_model_binding.rs`
   - 复用 authoring validation、稳定 binding 注入和 executable validation。
 - `src-tauri/src/commands_conversation.rs`
-  - 增加 get/preflight/save/composite/recovery command。
+  - 增加 get/preflight/save/composite/recovery command。这些 command 按请求里的 `project_id` 解析 conversation workspace，再读写该 workspace 的 execution plan；不能绑定桌面进程当前仓库。
 - storage/path 模块
   - 增加 manifest、revision、operation journal 的路径和原子写入。
 - runtime/DTO 模块
@@ -434,9 +441,9 @@ Workflow Run 继续在会话右侧工作区打开 `WorkflowEditor`。现有 reso
 - `web/src/components/conversation/ConversationRunHeader.tsx`
   - AUTO 配置 icon、Tooltip 和回调。
 - `web/src/pages/ConversationRunPage.tsx`
-  - 构造完整 locator，打开 Workflow/AUTO run-context 编辑资源。
+  - 构造完整 locator，在右侧工作区打开 Workflow 编辑和 `auto-config` 资源。AUTO 不切换会话路由。
 - `web/src/pages/RunModeManagementPage.tsx`
-  - 增加可选 Run context，并复用现有 AUTO 表单。
+  - 增加可选 Run context。右侧 Tab 以 `embedded` 复用现有 AUTO 表单，不渲染运行模式页标题。
 - `web/src/components/workspace/right-workspace-context.tsx`
   - 增加或扩展 execution-plan edit resource 和完整 locator key。
 - `web/src/components/workspace/ConversationRunWorkspaceResourcePanel.tsx`
@@ -533,7 +540,7 @@ Workflow Run 继续在会话右侧工作区打开 `WorkflowEditor`。现有 reso
 - AUTO icon 的显示条件、Tooltip、aria-label 和完整 locator；
 - 无 Run context 的运行模式管理行为不变；
 - 未分裂默认 Next 和三个保存目标；
-- 单边保存自动分裂，双目标成功保持未分裂；
+- 保存后按提交完成时的 `diverged` 决定是否分裂；内容相同的单侧保存保持未分裂，内容不同才进入两个 Tab；
 - 两个 Tab 的 draft、baseline、revision 和错误互不覆盖；
 - 解除分裂选择/取消语义；
 - conflict 保留 draft；
@@ -585,6 +592,16 @@ Workflow Run 继续在会话右侧工作区打开 `WorkflowEditor`。现有 reso
 - 分发读优先可以保证节点完成不被长时间配置写入阻塞，并按产品要求让并发写入失败。
 
 当前没有引入需要独立 benchmark 的高频算法；主要风险是锁范围和文件 I/O，一致性测试和并发接口测试应固定其边界。若后续观察到 plan revision 数量或 manifest I/O 成为瓶颈，再基于实际数据增加归档或索引，不提前设计无依据的压缩与队列。
+
+## 14.3 本轮实现收口
+
+- Workflow Current 保存始终执行 authoring 校验、稳定 model binding 注入和 executable 校验；不会因为 draft 看起来已经可执行而绕过权威绑定。
+- AUTO Current 保存在后端复用 Workflow executable provider、permission/capability 和 allowed-workflow 校验；未知 provider 以结构化 `VALIDATION_FAILED` 拒绝。
+- 普通 Task authoring 保存与 Current+Next commit 共用 authoring 写锁；锁被占用时返回 revision conflict，不再旁路覆盖 authoring。
+- preflight 未通过时前端丢弃 operation ID，因为此时尚未创建 operation journal；已进入保存阶段的 operation 仍可恢复。
+- dynamic proposal 在迁移完成后持有 Run plan read lock，覆盖权威 dynamic node 读取、后继物化和动态图持久化；provider invocation 仍在锁外。
+- 生产读取路径统一通过 execution-plan store；`workflow.snapshot.json` 仅保留为旧 Run 的迁移来源。
+- 2026-09-22 已有回归测试固定上述边界：Current binding 注入、AUTO 未知 provider、authoring lock、preflight operation ID，以及 legacy canonical 读取；前端测试若本机缺少 `@asamuzakjp/css-color` 依赖则记录为环境阻塞，不虚报通过。
 
 ## 16. 过度设计评审
 

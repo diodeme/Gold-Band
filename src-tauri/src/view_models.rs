@@ -913,7 +913,8 @@ pub struct AcpSessionConfigVm {
     pub auto_accept: bool,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub model_bound_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub model_bound_overrides:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -1676,7 +1677,8 @@ pub fn round_detail_vm(
     let selected_node_detail = selected_node_detail_vm(
         app, task_id, run_id, round_id, &run, &round, &nodes, &graph, &selection,
     )?;
-    let control = read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id))
+    let control = app
+        .current_run_workflow(task_id, run_id)
         .ok()
         .map(|workflow| workflow_control_vm(&workflow));
 
@@ -7782,7 +7784,7 @@ fn count_round_outputs(
 }
 
 fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<String, String> {
-    read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id))
+    app.current_run_workflow(task_id, run_id)
         .or_else(|_| app.task_workflow(task_id))
         .map(|workflow| {
             workflow

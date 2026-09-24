@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.17.1](https://github.com/diodeme/Gold-Band/compare/v0.17.0...v0.17.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **macos:** accept unsized browser log errors ([efa6c00](https://github.com/diodeme/Gold-Band/commit/efa6c0062e57234a39f7db67c2f4a7d33dc94c07))
+* **macos:** compile browser location observer ([d1dcad0](https://github.com/diodeme/Gold-Band/commit/d1dcad08552a67c1546828e2ceb59be617571212))
+* **macos:** complete browser observer integration ([5b988dc](https://github.com/diodeme/Gold-Band/commit/5b988dc376c301d8dec535e95434c83d98600028))
+
 ## [0.17.0](https://github.com/diodeme/Gold-Band/compare/v0.16.0...v0.17.0) (2026-09-24)
 
 

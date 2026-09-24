@@ -1,5 +1,6 @@
 {
   "versionPins": {
-    "claude-acp": "0.72.0"
+    "claude-acp": "0.72.0",
+    "codex-acp": "1.12.0"
   }
 }

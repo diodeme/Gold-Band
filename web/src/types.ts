@@ -828,6 +828,7 @@ export interface GitRepositorySnapshotVm {
   remotes: GitRemoteVm[];
   lock: GitLockVm;
   revision: string;
+  syncRevision: string;
 }
 
 export type GitFileChangeKindVm =

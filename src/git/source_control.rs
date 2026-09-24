@@ -595,6 +595,9 @@ pub struct GitRepositorySnapshot {
     pub remotes: Vec<GitRemote>,
     pub lock: GitLockSnapshot,
     pub revision: String,
+    /// Branch, HEAD, upstream, and ahead/behind. Sync operations compare this
+    /// identity so unstaged files do not block fetch, pull, or push.
+    pub sync_revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1328,6 +1331,7 @@ impl GitSourceControlService {
         let stashes = self.stashes(cwd)?;
         let remotes = self.remotes(cwd)?;
         let revision = workspace_snapshot_revision(&status, &refs);
+        let sync_revision = history_revision(&status.branch);
         status.snapshot_revision.clone_from(&revision);
         let current_branch = status
             .branch
@@ -1353,6 +1357,7 @@ impl GitSourceControlService {
             remotes,
             lock,
             revision,
+            sync_revision,
         };
         let mut refs = refs;
         let worktree_paths = worktrees
@@ -1551,11 +1556,7 @@ impl GitSourceControlService {
         self.status_with_untracked(cwd, "all")
     }
 
-    fn status_with_untracked(
-        &self,
-        cwd: &Utf8Path,
-        untracked: &str,
-    ) -> Result<GitWorkspaceStatus> {
+    fn status_with_untracked(&self, cwd: &Utf8Path, untracked: &str) -> Result<GitWorkspaceStatus> {
         let untracked_arg = format!("--untracked-files={untracked}");
         let output = self.runner.require(
             cwd,
@@ -1626,9 +1627,7 @@ impl GitSourceControlService {
             "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00",
         ];
         args.extend(scopes);
-        let output = self
-            .runner
-            .require(cwd, &args, "git.refs-query-failed")?;
+        let output = self.runner.require(cwd, &args, "git.refs-query-failed")?;
         parse_refs(&output.stdout)
     }
 
@@ -2538,12 +2537,21 @@ impl GitSourceControlService {
     ) -> Result<GitOperation> {
         let identity = self.repository_identity(cwd)?;
         if let Some(expected_revision) = request.expected_revision.as_deref() {
-            let status = self.status_without_stats(cwd)?;
-            let refs = self.refs(cwd)?;
-            let actual_revision = workspace_snapshot_revision(&status, &refs);
+            let (code, actual_revision) = if operation_uses_sync_revision(request.operation.kind())
+            {
+                let branch = self.branch_header(cwd)?;
+                ("git.sync-ref-changed", history_revision(&branch))
+            } else {
+                let status = self.status_without_stats(cwd)?;
+                let refs = self.refs(cwd)?;
+                (
+                    "git.ref-changed",
+                    workspace_snapshot_revision(&status, &refs),
+                )
+            };
             if expected_revision != actual_revision {
                 return Err(GitServiceError::new(
-                    "git.ref-changed",
+                    code,
                     serde_json::json!({
                         "expectedRevision": expected_revision,
                         "actualRevision": actual_revision,
@@ -4486,6 +4494,16 @@ fn parse_history_summary(bytes: &[u8]) -> Result<Vec<GitCommit>> {
         });
     }
     Ok(commits)
+}
+
+fn operation_uses_sync_revision(kind: GitOperationKind) -> bool {
+    matches!(
+        kind,
+        GitOperationKind::Fetch
+            | GitOperationKind::Pull
+            | GitOperationKind::Push
+            | GitOperationKind::PushTag
+    )
 }
 
 fn history_revision(branch: &GitBranchStatus) -> String {
@@ -6476,6 +6494,48 @@ mod tests {
         assert!(is_runtime_branch("refs/heads/gb-dyn-task-run-dyn-id"));
         assert!(is_runtime_branch("refs/heads/gb-runtime/checkpoint"));
         assert!(!is_runtime_branch("refs/heads/feature/gb-dyn-example"));
+    }
+
+    #[test]
+    fn sync_operations_ignore_unstaged_files_and_reject_a_moved_head() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "base");
+        let service = GitSourceControlService::default();
+        let snapshot = service.snapshot("project-test", &root).unwrap();
+        std::fs::write(root.join("tracked.txt"), "dirty\n").unwrap();
+
+        let started = service.start_operation(
+            &root,
+            &GitOperationRequest {
+                expected_revision: Some(snapshot.repository.sync_revision.clone()),
+                operation: GitOperationInput::Fetch {
+                    remote: None,
+                    prune: false,
+                },
+            },
+        );
+        assert!(
+            started.is_ok(),
+            "unstaged edits must not block fetch, pull, or push: {started:?}"
+        );
+
+        commit_file(&root, "tracked.txt", "two\n", "moved");
+        let error = service
+            .start_operation(
+                &root,
+                &GitOperationRequest {
+                    expected_revision: Some(snapshot.repository.sync_revision),
+                    operation: GitOperationInput::Fetch {
+                        remote: None,
+                        prune: false,
+                    },
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<GitServiceError>().unwrap().code,
+            "git.sync-ref-changed"
+        );
     }
 
     #[test]

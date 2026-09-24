@@ -661,13 +661,13 @@ fn built_in_validation_profiles_do_not_block_on_missing_external_evidence() {
             DesktopLanguage::ZhCn,
             "环境问题或需要人工验收导致当前验证无法继续时，应如实记录未执行项和证据缺口，但不构成阻塞条件",
             "前序存在开发节点但没有产出 `dev-report.md`，不构成阻塞条件",
-            "环境问题或需要人工验收导致当前验收无法继续时，应如实记录未执行项和证据缺口，但不构成阻塞条件",
+            "仅因环境或人工条件无法执行的验证记为 `FOLLOW_UP`",
         ),
         (
             DesktopLanguage::En,
             "Environment issues or required manual acceptance may prevent validation from continuing, but do not constitute blocking conditions",
             "If a predecessor dev node did not produce `dev-report.md`, that absence is not a blocking condition",
-            "Environment issues or required manual acceptance may prevent acceptance from continuing, but do not constitute blocking conditions",
+            "A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`",
         ),
     ] {
         let temp = tempdir().unwrap();

@@ -235,6 +235,85 @@ describe('BrowserWorkspacePanel', () => {
     }
   });
 
+  it('shows a same-document location in the address bar', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      browserSessionStore.openUrl('https://gold-band.dion.blue/zh/demo');
+      await act(async () => root.render(<BrowserWorkspacePanel />));
+      const address = container.querySelector<HTMLInputElement>('[data-browser-address="true"]');
+      expect(address?.value).toBe('https://gold-band.dion.blue/zh/demo');
+
+      await act(async () => {
+        const pageId = browserSessionStore.snapshot().activePageId;
+        browserSessionStore.applyNativeEvent({
+          kind: 'url',
+          pageId: pageId as string,
+          url: 'https://gold-band.dion.blue/zh/documentation',
+        });
+      });
+
+      expect(address?.value).toBe('https://gold-band.dion.blue/zh/documentation');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('follows a document location after the address bar was focused but not edited', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      browserSessionStore.openUrl('https://gold-band.dion.blue/zh/demo');
+      await act(async () => root.render(<BrowserWorkspacePanel />));
+      const address = container.querySelector<HTMLInputElement>('[data-browser-address="true"]');
+      await act(async () => {
+        address?.focus();
+      });
+      await act(async () => {
+        const pageId = browserSessionStore.snapshot().activePageId;
+        browserSessionStore.applyNativeEvent({
+          kind: 'url',
+          pageId: pageId as string,
+          url: 'https://gold-band.dion.blue/zh/documentation',
+        });
+      });
+      expect(address?.value).toBe('https://gold-band.dion.blue/zh/documentation');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('follows a document location after the address was submitted', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      browserSessionStore.openUrl('https://example.com/');
+      await act(async () => root.render(<BrowserWorkspacePanel />));
+      const address = container.querySelector<HTMLInputElement>('[data-browser-address="true"]');
+      await act(async () => {
+        address?.focus();
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(address, 'gold-band.dion.blue/zh/demo');
+        address!.dispatchEvent(new Event('input', { bubbles: true }));
+        address!.form?.requestSubmit();
+      });
+      await act(async () => {
+        const pageId = browserSessionStore.snapshot().activePageId;
+        browserSessionStore.applyNativeEvent({
+          kind: 'url',
+          pageId: pageId as string,
+          url: 'https://gold-band.dion.blue/zh/documentation',
+        });
+      });
+      expect(address?.value).toBe('https://gold-band.dion.blue/zh/documentation');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('toggles the current page between desktop and mobile site from the toolbar', async () => {
     const container = document.createElement('div');
     document.body.append(container);

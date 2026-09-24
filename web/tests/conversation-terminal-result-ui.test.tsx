@@ -86,7 +86,8 @@ describe('ConversationSidebar Direct terminal result dot', () => {
       const identity = container.querySelector<HTMLElement>('[data-conversation-terminal-result="failed"]');
       expect(identity).not.toBeNull();
       expect(identity?.getAttribute('aria-label')).toContain('conversation.sidebar.terminalResult.failed');
-      expect(identity?.querySelector('img')?.className).toContain('motion-safe:animate-pulse');
+      expect(identity?.querySelector('img')?.className).toContain('animate-pulse');
+      expect(identity?.querySelector('img')?.className).not.toContain('motion-safe');
       const dot = identity?.querySelector<HTMLElement>('span[aria-hidden="true"]');
       expect(dot?.className).toContain('absolute');
       expect(dot?.className).toContain('-top-0.5');

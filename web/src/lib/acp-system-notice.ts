@@ -62,7 +62,7 @@ export function acpRolledBackConfigNames(
   ];
   const thoughtLevelCount = items.filter((item) => item.category === 'thought_level').length;
   for (const item of ordered) {
-    const name = acpCompositeSectionLabel(
+    const label = acpCompositeSectionLabel(
       {
         id: item.configId,
         category: item.category,
@@ -72,6 +72,10 @@ export function acpRolledBackConfigNames(
       thoughtLevelCount,
       t,
     );
+    if (!label) continue;
+    const name = item.value
+      ? t('acp.configOptionWithValue', { name: label, value: item.value })
+      : label;
     if (!name || seen.has(name)) continue;
     seen.add(name);
     names.push(name);

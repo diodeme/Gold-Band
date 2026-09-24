@@ -130,6 +130,18 @@ export function getTaskDetail(taskId: string) {
 export function getWorkflow(taskId: string, projectId?: string | null) {
   return getRuntimeApi().getWorkflow(taskId, projectId);
 }
+export function getConversationExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string) {
+  return getRuntimeApi().getConversationExecutionPlan(projectId, taskId, taskUuid, runId);
+}
+export function preflightConversationExecutionPlanSave(command: import('@/types').ExecutionPlanSaveCommandVm) {
+  return getRuntimeApi().preflightConversationExecutionPlanSave(command);
+}
+export function saveConversationExecutionPlan(command: import('@/types').ExecutionPlanSaveCommandVm) {
+  return getRuntimeApi().saveConversationExecutionPlan(command);
+}
+export function recoverConversationExecutionPlanOperation(projectId: string, taskId: string, taskUuid: string, runId: string, operationId: string) {
+  return getRuntimeApi().recoverConversationExecutionPlanOperation(projectId, taskId, taskUuid, runId, operationId);
+}
 
 export function createTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createTask']>[0]) {
   return getRuntimeApi().createTask(input);

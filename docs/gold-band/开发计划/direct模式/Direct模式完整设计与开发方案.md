@@ -754,7 +754,7 @@ Direct runtime composer 继续复用 `ACPChatDialog`：
 - Direct 不显示停止/暂停黄点。
 - Direct 单轮失败不显示长期红点。
 - 当前选中态通过整行背景表达。
-- Direct 正在回复或停止当前回复时，让既有 Agent icon 使用遵守 reduced-motion 的低强度呼吸效果；不增加旋转环，也不使用绿/黄/红语义。状态来源是后端 task 级 canonical activity，必须覆盖首轮 runtime active 与 completed run 上的 same-session ACP follow-up，不能只读取 `latestRun.status`。同一 ACP update 同时包含 canonical lifecycle 与轻量 activity 时，lifecycle 的静止态必须压制迟到的非空 activity，终态不得被重新投影为活动态。
+- Direct 正在回复或停止当前回复时，让既有 Agent icon 使用低强度呼吸效果，不因系统 reduced-motion 停止；不增加旋转环，也不使用绿/黄/红语义。状态来源是后端 task 级 canonical activity，必须覆盖首轮 runtime active 与 completed run 上的 same-session ACP follow-up，不能只读取 `latestRun.status`。同一 ACP update 同时包含 canonical lifecycle 与轻量 activity 时，lifecycle 的静止态必须压制迟到的非空 activity，终态不得被重新投影为活动态。
 - relative time 来自 Direct `lastActivityAt`。
 
 ### 11.2 Workflow / AUTO 保持原状态点

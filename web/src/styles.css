@@ -755,39 +755,37 @@
   box-shadow: 0 0 0 5px color-mix(in srgb, var(--gold-running) 13%, transparent);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .acp-activity-live-label,
-  .acp-retry-live-label {
-    animation: acp-activity-label-breathe 1.8s ease-in-out infinite;
-  }
+.acp-activity-live-label,
+.acp-retry-live-label {
+  animation: acp-activity-label-breathe 1.8s ease-in-out infinite;
+}
 
-  .workflow-node-running::before {
-    animation: workflow-node-sheen 2.4s ease-in-out infinite;
-  }
+.workflow-node-running::before {
+  animation: workflow-node-sheen 2.4s ease-in-out infinite;
+}
 
-  .workflow-node-running::after {
-    animation: workflow-running-halo 1.8s ease-in-out infinite;
-  }
+.workflow-node-running::after {
+  animation: workflow-running-halo 1.8s ease-in-out infinite;
+}
 
-  .workflow-running-dot,
-  .workflow-running-mark,
-  .workflow-timeline-dot-running {
-    animation: workflow-running-pulse 1.35s ease-in-out infinite;
-  }
+.workflow-running-dot,
+.workflow-running-mark,
+.workflow-timeline-dot-running {
+  animation: workflow-running-pulse 1.35s ease-in-out infinite;
+}
 
-  .workflow-edge-flow .react-flow__edge-path,
-  .workflow-edge-flow.react-flow__edge-path {
-    animation: workflow-edge-flow 3.6s linear infinite;
-  }
+.workflow-edge-flow .react-flow__edge-path,
+.workflow-edge-flow.react-flow__edge-path {
+  animation: workflow-edge-flow 3.6s linear infinite;
+}
 
-  .workflow-edge-running .react-flow__edge-path,
-  .workflow-edge-running.react-flow__edge-path {
-    animation: workflow-edge-flow 2.4s linear infinite;
-  }
+.workflow-edge-running .react-flow__edge-path,
+.workflow-edge-running.react-flow__edge-path {
+  animation: workflow-edge-flow 2.4s linear infinite;
+}
 
-  .workflow-run-active {
-    animation: workflow-row-enter 220ms ease-out both;
-  }
+.workflow-run-active {
+  animation: workflow-row-enter 220ms ease-out both;
 }
 
 @keyframes acp-activity-label-breathe {
@@ -813,15 +811,6 @@
   50% {
     opacity: 1;
     transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .brand-loading-logo {
-    animation: none;
-    opacity: 0.72;
-    transform: none;
-    will-change: auto;
   }
 }
 

@@ -330,7 +330,6 @@ function compilePackageCss(themePackage) {
     blocks.push(`${selector}[data-visual-quality='performance']{--gb-material-blur:${performance.blur}px;--gb-material-saturate:${performance.saturate}%;--gb-theme-texture-opacity:${performance.textureOpacity}${performance.wallpapers ? ';--gb-wallpaper-image:none' : ''}}`);
   }
   blocks.push(`${selector}{--gb-theme-package-version:'${themePackage.version}'}`);
-  blocks.push(`@media (prefers-reduced-motion:reduce){${selector} [data-theme-role]{transition-duration:.01ms!important;animation-duration:.01ms!important}}`);
   return blocks.join('\n');
 }
 

@@ -88,6 +88,7 @@ export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): Readon
 }
 
 type EditorTab = 'canvas' | 'json';
+export type WorkflowEditorLayout = 'compact' | 'split';
 
 export interface WorkflowEditorSessionDraft {
   workflow: WorkflowDsl;
@@ -418,7 +419,7 @@ interface WorkflowEditorProps {
   agentRegistry: AgentRegistryVm | null;
   profileCatalog: WorkflowProfileCatalogState;
   onOpenProfileManagement?: () => void;
-  onSave: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
+  onSave?: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
   onChange?: (workflow: WorkflowDsl) => void;
   onModelBindingsChange?: (modelBindings: WorkflowModelBindings) => void;
   onApplyDefaultTemplate?: (workflow: WorkflowDsl) => void;
@@ -435,9 +436,14 @@ interface WorkflowEditorProps {
   focusNodeId?: string | null;
   initialSessionDraft?: WorkflowEditorSessionDraft | null;
   onSessionDraftChange?: (draft: WorkflowEditorSessionDraft) => void;
+  sessionSnapshotRef?: { current: WorkflowEditorSessionDraft | null };
+  draftScope?: string;
+  onLayoutChange?: (layout: WorkflowEditorLayout) => void;
+  focusInspectorRequest?: number;
+  restoreRequestId?: number;
 }
 
-export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profileCatalog, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
+export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profileCatalog, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange, sessionSnapshotRef, draftScope, onLayoutChange, focusInspectorRequest = 0, restoreRequestId = 0 }: WorkflowEditorProps) {
   const measuredWorkflowEditorRef = useWebviewMeasuredContainer<HTMLDivElement>('workflow-editor');
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
@@ -475,6 +481,9 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const workflowRef = useRef(workflow);
   const onChangeRef = useRef(onChange);
   const onSessionDraftChangeRef = useRef(onSessionDraftChange);
+  const onLayoutChangeRef = useRef(onLayoutChange);
+  const handledInspectorRequestRef = useRef(0);
+  const handledRestoreRequestRef = useRef(0);
   const externalChangeTimerRef = useRef<number | null>(null);
   const historyRef = useRef<WorkflowEditorHistory>({ past: [], future: [] });
   const viewportRef = useRef<Viewport>(initialSessionDraft?.viewport ?? { x: 0, y: 0, zoom: 1 });
@@ -495,6 +504,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   workflowRef.current = workflow;
   onChangeRef.current = onChange;
   onSessionDraftChangeRef.current = onSessionDraftChange;
+  onLayoutChangeRef.current = onLayoutChange;
+  if (sessionSnapshotRef) {
+    sessionSnapshotRef.current = { workflow, modelBindings, tab, jsonDraft, viewport: viewportRef.current };
+  }
   const agents = useMemo(() => workflowEditorSupportedAgents(agentRegistry), [agentRegistry]);
   const agentIconKeys = useMemo(() => workflowAgentIconKeys(agents), [agents]);
   const doctorReadyAgents = useMemo(() => agents.filter(isWorkflowAgentDoctorReady), [agents]);
@@ -532,7 +545,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       onSessionDraftChangeRef.current?.({ workflow, modelBindings, tab, jsonDraft, viewport: viewportRef.current });
     }, WORKFLOW_EDITOR_DRAFT_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [jsonDraft, modelBindings, tab, viewportRevision, workflow]);
+  }, [draftScope, jsonDraft, modelBindings, tab, viewportRevision, workflow]);
 
   useEffect(() => {
     const container = editorContainerRef.current;
@@ -548,6 +561,35 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    onLayoutChangeRef.current?.(isCompact ? 'compact' : 'split');
+  }, [isCompact]);
+
+  useEffect(() => {
+    if (!focusInspectorRequest || handledInspectorRequestRef.current === focusInspectorRequest) return;
+    handledInspectorRequestRef.current = focusInspectorRequest;
+    setCompactPane('inspector');
+  }, [focusInspectorRequest]);
+
+  useEffect(() => {
+    if (!restoreRequestId || handledRestoreRequestRef.current === restoreRequestId) return;
+    handledRestoreRequestRef.current = restoreRequestId;
+    const nextWorkflow = normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value));
+    setWorkflow(nextWorkflow);
+    setJsonDraft(JSON.stringify(nextWorkflow, null, 2));
+    setJsonError(null);
+    setModelBindings(normalizeWorkflowModelBindings(modelBindingsValue));
+    setFieldErrors({});
+    setInvalidNodeIds(new Set());
+    setLiveValidation(null);
+    clearCanvasSelection();
+    setVisibleTerminalIds(new Set());
+    setTerminalMenu(null);
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
+    historyRef.current = { past: [], future: [] };
+    setHistoryRevision((revision) => revision + 1);
+  }, [clearCanvasSelection, modelBindingsValue, restoreRequestId, value]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -761,7 +803,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     try {
-      await onSave(validation.sanitizedWorkflow, modelBindings);
+      await onSave?.(validation.sanitizedWorkflow, modelBindings);
       setWorkflow(validation.sanitizedWorkflow);
       setJsonDraft(JSON.stringify(validation.sanitizedWorkflow, null, 2));
     } catch (error) {

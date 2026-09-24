@@ -8,10 +8,8 @@ use std::collections::BTreeMap;
 
 use gold_band::config::{DesktopLanguage, RemoteCompletedTask, RemoteWorkspaceRef};
 use gold_band::prompts::{
-    RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN,
-    RUNTIME_REMOTE_TASK_CONTEXT_EN, RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN,
-    RUNTIME_REMOTE_TASK_PARENT_OUTPUT_EN, RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN,
-    prompt_by_language, render,
+    RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL, RUNTIME_REMOTE_TASK_CONTEXT,
+    RUNTIME_REMOTE_TASK_PARENT_OUTPUT, prompt_by_language, render,
 };
 use gold_band::provider::PromptHiddenSection;
 use serde::Serialize;
@@ -228,8 +226,7 @@ fn parent_output_block(task: &RemoteTask, language: DesktopLanguage) -> Option<S
     let parent_output = blank_to_none(task.parent_output.as_deref())?;
     let template = prompt_by_language(
         language,
-        RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN,
-        RUNTIME_REMOTE_TASK_PARENT_OUTPUT_EN,
+        RUNTIME_REMOTE_TASK_PARENT_OUTPUT,
     );
     let rendered = render(
         template,
@@ -250,8 +247,7 @@ fn completion_protocol_block(task: &RemoteTask, language: DesktopLanguage) -> Op
     blank_to_none(task.issue_id.as_deref())?;
     let template = prompt_by_language(
         language,
-        RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN,
-        RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN,
+        RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
     );
     // 模板无变量（协议指令恒定文案），空上下文渲染即原文。
     let rendered =
@@ -282,8 +278,7 @@ fn dpms_context_block(task: &RemoteTask, language: DesktopLanguage) -> Option<St
     }
     let template = prompt_by_language(
         language,
-        RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN,
-        RUNTIME_REMOTE_TASK_CONTEXT_EN,
+        RUNTIME_REMOTE_TASK_CONTEXT,
     );
     let rendered = render(template, &context).expect("remote task context template renders");
     Some(rendered.trim().to_string())

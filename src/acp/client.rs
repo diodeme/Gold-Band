@@ -380,10 +380,11 @@ use crate::acp::permission::{
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
-    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig,
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, RolledBackSessionConfig,
     live_catalog_model_id, model_bound_catalogs_from_capabilities_value,
-    observe_session_model_bound_catalog, reconcile_session_config_overrides,
-    retarget_live_model_bound_catalog, rolled_back_session_config_params,
+    observe_session_model_bound_catalog, plan_explicit_session_scalar,
+    reconcile_session_config_overrides, retarget_live_model_bound_catalog,
+    rolled_back_session_config_params,
 };
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
@@ -4687,15 +4688,47 @@ impl<'a> AcpRuntime<'a> {
         let catalog_at_start = self.config_options.clone();
         let mut model_applied = false;
         if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
-            let unspecified = matches!(
-                resolve_session_model(m, self.config_options.as_ref()),
-                SessionModelResolution::Unspecified
-            );
-            self.set_session_model(m)?;
-            model_applied = !unspecified;
+            let available = available_model_ids(self.config_options.as_ref());
+            match plan_explicit_session_scalar(
+                new_session,
+                "model",
+                "model",
+                m,
+                &available,
+                select_option_name(self.config_options.as_ref(), "model", m),
+            ) {
+                ExplicitSessionScalarPlan::RollBack(item) => {
+                    self.model_override = None;
+                    self.pending_config_rollbacks.push(item);
+                }
+                ExplicitSessionScalarPlan::Apply | ExplicitSessionScalarPlan::Unavailable(_) => {
+                    let unspecified = matches!(
+                        resolve_session_model(m, self.config_options.as_ref()),
+                        SessionModelResolution::Unspecified
+                    );
+                    self.set_session_model(m)?;
+                    model_applied = !unspecified;
+                }
+            }
         }
         if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
-            self.apply_permission_mode(pm)?;
+            let available = available_mode_ids(self.config_options.as_ref(), self.modes.as_ref());
+            match plan_explicit_session_scalar(
+                new_session,
+                "mode",
+                "mode",
+                pm,
+                &available,
+                mode_option_name(self.config_options.as_ref(), self.modes.as_ref(), pm),
+            ) {
+                ExplicitSessionScalarPlan::RollBack(item) => {
+                    self.permission_mode_override = None;
+                    self.pending_config_rollbacks.push(item);
+                }
+                ExplicitSessionScalarPlan::Apply | ExplicitSessionScalarPlan::Unavailable(_) => {
+                    self.apply_permission_mode(pm)?;
+                }
+            }
         }
         let mut pending = config_options.clone();
         let rollbacks = reconcile_session_config_overrides(
@@ -4707,8 +4740,7 @@ impl<'a> AcpRuntime<'a> {
         );
         self.config_option_overrides.clone_from(&pending);
         if let Some(model_id) = live_catalog_model_id(self.config_options.as_ref()) {
-            self.model_bound_overrides
-                .insert(model_id, pending.clone());
+            self.model_bound_overrides.insert(model_id, pending.clone());
         }
         self.pending_config_rollbacks.extend(rollbacks);
         for (config_id, value) in &pending {
@@ -8596,7 +8628,18 @@ fn resolve_session_model(model: &str, config_options: Option<&Value>) -> Session
     if model.is_empty() {
         return SessionModelResolution::Unspecified;
     }
-    let available = config_options
+    let available = available_model_ids(config_options);
+    if available.is_empty() || available.iter().any(|candidate| candidate == model) {
+        return SessionModelResolution::Selected(model.to_string());
+    }
+    SessionModelResolution::Stale {
+        requested: model.to_string(),
+        available,
+    }
+}
+
+fn available_model_ids(config_options: Option<&Value>) -> Vec<String> {
+    config_options
         .and_then(find_model_config_option)
         .and_then(|option| option.get("options"))
         .and_then(Value::as_array)
@@ -8606,14 +8649,59 @@ fn resolve_session_model(model: &str, config_options: Option<&Value>) -> Session
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .collect::<Vec<_>>();
-    if available.is_empty() || available.iter().any(|candidate| candidate == model) {
-        return SessionModelResolution::Selected(model.to_string());
+        .collect()
+}
+
+fn select_option_name(
+    config_options: Option<&Value>,
+    option_id: &str,
+    value: &str,
+) -> Option<String> {
+    let value = value.trim();
+    config_options
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("id").and_then(Value::as_str) == Some(option_id)
+                    || option.get("category").and_then(Value::as_str) == Some(option_id)
+            })
+        })
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("value").and_then(Value::as_str).map(str::trim) == Some(value)
+            })
+        })
+        .and_then(|option| option.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+fn mode_option_name(
+    config_options: Option<&Value>,
+    modes: Option<&Value>,
+    value: &str,
+) -> Option<String> {
+    if let Some(name) = select_option_name(config_options, "mode", value) {
+        return Some(name);
     }
-    SessionModelResolution::Stale {
-        requested: model.to_string(),
-        available,
-    }
+    let value = value.trim();
+    modes
+        .and_then(|modes| modes.get("availableModes"))
+        .and_then(Value::as_array)
+        .and_then(|modes| {
+            modes
+                .iter()
+                .find(|mode| mode.get("id").and_then(Value::as_str).map(str::trim) == Some(value))
+        })
+        .and_then(|mode| mode.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 fn available_mode_ids(config_options: Option<&Value>, modes: Option<&Value>) -> Vec<String> {

@@ -69,12 +69,12 @@ tauri-winrt-notification = "0.7"
 # 用于区分 Win10 的应用轮廓降级与 Win11 的 DWM 原生圆角。
 windows-version = "0.1.7"
 webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1.9.0"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSDictionary", "NSKeyValueObserving", "NSString", "NSURL"] }
 objc2-web-kit = { version = "0.3", features = ["std", "WKWebView"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]

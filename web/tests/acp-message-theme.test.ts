@@ -111,11 +111,12 @@ describe('ACP message theme contract', () => {
     expect(chatSource).not.toContain('bg-gold-surface-high/60 px-5');
   });
 
-  it('animates only active retry progress and respects reduced motion', () => {
+  it('keeps retry progress breathing even when the system reduces motion', () => {
     expect(chatSource).toContain(
       'retryFooter === "retrying" && "acp-retry-live-label"',
     );
-    expect(stylesSource).toContain('@media (prefers-reduced-motion: no-preference)');
+    expect(chatSource).not.toContain('motion-reduce:animate-none');
+    expect(stylesSource).not.toContain('prefers-reduced-motion');
     expect(stylesSource).toContain('.acp-retry-live-label {');
     expect(stylesSource).toContain(
       'animation: acp-activity-label-breathe 1.8s ease-in-out infinite;',

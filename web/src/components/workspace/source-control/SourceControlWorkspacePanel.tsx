@@ -44,8 +44,10 @@ import { SourceControlChangesToolbar, SourceControlSyncActions } from './SourceC
 import { SourceControlGitHubView } from './SourceControlGitHubView';
 import { SourceControlHistoryView } from './SourceControlHistoryView';
 import { githubDataStore, githubRepositorySessionKey } from './github-data-store';
-import { diffReviewStore, gitComparisonReviewItemId, type GitDiffReviewItem } from './diff-review-store';
+import { diffReviewStore, workspaceReviewItems } from './diff-review-store';
 import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
+
+export { workspaceReviewItems } from './diff-review-store';
 
 export function SourceControlWorkspacePanel({ resource }: { resource: SourceControlWorkspaceResource }) {
   const readOnly = useReadOnlyExperience();
@@ -125,6 +127,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
       projectId: resource.projectId,
       revision: snapshot.repository.revision,
       items,
+      workspace: { workspacePath: resource.workspacePath ?? null, area },
     });
     void workspace.openResource({
       kind: 'file-diff',
@@ -491,18 +494,6 @@ function ChangeGroup({
     </section>
     </TooltipProvider>
   );
-}
-
-export function workspaceReviewItems(workspacePath: string | null | undefined, area: 'staged' | 'unstaged', changes: GitFileChangeVm[]): GitDiffReviewItem[] {
-  return changes.map((change) => {
-    const source = { kind: 'workspace' as const, workspacePath, path: change.path, area };
-    return {
-      id: gitComparisonReviewItemId(source),
-      path: change.path,
-      source,
-      stats: { addedLines: change.addedLines ?? null, deletedLines: change.deletedLines ?? null },
-    };
-  });
 }
 
 function PanelState({ icon, text, description, action }: { icon?: ReactNode; text: string; description?: string; action?: ReactNode }) {

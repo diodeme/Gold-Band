@@ -77,6 +77,15 @@ describe('app error i18n', () => {
     expect(invalidOrder).toBe('待发送顺序无效，请重试。');
   });
 
+  it('localizes execution plan locator conflicts instead of a generic retry', () => {
+    const error = {
+      code: 'conversation.execution-plan.current-locator-conflict',
+      params: { field: 'projectId' },
+    };
+    expect(displayAppError(i18n.getFixedT('zh-CN'), error)).toBe('当前运行位置已变化。请重新加载后再试。');
+    expect(displayAppError(i18n.getFixedT('en'), error)).toBe('The running position changed. Reload and try again.');
+  });
+
   it('does not expose interpolation placeholders when an error has no message parameter', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'app.unexpected',

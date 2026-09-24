@@ -2401,6 +2401,12 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - main 新增 composer 工作区文件引用（draft `workspaceFiles` 状态）与本分支远程绑定并集后，`prefill`（远程任务覆盖式新草稿）同时清空 `workspaceFiles`——远程任务在远程工作空间执行，本地工作区文件引用不适用（draft 测试 `prefill writes requirement text + remote binding and drops prior attachments and workspace files` 锁定）。
 - main 新测试 `render_prompt_bundle_does_not_add_builtin_output_contracts` 曾锁定「RawAgent 首条 prompt 区段不进 user_prompt + display 回退原文」，与 M5-bk 契约在同一输入形态互斥；经取证（main 无 M5-bk 追加块、生产路径直接对话不设区段）并经用户确认，适配该测试到 M5-bk 语义（区段以标题 `<hidden>` 块受控追加 + `display_text = None`，其余 MUST NOT LEAK 断言保留）。详见 `merge-conflict-analysis-2026-09-22.md` 第十次合并章节。
 
+**main 合并适配（2026-09-24 第十一次合并，七语言 i18n JSON 化 + prompts LocalizedText 化）**
+
+- main 将 `web/src/i18n.ts` 内联翻译资源拆分为 `web/src/locales/*.json`（七语言，`fallbackLng: en`）。本分支 81 个 remote 系列 i18n key（taskManagement/connection/connect/sidebar.remoteTask\*/composer.remote\*/skills.remoteSync.\*/hiddenRemoteTaskContext/errors.remote.source-not-configured）随迁 `zh-CN.json` + `en.json`；其余五语言经 main 既有 fallback 覆盖（main 自身 25 key 缺口同走此路径）。七个 JSON 中 main 早期带入的旧 `multica.*` key 树（顶层 multica / errors.multica / sidebar.multica(TaskManagement) / composer.multica\*）按既定 Remote\* rename 决策全部删除，破坏式不留 fallback。
+- main 将 `src/prompts.rs` 重构为 `LocalizedText` 结构化对象 + `localized_prompt!`/`localized_prompt_zh_en!` 宏（七语言）。remote 系列 3 个运行时提示词（remote_task_context / remote_task_parent_output / remote_task_completion_protocol）以 `localized_prompt_zh_en!` 适配（仅中英，其他语言 resolve 降级英文，与 main 的 CICD 同模式）；`vm.rs` 三处 `prompt_by_language` 调用随 main 新签名收敛为传 `LocalizedText` 常量。AGENTS.md 七语言例外条款同步补入 `runtime/remote_task_*.md`。
+- 验证：provider_prompt_bundle 35 过、lib provider/prompts/dsl/config 196 过、desktop bins 371 过；tsc web/src 零错误；vitest 稳定失败集 138 例与 origin/main 逐文件一致（新增 1 例 conversation-greeting 系 main 拆 JSON 未更新 source-contract 测试），零合并回归。详见 `merge-conflict-analysis-2026-09-22.md` 第十一次合并章节。
+
 ### 12.51 改动四十九：终态后追问 run 的迟到 completion-output 补发（M5-bl，2026-09-21）
 
 **背景（用户内网实测）**：父任务 direct 模式首 run 完成时未产出 `completion-output` 块，用户输入「完成」让 agent 在**同一本地会话**补交了块，但子任务 claim 时 `parent_output` 仍为空。

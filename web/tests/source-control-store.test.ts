@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { diffReviewStore, workspaceReviewItems } from '@/components/workspace/source-control/diff-review-store';
 import { SourceControlStore } from '@/components/workspace/source-control/source-control-store';
 import i18n from '@/i18n';
 import type {
@@ -95,7 +96,8 @@ describe('source control session store', () => {
     const store = new SourceControlStore(api);
 
     await store.ensureLoaded('project-1', 'D:/repo');
-    store.setActiveTab('project-1', 'D:/repo', 'history');
+    expect(api.getHistory).not.toHaveBeenCalled();
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     store.setRepositoryTab('project-1', 'D:/repo', 'stashes');
     store.setHistoryPage('project-1', 'D:/repo', 2);
     store.setHistoryScrollPosition('project-1', 'D:/repo', 'commit-list', 144);
@@ -140,6 +142,7 @@ describe('source control session store', () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     store.setHistoryPage('project-1', 'D:/repo', 3);
     store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], { additive: false, range: false });
 
@@ -163,6 +166,7 @@ describe('source control session store', () => {
       .mockReturnValueOnce(nextPage.promise);
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
 
     const firstRequest = store.loadMoreHistory('project-1', 'D:/repo', true);
     const duplicateRequest = store.loadMoreHistory('project-1', 'D:/repo', true);
@@ -221,7 +225,7 @@ describe('source control session store', () => {
       expectedRevision: 'revision-1',
     });
     expect(api.getSnapshot).toHaveBeenCalledTimes(1);
-    expect(api.getHistory).toHaveBeenCalledTimes(1);
+    expect(api.getHistory).not.toHaveBeenCalled();
     expect(store.session('project-1', 'D:/repo').snapshot?.repository.revision).toBe('revision-2');
     expect(store.session('project-1', 'D:/repo').snapshot?.status.staged[0]?.path).toBe('src/app.ts');
   });
@@ -265,6 +269,7 @@ describe('source control session store', () => {
     api.getCommitReview.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     const visible = ['commit-1', 'commit-2'];
     store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
     store.selectCommit('project-1', 'D:/repo', 'commit-2', visible, { additive: false, range: false });
@@ -283,6 +288,7 @@ describe('source control session store', () => {
     api.getCommitReview.mockReturnValueOnce(review.promise);
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
 
     store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], {
       additive: false,
@@ -300,10 +306,44 @@ describe('source control session store', () => {
     await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
   });
 
+  it('does not leave commit review loading when a repository refresh races the review request', async () => {
+    vi.useFakeTimers();
+    try {
+      const review = deferred<GitCommitReviewVm>();
+      const events = eventApi();
+      events.api.getCommitReview.mockReturnValueOnce(review.promise);
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+      await store.setActiveTab('project-1', 'D:/repo', 'history');
+
+      store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], {
+        additive: false,
+        range: false,
+      });
+      events.emitState({
+        projectId: 'project-1',
+        repositoryCommonDir: 'D:/repo/.git',
+        workspacePath: 'D:/repo',
+        revision: null,
+      });
+      await vi.advanceTimersByTimeAsync(151);
+
+      review.resolve(commitReview(['commit-1']));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false);
+      expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reuses a commit review result for the same ordered selection and revision', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     const visible = ['commit-1', 'commit-2'];
 
     store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
@@ -320,11 +360,13 @@ describe('source control session store', () => {
     const store = new SourceControlStore(api);
     const visible = ['commit-1'];
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
     await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
 
     store.clear('project-1', 'D:/repo');
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
     await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
 
@@ -362,6 +404,7 @@ describe('source control session store', () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     api.executeMutation.mockResolvedValueOnce({ scope: 'repository' });
     api.getSnapshot.mockReturnValueOnce(nextSnapshot.promise);
     api.getHistory.mockReturnValueOnce(nextHistory.promise);
@@ -411,16 +454,17 @@ describe('source control session store', () => {
     const firstSnapshot = deferred<GitSourceControlSnapshotVm>();
     const firstHistory = deferred<GitHistoryPageVm>();
     const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
     api.getSnapshot
       .mockReturnValueOnce(firstSnapshot.promise)
       .mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-new'));
     api.getHistory
       .mockReturnValueOnce(firstHistory.promise)
       .mockResolvedValueOnce(historyPage('history-new'));
-    const store = new SourceControlStore(api);
-
-    const older = store.ensureLoaded('project-1', 'D:/repo');
-    await vi.waitFor(() => expect(api.getSnapshot).toHaveBeenCalledTimes(1));
+    const older = store.refresh('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(api.getSnapshot).toHaveBeenCalledTimes(2));
     const newer = store.refresh('project-1', 'D:/repo');
     await newer;
     firstSnapshot.resolve(repositorySnapshot('D:/repo', 'revision-old'));
@@ -612,7 +656,7 @@ describe('source control session store', () => {
       await vi.advanceTimersByTimeAsync(151);
 
       expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
-      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+      expect(events.api.getHistory).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -631,7 +675,7 @@ describe('source control session store', () => {
       }
 
       expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
-      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+      expect(events.api.getHistory).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -660,10 +704,124 @@ describe('source control session store', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
-      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+      expect(events.api.getHistory).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('updates the open workspace review from the same debounced file event', async () => {
+    vi.useFakeTimers();
+    try {
+      diffReviewStore.clearForTests();
+      const events = eventApi();
+      const refreshed = repositorySnapshot('D:/repo', 'revision-1');
+      refreshed.status.unstaged = [{
+        path: 'src/current.ts',
+        oldPath: null,
+        kind: 'modified',
+        indexStatus: null,
+        worktreeStatus: 'M',
+        binary: false,
+        submodule: false,
+        addedLines: 9,
+        deletedLines: 2,
+      }];
+      events.api.getSnapshot
+        .mockResolvedValueOnce(repositorySnapshot('D:/repo'))
+        .mockResolvedValueOnce(refreshed);
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+      const sessionId = 'project-1:workspace:D:/repo:unstaged:revision-1';
+      diffReviewStore.save({
+        id: sessionId,
+        projectId: 'project-1',
+        revision: 'revision-1',
+        workspace: { workspacePath: 'D:/repo', area: 'unstaged' },
+        items: workspaceReviewItems('D:/repo', 'unstaged', [
+          { path: 'src/current.ts', oldPath: null, kind: 'modified', indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 1, deletedLines: 0 },
+          { path: 'src/other.ts', oldPath: null, kind: 'modified', indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 1, deletedLines: 0 },
+        ]),
+      });
+      const current = diffReviewStore.get(sessionId)?.items[0];
+      const other = diffReviewStore.get(sessionId)?.items[1];
+      if (!current || !other) throw new Error('missing review items');
+
+      events.emitWorkspace('D:/repo/src/current.ts');
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(events.api.getHistory).not.toHaveBeenCalled();
+      expect(diffReviewStore.get(sessionId)?.items.map((item) => item.path)).toEqual(['src/current.ts']);
+      expect(diffReviewStore.get(sessionId)?.items[0]?.stats).toEqual({ addedLines: 9, deletedLines: 2 });
+      expect(diffReviewStore.workspaceContentEpoch('project-1', current.source)).toBe(1);
+      expect(diffReviewStore.workspaceContentEpoch('project-1', other.source)).toBe(0);
+    } finally {
+      diffReviewStore.clearForTests();
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidates cached workspace diffs when Git metadata changes', async () => {
+    vi.useFakeTimers();
+    try {
+      diffReviewStore.clearForTests();
+      const events = eventApi();
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+      const sessionId = 'project-1:workspace:D:/repo:staged:revision-1';
+      diffReviewStore.save({
+        id: sessionId,
+        projectId: 'project-1',
+        revision: 'revision-1',
+        workspace: { workspacePath: 'D:/repo', area: 'staged' },
+        items: workspaceReviewItems('D:/repo', 'staged', [{
+          path: 'src/current.ts', oldPath: null, kind: 'modified', indexStatus: 'M', worktreeStatus: null,
+          binary: false, submodule: false, addedLines: 1, deletedLines: 0,
+        }]),
+      });
+      const item = diffReviewStore.get(sessionId)?.items[0];
+      if (!item) throw new Error('missing staged item');
+
+      events.emitState({
+        projectId: 'project-1',
+        repositoryCommonDir: 'D:/repo/.git',
+        workspacePath: 'D:/repo',
+        reason: 'metadata',
+      });
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(diffReviewStore.get(sessionId)?.id).toBe(sessionId);
+      expect(diffReviewStore.workspaceContentEpoch('project-1', item.source)).toBe(1);
+    } finally {
+      diffReviewStore.clearForTests();
+      vi.useRealTimers();
+    }
+  });
+
+  it('pushes with the sync revision and reloads the snapshot when the branch moved', async () => {
+    const events = eventApi();
+    events.api.getSnapshot.mockImplementation(async (_projectId: string, workspacePath?: string | null) => (
+      repositorySnapshot(workspacePath ?? 'D:/repo', 'workspace-rev', 'sync-rev')
+    ));
+    const store = new SourceControlStore(events.api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    events.api.getSnapshot.mockClear();
+    events.api.startOperation.mockRejectedValueOnce({ code: 'git.sync-ref-changed', params: {} });
+
+    await store.startOperation('project-1', 'D:/repo', {
+      kind: 'push',
+      remote: 'origin',
+      branch: 'main',
+      setUpstream: false,
+    });
+
+    expect(events.api.startOperation).toHaveBeenCalledWith('project-1', 'D:/repo', expect.objectContaining({
+      kind: 'push',
+      expectedRevision: 'sync-rev',
+    }));
+    await vi.waitFor(() => expect(events.api.getSnapshot).toHaveBeenCalled());
+    expect(store.session('project-1', 'D:/repo').error?.code).toBe('git.sync-ref-changed');
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository.syncRevision).toBe('sync-rev');
   });
 
   it('refreshes only the worktree containing a changed workspace file', async () => {
@@ -767,7 +925,11 @@ function eventApi() {
   };
 }
 
-function repositorySnapshot(workspacePath: string, revision = 'revision-1'): GitSourceControlSnapshotVm {
+function repositorySnapshot(
+  workspacePath: string,
+  revision = 'revision-1',
+  syncRevision = 'sync-revision-1',
+): GitSourceControlSnapshotVm {
   return {
     repository: {
       projectId: 'project-1',
@@ -782,6 +944,7 @@ function repositorySnapshot(workspacePath: string, revision = 'revision-1'): Git
       remotes: [],
       lock: { locked: false, owner: null, operation: null },
       revision,
+      syncRevision,
     },
     status: {
       snapshotRevision: revision,

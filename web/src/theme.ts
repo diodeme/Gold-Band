@@ -1,6 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { z } from 'zod';
 import { isTauriRuntime } from './api/shared';
+import { themeDisplayLocale } from './languages';
 import type { AppearancePreference, DesktopLanguage, PersonalizationPreference, ResolvedColorScheme, VisualQuality, WallpaperPreferencesVm } from './types';
 import {
   MAX_FONT_FAMILY_CODE_POINTS,
@@ -93,7 +94,7 @@ export function getThemePackage(themeId: string): ThemePackage {
 
 export function themeFontStackDisplayName(themeId: string, stackId: string, language: DesktopLanguage): string {
   const stack = getThemePackage(themeId).fonts?.stacks.find((candidate) => candidate.id === stackId);
-  return stack?.displayName[language === 'zh-cn' ? 'zh-CN' : 'en'] ?? stackId;
+  return stack?.displayName[themeDisplayLocale(language)] ?? stackId;
 }
 
 export function resolveColorScheme(preference: AppearancePreference['colorScheme']): ResolvedColorScheme {

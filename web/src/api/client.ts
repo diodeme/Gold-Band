@@ -381,11 +381,14 @@ export interface BrowserBookmarkVm {
 }
 
 export interface RuntimeApi {
+  reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
   writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
-  getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
+  getGitCapability(projectId?: string | null, loadId?: string): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
-  getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
+  getSourceControlOverview(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitSourceControlOverviewVm>;
+  getSourceControlStatistics(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitWorkspaceStatusVm>;
+  getSourceControlSnapshot(projectId: string, workspacePath?: string | null, loadId?: string): Promise<GitSourceControlSnapshotVm>;
   getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null): Promise<GitBranchPickerSnapshotVm>;
   changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: GitBranchChangeRequestVm): Promise<GitBranchPickerSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
@@ -397,7 +400,7 @@ export interface RuntimeApi {
   startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;
   getGitOperation(operationId: string): Promise<GitOperationVm>;
   cancelGitOperation(operationId: string): Promise<GitOperationVm>;
-  startGitStateMonitor(projectId: string, workspacePath: string | null | undefined): Promise<void>;
+  startGitStateMonitor(projectId: string, workspacePath: string | null | undefined, loadId?: string): Promise<void>;
   stopGitStateMonitor(projectId: string, workspacePath: string | null | undefined): Promise<void>;
   subscribeGitOperationUpdates?(listener: (operation: GitOperationVm) => void): Promise<() => void>;
   subscribeGitStateChanges?(listener: (event: GitStateChangedEventVm) => void): Promise<() => void>;

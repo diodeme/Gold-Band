@@ -12,6 +12,56 @@ import type {
 } from '@/types';
 
 describe('source control session store', () => {
+  it('loads the catalog only on demand, coalesces requests and isolates failure', async () => {
+    const api = fakeApi();
+    const catalog = deferred<GitSourceControlSnapshotVm>();
+    api.getCatalog.mockReturnValueOnce(catalog.promise);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    expect(api.getCatalog).not.toHaveBeenCalled();
+    expect(store.session('project-1', 'D:/repo').catalog).toBeNull();
+    const loading = store.setActiveTab('project-1', 'D:/repo', 'repository');
+    const repeated = store.setActiveTab('project-1', 'D:/repo', 'repository');
+    expect(api.getCatalog).toHaveBeenCalledTimes(1);
+    expect(store.session('project-1', 'D:/repo').catalogLoading).toBe(true);
+    catalog.reject(new Error('catalog unavailable'));
+    await Promise.all([loading, repeated]);
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({ status: 'ready', catalog: null, catalogLoading: false });
+    expect(store.session('project-1', 'D:/repo').catalogError).not.toBeNull();
+    await store.setActiveTab('project-1', 'D:/repo', 'repository');
+    expect(store.session('project-1', 'D:/repo').catalog).not.toBeNull();
+  });
+
+  it('publishes files before statistics and rejects statistics from an older revision', async () => {
+    const api = fakeApi();
+    const statistics = deferred<GitSourceControlSnapshotVm['status']>();
+    const getStatistics = vi.fn().mockReturnValueOnce(statistics.promise).mockResolvedValue(repositorySnapshot('D:/repo', 'new').status);
+    const store = new SourceControlStore({ ...api, getStatistics });
+    await store.ensureLoaded('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').status).toBe('ready');
+    api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'new'));
+    await store.refresh('project-1', 'D:/repo');
+    statistics.resolve(repositorySnapshot('D:/repo', 'old').status);
+    await vi.waitFor(() => expect(getStatistics).toHaveBeenCalledTimes(2));
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository.revision).toBe('new');
+    expect(store.session('project-1', 'D:/repo').snapshot?.status.snapshotRevision).toBe('new');
+  });
+
+  it('correlates initial load IPCs and keeps successful data when diagnostics fail', async () => {
+    const events = eventApi();
+    const reportLoad = vi.fn().mockRejectedValue(new Error('log unavailable'));
+    const store = new SourceControlStore({ ...events.api, reportLoad });
+    await store.ensureLoaded('project-1', null);
+    expect(reportLoad).toHaveBeenCalledTimes(1);
+    const report = reportLoad.mock.calls[0][0];
+    expect(report).toMatchObject({ initial: true, outcome: 'ready' });
+    expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(events.api.getCapability).toHaveBeenCalledWith('project-1', report.loadId);
+    expect(events.api.startMonitor).toHaveBeenCalledWith('project-1', null, report.loadId);
+    expect(events.api.getSnapshot).toHaveBeenCalledWith('project-1', null, report.loadId);
+    expect(store.session('project-1', null).status).toBe('ready');
+  });
+
   it('models missing Git and non-repositories before requesting heavy repository data', async () => {
     const api = fakeApi();
     api.getCapability.mockResolvedValueOnce(capability('not-installed'));
@@ -615,7 +665,7 @@ describe('source control session store', () => {
     }
   });
 
-  it('establishes the repository monitor before taking the first authoritative snapshot', async () => {
+  it('publishes changes before a slow monitor and reconciles after registration', async () => {
     const events = eventApi();
     const monitorStarted = deferred<void>();
     events.api.startMonitor.mockReturnValueOnce(monitorStarted.promise);
@@ -623,11 +673,17 @@ describe('source control session store', () => {
 
     const loading = store.ensureLoaded('project-1', 'D:/repo');
     await vi.waitFor(() => expect(events.api.startMonitor).toHaveBeenCalledTimes(1));
-    expect(events.api.getSnapshot).not.toHaveBeenCalled();
+    try {
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+      await loading;
+      expect(store.session('project-1', 'D:/repo').status).toBe('ready');
+    } finally {
+      monitorStarted.resolve();
+      await loading;
+    }
 
     monitorStarted.resolve();
-    await loading;
-    expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(events.api.getSnapshot).toHaveBeenCalledTimes(2));
   });
 
   it('treats a null workspace path as the main repository monitor scope', async () => {
@@ -637,8 +693,8 @@ describe('source control session store', () => {
     const store = new SourceControlStore(events.api);
 
     const loading = store.ensureLoaded('project-1', null);
-    await vi.waitFor(() => expect(events.api.startMonitor).toHaveBeenCalledWith('project-1', null));
-    expect(events.api.getSnapshot).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(events.api.startMonitor).toHaveBeenCalledWith('project-1', null, expect.any(String)));
+    expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
 
     monitorStarted.resolve();
     await loading;
@@ -849,6 +905,7 @@ function fakeApi() {
     getCapability: vi.fn(async () => capability('ready')),
     initializeRepository: vi.fn(async () => capability('head-required')),
     getSnapshot: vi.fn(async (_projectId: string, workspacePath?: string | null) => repositorySnapshot(workspacePath ?? 'D:/repo')),
+    getCatalog: vi.fn(async (_projectId: string, workspacePath?: string | null) => repositorySnapshot(workspacePath ?? 'D:/repo')),
     getHistory: vi.fn(async () => historyPage('history-1')),
     getCommitReview: vi.fn(async (_projectId: string, _workspacePath: string | null | undefined, query: { selectedOids: string[] }) => ({
       selectedOids: query.selectedOids,
@@ -931,6 +988,7 @@ function repositorySnapshot(
   syncRevision = 'sync-revision-1',
 ): GitSourceControlSnapshotVm {
   return {
+    catalogRevision: revision,
     repository: {
       projectId: 'project-1',
       repoRoot: 'D:/repo',
@@ -982,6 +1040,7 @@ function historyCommit(index: number): GitHistoryPageVm['commits'][number] {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => { resolve = next; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((next, fail) => { resolve = next; reject = fail; });
+  return { promise, resolve, reject };
 }

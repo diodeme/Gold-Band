@@ -3523,13 +3523,27 @@ pub fn start_run(
 pub async fn get_git_capability(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
+    load_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    let project_root = app.paths.repo_root;
-    spawn_blocking_command(move || {
-        Ok(gold_band::git::GitRepositoryService::default().probe(&project_root))
-    })
-    .await
+    let mut diagnostic =
+        gold_band::git::diagnostics::GitReadRequest::new(load_id.as_deref(), "capability");
+    let trace = diagnostic.trace();
+    let result = async {
+        let worker_trace = trace.clone();
+        let app = trace.stage("resolve-app", || {
+            resolve_command_app(state.inner(), project_id.as_deref())
+        })?;
+        let project_root = app.paths.repo_root;
+        spawn_blocking_command(move || {
+            worker_trace.stage("blocking-work", || {
+                Ok(gold_band::git::GitRepositoryService::default().probe(&project_root))
+            })
+        })
+        .await
+    }
+    .await;
+    diagnostic.finish(&result);
+    result
 }
 
 #[tauri::command]
@@ -3548,26 +3562,119 @@ pub async fn initialize_git_repository(
 }
 
 #[tauri::command]
+pub fn record_source_control_load(report: gold_band::git::diagnostics::GitLoadReport) {
+    report.record();
+}
+
+#[tauri::command]
 pub async fn get_source_control_snapshot(
     state: State<'_, DesktopState>,
     project_id: String,
     workspace_path: Option<String>,
+    load_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitSourceControlSnapshot> {
-    let app = resolve_command_app(state.inner(), Some(&project_id))?;
-    let project_root = app.paths.repo_root;
-    spawn_blocking_command(move || {
-        let service = gold_band::git::GitSourceControlService::default();
-        let workspace = service
-            .resolve_scoped_workspace(
-                &project_root,
-                workspace_path.as_deref().map(camino::Utf8Path::new),
-            )
-            .map_err(command_error)?;
-        service
-            .snapshot_with_identity(&project_id, &workspace)
-            .map_err(command_error)
-    })
-    .await
+    let mut diagnostic =
+        gold_band::git::diagnostics::GitReadRequest::new(load_id.as_deref(), "snapshot");
+    let trace = diagnostic.trace();
+    let result = async {
+        let worker_trace = trace.clone();
+        let app = trace.stage("resolve-app", || {
+            resolve_command_app(state.inner(), Some(&project_id))
+        })?;
+        let project_root = app.paths.repo_root;
+        spawn_blocking_command(move || {
+            worker_trace.stage("blocking-work", || {
+                let service = gold_band::git::GitSourceControlService::default();
+                let workspace = service
+                    .resolve_scoped_workspace(
+                        &project_root,
+                        workspace_path.as_deref().map(camino::Utf8Path::new),
+                    )
+                    .map_err(command_error)?;
+                service
+                    .snapshot_with_identity(&project_id, &workspace)
+                    .map_err(command_error)
+            })
+        })
+        .await
+    }
+    .await;
+    diagnostic.finish(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn get_source_control_overview(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    load_id: Option<String>,
+) -> CommandResult<gold_band::git::GitSourceControlOverview> {
+    let mut diagnostic =
+        gold_band::git::diagnostics::GitReadRequest::new(load_id.as_deref(), "overview");
+    let trace = diagnostic.trace();
+    let result = async {
+        let worker_trace = trace.clone();
+        let app = trace.stage("resolve-app", || {
+            resolve_command_app(state.inner(), Some(&project_id))
+        })?;
+        let project_root = app.paths.repo_root;
+        spawn_blocking_command(move || {
+            worker_trace.stage("blocking-work", || {
+                let service = gold_band::git::GitSourceControlService::default();
+                let workspace = service
+                    .resolve_scoped_workspace(
+                        &project_root,
+                        workspace_path.as_deref().map(camino::Utf8Path::new),
+                    )
+                    .map_err(command_error)?;
+                service
+                    .overview_with_identity(&project_id, &workspace)
+                    .map_err(command_error)
+            })
+        })
+        .await
+    }
+    .await;
+    diagnostic.finish(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn get_source_control_statistics(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    load_id: Option<String>,
+) -> CommandResult<gold_band::git::GitWorkspaceStatus> {
+    let mut diagnostic =
+        gold_band::git::diagnostics::GitReadRequest::new(load_id.as_deref(), "statistics");
+    let trace = diagnostic.trace();
+    let result = async {
+        let worker_trace = trace.clone();
+        let app = trace.stage("resolve-app", || {
+            resolve_command_app(state.inner(), Some(&project_id))
+        })?;
+        let project_root = app.paths.repo_root;
+        spawn_blocking_command(move || {
+            worker_trace.stage("blocking-work", || {
+                let service = gold_band::git::GitSourceControlService::default();
+                let workspace = service
+                    .resolve_scoped_workspace(
+                        &project_root,
+                        workspace_path.as_deref().map(camino::Utf8Path::new),
+                    )
+                    .map_err(command_error)?;
+                service
+                    .statistics(&workspace.workspace_path)
+                    .map_err(command_error)
+            })
+        })
+        .await
+    }
+    .await;
+    diagnostic.finish(&result);
+    result
 }
 
 #[tauri::command]
@@ -3819,43 +3926,62 @@ pub async fn start_git_state_monitor(
     monitor_runtime: State<'_, crate::git_state_monitor::GitStateMonitorRuntime>,
     project_id: String,
     workspace_path: Option<String>,
+    load_id: Option<String>,
 ) -> CommandResult<()> {
-    let app = resolve_command_app(state.inner(), Some(&project_id))?;
-    let project_root = app.paths.repo_root;
-    let debounce_ms = app.config.workspace_files.watch_debounce_ms;
-    let (identity, targets) = spawn_blocking_command(move || {
-        let service = gold_band::git::GitSourceControlService::default();
-        let identity = service
-            .resolve_scoped_workspace(
-                &project_root,
-                workspace_path.as_deref().map(camino::Utf8Path::new),
+    let mut diagnostic =
+        gold_band::git::diagnostics::GitReadRequest::new(load_id.as_deref(), "monitor");
+    let trace = diagnostic.trace();
+    let result = async {
+        let worker_trace = trace.clone();
+        let app = trace.stage("resolve-app", || {
+            resolve_command_app(state.inner(), Some(&project_id))
+        })?;
+        let project_root = app.paths.repo_root;
+        let debounce_ms = app.config.workspace_files.watch_debounce_ms;
+        let (identity, targets) = spawn_blocking_command(move || {
+            worker_trace.stage("blocking-work", || {
+                let service = gold_band::git::GitSourceControlService::default();
+                let identity = service
+                    .resolve_scoped_workspace(
+                        &project_root,
+                        workspace_path.as_deref().map(camino::Utf8Path::new),
+                    )
+                    .map_err(command_error)?;
+                let targets = service
+                    .metadata_watch_targets(&identity.workspace_path)
+                    .map_err(command_error)?;
+                Ok((identity, targets))
+            })
+        })
+        .await?;
+        trace.stage("workspace-watch", || {
+            watch_runtime.start_workspace(
+                app_handle.clone(),
+                file_runtime.inner().clone(),
+                project_id.clone(),
+                identity.workspace_path.as_std_path().to_path_buf(),
+                debounce_ms,
             )
-            .map_err(command_error)?;
-        let targets = service
-            .metadata_watch_targets(&identity.workspace_path)
-            .map_err(command_error)?;
-        Ok((identity, targets))
-    })
-    .await?;
-    watch_runtime.start_workspace(
-        app_handle.clone(),
-        file_runtime.inner().clone(),
-        project_id.clone(),
-        identity.workspace_path.as_std_path().to_path_buf(),
-        debounce_ms,
-    )?;
-    if let Err(error) = monitor_runtime.start(
-        app_handle,
-        project_id.clone(),
-        &identity.common_dir,
-        &identity.workspace_path,
-        targets,
-        debounce_ms,
-    ) {
-        let _ = watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path());
-        return Err(error);
+        })?;
+        if let Err(error) = trace.stage("metadata-watch", || {
+            monitor_runtime.start(
+                app_handle,
+                project_id.clone(),
+                &identity.common_dir,
+                &identity.workspace_path,
+                targets,
+                debounce_ms,
+            )
+        }) {
+            let _ =
+                watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path());
+            return Err(error);
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+    diagnostic.finish(&result);
+    result
 }
 
 #[tauri::command]

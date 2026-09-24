@@ -34,14 +34,14 @@ import type {
   GitMutationRequestVm,
   GitOperationRequestVm,
   GitPullStrategyVm,
-  GitSourceControlSnapshotVm,
+  GitSourceControlOverviewVm,
 } from '@/types';
 import { rememberPreferredGitRemote, resolvePreferredGitRemote } from './source-control-preferences';
 
 type ChangesActionKind = 'fetch' | 'pull' | 'push' | 'stash-create';
 
 export function SourceControlSyncActions({ snapshot, busyActionKind, locked, onOperation }: {
-  snapshot: GitSourceControlSnapshotVm;
+  snapshot: GitSourceControlOverviewVm;
   busyActionKind: string | null;
   locked: boolean;
   onOperation: (input: GitOperationRequestVm) => void;
@@ -120,7 +120,7 @@ export function SourceControlChangesToolbar({
   onMutation,
   onOperation,
 }: {
-  snapshot: GitSourceControlSnapshotVm;
+  snapshot: GitSourceControlOverviewVm;
   busyActionKind: string | null;
   locked: boolean;
   onMutation: (input: GitMutationRequestVm) => void;

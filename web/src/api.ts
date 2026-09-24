@@ -235,16 +235,20 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
-export function getGitCapability(projectId?: string | null) {
-  return getRuntimeApi().getGitCapability(projectId);
+export function reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport) {
+  return getRuntimeApi().reportSourceControlLoad(report);
+}
+
+export function getGitCapability(projectId?: string | null, loadId?: string) {
+  return getRuntimeApi().getGitCapability(projectId, loadId);
 }
 
 export function initializeGitRepository(projectId?: string | null) {
   return getRuntimeApi().initializeGitRepository(projectId);
 }
 
-export function getSourceControlSnapshot(projectId: string, workspacePath?: string | null) {
-  return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath);
+export function getSourceControlSnapshot(projectId: string, workspacePath?: string | null, loadId?: string) {
+  return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath, loadId);
 }
 
 export function getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null) {
@@ -291,8 +295,8 @@ export function cancelGitOperation(operationId: string) {
   return getRuntimeApi().cancelGitOperation(operationId);
 }
 
-export function startGitStateMonitor(projectId: string, workspacePath: string | null | undefined) {
-  return getRuntimeApi().startGitStateMonitor(projectId, workspacePath);
+export function startGitStateMonitor(projectId: string, workspacePath: string | null | undefined, loadId?: string) {
+  return getRuntimeApi().startGitStateMonitor(projectId, workspacePath, loadId);
 }
 
 export function stopGitStateMonitor(projectId: string, workspacePath: string | null | undefined) {
@@ -1042,4 +1046,11 @@ export function getAcpImage(locator: import('./types').TurnFileLocatorVm, image:
 }
 export function getAcpActivityImages(input: import('./types').AcpActivityImagesInput) {
   return getRuntimeApi().getAcpActivityImages(input);
+}
+
+export function getSourceControlOverview(projectId: string, workspacePath?: string | null, loadId?: string) {
+  return getRuntimeApi().getSourceControlOverview(projectId, workspacePath, loadId);
+}
+export function getSourceControlStatistics(projectId: string, workspacePath?: string | null, loadId?: string) {
+  return getRuntimeApi().getSourceControlStatistics(projectId, workspacePath, loadId);
 }

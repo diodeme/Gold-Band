@@ -45,16 +45,23 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  reportSourceControlLoad: (report) => invokeCommand("record_source_control_load", { report }),
   readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
   writeProjectMemory: (projectId, command) => invokeCommand('write_project_memory', { projectId, command }),
-  getGitCapability(projectId) {
-    return invokeCommand('get_git_capability', { projectId });
+  getGitCapability(projectId, loadId) {
+    return invokeCommand('get_git_capability', { projectId, loadId });
   },
   initializeGitRepository(projectId) {
     return invokeCommand('initialize_git_repository', { projectId });
   },
-  getSourceControlSnapshot(projectId, workspacePath) {
-    return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
+  getSourceControlOverview(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_overview', { projectId, workspacePath, loadId });
+  },
+  getSourceControlStatistics(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_statistics', { projectId, workspacePath, loadId });
+  },
+  getSourceControlSnapshot(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_snapshot', { projectId, workspacePath, loadId });
   },
   getGitBranchPickerSnapshot(projectId, workspacePath) {
     return invokeCommand('get_git_branch_picker_snapshot', { projectId, workspacePath });
@@ -89,8 +96,8 @@ export const desktopApi: RuntimeApi = {
   cancelGitOperation(operationId) {
     return invokeCommand('cancel_git_operation', { operationId });
   },
-  startGitStateMonitor(projectId, workspacePath) {
-    return invokeCommand('start_git_state_monitor', { projectId, workspacePath });
+  startGitStateMonitor(projectId, workspacePath, loadId) {
+    return invokeCommand('start_git_state_monitor', { projectId, workspacePath, loadId });
   },
   stopGitStateMonitor(projectId, workspacePath) {
     return invokeCommand('stop_git_state_monitor', { projectId, workspacePath });

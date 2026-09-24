@@ -3,7 +3,7 @@
 ## 2026-09-24 macOS 原生浏览器监听恢复构建门禁
 
 - 根因：同文档地址同步为 macOS 新增 `objc2::define_class!` KVO observer 时，在协议实现位置写入了 `objc2::runtime::NSObjectProtocol` 限定路径；`objc2 0.6.4` 的宏这里只匹配单个标识符。首个解析错误还遮住了 `DefinedClass` / `AnyThread` trait 未导入、裸 observer pointer 不满足 Tauri UI 回调 `Send` 边界、字符串日志参数受隐式 `Sized` 限制三处同源编译缺陷。Linux 和 Windows 会跳过 macOS 条件编译分支，现有 PR Checks 又只有 Ubuntu，因此错误直到 release 的 macOS runner 才暴露。
-- 实现：按 `objc2` 官方用法导入协议和类 trait，宏内只引用协议标识符；observer 跨 Tauri 调度边界携带 `usize`，只在 UI 回调中恢复 Retained，调度失败立即释放；内部 WebView 日志接受 `dyn Display`。PR Checks 增加真实 macOS runner 的桌面 crate `cargo check`，并允许手动触发，以便 release 失败后在新 commit 上独立复验。
+- 实现：按 `objc2` 官方用法导入协议和类 trait，宏内只引用协议标识符；observer 跨 Tauri 调度边界携带 `usize`，只在 UI 回调中恢复 Retained，调度失败立即释放；内部 WebView 日志使用 `Display + ?Sized` 统一接受字符串、具体错误和 trait object。PR Checks 增加真实 macOS runner 的桌面 crate `cargo check`，并允许手动触发，以便 release 失败后在新 commit 上独立复验。
 - 验收：原 release macOS arm64 job 的稳定失败日志作为修复前证据；修复后手动 macOS check 和 Intel DevTools DMG 构建必须通过。旧 release run 固定旧 SHA，不通过移动 `v0.17.0` tag 伪造重跑。
 - 过度设计与性能评审：复用现有 observer、Cargo workspace 和 GitHub Actions，不新增运行时状态、依赖或兼容层；运行时性能不变，仅增加 PR 的 macOS 编译时间。
 

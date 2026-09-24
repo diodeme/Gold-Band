@@ -928,23 +928,51 @@ function TaskRow({
       </div>
       <span data-demo-task-actions={readOnly || undefined} className="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
         {onRename ? (
-          <Button disabled={readOnly} title={t('conversation.sidebar.rename')} aria-label={t('conversation.sidebar.rename')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
-            <Pencil className="size-3" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('conversation.sidebar.rename')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
+                  <Pencil className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('conversation.sidebar.rename')}</TooltipContent>
+          </Tooltip>
         ) : null}
         {pinned && onUnpin ? (
-          <Button disabled={readOnly} title={t('conversation.sidebar.unpin')} aria-label={t('conversation.sidebar.unpin')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
-            <PinOff className="size-3" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('conversation.sidebar.unpin')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
+                  <PinOff className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('conversation.sidebar.unpin')}</TooltipContent>
+          </Tooltip>
         ) : onPin ? (
-          <Button disabled={readOnly} title={t('conversation.sidebar.pinToTop')} aria-label={t('conversation.sidebar.pinToTop')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
-            <Pin className="size-3" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('conversation.sidebar.pinToTop')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
+                  <Pin className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('conversation.sidebar.pinToTop')}</TooltipContent>
+          </Tooltip>
         ) : null}
         {onDelete ? (
-          <Button disabled={readOnly} title={t('common.delete')} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
-            <Trash2 className="size-3" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+                  <Trash2 className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('common.delete')}</TooltipContent>
+          </Tooltip>
         ) : null}
       </span>
     </div>

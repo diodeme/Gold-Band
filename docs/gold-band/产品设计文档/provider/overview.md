@@ -87,6 +87,7 @@ Settings schema 11 不再持久化内置 Agent 的 `adapter.command` / `adapter.
 - canonical artifact contract 必须保持 provider-agnostic
 - provider-specific 引用只能通过 `worker-ref` 等边界文件暴露
 - ACP session events 是 provider 返回值的统一观测输入，但不作为稳定控制流依据
+- ACP adapter 的 stdout EOF 只表示 transport 已关闭；若进程退出状态尚不可用，记录 pending 观测但不得消耗最终退出状态。进程终态可用后必须只记录一次包含 exit code 的 `acp_adapter_exit_status`，保证诊断能够区分协议断开、正常退出和异常退出。
 - provider raw frame / raw stream 仅用于排障与 raw viewer，不作为 UI 主协议
 - 不再新增 Gold Band 自研 `progress.events.jsonl` 作为 provider 输出统一层
 - workflow / profile 的解析优先级应在 runtime 上层统一完成，而不是由 provider implementation 自行猜测

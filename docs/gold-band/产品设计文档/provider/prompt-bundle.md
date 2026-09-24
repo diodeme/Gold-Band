@@ -37,6 +37,7 @@
 - Gold Band / ACP 文件夹规则中的稳定部分
 - 当前节点 profile id 解析出的完整角色说明
 - 当前节点 `output` DSL 派生出的发射规则：`InlineControl` 展开 artifact 契约；`PostTurnProjection` 只声明业务 turn 自然完成、控制结果随后后置归一化，不暴露 artifact 名称、schema 或 success condition
+- AI-DYNAMIC acceptance 的稳定角色规则可以在 system prompt 中声明 `next.type` 决策词汇，业务 turn、隐藏 finalize 与 repair 必须保持一致；这不等于展开 `dynamic-node-completion` artifact 名称或 JSON schema，完整控制协议仍只进入隐藏 finalize / repair user prompt。merge 不承担路由决策，不注入该词汇
 - 现有 `extra_system_sections`，本期继续按原样放在 system prompt
 
 `systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要、本轮反馈以及 PostTurn finalize / repair 的完整控制协议。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。

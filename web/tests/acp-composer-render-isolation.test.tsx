@@ -78,6 +78,14 @@ import type { AcpSessionVm, AgentRegistryVm, ConversationAttemptLifecycleVm } fr
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
+
 function completedSession(): AcpSessionVm {
   return {
     branchId: 'root',
@@ -318,7 +326,7 @@ describe('ACP composer render isolation', () => {
     document.body.append(container);
     const root = createRoot(container);
     const view = (agentRegistry: AgentRegistryVm | null, taskId = 'task-render') => (
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           key={taskId}
           session={null}
@@ -334,7 +342,7 @@ describe('ACP composer render isolation', () => {
           showRawFramesAction={false}
           usageCompact
         />
-      </TooltipProvider>
+      </TestProviders>
     );
     try {
       await act(async () => root.render(view(lateRegistry ? null : registry)));
@@ -390,7 +398,7 @@ describe('ACP composer render isolation', () => {
     );
     const view = (marker: string) => (
       <div data-marker={marker}>
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={session}
             projectId="project-render"
@@ -403,7 +411,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>
+        </TestProviders>
       </div>
     );
 
@@ -437,7 +445,7 @@ describe('ACP composer render isolation', () => {
 
     try {
       await act(async () => root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={null}
             projectId="project-render"
@@ -451,7 +459,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       ));
 
       expect(container.textContent).toContain('historical');
@@ -506,7 +514,7 @@ describe('ACP composer render isolation', () => {
         });
       }, [eventWindowKey]);
       return (
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={selectedSession}
             projectId="project-render"
@@ -519,7 +527,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>
+        </TestProviders>
       );
     }
 
@@ -553,7 +561,7 @@ describe('ACP composer render isolation', () => {
       await act(async () => {
         root.render(
           <GitBranchPickerSnapshotProvider>
-            <TooltipProvider>
+            <TestProviders>
               <ACPChatDialog
                 session={completedSession()}
                 projectId="project-render"
@@ -567,7 +575,7 @@ describe('ACP composer render isolation', () => {
                 showRawFramesAction={false}
                 usageCompact
               />
-            </TooltipProvider>
+            </TestProviders>
           </GitBranchPickerSnapshotProvider>,
         );
       });
@@ -599,7 +607,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={null}
               sessionEstablished
@@ -614,7 +622,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 
@@ -634,7 +642,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={completedSession()}
               projectId="project-render"
@@ -647,7 +655,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
       const initialMarkdownRenders = streamdownRender.mock.calls.length;
@@ -684,7 +692,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={session}
               projectId="project-render"
@@ -702,7 +710,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await Promise.resolve();
       });
@@ -737,8 +745,7 @@ describe('ACP composer render isolation', () => {
     const root = createRoot(container);
 
     const view = (active: boolean) => (
-      <RightWorkspaceProvider>
-        <TooltipProvider>
+      <TestProviders>
           <ACPChatDialog
             session={null}
             projectId="project-render"
@@ -757,8 +764,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>
-      </RightWorkspaceProvider>
+      </TestProviders>
     );
 
     try {

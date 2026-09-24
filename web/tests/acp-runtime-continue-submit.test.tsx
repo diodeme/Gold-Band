@@ -24,6 +24,7 @@ import { ACPChatDialog, createAcpEventWindowCacheKey } from '@/components/acp/AC
 import { useAcpComposerDraft, type AcpComposerDraft } from '@/lib/acp-composer-draft';
 import { getRuntimeApi } from '@/api/client';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import type {
   AcpSessionVm,
   AcpUiEventVm,
@@ -31,6 +32,14 @@ import type {
 } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
 
 let fixtureIndex = 0;
 
@@ -226,7 +235,7 @@ async function renderPausedDialog(options: {
     locator = session,
   ) => act(async () => {
     root.render(
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           session={nextSession}
           projectId={`project-${id}`}
@@ -249,7 +258,7 @@ async function renderPausedDialog(options: {
           onSubmitManualCheck={options.onSubmitManualCheck}
           onOptimisticEventsChange={options.onOptimisticEventsChange}
         />
-      </TooltipProvider>,
+      </TestProviders>,
     );
   });
   await render(options.initialLifecycle ?? pausedLifecycle());
@@ -291,7 +300,7 @@ async function renderActiveDirectDialog() {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           session={session}
           projectId={`project-${id}`}
@@ -310,7 +319,7 @@ async function renderActiveDirectDialog() {
           showRawFramesAction={false}
           usageCompact
         />
-      </TooltipProvider>,
+      </TestProviders>,
     );
   });
   return { container, id, root, session };
@@ -329,7 +338,7 @@ async function renderCancelledDirectAttemptDialog() {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           session={null}
           projectId={`project-${id}`}
@@ -348,7 +357,7 @@ async function renderCancelledDirectAttemptDialog() {
           showRawFramesAction={false}
           usageCompact
         />
-      </TooltipProvider>,
+      </TestProviders>,
     );
   });
   return { container, id, root };
@@ -413,6 +422,7 @@ describe('ACP runtime continue submission', () => {
       { id: 'file', name: 'notes.txt', size: 4, mime: 'text/plain', source: 'dialog', path: 'C:/notes.txt' },
     ],
     quotes: [{ id: 'quote', sourceKey: 'original-message', text: 'quoted message' }],
+    workspaceFiles: [],
   });
   function mockHistory() {
     const cursor = { generation: 1, position: 1, messageId: 'history' };
@@ -483,7 +493,11 @@ describe('ACP runtime continue submission', () => {
       const calls = command === 'Enter' ? apiMocks.submitConversationPrompt : apiMocks.continueConversationRuntime;
       expect(calls).toHaveBeenCalledTimes(1);
       const args = calls.mock.calls[0];
-      expect(args[command === 'Enter' ? 6 : 8]).toEqual({ displayText: 'history text', quotes: [] });
+      expect(args[command === 'Enter' ? 6 : 8]).toEqual({
+        displayText: 'history text',
+        quotes: [],
+        workspaceFiles: [],
+      });
       expect(args.at(-1)).toBeUndefined();
       expect(textarea.value).toBe('history text');
       expectContext(container, false);
@@ -1020,7 +1034,7 @@ describe('ACP runtime continue submission', () => {
         session.attemptId,
         undefined,
         undefined,
-        { displayText: '继续并补充测试', quotes: [] },
+        { displayText: '继续并补充测试', quotes: [], workspaceFiles: [] },
         expect.any(String),
         undefined,
       );
@@ -1113,6 +1127,8 @@ describe('ACP Direct queue submission', () => {
 
   it('uses a stale run error only as fallback for ACP diagnostics', async () => {
     const result = await renderPausedDialog({
+      initialLifecycle: runtimeAbnormalLifecycle(),
+      isOrchestrated: false,
       runtimeErrorFallback: 'old provider failure',
     });
     try {
@@ -1230,7 +1246,7 @@ describe('ACP Direct queue submission', () => {
         `round-${id}`,
         `node-${id}`,
         `attempt-${id}`,
-        { displayText: '首轮停止后的下一句', quotes: [] },
+        { displayText: '首轮停止后的下一句', quotes: [], workspaceFiles: [] },
         expect.any(String),
         expect.objectContaining({
           sessionId: null,
@@ -1270,7 +1286,7 @@ describe('ACP Direct queue submission', () => {
         session.roundId,
         session.nodeId,
         session.attemptId,
-        { displayText: '边界消息只发送一次', quotes: [] },
+        { displayText: '边界消息只发送一次', quotes: [], workspaceFiles: [] },
         null,
         expect.any(Object),
         undefined,

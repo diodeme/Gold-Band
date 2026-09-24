@@ -1734,7 +1734,8 @@ impl App {
     }
 
     pub fn with_repo_root(&self, repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
-        let paths = GoldBandPaths::new(repo_root);
+        let paths =
+            GoldBandPaths::new_with_path_config(repo_root, self.paths.storage_path_config());
         let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,

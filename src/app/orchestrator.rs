@@ -21663,7 +21663,7 @@ mod tests {
         assert!(!prompt.user_prompt.contains("## 运行预算"));
         assert!(!prompt.user_prompt.contains("## Agent 与 profile 选项"));
         assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
-        assert!(!prompt.system_prompt.contains("next.type"));
+        assert!(prompt.system_prompt.contains("next.type"));
         assert!(
             prompt
                 .system_prompt
@@ -21682,7 +21682,7 @@ mod tests {
                 .system_prompt
                 .contains("dynamic-node-completion")
         );
-        assert!(!finalize_prompt.system_prompt.contains("next.type"));
+        assert!(finalize_prompt.system_prompt.contains("next.type"));
         assert!(finalize_prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
@@ -21883,7 +21883,7 @@ mod tests {
 
         let prompt = render_prompt_bundle(&invocation).unwrap();
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
-        assert!(prompt.system_prompt.contains("`BLOCKER` 仅限"));
+        assert!(prompt.system_prompt.contains("已批准条款未实现、部分实现"));
         assert!(prompt.system_prompt.contains("`FOLLOW_UP`"));
         assert!(prompt.system_prompt.contains("不创建修复任务"));
         assert!(prompt.system_prompt.contains("当前改动造成的可达回归"));

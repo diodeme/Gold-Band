@@ -106,6 +106,14 @@ import type {
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
+
 const locator = {
   projectId: 'project-watermark',
   taskId: 'task-watermark',
@@ -218,26 +226,26 @@ async function renderDialog(
   }
   await act(async () => {
     root.render(
-      <TooltipProvider>
-        <ACPChatDialog
-          session={acpSession}
-          {...dialogLocator}
-          branchId={branchId}
-          eventPageSize={eventPageSize}
-          runtimeComposerContext={lifecycle ? {
-            isOrchestrated: true,
-            runtimeStatus: lifecycle.runtime.status,
-            workflowValid: true,
-            lifecycle,
-          } : undefined}
-          allowEventOnlySessionShell={allowEventOnlySessionShell}
-          onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
-          onAtBottomChange={onAtBottomChange}
-          showSystemPromptAction={false}
-          showRawFramesAction={false}
-          usageCompact
-        />
-      </TooltipProvider>,
+      <TestProviders>
+          <ACPChatDialog
+            session={acpSession}
+            {...dialogLocator}
+            branchId={branchId}
+            eventPageSize={eventPageSize}
+            runtimeComposerContext={lifecycle ? {
+              isOrchestrated: true,
+              runtimeStatus: lifecycle.runtime.status,
+              workflowValid: true,
+              lifecycle,
+            } : undefined}
+            allowEventOnlySessionShell={allowEventOnlySessionShell}
+            onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
+            onAtBottomChange={onAtBottomChange}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>,
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
@@ -267,17 +275,17 @@ async function renderStoredOptimisticDialog(
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
-        <ACPChatDialog
-          session={acpSession}
-          {...locator}
-          branchId="root"
-          eventPageSize={eventPageSize}
-          showSystemPromptAction={false}
-          showRawFramesAction={false}
-          usageCompact
-        />
-      </TooltipProvider>,
+      <TestProviders>
+          <ACPChatDialog
+            session={acpSession}
+            {...locator}
+            branchId="root"
+            eventPageSize={eventPageSize}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>,
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
@@ -484,7 +492,7 @@ describe('ACP session re-entry reconciliation', () => {
             status: 'running', attempts: [nextLeaf] }],
         }] },
       });
-      return <RightWorkspaceProvider><GitBranchPickerSnapshotProvider><TooltipProvider>
+      return <GitBranchPickerSnapshotProvider><TestProviders>
         <ConversationRunPage run={run} taskTitle="Manual check" appConfig={mockBootstrap.appConfig}
           agentRegistry={null} followMode={mode} onAutoFollowChange={(follow) => setMode(follow ? 'auto' : 'manual')}
           onRerun={() => {}} onEditWorkflow={() => {}} initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={() => {}}
@@ -493,7 +501,7 @@ describe('ACP session re-entry reconciliation', () => {
             setRun({ ...initial, selectedSession: null,
               sessionTree: { ...initial.sessionTree, selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}` } });
           }} />
-      </TooltipProvider></GitBranchPickerSnapshotProvider></RightWorkspaceProvider>;
+      </TestProviders></GitBranchPickerSnapshotProvider>;
     }
     await act(async () => root.render(<RunHarness />));
     try {
@@ -1004,7 +1012,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={next}
               {...secondLocator}
@@ -1013,7 +1021,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -2426,7 +2434,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={second}
               {...secondLocator}
@@ -2435,7 +2443,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3024,7 +3032,7 @@ describe('ACP session re-entry reconciliation', () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={canonicalHead}
             {...locator}
@@ -3034,7 +3042,7 @@ describe('ACP session re-entry reconciliation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       );
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -3248,7 +3256,7 @@ describe('ACP session re-entry reconciliation', () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={historicalWindow}
             {...locator}
@@ -3258,7 +3266,7 @@ describe('ACP session re-entry reconciliation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       );
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -3755,7 +3763,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={head}
               {...locator}
@@ -3765,7 +3773,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3799,7 +3807,7 @@ describe('ACP session re-entry reconciliation', () => {
       expect(container.textContent).toContain('prop 一代旧内容');
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={current}
               {...locator}
@@ -3808,7 +3816,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3932,7 +3940,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={nextSession}
               {...nextLocator}
@@ -3942,7 +3950,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5105,7 +5113,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5116,7 +5124,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5199,7 +5207,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5209,7 +5217,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5362,7 +5370,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5378,7 +5386,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5849,7 +5857,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={canonicalHead}
               {...locator}
@@ -5858,7 +5866,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 

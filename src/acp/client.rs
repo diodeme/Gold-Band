@@ -8873,15 +8873,18 @@ mod tests {
         unsupported_client_inbound_reply, validate_session_restore_target,
     };
 
+    const DOCTOR_FIXTURE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
+    const DOCTOR_FIXTURE_RESCUE_DELAY: Duration = Duration::from_secs(10);
+
     #[test]
     fn doctor_session_new_timeout_reclaims_adapter_and_retains_evidence() {
-        assert_doctor_stage_timeout("session/new", Duration::from_millis(500));
+        assert_doctor_stage_timeout("session/new", DOCTOR_FIXTURE_STAGE_TIMEOUT);
     }
 
     #[test]
     fn doctor_initialize_and_cleanup_share_the_deadline() {
         for method in ["initialize", "session/delete", "session/close"] {
-            assert_doctor_stage_timeout(method, Duration::from_secs(1));
+            assert_doctor_stage_timeout(method, DOCTOR_FIXTURE_STAGE_TIMEOUT);
         }
     }
 
@@ -9098,7 +9101,7 @@ mod tests {
                 json!({"error": {"code": -32000, "message": "ORIGINAL_PROMPT_FAILURE"}})
             } else if frame["method"] == stall_method {
                 // Rescue the unfixed implementation without mistaking rescue for a timeout.
-                std::thread::sleep(Duration::from_secs(2));
+                std::thread::sleep(DOCTOR_FIXTURE_RESCUE_DELAY);
                 json!({"error": {"code": -32000, "message": "fixture rescue"}})
             } else if frame["method"] == "session/delete" && stall_method == "session/close" {
                 json!({"error": {"code": -32601, "message": "unsupported"}})

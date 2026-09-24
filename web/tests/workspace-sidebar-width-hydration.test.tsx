@@ -115,6 +115,13 @@ import { ConversationWorkspaceStore, createDraftConversationWorkspaceScope } fro
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+const browserPreferences = {
+  schemaVersion: 1 as const,
+  searchEngine: 'baidu' as const,
+  openLocalLinksInBrowser: true,
+  openWebLinksInBrowser: true,
+};
+
 beforeEach(() => {
   resizablePanelBehaviors.clear();
   resizablePanelHandles.clear();
@@ -142,6 +149,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
     const root = createRoot(container);
     const commonProps = {
       appName: 'Gold Band', windowFrameStyle: 'native-compositor' as const,
+      browserPreferences,
       appConfig: { acpSessionTitleRefreshEnabled: false, acpChatEventPageSize: 360, acpChatEventWindowPageCount: 3, acpChatResourceCacheSessionCount: 8, turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 }, workspaceLayout: FALLBACK_WORKSPACE_LAYOUT },
       vm: { loadStatus: 'ready' as const, workspaces: [{ projectId: 'p1', name: 'Workspace', workspacePath: '/workspace' }], pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' as const, nextCursor: null }, tasksByWorkspace: {}, workspaceTaskPages: {}, lastActiveWorkspaceId: null },
       conversationWorkspaceStore: new ConversationWorkspaceStore(), onSelect: () => {}, onToggleSidebar: () => {}, onNewConversation: () => {}, onSearch: () => {}, onPinTask: () => {}, onUnpinTask: () => {}, onRenameTask: () => {}, onDeleteTask: () => {},
@@ -168,6 +176,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
     const commonProps = {
       appName: 'Gold Band',
       windowFrameStyle: 'native-compositor' as const,
+      browserPreferences,
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
@@ -235,6 +244,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
     const commonProps = {
       appName: 'Gold Band',
       windowFrameStyle: 'native-compositor' as const,
+      browserPreferences,
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
@@ -336,6 +346,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
     const commonProps = {
       appName: 'Gold Band',
       windowFrameStyle: 'native-compositor' as const,
+      browserPreferences,
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
@@ -424,6 +435,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
           <WorkspaceShell
             appName="Gold Band"
             windowFrameStyle="native-compositor"
+            browserPreferences={browserPreferences}
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,

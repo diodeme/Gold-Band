@@ -194,6 +194,7 @@
 - 添加时校验不重复，已有历史对话的工作空间自动加载 task 列表
 - `conversationWorkspaces` 是会话模式工作空间列表的唯一事实源；侧边栏、搜索、运行模式、置顶和会话命令都只能解析该列表中的工作空间。`DesktopContext.repo_root` 仅用于桌面启动上下文和构造指定工作空间的 `App.paths.repo_root`，不得作为隐式工作空间注入侧边栏。
 - 桌面 Runtime 启动恢复必须遍历 `conversationWorkspaces` 的全部规范工作空间，而不是只扫描 `DesktopContext.repo_root` 或 `lastConversationWorkspace`。相同规范路径只扫描一次，单个工作空间损坏只记录结构化失败并继续其他工作空间；列表为空时不回退扫描桌面启动上下文。
+- 从当前 App 派生其他 workspace App 时，必须继承当前 App 已冻结的 storage path config，再只替换 repo root；不得重新读取进程级可变配置或环境变量后形成另一存储域。workspace 的 canonical `projectId` 继续由目标规范路径计算，用户级状态、运行目录和产品通道边界沿用来源 App。
 - 启动恢复只在桌面初始化时执行一次，逐 workspace 扫描 task/run 的 durable 状态并收敛仍为 running 的执行；不轮询、不缓存 workspace，也不调用 provider。复杂度为 `O(workspaces + Σ(tasks + runs))`，工作空间数量和本地历史规模下属于有界文件读取。
 - 工作空间身份由规范路径生成 `projectId`，Windows 下解析历史 ID 时忽略盘符/路径大小写；持久化迁移按规范化路径去重，并同步迁移 `lastConversationWorkspace`、`conversationRunModes` 和 `conversationPins`。若旧状态同时存在规范 key 与历史大小写 key，规范 key 的配置优先。
 - 用户状态使用 `stateSchemaVersion` 执行一次性迁移；达到当前版本后启动直接跳过迁移扫描和写盘。迁移函数同时保持幂等，重复调用不得继续改变状态。
@@ -214,6 +215,7 @@
 - Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，让既有 Agent icon 使用低强度呼吸效果，不因系统 reduced-motion 停止；结束后立即恢复静态 icon；不增加旋转环，也不使用成功/暂停/失败颜色表达单轮结果。
 - 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段只取 Task 创建时间或会话元数据 `lastActivityAt`，不再聚合 Run `updatedAt`。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
 - hover 时在行尾显示重命名 / 置顶 / 删除操作；未 hover 时不为操作按钮预留占位，长标题只占用标题和时间可用区域
+- 重命名、置顶、取消置顶和删除等纯图标操作必须同时提供 `aria-label` 与项目 shadcn Tooltip；只读或禁用状态继续通过可命中的外层 trigger 展示说明，不使用浏览器原生 `title`
 - 删除会话前必须弹出不可撤销确认；确认文案明确说明将删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站
 - 如果会话仍有运行中的 run，后端拒绝删除并提示用户先停止
 - 滚动容器必须约束内部内容宽度，长标题只允许在会话行内部截断，不允许把相对时间或 hover 操作撑出侧边栏视口

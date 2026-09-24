@@ -605,7 +605,16 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setEditor(closeAgentEditorState)}>{t('common.close')}</Button>
-              <Button title={readOnly ? t('demo.saveDisabled') : undefined} disabled={readOnly || saving || !editor.selectedType.trim() || !editor.form.displayName.trim() || !editor.form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <Button disabled={readOnly || saving || !editor.selectedType.trim() || !editor.form.displayName.trim() || !editor.form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
+                    </span>
+                  </TooltipTrigger>
+                  {readOnly ? <TooltipContent>{t('demo.saveDisabled')}</TooltipContent> : null}
+                </Tooltip>
+              </TooltipProvider>
             </div>
           </div>
         </SheetContent>

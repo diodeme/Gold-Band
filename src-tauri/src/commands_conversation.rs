@@ -3301,31 +3301,19 @@ mod tests {
     #[test]
     fn execution_plan_reads_the_registered_conversation_workspace() {
         let directory = tempfile::tempdir().unwrap();
-        let previous = gold_band::storage::active_storage_path_config();
         let path_config = gold_band::storage::StoragePathConfig {
             app_key: "gold-band-execution-plan-workspace-test",
             config_dir_name: ".gold-band-execution-plan-workspace-test",
             home_env_var: "GOLD_BAND_EXECUTION_PLAN_WORKSPACE_TEST_HOME",
         };
-        let test_home = directory.path().join("user-home");
-        unsafe { std::env::set_var(path_config.home_env_var, &test_home) };
-        gold_band::storage::configure_storage_paths(path_config);
-        struct RestoreStorage(gold_band::storage::StoragePathConfig);
-        impl Drop for RestoreStorage {
-            fn drop(&mut self) {
-                gold_band::storage::configure_storage_paths(self.0);
-                unsafe { std::env::remove_var("GOLD_BAND_EXECUTION_PLAN_WORKSPACE_TEST_HOME") };
-            }
-        }
-        let restore = RestoreStorage(previous);
-
         let desktop_root = Utf8PathBuf::from_path_buf(directory.path().join("desktop")).unwrap();
         let foreign_root = Utf8PathBuf::from_path_buf(directory.path().join("foreign")).unwrap();
         std::fs::create_dir_all(desktop_root.as_std_path()).unwrap();
         std::fs::create_dir_all(foreign_root.as_std_path()).unwrap();
         let config = gold_band::config::RuntimeConfig::default();
-        let desktop = App::with_config(desktop_root, config.clone());
-        let foreign = App::with_config(foreign_root.clone(), config.clone());
+        let desktop = App::with_config_and_path_config(desktop_root, config.clone(), path_config);
+        let foreign =
+            App::with_config_and_path_config(foreign_root.clone(), config.clone(), path_config);
         desktop
             .with_state(|state| {
                 state
@@ -3365,6 +3353,5 @@ mod tests {
             missing.unwrap_err().code(),
             gold_band::execution_plan::error::NOT_FOUND
         );
-        drop(restore);
     }
 }

@@ -1,4 +1,4 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -316,6 +316,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
     ? <GitBranch className="size-3.5 shrink-0" />
     : tab.kind === 'workflow-edit'
       ? <PencilLine className="size-3.5 shrink-0" />
+      : tab.kind === 'auto-config'
+        ? <Settings2 className="size-3.5 shrink-0" />
       : tab.kind === 'hidden-prompt-section'
         ? <FileText className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'

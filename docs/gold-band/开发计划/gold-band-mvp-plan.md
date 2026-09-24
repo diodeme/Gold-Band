@@ -1,5 +1,82 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-24 AUTO 配置页不再打开工作流编辑器
+
+- 根因：再次运行 AUTO 会话时走了工作流的 `prepare_run`，执行计划被写成 workflow。AUTO 配置页按这份计划切换模式，于是打开的是工作流模板和画布。
+- 实现：会话元数据是 AUTO 时，执行计划视图和保存都按 AUTO 处理，下一次配置仍读该任务的 `authoring/auto.json`。再次运行发布 AUTO 计划。会话里的 AUTO 配置页只接收 AUTO 草稿，不再切到工作流模板编辑器。
+- 验收：`auto_conversation_keeps_the_auto_form_when_the_plan_was_published_as_workflow` 固定计划文件虽是 workflow，视图的 `runMode` 仍是 `auto`，下一次配置来自任务 `authoring/auto.json`。
+- 过度设计与性能评审：不新增计划类型或第二套表单。每次打开多读一个已有的 `conversation.json`；再次运行仍只发布一份计划。
+
+## 2026-09-24 下一次 Run 的 AUTO 配置属于任务
+
+- 根因：下一次 Run 的 AUTO 直接读写项目运行模式。会话里保存「仅下一次」或「当前和下一次」会改掉该项目的默认 AUTO，运行模式页和其他任务的下一次都会跟着变。工作流的下一次已经写在任务作者态，AUTO 却还停在项目级。
+- 实现：下一次 Run 的 AUTO 写在该任务的 `authoring/auto.json`，和 `authoring/workflow.json` 共用任务 authoring revision。保存不写项目运行模式，也不写模板库。创建 AUTO 任务时把当时的具体配置抄进这份文件，并去掉模板身份。还没有这份文件的旧任务，下一次仍先读项目 AUTO，直到第一次保存下一次 Run。同一任务的各个 Run 共用这一份；当前 Run 仍只写本 Run 的 execution plan。
+- 验收：`auto_run_saves_current_plan_and_project_authoring_separately` 固定只保存当前 Run 时项目 fanout 仍为 2，保存下一次后任务 `authoring/auto.json` 的 fanout 为 9、项目运行模式仍为 2，过期的 authoring revision 返回冲突。
+- 过度设计与性能评审：不新增项目字段、模板或第二套 revision。每次读取最多多读一个任务文件；保存只写该任务的 auto 配置，投影变化时才重写已有的作者态工作流。
+
+## 2026-09-24 两边不同时打开即分开，取消分开用弹窗
+
+- 根因：打开时两边已经不同却停在一份草稿上，只给提示。取消分开只换了正在编辑的那一份，另一边草稿还在，所以 `diverged` 仍为真。选择本身是一次短确认，不该用抽屉。
+- 实现：新建会话在两边不同时直接分开。确认取消分开后，三份编辑草稿都换成保留的那一份，并把会话标成未分开。之后重新加载时，只要这份统一草稿还在，就不按服务器上的旧差异再拆开。取消分开改为弹窗。
+- 验收：`execution-plan-editor.test.ts` 固定两边不同的新会话一开始就是两个标签；确认保留当前 Run 后两边草稿相同且不再标记为不同。
+- 过度设计与性能评审：不新增偏好字段。比较仍是会话里已有的草稿相等判断。
+
+## 2026-09-24 新建会话不支持的模型与权限回滚为不指定
+
+- 根因：`thought_level` / `model_config` 在 `session/new` 已会回滚为不指定并继续 prompt。显式模型和权限仍在活目录非空且值缺失时返回 `acp.session-config-value-unavailable`，所以 Cursor 节点拿到 `bypassPermissions` 时整段会话起不来。这是同一条「不指定」契约没覆盖到模型和权限。
+- 实现：新建会话对不在活目录中的显式模型、权限清除 override，不下发 `set_config_option` / `set_mode`，并写入既有 `acp.session-config-rolled-back` 通知。活目录为空时仍按原值下发。已建立会话的非法显式值仍失败。分割线主语为「当前Agent」，不再写「当前模型」。每一项带上被回滚的具体值，例如「mode：bypassPermissions」「Fast：false」「上下文（context）：1m」。
+- 验收：修复前 `new_session_rolls_unavailable_model_and_permission_back_to_unspecified` 得到 `Unavailable(bypassPermissions)`。修复后同一用例要求新建会话回滚、已建立会话仍为不可用，目录中的值和空目录仍下发。
+- 过度设计与性能评审：复用现有回滚通知和 override 字段，不新增状态或按 Agent 的映射。判断只扫描当前活目录的模型或权限列表。
+
+## 2026-09-24 回到会话时内置浏览器不再白屏
+
+- 根因：绘制前 `resume` 会先清掉 `suppress`，此时右栏占位盒往往还是 0 尺寸。这条测量看到「未抑制」就再发一次 `hide`，把正在进行的 `show` 取消，工具栏还在，网页停在白底。设计已经要求小于 2px 的测量不得隐藏已经隐藏的实例；实现只判断了 `suppress` 标志，标志被提前清掉后这条保护就失效了。
+- 实现：占位盒小于 2px 时，只有当前原生页确实还显示着才 `hide`。已经隐藏的页等占位盒有尺寸后再 `show`。
+- 验收：修复前 `browser-webview-host.test.ts` 在 `resume` 之后、`show` 尚未完成时送入 0 尺寸，`browserHideAll` 被调用 1 次。修复后同一用例不再 `hide`，并且 `browserShowPage` 仍会调用。
+- 过度设计与性能评审：不新增状态。0 尺寸测量少一次无意义的 `hide` IPC。
+
+## 2026-09-24 会话 AUTO 面板去掉模板行的保存修改
+
+- 根因：会话面板里的「保存修改」只更新用户级模板库，和上方的当前 Run / 下一次 Run 保存不是同一件事。放在模板旁边会让人以为改模板就改了这次运行。
+- 实现：有 Run 上下文时隐藏 AUTO 模板行的「保存修改」。运行模式页仍用它更新模板并写成项目默认。会话里保留「另存模板」，运行配置只走上方保存。
+- 验收：`run-mode-management-page.test.ts` 固定 `showSaveCurrent={!runContext && !isAutoTemplateDraft}`。
+- 过度设计与性能评审：只少渲染一个按钮，无新状态或请求。
+
+## 2026-09-24 会话 AUTO 模板和下一次 Run 跟到已保存事实
+
+- 根因：会话里的 AUTO 表单挂上之后，会用一份没有配置的页面 run mode 把编辑器清成「不使用模板」。计划重新读回时又把这份空表单写进草稿，已保存的模板身份被盖掉。下一次 Run 的作者态本来就是同一 Task 共用的，但每个 Run 的内存草稿在作者态已经变了之后仍留着旧图，模型绑定却改读新 baseline，所以节点还在、Agent 配置没了。这是草稿投影没有跟着共享作者态走，不是再为每个 Run 复制一份下一次配置。
+- 实现：有 Run 上下文时，表单只接受 execution plan 灌入，不再用空 run mode 重置。第一次加载不把当时的表单折进会话。与上次 baseline 相同的草稿改用新事实；未保存的草稿连同工作流和模型绑定整份留下。画布使用这份草稿自己的绑定，不再和 baseline 拆开。
+- 验收：修复前 `adopts a newer shared next draft when the local next draft is unchanged` 仍是带 review 的旧草稿；`keeps a saved AUTO template when the open form was reset before the plan returns` 的 `activeTemplateId` 为 undefined；工作流面板干净草稿的节点是 `dev,review`，脏草稿的 Agent 绑定变成了新 baseline 的 `slot-1:codex`。修复后这四项与原有 execution plan 用例一起通过。
+- 过度设计与性能评审：不新增作者态、revision 或跨 Run 草稿键。打开一侧时只对这一份草稿做一次 JSON 比较，规模等于当前正在编辑的工作流或 AUTO 配置。未改过的编辑器缓存直接丢掉，不另做合并。
+
+## 2026-09-24 执行计划保存条按错误类型给出下一步
+
+- 根因：保存条把所有失败都配了「重新加载」。校验失败和「仍可能被继续的 Agent」都是当前草稿的问题，再次保存就会重新校验；重新加载只会丢掉草稿。校验原因已经在配置面板里。停止或继续会话会更新运行目录描述，右侧工作区因此重渲染，编辑器被父级更新带着重画，Agent 目录对象一变还会把整页换成加载态。
+- 实现：校验失败在画布 / 配置面板收成标签时显示「查看原因」，并切到配置面板；两侧同时可见时不显示。Agent 身份错误写明节点 id，这两类都不提供重新加载。版本冲突和部分提交仍保留重新加载或恢复。草稿相对已持久化基线有改动时，保存旁显示「还原」。运行生命周期变化不重渲染已打开的编辑工作流；已显示的编辑器不会因为 Agent 目录对象更换而回到加载态。
+- 验收：修复前 `execution-plan-save-bar.test.tsx` 在校验失败和 Agent 身份错误上仍出现「重新加载」，且没有「查看原因」、节点名和「还原」。`execution-plan-workflow-panel.test.tsx` 在只改变 Run 状态时编辑器渲染次数增加，更换 Agent 目录对象后画布节点被换掉。修复后同一用例分别要求原因按钮、节点名、还原，以及编辑器 DOM 保持不变。
+- 过度设计与性能评审：不新增计划状态或第二份草稿。错误只多带已有 `nodeId`。运行状态变化不再渲染工作流编辑器；Agent 目录更新只替换编辑器收到的目录引用，不重新读取 execution plan。
+
+## 2026-09-24 Push 不再被未暂存文件挡住
+
+- 根因：Fetch、Pull、Push 使用整份 workspace revision 做预期校验，未暂存文件一变就返回 `git.ref-changed`。失败后只留下「请刷新后重试」，不重读 snapshot，也没有刷新按钮，所以同一份旧修订会让之后的 Push 继续失败。
+- 修复：同步操作改为只核对 `syncRevision`（分支、HEAD、upstream、ahead/behind）。分支真的变了返回 `git.sync-ref-changed`，并重新读取 snapshot，红字保留到用户再次操作。暂存、提交和 Stash 仍核对包含文件列表的 revision；失败时同样重读列表，文案改为再试一次。
+- 验收：`sync_operations_ignore_unstaged_files_and_reject_a_moved_head` 在未暂存修改后仍能开始 Fetch，新 Commit 后返回 `git.sync-ref-changed`。前端固定 Push 发送 `syncRevision`，失败后重读 snapshot 且错误不消失。
+- 过度设计与性能评审：不新增刷新按钮、缓存或轮询。同步校验少读一次完整 status 和 refs；只有修订不匹配才多读一次 snapshot。
+
+## 2026-09-24 会话工作流编辑器底部被窗口裁切
+
+- 根因：工作流编辑器的高度约定是由容器接管，模板管理页已经用剩余高度铺满并让配置在面板内滚动。会话右侧工作区嵌入时没有接管高度，仍使用 `100dvh - 11rem`（最高 760px）的视口高度，外面再套一层滚动。这块高度没有扣掉标题栏、工作区页签和保存条，编辑器超出工作区后被窗口裁掉，配置面板底部进不了可见区域。
+- 实现：会话工作流编辑器改为占满保存条以下的剩余高度，外层改为 `overflow-hidden`。配置标题固定，配置内容继续只在 Inspector 内部滚动。
+- 验收：修复前 `conversation-run-workflow-save.test.tsx` 断言编辑器带 `h-full` 时失败，实际 class 为空。修复后同一用例要求编辑器为 `h-full min-h-0`，宿主为 `overflow-hidden` 且不再 `overflow-auto`。
+- 过度设计与性能评审：不新增高度状态、观察器或第二套编辑器。少一层按视口撑开的外层滚动，画布和配置只布局当前工作区剩余高度。
+
+## 2026-09-24 离开会话时内置浏览器在绘制前隐藏
+
+- 根因：子 WebView 盖在主窗口上，设置页、上下文页的 HTML 盖不住它。设计要求这些离开路径立刻 `hide + suppress`。实现把 `suppress` 放在绘制之后的被动 effect 里，还要再等一次动态 `import()`。会话页的卸载清理排在这次调用前面，所以新页面已经显示时，网页仍会在原矩形上停留约 1～2 秒。会话之间切换不隐藏同一实例，只按占位盒对齐，所以没有这段等待。这是显隐契约的实现时序不完整，不是再加一层隐藏状态。
+- 实现：展示条件变为不可见时，在 layout 阶段直接对已加载的宿主调用 `suppress`。会话壳卸载仍用 generation 微任务避开 StrictMode 的模拟卸载，但微任务改由 layout cleanup 登记，绘制前执行。
+- 验收：修复前 `browser-native-lifecycle.test.tsx` 在右栏变为不可用时顺序是 `later-layout` → `passive` → `suppress`。修复后同一用例要求 `suppress` → `later-layout` → `passive`。壳卸载仍只 `suppress`，StrictMode 重放挂载不 `suppress`，切会话也不 `suppress`。
+- 过度设计与性能评审：不新增显隐状态、缓存队列或同步 IPC。宿主模块只保留已经加载过的引用，避免隐藏再等一次 import。每次离开仍是一次 `browserHideAll`，只是提前到绘制前发出。
+
 ## 2026-09-23 同文档跳转后地址栏仍停在上一页
 
 - 根因：两处都会把地址留在 demo。地址栏只要获得过焦点就把后续 `url` 事件全部丢掉，即使用户没有改字；提交后这层保护也不解除。Windows 上 WebView2 的 `Source` 对一部分 `history.pushState` 保持为上一次整页加载地址，只订 `SourceChanged` 读不到 `/zh/documentation`。页签标题来自 `document.title`，所以标题已经变成 Documentation，地址栏仍是 demo。
@@ -13,6 +90,34 @@
 - 实现：引擎报告顶层地址变化且这次不是新文档时，读取引擎自己的当前地址，发已有的 `url` 事件。Windows 看 `SourceChanged.IsNewDocument`；macOS/Linux 在整页加载进行中不发，避免和文档加载重复。浏览页仍然没有 Tauri IPC。fragment 没变时的 hash 改写只更新地址栏，不重写访问记录。
 - 验收：`browser_location` 的决策测试固定 `/zh/demo` 到 `/zh/documentation` 会发布并记一次访问，只改 hash 会发布但不记访问，整页加载和 `about:blank` 不从这条路径发布。`browser-workspace-panel.test.tsx` 固定未编辑时这条 `url` 事件写进地址栏。
 - 过度设计与性能评审：不新增页面身份、轮询或页面脚本通道。每个活页多记一条上次投影的地址，用来丢掉重复事件。一次同文档跳转只发一条 `url` 事件；访问记录仍只在去掉 fragment 后的 `http(s)` 地址变化时写盘。
+
+## 2026-09-23 回到会话时内置浏览器跟上侧边栏宽度
+
+- 根因：占位盒尺寸是原生网页矩形的权威投影。切到别的会话时网页只隐藏，侧边栏或右栏宽度仍会改到共享布局上。隐藏期间的有效测量写进了 `lastBounds`，但没有发给原生窗口。回到原会话时占位盒已经是新尺寸，宿主拿它和 `lastBounds` 比较，认为没有变化，于是跳过 `setBounds`。面板是新宽度，网页仍是离开前的矩形。这是既有显隐契约没把“记住的测量”和“原生窗口已经到达的矩形”分开，不是再做一套布局状态。
+- 实现：`setBounds` 只和上一次成功发给原生窗口的矩形，或当前在途目标比较。隐藏期间仍只记测量；重新显示后按当前占位盒提交，尺寸没变也要补上离开后错过的那次更新。小于 2px 的收起测量继续忽略，避免回来时先被中间态改小。
+- 验收：修复前 `browser-webview-host.test.ts` 在隐藏期间测到新矩形、恢复后占位盒仍是该矩形时，`browserSetBounds` 调用次数为 0。修复后同一用例要求把新矩形发给原生窗口并重新显示。原有用例仍要求隐藏期间的窄测量不会写进原生窗口，恢复到离开前的尺寸时不再重复提交。
+- 过度设计与性能评审：不新增布局状态、会话副本或第二套 bounds。每个活页面多记一个已提交矩形；占位盒和原生窗口一致时热路径仍不发 IPC，只有真正错过的布局变化才补一次 `setBounds`。
+
+## 2026-09-23 发送成功后消息图片复用已打开的预览
+
+- 根因：输入框预览的标签键是附件 id，消息图片的键是落盘路径。发送成功后点消息图片会再开一个标签，并把文件读成 base64。已打开的内存预览不该被换成第二次读取。
+- 实现：发送成功时用当前会话作用域和附件 id 找到已打开的 `draft-attachment`，把消息预览键记成 `previewAliasKey`。新会话用 `task-inputs/文件名`，追问用当前 attempt 的 `user-inputs/文件名`。点击消息图片时先按这个别名激活原标签。没打开过预览、标签已关闭，或应用重启后，仍读取持久文件。别名只留在当前进程的工作区标签上。
+- 验收：`right-workspace.test.ts` 固定新建会话提升后，按附件 id 记上任务输入别名，查到的仍是原来的内存预览；另一个 attempt 的同名路径查不到；未打开的 id 不加别名。
+- 过度设计与性能评审：不新增持久字段、图片 id 或文件读取。别名是已打开标签上的一个字符串。点击时只扫描当前会话已打开的标签。
+
+## 2026-09-23 已打开的附件预览继续使用自己的内存地址
+
+- 根因：为了切换会话后图片还在，预览被改绑到 `task-inputs` / `user-inputs` 并整文件读成 base64。这让每次回来都重新读盘，发送失败后退不回草稿图，同名文件还合成一个标签。图片消失的原因只是输入区释放了和标签共用的 Object URL，不是预览必须改读持久文件。
+- 实现：已打开的预览保持 `draft-attachment`，身份仍是附件 id。Object URL 在打开时从当前 `File` 另建一份，只属于这个标签；输入区提交、追问接纳和离开会话只释放输入区自己的地址。用户关闭标签、删除会话或工作区缓存淘汰时才释放标签地址。桌面文件选择器的协议地址不是 Object URL，继续共用，`revokeObjectURL` 对它无效。消息气泡仍按持久路径读取。
+- 验收：`draft-attachment-preview.test.ts` 固定输入区释放自己的 Object URL 后，标签上的地址仍能读出图片，且两个同名附件键不同。`right-workspace.test.ts` 固定新建会话后两张同名预览仍是各自的 `draft-attachment` 和原来的预览地址。
+- 过度设计与性能评审：不新增持久字段、预览缓存或整文件 IPC。每个打开的图片标签多持有一份 Object URL 和已有的 `File`，直到关闭或会话缓存淘汰；切换会话不读盘。
+
+## 2026-09-23 AUTO 配置留在右侧工作区
+
+- 根因：AUTO 配置和 Workflow 编辑是同一类 Run 级执行计划编辑。Workflow 已经在会话右侧 Tab 里打开；AUTO 却把会话路由换成运行模式管理页，左侧导航跟着离开当前 Run。这是交互载体选错，不是缺第二套 AUTO 表单。保存条在两侧计划不同时只放一句提示，保存目标选择器和保存按钮高度也不一致，所以操作区排不齐。
+- 实现：会话头部的 AUTO 配置打开 `auto-config` Tab，内容仍是 `RunModeManagementPage` 的 AUTO 表单。项目级 `/chat/run-modes` 保持独立页面。两侧计划不同时，「分开查看」、保存目标和保存放在同一行；分开只把当前统一草稿放到下一次 Run，不覆盖当前 Run。右侧工作区变窄时，Run 切换单独一行，保存目标和保存另起一行并从左侧对齐；目标选择器可以收缩，保存按钮保持在面板内。保存后是否分成两个 Tab 使用提交完成后的 `diverged`：工作流比较注入后的下一次 Run 与当前执行快照，AUTO 比较两份配置。内容相同则保持一份草稿。
+- 验收：`execution-plan-editor.test.ts` 固定内容相同的单侧保存保持未分裂，内容不同才分成两个 Tab，并且分开后当前 Run 草稿不被统一草稿覆盖。`execution-plan-save-bar.test.tsx` 固定分开与保存在同一操作行、控件同为 `sm`，并且窄栏下保存区是通栏左对齐、目标选择器可收缩。`conversation-run-page-workspace-renderer.test.tsx` 固定点击后打开 `auto-config` Tab，而不是离开会话。`unchanged_current_save_reports_the_plans_still_match` 固定未改内容的当前 Run 保存返回 `diverged = false`。
+- 过度设计与性能评审：不新增 AUTO 表单、路由或计划状态机。Tab 打开后才读取该 Run 的 execution plan；工作流模板和 Agent 目录只在父级尚未提供时各读一次有界目录。表单状态留在页面组件内，不抬升到会话页。
 
 ## 2026-09-23 切回会话不再把已打开文件刷回顶部
 
@@ -41,6 +146,13 @@
 - 修复：repository refresh 完成并发布最新 snapshot/history 后，若历史页仍有选中提交，则清空旧 Review、重新进入详情 loading，并以当前 history revision 调用同一 `getGitCommitReview`；刷新失败时结束详情 loading，保留结构化错误供页面恢复。不会放宽旧请求校验，也不新增第二套 Review 状态。
 - 验收：新增前端接口级回归测试，先让 Review 请求挂起，再注入 repository refresh，确认请求完成后 `historyDetailLoading=false` 且选中 OID 的 `commitReview` 恢复；修复前测试稳定停留在 loading，修复后通过。源码管理历史/布局相关测试共 48 项通过；Git 聚合单测验证真实多文件提交可返回文件列表。
 - 过度设计与性能评审：只在已有 repository refresh 与选中 Review 同时存在时重发一次有界请求，不新增轮询、缓存、队列或持久字段。刷新仍复用单次 snapshot/history 读取；Review 仍按选中 OID 及 revision 合并，旧响应继续由 revision 丢弃。
+
+## 2026-09-22 切回会话时工作空间目录保持已展开
+
+- 根因：工作空间目录按项目记住展开路径，面板重新激活时静默重读根和已展开分支。这个对账设计是对的，但重读用全新节点替换目录，子节点先变成未加载，再按深度逐个请求。虚拟树只能跟着每一层数据到达重新打开，所以切回会话会先看到收起，再逐层展开。
+- 实现：对账按目录 identity 合并已加载子树。目录还在就保留后代；这一层列表没变化就不发布快照，也不把箭头换成加载中。磁盘上新增或删除的项仍更新当前层。
+- 验收：`file-explorer-store.test.ts` 在修复前失败于对账期间已加载的 `main.rs` 从树视图消失；修复后同一用例要求根列表未变时树引用不变，父目录新增文件时后代仍在。
+- 过度设计与性能评审：不新增展开持久化、动画或并发请求。重新激活仍按已展开目录逐个重读，数量上限不变；列表未变化时不再触发目录树重渲染。
 
 ## 2026-09-22 官网与 rrweb 演示不再跟随系统减少动态效果
 
@@ -84,6 +196,13 @@
 - 证据：边距策略由 `windows_10_requests_a_one_pixel_dwm_shadow_without_tao_insets` 固定；Win10 仍关闭 TAO shadow。DWM 合成出的投影像素不能在 cargo 或 jsdom 里复现，需要在 Win10 普通窗口上查看四边阴影，并确认没有三侧黑线；最大化后阴影消失，还原后恢复。
 - 过度设计与性能评审：不新增 frame style、前端状态或持久字段。边距只在窗口创建、重建，以及最大化/还原这类尺寸状态变化时提交给 DWM；拖拽缩放命中缓存后不再调用 `SetWindowPos`。
 
+## 2026-09-22 新建会话后已打开的附件预览改读任务输入文件
+
+- 根因：设计要求提交后结束草稿预览，不能把已释放的 Object URL 留在工作区。实现却在 `promoteDraft` 里原样搬走 `draft-attachment`，标签键跟着会话作用域变掉，随后的关闭打不中，草稿 reset 再回收预览地址。已经画出来的图片会留到卸载；切走再回来用同一个失效地址新建 `<img>`，于是只剩破损图标和文件名。这是正确生命周期没有在草稿提升时落地，不是缺一套预览缓存。
+- 实现：提升时把打开的草稿附件改绑为 `conversation-asset` / `input-attachment`，指向创建会话时已经复制到 `authoring/inputs` 的文件。Tab 身份是 project、task 与 `task-inputs/{文件名}`，与稍后从消息气泡打开的同一任务输入重合。面板继续调用 `showConversationAttachment`，每次挂载按文件名读取，不保存草稿 `previewUrl`。
+- 验收：`right-workspace.test.ts` 在修复前失败于仍提升 `draft-attachment` 且任务输入键带 attempt；修复后固定提升结果不含 `blob:` 预览地址，并且不同 attempt 的同一任务输入键相同。`conversation-asset-workspace-panel.test.tsx` 固定卸载再挂载会再次调用 `showConversationAttachment`，画布拿到的是文件 data URL。
+- 过度设计与性能评审：不新增资源类型、预览缓存、grant 或持久字段。提升只遍历当前已打开的少量 Tab。图片在 Tab 可见时读取一次，大小仍受附件单文件上限约束；离开会话即卸下面板，不保留正文。
+
 ## 2026-09-22 验收 FOLLOW_UP 不再承接范围内未满足条款
 
 - 根因：`profile/accept.md` 与 `runtime/ai-dynamic/acceptance.md` 把 `BLOCKER` 收成三类，又写「其他发现均为 `FOLLOW_UP`」和「环境或人工验收不构成阻塞」。范围内条款因此可以被解释成文案遗漏、测试没走到、入口暂时走不到或没有浏览器，然后与 PASS 并存。task-183 round-003 按这套规则把方案 §6、§7.1、§11.3、§14.1、§14.3 的 PARTIAL / MISSING 标成 `FOLLOW_UP` 并通过。这是分级契约过宽，不是模型违反角色。
@@ -91,12 +210,20 @@
 - 验收：`acceptance_prompts_separate_scope_or_regression_backed_blockers_from_follow_ups` 先在旧文案上因缺少「不能删除、缩小、拆散、替换或弱化」失败，再与 `built_in_validation_profiles_do_not_block_on_missing_external_evidence` 一起转绿。
 - 过度设计与性能评审：只改静态提示词。不新增账本、schema、Agent 或调度状态。每次验收调用增加的是常量级契约文本。
 
-## 2026-09-22 新建会话后已打开的附件预览改读任务输入文件
+## 2026-09-24 未启动的 merge / acceptance 跟随当前控制面
 
-- 根因：设计要求提交后结束草稿预览，不能把已释放的 Object URL 留在工作区。实现却在 `promoteDraft` 里原样搬走 `draft-attachment`，标签键跟着会话作用域变掉，随后的关闭打不中，草稿 reset 再回收预览地址。已经画出来的图片会留到卸载；切走再回来用同一个失效地址新建 `<img>`，于是只剩破损图标和文件名。这是正确生命周期没有在草稿提升时落地，不是缺一套预览缓存。
-- 实现：提升时把打开的草稿附件改绑为 `conversation-asset` / `input-attachment`，指向创建会话时已经复制到 `authoring/inputs` 的文件。Tab 身份是 project、task 与 `task-inputs/{文件名}`，与稍后从消息气泡打开的同一任务输入重合。面板继续调用 `showConversationAttachment`，每次挂载按文件名读取，不保存草稿 `previewUrl`。
-- 验收：`right-workspace.test.ts` 在修复前失败于仍提升 `draft-attachment` 且任务输入键带 attempt；修复后固定提升结果不含 `blob:` 预览地址，并且不同 attempt 的同一任务输入键相同。`conversation-asset-workspace-panel.test.tsx` 固定卸载再挂载会再次调用 `showConversationAttachment`，画布拿到的是文件 data URL。
-- 过度设计与性能评审：不新增资源类型、预览缓存、grant 或持久字段。提升只遍历当前已打开的少量 Tab。图片在 Tab 可见时读取一次，大小仍受附件单文件上限约束；离开会话即卸下面板，不保留正文。
+- 根因：fanout 接受时把控制面 provider 和模型写进 group。merge / acceptance 创建时权限已读当前 drive 的控制面，provider 和模型仍抄 group。当前 Run 从动态 Cursor 改成固定 Claude 后，验收节点用 Cursor 带上 `bypassPermissions` 启动。这是后继创建没有完成控制面注入，不是再冻一份 Agent 身份。
+- 实现：创建尚未启动的 merge / acceptance 时，按当前控制面一起注入 provider、权限和 Auto Accept。动态策略使用 `acceptanceModel`；固定策略有模型时使用该模型，为空时保留 group 上已注入的模型。已启动节点不变。
+- 验收：`unstarted_merge_and_acceptance_use_the_current_control_plane` 在修复前失败于 merge provider 仍为 group 上的 `cursor`；修复后覆盖动态改固定、固定改动态，以及固定模型为空时保留已注入模型。
+- 过度设计与性能评审：不新增字段、锁或计划读取。创建每个控制面节点只做一次策略匹配，复杂度 O(1)。
+
+## 2026-09-22 Run 级 execution plan 与 AUTO 配置热更新
+
+- 根因：Task authoring、Run 创建时的 `workflow.snapshot.json`、Attempt `resolved_config` 和 AUTO 项目配置是四份不同事实，但保存入口只写 authoring。当前 Run 的后续分发因此不能使用新配置，AUTO 也没有可修订的 Run 级快照。这是事实域缺失，不是单个保存接口的缺陷。
+- 数据与实现：每个 Run 新增 `execution-plan/manifest.json` 与 revision 文件。`planRevision` 不复用 `RunState.execution.revision`。当前 Run 保存发布新 plan；下一次 Run 保存更新 Task authoring 或项目 AUTO 配置。双目标保存是一个带 journal 的后端操作。旧 snapshot 在该 Run 首次读取时幂等迁成 revision 1。当前节点不能删除或改变类型；已发生且仍可 `session=continue` 的节点不能更换 Agent identity。
+- 验收：execution plan 存储、迁移、CAS、锁和身份保护由 `execution_plan::tests` 固定。有当前位置的 Run 从 view 带回 current locator，仅当前、仅下一次和双目标都能发布，由 `positioned_run_save_uses_locator_published_on_the_view` 固定。前端保存目标、分裂、草稿缓存和切 Tab 写回由 `execution-plan-editor.test.ts` 与 workflow/AUTO 面板测试固定。同一 drive 的后继 Attempt 使用分发临界区读到的 plan：`successor_attempt_uses_the_execution_plan_captured_for_dispatch` 在修复前因入口 workflow 缺少新节点而在 `validated node exists` 处 panic，修复后通过，并固定当前 Attempt 的 goal 与 `resolved_config` 不变、后继 goal/model/config options 来自新 plan。
+- 过度设计与性能评审：不新增数据库、事件总线或第二套 AUTO 表单。锁只覆盖计划读取、后继计算和发布；provider 调用不持锁。后继 Attempt 使用临界区内已经读出的 workflow，不额外读盘。草稿使用容量 24 的内存 LRU，不写入 Run 状态。
+- 收口修复：Workflow Current 保存现在始终执行权威 model binding 注入；AUTO Current 在后端执行 provider/capability/allowed-workflow 校验；普通 authoring 保存与 composite commit 共用 authoring 写锁。preflight 阻塞会丢弃尚未入 journal 的 operation ID，dynamic proposal 的 plan read lock 覆盖 dynamic node 读取、物化和动态图持久化，生产读取统一经 execution-plan store。未知 provider、authoring lock、binding 注入和 operation ID 复用均有回归测试；前端测试受本机缺少 `@asamuzakjp/css-color` 依赖阻塞时按环境事实记录。
 
 ## 2026-09-22 桌面语言扩展到七种，安装包与首次启动跟随系统界面语言
 
@@ -263,8 +390,8 @@
 ## 2026-09-18 发起会话按活目录 remap/回滚作者态 option id，分割线写出具体配置
 
 - 根因：作者态 `configOptionOverrides` 仍用 Doctor/上一模型接线名（如 `effort`），`session/new` 活目录可能已经是另一模型（如 `reasoning`）。strip 只在切前目录里能看到旧 id 时才 remap，发起会话因此把合法 High 报成 `acp.session-config-value-unavailable`。这是同一套回滚契约没覆盖「活目录已换、Gold Band 未切模型」，不是用户选了非法值。
-- 实现：缺失的 option id 仍先按 thought value remap，对不上的模型绑定项回滚为不指定并继续 prompt。`session/new` 即使这次没切模型，也按活目录完整 strip（含 listed 非法值）。已建立会话未切模型、option id 仍在活目录、只是值非法时仍报 unavailable。分割线文案改为「当前模型暂不支持配置：{{names}}」，多项用 ` · ` 连接。Doctor 按模型 upsert `modelBoundCatalogs`，不得把 Luna Context 当成 Grok 的目录。
-- 证据：Rust 覆盖活目录已是 Luna 时 `effort=high`→`reasoning=high`、缺失 id 回滚、发起会话 listed 非法值回滚、Doctor 在 Grok 仍列出时不把 Luna Context 写入作者态、params 带协议 `name`；前端覆盖「当前模型暂不支持配置：思考强度 · Context」，以及首页 Grok + Luna 目录时不展示 Context。
+- 实现：缺失的 option id 仍先按 thought value remap，对不上的模型绑定项回滚为不指定并继续 prompt。`session/new` 即使这次没切模型，也按活目录完整 strip（含 listed 非法值）。已建立会话未切模型、option id 仍在活目录、只是值非法时仍报 unavailable。分割线文案改为「当前Agent暂不支持配置：{{names}}」，多项用 ` · ` 连接。Doctor 按模型 upsert `modelBoundCatalogs`，不得把 Luna Context 当成 Grok 的目录。
+- 证据：Rust 覆盖活目录已是 Luna 时 `effort=high`→`reasoning=high`、缺失 id 回滚、发起会话 listed 非法值回滚、Doctor 在 Grok 仍列出时不把 Luna Context 写入作者态、params 带协议 `name`；前端覆盖「当前Agent暂不支持配置：思考强度 · Context」，以及首页 Grok + Luna 目录时不展示 Context。
 - 过度设计与性能评审：复用现有 strip/override map 和 timeline `systemNotice`，不新增状态、探测或缓存。目录为有界 select 列表。
 
 ## 2026-09-18 思考强度按 category 跨 option id 保留，目录立即推给 composer

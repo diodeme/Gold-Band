@@ -1042,6 +1042,7 @@ mod tests {
             direct_config: None,
             direct_preferences: Default::default(),
             auto_config: None,
+            authoring_revision: 0,
         }
     }
 

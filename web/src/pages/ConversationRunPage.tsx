@@ -36,7 +36,7 @@ import {
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, WorkflowModelBindings, WorkflowVm } from '../types';
+import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -97,7 +97,9 @@ interface ConversationRunPageProps {
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
-  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
+  workflowTemplates?: WorkflowTemplateStore | null;
+  onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
+  onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
   onSelectSession: (leaf: ConversationSessionLocator, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
@@ -115,7 +117,9 @@ export function ConversationRunPage({
   agentRegistry,
   onRerun,
   onEditWorkflow,
-  onSaveWorkflow,
+  workflowTemplates = null,
+  onWorkflowTemplatesChange,
+  onExecutionPlanSaved,
   onSelectSession,
   onLifecycleSnapshot,
   onAutoFollowChange,
@@ -221,6 +225,18 @@ export function ConversationRunPage({
     openWorkflowEditor('repair');
   }, [openWorkflowEditor]);
 
+  const handleConfigureAuto = useCallback(() => {
+    if (!workspace.scopeKey) return;
+    workspace.openResource({
+      kind: 'auto-config',
+      key: conversationRunWorkspaceResourceKey('auto-config', workflowLocator),
+      scopeKey: workspace.scopeKey,
+      title: t('executionPlan.configureAuto'),
+      attention: false,
+      locator: workflowLocator,
+    });
+  }, [t, workflowLocator, workspace.openResource, workspace.scopeKey]);
+
   const handleViewWorkflow = useCallback(() => {
     if (!workspace.scopeKey) return;
     workspace.openResource({
@@ -243,10 +259,35 @@ export function ConversationRunPage({
     onSelectSession(leaf);
   }, [run.sessionTree, onAutoFollowChange, onSelectSession]);
 
+  // The workspace renderer is a registry entry, not a projection of the live
+  // run. Keeping its identity stable prevents RightWorkspaceProvider from
+  // unregistering the renderer (and briefly rendering null) on every live run
+  // update. The refs preserve the latest canonical run and callbacks without
+  // coupling registry lifetime to the stream frequency.
+  const runRef = useRef(run);
+  const agentRegistryRef = useRef(agentRegistry);
+  const onExecutionPlanSavedRef = useRef(onExecutionPlanSaved);
+  const workflowTemplatesRef = useRef(workflowTemplates);
+  const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
+  const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
+  runRef.current = run;
+  agentRegistryRef.current = agentRegistry;
+  onExecutionPlanSavedRef.current = onExecutionPlanSaved;
+  workflowTemplatesRef.current = workflowTemplates;
+  onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
+  handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
+  const onExecutionPlanSavedStable = useCallback((saved: ExecutionPlanSaveResultVm) => {
+    return onExecutionPlanSavedRef.current?.(saved);
+  }, []);
+  const onNodeOpenSessionStable = useCallback((node: GraphNodeVm) => {
+    handleWorkflowNodeOpenSessionRef.current(node);
+  }, []);
+
   const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
     if (
       resource.kind !== 'workflow-view' &&
       resource.kind !== 'workflow-edit' &&
+      resource.kind !== 'auto-config' &&
       resource.kind !== 'system-prompt' &&
       resource.kind !== 'hidden-prompt-section' &&
       resource.kind !== 'raw-frames'
@@ -255,18 +296,21 @@ export function ConversationRunPage({
       <ConversationRunWorkspaceResourcePanel
         key={resource.key}
         resource={resource}
-        run={run}
-        agentRegistry={agentRegistry}
-        onSaveWorkflow={onSaveWorkflow}
-        onNodeOpenSession={handleWorkflowNodeOpenSession}
+        run={runRef.current}
+        agentRegistry={agentRegistryRef.current}
+        workflowTemplates={workflowTemplatesRef.current}
+        onWorkflowTemplatesChange={(store) => onWorkflowTemplatesChangeRef.current?.(store)}
+        onExecutionPlanSaved={onExecutionPlanSavedStable}
+        onNodeOpenSession={onNodeOpenSessionStable}
       />
     );
-  }, [agentRegistry, handleWorkflowNodeOpenSession, onSaveWorkflow, run]);
+  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable]);
 
   useEffect(() => {
     const unregister = [
       workspace.registerResourceRenderer('workflow-view', renderWorkspaceResource),
       workspace.registerResourceRenderer('workflow-edit', renderWorkspaceResource),
+      workspace.registerResourceRenderer('auto-config', renderWorkspaceResource),
       workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
       workspace.registerResourceRenderer('hidden-prompt-section', renderWorkspaceResource),
       workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
@@ -543,6 +587,8 @@ export function ConversationRunPage({
             canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
+            onConfigureAuto={readOnly ? undefined : handleConfigureAuto}
+            readOnly={readOnly}
             onViewWorkflow={handleViewWorkflow}
             onSessionSwitcherOpenChange={setSessionSwitcherOpen}
             sessionSwitcherOpen={sessionSwitcherOpen}

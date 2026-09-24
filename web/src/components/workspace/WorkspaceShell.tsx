@@ -29,6 +29,7 @@ import {
   type RightWorkspaceResource,
 } from './right-workspace-context';
 import { BrowserNativeLifecycle, notifyBrowserLayoutFrame, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
+import { revokeAttachmentPreviewUrls } from '@/lib/attachment-service';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
@@ -209,6 +210,12 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyDraftAttachmentWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceCloseResolver('draft-attachment', (resource, reason) => {
+    if (reason === 'close' && resource.kind === 'draft-attachment') {
+      revokeAttachmentPreviewUrls([resource.attachment]);
+    }
+    return true;
+  }), [workspace.registerResourceCloseResolver]);
   useEffect(() => workspace.registerResourceRenderer('source-control', (resource: RightWorkspaceResource) => (
     resource.kind === 'source-control'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazySourceControlWorkspacePanel resource={resource} /></Suspense>

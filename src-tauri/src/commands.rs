@@ -8707,6 +8707,9 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::git::GitHubServiceError>() {
         return CommandErrorVm::new(error.code, error.params.clone());
     }
+    if let Some(error) = error.downcast_ref::<gold_band::execution_plan::ExecutionPlanError>() {
+        return CommandErrorVm::new(error.code(), error.context().clone());
+    }
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
     }
@@ -11399,21 +11402,11 @@ mod tests {
             }]),
         );
 
-        validate_acp_session_config_option_value(
-            &catalogs,
-            &session,
-            &authoring,
-            "context",
-            "1m",
-        )
-        .unwrap();
+        validate_acp_session_config_option_value(&catalogs, &session, &authoring, "context", "1m")
+            .unwrap();
         assert_eq!(
             validate_acp_session_config_option_value(
-                &catalogs,
-                &session,
-                &authoring,
-                "context",
-                "2m",
+                &catalogs, &session, &authoring, "context", "2m",
             )
             .unwrap_err()
             .code,

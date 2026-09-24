@@ -1,4 +1,4 @@
-import { AlarmClock, Eye, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, RotateCcw, Settings2, Workflow, ChevronDown } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
@@ -15,6 +15,8 @@ interface ConversationRunHeaderProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
+  onConfigureAuto?: () => void;
+  readOnly?: boolean;
   onSessionSwitcherOpenChange: (open: boolean) => void;
   sessionSwitcherOpen: boolean;
   sessionSwitcher: ReactNode;
@@ -30,6 +32,8 @@ export function ConversationRunHeader({
   onRerun,
   onEditWorkflow,
   onViewWorkflow,
+  onConfigureAuto,
+  readOnly = false,
   onSessionSwitcherOpenChange,
   sessionSwitcherOpen,
   sessionSwitcher,
@@ -109,6 +113,17 @@ export function ConversationRunHeader({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t('conversation.runtime.viewWorkflow')}</TooltipContent>
+            </Tooltip>
+          ) : null}
+
+          {run.runMode === 'auto' && !readOnly && onConfigureAuto ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('executionPlan.configureAuto')} onClick={onConfigureAuto}>
+                  <Settings2 className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('executionPlan.configureAuto')}</TooltipContent>
             </Tooltip>
           ) : null}
 

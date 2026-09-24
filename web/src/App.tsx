@@ -2857,6 +2857,15 @@ export function App() {
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+          runContext={conversationPage.projectId && conversationPage.taskId && conversationPage.runId ? {
+            projectId: conversationPage.projectId,
+            taskId: conversationPage.taskId,
+            taskUuid: conversationPage.taskUuid || conversationPage.taskId,
+            runId: conversationPage.runId,
+          } : null}
+          onExecutionPlanSaved={() => {
+            if (conversationPage.projectId) void loadConversationRunMode(conversationPage.projectId);
+          }}
         />
       );
     }
@@ -2933,15 +2942,15 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onEditWorkflow={() => {}}
-          onSaveWorkflow={async (json, modelBindings) => {
-            const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[2];
-            const saved = await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);
+          workflowTemplates={conversationWorkflowTemplates}
+          onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+          onExecutionPlanSaved={async () => {
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
             applyConversationRunSnapshot(refreshed, 'workflow-save', {
               selectedSessionKey: conversationSelectedSessionKeyRef.current,
               preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
             });
-            return saved;
+            void loadConversationRunMode(conversationPage.projectId);
           }}
           onSelectSession={(leaf, followActive) => {
             const key = leaf.outerNodeId

@@ -62,4 +62,51 @@ describe('ConversationRunHeader', () => {
     expect(html).not.toContain('title="修改标题"');
     expect(html).toContain('px-5 py-0.5');
   });
+
+  it('shows the AUTO configuration action with a tooltip label and hides it for direct runs', () => {
+    const auto = directRun();
+    auto.runMode = 'auto';
+    auto.taskId = 'task-183';
+    auto.runId = 'run-001';
+    const html = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(ConversationRunHeader, {
+          run: auto,
+          taskTitle: 'AUTO',
+          onRerun: () => undefined,
+          onEditWorkflow: () => undefined,
+          onViewWorkflow: () => undefined,
+          onConfigureAuto: () => undefined,
+          onSessionSwitcherOpenChange: () => undefined,
+          sessionSwitcherOpen: false,
+          sessionSwitcher: null,
+          canViewWorkflow: false,
+          canEditWorkflow: false,
+        }),
+      ),
+    );
+    expect(html).toContain('aria-label="AUTO 配置"');
+    expect(html).toContain('AUTO 配置');
+
+    const direct = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(ConversationRunHeader, {
+          run: directRun(),
+          taskTitle: 'Direct',
+          onRerun: () => undefined,
+          onEditWorkflow: () => undefined,
+          onViewWorkflow: () => undefined,
+          onConfigureAuto: () => undefined,
+          onSessionSwitcherOpenChange: () => undefined,
+          sessionSwitcherOpen: false,
+          sessionSwitcher: null,
+        }),
+      ),
+    );
+    expect(direct).not.toContain('aria-label="AUTO 配置"');
+  });
 });

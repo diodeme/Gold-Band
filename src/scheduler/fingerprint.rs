@@ -597,7 +597,11 @@ mod tests {
             content_fingerprint(&second).unwrap()
         );
         let canonical = canonical_content_json(&first).to_string();
-        for excluded in ["extra-high", "bootstrapConfigOptions", "modelBoundOverrides"] {
+        for excluded in [
+            "extra-high",
+            "bootstrapConfigOptions",
+            "modelBoundOverrides",
+        ] {
             assert!(
                 !canonical.contains(excluded),
                 "canonical identity leaked {excluded}"

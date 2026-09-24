@@ -7,6 +7,14 @@
 - 验收：修复前最小测试证明自定义 provider 不注入策略、`thinking` 缺失；修复后 adapter 单测 4 项与 `tests/acp_claude_execution_policy.rs` 4 项通过，fixture 按 initialize 返回能力，覆盖自定义 provider 生效、无能力不注入、非会话方法不改写、保留调用方 `thinking` 与幂等。真实 claude-agent-acp 0.81.2 + 本机 Claude 登录，同一推理 prompt：不带选项 0 个 thought chunk，带 summarized 24 个。`acp::` 其余测试通过；`resolve_command_uses_resolved_path` 修复前已失败，`doctor_session_new_timeout_reclaims_adapter_and_retains_evidence` 仅全量并行时超时，单跑稳定通过，均与本次无关。
 - 过度设计与性能评审：复用连接已缓存的 initialize 能力，无新增状态或依赖；只在四个会话方法上读取一次能力并合并参数。思考流新增的 chunk 与文本 chunk 同路径处理，原诊断显示单帧处理远低于瓶颈。
 
+## 2026-09-24 Win10 独立窗口边框
+
+- 根因：原设计已经要求 Win10 `app-outline`，但 base layer 的 inset shadow 被 components layer 的 shell recipe `box-shadow: none` 覆盖；即使恢复阴影，父容器 inset shadow 也会绘制在子内容下方。属于已有设计的实现不完整，系统关闭阴影后没有可靠的可见边界。
+- 实现：删除根壳 inset shadow，以 utilities layer 的主题化真实 border 为四边保留 1px 内容外空间，沿用现有平台 policy、hairline 和 window-outline token；原生浏览器继续根据内侧 DOM 矩形同步 bounds。共享标题栏从已有 resize 监听读取 maximized/fullscreen，统一快照、拒绝迟到响应、卸载释放；最大化或全屏不画 border。Win11 继续原生 compositor。补齐 fullscreen 查询权限。
+- 修复前证据：真实 `/chat` 页面注入 Win10 policy 后，computed box-shadow 为 none、border 为 0px，标题栏 top/left 为 0；浏览器断言要求 border=1px、top/left=1 稳定失败。新增窗口状态 DOM 测试失败于缺少占满桌面投影，样式契约失败于缺少真实边框；修复后同一浏览器断言与测试转绿。
+- 验证：窗口相关 5 个文件共 27 项测试、TypeScript 和 Web 生产构建通过。浏览器检查两套主题的明暗颜色、1280 与 700 宽窗口、最大化/全屏展示投影和 Win11 无额外边框；四边均 1px，窄窗口无横向溢出。当前验证为浏览器注入宿主 policy，不冒充 Win10 EXE 验收；关闭系统阴影、原生浏览器贴边、DPI 缩放和实际最大化/还原仍需 Win10 实机确认。
+- 性能与过度设计评审：仅一个根壳静态 border，不新增依赖、缓存、扫描、轮询、事件监听或持久状态。沿用现有标题栏监听，每次查询增加一个常数大小 fullscreen 读取，与 maximized 并行；未变化快照复用原值，不推动应用壳或消息列表重渲染。原生浏览器复用现有 ResizeObserver 更新边界。
+
 ## 2026-09-24 macOS 原生浏览器监听恢复构建门禁
 
 - 根因：同文档地址同步为 macOS 新增 `objc2::define_class!` KVO observer 时，在协议实现位置写入了 `objc2::runtime::NSObjectProtocol` 限定路径；`objc2 0.6.4` 的宏这里只匹配单个标识符。首个解析错误还遮住了 `DefinedClass` / `AnyThread` trait 未导入、裸 observer pointer 不满足 Tauri UI 回调 `Send` 边界、字符串日志参数受隐式 `Sized` 限制三处同源编译缺陷。Linux 和 Windows 会跳过 macOS 条件编译分支，现有 PR Checks 又只有 Ubuntu，因此错误直到 release 的 macOS runner 才暴露。

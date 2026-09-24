@@ -238,6 +238,12 @@
 - 实现：收集与清理共用 Cargo 解析后的 target 目录。优先 `cargo metadata --no-deps` 的 `target_directory`（覆盖环境变量和本机 cargo config，换机器无需改脚本），失败再回退 `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` 与仓库内默认路径；设置了 `CARGO_BUILD_TARGET` 时同时看 host 与 triple 子目录。不写死某台机器的绝对路径。
 - 证据：修复前 `scripts/cargo-bundle-dirs.test.mjs` 中 8 项稳定失败，表现为候选目录不含自定义 target、`findBundleDir` 命中仓库残留 bundle、`build-channel.mjs` 仍内联硬编码路径；修复后 `npm run test:channel-config` 17 项通过。本机 `cargo metadata` 解析为共享 target 目录，与本次 wb 安装包实际落点一致。
 - 过度设计与性能评审：不新增配置、持久字段、缓存或扫描整个 target。每次渠道构建只调用一次 `cargo metadata --no-deps`，再对 2–4 个 bundle 路径 `existsSync`；复杂度与一次正式打包相比可忽略，无需 benchmark。
+## 2026-09-23 wb 渠道构建要求 `GOLD_BAND_METRICS_API_KEY` 非空
+
+- 根因：wb 渠道开启 metrics，但构建期只有 Tauri 对签名私钥的原生门禁；`GOLD_BAND_METRICS_API_KEY` 为空时构建仍成功，运行时 metrics collector 会静默关闭采集。属于构建门禁缺失，不是运行时设计缺陷。
+- 实现：`scripts/build-channel-options.mjs` 新增 `assertChannelBuildSecrets`，以 `config.metricsEnabled` 为触发条件，要求环境变量 `GOLD_BAND_METRICS_API_KEY` trim 后非空；`scripts/build-channel.mjs` 在 env 组装后、catalog 与 Tauri 构建前调用并失败退出。default 渠道 metrics 关闭，`npm run build` 与 `dev:wb` 均不受影响。
+- 验证：`npm run test:channel-config` 9/9 通过，新增 metrics 开启缺 key/空 key/空白 key 失败与非空 key 通过、metrics 关闭不要求 key 的接口测试。
+- 过度设计与性能评审：新增一个纯函数和一次入口校验，无新依赖、持久状态、缓存、队列或兼容层；校验为 O(1) 且提前失败，避免空 key 继续执行昂贵构建。
 
 ## 2026-09-20 记录 Cursor ACP `session/cancel` 回滚已接受 user prompt
 
@@ -464,6 +470,14 @@
 - 实现：line Tabs 标签跟随内容宽度，default/bare 仍可均分；源码管理填充页的 TabsContent 统一 column flex；编辑器根节点 `w-full min-w-0`；PR/Issue 详情继续使用全宽 Markdown 契约。
 - 证据：复现用例先失败于概览 TabsContent 缺少 `flex-col`、line Trigger 仍无条件 `flex-1`、编辑器根节点缺少 `w-full`。修复后同一用例转绿；源码管理 GitHub / Tabs / 编辑器及相关 37 项通过，TypeScript 与 Web 生产构建通过。浏览器 preview 的 Git capability 仍是 `repository-required`，无法打开 GitHub PR 页；未把该路径的视觉验收虚报为通过。
 - 过度设计与性能评审：只调整既有 Tabs variant 与 flex 方向，不新增状态、测量、观察器、缓存或 identity。布局由浏览器一次 flex 计算完成。
+
+## 2026-09-18 工作空间文件引用到 Composer
+
+- 方案：文件树 / 搜索结果中的文件右键“引用到对话”，在当前 Composer 上下文区生成轻量文件 chip；prompt 新增 `workspaceFiles { projectId, relativePath }` 结构化输入，Rust 在 admission、队列 dispatch 与定时任务 authoring 持久化前重新解析并校验 workspace 边界，最终投影为 ACP `ResourceLink`。
+- 边界：不把路径写入 textarea，不把工作空间文件当作普通上传附件，不复制到 `task-inputs` / `user-inputs`，不读取全文、不计算 revision、不签发 preview grant、不新增 watcher 或文件 ID。
+- 状态：已完成。已有会话追问、队列派发和定时任务继续同一会话都会把 `workspaceFiles` 投影为绝对路径 ResourceLink；跨工作空间引用按该工作空间根目录解析。实施与验收细目见[工作空间文件引用到 Composer 设计与实施计划](新增流程/2026-09-18-工作空间文件引用到Composer设计与实施计划.md)。
+- 验收：2026-09-21 review 修复后 Rust focused 44/44、Web focused 143/143、类型检查与生产构建通过；内置浏览器覆盖队列文件数量、树右键、Composer chip resolver-first 打开、消息 chip、620px 宽度与控制台错误检查。
+- 说明：首次 Rust 全量测试编译受 Windows 页面文件不足影响失败，已改用低并发 focused 测试并记录；非代码断言失败。本次修改相关 Rust 文件通过 rustfmt 检查；仓库级 cargo fmt 仍存在本分支既有的无关格式差异。
 
 ## 2026-09-18 Agent 管理 ACP Registry 改为内置浏览器链接
 

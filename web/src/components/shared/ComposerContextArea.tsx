@@ -1,4 +1,4 @@
-import { FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, X } from 'lucide-react';
+import { FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, SquareCode, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -7,29 +7,35 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useImageActions } from '@/hooks/useImageActions';
 import { isImageMime } from '@/lib/attachments';
 import type { AttachmentItem } from '@/lib/attachment-service';
-import type { ComposerQuote } from '@/lib/composer-context';
+import type { ComposerQuote, ComposerWorkspaceFileRef } from '@/lib/composer-context';
 import { formatSize } from '@/lib/attachment-service';
 import { cn } from '@/lib/utils';
 
 export interface ComposerContextAreaProps {
   quotes?: readonly ComposerQuote[];
+  workspaceFiles?: readonly ComposerWorkspaceFileRef[];
   attachments: readonly AttachmentItem[];
   error?: string | null;
   onRemoveQuote?: (id: string) => void;
+  onRemoveWorkspaceFile?: (id: string) => void;
+  onOpenWorkspaceFile?: (file: ComposerWorkspaceFileRef) => void;
   onRemoveAttachment: (id: string) => void;
   onPreviewAttachment: (item: AttachmentItem) => void;
 }
 
 export function ComposerContextArea({
   quotes = [],
+  workspaceFiles = [],
   attachments,
   error,
   onRemoveQuote,
+  onRemoveWorkspaceFile,
+  onOpenWorkspaceFile,
   onRemoveAttachment,
   onPreviewAttachment,
 }: ComposerContextAreaProps) {
   const { t } = useTranslation();
-  if (quotes.length === 0 && attachments.length === 0 && !error) return null;
+  if (quotes.length === 0 && workspaceFiles.length === 0 && attachments.length === 0 && !error) return null;
 
   return (
     <div className="mb-1.5 px-1" data-composer-context-area="true">
@@ -68,6 +74,45 @@ export function ComposerContextArea({
             onPreview={() => onPreviewAttachment(attachment)}
             onRemove={() => onRemoveAttachment(attachment.id)}
           />
+        ))}
+        {workspaceFiles.map((file) => (
+          <Tooltip key={file.id}>
+            <TooltipTrigger asChild>
+              <span
+                className="group flex h-8 min-w-0 max-w-52 items-center gap-1.5 rounded-lg bg-muted/55 px-2 text-xs text-foreground/85 transition-colors hover:bg-muted/75 focus-within:bg-muted/75"
+                data-composer-workspace-file-chip="true"
+              >
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-1.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                  onClick={() => onOpenWorkspaceFile?.(file)}
+                  aria-label={t('workspace.filesPanel.openWorkspaceFile', { name: file.name })}
+                >
+                  <SquareCode className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{file.name}</span>
+                </button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="-mr-1 size-5 shrink-0 rounded-full opacity-60 transition-opacity hover:bg-background/70 hover:opacity-100 focus-visible:opacity-100"
+                  aria-label={t('workspace.filesPanel.removeWorkspaceReference', { name: file.name })}
+                  onClick={() => onRemoveWorkspaceFile?.(file.id)}
+                  data-prompt-input-interactive="true"
+                >
+                  <X className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8} className="max-w-[min(36rem,calc(100vw-2rem))]">
+              <span className="block break-all">{file.relativePath}</span>
+              <span className="block text-muted-foreground">
+                {file.byteLength == null
+                  ? t('workspace.filesPanel.unknownFileSize')
+                  : formatSize(file.byteLength)}
+              </span>
+            </TooltipContent>
+          </Tooltip>
         ))}
       </div>
       {error ? (

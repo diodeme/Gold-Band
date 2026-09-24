@@ -1,4 +1,5 @@
 pub(crate) mod cicd;
+pub mod workspace_files;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
@@ -35,6 +36,11 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::str::FromStr;
 use tracing::debug;
+pub use workspace_files::{
+    MAX_PROMPT_WORKSPACE_FILES, PromptWorkspaceFileRef, PromptWorkspaceRoot,
+    ResolvedWorkspaceFileRef, WorkspaceFileRefError, prompt_workspace_roots,
+    resolve_prompt_workspace_files, workspace_file_authoring_identity,
+};
 
 use crate::acp::events::AttachmentMeta;
 
@@ -66,9 +72,11 @@ pub fn conversation_prompt_has_payload(
     display_text: &str,
     attachment_count: usize,
     role: Option<&UserPromptRole>,
+    workspace_file_count: usize,
 ) -> bool {
     !display_text.trim().is_empty()
         || attachment_count > 0
+        || workspace_file_count > 0
         || role.is_some_and(UserPromptRole::is_complete)
 }
 
@@ -80,6 +88,8 @@ pub struct ConversationPromptInput {
     pub quotes: Vec<UserPromptQuote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<UserPromptRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
 }
 
 impl From<String> for ConversationPromptInput {
@@ -88,6 +98,7 @@ impl From<String> for ConversationPromptInput {
             display_text: prompt.clone(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         }
     }
 }
@@ -385,6 +396,10 @@ pub struct WorkerInvocation {
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
+    /// Registered workspace roots used to resolve `prompt_display.workspace_files`.
+    /// Empty means the conversation project root in `adapter_workspace_dir`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_file_roots: Vec<PromptWorkspaceRoot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,6 +717,7 @@ pub struct PromptBundle {
     pub runtime_control_source_transition_id: Option<String>,
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
+    pub workspace_files: Vec<ResolvedWorkspaceFileRef>,
     pub content_blocks: Vec<AcpContentBlock>,
     pub scheduled_trigger: Option<crate::acp::events::ScheduledTriggerPayload>,
 }
@@ -1638,6 +1654,14 @@ impl AcpProvider {
                     .unwrap_or_else(|| prompt.user_prompt.clone()),
                 quotes: prompt.quotes.clone(),
                 role: prompt.role.clone(),
+                workspace_files: prompt
+                    .workspace_files
+                    .iter()
+                    .map(|reference| PromptWorkspaceFileRef {
+                        project_id: reference.project_id.clone(),
+                        relative_path: reference.relative_path.clone(),
+                    })
+                    .collect(),
             },
             attachment_paths: req
                 .task_input_attachment_paths
@@ -2347,6 +2371,41 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         attachment_metas.push(resolved.meta);
         content_blocks.push(resolved.block);
     }
+    let prompt_workspace_files = req
+        .prompt_display
+        .as_ref()
+        .map(|input| input.workspace_files.clone())
+        .unwrap_or_default();
+    let resolved_workspace_files = if prompt_workspace_files.is_empty() {
+        Vec::new()
+    } else {
+        let roots = if req.workspace_file_roots.is_empty() {
+            vec![PromptWorkspaceRoot {
+                project_id: req.runtime_context.project_id.clone(),
+                root: req.adapter_workspace_dir.as_std_path().to_path_buf(),
+            }]
+        } else {
+            req.workspace_file_roots.clone()
+        };
+        resolve_prompt_workspace_files(
+            &roots,
+            &prompt_workspace_files,
+            req.task_input_attachment_paths.len() + req.user_input_attachment_paths.len(),
+        )
+        .map_err(|error| {
+            runtime_error(crate::runtime_error::manual_runtime_error_info(
+                RuntimeErrorDomain::Workspace,
+                error.code(),
+                error.diagnostic(),
+                error.params(),
+            ))
+        })?
+    };
+    for reference in &resolved_workspace_files {
+        content_blocks.push(workspace_files::resolved_workspace_file_content_block(
+            reference,
+        ));
+    }
 
     let display_text = req
         .prompt_display
@@ -2384,6 +2443,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         runtime_control_source_transition_id: None,
         runtime_control_transition_cause: None,
         attachment_metas,
+        workspace_files: resolved_workspace_files,
         content_blocks,
         scheduled_trigger: scheduled_trigger_payload(req)?,
     })
@@ -3215,6 +3275,7 @@ mod tests {
                     name: "开发".to_string(),
                     content: "你是开发角色".to_string(),
                 }),
+                workspace_files: Vec::new(),
             },
             crate::config::DesktopLanguage::ZhCn,
         );
@@ -3232,6 +3293,7 @@ mod tests {
                 display_text: "继续".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             crate::config::DesktopLanguage::En,
         );
@@ -3245,8 +3307,8 @@ mod tests {
             name: "开发".to_string(),
             content: "完整角色定义".to_string(),
         };
-        assert!(conversation_prompt_has_payload("", 0, Some(&role)));
-        assert!(!conversation_prompt_has_payload("   ", 0, None));
+        assert!(conversation_prompt_has_payload("", 0, Some(&role), 0));
+        assert!(!conversation_prompt_has_payload("   ", 0, None, 0));
         assert!(!conversation_prompt_has_payload(
             "",
             0,
@@ -3254,13 +3316,15 @@ mod tests {
                 profile_id: "pf-dev".to_string(),
                 name: "开发".to_string(),
                 content: String::new(),
-            })
+            }),
+            0
         ));
         let wrapped = conversation_agent_prompt_text(
             &ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: Some(role),
+                workspace_files: Vec::new(),
             },
             crate::config::DesktopLanguage::ZhCn,
         );
@@ -3349,6 +3413,7 @@ mod tests {
             ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
+            workspace_file_roots: Vec::new(),
         }
     }
 
@@ -3387,6 +3452,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prompt_bundle_projects_workspace_references_as_resource_links() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("WorkspaceFileTree.tsx"), "x").unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt")).unwrap();
+        std::fs::create_dir_all(&attempt_dir).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.adapter_workspace_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        req.workspace_dir = req.adapter_workspace_dir.clone();
+        req.prompt_display = Some(ConversationPromptInput {
+            display_text: String::new(),
+            quotes: Vec::new(),
+            role: None,
+            workspace_files: vec![PromptWorkspaceFileRef {
+                project_id: "project-001".to_string(),
+                relative_path: "WorkspaceFileTree.tsx".to_string(),
+            }],
+        });
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert_eq!(prompt.display_text.as_deref(), Some(""));
+        assert!(matches!(
+            prompt.content_blocks.last(),
+            Some(AcpContentBlock::ResourceLink(link))
+                if link.name == "WorkspaceFileTree.tsx"
+                    && link.mime_type == "text/typescript"
+                    && link.size == 1
+        ));
+        assert!(!prompt.user_prompt.contains("WorkspaceFileTree.tsx"));
+    }
+
+    #[test]
+    fn prompt_bundle_projects_another_workspace_as_an_absolute_resource_link() {
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(other.path().join("attempt")).unwrap();
+        std::fs::create_dir_all(&attempt_dir).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.workspace_file_roots = vec![PromptWorkspaceRoot {
+            project_id: "other-project".to_string(),
+            root: other.path().to_path_buf(),
+        }];
+        req.prompt_display = Some(ConversationPromptInput {
+            display_text: String::new(),
+            quotes: Vec::new(),
+            role: None,
+            workspace_files: vec![PromptWorkspaceFileRef {
+                project_id: "other-project".to_string(),
+                relative_path: "foreign.ts".to_string(),
+            }],
+        });
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert!(
+            prompt.workspace_files[0]
+                .canonical_path
+                .contains("foreign.ts")
+        );
+        assert!(matches!(
+            prompt.content_blocks.last(),
+            Some(AcpContentBlock::ResourceLink(link))
+                if link.uri.starts_with("file:") && link.uri.contains("foreign.ts")
+        ));
+        assert!(!prompt.user_prompt.contains("foreign.ts"));
+    }
+
     fn scheduled_invocation(
         trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
     ) -> WorkerInvocation {
@@ -3397,6 +3532,7 @@ mod tests {
             display_text: "检查主分支状态".to_string(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         });
         req.resume_prompt_id = Some("occurrence-turn-001".to_string());
         req.scheduled_context = Some(scheduled_context(trigger_kind));
@@ -4309,6 +4445,7 @@ mod tests {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "1Z".to_string(),
@@ -4805,6 +4942,7 @@ mod tests {
             ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
+            workspace_file_roots: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

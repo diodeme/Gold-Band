@@ -490,6 +490,14 @@ function browserCompletedConversationRun(): ConversationRunVm {
             type: 'image/png',
             size: 68,
           }],
+          workspaceFiles: [{
+            projectId: 'default',
+            relativePath: 'src/config.json',
+            canonicalPath: '/default/src/config.json',
+            name: 'config.json',
+            mimeType: 'application/json',
+            size: 42,
+          }],
         },
       },
       {
@@ -646,6 +654,7 @@ const browserQueuedPromptDrafts = [
     content: '把关键设计决策同步到产品文档。',
     quotes: [],
     attachmentPaths: [],
+    workspaceFiles: [{ projectId: 'default', relativePath: 'docs/design.md' }],
     createdAt: '2026-08-07T08:00:02Z',
   },
   {
@@ -715,6 +724,7 @@ function browserQueuedConversationRun(): ConversationRunVm {
           content: item.content,
           attachmentCount: item.attachmentPaths.length,
           quoteCount: item.quotes.length,
+          workspaceFileCount: item.workspaceFiles?.length ?? 0,
           ...('role' in item && item.role ? { roleName: item.role.name } : {}),
           createdAt: item.createdAt,
         })),
@@ -1942,6 +1952,7 @@ export const browserApi: RuntimeApi = {
         content: item.content,
         quotes: item.quotes.map((quote) => ({ ...quote })),
         attachmentPaths: [...item.attachmentPaths],
+        ...(item.workspaceFiles?.length ? { workspaceFiles: [...item.workspaceFiles] } : {}),
         ...('role' in item && item.role ? { role: { ...item.role } } : {}),
       },
       lifecycle: null,

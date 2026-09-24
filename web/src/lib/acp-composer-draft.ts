@@ -5,7 +5,7 @@ import {
   type AttachmentItem,
 } from './attachment-service';
 import { composerTextFromPromptRole } from './slash-command';
-import type { ComposerQuote } from './composer-context';
+import type { ComposerQuote, ComposerWorkspaceFileRef } from './composer-context';
 import type { AttachmentFileRef } from '@/api/client';
 import type { ConversationQueuedPromptDraftVm } from '@/types';
 
@@ -13,6 +13,7 @@ export interface AcpComposerDraft {
   content: string;
   attachments: AttachmentItem[];
   quotes: ComposerQuote[];
+  workspaceFiles: ComposerWorkspaceFileRef[];
 }
 
 export function queuedPromptToAcpComposerDraft(
@@ -27,6 +28,14 @@ export function queuedPromptToAcpComposerDraft(
       sourceKey: sourceMessageKey,
       text,
     })),
+    workspaceFiles: (item.workspaceFiles ?? []).map((file) => ({
+      id: `${file.projectId}:${file.relativePath}`,
+      projectId: file.projectId,
+      relativePath: file.relativePath.replaceAll('\\', '/'),
+      name: file.relativePath.split(/[\\/]/).at(-1) ?? file.relativePath,
+      byteLength: null,
+      mimeType: 'application/octet-stream',
+    })),
   };
 }
 
@@ -34,11 +43,14 @@ export const MAX_ACP_COMPOSER_DRAFTS = 64;
 export const MAX_ACP_COMPOSER_DRAFT_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 function emptyDraft(): AcpComposerDraft {
-  return { content: '', attachments: [], quotes: [] };
+  return { content: '', attachments: [], quotes: [], workspaceFiles: [] };
 }
 
 function hasDraftContent(draft: AcpComposerDraft) {
-  return draft.content.length > 0 || draft.attachments.length > 0 || draft.quotes.length > 0;
+  return draft.content.length > 0
+    || draft.attachments.length > 0
+    || draft.quotes.length > 0
+    || draft.workspaceFiles.length > 0;
 }
 
 function attachmentBytes(draft: AcpComposerDraft) {
@@ -119,6 +131,7 @@ export interface AcpComposerDraftController {
   setContent: Dispatch<SetStateAction<string>>;
   setAttachments: Dispatch<SetStateAction<AttachmentItem[]>>;
   setQuotes: Dispatch<SetStateAction<ComposerQuote[]>>;
+  setWorkspaceFiles: Dispatch<SetStateAction<ComposerWorkspaceFileRef[]>>;
   clearIfUnchanged: (expected: AcpComposerDraft) => boolean;
   restoreIfEmpty: (draft: AcpComposerDraft) => boolean;
   replaceIfUnchanged: (expected: AcpComposerDraft, next: AcpComposerDraft) => boolean;
@@ -164,6 +177,16 @@ export function useAcpComposerDraft(key: string): AcpComposerDraftController {
     renderCurrentDraft();
   }, [key]);
 
+  const setWorkspaceFiles = useCallback<Dispatch<SetStateAction<ComposerWorkspaceFileRef[]>>>((next) => {
+    const current = draftRef.current ?? emptyDraft();
+    const workspaceFiles = typeof next === 'function' ? next(current.workspaceFiles) : next;
+    if (workspaceFiles === current.workspaceFiles) return;
+    const updated = { ...current, workspaceFiles };
+    draftRef.current = updated;
+    acpComposerDraftStore.write(key, updated);
+    renderCurrentDraft();
+  }, [key]);
+
   const clearIfUnchanged = useCallback((expected: AcpComposerDraft) => {
     if (draftRef.current !== expected) return false;
     const cleared = emptyDraft();
@@ -195,6 +218,7 @@ export function useAcpComposerDraft(key: string): AcpComposerDraftController {
     setContent,
     setAttachments,
     setQuotes,
+    setWorkspaceFiles,
     clearIfUnchanged,
     restoreIfEmpty,
     replaceIfUnchanged,

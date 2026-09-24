@@ -607,6 +607,7 @@ fn apply_continue_input_to_prompt_state(
             &value.display_text,
             state.input_attachment_paths.len(),
             value.role.as_ref(),
+            value.workspace_files.len(),
         )
     }) {
         input.display_text = input.display_text.trim().to_string();
@@ -4162,6 +4163,20 @@ fn emit_run_paused_lifecycle_event(
             kind: RuntimeInterventionKind::ManualDecisionRequired,
             task_title: task_title(app, task_id),
         });
+        emit_run_metrics_fact(
+            app,
+            run,
+            super::observability::LifecycleEventType::InterventionRequested,
+            format!(
+                "{event_id}:intervention:manual-decision:{}",
+                run.execution.revision
+            ),
+            occurred_at.clone(),
+            None,
+            Some(RuntimeInterventionKind::ManualDecisionRequired),
+            None,
+            None,
+        );
     }
     emit_run_metrics_fact(
         app,
@@ -4879,11 +4894,22 @@ fn apply_control_decision(
 }
 
 fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
-    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id)).ok()?;
-    if role.profile_id.trim().is_empty()
-        || role.name.trim().is_empty()
-        || role.content.trim().is_empty()
-    {
+    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id))
+        .ok()
+        .filter(|role| {
+            !role.profile_id.trim().is_empty()
+                && !role.name.trim().is_empty()
+                && !role.content.trim().is_empty()
+        });
+    let workspace_files = read_json::<Vec<crate::provider::PromptWorkspaceFileRef>>(
+        &app.paths
+            .task_dir(task_id)
+            .join("authoring")
+            .join("initial-prompt-workspace-files.json"),
+    )
+    .ok()
+    .unwrap_or_default();
+    if role.is_none() && workspace_files.is_empty() {
         return None;
     }
     let requirement =
@@ -4891,7 +4917,8 @@ fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationP
     Some(ConversationPromptInput {
         display_text: requirement,
         quotes: Vec::new(),
-        role: Some(role),
+        role,
+        workspace_files,
     })
 }
 
@@ -12934,6 +12961,14 @@ fn build_dynamic_worker_invocation(
         );
         Vec::new()
     });
+    let workspace_file_roots = if prompt_display
+        .as_ref()
+        .is_some_and(|input| !input.workspace_files.is_empty())
+    {
+        ctx.app.prompt_workspace_roots()
+    } else {
+        Vec::new()
+    };
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12982,6 +13017,7 @@ fn build_dynamic_worker_invocation(
         ),
         mcp_servers,
         scheduled_context: None,
+        workspace_file_roots,
     };
     dynamic_invocation_build_step_end(
         ctx,
@@ -17116,6 +17152,7 @@ mod tests {
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         };
         let state = runtime_control_resume_prompt_state(
             DesktopLanguage::ZhCn,
@@ -17159,6 +17196,7 @@ mod tests {
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             }),
             Some("prompt-2".to_string()),
             Vec::new(),
@@ -17246,6 +17284,7 @@ mod tests {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             }),
             Some("prompt-attachment-only".to_string()),
             vec!["C:/temp/context.txt".to_string()],
@@ -18546,6 +18585,132 @@ mod tests {
             }
             event => panic!("expected ManualCheck intervention second, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn manual_check_pause_emits_metrics_for_pause_and_manual_decision() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let bus = crate::app::observability::RuntimeLifecycleBus::new();
+        let app = App::new(repo_root)
+            .with_metrics_collection_enabled(true)
+            .with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let started_at = "2026-09-23T10:00:00.000".to_string();
+        let task_uuid = generate_uuid();
+        let run_uuid = generate_uuid();
+        let node_uuid = generate_uuid();
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: Some(task_uuid),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: started_at.clone(),
+            updated_at: started_at.clone(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some("cicd".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: Some(run_uuid.clone()),
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: round_id.to_string(),
+            run_id: run_id.to_string(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let mut node = NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "cicd".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+            manual_check_pending: true,
+            runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
+            uuid: Some(node_uuid.clone()),
+        };
+        node.resolved_config
+            .insert("profileName".to_string(), serde_json::json!("CI/CD"));
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        write_json(&app.paths.round_file(task_id, run_id, round_id), &round).unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "cicd", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        emit_pause_side_effects(&app, task_id, &run, &round, &node);
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().any(|fact| {
+            fact.event_type == crate::app::observability::LifecycleEventType::ExecutionPaused
+                && fact.payload.pause_reason
+                    == Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
+        }));
+        let intervention = facts.iter().find(|fact| {
+            fact.event_type == crate::app::observability::LifecycleEventType::InterventionRequested
+        });
+        let Some(intervention) = intervention else {
+            panic!("expected manual-decision intervention metrics fact");
+        };
+        assert_eq!(
+            intervention.payload.intervention_kind,
+            Some(crate::app::observability::MetricsInterventionKind::ManualDecision)
+        );
+        assert!(matches!(
+            intervention.subject,
+            crate::app::observability::MetricsSubject::WorkflowNodeAttempt { .. }
+        ));
+        assert_eq!(
+            intervention.fact_id,
+            format!(
+                "{}:intervention:manual-decision:{}",
+                crate::app::notification::make_dedup_key(
+                    &app.paths.project_id,
+                    task_id,
+                    run_id,
+                    round_id,
+                    "cicd",
+                    "attempt-001",
+                    PauseReason::WaitingForUserInput,
+                ),
+                run.execution.revision
+            )
+        );
     }
 
     #[test]

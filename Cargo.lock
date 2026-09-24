@@ -2243,6 +2243,7 @@ dependencies = [
  "jsonschema",
  "keyring",
  "libc",
+ "mime_guess",
  "minijinja",
  "parking_lot",
  "pulldown-cmark",

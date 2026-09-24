@@ -112,6 +112,33 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it('shows catalog loading and local failure without pretending the catalog is empty', async () => {
+    sessionRuntime.session = { ...sourceControlSession(), activeTab: 'repository', catalog: null, catalogLoading: true };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+      }} /></RightWorkspaceProvider>));
+      expect(container.textContent).toContain('sourceControl.loading');
+      expect(container.querySelector('[data-tested-repository-view]')).toBeNull();
+      await act(async () => {
+        sessionRuntime.session = { ...sessionRuntime.session, catalogLoading: false, catalogError: { code: 'git.status-failed', params: {} } };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.textContent).toContain('sourceControl.loadFailed');
+      expect(container.textContent).toContain('sourceControl.checkAgain');
+      await act(async () => {
+        sessionRuntime.session = { ...sessionRuntime.session, catalogError: null, catalog: sourceControlSession().snapshot };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.querySelector('[data-tested-repository-view]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders workspace numstat beside each tracked changed file', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -370,6 +397,7 @@ describe('source control history cache presentation', () => {
   });
 
   it('keeps the selected repository sub-tab in the source-control session', async () => {
+    sessionRuntime.session = { ...sourceControlSession(), catalog: sourceControlSession().snapshot };
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -447,7 +475,7 @@ describe('source control history cache presentation', () => {
     }
   });
 
-  it('prewarms GitHub capability once the source-control repository is ready', async () => {
+  it('does not probe GitHub while viewing changes', async () => {
     githubRuntime.getCapability.mockResolvedValue({ status: 'not-installed' });
     const container = document.createElement('div');
     document.body.append(container);
@@ -459,10 +487,7 @@ describe('source control history cache presentation', () => {
           title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
         }} /></RightWorkspaceProvider>);
       });
-      expect(githubRuntime.getCapability).toHaveBeenCalledTimes(1);
-      expect(githubRuntime.getCapability).toHaveBeenCalledWith(
-        'project-1:D:/repo/.git:D:/repo', 'project-1', 'D:/repo',
-      );
+      expect(githubRuntime.getCapability).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
     }

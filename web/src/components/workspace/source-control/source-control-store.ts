@@ -1,5 +1,7 @@
+import { createSourceControlLoadDiagnostic } from '@/lib/source-control-load-diagnostics';
 import { useCallback, useSyncExternalStore } from 'react';
 import {
+  reportSourceControlLoad,
   cancelGitOperation,
   executeGitMutation,
   getGitCapability,
@@ -7,6 +9,8 @@ import {
   getGitCommitReview,
   getGitHistory,
   getSourceControlSnapshot,
+  getSourceControlOverview,
+  getSourceControlStatistics,
   initializeGitRepository,
   startGitOperation,
   startGitStateMonitor,
@@ -53,7 +57,10 @@ export interface SourceControlSessionSnapshot {
   canonicalWorkspacePath: string | null;
   status: 'idle' | 'loading' | 'ready' | 'unavailable' | 'error';
   capability: GitCapabilityVm | null;
-  snapshot: GitSourceControlSnapshotVm | null;
+  snapshot: import('@/types').GitSourceControlOverviewVm | null;
+  catalog: GitSourceControlSnapshotVm | null;
+  catalogLoading: boolean;
+  catalogError: GitOperationErrorVm | null;
   history: GitHistoryPageVm | null;
   historyLoading: boolean;
   activeTab: SourceControlTab;
@@ -75,9 +82,12 @@ export interface SourceControlSessionSnapshot {
 }
 
 interface SourceControlApi {
+  reportLoad?: typeof reportSourceControlLoad;
   getCapability: typeof getGitCapability;
   initializeRepository: typeof initializeGitRepository;
-  getSnapshot: typeof getSourceControlSnapshot;
+  getSnapshot: typeof getSourceControlOverview;
+  getCatalog: typeof getSourceControlSnapshot;
+  getStatistics?: typeof getSourceControlStatistics;
   getHistory: typeof getGitHistory;
   getCommitReview: typeof getGitCommitReview;
   getCommitReachability: typeof getGitCommitReachability;
@@ -101,6 +111,8 @@ interface SessionRuntime {
   detailRequestRevision: number;
   reachabilityRequestRevision: number;
   loadPromise: Promise<void> | null;
+  catalogPromise: Promise<void> | null;
+  statisticsPromise: Promise<void> | null;
   monitorStarted: boolean;
   monitorStartPromise: Promise<void> | null;
   invalidationTimer: ReturnType<typeof setTimeout> | null;
@@ -120,9 +132,12 @@ interface CommitReviewCacheSlot {
 }
 
 const DEFAULT_API: SourceControlApi = {
+  reportLoad: reportSourceControlLoad,
   getCapability: getGitCapability,
   initializeRepository: initializeGitRepository,
-  getSnapshot: getSourceControlSnapshot,
+  getSnapshot: getSourceControlOverview,
+  getCatalog: getSourceControlSnapshot,
+  getStatistics: getSourceControlStatistics,
   getHistory: getGitHistory,
   getCommitReview: getGitCommitReview,
   getCommitReachability: getGitCommitReachability,
@@ -200,12 +215,64 @@ export class SourceControlStore {
 
   setActiveTab(projectId: string, workspacePath: string | null | undefined, activeTab: SourceControlTab) {
     const runtime = this.runtime(projectId, workspacePath);
+    if (activeTab === 'repository' || activeTab === 'github') {
+      this.update(runtime, { ...runtime.snapshot, activeTab });
+      return this.ensureCatalog(runtime);
+    }
     if (runtime.snapshot.activeTab === activeTab) {
       return activeTab === 'history' ? this.ensureHistory(projectId, workspacePath) : Promise.resolve();
     }
     const historyLoading = activeTab === 'history' && runtime.snapshot.history == null;
     this.update(runtime, { ...runtime.snapshot, activeTab, historyLoading });
     return historyLoading ? this.ensureHistory(projectId, workspacePath) : Promise.resolve();
+  }
+
+  private ensureCatalog(runtime: SessionRuntime): Promise<void> {
+    if (runtime.catalogPromise) return runtime.catalogPromise;
+    if (runtime.snapshot.catalog || !runtime.snapshot.snapshot) return Promise.resolve();
+    const revision = runtime.repositoryRequestRevision;
+    this.update(runtime, { ...runtime.snapshot, catalogLoading: true, catalogError: null });
+    const request = this.api.getCatalog(runtime.snapshot.projectId, runtime.snapshot.requestedWorkspacePath)
+      .then((catalog) => {
+        if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
+        this.update(runtime, { ...runtime.snapshot, catalog, catalogLoading: false });
+      }).catch((reason) => {
+        if (runtime.repositoryRequestRevision !== revision) return;
+        this.update(runtime, { ...runtime.snapshot, catalogLoading: false, catalogError: structuredErrorFrom(reason, 'git.status-failed') });
+      }).finally(() => {
+        runtime.catalogPromise = null;
+        if (runtime.repositoryRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) this.loadVisibleDetails(runtime);
+      });
+    runtime.catalogPromise = request;
+    return request;
+  }
+
+  private loadVisibleDetails(runtime: SessionRuntime) {
+    if (runtime.snapshot.activeTab === 'repository' || runtime.snapshot.activeTab === 'github') void this.ensureCatalog(runtime);
+  }
+
+  private loadStatistics(runtime: SessionRuntime, loadId?: string) {
+    if (!this.api.getStatistics || runtime.statisticsPromise || !runtime.snapshot.snapshot || runtime.pendingInvalidation) return;
+    const revision = runtime.repositoryRequestRevision;
+    const snapshot = runtime.snapshot.snapshot;
+    const request = this.api.getStatistics(runtime.snapshot.projectId, runtime.snapshot.requestedWorkspacePath, loadId)
+      .then((status) => {
+        if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
+        if (status.snapshotRevision !== snapshot.repository.revision) return;
+        this.update(runtime, { ...runtime.snapshot, snapshot: { ...snapshot, status } });
+        diffReviewStore.publishWorkspaceRefresh({
+          projectId: runtime.snapshot.projectId,
+          workspacePath: runtime.snapshot.requestedWorkspacePath,
+          staged: status.staged,
+          unstaged: status.unstaged,
+          untracked: status.untracked,
+          invalidate: { all: false, paths: [] },
+        });
+      }).catch(() => undefined).finally(() => {
+        runtime.statisticsPromise = null;
+        if (runtime.repositoryRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) this.loadStatistics(runtime);
+      });
+    runtime.statisticsPromise = request;
   }
 
   setHistoryPage(projectId: string, workspacePath: string | null | undefined, historyPage: number) {
@@ -351,6 +418,7 @@ export class SourceControlStore {
     const runtime = this.runtime(projectId, workspacePath);
     const snapshot = runtime.snapshot.snapshot;
     if (!snapshot || runtime.snapshot.pendingAction) return;
+    if (!(input.kind === 'commit' || input.kind.startsWith('stage') || input.kind.startsWith('unstage')) && !runtime.snapshot.catalog) return;
     const requestRevision = ++runtime.repositoryRequestRevision;
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
@@ -364,7 +432,9 @@ export class SourceControlStore {
     try {
       const result = await this.api.executeMutation(projectId, workspacePath, {
         ...input,
-        expectedRevision: snapshot.repository.revision,
+        expectedRevision: input.kind === 'commit' || input.kind.startsWith('stage') || input.kind.startsWith('unstage')
+          ? snapshot.repository.revision
+          : runtime.snapshot.catalog?.catalogRevision,
       });
       mutationApplied = true;
       if (runtime.repositoryRequestRevision !== requestRevision) return;
@@ -378,9 +448,11 @@ export class SourceControlStore {
             status: result.status,
           },
           pendingAction: null,
+          catalog: null,
           error: null,
         });
         this.applyWorkspaceProjection(runtime, result.status);
+        this.loadVisibleDetails(runtime);
         return;
       }
       const [nextSnapshot, history] = await Promise.all([
@@ -397,6 +469,7 @@ export class SourceControlStore {
         status: 'ready',
         canonicalWorkspacePath: nextSnapshot.repository.workspacePath,
         snapshot: nextSnapshot,
+        catalog: null,
         history,
         pendingAction: null,
         error: null,
@@ -404,6 +477,8 @@ export class SourceControlStore {
         body: input.kind === 'commit' ? '' : runtime.snapshot.body,
       });
       this.applyWorkspaceProjection(runtime, nextSnapshot.status);
+      this.loadVisibleDetails(runtime);
+      this.loadStatistics(runtime);
     } catch (reason) {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       const error = structuredErrorFrom(reason, mutationApplied ? 'git.status-failed' : 'git.operation-failed');
@@ -650,6 +725,8 @@ export class SourceControlStore {
     if (!force && runtime.snapshot.status === 'unavailable') return;
     if (runtime.loadPromise && refreshKind !== 'manual') return runtime.loadPromise;
     if (runtime.snapshot.pendingAction) return;
+    const diagnostic = createSourceControlLoadDiagnostic(!runtime.snapshot.snapshot, this.api.reportLoad);
+    let outcome: "ready" | "unavailable" | "error" | "superseded" = "superseded";
     const requestRevision = ++runtime.repositoryRequestRevision;
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
@@ -668,10 +745,11 @@ export class SourceControlStore {
         || (refreshKind === 'manual' && !runtime.snapshot.snapshot)
         || (currentCapability.status !== 'ready' && currentCapability.status !== 'head-required');
       const capability = shouldProbe
-        ? await this.api.getCapability(projectId)
+        ? await diagnostic.measure("capabilityMs", () => this.api.getCapability(projectId, diagnostic.loadId))
         : currentCapability;
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       if (capability.status !== 'ready' && capability.status !== 'head-required') {
+        outcome = 'unavailable';
         this.update(runtime, {
           ...runtime.snapshot,
           status: 'unavailable',
@@ -682,13 +760,24 @@ export class SourceControlStore {
         return;
       }
       if (!runtime.monitorStarted) {
-        await this.ensureSubscriptions();
-        await this.startMonitor(runtime, workspacePath);
+        await diagnostic.measure("subscriptionsMs", () => this.ensureSubscriptions());
+        const monitor = diagnostic.measure("monitorMs", () => this.startMonitor(runtime, workspacePath, diagnostic.loadId));
+        let snapshotStarted = false;
+        // Subscribe before reading, but do not put native watcher setup on the
+        // first-content path. Registration overlapping a read needs a catch-up.
+        void runtime.monitorStartPromise?.then(() => {
+          if (snapshotStarted && this.sessions.get(runtime.storageKey) === runtime) {
+            this.scheduleInvalidation(runtime, 'repository');
+          }
+        }).catch(() => undefined);
+        await Promise.resolve();
+        snapshotStarted = true;
+        void monitor;
         if (runtime.repositoryRequestRevision !== requestRevision) return;
       }
       const includeHistory = this.historyIsCurrent(runtime);
       const [snapshot, history] = await Promise.all([
-        this.api.getSnapshot(projectId, workspacePath),
+        diagnostic.measure("snapshotMs", () => this.api.getSnapshot(projectId, workspacePath, diagnostic.loadId)),
         includeHistory
           ? this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE })
           : Promise.resolve(runtime.snapshot.history),
@@ -701,12 +790,17 @@ export class SourceControlStore {
         capability,
         canonicalWorkspacePath: snapshot.repository.workspacePath,
         snapshot,
+        catalog: null,
         history: includeHistory ? history : runtime.snapshot.history,
         historyLoading: includeHistory ? false : runtime.snapshot.historyLoading,
         refreshing: null,
         error: operationError,
       });
+      outcome = 'ready';
+      diagnostic.finish(outcome);
       this.applyWorkspaceProjection(runtime, snapshot.status);
+      this.loadVisibleDetails(runtime);
+      this.loadStatistics(runtime, diagnostic.loadId);
       if (!resetNavigation && includeHistory && runtime.snapshot.activeTab === 'history') {
         const selectedOids = [...runtime.snapshot.selectedCommitOids];
         if (selectedOids.length > 0) {
@@ -720,6 +814,7 @@ export class SourceControlStore {
       }
     })().catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
+      outcome = "error";
       this.update(runtime, {
         ...runtime.snapshot,
         status: runtime.snapshot.snapshot ? 'ready' : 'error',
@@ -734,6 +829,7 @@ export class SourceControlStore {
         this.update(runtime, { ...runtime.snapshot, historyDetailLoading: false });
       }
     }).finally(() => {
+      diagnostic.finish(outcome);
       if (runtime.loadPromise === request) {
         runtime.loadPromise = null;
         this.armInvalidation(runtime);
@@ -862,10 +958,13 @@ export class SourceControlStore {
         ...runtime.snapshot,
         canonicalWorkspacePath: snapshot.repository.workspacePath,
         snapshot,
+        catalog: null,
         refreshing: null,
         error: null,
       });
       this.applyWorkspaceProjection(runtime, snapshot.status);
+      this.loadVisibleDetails(runtime);
+      this.loadStatistics(runtime);
     }).catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -883,14 +982,16 @@ export class SourceControlStore {
     return request;
   }
 
-  private async startMonitor(runtime: SessionRuntime, requestedWorkspacePath?: string | null) {
+  private async startMonitor(runtime: SessionRuntime, requestedWorkspacePath?: string | null, loadId?: string) {
     const workspacePath = runtime.snapshot.canonicalWorkspacePath
       ?? requestedWorkspacePath
       ?? runtime.snapshot.requestedWorkspacePath
       ?? null;
     if (runtime.monitorStarted || !this.api.startMonitor) return false;
     runtime.monitorStarted = true;
-    const request = this.api.startMonitor(runtime.snapshot.projectId, workspacePath);
+    const request = loadId
+      ? this.api.startMonitor(runtime.snapshot.projectId, workspacePath, loadId)
+      : this.api.startMonitor(runtime.snapshot.projectId, workspacePath);
     runtime.monitorStartPromise = request;
     try {
       await request;
@@ -904,6 +1005,9 @@ export class SourceControlStore {
   }
 
   private disposeRuntime(runtime: SessionRuntime) {
+    runtime.repositoryRequestRevision += 1;
+    runtime.historyRequestRevision += 1;
+    runtime.detailRequestRevision += 1;
     if (runtime.invalidationTimer) clearTimeout(runtime.invalidationTimer);
     runtime.invalidationTimer = null;
     runtime.invalidationStartedAt = null;
@@ -956,6 +1060,8 @@ export class SourceControlStore {
         detailRequestRevision: 0,
         reachabilityRequestRevision: 0,
         loadPromise: null,
+        catalogPromise: null,
+        statisticsPromise: null,
         monitorStarted: false,
         monitorStartPromise: null,
         invalidationTimer: null,
@@ -1048,6 +1154,9 @@ function idleSnapshot(projectId: string, workspacePath: string | null | undefine
     status: 'idle',
     capability: null,
     snapshot: null,
+    catalog: null,
+    catalogLoading: false,
+    catalogError: null,
     history: null,
     historyLoading: false,
     activeTab: 'changes',

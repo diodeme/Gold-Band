@@ -22,6 +22,13 @@
 - 验证：窗口相关 5 个文件共 27 项测试、TypeScript 和 Web 生产构建通过。浏览器检查两套主题的明暗颜色、1280 与 700 宽窗口、最大化/全屏展示投影和 Win11 无额外边框；四边均 1px，窄窗口无横向溢出。当前验证为浏览器注入宿主 policy，不冒充 Win10 EXE 验收；关闭系统阴影、原生浏览器贴边、DPI 缩放和实际最大化/还原仍需 Win10 实机确认。
 - 性能与过度设计评审：仅一个根壳静态 border，不新增依赖、缓存、扫描、轮询、事件监听或持久状态。沿用现有标题栏监听，每次查询增加一个常数大小 fullscreen 读取，与 maximized 并行；未变化快照复用原值，不推动应用壳或消息列表重渲染。原生浏览器复用现有 ResizeObserver 更新边界。
 
+## 2026-09-24 源码管理 DEBUG 加载诊断
+
+- 目标与证据：用户弱机器的 Git cmd 入口版本查询约 1 秒、mingw64 入口约 0.52 秒、Windows cmd 空操作约 0.59 秒，8 次 Git metadata 路径查询约 8 秒。先保留加载链路建立真实 EXE 基线，不将 shell 测量或功能测试耗时当作应用提速证据。
+- 实现：一次前端加载的 UUID 贯穿 capability/monitor/snapshot；记录 DEBUG 的前端数据发布耗时、IPC 总耗时、阶段时间、Git 命令准备与执行时间、退出码和尝试次数。计时覆盖失败路径，显式传播 blocking/numstat 线程上下文，退出时恢复；日志失败不阻塞业务。既有“记录详细日志”开关控制，写入已有轮转 runtime.log，不记录命令参数、路径、URL 或正文。
+- 验证：前端诊断与 Store 38 项测试、TypeScript、Vite 生产构建、Windows 桌面 crate cargo check 通过。浏览器验证真实源码管理组件的非仓库分支，再注入 browserApi 模拟仓库响应，确认更改列表展示、只上报一次关联摘要、上报失败仍保持 ready；此证据不代表真实 Git 或 EXE 性能。Rust Git 领域 83 项回归通过，其中 4 项诊断测试覆盖 DEBUG/INFO 过滤、字段脱敏、失败计数、并发共享及作用域异常恢复；诊断测试在默认并行运行下再次通过。测试浏览器与前端服务已清理。
+- 性能与过度设计评审：每次加载固定大小摘要、每个 Git 调用常数级计时，新增一次不阻塞加载的摘要 IPC；不增加 Git 调用、扫描、业务状态、缓存或依赖。复用已有异步有界日志缓冲与轮转；Info 下不输出诊断。加载拆分、命令合并及弱机器优化后耗时尚未在此次诊断变更中实现或验收。
+
 ## 2026-09-24 macOS 原生浏览器监听恢复构建门禁
 
 - 根因：同文档地址同步为 macOS 新增 `objc2::define_class!` KVO observer 时，在协议实现位置写入了 `objc2::runtime::NSObjectProtocol` 限定路径；`objc2 0.6.4` 的宏这里只匹配单个标识符。首个解析错误还遮住了 `DefinedClass` / `AnyThread` trait 未导入、裸 observer pointer 不满足 Tauri UI 回调 `Send` 边界、字符串日志参数受隐式 `Sized` 限制三处同源编译缺陷。Linux 和 Windows 会跳过 macOS 条件编译分支，现有 PR Checks 又只有 Ubuntu，因此错误直到 release 的 macOS runner 才暴露。
@@ -2657,3 +2664,14 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 方案：预览协议对 SVG 直接返回 `image/svg+xml` 原文，删除 `rasterize_svg` 与 preview grant 的 `svg` 字段；CSP 调整为 `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src data:; sandbox`，保留 `nosniff`，直接导航预览 URL 也无脚本。`resvg` 只保留画布尺寸解析。内置浏览器本地文档扩展名统一为 `BROWSER_DOCUMENT_EXTENSIONS`（html/htm/svg）；前端新增 `isBrowserDocumentPath` 与 `openLocalDocumentInBrowser`，SVG 图片预览工具栏与源码浮层提供“在浏览器中打开”。本地 `.svg` 链接仍默认走文件预览。
 - [x] 验收：Rust `svg_preview_returns_source_under_a_script_free_policy`、`local_svg_opens_as_a_browser_document_served_as_svg`、`plain_local_files_are_not_browser_documents`；Web `open-web-target` 新增 SVG 路由用例，`workspace-html-source` 同步入口断言。Chromium 中以同一 CSP 验证 `<img>` 渲染中文文字与内联 `<style>`，直接打开含 `<script>` 的 SVG 不执行脚本。
 - 性能与过度设计评审：删除后端 CPU 栅格化与 PNG 编解码，渲染交给 WebView GPU；无新增状态、缓存或依赖。
+## 2026-09-24 源码管理首屏渐进加载优化
+
+- [x] 根因证据：用户日志首次加载 47.0258 秒、34 次 Git；进程准备合计约 128ms，监听注册约 5ms，主要等待来自串行子进程和首屏绑定整库数据。
+- [x] 最小失败测试：监听未完成时快照调用次数为 0（预期 1）；监听路径调用 8 次（预期 1）；能力探测调用 6 次（预期 4）。均为明确断言失败，修复后转绿。
+- [x] overview 首屏、statistics 后补、catalog 按仓库/GitHub 页签加载；移除更改页 GitHub 预探测。catalog 错误/未加载独立表达，single-flight 与旧请求拒绝继续复用会话 revision。
+- [x] Git identity/监听/操作标记批量 rev-parse，监听并行注册并合并交接补读；分离 workspace revision 与 catalogRevision，保留写入过期校验、linked worktree 归属和隐藏窗口命令 helper。
+- [x] 保留 DEBUG 日志与同次加载 UUID，统计与 overview 后端可分别定位；首屏摘要不等待统计或日志写入。
+- 验收预算：普通单 remote 主仓库首屏 capability 4 + overview 7 次，monitor 3 次并行；首屏后统计、交接补读和目录查询另计。原机器的新秒数尚待复测。
+- 性能与过度设计评审：不加依赖或持久缓存；目录与统计各一个 in-flight，缓存复用既有 24 会话上限。文件状态仍 O(变更文件)，目录 O(refs + worktrees + stashes) 按需加载；remote get-url 语义和独立 IPC 作用域校验保留。
+
+- [x] 最终验证：Rust Git 领域 86 项通过，linked worktree 扩展断言单独通过；前端 6 文件/64 项通过；TypeScript、Vite 生产构建、Windows desktop cargo check 通过（保留既有 warning）。浏览器真实组件配合受控 browserApi，验证监听/统计挂起仍显示文件、目录首次请求只发生在仓库页签、目录 loading→真实分支、监听就绪后补读、统计补齐；不把 mock 页面结果当作 EXE 耗时证据。测试会话和本次 Vite 服务已清理。

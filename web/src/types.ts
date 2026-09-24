@@ -1024,7 +1024,13 @@ export interface GitCommitReachabilityVm {
   parentOids: string[];
 }
 
+export interface GitSourceControlOverviewVm {
+  repository: GitRepositorySnapshotVm;
+  status: GitWorkspaceStatusVm;
+}
+
 export interface GitSourceControlSnapshotVm {
+  catalogRevision: string;
   repository: GitRepositorySnapshotVm;
   status: GitWorkspaceStatusVm;
   refs: GitRefVm[];

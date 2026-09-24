@@ -30,7 +30,7 @@ import type {
   GitMutationRequestVm,
   GitOperationErrorVm,
   GitOperationRequestVm,
-  GitSourceControlSnapshotVm,
+  GitSourceControlOverviewVm,
 } from '@/types';
 import {
   gitDiffReviewWorkspaceResourceKey,
@@ -43,7 +43,6 @@ import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
 import { SourceControlChangesToolbar, SourceControlSyncActions } from './SourceControlChangesToolbar';
 import { SourceControlGitHubView } from './SourceControlGitHubView';
 import { SourceControlHistoryView } from './SourceControlHistoryView';
-import { githubDataStore, githubRepositorySessionKey } from './github-data-store';
 import { diffReviewStore, workspaceReviewItems } from './diff-review-store';
 import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
 
@@ -73,17 +72,6 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
   useEffect(() => {
     void sourceControlStore.ensureLoaded(resource.projectId, resource.workspacePath);
   }, [resource.projectId, resource.workspacePath]);
-
-  useEffect(() => {
-    const repository = snapshot?.repository;
-    if (!repository) return;
-    const sessionKey = githubRepositorySessionKey(resource.projectId, repository.commonDir, repository.workspacePath);
-    void githubDataStore.getCapability(
-      sessionKey,
-      resource.projectId,
-      repository.workspacePath,
-    ).catch(() => undefined);
-  }, [resource.projectId, snapshot?.repository]);
 
   const changeTab = useCallback((value: SourceControlTab) => {
     sourceControlStore.setActiveTab(resource.projectId, resource.workspacePath, value);
@@ -303,14 +291,14 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         </TabsContent>
 
         <TabsContent value="repository" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          <SourceControlRepositoryView snapshot={snapshot} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} />
+          {session.catalog ? <SourceControlRepositoryView snapshot={{ ...session.catalog, ...snapshot }} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('repository')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
         </TabsContent>
 
         <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          <SourceControlGitHubView
+          {session.catalog ? <SourceControlGitHubView
             projectId={resource.projectId}
             workspacePath={resource.workspacePath}
-            snapshot={snapshot}
+            snapshot={{ ...session.catalog, ...snapshot }}
             busy={busy}
             onPush={(remote, branch) => startOperation({
               kind: 'push',
@@ -318,7 +306,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
               branch,
               setUpstream: branch === snapshot.repository.currentBranch && !snapshot.repository.upstream,
             })}
-          />
+          /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('github')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
         </TabsContent>
       </Tabs>
     </section>
@@ -387,7 +375,7 @@ function SourceControlOperationStatus({ operation, onCancel, onDismiss }: {
 }
 
 function SourceControlConflictWorkflow({ operation, busy, onOperation }: {
-  operation: NonNullable<GitSourceControlSnapshotVm['status']['operationInProgress']>;
+  operation: NonNullable<GitSourceControlOverviewVm['status']['operationInProgress']>;
   busy: boolean;
   onOperation: (input: GitOperationRequestVm) => void;
 }) {

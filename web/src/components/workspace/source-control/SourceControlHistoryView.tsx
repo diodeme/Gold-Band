@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
-import type { GitCommitReviewFileVm, GitCommitVm, GitSourceControlSnapshotVm } from '@/types';
+import type { GitCommitReviewFileVm, GitCommitVm, GitSourceControlOverviewVm } from '@/types';
 import { useWorkspaceResponsiveState } from '../use-workspace-responsive-state';
 import {
   gitDiffReviewWorkspaceResourceKey,
@@ -37,7 +37,7 @@ export function SourceControlHistoryView({
 }: {
   resource: SourceControlWorkspaceResource;
   session: SourceControlSessionSnapshot;
-  snapshot: GitSourceControlSnapshotVm;
+  snapshot: GitSourceControlOverviewVm;
   busy: boolean;
 }) {
   const { t } = useTranslation();

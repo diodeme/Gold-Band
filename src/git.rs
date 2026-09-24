@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::process::{background_command, find_executable_in_path, resolved_child_path};
 use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info, runtime_error};
 
+pub mod diagnostics;
 mod github;
 mod source_control;
 
@@ -268,10 +269,12 @@ enum GitVersionProbe {
 }
 
 fn probe_git_version() -> GitVersionProbe {
-    let Some(mut command) = git_command_from_executable(refresh_resolved_git_executable()) else {
-        return GitVersionProbe::NotInstalled;
-    };
-    let output = match command.arg("--version").env("LC_ALL", "C").output() {
+    let output = match diagnostics::command_output(&["--version"], || {
+        let mut command = git_command_from_executable(refresh_resolved_git_executable())
+            .ok_or_else(|| anyhow!("Git executable was not found"))?;
+        command.arg("--version").env("LC_ALL", "C");
+        Ok(command)
+    }) {
         Ok(output) => output,
         Err(_) => {
             clear_resolved_git_executable();
@@ -428,14 +431,14 @@ pub struct GitCommandRunner;
 
 impl GitCommandRunner {
     pub fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
-        git_background_command()
-            .ok_or_else(|| anyhow!("Git executable was not found"))?
-            .arg("-C")
-            .arg(cwd.as_str())
-            .args(args)
-            .output()
-            .map(GitCommandOutput::from)
-            .with_context(|| format!("failed to execute Git in `{cwd}`"))
+        diagnostics::command_output(args, || {
+            let mut command =
+                git_background_command().ok_or_else(|| anyhow!("Git executable was not found"))?;
+            command.arg("-C").arg(cwd.as_str()).args(args);
+            Ok(command)
+        })
+        .map(GitCommandOutput::from)
+        .with_context(|| format!("failed to execute Git in `{cwd}`"))
     }
 
     fn capture(&self, cwd: &Utf8Path, args: &[&str]) -> Option<String> {
@@ -466,27 +469,28 @@ impl GitRepositoryService {
         };
         let installed_version = Some(version.display);
 
-        let Some(inside) = self
-            .runner
-            .capture(cwd, &["rev-parse", "--is-inside-work-tree"])
-        else {
+        let Some(paths) = self.runner.capture(
+            cwd,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--is-inside-work-tree",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+        ) else {
             return GitCapability::new(GitCapabilityStatus::RepositoryRequired, installed_version);
         };
-        if inside != "true" {
+        let paths: Vec<&str> = paths.lines().collect();
+        if paths.first() != Some(&"true") {
             return GitCapability::new(GitCapabilityStatus::RepositoryRequired, installed_version);
         }
-
-        let repo_root = self
-            .runner
-            .capture(cwd, &["rev-parse", "--show-toplevel"])
-            .and_then(|path| canonical_git_path(&path));
-        let common_dir = self
-            .runner
-            .capture(
-                cwd,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            )
-            .and_then(|path| canonical_git_path(&path));
+        let repo_root = (paths.len() == 3)
+            .then(|| canonical_git_path(paths[1]))
+            .flatten();
+        let common_dir = (paths.len() == 3)
+            .then(|| canonical_git_path(paths[2]))
+            .flatten();
         if repo_root.is_none() || common_dir.is_none() {
             let mut capability = GitCapability::new(
                 GitCapabilityStatus::RepositoryUnavailable,

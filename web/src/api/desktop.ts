@@ -311,6 +311,18 @@ export const desktopApi: RuntimeApi = {
   getWorkflow(taskId: string, projectId?: string | null) {
     return invokeCommand('get_workflow', { projectId, taskId });
   },
+  getConversationExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string) {
+    return invokeCommand('get_conversation_execution_plan', { projectId, taskId, taskUuid, runId });
+  },
+  preflightConversationExecutionPlanSave(command: import('@/types').ExecutionPlanSaveCommandVm) {
+    return invokeCommand('preflight_conversation_execution_plan_save', { command });
+  },
+  saveConversationExecutionPlan(command: import('@/types').ExecutionPlanSaveCommandVm) {
+    return invokeCommand('save_conversation_execution_plan', { command });
+  },
+  recoverConversationExecutionPlanOperation(projectId: string, taskId: string, taskUuid: string, runId: string, operationId: string) {
+    return invokeCommand('recover_conversation_execution_plan_operation', { projectId, taskId, taskUuid, runId, operationId });
+  },
   createTask(input: CreateTaskInput) {
     return invokeCommand('create_task', { input });
   },

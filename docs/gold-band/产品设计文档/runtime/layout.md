@@ -236,6 +236,10 @@ runs/
     run.json
     run-progress.json
     workflow.snapshot.json
+    execution-plan/
+      manifest.json
+      revisions/
+      operations/
     events.jsonl
     rounds/
       round-001/
@@ -246,7 +250,8 @@ runs/
 
 - `run.json`：本次执行的全局状态
 - `run-progress.json`：本次 run 的快速状态视图
-- `workflow.snapshot.json`：本次 run 真正执行的 workflow 快照
+- `execution-plan/manifest.json`：当前 Run 后续分发使用的 execution plan 定位。`planRevision` 与 `run.json` 的 `execution.revision` 分开计数。Workflow payload 是注入后的可执行工作流；AUTO payload 是完整可执行 AUTO 配置。节点完成后的后继和动态节点创建读取这份最新计划，不回写当前 Attempt 的 `resolved_config`。尚未启动的 merge / acceptance 在创建节点时按当前 drive 的控制面重新注入 provider、模型和权限；group 上的注入结果只保留任务与建组投影。同一次 drive 里，已经开始的 Attempt 继续使用进入该 Attempt 的 workflow；后继 Attempt 的 provider 调用使用本次分发临界区读到的同一份计划。dynamic proposal 的 plan read lock 覆盖权威 dynamic node 读取、物化和动态图持久化，防止 Current publish 在一次提议中途切换事实源。
+- `workflow.snapshot.json`：只作为旧 Run 的迁移来源。没有 manifest 时，首次读取该 Run 会把它幂等发布为 plan revision 1；新的 Current 保存不再回写这个文件。
 - `events.jsonl`：run 级时间线
 - `rounds/`：本次 run 内的所有 round
 

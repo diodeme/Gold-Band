@@ -72,6 +72,7 @@ fn profile_supplements_are_channel_scoped_and_complete() {
                     "at most 40 Unicode characters",
                     "Neither case is a blocker",
                 ],
+                _ => unreachable!(),
             };
             for content in [&interview.content, &grill.content] {
                 for marker in identity_markers {
@@ -126,6 +127,7 @@ fn profile_supplements_are_channel_scoped_and_complete() {
                     "commit OID",
                     "CICD uses these commit OIDs",
                 ],
+                _ => unreachable!(),
             };
             assert_eq!(
                 requirement_identity_enabled, dev_test_auto_commit_enabled,
@@ -162,6 +164,7 @@ fn profile_supplements_are_channel_scoped_and_complete() {
                     (grill.content.as_str(), PROFILE_GRILLME_EN),
                     (dev_test.content.as_str(), PROFILE_DEV_TEST_EN),
                 ],
+                _ => unreachable!(),
             };
             for (actual, expected) in expected {
                 assert_eq!(actual, expected);

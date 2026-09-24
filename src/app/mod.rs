@@ -1,3 +1,4 @@
+mod execution_plan_service;
 mod ids;
 pub mod intervention;
 mod node_executor;
@@ -45,6 +46,7 @@ use crate::dynamic::{
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
+use crate::prompts::{CICD_GOAL, LocalizedText};
 use crate::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility,
     ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode,
@@ -80,6 +82,9 @@ use self::orchestrator::{
     dynamic_resume_target_is_active, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
+    prepare_auto_run as orchestrator_prepare_auto_run,
+    prepare_auto_run_in_worktree as orchestrator_prepare_auto_run_in_worktree,
+    prepare_auto_run_in_worktree_at as orchestrator_prepare_auto_run_in_worktree_at,
     prepare_dynamic_acp_prompt, prepare_run as orchestrator_prepare_run,
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
     prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
@@ -252,7 +257,7 @@ fn default_workflow_template(
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
-        name: "默认完整工作流".to_string(),
+        name: workflow_display_name("full", language).to_string(),
         is_built_in: true,
         optional_entry_stage: Some(OptionalEntryStage {
             node_id: "interview".to_string(),
@@ -273,7 +278,7 @@ fn default_lightweight_workflow_template(
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string(),
-        name: "默认轻量工作流".to_string(),
+        name: workflow_display_name("light", language).to_string(),
         is_built_in: true,
         optional_entry_stage: Some(OptionalEntryStage {
             node_id: "grill".to_string(),
@@ -287,40 +292,147 @@ fn default_lightweight_workflow_template(
     }
 }
 
+fn workflow_display_name(kind: &str, language: DesktopLanguage) -> &'static str {
+    let text = match kind {
+        "full" => LocalizedText::all(
+            "默认完整工作流",
+            "預設完整工作流程",
+            "Default full workflow",
+            "既定の完全ワークフロー",
+            "기본 전체 워크플로",
+            "Fluxo completo padrão",
+            "Flujo completo predeterminado",
+        ),
+        "light" => LocalizedText::all(
+            "默认轻量工作流",
+            "預設輕量工作流程",
+            "Default lightweight workflow",
+            "既定の軽量ワークフロー",
+            "기본 경량 워크플로",
+            "Fluxo leve padrão",
+            "Flujo ligero predeterminado",
+        ),
+        "cicd" => LocalizedText::all(
+            "开发构建部署工作流",
+            "開發建置部署工作流程",
+            "Development, Build and Deployment",
+            "開発・ビルド・デプロイのワークフロー",
+            "개발 빌드 배포 워크플로",
+            "Fluxo de desenvolvimento, build e implantação",
+            "Flujo de desarrollo, compilación e implementación",
+        ),
+        _ => LocalizedText::zh_en("", ""),
+    };
+    text.resolve(language)
+}
+
 fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
-    match (language, key) {
-        (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
-        (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
-        (DesktopLanguage::ZhCn, "review") => "审查实现质量并形成明确结论。",
-        (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
-        (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
-        (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
-        (DesktopLanguage::ZhCn, "grill") => {
-            "持续拷问需求直至达成共同理解，并产出 grill-consensus.md。"
-        }
-        (DesktopLanguage::ZhCn, "dev-test") => "在当前工作区完成需求实现、自动化测试和必要回归。",
-        (DesktopLanguage::En, "plan") => {
-            "Analyze the imported requirement and produce an implementation plan."
-        }
-        (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
-        (DesktopLanguage::En, "review") => {
-            "Review the implementation and reach a clear conclusion."
-        }
-        (DesktopLanguage::En, "test") => "Run verification and reach a clear conclusion.",
-        (DesktopLanguage::En, "accept") => {
-            "Validate acceptance against the requirement and reach a clear conclusion."
-        }
-        (DesktopLanguage::En, "cleanup") => {
-            "Clean up resources, finalize handoff notes, and clean up the Git workspace."
-        }
-        (DesktopLanguage::En, "grill") => {
-            "Challenge the requirement until shared understanding is reached and produce grill-consensus.md."
-        }
-        (DesktopLanguage::En, "dev-test") => {
-            "Implement the requirement and run automated verification in the current workspace."
-        }
-        _ => "Execute this workflow node.",
-    }
+    const GOALS: &[(&str, LocalizedText)] = &[
+        (
+            "plan",
+            LocalizedText::all(
+                "分析导入的需求并产出实施方案。",
+                "分析匯入的需求並產出實施方案。",
+                "Analyze the imported requirement and produce an implementation plan.",
+                "取り込まれた要件を分析し、実装計画を作成します。",
+                "가져온 요구사항을 분석하고 구현 계획을 만듭니다.",
+                "Analise o requisito importado e produza um plano de implementação.",
+                "Analice el requisito importado y produzca un plan de implementación.",
+            ),
+        ),
+        (
+            "dev",
+            LocalizedText::all(
+                "在当前工作区实现需求。",
+                "在目前工作區實現需求。",
+                "Implement the requirement in the workspace.",
+                "現在のワークスペースで要件を実装します。",
+                "현재 워크스페이스에서 요구사항을 구현합니다.",
+                "Implemente o requisito no workspace.",
+                "Implemente el requisito en el workspace.",
+            ),
+        ),
+        (
+            "review",
+            LocalizedText::all(
+                "审查实现质量并形成明确结论。",
+                "審查實作品質並形成明確結論。",
+                "Review the implementation and reach a clear conclusion.",
+                "実装をレビューし、明確な結論を出します。",
+                "구현을 검토하고 명확한 결론을 냅니다.",
+                "Revise a implementação e chegue a uma conclusão clara.",
+                "Revise la implementación y llegue a una conclusión clara.",
+            ),
+        ),
+        (
+            "test",
+            LocalizedText::all(
+                "执行验证并形成明确结论。",
+                "執行驗證並形成明確結論。",
+                "Run verification and reach a clear conclusion.",
+                "検証を実行し、明確な結論を出します。",
+                "검증을 실행하고 명확한 결론을 냅니다.",
+                "Execute a verificação e chegue a uma conclusão clara.",
+                "Ejecute la verificación y llegue a una conclusión clara.",
+            ),
+        ),
+        (
+            "accept",
+            LocalizedText::all(
+                "对照需求进行验收并形成明确结论。",
+                "對照需求進行驗收並形成明確結論。",
+                "Validate acceptance against the requirement and reach a clear conclusion.",
+                "要件と照合して Acceptance を行い、明確な結論を出します。",
+                "요구사항과 대조해 Acceptance를 수행하고 명확한 결론을 냅니다.",
+                "Valide o Acceptance em relação ao requisito e chegue a uma conclusão clara.",
+                "Valide el Acceptance frente al requisito y llegue a una conclusión clara.",
+            ),
+        ),
+        (
+            "cleanup",
+            LocalizedText::all(
+                "清理资源、整理交付说明并清理 Git 工作区。",
+                "清理資源、整理交付說明並清理 Git 工作區。",
+                "Clean up resources, finalize handoff notes, and clean up the Git workspace.",
+                "リソースを解放し、引き継ぎメモを整え、Git ワークスペースをクリーンアップします。",
+                "리소스를 정리하고, 인수인계 메모를 마무리하고, Git 워크스페이스를 정리합니다.",
+                "Limpe os recursos, finalize as notas de handoff e limpe o workspace Git.",
+                "Limpie los recursos, cierre las notas de handoff y limpie el workspace de Git.",
+            ),
+        ),
+        (
+            "grill",
+            LocalizedText::all(
+                "持续拷问需求直至达成共同理解，并产出 grill-consensus.md。",
+                "持續詰問需求直至達成共同理解，並產出 grill-consensus.md。",
+                "Challenge the requirement until shared understanding is reached and produce grill-consensus.md.",
+                "共通理解に至るまで要件を問い続け、grill-consensus.md を作成します。",
+                "공통 이해에 도달할 때까지 요구사항을 계속 질의하고 grill-consensus.md를 만듭니다.",
+                "Questione o requisito até haver entendimento comum e produza grill-consensus.md.",
+                "Cuestione el requisito hasta alcanzar un entendimiento común y produzca grill-consensus.md.",
+            ),
+        ),
+        (
+            "dev-test",
+            LocalizedText::all(
+                "在当前工作区完成需求实现、自动化测试和必要回归。",
+                "在目前工作區完成需求實現、自動化測試和必要回歸。",
+                "Implement the requirement and run automated verification in the current workspace.",
+                "現在のワークスペースで要件の実装、自動テスト、必要な回帰を完了します。",
+                "현재 워크스페이스에서 요구사항 구현, 자동화 테스트, 필요한 회귀를 완료합니다.",
+                "Implemente o requisito e execute a verificação automatizada no workspace atual.",
+                "Implemente el requisito y ejecute la verificación automatizada en el workspace actual.",
+            ),
+        ),
+    ];
+    GOALS
+        .iter()
+        .find(|(goal_key, _)| *goal_key == key)
+        .map(|(_, text)| text.resolve(language))
+        .unwrap_or_else(|| {
+            LocalizedText::zh_en("执行此工作流节点。", "Execute this workflow node.")
+                .resolve(language)
+        })
 }
 
 fn wb_cicd_workflow_template(
@@ -329,11 +441,7 @@ fn wb_cicd_workflow_template(
 ) -> WorkflowTemplate {
     let mut template = default_lightweight_workflow_template(profiles, language);
     template.id = WB_CICD_WORKFLOW_TEMPLATE_ID.into();
-    template.name = match language {
-        DesktopLanguage::ZhCn => "开发构建部署工作流",
-        DesktopLanguage::En => "Development, Build and Deployment",
-    }
-    .into();
+    template.name = workflow_display_name("cicd", language).into();
     template.workflow.id = "task-workflow-cicd".into();
     let mut cicd = template
         .workflow
@@ -345,14 +453,7 @@ fn wb_cicd_workflow_template(
     if let NodeDsl::Worker(worker) = &mut cicd {
         worker.id = "cicd".into();
         worker.profile = Some("pf-builtin-cicd".into());
-        worker.goal = Some(
-            match language {
-                DesktopLanguage::ZhCn => include_str!("../prompts/zh-CN/runtime/cicd-goal.md"),
-                DesktopLanguage::En => include_str!("../prompts/en/runtime/cicd-goal.md"),
-            }
-            .trim()
-            .into(),
-        );
+        worker.goal = Some(CICD_GOAL.resolve(language).trim().into());
         worker.output = None;
         worker.success_condition = None;
         worker.manual_check = Some(true);
@@ -3955,7 +4056,18 @@ impl App {
         )?)
     }
 
-    fn save_task_authoring_workflow(
+    pub(crate) fn save_task_authoring_workflow(
+        &self,
+        task_id: &str,
+        authoring: TaskAuthoringWorkflow,
+    ) -> Result<()> {
+        let key = crate::execution_plan::authoring_lock_key(&self.paths.project_id, task_id);
+        let _lock =
+            crate::execution_plan::try_acquire_plan_write(&key).map_err(|error| anyhow!(error))?;
+        self.save_task_authoring_workflow_unlocked(task_id, authoring)
+    }
+
+    pub(crate) fn save_task_authoring_workflow_unlocked(
         &self,
         task_id: &str,
         mut authoring: TaskAuthoringWorkflow,
@@ -3973,7 +4085,10 @@ impl App {
             persisted.as_ref(),
             None,
         )?;
-        write_json(&path, &authoring)
+        write_json(&path, &authoring)?;
+        crate::execution_plan::bump_authoring_revision(&self.paths, task_id)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
     }
 
     fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
@@ -4483,7 +4598,12 @@ impl App {
     }
 
     pub fn workflow_snapshot_show(&self, task_id: &str, run_id: &str) -> Result<Option<String>> {
-        self.read_optional_text(&self.paths.workflow_snapshot_file(task_id, run_id))
+        if !self.paths.run_file(task_id, run_id).exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::to_string_pretty(
+            &self.current_run_workflow(task_id, run_id)?,
+        )?))
     }
 
     pub fn worker_ref_show(
@@ -5857,6 +5977,39 @@ impl App {
         orchestrator_prepare_run_with_authoring(self, task_id, authoring)
     }
 
+    pub fn prepare_auto_run(
+        &self,
+        task_id: &str,
+        auto_config: crate::config::ConversationAutoConfig,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_auto_run(self, task_id, auto_config)
+    }
+
+    pub fn prepare_auto_run_in_worktree(
+        &self,
+        task_id: &str,
+        auto_config: crate::config::ConversationAutoConfig,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_auto_run_in_worktree(self, task_id, auto_config)
+    }
+
+    pub fn prepare_auto_run_in_worktree_at(
+        &self,
+        task_id: &str,
+        auto_config: crate::config::ConversationAutoConfig,
+        fork_commit: String,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_auto_run_in_worktree_at(self, task_id, auto_config, fork_commit)
+    }
+
+    pub fn current_run_workflow(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<crate::dsl::WorkflowDsl> {
+        state_access::load_run_workflow(self, task_id, run_id)
+    }
+
     pub fn launch_prepared_run_background(
         &self,
         task_id: &str,
@@ -5994,15 +6147,14 @@ impl App {
                     continue;
                 };
                 let run_file = self.paths.run_file(task_id, run_id);
-                let snapshot_file = self.paths.workflow_snapshot_file(task_id, run_id);
-                if !run_file.exists() || !snapshot_file.exists() {
+                if !run_file.exists() {
                     continue;
                 }
                 let run = read_json::<RunState>(&run_file)?;
                 if !self.run_snapshot_is_actionable(task_id, &run)? {
                     continue;
                 }
-                let workflow = read_json::<WorkflowDsl>(&snapshot_file)?;
+                let workflow = self.current_run_workflow(task_id, run_id)?;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.run_count += 1;
                 }
@@ -6261,7 +6413,7 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
         ENV_LOCK
             .get_or_init(|| std::sync::Mutex::new(()))
@@ -6781,7 +6933,7 @@ mod tests {
         test_app_with_named_provider_capabilities(repo_root, "claude-acp", capabilities)
     }
 
-    fn test_app_with_named_provider_capabilities(
+    pub(super) fn test_app_with_named_provider_capabilities(
         repo_root: Utf8PathBuf,
         provider: &str,
         capabilities: serde_json::Value,
@@ -6808,7 +6960,10 @@ mod tests {
         )
     }
 
-    fn worker_workflow(model: Option<&str>, permission_mode: Option<&str>) -> WorkflowDsl {
+    pub(super) fn worker_workflow(
+        model: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> WorkflowDsl {
         WorkflowDsl {
             version: "0.1".to_string(),
             id: "workflow-test".to_string(),

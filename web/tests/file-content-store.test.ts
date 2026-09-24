@@ -191,6 +191,71 @@ describe('FileContentStore autosave contract', () => {
       && store.snapshot(resource.key).snapshot.content).toBe('disk replacement');
   });
 
+  it('keeps the editor instance when a clean reload returns the same bytes', async () => {
+    const store = createStore();
+    await store.load(resource);
+    const previousContentRevision = store.snapshot(resource.key).contentRevision;
+    store.persistEditorState(resource.key, { history: ['kept'] }, previousContentRevision);
+    api.readFileResource.mockResolvedValueOnce(snapshot('start', revision('disk-1')));
+
+    await store.load(resource, false, true, true);
+
+    expect(store.snapshot(resource.key).contentRevision).toBe(previousContentRevision);
+    expect(store.editorState(resource.key)).toEqual({ history: ['kept'] });
+    store.persistEditorState(resource.key, { history: ['still-current'] }, previousContentRevision);
+    expect(store.editorState(resource.key)).toEqual({ history: ['still-current'] });
+  });
+
+  it('keeps the reading position across a same-byte reload and drops it when disk content changes', async () => {
+    const store = createStore();
+    await store.load(resource);
+    const previousContentRevision = store.snapshot(resource.key).contentRevision;
+    const readingAnchor = {
+      position: 120,
+      blockOffsetTop: 8,
+      blockRange: { from: 100, to: 140 },
+      widgetRange: null,
+      widgetAnchor: null,
+    };
+    store.persistEditorState(resource.key, { history: ['kept'] }, previousContentRevision, readingAnchor, 480);
+    store.consumeLocationTarget(resource.key, 4);
+
+    api.readFileResource.mockResolvedValueOnce(snapshot('start', revision('disk-1')));
+    await store.load(resource, false, true, true);
+
+    expect(store.editorViewport(resource.key)).toEqual(readingAnchor);
+    expect(store.editorScrollTop(resource.key)).toBe(480);
+    expect(store.consumedLocationTarget(resource.key)).toBe(4);
+
+    api.readFileResource.mockResolvedValueOnce(snapshot('disk replacement', revision('disk-2')));
+    await store.load(resource, false, true);
+    store.persistEditorState(resource.key, { history: ['stale'] }, previousContentRevision, readingAnchor);
+
+    expect(store.editorViewport(resource.key)).toBeNull();
+    expect(store.editorScrollTop(resource.key)).toBe(0);
+    expect(store.consumedLocationTarget(resource.key)).toBe(0);
+    expect(store.editorState(resource.key)).toBeNull();
+  });
+
+  it('does not flash loading or drop the scroll offset when a watched file is opened again', async () => {
+    const store = createStore();
+    await store.startProjectWatch(resource.projectId);
+    await store.load(resource);
+    const contentRevision = store.snapshot(resource.key).contentRevision;
+    store.persistEditorState(resource.key, { history: ['kept'] }, contentRevision, null, 480);
+    await store.stopProjectWatch(resource.projectId);
+
+    const statuses: string[] = [];
+    store.subscribe(() => statuses.push(store.snapshot(resource.key).status));
+    const pending = store.load(resource);
+    expect(store.snapshot(resource.key).status).toBe('ready');
+    await pending;
+
+    expect(statuses).not.toContain('loading');
+    expect(store.snapshot(resource.key).contentRevision).toBe(contentRevision);
+    expect(store.editorScrollTop(resource.key)).toBe(480);
+  });
+
   it('flushes a deactivated file without releasing its content, history, or grant', async () => {
     const store = createStore();
     api.readFileResource.mockResolvedValueOnce(externalSnapshot());
@@ -301,6 +366,29 @@ describe('FileContentStore autosave contract', () => {
       kind: 'error',
       errorCode: 'workspace-file.not-found',
     });
+  });
+
+  it('rereads a cached file after the project watch stops and keeps it while that watch stays active', async () => {
+    const store = createStore();
+    const other: FileWorkspaceResource = {
+      ...resource,
+      key: 'file:project-1:D:/repo/other.txt',
+      title: 'other.txt',
+      locator: { ...resource.locator, canonicalPath: 'D:/repo/other.txt', relativePath: 'other.txt' },
+    };
+    await store.load(resource);
+    await store.load(other);
+    await store.startProjectWatch(resource.projectId);
+    await store.load(resource);
+    expect(api.readFileResource).toHaveBeenCalledTimes(2);
+
+    await store.stopProjectWatch(resource.projectId);
+    api.readFileResource.mockResolvedValueOnce(snapshot('after gap', revision('disk-2')));
+    await store.load(resource);
+
+    expect(store.snapshot(resource.key).snapshot?.kind === 'text' && store.snapshot(resource.key).snapshot.content).toBe('after gap');
+    expect(api.readFileResource).toHaveBeenCalledTimes(3);
+    expect(store.snapshot(other.key).snapshot?.kind === 'text' && store.snapshot(other.key).snapshot.content).toBe('start');
   });
 
   it('reconciles clean cached content after the workspace watcher becomes active', async () => {

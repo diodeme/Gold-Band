@@ -1,6 +1,6 @@
 [package]
 name = "gold-band"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -74,6 +74,9 @@ unicode-properties = { version = "0.1", features = ["general-category"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+
+[target.'cfg(not(windows))'.dependencies]
+sys-locale = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

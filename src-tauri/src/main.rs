@@ -5,6 +5,7 @@ mod avatar;
 mod browser;
 mod browser_bookmarks;
 mod browser_history;
+mod browser_location;
 mod browser_ua;
 mod builtin_mcp;
 mod channel;
@@ -81,13 +82,15 @@ use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
     delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
-    get_conversation_pinned_task_page, get_conversation_run, get_conversation_run_mode,
-    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
-    get_conversation_task_page, get_conversation_workspaces, get_scheduled_runtime_settings,
-    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
-    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
-    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
-    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
+    get_conversation_execution_plan, get_conversation_pinned_task_page, get_conversation_run,
+    get_conversation_run_mode, get_conversation_run_summary_page,
+    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
+    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
+    get_supported_attachment_extensions, list_scheduled_execution_history, list_scheduled_tasks,
+    materialize_conversation_attachments, pin_conversation,
+    preflight_conversation_execution_plan_save, recover_conversation_execution_plan_operation,
+    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
+    run_scheduled_task_now, save_conversation_execution_plan, save_conversation_preference,
     save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
     save_scheduled_runtime_settings, search_conversation_tasks, set_scheduled_task_enabled,
     show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
@@ -139,8 +142,8 @@ fn run() -> anyhow::Result<()> {
         // WebView2's opaque controller visibly lags behind Win32 edge resizing and exposes
         // black/white bars. Composition mode avoids that artifact while the CSS root still
         // paints an opaque application surface. Windows 11 keeps the DWM shadow for native
-        // rounding; Windows 10 disables TAO's asymmetric undecorated frame and uses the
-        // application-owned inset outline instead.
+        // rounding. Windows 10 keeps TAO's undecorated shadow off — that path insets the
+        // client on three sides — and asks DWM for a symmetric outer shadow separately.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
         // WRY maps this setting to both WebView2 IsZoomControlEnabled and
@@ -246,6 +249,7 @@ fn run() -> anyhow::Result<()> {
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::ensure_undecorated_edge_resize(&window);
+                window_chrome::install_win10_compositor_shadow(&window);
             }
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
@@ -604,7 +608,11 @@ fn run() -> anyhow::Result<()> {
             unpin_conversation,
             reorder_pinned_conversations,
             search_conversation_tasks,
+            get_conversation_execution_plan,
             get_conversation_run_mode,
+            preflight_conversation_execution_plan_save,
+            save_conversation_execution_plan,
+            recover_conversation_execution_plan_operation,
             save_conversation_run_mode,
             choose_conversation_workspace,
             add_conversation_workspace,

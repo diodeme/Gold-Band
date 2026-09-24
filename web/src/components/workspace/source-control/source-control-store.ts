@@ -28,6 +28,7 @@ import type {
   GitSourceControlSnapshotVm,
   WorkspaceFileChangedEventVm,
 } from '@/types';
+import { diffReviewStore } from './diff-review-store';
 import {
   normalizeSourceControlWorkspacePath,
   sourceControlWorkspaceSessionKey,
@@ -54,6 +55,7 @@ export interface SourceControlSessionSnapshot {
   capability: GitCapabilityVm | null;
   snapshot: GitSourceControlSnapshotVm | null;
   history: GitHistoryPageVm | null;
+  historyLoading: boolean;
   activeTab: SourceControlTab;
   repositoryTab: SourceControlRepositoryTab;
   historyPage: number;
@@ -95,6 +97,7 @@ interface SessionRuntime {
   listeners: Set<() => void>;
   repositoryRequestRevision: number;
   historyRequestRevision: number;
+  historyPromise: Promise<void> | null;
   detailRequestRevision: number;
   reachabilityRequestRevision: number;
   loadPromise: Promise<void> | null;
@@ -103,6 +106,8 @@ interface SessionRuntime {
   invalidationTimer: ReturnType<typeof setTimeout> | null;
   invalidationStartedAt: number | null;
   pendingInvalidation: SourceControlInvalidationScope | null;
+  pendingDiffPaths: Set<string>;
+  pendingDiffAll: boolean;
   finishingOperationId: string | null;
   historyCommitScrollTop: number;
   historyReviewScrollTop: number;
@@ -195,8 +200,12 @@ export class SourceControlStore {
 
   setActiveTab(projectId: string, workspacePath: string | null | undefined, activeTab: SourceControlTab) {
     const runtime = this.runtime(projectId, workspacePath);
-    if (runtime.snapshot.activeTab === activeTab) return;
-    this.update(runtime, { ...runtime.snapshot, activeTab });
+    if (runtime.snapshot.activeTab === activeTab) {
+      return activeTab === 'history' ? this.ensureHistory(projectId, workspacePath) : Promise.resolve();
+    }
+    const historyLoading = activeTab === 'history' && runtime.snapshot.history == null;
+    this.update(runtime, { ...runtime.snapshot, activeTab, historyLoading });
+    return historyLoading ? this.ensureHistory(projectId, workspacePath) : Promise.resolve();
   }
 
   setHistoryPage(projectId: string, workspacePath: string | null | undefined, historyPage: number) {
@@ -360,6 +369,7 @@ export class SourceControlStore {
       mutationApplied = true;
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       if (result.scope === 'workspace') {
+        runtime.pendingDiffAll = true;
         this.update(runtime, {
           ...runtime.snapshot,
           snapshot: {
@@ -370,14 +380,18 @@ export class SourceControlStore {
           pendingAction: null,
           error: null,
         });
+        this.applyWorkspaceProjection(runtime, result.status);
         return;
       }
       const [nextSnapshot, history] = await Promise.all([
         this.api.getSnapshot(projectId, workspacePath),
-        this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
+        this.historyIsCurrent(runtime)
+          ? this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE })
+          : Promise.resolve(runtime.snapshot.history),
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.registerCanonicalAlias(runtime, nextSnapshot.repository.workspacePath);
+      runtime.pendingDiffAll = true;
       this.update(runtime, {
         ...resetHistoryState(runtime.snapshot),
         status: 'ready',
@@ -389,13 +403,18 @@ export class SourceControlStore {
         subject: input.kind === 'commit' ? '' : runtime.snapshot.subject,
         body: input.kind === 'commit' ? '' : runtime.snapshot.body,
       });
+      this.applyWorkspaceProjection(runtime, nextSnapshot.status);
     } catch (reason) {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
+      const error = structuredErrorFrom(reason, mutationApplied ? 'git.status-failed' : 'git.operation-failed');
       this.update(runtime, {
         ...runtime.snapshot,
         pendingAction: null,
-        error: structuredErrorFrom(reason, mutationApplied ? 'git.status-failed' : 'git.operation-failed'),
+        error,
       });
+      if (isRevisionChangedError(error.code)) {
+        void this.load(projectId, workspacePath, true, false, 'background');
+      }
     }
   }
 
@@ -534,18 +553,24 @@ export class SourceControlStore {
       await this.ensureSubscriptions();
       const activeOperation = await this.api.startOperation(projectId, workspacePath, {
         ...input,
-        expectedRevision: snapshot.repository.revision,
+        expectedRevision: operationUsesSyncRevision(input.kind)
+          ? snapshot.repository.syncRevision
+          : snapshot.repository.revision,
       });
       const latestOperation = this.earlyOperationUpdates.get(activeOperation.operationId) ?? activeOperation;
       this.earlyOperationUpdates.delete(activeOperation.operationId);
       this.update(runtime, { ...runtime.snapshot, activeOperation: latestOperation });
       if (!isOperationPending(latestOperation)) void this.finishOperation(runtime, latestOperation);
     } catch (reason) {
+      const error = structuredErrorFrom(reason, 'git.operation-failed');
       this.update(runtime, {
         ...runtime.snapshot,
         pendingAction: null,
-        error: structuredErrorFrom(reason, 'git.operation-failed'),
+        error,
       });
+      if (isRevisionChangedError(error.code)) {
+        void this.load(projectId, workspacePath, true, false, 'background');
+      }
     }
   }
 
@@ -574,6 +599,41 @@ export class SourceControlStore {
     }
   }
 
+  private historyIsCurrent(runtime: SessionRuntime) {
+    return runtime.snapshot.history != null || runtime.snapshot.activeTab === 'history';
+  }
+
+  private ensureHistory(projectId: string, workspacePath: string | null | undefined) {
+    const runtime = this.runtime(projectId, workspacePath);
+    if (runtime.snapshot.history || runtime.snapshot.status !== 'ready') {
+      if (runtime.snapshot.historyLoading && runtime.snapshot.history) {
+        this.update(runtime, { ...runtime.snapshot, historyLoading: false });
+      }
+      return Promise.resolve();
+    }
+    if (runtime.historyPromise) return runtime.historyPromise;
+    const requestRevision = ++runtime.historyRequestRevision;
+    if (!runtime.snapshot.historyLoading) {
+      this.update(runtime, { ...runtime.snapshot, historyLoading: true });
+    }
+    const request = (async () => {
+      const page = await this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE });
+      if (runtime.historyRequestRevision !== requestRevision) return;
+      this.update(runtime, { ...runtime.snapshot, history: page, historyLoading: false });
+    })().catch((reason: unknown) => {
+      if (runtime.historyRequestRevision !== requestRevision) return;
+      this.update(runtime, {
+        ...runtime.snapshot,
+        historyLoading: false,
+        error: structuredErrorFrom(reason, 'git.history-query-failed'),
+      });
+    }).finally(() => {
+      if (runtime.historyPromise === request) runtime.historyPromise = null;
+    });
+    runtime.historyPromise = request;
+    return request;
+  }
+
   private async load(
     projectId: string,
     workspacePath: string | null | undefined,
@@ -594,10 +654,8 @@ export class SourceControlStore {
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
     const operationError = refreshKind === 'background'
-      && runtime.snapshot.activeOperation?.error
-      && sameStructuredError(runtime.snapshot.error, runtime.snapshot.activeOperation.error)
-        ? runtime.snapshot.error
-        : null;
+      ? preservedBackgroundError(runtime)
+      : null;
     this.update(runtime, {
       ...runtime.snapshot,
       status: runtime.snapshot.snapshot ? 'ready' : 'loading',
@@ -628,9 +686,12 @@ export class SourceControlStore {
         await this.startMonitor(runtime, workspacePath);
         if (runtime.repositoryRequestRevision !== requestRevision) return;
       }
+      const includeHistory = this.historyIsCurrent(runtime);
       const [snapshot, history] = await Promise.all([
         this.api.getSnapshot(projectId, workspacePath),
-        this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
+        includeHistory
+          ? this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE })
+          : Promise.resolve(runtime.snapshot.history),
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.registerCanonicalAlias(runtime, snapshot.repository.workspacePath);
@@ -640,10 +701,23 @@ export class SourceControlStore {
         capability,
         canonicalWorkspacePath: snapshot.repository.workspacePath,
         snapshot,
-        history,
+        history: includeHistory ? history : runtime.snapshot.history,
+        historyLoading: includeHistory ? false : runtime.snapshot.historyLoading,
         refreshing: null,
         error: operationError,
       });
+      this.applyWorkspaceProjection(runtime, snapshot.status);
+      if (!resetNavigation && includeHistory && runtime.snapshot.activeTab === 'history') {
+        const selectedOids = [...runtime.snapshot.selectedCommitOids];
+        if (selectedOids.length > 0) {
+          this.update(runtime, {
+            ...runtime.snapshot,
+            commitReview: null,
+            historyDetailLoading: true,
+          });
+          void this.loadCommitReview(projectId, workspacePath, selectedOids);
+        }
+      }
     })().catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -652,6 +726,13 @@ export class SourceControlStore {
         refreshing: null,
         error: structuredErrorFrom(reason, 'git.status-failed'),
       });
+      if (
+        runtime.snapshot.activeTab === 'history'
+        && runtime.snapshot.selectedCommitOids.size > 0
+        && runtime.snapshot.commitReview === null
+      ) {
+        this.update(runtime, { ...runtime.snapshot, historyDetailLoading: false });
+      }
     }).finally(() => {
       if (runtime.loadPromise === request) {
         runtime.loadPromise = null;
@@ -698,6 +779,7 @@ export class SourceControlStore {
               event.workspacePath,
             ))
       ) {
+        runtime.pendingDiffAll = true;
         this.scheduleInvalidation(runtime, 'repository');
       }
     }
@@ -714,6 +796,9 @@ export class SourceControlStore {
         && workspacePath
         && pathIsWithinWorkspace(event.canonicalPath, workspacePath)
       ) {
+        const relativePath = workspaceRelativePath(workspacePath, event.canonicalPath);
+        if (relativePath) runtime.pendingDiffPaths.add(relativePath);
+        else runtime.pendingDiffAll = true;
         this.scheduleInvalidation(runtime, 'worktree');
       }
     }
@@ -780,6 +865,7 @@ export class SourceControlStore {
         refreshing: null,
         error: null,
       });
+      this.applyWorkspaceProjection(runtime, snapshot.status);
     }).catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -866,6 +952,7 @@ export class SourceControlStore {
         listeners: new Set(),
         repositoryRequestRevision: 0,
         historyRequestRevision: 0,
+        historyPromise: null,
         detailRequestRevision: 0,
         reachabilityRequestRevision: 0,
         loadPromise: null,
@@ -874,6 +961,8 @@ export class SourceControlStore {
         invalidationTimer: null,
         invalidationStartedAt: null,
         pendingInvalidation: null,
+        pendingDiffPaths: new Set(),
+        pendingDiffAll: false,
         finishingOperationId: null,
         historyCommitScrollTop: 0,
         historyReviewScrollTop: 0,
@@ -887,6 +976,22 @@ export class SourceControlStore {
       this.sessions.set(storageKey, runtime);
     }
     return runtime;
+  }
+
+  private applyWorkspaceProjection(runtime: SessionRuntime, status: GitSourceControlSnapshotVm['status']) {
+    const invalidate = runtime.pendingDiffAll
+      ? { all: true, paths: [] as string[] }
+      : { all: false, paths: [...runtime.pendingDiffPaths] };
+    runtime.pendingDiffAll = false;
+    runtime.pendingDiffPaths.clear();
+    diffReviewStore.publishWorkspaceRefresh({
+      projectId: runtime.snapshot.projectId,
+      workspacePath: runtime.snapshot.requestedWorkspacePath,
+      staged: status.staged,
+      unstaged: status.unstaged,
+      untracked: status.untracked,
+      invalidate,
+    });
   }
 
   private registerCanonicalAlias(runtime: SessionRuntime, canonicalWorkspacePath: string) {
@@ -944,6 +1049,7 @@ function idleSnapshot(projectId: string, workspacePath: string | null | undefine
     capability: null,
     snapshot: null,
     history: null,
+    historyLoading: false,
     activeTab: 'changes',
     repositoryTab: 'branches',
     historyPage: 0,
@@ -995,6 +1101,14 @@ function pathIsWithinWorkspace(path: string, workspacePath: string) {
   return candidate === root || candidate.startsWith(`${root}/`);
 }
 
+function workspaceRelativePath(workspacePath: string, canonicalPath: string) {
+  const root = normalizeWorkspacePath(workspacePath);
+  const candidate = normalizeWorkspacePath(canonicalPath);
+  const prefix = `${root}/`;
+  if (!candidate.startsWith(prefix)) return null;
+  return candidate.slice(prefix.length);
+}
+
 function pendingActionFromMutation(input: GitMutationRequestVm): SourceControlPendingAction {
   const path = input.kind === 'worktree-remove'
     ? input.path
@@ -1006,6 +1120,28 @@ function pendingActionFromMutation(input: GitMutationRequestVm): SourceControlPe
 
 function isOperationPending(operation: GitOperationVm) {
   return operation.status === 'queued' || operation.status === 'running';
+}
+
+const SYNC_OPERATION_KINDS = new Set<GitOperationRequestVm['kind']>(['fetch', 'pull', 'push', 'push-tag']);
+const REVISION_CHANGED_CODES = new Set(['git.ref-changed', 'git.sync-ref-changed']);
+
+function operationUsesSyncRevision(kind: GitOperationRequestVm['kind']) {
+  return SYNC_OPERATION_KINDS.has(kind);
+}
+
+function isRevisionChangedError(code: string) {
+  return REVISION_CHANGED_CODES.has(code);
+}
+
+function preservedBackgroundError(runtime: SessionRuntime) {
+  const error = runtime.snapshot.error;
+  if (error && isRevisionChangedError(error.code)) return error;
+  if (
+    runtime.snapshot.activeOperation?.error
+    && error
+    && sameStructuredError(error, runtime.snapshot.activeOperation.error)
+  ) return error;
+  return null;
 }
 
 function structuredErrorFrom(reason: unknown, fallback: string): GitOperationErrorVm {

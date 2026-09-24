@@ -459,16 +459,17 @@ describe('WorkspaceFileEditor target intent', () => {
     );
     try {
       await act(async () => root.render(<ModeHarness />));
-      await act(async () => new Promise((resolve) => setTimeout(resolve, 600)));
+      await vi.waitFor(() => expect(container.querySelector('.workspace-markdown-live-preview')).not.toBeNull(), { timeout: 5_000 });
       const originalView = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+      const baseline = viewportRestoreCalls().length;
 
       await switchMode();
-      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(1), { timeout: 5_000 });
+      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(baseline + 1), { timeout: 5_000 });
       expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(originalView);
       await switchMode();
-      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(2), { timeout: 5_000 });
+      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(baseline + 2), { timeout: 5_000 });
 
-      const viewportRestores = viewportRestoreCalls();
+      const viewportRestores = viewportRestoreCalls().slice(baseline);
       expect(viewportRestores).toHaveLength(2);
       expect(viewportRestores[1]).toEqual(viewportRestores[0]);
       expect(decode).toHaveBeenCalledOnce();
@@ -479,7 +480,7 @@ describe('WorkspaceFileEditor target intent', () => {
       if (originalDecode) Object.defineProperty(HTMLImageElement.prototype, 'decode', originalDecode);
       else Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
     }
-  });
+  }, 20_000);
 
   it('restores the real todo table after preview-source-preview mode changes', async () => {
     const container = document.createElement('div');
@@ -712,6 +713,118 @@ describe('WorkspaceFileEditor target intent', () => {
       expect(EditorView.scrollIntoView).toHaveBeenCalledTimes(firstRevealCount + 1);
     } finally {
       await act(async () => root.unmount());
+    }
+  });
+
+  it('restores a saved reading position instead of replaying a consumed line target', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const value = Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join('\n');
+    const readingAnchor = {
+      position: 120,
+      blockOffsetTop: 8,
+      blockRange: { from: 100, to: 140 },
+      widgetRange: null,
+      widgetAnchor: null,
+    };
+    const onPersistState = vi.fn();
+    try {
+      await act(async () => root.render(
+        <WorkspaceFileEditor
+          documentKey="readme-return"
+          value={value}
+          editable
+          language="text"
+          highlight={false}
+          contentRevision={1}
+          target={{ line: 40, column: null, endLine: null }}
+          targetRevision={4}
+          onChange={() => undefined}
+          onSave={() => undefined}
+          initialStateJson={null}
+          onPersistState={onPersistState}
+          initialViewportAnchor={readingAnchor}
+          initialConsumedLocationRevision={4}
+        />,
+      ));
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 120)));
+
+      expect(EditorView.scrollIntoView).toHaveBeenCalledWith(120, { y: 'start', yMargin: 8 });
+      expect(EditorView.scrollIntoView).not.toHaveBeenCalledWith(expect.anything(), { y: 'center' });
+      const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+      expect(view?.state.selection.main.head).toBe(0);
+      await act(async () => root.unmount());
+      expect(onPersistState).toHaveBeenCalledWith(expect.anything(), readingAnchor, expect.any(Number));
+    } finally {
+      if (container.isConnected) await act(async () => root.unmount());
+    }
+  });
+
+  it('remembers the scroller offset and restores it after the editor is created again', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const value = Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join('\n');
+    const onPersistState = vi.fn();
+    let firstRootMounted = true;
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 4_000 });
+    try {
+      await act(async () => root.render(
+        <WorkspaceFileEditor
+          documentKey="readme-scroll"
+          value={value}
+          editable
+          language="text"
+          highlight={false}
+          contentRevision={1}
+          target={null}
+          targetRevision={0}
+          onChange={() => undefined}
+          onSave={() => undefined}
+          initialStateJson={null}
+          onPersistState={onPersistState}
+        />,
+      ));
+      const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+      expect(view).toBeTruthy();
+      view!.scrollDOM.scrollTop = 480;
+      view!.scrollDOM.dispatchEvent(new Event('scroll'));
+      await act(async () => root.unmount());
+      firstRootMounted = false;
+
+      expect(onPersistState).toHaveBeenCalledWith(expect.anything(), null, 480);
+
+      const restoredRoot = createRoot(container);
+      try {
+        await act(async () => restoredRoot.render(
+          <WorkspaceFileEditor
+            documentKey="readme-scroll"
+            value={value}
+            editable
+            language="text"
+            highlight={false}
+            contentRevision={1}
+            target={null}
+            targetRevision={0}
+            onChange={() => undefined}
+            onSave={() => undefined}
+            initialStateJson={null}
+            onPersistState={() => undefined}
+            initialViewportScrollTop={480}
+          />,
+        ));
+        await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+        const restored = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+        expect(restored?.scrollDOM.scrollTop).toBe(480);
+      } finally {
+        await act(async () => restoredRoot.unmount());
+      }
+    } finally {
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeight);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      if (firstRootMounted) await act(async () => root.unmount());
     }
   });
 

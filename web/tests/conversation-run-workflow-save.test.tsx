@@ -4,13 +4,16 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ConversationRunVm, WorkflowDsl, WorkflowModelBindings, WorkflowVm } from '@/types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ConversationRunVm, ExecutionPlanSaveResultVm, ExecutionPlanViewVm, WorkflowDsl, WorkflowModelBindings } from '@/types';
 
 const api = vi.hoisted(() => ({
   getAgentRegistry: vi.fn(),
   getProfiles: vi.fn(),
-  getWorkflow: vi.fn(),
+  getConversationExecutionPlan: vi.fn(),
+  preflightConversationExecutionPlanSave: vi.fn(),
+  saveConversationExecutionPlan: vi.fn(),
+  recoverConversationExecutionPlanOperation: vi.fn(),
 }));
 
 const workflow: WorkflowDsl = {
@@ -33,10 +36,30 @@ const modelBindings: WorkflowModelBindings = {
   }],
 };
 
-const workflowVm = {
-  workflowJson: JSON.stringify(workflow),
-  modelBindings,
-} as WorkflowVm;
+const plan: ExecutionPlanViewVm = {
+  runMode: 'workflow',
+  runStatus: 'running',
+  planRevision: 4,
+  authoringRevision: 2,
+  executionRevision: 1,
+  currentEditable: true,
+  diverged: false,
+  currentWorkflow: workflow,
+  currentModelBindings: modelBindings,
+  nextWorkflow: workflow,
+  nextModelBindings: modelBindings,
+  currentAutoConfig: null,
+  nextAutoConfig: null,
+} as ExecutionPlanViewVm;
+
+const saved: ExecutionPlanSaveResultVm = {
+  operationId: 'op-1',
+  complete: true,
+  planRevision: 5,
+  authoringRevision: 3,
+  executionRevision: 1,
+  targets: [{ target: 'both', committed: true, error: null }],
+} as ExecutionPlanSaveResultVm;
 
 vi.mock('@/api', () => ({
   ...api,
@@ -51,20 +74,19 @@ vi.mock('react-i18next', async (importOriginal) => ({
 
 vi.mock('@/components/WorkflowEditor', () => ({
   parseWorkflowJson: (json: string) => JSON.parse(json),
-  WorkflowEditor: ({ value, modelBindings: bindings, onSave }: {
+  WorkflowEditor: ({ className, value, modelBindings: bindings, showSaveAction }: {
+    className?: string;
     value: WorkflowDsl;
     modelBindings: WorkflowModelBindings;
-    onSave: (next: WorkflowDsl, bindings: WorkflowModelBindings) => Promise<void>;
+    showSaveAction?: boolean;
   }) => (
-    <button
-      type="button"
-      data-save-workflow
+    <div
+      data-workflow-editor
+      className={className}
       data-workflow-id={value.id}
       data-agent-id={bindings.bindings[0]?.agentId}
-      onClick={() => void onSave(value, bindings)}
-    >
-      Save
-    </button>
+      data-show-save-action={String(showSaveAction)}
+    />
   ),
 }));
 
@@ -77,16 +99,23 @@ import { ConversationRunWorkspaceResourcePanel } from '@/components/workspace/Co
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+});
+
 afterEach(() => {
   vi.clearAllMocks();
   document.body.innerHTML = '';
 });
 
 describe('conversation run workflow save contract', () => {
-  it('forwards the editor model bindings with the serialized workflow', async () => {
+  it('saves the editor draft through the execution plan and refreshes the run once committed', async () => {
     api.getProfiles.mockResolvedValue({ profiles: [] });
-    api.getWorkflow.mockResolvedValue(workflowVm);
-    const onSaveWorkflow = vi.fn().mockResolvedValue(workflowVm);
+    api.getConversationExecutionPlan.mockResolvedValue(plan);
+    api.preflightConversationExecutionPlanSave.mockResolvedValue({ blocking: [], warnings: [] });
+    api.saveConversationExecutionPlan.mockResolvedValue(saved);
+    const onExecutionPlanSaved = vi.fn().mockResolvedValue(undefined);
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -103,29 +132,83 @@ describe('conversation run workflow save contract', () => {
             mode: 'edit',
             locator: { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' },
           }}
-          run={{ projectId: 'project-1', taskId: 'task-1', workflowValid: true } as ConversationRunVm}
+          run={{ projectId: 'project-1', taskId: 'task-1', taskUuid: 'uuid-1', runId: 'run-1', workflowValid: true } as ConversationRunVm}
           agentRegistry={{ agents: [], catalog: [] }}
-          onSaveWorkflow={onSaveWorkflow}
+          onExecutionPlanSaved={onExecutionPlanSaved}
         />,
       );
     });
 
-    const saveButton = container.querySelector<HTMLButtonElement>('[data-save-workflow]');
-    expect(saveButton).not.toBeNull();
-    expect(saveButton?.dataset.workflowId).toBe('workflow-1');
-    expect(saveButton?.dataset.agentId).toBe('codex-acp');
-    expect(api.getWorkflow).toHaveBeenCalledWith('task-1', 'project-1');
+    // The execution plan is the single source for the editor baseline; the legacy
+    // project-authoring read and the editor's own save button are gone.
+    expect(api.getConversationExecutionPlan).toHaveBeenCalledWith('project-1', 'task-1', 'uuid-1', 'run-1');
+    const editor = container.querySelector<HTMLElement>('[data-workflow-editor]');
+    expect(editor?.dataset.workflowId).toBe('workflow-1');
+    expect(editor?.dataset.agentId).toBe('codex-acp');
+    expect(editor?.dataset.showSaveAction).toBe('false');
+
+    const saveBar = container.querySelector('[data-execution-plan-save-bar]');
+    expect(saveBar?.getAttribute('data-execution-plan-save-bar')).toBe('ready');
+    const saveButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'executionPlan.save');
+    expect(saveButton).toBeDefined();
     await act(async () => saveButton?.click());
 
-    expect(onSaveWorkflow).toHaveBeenCalledWith(JSON.stringify(workflow), modelBindings);
+    const command = api.saveConversationExecutionPlan.mock.calls[0]?.[0];
+    expect(api.preflightConversationExecutionPlanSave).toHaveBeenCalledWith(command);
+    expect(command).toMatchObject({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'uuid-1',
+      runId: 'run-1',
+      expectedPlanRevision: 4,
+      expectedAuthoringRevision: 2,
+      expectedRunStatus: 'running',
+      workflow: { workflow, modelBindings },
+    });
+    expect(onExecutionPlanSaved).toHaveBeenCalledWith(saved);
     await act(async () => root.unmount());
   });
 
-  it('passes bindings to the Task save API before refreshing the conversation run', () => {
+  it('fills the workspace below the save bar instead of a viewport-sized editor', async () => {
+    api.getProfiles.mockResolvedValue({ profiles: [] });
+    api.getConversationExecutionPlan.mockResolvedValue(plan);
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <ConversationRunWorkspaceResourcePanel
+          resource={{
+            kind: 'workflow-edit',
+            key: 'workflow-edit:project-1:task-1:run-1',
+            scopeKey: 'conversation:project-1:task-1:run-1',
+            title: 'Workflow',
+            attention: false,
+            mode: 'edit',
+            locator: { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' },
+          }}
+          run={{ projectId: 'project-1', taskId: 'task-1', taskUuid: 'uuid-1', runId: 'run-1', workflowValid: true } as ConversationRunVm}
+          agentRegistry={{ agents: [], catalog: [] }}
+        />,
+      );
+    });
+
+    const editor = container.querySelector<HTMLElement>('[data-workflow-editor]');
+    const host = editor?.parentElement;
+    expect(editor?.className).toContain('h-full');
+    expect(editor?.className).toContain('min-h-0');
+    expect(host?.className).toContain('min-h-0');
+    expect(host?.className).toContain('overflow-hidden');
+    expect(host?.className).not.toContain('overflow-auto');
+    await act(async () => root.unmount());
+  });
+
+  it('refreshes the conversation run projection after a committed execution-plan save', () => {
     const appSource = readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
 
-    expect(appSource).toContain('onSaveWorkflow={async (json, modelBindings) => {');
-    expect(appSource).toContain('const saved = await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);');
-    expect(appSource).toContain('return saved;');
+    expect(appSource).toContain('onExecutionPlanSaved={async () => {');
+    expect(appSource).not.toContain('onSaveWorkflow={async (json, modelBindings) => {');
+    expect(appSource).toContain("applyConversationRunSnapshot(refreshed, 'workflow-save', {");
   });
 });

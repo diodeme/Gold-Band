@@ -20,6 +20,7 @@ import type {
   MarkdownImagePreviewVm,
 } from '@/types';
 import type { FileWorkspaceResource } from '../right-workspace-context';
+import type { EditorViewportAnchor } from './WorkspaceFileEditor';
 
 export type FileSaveState =
   | { kind: 'clean' }
@@ -43,6 +44,7 @@ export interface FileContentEntry {
   errorCode: string | null;
   requestRevision: number;
   contentRevision: number;
+  watchEpoch: number;
   localRevision: number;
   savedLocalRevision: number;
   saveState: FileSaveState;
@@ -56,6 +58,7 @@ const EMPTY_ENTRY: FileContentEntry = {
   errorCode: null,
   requestRevision: 0,
   contentRevision: 0,
+  watchEpoch: 0,
   localRevision: 0,
   savedLocalRevision: 0,
   saveState: { kind: 'clean' },
@@ -72,6 +75,9 @@ interface SaveRuntime {
   renewalTimer: ReturnType<typeof setTimeout> | null;
   previewRefreshTimer: ReturnType<typeof setTimeout> | null;
   editorStateJson: unknown | null;
+  viewportAnchor: EditorViewportAnchor | null;
+  viewportScrollTop: number;
+  consumedLocationRevision: number;
   imageViewState: FileImageViewState;
   markdownMode: MarkdownEditorMode;
   markdownImages: Map<string, MarkdownImageState>;
@@ -109,6 +115,15 @@ function operationId() {
   return globalThis.crypto?.randomUUID?.() ?? `file-write-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function sameDiskContent(
+  previous: WorkspaceFileSnapshotVm | null | undefined,
+  next: WorkspaceFileSnapshotVm,
+) {
+  return previous != null
+    && previous.kind === next.kind
+    && previous.revision.contentHash === next.revision.contentHash;
+}
+
 export class FileContentStore {
   private config: WorkspaceFilesVm = FALLBACK_WORKSPACE_FILES;
   private readonly entries = new Map<string, FileContentEntry>();
@@ -119,6 +134,7 @@ export class FileContentStore {
   private readonly projectWatchRefs = new Map<string, number>();
   private readonly projectWatchOperations = new Map<string, Promise<void>>();
   private readonly activeProjectWatches = new Set<string>();
+  private readonly projectContentEpoch = new Map<string, number>();
   private eventUnsubscribe: (() => void) | null = null;
   private eventSubscriptionPromise: Promise<void> | null = null;
 
@@ -238,10 +254,37 @@ export class FileContentStore {
     return this.runtimes.get(resourceKey)?.editorStateJson ?? null;
   }
 
-  persistEditorState(resourceKey: string, state: unknown, contentRevision?: number) {
+  editorViewport(resourceKey: string) {
+    return this.runtimes.get(resourceKey)?.viewportAnchor ?? null;
+  }
+
+  editorScrollTop(resourceKey: string) {
+    return this.runtimes.get(resourceKey)?.viewportScrollTop ?? 0;
+  }
+
+  consumedLocationTarget(resourceKey: string) {
+    return this.runtimes.get(resourceKey)?.consumedLocationRevision ?? 0;
+  }
+
+  consumeLocationTarget(resourceKey: string, revision: number) {
+    const runtime = this.runtimes.get(resourceKey);
+    if (!runtime || revision <= runtime.consumedLocationRevision) return;
+    runtime.consumedLocationRevision = revision;
+  }
+
+  persistEditorState(
+    resourceKey: string,
+    state: unknown,
+    contentRevision?: number,
+    viewportAnchor?: EditorViewportAnchor | null,
+    scrollTop?: number,
+  ) {
     if (contentRevision != null && this.entries.get(resourceKey)?.contentRevision !== contentRevision) return;
     const runtime = this.runtimes.get(resourceKey);
-    if (runtime) runtime.editorStateJson = state;
+    if (!runtime) return;
+    if (state !== undefined) runtime.editorStateJson = state;
+    if (viewportAnchor !== undefined) runtime.viewportAnchor = viewportAnchor;
+    if (scrollTop !== undefined) runtime.viewportScrollTop = Math.max(0, scrollTop);
   }
 
   subscribe = (listener: () => void) => {
@@ -272,9 +315,11 @@ export class FileContentStore {
 
   async load(resource: FileWorkspaceResource, preferSource = false, force = false, preserveReady = false) {
     const existing = this.entries.get(resource.key);
-    if (!force && existing?.status === 'ready') return existing;
+    const watchEpoch = this.contentEpoch(resource.projectId);
+    if (!force && existing?.status === 'ready' && existing.watchEpoch === watchEpoch) return existing;
     const requestRevision = (existing?.requestRevision ?? 0) + 1;
-    const keepReady = preserveReady && existing?.status === 'ready' && existing.snapshot !== null;
+    // A later watch epoch still re-reads disk, but an open file must stay visible.
+    const keepReady = existing?.status === 'ready' && existing.snapshot !== null && (preserveReady || existing.status === 'ready');
     this.setEntry(resource.key, {
       ...(existing ?? { ...EMPTY_ENTRY, key: resource.key, resource }),
       resource,
@@ -293,6 +338,39 @@ export class FileContentStore {
         preferSource,
       );
       if (this.entries.get(resource.key)?.requestRevision !== requestRevision) return this.entries.get(resource.key) ?? null;
+      const current = this.entries.get(resource.key);
+      const unchanged = Boolean(
+        current
+        && current.status === 'ready'
+        && current.saveState.kind === 'clean'
+        && sameDiskContent(current.snapshot, snapshot),
+      );
+      if (unchanged && current) {
+        const runtime = this.runtimes.get(resource.key);
+        if (runtime) {
+          if (snapshot.kind === 'text') {
+            runtime.latestContent = snapshot.content;
+            runtime.encoding = snapshot.encoding;
+            runtime.lineEnding = snapshot.lineEnding;
+          }
+          runtime.diskRevision = snapshot.revision;
+          runtime.externalAccessGrant = snapshot.externalAccessGrant;
+        } else {
+          this.installRuntime(resource.key, snapshot);
+        }
+        const next: FileContentEntry = {
+          ...current,
+          resource,
+          status: 'ready',
+          snapshot,
+          errorCode: null,
+          requestRevision,
+          watchEpoch: this.contentEpoch(resource.projectId) === watchEpoch ? watchEpoch : current.watchEpoch,
+        };
+        this.setEntry(resource.key, next);
+        this.touch(resource.key);
+        return next;
+      }
       if (snapshot.externalAccessGrant) {
         this.primedGrants.set(resource.key, {
           projectId: resource.projectId,
@@ -314,6 +392,7 @@ export class FileContentStore {
         errorCode: null,
         requestRevision,
         contentRevision: (existing?.contentRevision ?? 0) + 1,
+        watchEpoch: this.contentEpoch(resource.projectId) === watchEpoch ? watchEpoch : existing?.watchEpoch ?? watchEpoch,
         localRevision: 0,
         savedLocalRevision: 0,
         saveState: { kind: 'clean' },
@@ -445,6 +524,9 @@ export class FileContentStore {
     if (refs > 1) {
       this.projectWatchRefs.set(projectId, refs - 1);
       return;
+    }
+    if (refs === 1) {
+      this.projectContentEpoch.set(projectId, this.contentEpoch(projectId) + 1);
     }
     this.projectWatchRefs.delete(projectId);
     await this.queueWatchOperation(projectId, async () => {
@@ -695,6 +777,9 @@ export class FileContentStore {
       // A disk reload creates a new undo boundary. Tab deactivation does not call load,
       // so normal Tab switches still preserve the serialized CodeMirror history.
       editorStateJson: null,
+      viewportAnchor: null,
+      viewportScrollTop: 0,
+      consumedLocationRevision: 0,
       imageViewState: existing?.imageViewState ?? { zoom: 1, scrollLeft: 0, scrollTop: 0 },
       markdownMode: existing?.markdownMode ?? 'live-preview',
       markdownImages: new Map(),
@@ -828,6 +913,10 @@ export class FileContentStore {
       }
       await this.load(entry.resource, entry.snapshot?.kind === 'text' && entry.resource.locator.canonicalPath.toLowerCase().endsWith('.svg'), true);
     }
+  }
+
+  private contentEpoch(projectId: string) {
+    return this.projectContentEpoch.get(projectId) ?? 0;
   }
 
   private setEntry(key: string, entry: FileContentEntry) {

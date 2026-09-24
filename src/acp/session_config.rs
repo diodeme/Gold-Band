@@ -118,6 +118,45 @@ fn retain_authoring_model_bound_overrides(
     let _ = strip_unsupported_model_bound_overrides(current, Some(&projected), overrides);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplicitSessionScalarPlan {
+    Apply,
+    RollBack(RolledBackSessionConfig),
+    Unavailable(RolledBackSessionConfig),
+}
+
+/// Model and permission are explicit scalars, not model-bound config maps.
+/// An empty live catalog cannot prove the value is missing, so it stays
+/// applyable. A non-empty catalog that omits the value rolls back to
+/// unspecified on `session/new` and stays unavailable for an established session.
+pub fn plan_explicit_session_scalar(
+    new_session: bool,
+    category: &str,
+    config_id: &str,
+    requested: &str,
+    available: &[String],
+    name: Option<String>,
+) -> ExplicitSessionScalarPlan {
+    let requested = requested.trim();
+    if requested.is_empty()
+        || available.is_empty()
+        || available.iter().any(|item| item == requested)
+    {
+        return ExplicitSessionScalarPlan::Apply;
+    }
+    let item = RolledBackSessionConfig {
+        category: category.to_string(),
+        config_id: config_id.to_string(),
+        value: requested.to_string(),
+        name,
+    };
+    if new_session {
+        ExplicitSessionScalarPlan::RollBack(item)
+    } else {
+        ExplicitSessionScalarPlan::Unavailable(item)
+    }
+}
+
 /// `session/new` and in-session model switches both treat the live catalog as
 /// the apply fact source: remap thought by value, unspecify unsupported
 /// `thought_level` / `model_config`. Attached reuse without a model RPC still
@@ -418,10 +457,8 @@ pub fn apply_session_snapshot_model_switch_with_authoring(
     let previous = session_selected_model_id(session);
     let current_overrides = session_string_map(session, ACP_CONFIG_OPTION_OVERRIDES_KEY);
     let remembered = session_remembered_override_map(session);
-    let catalogs = merge_model_bound_catalogs(
-        authoring_catalogs,
-        &session_model_bound_catalogs(session),
-    );
+    let catalogs =
+        merge_model_bound_catalogs(authoring_catalogs, &session_model_bound_catalogs(session));
     let live = session.get("configOptions").cloned();
     let (applied, remembered) = switch_model_bound_overrides(
         &remembered,
@@ -502,7 +539,11 @@ pub fn merge_model_bound_catalogs(
     session: &BTreeMap<String, Value>,
 ) -> BTreeMap<String, Value> {
     let mut merged = authoring.cloned().unwrap_or_default();
-    merged.extend(session.iter().map(|(key, value)| (key.clone(), value.clone())));
+    merged.extend(
+        session
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
     merged
 }
 
@@ -625,9 +666,8 @@ pub fn projected_bound_option<'a>(
             .and_then(|catalogs| catalogs.get(selected.as_str()))
             .or_else(|| authoring_catalogs.get(&selected))
     };
-    config_option_by_id(source, option_id).filter(|option| {
-        option_category(Some(option)).is_some_and(is_model_bound_config_category)
-    })
+    config_option_by_id(source, option_id)
+        .filter(|option| option_category(Some(option)).is_some_and(is_model_bound_config_category))
 }
 
 fn live_has_model_bound_rows(live: Option<&Value>) -> bool {
@@ -785,12 +825,7 @@ fn strip_model_bound_overrides(
                 .map(|category| category == ACP_THOUGHT_LEVEL_CATEGORY)
                 .unwrap_or(true);
             if source_is_thought_level {
-                if apply_thought_level_remap(
-                    Some(catalog_after),
-                    overrides,
-                    &config_id,
-                    &value,
-                ) {
+                if apply_thought_level_remap(Some(catalog_after), overrides, &config_id, &value) {
                     continue;
                 }
             }
@@ -858,8 +893,7 @@ fn apply_thought_level_remap(
     config_id: &str,
     value: &str,
 ) -> bool {
-    let Some(thought_id) =
-        remap_thought_level_override(catalog_after, overrides, config_id, value)
+    let Some(thought_id) = remap_thought_level_override(catalog_after, overrides, config_id, value)
     else {
         return false;
     };
@@ -1483,6 +1517,50 @@ mod tests {
     }
 
     #[test]
+    fn new_session_rolls_unavailable_model_and_permission_back_to_unspecified() {
+        let modes = ["agent".to_string(), "plan".to_string()];
+        assert_eq!(
+            plan_explicit_session_scalar(
+                true,
+                "mode",
+                "mode",
+                "bypassPermissions",
+                &modes,
+                Some("Bypass Permissions".to_string()),
+            ),
+            ExplicitSessionScalarPlan::RollBack(RolledBackSessionConfig {
+                category: "mode".into(),
+                config_id: "mode".into(),
+                value: "bypassPermissions".into(),
+                name: Some("Bypass Permissions".to_string()),
+            })
+        );
+        assert!(matches!(
+            plan_explicit_session_scalar(
+                true,
+                "model",
+                "model",
+                "gpt-5.4",
+                &["gpt-5.6-sol".to_string(), "gpt-5.6-terra".to_string()],
+                None,
+            ),
+            ExplicitSessionScalarPlan::RollBack(_)
+        ));
+        assert!(matches!(
+            plan_explicit_session_scalar(false, "mode", "mode", "bypassPermissions", &modes, None,),
+            ExplicitSessionScalarPlan::Unavailable(_)
+        ));
+        assert_eq!(
+            plan_explicit_session_scalar(true, "mode", "mode", "agent", &modes, None),
+            ExplicitSessionScalarPlan::Apply
+        );
+        assert_eq!(
+            plan_explicit_session_scalar(true, "mode", "mode", "bypassPermissions", &[], None,),
+            ExplicitSessionScalarPlan::Apply
+        );
+    }
+
+    #[test]
     fn new_session_rolls_back_listed_invalid_values_without_a_model_rpc() {
         let live = catalog("grok-4.6", &["low", "medium"], true);
         let mut overrides = BTreeMap::from([("effort".into(), "high".into())]);
@@ -1747,8 +1825,8 @@ mod tests {
     fn session_live_catalog_refreshes_authoring_current_table_when_catalogs_already_cached() {
         let previous = doctor_authoring_capabilities();
         let live = luna_session_live_catalog();
-        let mut cached = upsert_session_authoring_model_bound_catalog(Some(&previous), &live)
-            .unwrap();
+        let mut cached =
+            upsert_session_authoring_model_bound_catalog(Some(&previous), &live).unwrap();
         cached["configOptions"] = previous["configOptions"].clone();
 
         let merged = upsert_session_authoring_model_bound_catalog(Some(&cached), &live).unwrap();
@@ -1798,11 +1876,13 @@ mod tests {
             catalog_ids(catalogs["sol"].as_array().unwrap()),
             vec!["effort", "fast"]
         );
-        assert!(catalogs["gpt-5.6-luna"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|option| option.get("id").and_then(Value::as_str) == Some("context")));
+        assert!(
+            catalogs["gpt-5.6-luna"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option.get("id").and_then(Value::as_str) == Some("context"))
+        );
     }
 
     #[test]
@@ -1818,12 +1898,10 @@ mod tests {
         let ids = catalog_ids(live.as_ref().unwrap().as_array().unwrap());
         assert!(ids.contains(&"context"));
         assert!(catalogs.get("sol").is_none());
-        assert!(authoring_upsert_payload_from_session_catalog(
-            live.as_ref(),
-            &catalogs,
-            Some("sol")
-        )
-        .is_none());
+        assert!(
+            authoring_upsert_payload_from_session_catalog(live.as_ref(), &catalogs, Some("sol"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1861,10 +1939,7 @@ mod tests {
             &catalogs,
         );
         assert!(mini_applied.is_empty());
-        assert_eq!(
-            remembered.get("grok-4.6"),
-            Some(&current)
-        );
+        assert_eq!(remembered.get("grok-4.6"), Some(&current));
         assert_eq!(remembered.get("gpt-5-mini"), Some(&BTreeMap::new()));
 
         let (grok_applied, _) = switch_model_bound_overrides(
@@ -1921,7 +1996,8 @@ mod tests {
     }
 
     #[test]
-    fn session_model_switch_retains_against_authoring_catalogs_when_this_session_has_not_observed_the_model() {
+    fn session_model_switch_retains_against_authoring_catalogs_when_this_session_has_not_observed_the_model()
+     {
         let grok = catalog("grok-4.6", &["high", "extra-high"], true);
         let mini = catalog("gpt-5-mini", &["low", "high"], false);
         let mut session_catalogs = BTreeMap::new();
@@ -2016,7 +2092,9 @@ mod tests {
         let rolled_back =
             strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
 
-        assert!(rolled_back.is_empty() || rolled_back.iter().all(|item| item.config_id == "reasoning"));
+        assert!(
+            rolled_back.is_empty() || rolled_back.iter().all(|item| item.config_id == "reasoning")
+        );
         assert_eq!(overrides.get("effort").map(String::as_str), Some("high"));
         assert!(!overrides.contains_key("reasoning"));
     }

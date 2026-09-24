@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 
-use crate::dsl::{WorkflowDsl, normalize_legacy_workflow_snapshot};
+use crate::dsl::WorkflowDsl;
 use crate::runtime::{NodeState, RoundState, RunState, RuntimeAttemptLocator, write_node_state};
 use crate::storage::{read_json, write_json};
 
@@ -67,10 +67,8 @@ pub(crate) fn current_attempt_state(
 }
 
 pub(crate) fn load_run_workflow(app: &App, task_id: &str, run_id: &str) -> Result<WorkflowDsl> {
-    let snapshot_path = app.paths.workflow_snapshot_file(task_id, run_id);
-    Ok(normalize_legacy_workflow_snapshot(read_json(
-        &snapshot_path,
-    )?))
+    crate::execution_plan::load_workflow_projection(&app.paths, task_id, run_id)
+        .map_err(|error| anyhow!(error))
 }
 
 pub(crate) fn persist_runtime_state(

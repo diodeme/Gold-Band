@@ -98,6 +98,7 @@ import {
   conversationAssetWorkspaceResourceKey,
   createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
+  sentAttachmentPreviewAliasKey,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
@@ -1677,8 +1678,8 @@ export function ACPChatDialog(
       restoreComposerDraftIfEmpty(record.draft);
     }
   }, [promptDraftHasAdmission, restoreComposerDraftIfEmpty]);
-  // Canonical admission is the delivery fact: only then may the detached draft
-  // release its attachment previews. Until then the snapshot stays reclaimable.
+  // Canonical admission releases the composer draft's own preview URL. An open
+  // workspace tab keeps a separate object URL until the user closes that tab.
   useEffect(() => {
     releaseAdmittedPromptDrafts();
   });
@@ -2619,9 +2620,11 @@ export function ACPChatDialog(
       const assetKind = isTaskInputMessageAttachment(attachment)
         ? 'input-attachment' as const
         : 'message-attachment' as const;
+      const key = conversationAssetWorkspaceResourceKey(assetKind, attemptWorkspaceLocator, attachment.name, attachment.path);
+      if (rightWorkspace.activatePreviewAlias(key)) return;
       void rightWorkspace.openResource({
         kind: 'conversation-asset',
-        key: conversationAssetWorkspaceResourceKey(assetKind, attemptWorkspaceLocator, attachment.name, attachment.path),
+        key,
         scopeKey: rightWorkspace.scopeKey,
         title: attachment.name,
         description: attachment.path,
@@ -2648,7 +2651,9 @@ export function ACPChatDialog(
 
   const handleOpenComposerAttachment = useCallback((attachment: AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
-    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
+    const key = draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id);
+    const existing = rightWorkspace.getResource(key);
+    void rightWorkspace.openResource(existing?.kind === 'draft-attachment' ? existing : createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
       attachment,
@@ -5541,7 +5546,15 @@ export function ACPChatDialog(
   };
 
   const releaseSubmittedAttachments = (attachments: AttachmentItem[]) => {
-    attachments.forEach(closeComposerAttachmentPreview);
+    if (rightWorkspace?.scopeKey) {
+      for (const attachment of attachments) {
+        rightWorkspace.aliasOpenDraftAttachment(attachment.id, sentAttachmentPreviewAliasKey({
+          assetKind: 'message-attachment',
+          locator: attemptWorkspaceLocator,
+          name: attachment.name,
+        }));
+      }
+    }
     revokeAttachmentPreviewUrls(attachments);
   };
 
@@ -5550,7 +5563,8 @@ export function ACPChatDialog(
     const next = { content, attachments: [], quotes: [], workspaceFiles: [] };
     if (!composerDraft.clearIfUnchanged(previous)) return null;
     composerDraft.restoreIfEmpty(next);
-    releaseSubmittedAttachments(previous.attachments);
+    previous.attachments.forEach(closeComposerAttachmentPreview);
+    revokeAttachmentPreviewUrls(previous.attachments);
     setComposerContextError(null);
     return next;
   };
@@ -7885,7 +7899,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
             aria-hidden="true"
             className={cn(
               "flex size-5 shrink-0 items-center justify-center rounded-full text-ui-caption font-semibold",
-              running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin motion-reduce:animate-none",
+              running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin",
               !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
               interrupted && "bg-destructive/10 text-destructive",
             )}
@@ -7909,7 +7923,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
         ) : null}
         {running ? (
           <div className="mt-2 h-0.5 w-full max-w-72 overflow-hidden rounded-full bg-primary/10">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/55 motion-reduce:animate-none" />
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/55" />
           </div>
         ) : null}
       </div>
@@ -8037,7 +8051,7 @@ const AgentBranchSessionSummary = memo(function AgentBranchSessionSummary({
           aria-hidden="true"
           className={cn(
             "size-1.5 rounded-full bg-muted-foreground/50",
-            tone === "running" && "animate-pulse bg-primary motion-reduce:animate-none",
+            tone === "running" && "animate-pulse bg-primary",
             tone === "success" && "bg-emerald-500",
             tone === "danger" && "bg-destructive",
           )}

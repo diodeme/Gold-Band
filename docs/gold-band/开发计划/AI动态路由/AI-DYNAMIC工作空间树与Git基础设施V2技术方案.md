@@ -353,6 +353,9 @@ runtime checkpoint：
 - 只允许在 ownership=runtime 的 workspace 执行。
 - 执行前确认没有其他 writer。
 - 检测 unresolved conflict、merge、rebase、cherry-pick 等中间状态；存在时返回结构化阻塞，不自动修复。
+- 初始 `status` 只用于快速判断是否可能需要 checkpoint；dirty 时执行 `git add -A`，再用 `git diff --cached --quiet --exit-code --` 判断索引相对 `HEAD` 的权威差异。
+- staged diff 退出码为 `0` 且 workspace 已 clean 时返回成功空操作并沿用当前 `HEAD`；退出码为 `1` 时才创建 checkpoint commit；其他退出码或“workspace 仍 dirty 但索引无差异”返回 `workspace.checkpoint-failed`，参数包含 phase 与 exitCode。
+- commit 命令失败后重新检查 staged diff 与 workspace clean 状态；两者已收敛到“无差异且 clean”时按成功空操作处理，否则保留真实失败。不得使用 `--allow-empty`，也不得解析本地化的 `nothing to commit` 等人类可读文本判断结果。
 - 使用 runtime 专属 author/committer identity。
 - 禁用 GPG signing。
 - 使用 --no-verify，避免内部快照触发用户提交 hooks。
@@ -857,6 +860,8 @@ Git HEAD 查询沿用 `GitRepositoryService` 的 `Result` 契约；查询失败�
 - dirty main 文件不出现在 child，契约与 UI 提示一致。
 - dirty runtime worktree fanout 前生成 checkpoint。
 - wt1 fanout 创建 wt11/wt12，forkCommit 包含 wt1 修改。
+- `core.autocrlf=true` 下，同内容文件从 CRLF 重写为 LF 导致初始 status dirty、但无索引差异时，checkpoint 返回空操作、HEAD 不变且 workspace clean。
+- Git 索引锁等真实写入失败返回 `workspace.checkpoint-failed`，并保留 `phase / exitCode` 供诊断。
 
 ### 20.3 嵌套 Merge
 

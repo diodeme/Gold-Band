@@ -55,6 +55,30 @@ describe('desktop entry routing', () => {
     expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
   });
 
+  it('round-trips the run-scoped AUTO configuration route with an optional task uuid', () => {
+    const path = '/chat/projects/project-a/tasks/task-a/runs/run-a/mode';
+    const page = routeFromPath(path).conversationPage;
+
+    expect(page).toEqual({
+      kind: 'run-mode-management',
+      projectId: 'project-a',
+      taskId: 'task-a',
+      runId: 'run-a',
+      taskUuid: undefined,
+    });
+    expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
+
+    const withUuid = `${path}/uuid-1`;
+    const pageWithUuid = routeFromPath(withUuid).conversationPage;
+    expect(pageWithUuid).toMatchObject({ kind: 'run-mode-management', runId: 'run-a', taskUuid: 'uuid-1' });
+    expect(pathFromRoute('task-orchestration', taskListPage, pageWithUuid)).toBe(withUuid);
+  });
+
+  it('keeps the project-level run mode route free of a run context', () => {
+    expect(routeFromPath('/chat/run-modes').conversationPage).toEqual({ kind: 'run-mode-management' });
+    expect(pathFromRoute('task-orchestration', taskListPage, { kind: 'run-mode-management' })).toBe('/chat/run-modes');
+  });
+
   it('does not revive the retired workbench round detail route', () => {
     expect(routeFromPath('/tasks/task-a/runs/run-a/rounds/round-a')).toMatchObject({
       uiMode: 'workbench',

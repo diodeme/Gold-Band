@@ -165,6 +165,7 @@ fn minimum_supported_git_version() -> Version {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCommandOutput {
     pub success: bool,
+    pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
 }
@@ -173,6 +174,7 @@ impl From<Output> for GitCommandOutput {
     fn from(output: Output) -> Self {
         Self {
             success: output.status.success(),
+            exit_code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         }
@@ -717,12 +719,41 @@ impl GitWorkspaceManager {
         workspace_id: &str,
         group_id: Option<&str>,
     ) -> Result<Option<String>> {
-        if self.repository.status_porcelain(workspace)?.is_empty() {
+        if self.checkpoint_is_clean(workspace)? {
             return Ok(None);
         }
         self.ensure_no_in_progress_operation(workspace)?;
-        let add = self.runner.run(workspace, &["add", "-A"])?;
-        ensure!(add.success, "git add -A failed: {}", details(&add));
+        let add = self
+            .runner
+            .run(workspace, &["add", "-A"])
+            .map_err(|error| {
+                checkpoint_error(
+                    workspace,
+                    "add",
+                    format!("failed to execute git add -A: {error:#}"),
+                    None,
+                )
+            })?;
+        if !add.success {
+            return Err(checkpoint_error(
+                workspace,
+                "add",
+                format!("git add -A failed: {}", details(&add)),
+                add.exit_code,
+            ));
+        }
+
+        if !self.checkpoint_has_staged_changes(workspace)? {
+            if self.checkpoint_is_clean(workspace)? {
+                return Ok(None);
+            }
+            return Err(checkpoint_error(
+                workspace,
+                "post-stage",
+                "workspace remained dirty after staging, but the index has no changes to commit",
+                None,
+            ));
+        }
 
         let mut message = format!(
             "Gold Band checkpoint: {workspace_id}\n\nGold-Band-Internal: checkpoint\nGold-Band-Workspace: {workspace_id}"
@@ -730,32 +761,99 @@ impl GitWorkspaceManager {
         if let Some(group_id) = group_id {
             message.push_str(&format!("\nGold-Band-Group: {group_id}"));
         }
-        let commit = self.runner.run(
-            workspace,
-            &[
-                "-c",
-                &format!("user.name={CHECKPOINT_AUTHOR_NAME}"),
-                "-c",
-                &format!("user.email={CHECKPOINT_AUTHOR_EMAIL}"),
-                "-c",
-                "commit.gpgSign=false",
+        let commit = self
+            .runner
+            .run(
+                workspace,
+                &[
+                    "-c",
+                    &format!("user.name={CHECKPOINT_AUTHOR_NAME}"),
+                    "-c",
+                    &format!("user.email={CHECKPOINT_AUTHOR_EMAIL}"),
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "--no-verify",
+                    "--no-gpg-sign",
+                    "-m",
+                    &message,
+                ],
+            )
+            .map_err(|error| {
+                checkpoint_error(
+                    workspace,
+                    "commit",
+                    format!("failed to execute checkpoint commit: {error:#}"),
+                    None,
+                )
+            })?;
+        if !commit.success {
+            if !self.checkpoint_has_staged_changes(workspace)?
+                && self.checkpoint_is_clean(workspace)?
+            {
+                return Ok(None);
+            }
+            return Err(checkpoint_error(
+                workspace,
                 "commit",
-                "--no-verify",
-                "--no-gpg-sign",
-                "-m",
-                &message,
-            ],
-        )?;
-        ensure!(
-            commit.success,
-            "checkpoint commit failed: {}",
-            details(&commit)
-        );
-        ensure!(
-            self.repository.status_porcelain(workspace)?.is_empty(),
-            "workspace remained dirty after checkpoint"
-        );
-        self.repository.head(workspace).map(Some)
+                format!("checkpoint commit failed: {}", details(&commit)),
+                commit.exit_code,
+            ));
+        }
+        if !self.checkpoint_is_clean(workspace)? {
+            return Err(checkpoint_error(
+                workspace,
+                "post-commit",
+                "workspace remained dirty after checkpoint",
+                None,
+            ));
+        }
+        self.repository.head(workspace).map(Some).map_err(|error| {
+            checkpoint_error(
+                workspace,
+                "head",
+                format!("failed to resolve checkpoint HEAD: {error:#}"),
+                None,
+            )
+        })
+    }
+
+    fn checkpoint_is_clean(&self, workspace: &Utf8Path) -> Result<bool> {
+        self.repository.is_clean(workspace).map_err(|error| {
+            checkpoint_error(
+                workspace,
+                "status",
+                format!("failed to inspect checkpoint workspace status: {error:#}"),
+                None,
+            )
+        })
+    }
+
+    fn checkpoint_has_staged_changes(&self, workspace: &Utf8Path) -> Result<bool> {
+        let diff = self
+            .runner
+            .run(
+                workspace,
+                &["diff", "--cached", "--quiet", "--exit-code", "--"],
+            )
+            .map_err(|error| {
+                checkpoint_error(
+                    workspace,
+                    "staged-diff",
+                    format!("failed to inspect staged checkpoint changes: {error:#}"),
+                    None,
+                )
+            })?;
+        match diff.exit_code {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            exit_code => Err(checkpoint_error(
+                workspace,
+                "staged-diff",
+                format!("git diff --cached failed: {}", details(&diff)),
+                exit_code,
+            )),
+        }
     }
 
     pub fn create_worktree(
@@ -976,6 +1074,24 @@ impl GitWorkspaceManager {
         }
         Ok(())
     }
+}
+
+fn checkpoint_error(
+    workspace: &Utf8Path,
+    phase: &'static str,
+    diagnostic: impl Into<String>,
+    exit_code: Option<i32>,
+) -> anyhow::Error {
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workspace,
+        "workspace.checkpoint-failed",
+        diagnostic,
+        serde_json::json!({
+            "workspacePath": workspace.as_str(),
+            "phase": phase,
+            "exitCode": exit_code,
+        }),
+    ))
 }
 
 fn canonical_git_path(path: &str) -> Option<Utf8PathBuf> {
@@ -1200,6 +1316,93 @@ mod tests {
             .unwrap();
         assert!(message.stdout.contains("Gold-Band-Internal: checkpoint"));
         assert!(message.stdout.contains("Gold-Band-Group: group-1"));
+    }
+
+    #[test]
+    fn runtime_worktree_checkpoint_skips_autocrlf_only_status_change() {
+        let (_dir, root) = initialized_repository();
+        let runner = GitCommandRunner::default();
+        assert!(
+            runner
+                .run(&root, &["config", "core.autocrlf", "true"])
+                .unwrap()
+                .success
+        );
+
+        std::fs::write(root.join("print_a.py"), b"print(\"this is A\")\n").unwrap();
+        assert!(
+            runner
+                .run(&root, &["add", "--", "print_a.py"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &[
+                        "-c",
+                        "user.name=Gold Band Tests",
+                        "-c",
+                        "user.email=gold-band-tests@example.com",
+                        "commit",
+                        "-m",
+                        "add print fixture",
+                    ],
+                )
+                .unwrap()
+                .success
+        );
+
+        let manager = GitWorkspaceManager::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let worktree = root.join("runtime-worktrees").join("autocrlf-noop");
+        manager
+            .create_worktree(&root, &worktree, "gb-test-autocrlf-noop", &head)
+            .unwrap();
+
+        std::fs::write(worktree.join("print_a.py"), b"print(\"this is A\")\n").unwrap();
+        let status = manager.repository.status_porcelain(&worktree).unwrap();
+        assert!(
+            status.contains("print_a.py"),
+            "fixture must be reported dirty before Git refreshes the index"
+        );
+        let diff = runner
+            .run(&worktree, &["diff", "--numstat", "--", "print_a.py"])
+            .unwrap();
+        assert!(diff.success, "{}", details(&diff));
+        assert!(
+            diff.stdout.is_empty(),
+            "fixture must not contain a content diff: {}",
+            details(&diff)
+        );
+
+        let checkpoint = manager
+            .checkpoint(&worktree, "workspace-autocrlf-noop", Some("group-1"))
+            .unwrap();
+        assert_eq!(checkpoint, None);
+        assert_eq!(
+            GitRepositoryService::default().head(&worktree).unwrap(),
+            head
+        );
+        assert!(GitRepositoryService::default().is_clean(&worktree).unwrap());
+    }
+
+    #[test]
+    fn runtime_worktree_checkpoint_reports_git_write_failure_as_workspace_error() {
+        let (_dir, root) = initialized_repository();
+        std::fs::write(root.join("README.md"), "changed\n").unwrap();
+        std::fs::write(root.join(".git").join("index.lock"), "locked\n").unwrap();
+
+        let error = GitWorkspaceManager::default()
+            .checkpoint(&root, "workspace-locked", Some("group-1"))
+            .unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+
+        assert_eq!(info.domain, RuntimeErrorDomain::Workspace);
+        assert_eq!(info.code_str(), "workspace.checkpoint-failed");
+        assert_eq!(info.params["phase"], "add");
+        assert!(info.params["exitCode"].is_number());
     }
 
     #[test]

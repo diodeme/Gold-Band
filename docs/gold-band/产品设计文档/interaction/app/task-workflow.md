@@ -154,9 +154,18 @@
 - Task 作者态把 `{ workflow, modelBindings }` 作为一个聚合原子写入 `authoring/workflow.json`；定时任务创建或编辑时把同一聚合冻结到 content snapshot。两者都不维护独立绑定文件或双写路径。
 - 读取旧版 Task `authoring/workflow.json` 时，必须先在内存中完成槽位补齐、旧 Worker 本机字段抽取和 revision 规范化，再将完整新聚合一次性写回；不能因已识别为旧格式而跳过迁移。迁移后的实体必须能直接通过同一运行解析入口，重复读取保持幂等。
 - 聚合保存必须以已持久化的作者态实体为 revision 基线：规范化后模型绑定 payload 真正变化时，`bindingRevision` 只递增一次；相同内容重复保存以及仅修改工作流定义时保持不变。`definitionRevision` 始终由最终 `WorkflowDsl` 重算，另存模板必须先生成最终 workflow ID，再迁移、计算 revision 和原子写入，保证接口返回值与立即重读完全一致。客户端提交的 revision 不是权威序列。
-- 会话 Run 中的工作流编辑或修复入口编辑的是 Task 作者态聚合，不是当前 Run 的 executable snapshot。入口激活时按 `projectId/taskId` 读取完整 `WorkflowVm`，同时初始化定义和本机模型绑定；保存成功后使用接口返回实体更新编辑基线。当前及历史 Run 的图和继续执行仍只读取各自冻结快照。
+- 会话 Run 中的工作流编辑按该 Run 的 `project_id` 打开对应 conversation workspace，不使用桌面进程当前仓库。读取两个事实：当前 Run 的 execution plan，以及 Task 作者态。读取结果带上当前 round、node 和 attempt。保存时客户端把这三个值连同 plan revision、authoring revision 和 Run 状态一并提交；任一不一致都拒绝发布。未分裂时默认编辑下一次 Run，保存目标可以是仅当前 Run、仅下一次 Run，或两者一起。保存完成后按两侧事实是否不同决定是否分成两个 Tab：工作流比较注入后的下一次 Run 与当前 Run 执行快照，AUTO 比较两份配置。相同则保持一份草稿；不同才分开，并停在本次写入的那一侧。两个 Tab 各自持有草稿。切换前先把编辑器里尚未写入会话的内容放回离开的一侧，再载入进入一侧。恢复未完成的保存后，用返回的 revision 和已提交目标更新对应 baseline。当前 Attempt、已完成历史和 `resolved_config` 不回写。已发生且仍能通过 `session=continue` 回到的节点，不能更换 Agent/provider identity。节点完成后，同一 drive 的后继 Attempt 使用本次分发读到的最新 execution plan；当前 Attempt 的调用不切换。
+- 同一 Task 的下一次 Run 只有一份作者态。工作流写在该任务的 `authoring/workflow.json`。AUTO 写在该任务的 `authoring/auto.json`。两者都不回写项目运行模式，也不回写模板库。创建 AUTO 任务时把当时的具体配置抄进 `authoring/auto.json`，并去掉模板身份。还没有这份文件的旧任务，下一次仍先读项目 AUTO，第一次保存下一次 Run 之后只走任务文件。各 Run 的当前执行计划彼此独立。
+- AUTO Run 在会话头部打开右侧工作区 Tab，复用运行模式页里的 AUTO 表单，不离开当前会话，也不切到运行模式导航。Tab 使用同一套 Current/Next、预检和 CAS 保存。表单以该 Run 的 execution plan 为准，不从空的页面级 run mode 回填。会话里的当前 Run 和下一次 Run 只编辑具体配置，不显示模板选择、模板名称或「另存模板」，保存时也不写入模板身份。模板库仍只在运行模式页。无 Run locator 的 `/chat/run-modes` 仍管理项目级运行模式和模板。
+- 执行计划保存条在右侧工作区变窄时，Run 切换和保存操作分成两行，两行都从左侧对齐。保存目标选择器随剩余宽度收缩，保存按钮不溢出面板。
+- 校验失败不提供重新加载。再次保存会用当前草稿重新校验。原因列在配置面板中；只有画布和配置面板收成标签时，保存条才显示「查看原因」并切到配置面板。两侧同时可见时不显示该按钮。
+- 仍可能通过 `session=continue` 回到的节点不能更换 Agent 时，提示写明节点 id，不提供重新加载。版本冲突和部分提交仍保留草稿，并提供重新加载或恢复。
+- 当前草稿与这一侧已持久化的工作流或模型绑定不同时，保存按钮旁显示「还原」，回到该持久化内容，并清掉由这份草稿引起的校验或 Agent 身份错误。冲突和部分提交的恢复动作保留。
+- 停止或继续会话只更新运行生命周期。已打开的编辑工作流 Tab 保持当前草稿、选择和画布，不重新进入加载态。
+- 会话右侧工作区中的工作流编辑器占满保存条以下的剩余高度，不按整个视口再取一层固定高度，外层也不再纵向滚动。画布和配置面板一起延伸到工作区底部；配置标题保持固定，配置内容只在配置面板内部滚动。
+- 打开编辑时若当前 Run 与下一次 Run 已经不同，直接分成两个标签，停在下一次 Run。保存后是否分开仍由提交结果决定。取消分开用弹窗选择保留哪一份；确认后当前 Run 和下一次 Run 的编辑草稿都变成这一份，不再处于分开状态，因此不会立刻再拆开。这份草稿尚未写回已保存计划；只要它和任一侧的已保存内容不同，保存旁就显示「还原」，点下去回到两侧各自的已保存内容，两边仍不同时重新分开。弹窗关闭不保存。
 - Task 可保存不完整或失效的模型绑定，但不能创建新 Run；运行尝试必须阻断并 deep link 到第一个问题普通 Worker，用户保存修复后自行再次发起运行，不保留启动意图或自动续跑。
-- 新建 Run 前，runtime 按 `executionSlotId` 严格校验并把 Task 绑定注入普通 Worker 的 provider、model、permission 与 config options，随后把完整可执行 `WorkflowDsl` 冻结为 `runs/<run>/workflow.snapshot.json`；校验失败不得产生部分 Run。
+- 新建 Run 前，runtime 按 `executionSlotId` 严格校验并把 Task 绑定注入普通 Worker 的 provider、model、permission 与 config options，然后发布 execution plan revision 1。Workflow Run 保存可执行工作流；AUTO Run 保存本次提交的 AUTO 配置。`workflow.snapshot.json` 只留下创建时的迁移副本。校验失败不得产生部分 Run。
 - 创建 Run 的结构化绑定错误携带 `workflowTemplateId`、`nodeId` 和 `executionSlotId`；修复入口打开对应模板并聚焦第一个失效普通 Worker，不自动重试原启动动作。
 - workflow snapshot 中的 `AI-DYNAMIC` allowed workflows 会在进入节点时冻结为 `allowed-workflow-snapshots.json`；内部 workflow invocation 只引用本次冻结快照，不读取 live 模板。
 - 已存在 Run / Round 的展示和继续执行只读取运行时快照，不被后续模板、Task、Agent 能力或应用升级回写。ACP session 建立后的模型与权限 override 只属于当前 session，不反向修改 Task 或模板绑定。

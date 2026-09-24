@@ -40,11 +40,10 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   const active = session.pages.find((page) => page.pageId === session.activePageId) ?? null;
   const [address, setAddress] = useState(active?.url === BLANK_BROWSER_URL ? '' : (active?.url ?? ''));
   const [typed, setTyped] = useState(false);
-  // The address bar draft belongs to the user while it is focused. Page url/title events keep
-  // arriving from the native webview (SPA route changes, redirects) and must never overwrite
-  // what the user is typing, otherwise the suggestion list silently flips from filtered
-  // results to recent visits on an already-open tab.
+  // A typed, unsubmitted address belongs to the user. Focusing the field alone must not
+  // freeze it: same-document navigations still have to replace the displayed URL.
   const editingAddressRef = useRef(false);
+  const typedRef = useRef(false);
   const lastSyncedPageRef = useRef<string | null>(active?.pageId ?? null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
@@ -72,7 +71,8 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   useEffect(() => {
     const pageChanged = lastSyncedPageRef.current !== (active?.pageId ?? null);
     lastSyncedPageRef.current = active?.pageId ?? null;
-    if (!pageChanged && editingAddressRef.current) return;
+    if (!pageChanged && typedRef.current) return;
+    typedRef.current = false;
     setTyped(false);
     setAddress(!active || active.url === BLANK_BROWSER_URL ? '' : active.url);
   }, [active?.pageId, active?.url]);
@@ -97,6 +97,9 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   }, []);
 
   const submitAddress = useCallback((override?: string) => {
+    typedRef.current = false;
+    editingAddressRef.current = false;
+    setTyped(false);
     const url = normalizeBrowserAddress(override ?? address, searchEngine);
     if (!active) {
       browserSessionStore.openUrl(url);
@@ -161,6 +164,7 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
             onAddressChange={setAddress}
             onTyped={() => {
               editingAddressRef.current = true;
+              typedRef.current = true;
               setTyped(true);
             }}
             onSubmit={submitAddress}

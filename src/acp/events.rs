@@ -14,7 +14,8 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::runtime_error::{
-    RuntimeErrorDomain, RuntimeErrorInfo, manual_runtime_error_info, normalize_runtime_error,
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, manual_runtime_error_info,
+    normalize_runtime_error,
 };
 use crate::storage::{
     append_jsonl, append_jsonl_lines_flushed_unlocked, atomic_write_file, ensure_parent_dir,
@@ -2055,6 +2056,9 @@ fn normalize_lifecycle_header(value: &Value, header: &mut AcpLifecycleHeader) {
 
 enum AcpLifecycleTransition<'a> {
     PromptAdmitted(&'a AcpPromptSubmission),
+    PromptReopened {
+        operation_id: &'a str,
+    },
     ExecutionClaimed,
     StopRequested {
         operation_id: &'a str,
@@ -2081,6 +2085,13 @@ fn reduce_lifecycle_header(
             next.latest_turn_status = AcpLatestTurnStatus::None;
             next.stop_reason = None;
             next.operation_id = Some(submission.operation_id.clone());
+        }
+        AcpLifecycleTransition::PromptReopened { operation_id } => {
+            next.prompt_event_id = None;
+            next.live_turn_activity = AcpLiveTurnActivity::Starting;
+            next.latest_turn_status = AcpLatestTurnStatus::None;
+            next.stop_reason = None;
+            next.operation_id = Some(operation_id.to_string());
         }
         AcpLifecycleTransition::ExecutionClaimed => {
             next.live_turn_activity = AcpLiveTurnActivity::Accepted;
@@ -2252,13 +2263,22 @@ fn prompt_submission_from_value(value: &Value) -> Result<Option<AcpPromptSubmiss
         .map_err(Into::into)
 }
 
+#[derive(Debug)]
+enum ExistingTurnClassification {
+    New,
+    Active(AcpLifecycleHeader),
+    Terminal(AcpLifecycleHeader),
+    AutoRetryable(AcpLifecycleHeader),
+}
+
 fn classify_existing_turn(
     value: &Value,
     submission: &AcpPromptSubmission,
-) -> Result<Option<AcpTurnAdmission>> {
+    automatic_retry: bool,
+) -> Result<ExistingTurnClassification> {
     let current = lifecycle_header_from_value(value);
     if current.turn_id.as_deref() != Some(submission.turn_id.as_str()) {
-        return Ok(None);
+        return Ok(ExistingTurnClassification::New);
     }
     if let Some(persisted) = prompt_submission_from_value(value)?
         && (persisted.input != submission.input
@@ -2266,10 +2286,16 @@ fn classify_existing_turn(
     {
         anyhow::bail!("acp.prompt-submission-conflict");
     }
-    if lifecycle_is_terminal(&current) || lifecycle_is_stopping(&current) {
-        Ok(Some(AcpTurnAdmission::ExistingTerminal(current)))
+    if automatic_retry
+        && lifecycle_is_terminal(&current)
+        && current.latest_turn_status == AcpLatestTurnStatus::Failed
+        && current.turn_error.as_ref().is_some_and(|error| error.recovery == RecoveryMode::Auto)
+    {
+        Ok(ExistingTurnClassification::AutoRetryable(current))
+    } else if lifecycle_is_terminal(&current) || lifecycle_is_stopping(&current) {
+        Ok(ExistingTurnClassification::Terminal(current))
     } else {
-        Ok(Some(AcpTurnAdmission::ExistingActive(current)))
+        Ok(ExistingTurnClassification::Active(current))
     }
 }
 
@@ -2284,7 +2310,18 @@ pub fn inspect_session_turn(
     let _guard = session_metadata_lock(path).lock().unwrap();
     admission_metadata_base(path)?
         .as_ref()
-        .map(|value| classify_existing_turn(value, submission))
+        .map(|value| {
+            classify_existing_turn(value, submission, false).map(|classification| match classification {
+                ExistingTurnClassification::New => None,
+                ExistingTurnClassification::Active(header) => {
+                    Some(AcpTurnAdmission::ExistingActive(header))
+                }
+                ExistingTurnClassification::Terminal(header)
+                | ExistingTurnClassification::AutoRetryable(header) => {
+                    Some(AcpTurnAdmission::ExistingTerminal(header))
+                }
+            })
+        })
         .transpose()
         .map(Option::flatten)
 }
@@ -2358,8 +2395,9 @@ pub fn claim_session_turn_for_execution(
 pub fn admit_session_turn_for_execution(
     path: &Utf8Path,
     submission: &AcpPromptSubmission,
+    automatic_retry: bool,
 ) -> Result<AcpTurnExecutionClaim> {
-    let admission = begin_session_turn(path, submission)?;
+    let admission = begin_session_turn(path, submission, automatic_retry)?;
     let header = admission.header();
     match admission {
         AcpTurnAdmission::ExistingTerminal(header) => {
@@ -2652,6 +2690,7 @@ pub fn write_session_metadata_owned(
 pub fn begin_session_turn(
     path: &Utf8Path,
     submission: &AcpPromptSubmission,
+    automatic_retry: bool,
 ) -> Result<AcpTurnAdmission> {
     let _guard = session_metadata_lock(path).lock().unwrap();
     let mut value = admission_metadata_base(path)?.unwrap_or_else(|| {
@@ -2667,8 +2706,42 @@ pub fn begin_session_turn(
             "updatedAt": submission.admitted_at,
         })
     });
-    if let Some(existing) = classify_existing_turn(&value, submission)? {
-        return Ok(existing);
+    match classify_existing_turn(&value, submission, automatic_retry)? {
+        ExistingTurnClassification::Active(header) => {
+            return Ok(AcpTurnAdmission::ExistingActive(header))
+        }
+        ExistingTurnClassification::Terminal(header) => {
+            return Ok(AcpTurnAdmission::ExistingTerminal(header))
+        }
+        ExistingTurnClassification::AutoRetryable(_) => {
+            let current_value = read_json::<Value>(path)?;
+            let current = lifecycle_header_from_value(&current_value);
+            let still_auto_retryable = current.turn_id.as_deref() == Some(submission.turn_id.as_str())
+                && lifecycle_is_terminal(&current)
+                && current.latest_turn_status == AcpLatestTurnStatus::Failed
+                && current
+                    .turn_error
+                    .as_ref()
+                    .is_some_and(|error| error.recovery == RecoveryMode::Auto);
+            if !still_auto_retryable {
+                return Ok(AcpTurnAdmission::ExistingTerminal(current));
+            }
+            let reopened = reduce_lifecycle_header(
+                &current_value,
+                current,
+                AcpLifecycleTransition::PromptReopened {
+                    operation_id: &submission.operation_id,
+                },
+            )?;
+            value = current_value;
+            apply_lifecycle_header(&mut value, &reopened);
+            value["promptSubmission"] = serde_json::to_value(submission)?;
+            value["updatedAt"] = Value::String(submission.admitted_at.clone());
+            write_json(path, &value)?;
+            mark_session_turn_active(path, &submission.turn_id)?;
+            return Ok(AcpTurnAdmission::Started(reopened));
+        }
+        ExistingTurnClassification::New => {}
     }
     let current = lifecycle_header_from_value(&value);
     if current.live_turn_activity != AcpLiveTurnActivity::Idle {
@@ -4224,7 +4297,7 @@ mod tests {
             attachment_paths: vec![],
             admitted_at: "4Z".into(),
         };
-        begin_session_turn(&path, &next).unwrap();
+        begin_session_turn(&path, &next, false).unwrap();
         assert!(
             super::persist_session_turn_failure_owned(&path, &owner, &error, "5Z")
                 .unwrap()
@@ -4283,7 +4356,7 @@ mod tests {
             };
 
         let first = submission("turn-a", "operation-a", "2026-08-19T10:00:00Z");
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &first).unwrap() else {
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &first, false).unwrap() else {
             panic!("first admission must start the turn");
         };
         assert_eq!(started.revision, 1);
@@ -4300,7 +4373,7 @@ mod tests {
             ..first.clone()
         };
         let AcpTurnAdmission::ExistingActive(duplicate) =
-            begin_session_turn(&path, &duplicate_submission).unwrap()
+            begin_session_turn(&path, &duplicate_submission, false).unwrap()
         else {
             panic!("duplicate active admission must be classified without starting");
         };
@@ -4309,7 +4382,7 @@ mod tests {
         let mut conflicting = first.clone();
         conflicting.input.display_text = "different payload".to_string();
         assert!(
-            begin_session_turn(&path, &conflicting)
+            begin_session_turn(&path, &conflicting, false)
                 .unwrap_err()
                 .to_string()
                 .starts_with("acp.prompt-submission-conflict")
@@ -4319,6 +4392,7 @@ mod tests {
             begin_session_turn(
                 &path,
                 &submission("turn-b", "operation-b", "2026-08-19T10:00:02Z"),
+                false,
             )
             .unwrap_err()
             .to_string()
@@ -4354,13 +4428,14 @@ mod tests {
         assert_eq!(terminal.latest_turn_status, AcpLatestTurnStatus::Cancelled);
         assert_eq!(terminal.live_turn_activity, AcpLiveTurnActivity::Idle);
         assert!(matches!(
-            begin_session_turn(&path, &duplicate_submission).unwrap(),
+            begin_session_turn(&path, &duplicate_submission, false).unwrap(),
             AcpTurnAdmission::ExistingTerminal(_)
         ));
 
         let AcpTurnAdmission::Started(next) = begin_session_turn(
             &path,
             &submission("turn-b", "operation-b", "2026-08-19T10:00:05Z"),
+            false,
         )
         .unwrap() else {
             panic!("terminal predecessor must allow a new turn");
@@ -4407,7 +4482,7 @@ mod tests {
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
         assert!(matches!(
-            begin_session_turn(&path, &submission).unwrap(),
+            begin_session_turn(&path, &submission, false).unwrap(),
             AcpTurnAdmission::Started(_)
         ));
         super::clear_session_turn_active(&path, Some("turn-orphan"));
@@ -4458,7 +4533,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
-        begin_session_turn(&path, &submission).unwrap();
+        begin_session_turn(&path, &submission, false).unwrap();
         super::request_session_stop(&path, "stop-operation", "2026-08-19T10:00:01Z").unwrap();
         super::clear_session_turn_active(&path, Some(&submission.turn_id));
 
@@ -4535,7 +4610,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
-        begin_session_turn(&path, &first).unwrap();
+        begin_session_turn(&path, &first, false).unwrap();
         let accepted =
             super::request_session_stop_outcome(&path, "stop-1", "2026-08-19T10:00:01Z").unwrap();
         let old_owner = accepted.owner.clone().unwrap();
@@ -4559,7 +4634,7 @@ mod tests {
             admitted_at: "2026-08-19T10:00:03Z".to_string(),
             ..first
         };
-        begin_session_turn(&path, &second).unwrap();
+        begin_session_turn(&path, &second, false).unwrap();
         assert!(!super::lifecycle_owner_still_cancelling(&path, &old_owner).unwrap());
     }
 
@@ -4633,7 +4708,7 @@ mod tests {
         };
 
         assert!(matches!(
-            begin_session_turn(&snapshot_path, &submission).unwrap(),
+            begin_session_turn(&snapshot_path, &submission, false).unwrap(),
             AcpTurnAdmission::Started(_)
         ));
 
@@ -4680,7 +4755,7 @@ mod tests {
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
         assert!(matches!(
-            begin_session_turn(&session_path, &submission).unwrap(),
+            begin_session_turn(&session_path, &submission, false).unwrap(),
             AcpTurnAdmission::Started(_)
         ));
         let snapshot: Value = read_json(&session_path).unwrap();
@@ -4720,7 +4795,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
         else {
             panic!("claim test admission must start");
         };
@@ -4810,7 +4885,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
         else {
             panic!("owned metadata admission must start");
         };
@@ -4873,7 +4948,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
         else {
             panic!("stop takeover admission must start");
         };
@@ -5000,7 +5075,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
         else {
             panic!("launch override test admission must start");
         };
@@ -5053,7 +5128,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
         else {
             panic!("command clear test admission must start");
         };
@@ -5114,7 +5189,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
         else {
             panic!("auto accept command-owned test admission must start");
         };
@@ -7154,5 +7229,196 @@ mod tests {
         .unwrap();
         let roll = second.roll.expect("raw log rewrite stats");
         assert!(roll.before_bytes > roll.after_bytes);
+    }
+
+    #[test]
+    fn automatic_retry_reopens_a_recoverable_failed_turn_at_the_admission_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = prompt_submission("turn-auto-retry", "operation-1");
+
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission, false).unwrap()
+        else {
+            panic!("first attempt must admit the turn");
+        };
+        let error = crate::runtime_error::auto_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            "ACP `initialize` timed out after 60 seconds",
+            serde_json::json!({"method": "initialize"}),
+        );
+        let persisted = super::persist_session_turn_failure_owned(
+            &path,
+            &super::AcpLifecycleOwner {
+                turn_id: started.turn_id.clone().unwrap(),
+                operation_id: started.operation_id.clone().unwrap(),
+                revision: started.revision,
+            },
+            &error,
+            "2026-09-23T00:00:01Z",
+        )
+        .unwrap()
+        .expect("first recoverable failure must settle the attempt");
+        assert_eq!(persisted.latest_turn_status, AcpLatestTurnStatus::Failed);
+        assert_eq!(persisted.turn_error.as_ref().map(|error| error.recovery), Some(crate::runtime_error::RecoveryMode::Auto));
+
+        let retry = prompt_submission("turn-auto-retry", "operation-2");
+        let claim = super::admit_session_turn_for_execution(&path, &retry, true).unwrap();
+        match claim {
+            super::AcpTurnExecutionClaim::Claimed(owner) => {
+                assert_eq!(owner.turn_id, "turn-auto-retry");
+                assert_eq!(owner.operation_id, "operation-2");
+                assert_eq!(owner.revision, persisted.revision + 2);
+            }
+            other => panic!("automatic retry must claim the reopened turn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn automatic_retry_rejects_non_recoverable_terminal_turns() {
+        let cases = [
+            (crate::runtime_error::RecoveryMode::Manual, true),
+            (crate::runtime_error::RecoveryMode::Blocked, true),
+            (crate::runtime_error::RecoveryMode::Auto, false),
+        ];
+        for (recovery, automatic_retry) in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+            let submission = prompt_submission("turn-reject", "operation-1");
+            let AcpTurnAdmission::Started(started) =
+                begin_session_turn(&path, &submission, false).unwrap()
+            else {
+                panic!("rejection fixture must admit the turn");
+            };
+            let error = crate::runtime_error::RuntimeErrorInfo::new(
+                crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+                "runtime.transport-interrupted",
+                recovery,
+                "diagnostic",
+                serde_json::json!({}),
+                None,
+            );
+            super::persist_session_turn_failure_owned(
+                &path,
+                &super::AcpLifecycleOwner {
+                    turn_id: started.turn_id.clone().unwrap(),
+                    operation_id: started.operation_id.clone().unwrap(),
+                    revision: started.revision,
+                },
+                &error,
+                "2026-09-23T00:00:01Z",
+            )
+            .unwrap()
+            .unwrap();
+            let retry = prompt_submission("turn-reject", "operation-2");
+            assert!(matches!(
+                super::admit_session_turn_for_execution(&path, &retry, automatic_retry).unwrap(),
+                super::AcpTurnExecutionClaim::AlreadySettled(_)
+            ));
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = prompt_submission("turn-completed", "operation-1");
+        let AcpTurnAdmission::Started(started) =
+            begin_session_turn(&path, &submission, false).unwrap()
+        else {
+            panic!("completed fixture must admit the turn");
+        };
+        super::persist_session_turn_terminal_owned(
+            &path,
+            "turn-completed",
+            Some("operation-1"),
+            started.revision,
+            AcpLatestTurnStatus::Completed,
+            "completed",
+            "2026-09-23T00:00:01Z",
+        )
+        .unwrap()
+        .unwrap();
+        let retry = prompt_submission("turn-completed", "operation-2");
+        assert!(matches!(
+            super::admit_session_turn_for_execution(&path, &retry, true).unwrap(),
+            super::AcpTurnExecutionClaim::AlreadySettled(_)
+        ));
+    }
+
+    #[test]
+    fn automatic_retry_does_not_reopen_a_cancelled_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = prompt_submission("turn-cancelled", "operation-1");
+        let AcpTurnAdmission::Started(started) =
+            begin_session_turn(&path, &submission, false).unwrap()
+        else {
+            panic!("cancelled fixture must admit the turn");
+        };
+        super::persist_session_turn_terminal_owned(
+            &path,
+            "turn-cancelled",
+            Some("operation-1"),
+            started.revision,
+            AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            "2026-09-23T00:00:01Z",
+        )
+        .unwrap()
+        .unwrap();
+        let retry = prompt_submission("turn-cancelled", "operation-2");
+        assert!(matches!(
+            super::admit_session_turn_for_execution(&path, &retry, true).unwrap(),
+            super::AcpTurnExecutionClaim::AlreadySettled(_)
+        ));
+    }
+
+    #[test]
+    fn late_settlement_from_replaced_operation_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = prompt_submission("turn-late", "operation-1");
+        let AcpTurnAdmission::Started(started) =
+            begin_session_turn(&path, &submission, false).unwrap()
+        else {
+            panic!("late fixture must admit the turn");
+        };
+        let error = crate::runtime_error::auto_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            "diagnostic",
+            serde_json::json!({}),
+        );
+        super::persist_session_turn_failure_owned(
+            &path,
+            &super::AcpLifecycleOwner {
+                turn_id: started.turn_id.clone().unwrap(),
+                operation_id: started.operation_id.clone().unwrap(),
+                revision: started.revision,
+            },
+            &error,
+            "2026-09-23T00:00:01Z",
+        )
+        .unwrap()
+        .unwrap();
+        let retry = prompt_submission("turn-late", "operation-2");
+        let claim = super::admit_session_turn_for_execution(&path, &retry, true).unwrap();
+        let super::AcpTurnExecutionClaim::Claimed(owner) = claim else {
+            panic!("automatic retry must claim the reopened turn");
+        };
+        let late = super::persist_session_turn_failure_owned(
+            &path,
+            &super::AcpLifecycleOwner {
+                turn_id: started.turn_id.clone().unwrap(),
+                operation_id: started.operation_id.clone().unwrap(),
+                revision: started.revision,
+            },
+            &error,
+            "2026-09-23T00:00:02Z",
+        )
+        .unwrap();
+        assert!(late.is_none());
+        let current = super::read_lifecycle_header(&path).unwrap().unwrap();
+        assert_eq!(current.operation_id.as_deref(), Some(owner.operation_id.as_str()));
+        assert_eq!(current.latest_turn_status, AcpLatestTurnStatus::None);
+        assert!(current.turn_error.is_none());
     }
 }

@@ -389,6 +389,8 @@ ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `ac
 | lifecycle 顶层 | `displayStatus / runtimeDisplay / continueKind` | 作为 session tree、activeSessions 与 composer 的基础派生事实源 |
 | composer facet | `mode / submitTarget / processingKind / statusKey / canStop / lockInput` | 作为 composer 输入、停止、状态文案和提交目标的唯一业务规则源 |
 
+自动重试的 attempt 结算不等于 logical turn 终态：`latestTurnStatus=failed + turnError.recovery=auto` 表示当前 attempt 已结算但 turn 仍可自动重试；唯一合法重开路径是 `PromptReopened`，保留 `turnId`、更换 `operationId`、递增 `revision`，并且判定与 CAS 写入必须在同一 metadata lock 内完成。`recovery=manual/blocked`、`completed`、`cancelled` 与 `cancelRequested` 不得重开。初始化阶段复用 `initializing` 投影，composer 在 Agent 尚未准备完成时展示「正在准备 Agent」，不新增平行状态机。
+
 `status` 与 `runtimeDisplay` 仍可作为兼容字段暴露，但必须由 lifecycle 同一个派生函数产出，不能在前端或其他 VM 中重新拼优先级。
 
 `runtimeDisplay` 必须同时表达视觉结果和错误语义：`tone=danger` 可以表示测试/验收节点正常完成后的 workflow outcome failure，但只有 `blockingError=true` 才能驱动 composer 的 runtime/session error 面板。前端不得再用红色或终局状态反推运行时错误。

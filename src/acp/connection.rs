@@ -37,6 +37,7 @@ const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
 const STDERR_FAILURE_MAX_CHARS: usize = 2_000;
+const STDERR_DIAGNOSTIC_MAX_CHARS: usize = 4_000;
 pub(crate) const STDERR_FAILURE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const CONNECTION_DIAGNOSTIC_REQUEST_LIMIT: usize = 8;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -1013,6 +1014,7 @@ pub struct AdapterConnection {
     exit_status_logged: AtomicBool,
     stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
     stderr_failures: Mutex<StderrFailureLog>,
+    stderr_diagnostics: Mutex<String>,
     stderr_failures_changed: Condvar,
 }
 
@@ -1235,6 +1237,7 @@ impl AdapterConnection {
             exit_status_logged: AtomicBool::new(false),
             stderr_noise_counts: Mutex::new(BTreeMap::new()),
             stderr_failures: Mutex::new(StderrFailureLog::default()),
+            stderr_diagnostics: Mutex::new(String::new()),
             stderr_failures_changed: Condvar::new(),
         });
 
@@ -1338,6 +1341,35 @@ impl AdapterConnection {
         };
         append_failure_stderr_text(&mut log.text, line);
         self.stderr_failures_changed.notify_all();
+    }
+
+    fn record_stderr_diagnostic(&self, line: &str) {
+        let Ok(mut diagnostics) = self.stderr_diagnostics.lock() else {
+            return;
+        };
+        append_failure_stderr_text(&mut diagnostics, line);
+        if diagnostics.chars().count() > STDERR_DIAGNOSTIC_MAX_CHARS {
+            *diagnostics = diagnostics
+                .chars()
+                .skip(diagnostics.chars().count() - STDERR_DIAGNOSTIC_MAX_CHARS)
+                .collect();
+        }
+    }
+
+    pub fn stderr_diagnostic_tail(&self, max_chars: usize) -> String {
+        let diagnostics = self
+            .stderr_diagnostics
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        tail_text(&diagnostics, max_chars)
+    }
+
+    pub fn take_stderr_diagnostics(&self) -> String {
+        self.stderr_diagnostics
+            .lock()
+            .map(|mut value| std::mem::take(&mut *value))
+            .unwrap_or_default()
     }
 
     fn finish_failure_stderr(&self) {
@@ -2067,6 +2099,14 @@ fn append_failure_stderr_text(target: &mut String, line: &str) {
     }
 }
 
+fn tail_text(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    text.chars().skip(char_count - max_chars).collect()
+}
+
 fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
     match classify_adapter_stderr(&line.text) {
         AdapterStderrKind::Noise(kind) => {
@@ -2076,7 +2116,7 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
             return;
         }
         AdapterStderrKind::Failure => connection.record_failure_stderr(&line.text),
-        AdapterStderrKind::Diagnostic => {}
+        AdapterStderrKind::Diagnostic => connection.record_stderr_diagnostic(&line.text),
     }
     let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
     if line.encoding == "non-utf8" {

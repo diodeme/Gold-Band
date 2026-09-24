@@ -1384,7 +1384,7 @@ fn claim_agent_prompt_lifecycle(
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),
     };
-    match admit_session_turn_for_execution(&attempt_dir.join("acp.snapshot.json"), &submission)
+    match admit_session_turn_for_execution(&attempt_dir.join("acp.snapshot.json"), &submission, false)
         .map_err(|error| {
             analytics_error(
                 "analytics.execution-failed",

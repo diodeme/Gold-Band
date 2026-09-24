@@ -645,7 +645,7 @@ pub(crate) fn build_worker_invocation(
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: app.config.log_prompts,
-        log_provider_command: app.config.log_provider_command,
+        automatic_prompt_retry: false,
         attachments_dir: matches!(node_dsl, NodeDsl::Worker(_)).then(|| {
             app.paths
                 .attachments_dir(task_id, run_id, round_id, node_id, attempt_id)
@@ -699,6 +699,7 @@ pub(crate) fn execute_ai_node(
     runtime_control_intent: RuntimeControlIntent,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
+    automatic_prompt_retry: bool,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let mut invocation = build_worker_invocation(
@@ -721,6 +722,7 @@ pub(crate) fn execute_ai_node(
         permission_mode_override,
     )?;
     invocation.runtime_control_intent = runtime_control_intent;
+    invocation.automatic_prompt_retry = automatic_prompt_retry;
 
     progress(&format!(
         "calling provider for {}/{}/{}",

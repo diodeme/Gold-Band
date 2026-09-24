@@ -202,7 +202,9 @@ BrowserPanel
 
 隐藏后重新显示必然是原生图层的一次 hide → show，中间会露出承载面板的 HTML 空白，因此首次测量与 `show` 必须在 layout 阶段（首帧前）发出，不得排进 `requestAnimationFrame`；只有 resize / observer 驱动的后续同步才走 rAF 合并。只有 `live` 翻转时才额外补一次同步，避免挂载时重复同步。
 
-占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
+离开可见状态同样在 layout 阶段发出 `suppress`，早于下一页绘制，也早于会话页卸载时的被动 effect。子 WebView 不在 HTML 树里，占位盒卸掉不会让它消失；若把 `hide` 留到绘制之后，设置页、上下文页已经显示时网页仍会盖在原来的矩形上。浏览器一旦打开过，宿主模块已在内存中，这次调用直接 `suppress`，不再等待动态 `import()`。会话壳卸载仍用 generation 微任务避开 StrictMode 的模拟卸载，但该微任务由 layout cleanup 登记，仍在绘制前执行。
+
+占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，不论当时 `suppress` 标志是否已经由 `resume` 清掉，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。`lastBounds` 只表示最近一次有效占位测量，不是原生窗口已经到达的矩形。是否调用 `setBounds` 要和上一次成功发给原生窗口的矩形，或当前在途目标比较。隐藏期间记下的新尺寸，即使 `resume` 后占位盒没有再变化，也必须提交。否则在别的会话改过侧边栏或右栏宽度后，回来时网页会停在离开前的矩形上，和已经更新的面板错位。另一条路径仍然保留：不得把隐藏期间的窄测量写进原生窗口，否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
 
 导航同样只有一个在途事务，与页面身份绑定：同一个 `pageId` 同时最多有一条未完成的原生 create/navigate，同目标重复提交直接复用在途 Promise，不同目标只保留最后一个排队目标。权威 URL（`page.url`）只在原生命令成功后写回；失败时结束 loading、让页面保持在上一次确认的 URL，并把结构化错误码投到该页 notice。地址栏作为用户输入保留待修正内容，不回写失败地址为权威值。禁用「先写 URL 再发命令」和「同一页并发导航」，是因为前者会留下白屏但地址栏显示成功的假象，后者会随点击次数线性堆积原生调用，最终拖垮 WebView 消息循环并让整个应用无响应。
 
@@ -212,7 +214,7 @@ BrowserPanel
 
 临时离开统一 suppress 而不是 discard，是为了保留页内 JS 状态、滚动位置、SPA 状态和原生导航历史，代价是隐藏实例仍占用内存并可能继续跑定时器、网络或音频，由 5 个活实例上限兜底。语义按 Tauri 子 WebView 定义，不绑定具体内核：`show/hide`、bounds、`close`、registry 与 LRU 对所有平台一致，Windows WebView2 / macOS WKWebView / Linux WebKitGTK 只作为平台实现细节。第一版不引入平台专属 suspend/冻结状态机；只有实测隐藏实例消耗不可接受时，才单独设计跨平台降级能力。
 
-`WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。原生网页的显隐只由 `BrowserNativeLifecycle` 写入；浏览器面板和占位组件卸载不得自行调用 `resume`、`suppress` 或 `hideAll`，避免同一 scope 切换产生重复 hide/show。占位组件只负责在 layout 阶段测量并把当前 `pageId + bounds + visible` 交给 host，后续 ResizeObserver/窗口变化通过 rAF 合并到 `ensurePage`；同一次测量不得再旁路发送 bounds IPC。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效；但无论是面板卸载、Shell 卸载还是 `available=false`，cleanup 都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
+`WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。原生网页的显隐只由 `BrowserNativeLifecycle` 写入；浏览器面板和占位组件卸载不得自行调用 `resume`、`suppress` 或 `hideAll`，避免同一 scope 切换产生重复 hide/show。占位组件只负责在 layout 阶段测量并把当前 `pageId + bounds + visible` 交给 host，后续 ResizeObserver/窗口变化通过 rAF 合并到 `ensurePage`；同一次测量不得再旁路发送 bounds IPC。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效。这条失效检查放在 layout cleanup 登记的微任务里，真实卸载仍在绘制前 `suppress`。无论是面板卸载、Shell 卸载还是 `available=false`，都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。`available=false` 且宿主模块已加载时，在 layout effect 本体里同步 `suppress`，不等这个微任务。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
 
 地址建议浮层不进入活网页 LRU。聚焦/输入/键盘选中/主题或窗口尺寸变化时更新同一个实例；提交、Escape、主界面点到地址栏以外、浏览页子 WebView 获得焦点、浏览器整体隐藏或 owner 丢弃时 hide/close。地址栏因点击浮层而失焦不得 hide。show/hide revision 由模块级分配器跨组件挂载单调递增；整体隐藏还必须在 Rust 侧失效化在途 show，迟到请求不得覆盖较新的 hide。鼠标选择与删除通过带 revision 和稳定 item key 的事件回到主 WebView；主界面只接受当前可见 revision 且仍存在于当前建议投影中的项目。dismiss 只关闭浮层，不匹配建议项。
 

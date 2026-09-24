@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import React, { act } from 'react';
+import React, { act, useEffect, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -106,6 +106,74 @@ describe('BrowserNativeLifecycle', () => {
     await act(async () => root.unmount());
     await vi.waitFor(() => expect(host.suppress).toHaveBeenCalled());
     expect(host.discardAll).not.toHaveBeenCalled();
+  });
+
+  it('hides the native page during layout before the next page lays out or runs passive effects', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const props = {
+      scopeKey: 'conversation-a',
+      presented: true,
+      autoCollapsedHidden: false,
+      requestedOpen: true,
+      activeIsBrowser: true,
+    };
+    await act(async () => {
+      root.render(<BrowserNativeLifecycle {...props} available />);
+    });
+    await vi.waitFor(() => expect(host.resume).toHaveBeenCalled());
+    const order: string[] = [];
+    host.suppress.mockImplementation(() => {
+      order.push('suppress');
+      return Promise.resolve();
+    });
+    function NextPage() {
+      useLayoutEffect(() => {
+        order.push('later-layout');
+      });
+      useEffect(() => {
+        order.push('passive');
+      });
+      return null;
+    }
+    await act(async () => {
+      root.render(
+        <>
+          <BrowserNativeLifecycle {...props} available={false} />
+          <NextPage />
+        </>,
+      );
+    });
+    expect(order).toEqual(['suppress', 'later-layout', 'passive']);
+    expect(host.discardAll).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it('does not hide when strict mode replays the owner mount', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <React.StrictMode>
+          <BrowserNativeLifecycle
+            scopeKey="conversation-a"
+            presented
+            autoCollapsedHidden={false}
+            available
+            requestedOpen
+            activeIsBrowser
+          />
+        </React.StrictMode>,
+      );
+    });
+    await act(async () => undefined);
+    expect(host.suppress).not.toHaveBeenCalled();
+    expect(host.discardAll).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    container.remove();
   });
 
   it('keeps the retained webview visible when only the scope identity changes', async () => {

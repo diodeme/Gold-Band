@@ -216,6 +216,49 @@ describe('FileExplorerStore lifecycle', () => {
     expect(store.snapshot('project-1').treeScrollTop).toBe(beforeRefresh.treeScrollTop);
   });
 
+  it('keeps already loaded descendants visible while an expanded tree reconciles', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    await store.toggleDirectory('project-1', 'src', true);
+    const before = store.snapshot('project-1').roots;
+    expect(fileTreeView(before, 'tree').flatMap((node) => node.children ?? []).flatMap((node) => node.children ?? []).map((node) => node.displayName)).toEqual(['main.rs']);
+
+    const pending = new Map<string, (entries: WorkspaceDirectoryEntryVm[]) => void>();
+    api.listWorkspaceDirectory.mockImplementation((_projectId: string, path: string) => {
+      if (path === '') return Promise.resolve([directory('src'), file('README.md')]);
+      return new Promise((resolve) => {
+        pending.set(path, resolve);
+      });
+    });
+    let droppedLoadedDescendant = false;
+    const unsubscribe = store.subscribe(() => {
+      const visible = fileTreeView(store.snapshot('project-1').roots, 'tree');
+      const names = visible.flatMap((node) => [node.displayName, ...(node.children ?? []).flatMap((child) => [child.displayName, ...(child.children ?? []).map((nested) => nested.displayName)])]);
+      if (!names.includes('main.rs')) droppedLoadedDescendant = true;
+    });
+
+    const reconciliation = store.reconcile('project-1');
+    await vi.waitFor(() => expect(pending.has('src')).toBe(true));
+
+    expect(droppedLoadedDescendant).toBe(false);
+    expect(store.snapshot('project-1').roots).toBe(before);
+    expect(store.snapshot('project-1').roots[0]?.loading).toBe(false);
+
+    pending.get('src')!([directory('nested', 'src/nested'), file('added.rs', 'src/added.rs')]);
+    await vi.waitFor(() => expect(pending.has('src/nested')).toBe(true));
+
+    const src = store.snapshot('project-1').roots[0];
+    expect(src?.children?.map((entry) => entry.name)).toEqual(['nested', 'added.rs']);
+    expect(src?.children?.[0]?.children?.[0]?.name).toBe('main.rs');
+    expect(droppedLoadedDescendant).toBe(false);
+
+    pending.get('src/nested')!([file('main.rs', 'src/nested/main.rs')]);
+    await reconciliation;
+    unsubscribe();
+    expect(droppedLoadedDescendant).toBe(false);
+    expect(store.snapshot('project-1').expanded).toEqual(new Set(['src', 'src/nested']));
+  });
+
   it('reconciles a cached tree on workspace reactivation without resetting ready UI state', async () => {
     const store = createStore();
     await store.loadRoot('project-1');

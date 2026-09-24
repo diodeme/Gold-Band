@@ -37,7 +37,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 2. 历史：当前工作树 HEAD 可达的完整提交列表、标准桌面多选、按文件聚合的最终 Diff 审阅、提交归属和分页；其他分支只有用户显式选择对应 ref 时才进入历史范围，默认不得用 `--all` 混入旁支提交。
 3. 仓库：分支、tag、worktree 与已有 stash 的查看/应用，不承载日常同步入口。
 
-仓库标题右侧使用一个动态同步按钮和一个独立 Fetch 按钮。`behind > 0` 时同步按钮同时显示 `↓behind ↑ahead`，主动作固定为 Pull；`behind = 0` 时只显示 `↑ahead`，主动作是 Push，`ahead = 0` 时禁用；未设置 upstream 的当前分支显示上箭头并允许首次 Push。Push 遇到 non-fast-forward 只返回结构化错误，不自动 Pull，用户需自行 Fetch、Pull 后再 Push。点击可用入口后进入对应确认/配置对话框，执行中在原入口显示旋转状态，结束后在仓库标题下保留成功、失败、冲突或取消结果，直到用户关闭或开始下一次操作。更改区不重复显示 Fetch/Pull/Push，只在 `…` 菜单提供全部暂存、全部取消暂存和保存为 stash。Git watcher 自动收敛本地工作区和 Git metadata 状态，因此已加载页面不提供普通“重新读取本地状态”按钮；Fetch 不能删除，因为 watcher 不感知远端服务器的新提交，必须由用户显式联网更新 remote refs。
+仓库标题右侧使用一个动态同步按钮和一个独立 Fetch 按钮。`behind > 0` 时同步按钮同时显示 `↓behind ↑ahead`，主动作固定为 Pull；`behind = 0` 时只显示 `↑ahead`，主动作是 Push，`ahead = 0` 时禁用；未设置 upstream 的当前分支显示上箭头并允许首次 Push。Push 遇到 non-fast-forward 只返回结构化错误，不自动 Pull，用户需自行 Fetch、Pull 后再 Push。点击可用入口后进入对应确认/配置对话框，执行中在原入口显示旋转状态，结束后在仓库标题下保留成功、失败、冲突或取消结果，直到用户关闭或开始下一次操作。更改区不重复显示 Fetch/Pull/Push，只在 `…` 菜单提供全部暂存、全部取消暂存和保存为 stash。Git watcher 自动收敛本地工作区和 Git metadata 状态，因此已加载页面不提供普通“重新读取本地状态”按钮；Fetch 不能删除，因为 watcher 不感知远端服务器的新提交，必须由用户显式联网更新 remote refs。Fetch、Pull、Push 和 Push Tag 的预期修订只覆盖当前分支、HEAD、upstream 以及 ahead/behind，不包含未暂存或未跟踪文件。暂存、提交和 Stash 继续使用包含文件列表的 workspace revision。修订不匹配时重新读取 snapshot，保留该错误直到用户再次操作：同步操作提示分支已变化，文件操作提示更改列表已更新，都不再要求用户手动刷新，也不自动重试这次写操作。
 
 Fetch 的可选 prune 行为对客描述为“移除远端已删除的分支记录”，并明确提示不会删除本地分支或工作区文件；默认关闭，只有用户显式开启才向 operation 传递 `prune=true`。
 

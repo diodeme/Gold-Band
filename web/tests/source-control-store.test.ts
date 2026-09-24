@@ -798,6 +798,32 @@ describe('source control session store', () => {
     }
   });
 
+  it('pushes with the sync revision and reloads the snapshot when the branch moved', async () => {
+    const events = eventApi();
+    events.api.getSnapshot.mockImplementation(async (_projectId: string, workspacePath?: string | null) => (
+      repositorySnapshot(workspacePath ?? 'D:/repo', 'workspace-rev', 'sync-rev')
+    ));
+    const store = new SourceControlStore(events.api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    events.api.getSnapshot.mockClear();
+    events.api.startOperation.mockRejectedValueOnce({ code: 'git.sync-ref-changed', params: {} });
+
+    await store.startOperation('project-1', 'D:/repo', {
+      kind: 'push',
+      remote: 'origin',
+      branch: 'main',
+      setUpstream: false,
+    });
+
+    expect(events.api.startOperation).toHaveBeenCalledWith('project-1', 'D:/repo', expect.objectContaining({
+      kind: 'push',
+      expectedRevision: 'sync-rev',
+    }));
+    await vi.waitFor(() => expect(events.api.getSnapshot).toHaveBeenCalled());
+    expect(store.session('project-1', 'D:/repo').error?.code).toBe('git.sync-ref-changed');
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository.syncRevision).toBe('sync-rev');
+  });
+
   it('refreshes only the worktree containing a changed workspace file', async () => {
     vi.useFakeTimers();
     try {
@@ -899,7 +925,11 @@ function eventApi() {
   };
 }
 
-function repositorySnapshot(workspacePath: string, revision = 'revision-1'): GitSourceControlSnapshotVm {
+function repositorySnapshot(
+  workspacePath: string,
+  revision = 'revision-1',
+  syncRevision = 'sync-revision-1',
+): GitSourceControlSnapshotVm {
   return {
     repository: {
       projectId: 'project-1',
@@ -914,6 +944,7 @@ function repositorySnapshot(workspacePath: string, revision = 'revision-1'): Git
       remotes: [],
       lock: { locked: false, owner: null, operation: null },
       revision,
+      syncRevision,
     },
     status: {
       snapshotRevision: revision,

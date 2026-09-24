@@ -406,11 +406,15 @@ export class SourceControlStore {
       this.applyWorkspaceProjection(runtime, nextSnapshot.status);
     } catch (reason) {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
+      const error = structuredErrorFrom(reason, mutationApplied ? 'git.status-failed' : 'git.operation-failed');
       this.update(runtime, {
         ...runtime.snapshot,
         pendingAction: null,
-        error: structuredErrorFrom(reason, mutationApplied ? 'git.status-failed' : 'git.operation-failed'),
+        error,
       });
+      if (isRevisionChangedError(error.code)) {
+        void this.load(projectId, workspacePath, true, false, 'background');
+      }
     }
   }
 
@@ -549,18 +553,24 @@ export class SourceControlStore {
       await this.ensureSubscriptions();
       const activeOperation = await this.api.startOperation(projectId, workspacePath, {
         ...input,
-        expectedRevision: snapshot.repository.revision,
+        expectedRevision: operationUsesSyncRevision(input.kind)
+          ? snapshot.repository.syncRevision
+          : snapshot.repository.revision,
       });
       const latestOperation = this.earlyOperationUpdates.get(activeOperation.operationId) ?? activeOperation;
       this.earlyOperationUpdates.delete(activeOperation.operationId);
       this.update(runtime, { ...runtime.snapshot, activeOperation: latestOperation });
       if (!isOperationPending(latestOperation)) void this.finishOperation(runtime, latestOperation);
     } catch (reason) {
+      const error = structuredErrorFrom(reason, 'git.operation-failed');
       this.update(runtime, {
         ...runtime.snapshot,
         pendingAction: null,
-        error: structuredErrorFrom(reason, 'git.operation-failed'),
+        error,
       });
+      if (isRevisionChangedError(error.code)) {
+        void this.load(projectId, workspacePath, true, false, 'background');
+      }
     }
   }
 
@@ -644,10 +654,8 @@ export class SourceControlStore {
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
     const operationError = refreshKind === 'background'
-      && runtime.snapshot.activeOperation?.error
-      && sameStructuredError(runtime.snapshot.error, runtime.snapshot.activeOperation.error)
-        ? runtime.snapshot.error
-        : null;
+      ? preservedBackgroundError(runtime)
+      : null;
     this.update(runtime, {
       ...runtime.snapshot,
       status: runtime.snapshot.snapshot ? 'ready' : 'loading',
@@ -1112,6 +1120,28 @@ function pendingActionFromMutation(input: GitMutationRequestVm): SourceControlPe
 
 function isOperationPending(operation: GitOperationVm) {
   return operation.status === 'queued' || operation.status === 'running';
+}
+
+const SYNC_OPERATION_KINDS = new Set<GitOperationRequestVm['kind']>(['fetch', 'pull', 'push', 'push-tag']);
+const REVISION_CHANGED_CODES = new Set(['git.ref-changed', 'git.sync-ref-changed']);
+
+function operationUsesSyncRevision(kind: GitOperationRequestVm['kind']) {
+  return SYNC_OPERATION_KINDS.has(kind);
+}
+
+function isRevisionChangedError(code: string) {
+  return REVISION_CHANGED_CODES.has(code);
+}
+
+function preservedBackgroundError(runtime: SessionRuntime) {
+  const error = runtime.snapshot.error;
+  if (error && isRevisionChangedError(error.code)) return error;
+  if (
+    runtime.snapshot.activeOperation?.error
+    && error
+    && sameStructuredError(error, runtime.snapshot.activeOperation.error)
+  ) return error;
+  return null;
 }
 
 function structuredErrorFrom(reason: unknown, fallback: string): GitOperationErrorVm {

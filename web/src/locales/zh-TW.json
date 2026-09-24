@@ -723,7 +723,8 @@
       "version-unsupported": "目前 Git 版本 {{installedVersion}} 過低，需要 Git {{minimumVersion}} 或更高版本。",
       "version-unavailable": "無法識別目前 Git 版本，請修復或重新安裝 Git 後重試。",
       "workspace-outside-project": "所選 Worktree 不屬於目前專案。",
-      "ref-changed": "儲存庫狀態已變化，請重新整理後重試。",
+      "ref-changed": "變更清單已更新，請再試一次。",
+      "sync-ref-changed": "分支已變化，請再試一次。",
       "repository-locked": "儲存庫正在執行其他寫操作。",
       "workspace-locked": "目前工作區正在執行其他寫操作。",
       "operation-in-progress": "目前 Git 流程尚未結束，請完成或中止後重試。",
@@ -929,7 +930,23 @@
       "prompt-session-busy": "上一條訊息仍在處理中，請稍候或先停止目前回覆。",
       "prompt-submission-conflict": "這條訊息的發送標識已被其他內容使用，請重新發送。",
       "prompt-submission-missing": "已接納的訊息內容無法讀取，請重新發送。",
-      "prompt-queue-storage-failed": "待發送佇列儲存失敗，請重試。"
+      "prompt-queue-storage-failed": "待發送佇列儲存失敗，請重試。",
+      "execution-plan": {
+        "not-found": "這次 Run 還沒有執行計畫。",
+        "revision-conflict": "執行計畫已變化。請重新載入後再試。",
+        "authoring-conflict": "下一次 Run 的設定已變化。請重新載入後再試。",
+        "current-locator-conflict": "目前執行位置已變化。請重新載入後再試。",
+        "current-run-not-editable": "這次 Run 不能再修改目前執行計畫。",
+        "current-node-identity-changed": "目前節點的身份不能改變。",
+        "current-node-removed": "不能刪除目前節點。",
+        "agent-identity-changed": "仍可能被繼續的 Agent 不能更換。",
+        "agent-identity-changed-node": "節點 {{nodeId}} 仍可能被繼續，不能更換 Agent。",
+        "continue-unsupported": "這個 Agent 不能繼續原有工作階段。",
+        "resume-failed": "繼續工作階段失敗。請選擇重試或新工作階段。",
+        "validation-failed": "執行計畫未通過校驗。",
+        "partial-commit": "只發布了一部分。請查看每個儲存目標。",
+        "recovery-required": "這次儲存需要先恢復，才能繼續。"
+      }
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} 未通過 doctor。",
@@ -2083,8 +2100,9 @@
     "currentModel": "模型",
     "thoughtLevel": "思考強度",
     "unspecifiedThoughtLevel": "不指定",
-    "sessionConfigRolledBack": "目前模型暫不支援設定：{{names}}。系統已將其回滾為不指定。可停止對話後修改。",
+    "sessionConfigRolledBack": "目前Agent暫不支援設定：{{names}}。系統已將其回滾為不指定。可停止對話後修改。",
     "configOptionWithId": "{{name}}（{{id}}）",
+    "configOptionWithValue": "{{name}}：{{value}}",
     "configOption": {
       "thinking": "深度思考",
       "effort": "思考強度",

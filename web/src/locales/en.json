@@ -687,6 +687,35 @@
     },
     "discardWorkflowChanges": "This workflow has unsaved changes. Discard them and close the tab?"
   },
+  "executionPlan": {
+    "configureAuto": "AUTO configuration",
+    "currentRun": "Current Run",
+    "nextRun": "Next Run",
+    "saveTarget": "Save target",
+    "save": "Save",
+    "saving": "Saving",
+    "working": "Updating the execution plan",
+    "diverged": "Current Run and Next Run differ. Split the editor before changing either side.",
+    "split": "Split view",
+    "unsplit": "Stop splitting",
+    "unsplitTitle": "Keep one draft",
+    "unsplitDescription": "Choose which draft stays in the editor. This does not save until you confirm the save target.",
+    "keepCurrent": "Keep Current Run",
+    "keepNext": "Keep Next Run",
+    "cancel": "Cancel",
+    "reload": "Reload",
+    "viewIssues": "View reasons",
+    "revert": "Revert",
+    "recover": "Recover",
+    "committed": "Saved",
+    "notCommitted": "Not saved",
+    "saveFailed": "The execution plan was not saved.",
+    "targets": {
+      "current": "Current Run only",
+      "next": "Next Run only",
+      "current-and-next": "Current Run and Next Run"
+    }
+  },
   "errors": {
     "browser": {
       "webview": {
@@ -723,7 +752,8 @@
       "version-unsupported": "Git {{installedVersion}} is too old. Git {{minimumVersion}} or later is required.",
       "version-unavailable": "The installed Git version could not be identified. Repair or reinstall Git and try again.",
       "workspace-outside-project": "The selected worktree does not belong to this project.",
-      "ref-changed": "Repository state changed. Refresh and try again.",
+      "ref-changed": "The change list was updated. Try again.",
+      "sync-ref-changed": "The branch changed. Try again.",
       "repository-locked": "Another repository write operation is running.",
       "workspace-locked": "Another workspace write operation is running.",
       "operation-in-progress": "A Git workflow is still in progress. Complete or abort it and try again.",
@@ -929,7 +959,23 @@
       "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
       "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
       "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
-      "prompt-queue-storage-failed": "The pending queue could not be saved. Try again."
+      "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
+      "execution-plan": {
+        "not-found": "This run has no execution plan.",
+        "revision-conflict": "The execution plan changed. Reload and try again.",
+        "authoring-conflict": "The next run configuration changed. Reload and try again.",
+        "current-locator-conflict": "The running position changed. Reload and try again.",
+        "current-run-not-editable": "This run can no longer update its current execution plan.",
+        "current-node-identity-changed": "The current node's identity cannot change.",
+        "current-node-removed": "The current node cannot be removed.",
+        "agent-identity-changed": "An agent that can still be resumed cannot be replaced.",
+        "agent-identity-changed-node": "Node {{nodeId}} can still be resumed, so its Agent cannot be replaced.",
+        "continue-unsupported": "This agent cannot continue the existing session.",
+        "resume-failed": "Resuming the session failed. Choose retry or a new session.",
+        "validation-failed": "The execution plan is not valid.",
+        "partial-commit": "Only part of the save was published. Review each target.",
+        "recovery-required": "The save needs recovery before it can continue."
+      }
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} has not passed doctor.",
@@ -2083,8 +2129,9 @@
     "currentModel": "Model",
     "thoughtLevel": "Reasoning",
     "unspecifiedThoughtLevel": "Unspecified",
-    "sessionConfigRolledBack": "This model does not currently support: {{names}}. The system has rolled it back to unspecified. You can change it after stopping the conversation.",
+    "sessionConfigRolledBack": "This Agent does not currently support: {{names}}. The system has rolled it back to unspecified. You can change it after stopping the conversation.",
     "configOptionWithId": "{{name}} ({{id}})",
+    "configOptionWithValue": "{{name}}: {{value}}",
     "configOption": {
       "thinking": "Thinking",
       "effort": "Effort",

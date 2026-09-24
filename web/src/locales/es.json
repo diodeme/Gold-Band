@@ -723,7 +723,8 @@
       "version-unsupported": "Git {{installedVersion}} es demasiado antiguo. Se requiere Git {{minimumVersion}} o posterior.",
       "version-unavailable": "No se pudo identificar la versión instalada de Git. Repare o reinstale Git e inténtelo de nuevo.",
       "workspace-outside-project": "El worktree seleccionado no pertenece a este proyecto.",
-      "ref-changed": "El estado del repositorio cambió. Actualice e inténtelo de nuevo.",
+      "ref-changed": "La lista de cambios se actualizó. Inténtelo de nuevo.",
+      "sync-ref-changed": "La rama cambió. Inténtelo de nuevo.",
       "repository-locked": "Hay otra operación de escritura en el repositorio en curso.",
       "workspace-locked": "Hay otra operación de escritura en el espacio de trabajo en curso.",
       "operation-in-progress": "Un flujo de Git aún está en curso. Complételo o abortelo e inténtelo de nuevo.",
@@ -929,7 +930,23 @@
       "prompt-session-busy": "El mensaje anterior aún se está procesando. Espere o detenga primero la respuesta actual.",
       "prompt-submission-conflict": "Este identificador de mensaje ya está asociado con contenido diferente. Envíelo de nuevo.",
       "prompt-submission-missing": "No se pudo leer el contenido del mensaje aceptado. Envíelo de nuevo.",
-      "prompt-queue-storage-failed": "No se pudo guardar la cola pendiente. Vuelva a intentarlo."
+      "prompt-queue-storage-failed": "No se pudo guardar la cola pendiente. Vuelva a intentarlo.",
+      "execution-plan": {
+        "not-found": "Este Run todavía no tiene un plan de ejecución.",
+        "revision-conflict": "El plan de ejecución cambió. Vuelva a cargarlo e inténtelo de nuevo.",
+        "authoring-conflict": "La configuración del próximo Run cambió. Vuelva a cargarla e inténtelo de nuevo.",
+        "current-locator-conflict": "La posición en ejecución cambió. Vuelva a cargarla e inténtelo de nuevo.",
+        "current-run-not-editable": "Este Run ya no puede modificar el plan de ejecución actual.",
+        "current-node-identity-changed": "La identidad del nodo actual no puede cambiar.",
+        "current-node-removed": "No se puede eliminar el nodo actual.",
+        "agent-identity-changed": "Un Agent que aún puede continuar no se puede reemplazar.",
+        "agent-identity-changed-node": "El nodo {{nodeId}} aún puede continuar, así que su Agent no se puede reemplazar.",
+        "continue-unsupported": "Este Agent no puede continuar la sesión existente.",
+        "resume-failed": "No se pudo continuar la sesión. Reintente o elija una sesión nueva.",
+        "validation-failed": "El plan de ejecución no superó la validación.",
+        "partial-commit": "Solo se publicó una parte. Revise cada destino de guardado.",
+        "recovery-required": "Este guardado debe recuperarse antes de continuar."
+      }
     },
     "workflow": {
       "agent-doctor-failed": "El Agent {{agentType}} no ha superado doctor.",
@@ -2083,8 +2100,9 @@
     "currentModel": "Modelo",
     "thoughtLevel": "Razonamiento",
     "unspecifiedThoughtLevel": "Sin especificar",
-    "sessionConfigRolledBack": "Este modelo no admite actualmente: {{names}}. El sistema lo ha revertido a sin especificar. Puedes cambiarlo después de detener la conversación.",
+    "sessionConfigRolledBack": "Este Agent no admite actualmente: {{names}}. El sistema lo ha revertido a sin especificar. Puedes cambiarlo después de detener la conversación.",
     "configOptionWithId": "{{name}} ({{id}})",
+    "configOptionWithValue": "{{name}}: {{value}}",
     "configOption": {
       "thinking": "Razonamiento profundo",
       "effort": "Intensidad de razonamiento",

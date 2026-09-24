@@ -723,7 +723,8 @@
       "version-unsupported": "Git {{installedVersion}} は古すぎます。 Git {{minimumVersion}} 以降が必要です。",
       "version-unavailable": "インストールされている Git のバージョンを特定できませんでした。 Git を修復または再インストールして、もう一度試してください。",
       "workspace-outside-project": "選択したワークツリーはこのプロジェクトに属していません。",
-      "ref-changed": "リポジトリの状態が変更されました。更新して再試行してください。",
+      "ref-changed": "変更一覧が更新されました。もう一度お試しください。",
+      "sync-ref-changed": "ブランチが変わりました。もう一度お試しください。",
       "repository-locked": "別のリポジトリ書き込み操作が実行中です。",
       "workspace-locked": "別のワークスペース書き込み操作が実行中です。",
       "operation-in-progress": "Git ワークフローはまだ進行中です。完了するか中止して、再試行してください。",
@@ -929,7 +930,23 @@
       "prompt-session-busy": "前のメッセージはまだ処理中です。まず現在の応答を待つか停止してください。",
       "prompt-submission-conflict": "このメッセージ識別子は、すでに別のコンテンツに関連付けられています。もう一度送信してください。",
       "prompt-submission-missing": "受け付けられたメッセージの内容を読み取れませんでした。もう一度送信してください。",
-      "prompt-queue-storage-failed": "保留キューを保存できませんでした。もう一度やり直してください。"
+      "prompt-queue-storage-failed": "保留キューを保存できませんでした。もう一度やり直してください。",
+      "execution-plan": {
+        "not-found": "この Run には実行計画がありません。",
+        "revision-conflict": "実行計画が更新されています。再読み込みしてからやり直してください。",
+        "authoring-conflict": "次回 Run の設定が更新されています。再読み込みしてからやり直してください。",
+        "current-locator-conflict": "実行位置が変わっています。再読み込みしてからやり直してください。",
+        "current-run-not-editable": "この Run の現在の実行計画は変更できません。",
+        "current-node-identity-changed": "現在のノードの識別子は変更できません。",
+        "current-node-removed": "現在のノードは削除できません。",
+        "agent-identity-changed": "続行できる Agent は変更できません。",
+        "agent-identity-changed-node": "ノード {{nodeId}} はまだ続行できるため、Agent を変更できません。",
+        "continue-unsupported": "この Agent は既存のセッションを続行できません。",
+        "resume-failed": "セッションの続行に失敗しました。再試行するか、新しいセッションを選んでください。",
+        "validation-failed": "実行計画が検証を通過しませんでした。",
+        "partial-commit": "一部だけ保存されました。保存先を確認してください。",
+        "recovery-required": "この保存は復旧してから続行してください。"
+      }
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} は doctor を通過していません。",
@@ -2083,8 +2100,9 @@
     "currentModel": "モデル",
     "thoughtLevel": "推論",
     "unspecifiedThoughtLevel": "不特定",
-    "sessionConfigRolledBack": "このモデルは現在、{{names}} をサポートしていません。システムはそれを未指定にロールバックしました。会話を終了した後に変更できます。",
+    "sessionConfigRolledBack": "このAgentは現在、{{names}} をサポートしていません。システムはそれを未指定にロールバックしました。会話を終了した後に変更できます。",
     "configOptionWithId": "{{name}} ({{id}})",
+    "configOptionWithValue": "{{name}}: {{value}}",
     "configOption": {
       "thinking": "考え",
       "effort": "努力",

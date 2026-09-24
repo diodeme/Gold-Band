@@ -182,6 +182,7 @@ import {
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
+  sentAttachmentPreviewAliasKey,
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
@@ -2678,7 +2679,7 @@ export function App() {
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input, multica) => {
+          onSubmit={async (input, multica, sentAttachments) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'direct'
               ? {
                 mode: 'direct',
@@ -2712,15 +2713,36 @@ export function App() {
                 ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
                 : await createConversationRun(input);
               applyConversationTask(task);
+              const conversationScope = createConversationWorkspaceScope({
+                projectId: run.projectId,
+                taskId: run.taskId,
+                taskUuid: run.taskUuid,
+                runId: run.runId,
+              });
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
-                createConversationWorkspaceScope({
-                  projectId: run.projectId,
-                  taskId: run.taskId,
-                  taskUuid: run.taskUuid,
-                  runId: run.runId,
-                }),
+                conversationScope,
               );
+              for (const attachment of sentAttachments ?? []) {
+                conversationWorkspaceStore.aliasDraftAttachmentPreview(
+                  conversationScope.key,
+                  attachment.id,
+                  sentAttachmentPreviewAliasKey({
+                    assetKind: 'input-attachment',
+                    locator: {
+                      projectId: run.projectId,
+                      taskId: run.taskId,
+                      taskUuid: run.taskUuid,
+                      runId: run.runId,
+                      roundId: '',
+                      nodeId: '',
+                      attemptId: '',
+                      branchId: '',
+                    },
+                    name: attachment.name,
+                  }),
+                );
+              }
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null, run);
               applyConversationRunSnapshot(run, 'create');

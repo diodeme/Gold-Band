@@ -22,10 +22,8 @@ use gold_band::personal_analytics::{
     personal_analytics_narrative_schema,
 };
 use gold_band::prompts::{
-    PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN, PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN,
-    PERSONAL_ANALYTICS_REPAIR_USER_EN, PERSONAL_ANALYTICS_REPAIR_USER_ZH_CN,
-    PERSONAL_ANALYTICS_SYSTEM_EN, PERSONAL_ANALYTICS_SYSTEM_ZH_CN, PERSONAL_ANALYTICS_USER_EN,
-    PERSONAL_ANALYTICS_USER_ZH_CN, prompt_by_language, render,
+    PERSONAL_ANALYTICS_REPAIR_SYSTEM, PERSONAL_ANALYTICS_REPAIR_USER, PERSONAL_ANALYTICS_SYSTEM,
+    PERSONAL_ANALYTICS_USER, prompt_by_language, render,
 };
 use gold_band::provider::{
     AttachmentProjectionPolicy, ConversationPromptInput, PromptBundle, PromptVisibility,
@@ -1212,19 +1210,11 @@ fn invoke_agent(
         let (invalid_path, validation_errors) = invalid.expect("repair requires invalid output");
         (
             render(
-                prompt_by_language(
-                    language,
-                    PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN,
-                    PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN,
-                ),
+                prompt_by_language(language, PERSONAL_ANALYTICS_REPAIR_SYSTEM),
                 json!({}),
             ),
             render(
-                prompt_by_language(
-                    language,
-                    PERSONAL_ANALYTICS_REPAIR_USER_ZH_CN,
-                    PERSONAL_ANALYTICS_REPAIR_USER_EN,
-                ),
+                prompt_by_language(language, PERSONAL_ANALYTICS_REPAIR_USER),
                 json!({
                     "operation_id": operation_id,
                     "invalid_report_path": invalid_path,
@@ -1238,19 +1228,11 @@ fn invoke_agent(
     } else {
         (
             render(
-                prompt_by_language(
-                    language,
-                    PERSONAL_ANALYTICS_SYSTEM_ZH_CN,
-                    PERSONAL_ANALYTICS_SYSTEM_EN,
-                ),
+                prompt_by_language(language, PERSONAL_ANALYTICS_SYSTEM),
                 json!({ "report_schema": schema }),
             ),
             render(
-                prompt_by_language(
-                    language,
-                    PERSONAL_ANALYTICS_USER_ZH_CN,
-                    PERSONAL_ANALYTICS_USER_EN,
-                ),
+                prompt_by_language(language, PERSONAL_ANALYTICS_USER),
                 json!({
                     "operation_id": operation_id,
                     "report_schema_version": PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION,

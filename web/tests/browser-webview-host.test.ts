@@ -274,6 +274,28 @@ describe('browser webview host lifecycle', () => {
     expect(applied.at(-1)).toEqual(full);
   });
 
+  it('commits the layout measured while hidden once the same page is shown again', async () => {
+    const page = liveNativePage();
+    const before = { x: 900, y: 40, width: 640, height: 720 };
+    const after = { x: 760, y: 40, width: 780, height: 720 };
+    await browserWebviewHost.ensurePage(page, before, true);
+    await browserWebviewHost.suppress();
+    api.browserSetBounds.mockClear();
+    api.browserShowPage.mockClear();
+
+    await browserWebviewHost.ensurePage(page, after, true);
+    expect(api.browserSetBounds).not.toHaveBeenCalled();
+
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(page, after, true);
+
+    expect(api.browserSetBounds).toHaveBeenCalledWith({
+      pageId: page.pageId,
+      bounds: after,
+    });
+    expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
+  });
+
   it('does not apply placeholder bounds while suppressed so restore cannot shrink a hidden page', async () => {
     const page = liveNativePage();
     const full = { x: 20, y: 40, width: 640, height: 720 };
@@ -288,10 +310,7 @@ describe('browser webview host lifecycle', () => {
 
     browserWebviewHost.resume();
     await browserWebviewHost.ensurePage(page, full, true);
-    expect(api.browserSetBounds).toHaveBeenCalledWith({
-      pageId: page.pageId,
-      bounds: full,
-    });
+    expect(api.browserSetBounds).not.toHaveBeenCalled();
     expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
   });
 
@@ -306,6 +325,28 @@ describe('browser webview host lifecycle', () => {
 
     expect(api.browserSetBounds).not.toHaveBeenCalled();
     expect(api.browserHideAll).not.toHaveBeenCalled();
+  });
+
+  it('does not let a collapsed placeholder after resume cancel the show and leave a white page', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.ensurePage(page, bounds, true);
+    await browserWebviewHost.suppress();
+    browserWebviewHost.resume();
+    let releaseShow: (() => void) | null = null;
+    api.browserShowPage.mockClear();
+    api.browserHideAll.mockClear();
+    api.browserShowPage.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseShow = resolve;
+    }));
+
+    const showing = browserWebviewHost.ensurePage(page, bounds, true);
+    await vi.waitFor(() => expect(releaseShow).not.toBeNull());
+    const collapsed = browserWebviewHost.ensurePage(page, { x: 20, y: 40, width: 0, height: 0 }, true);
+    releaseShow!();
+    await Promise.all([showing, collapsed]);
+
+    expect(api.browserHideAll).not.toHaveBeenCalled();
+    expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
   });
 
   it('applies the latest placeholder bounds after a slow native create', async () => {
@@ -468,6 +509,27 @@ describe('browser webview host lifecycle', () => {
       pageId: page.pageId,
       viewMode: 'mobile',
     });
+  });
+
+  it('moves an existing webview to the latest placeholder when create fails', async () => {
+    const page = livePage('file:///E:/demo/index.html');
+    const shifted = { ...bounds, x: bounds.x + 180 };
+    api.browserCreatePage.mockRejectedValue({
+      code: 'browser.local_html.grant_failed',
+      params: {},
+    });
+
+    await expect(browserWebviewHost.ensurePage(page, bounds, true)).rejects.toMatchObject({
+      code: 'browser.local_html.grant_failed',
+    });
+    expect(api.browserSetBounds).toHaveBeenCalledWith({ pageId: page.pageId, bounds });
+
+    api.browserSetBounds.mockClear();
+    await expect(browserWebviewHost.ensurePage(page, shifted, true)).rejects.toMatchObject({
+      code: 'browser.local_html.grant_failed',
+    });
+    expect(api.browserSetBounds).toHaveBeenCalledWith({ pageId: page.pageId, bounds: shifted });
+    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
   });
 
   it('clears loading when native create fails so the loader cannot cover the workspace forever', async () => {

@@ -3569,7 +3569,7 @@ pub async fn get_source_control_snapshot(
             )
             .map_err(command_error)?;
         service
-            .snapshot(&project_id, &workspace.workspace_path)
+            .snapshot_with_identity(&project_id, &workspace)
             .map_err(command_error)
     })
     .await
@@ -3592,7 +3592,7 @@ pub async fn get_git_branch_picker_snapshot(
             )
             .map_err(command_error)?;
         service
-            .branch_picker_snapshot(&workspace.workspace_path)
+            .branch_picker_snapshot_with_identity(&workspace)
             .map_err(command_error)
     })
     .await
@@ -8770,6 +8770,9 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     }
     if let Some(error) = error.downcast_ref::<gold_band::git::GitHubServiceError>() {
         return CommandErrorVm::new(error.code, error.params.clone());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::execution_plan::ExecutionPlanError>() {
+        return CommandErrorVm::new(error.code(), error.context().clone());
     }
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());

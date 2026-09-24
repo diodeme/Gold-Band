@@ -22,7 +22,7 @@ import {
 } from '../right-workspace-context';
 import { fileContentStore, useFileContentEntry } from './file-content-store';
 import { fileExplorerStore } from './file-explorer-store';
-import { WorkspaceFileEditor } from './WorkspaceFileEditor';
+import { WorkspaceFileEditor, type EditorViewportAnchor } from './WorkspaceFileEditor';
 import { markdownImageSources } from './markdown-image-preview';
 import { isMarkdownDocumentPath } from './markdown-document';
 import { markdownHasTableImages } from './markdown-live-preview';
@@ -198,8 +198,8 @@ function FileSnapshotContent({
   const { t } = useTranslation();
   const markdownResourceLinkHandler = useMarkdownResourceLinkHandler();
   const entry = useFileContentEntry(resource.key);
-  const persistEditorState = useCallback((state: unknown) => {
-    fileContentStore.persistEditorState(resource.key, state, entry.contentRevision);
+  const persistEditorState = useCallback((state: unknown, viewportAnchor?: EditorViewportAnchor | null, scrollTop?: number) => {
+    fileContentStore.persistEditorState(resource.key, state, entry.contentRevision, viewportAnchor, scrollTop);
   }, [entry.contentRevision, resource.key]);
   const snapshot = entry.snapshot;
   const markdown = snapshot?.kind === 'text' && isMarkdownDocumentPath(resource.locator.canonicalPath);
@@ -280,6 +280,10 @@ function FileSnapshotContent({
           onChange={(content) => fileContentStore.updateText(resource.key, content)}
           onSave={() => void fileContentStore.flush(resource.key)}
           initialStateJson={fileContentStore.editorState(resource.key)}
+          initialViewportAnchor={fileContentStore.editorViewport(resource.key)}
+          initialViewportScrollTop={fileContentStore.editorScrollTop(resource.key)}
+          initialConsumedLocationRevision={fileContentStore.consumedLocationTarget(resource.key)}
+          onConsumeLocationTarget={(revision) => fileContentStore.consumeLocationTarget(resource.key, revision)}
           onPersistState={persistEditorState}
           onLocationAdjusted={onLocationAdjusted}
           markdownMode={markdownMode}
@@ -306,22 +310,12 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
   const snapshot = entry.snapshot?.kind === 'image' ? entry.snapshot : null;
   const initialViewState = useMemo(() => fileContentStore.imageViewState(resource.key), [resource.key]);
   const [zoom, setZoomState] = useState(initialViewState.zoom);
-  const [animationPaused, setAnimationPaused] = useState(() => (
-    Boolean(snapshot?.animated)
-    && typeof window !== 'undefined'
-    && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
-  ));
+  const [animationPaused, setAnimationPaused] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number } | null>(null);
   useEffect(() => {
-    if (!snapshot?.animated) {
-      setAnimationPaused(false);
-      return;
-    }
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-      setAnimationPaused(true);
-    }
-  }, [snapshot?.animated, snapshot?.previewGrant.token]);
+    if (!snapshot?.animated) setAnimationPaused(false);
+  }, [snapshot?.animated]);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || !snapshot) return;

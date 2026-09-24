@@ -184,6 +184,17 @@ export function missingAcpSessionRetryDelay(attempt: number) {
   return MISSING_ACP_SESSION_RETRY_DELAYS_MS[attempt] ?? null;
 }
 
+export interface AcpInitialSessionRetryExhaustedInput {
+  runtimeActive: boolean;
+  hasLoadError: boolean;
+}
+
+export function shouldKeepAcpInitialSessionLoadingAfterRetryExhausted(
+  input: AcpInitialSessionRetryExhaustedInput,
+) {
+  return input.runtimeActive && !input.hasLoadError;
+}
+
 export interface AcpSessionMetadataInput {
   systemPromptAppend?: string | null;
   config?: {

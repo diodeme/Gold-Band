@@ -259,15 +259,8 @@ struct MemoryMcp {
 }
 
 fn tools(language: crate::config::DesktopLanguage) -> Vec<Tool> {
-    let descriptions: Value = serde_json::from_str(match language {
-        crate::config::DesktopLanguage::ZhCn => {
-            include_str!("../prompts/zh-CN/runtime/memory-tools.json")
-        }
-        crate::config::DesktopLanguage::En => {
-            include_str!("../prompts/en/runtime/memory-tools.json")
-        }
-    })
-    .expect("bundled memory tool descriptions");
+    let descriptions: Value = serde_json::from_str(crate::prompts::MEMORY_TOOLS.resolve(language))
+        .expect("bundled memory tool descriptions");
     let entry = json!({"type":"object", "additionalProperties":false, "required":["key","value","desc"], "properties":{
         "key":{"type":"string","maxLength":super::MAX_KEY_CHARS}, "value":{"type":"string","maxLength":super::MAX_VALUE_CHARS}, "desc":{"type":"string","maxLength":super::MAX_DESC_CHARS}
     }});

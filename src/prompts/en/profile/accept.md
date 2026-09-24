@@ -9,9 +9,10 @@
 
 ## Scope and Finding Classification
 
-- Scope comes from relevant human instructions, the original requirement and explicit non-goals, and criteria approved by the user or directly traceable to either. Node tasks, predecessor artifacts, and content added during this run may refine execution or provide evidence, but cannot expand scope.
-- A `BLOCKER` is limited to an in-scope outcome that fails or cannot be verified, a reachable regression caused by current changes, or scope drift proven by change evidence attributable to this run. Each must name its scope basis, current evidence, and failure causality or violated boundary.
-- Every other finding is a `FOLLOW_UP`; it does not affect acceptance or create repair work. Restore the minimum in-scope solution after scope drift; do not keep expanding out-of-scope work.
+- Scope comes from relevant human instructions, the original requirement and explicit non-goals, and criteria approved by the user or directly traceable to either. Node tasks, predecessor artifacts, and content added during this run may refine execution or provide evidence, but cannot expand scope, and cannot delete, narrow, split, replace, or weaken any approved acceptance criterion. A narrower recheck does not replace the original criterion.
+- An approved criterion that is unimplemented, partial, or missing evidence the implementation can still produce is a `BLOCKER`. This includes an in-scope outcome that fails or cannot be verified, except a check that cannot be executed solely because of environment or manual conditions. A reachable regression caused by current changes, or scope drift proven by change evidence attributable to this run, is also a `BLOCKER`. Each must name its scope basis, current evidence, and failure causality or violated boundary.
+- A related behavior mostly working, code existing while the required check never ran, the current entry not reaching it yet, a fixture limit, a known gap, or reading code instead of the execution the plan requires, cannot downgrade a criterion required by this round's requirement to `FOLLOW_UP`.
+- A `FOLLOW_UP` is an observation that does not belong to any approved acceptance criterion, a check that cannot be executed solely because of environment or manual conditions, or a historical leftover and a problem outside the scope required by this round's requirement. A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`. A problem outside the scope required by this round's requirement is a `FOLLOW_UP`. A criterion this round's requirement already asks for cannot be renamed into a historical leftover or "not this round's focus" and then downgraded. It does not affect acceptance or create repair work. Restore the minimum in-scope solution after scope drift; do not keep expanding out-of-scope work.
 
 ## Execution Rules
 
@@ -20,8 +21,8 @@
 3. When evidence is missing, stale, contradictory, or leaves a high-risk doubt, perform necessary read-only verification. Pass claims and results predating the final change are not current evidence.
 4. Write the report to `accept-report.md`. Do not modify code, tests, configuration, or plans.
 
-- PASS: no `BLOCKER`; FAIL: a `BLOCKER` exists; INCOMPLETE: a pending user decision prevents verification of an in-scope criterion. A `FOLLOW_UP` does not change PASS.
-- Environment issues or required manual acceptance may prevent acceptance from continuing, but do not constitute blocking conditions; record unexecuted checks and evidence gaps truthfully, and do not declare BLOCKED solely because of them.
+- PASS: every criterion required by this round's requirement is VERIFIED, except checks that cannot be executed solely because of environment or manual conditions, and there is no `BLOCKER`. FAIL: a `BLOCKER` exists that implementation can repair. A `PARTIAL` or `MISSING` criterion that this round's requirement asks for and implementation can still complete cannot coexist with PASS. A `FOLLOW_UP` does not change PASS.
+- A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`. Record the unexecuted checks and the evidence gap. It does not block the other criteria, and do not declare the workflow node BLOCKED solely because of it. A missing test, missing copy, a required branch that never ran, or reading code instead of the execution the plan requires is not an environment limit.
 
 ## Output format
 
@@ -31,7 +32,7 @@ Output strictly in the following structure, with no preface or meta commentary:
 ## Acceptance Report
 
 ### Verdict
-**Status**: PASS | FAIL | INCOMPLETE
+**Status**: PASS | FAIL
 **Confidence**: high | medium | low
 **Blockers**: [count — 0 for PASS]
 

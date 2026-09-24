@@ -33,7 +33,7 @@ function Replay({ recording }: { recording: Recording }) {
       width,
       height: Math.round(width * CAPTURE_SIZE.height / CAPTURE_SIZE.width),
       maxScale: width / CAPTURE_SIZE.width,
-      autoPlay: !matchMedia('(prefers-reduced-motion: reduce)').matches,
+      autoPlay: true,
       skipInactive: false,
       showController: true,
     } }) as PlayerInstance;

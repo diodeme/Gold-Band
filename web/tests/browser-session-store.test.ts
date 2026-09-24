@@ -84,6 +84,37 @@ describe('browser session store', () => {
     }
   });
 
+  it('clears a navigation notice when that page is created or finishes a later load', () => {
+    const pageId = store.openUrl('file:///E:/demo/index.html');
+    store.failNavigation(pageId, 'browser.local_html.grant_failed');
+    store.markLive(pageId, true);
+    expect(store.snapshot().noticeCode).toBeNull();
+
+    store.failNavigation(pageId, 'browser.local_html.grant_failed');
+    store.applyNativeEvent({ kind: 'load-start', pageId, url: 'file:///E:/demo/index.html' });
+    store.applyNativeEvent({ kind: 'load-finish', pageId, url: 'file:///E:/demo/index.html' });
+    expect(store.snapshot().noticeCode).toBeNull();
+  });
+
+  it('keeps a navigation notice when an older load finishes or another page is created', () => {
+    const failedPageId = store.openUrl('file:///E:/demo/index.html');
+    const otherPageId = store.openUrl('https://example.com/');
+    store.applyNativeEvent({ kind: 'load-start', pageId: failedPageId, url: 'file:///E:/demo/index.html' });
+    store.failNavigation(failedPageId, 'browser.local_html.grant_failed');
+    store.applyNativeEvent({ kind: 'load-finish', pageId: failedPageId, url: 'file:///E:/demo/index.html' });
+    store.markLive(otherPageId, true);
+    expect(store.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+  });
+
+  it('keeps a download notice when the page is created or finishes loading', () => {
+    const pageId = store.openUrl('https://example.com/file');
+    store.applyNativeEvent({ kind: 'download-cancelled', pageId });
+    store.markLive(pageId, true);
+    store.applyNativeEvent({ kind: 'load-start', pageId, url: 'https://example.com/file' });
+    store.applyNativeEvent({ kind: 'load-finish', pageId, url: 'https://example.com/file' });
+    expect(store.snapshot().noticeCode).toBe('browser.download.cancelled');
+  });
+
   it('clears a hung load so the native page can be shown again', () => {
     vi.useFakeTimers();
     try {

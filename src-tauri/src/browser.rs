@@ -96,6 +96,12 @@ struct BrowserNativePage {
     allowed_file_root: Option<PathBuf>,
     view_mode: BrowserViewMode,
     last_http_url: Option<String>,
+    /// Last top-level location already projected to the address bar. Same-document
+    /// engine events compare against this so an unchanged URL is not published again.
+    last_location: Option<String>,
+    /// Latest document-location read. A script result from an older history change
+    /// must not overwrite a newer load or a newer read.
+    location_probe: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1225,6 +1231,8 @@ fn create_or_reuse_page(
                 allowed_file_root: allowed_root,
                 view_mode,
                 last_http_url: crate::browser_history::http_visit_url(&resolved.url),
+                last_location: Some(resolved.url.to_string()),
+                location_probe: 0,
             },
         );
     }
@@ -1241,6 +1249,7 @@ fn create_or_reuse_page(
 
     hide_label(app, Some(page_id), &label)?;
     attach_page_focus_dismisses_address_suggestions(app, &label);
+    crate::browser_location::attach_document_location_watch(app, page_id, &label);
     info!(
         target: "gold_band::browser",
         operation = "create",
@@ -1559,7 +1568,7 @@ fn browser_navigation_url(url: &Url, allowed_file_root: Option<&Path>) -> Comman
     Ok(navigation_url)
 }
 
-fn is_browser_local_file_url(url: &Url) -> bool {
+pub(crate) fn is_browser_local_file_url(url: &Url) -> bool {
     url.scheme() == BROWSER_LOCAL_FILE_PROTOCOL
         || (matches!(url.scheme(), "http" | "https")
             && url.host_str().is_some_and(|host| {
@@ -1767,7 +1776,88 @@ fn remember_page_url(app: &AppHandle, page_id: &str, url: &Url) {
     };
     if let Some(page) = inner.pages.get_mut(page_id) {
         page.last_http_url = crate::browser_history::http_visit_url(url);
+        page.last_location = Some(url.to_string());
+        page.location_probe = page.location_probe.wrapping_add(1);
     }
+}
+
+pub(crate) fn begin_location_probe(app: &AppHandle, page_id: &str) -> Option<u64> {
+    let host = app.try_state::<BrowserHost>()?;
+    let mut inner = lock_host(&host).ok()?;
+    let page = inner.pages.get_mut(page_id)?;
+    page.location_probe = page.location_probe.wrapping_add(1);
+    Some(page.location_probe)
+}
+
+pub(crate) fn log_document_location_failure(label: &str, error: &impl std::fmt::Display) {
+    log_webview_failure("watch-document-location", None, label, error);
+}
+
+/// Project a top-level location change that did not create a new document.
+/// `new_document` is the engine's own signal: WebView2 `SourceChanged.IsNewDocument`,
+/// or "the view is in a full document load" on engines that only expose the current URI.
+pub(crate) fn publish_same_document_location(
+    app: &AppHandle,
+    page_id: &str,
+    raw_url: &str,
+    new_document: bool,
+    expected_probe: Option<u64>,
+) {
+    let Ok(parsed) = Url::parse(raw_url.trim()) else {
+        return;
+    };
+    let location_url = current_allowed_root(app, page_id)
+        .as_deref()
+        .map(|root| browser_display_url(&parsed, Some(root)))
+        .unwrap_or(parsed);
+    let location_text = location_url.to_string();
+    let decision = {
+        let Some(host) = app.try_state::<BrowserHost>() else {
+            return;
+        };
+        let Ok(mut inner) = lock_host(&host) else {
+            return;
+        };
+        let Some(page) = inner.pages.get_mut(page_id) else {
+            return;
+        };
+        if expected_probe.is_some_and(|probe| page.location_probe != probe) {
+            return;
+        }
+        let decision = crate::browser_location::decide_document_location(
+            new_document,
+            &location_text,
+            page.last_location.as_deref(),
+            page.last_http_url.as_deref(),
+        );
+        if decision.publish_url.is_some() {
+            page.last_location = decision.publish_url.clone();
+            page.last_http_url = crate::browser_history::http_visit_url(&location_url);
+        }
+        decision
+    };
+    if decision.record_visit {
+        crate::browser_history::record_finished_url(app, &location_url);
+    }
+    let Some(url) = decision.publish_url else {
+        return;
+    };
+    info!(
+        target: "gold_band::browser",
+        operation = "document-location",
+        page_id,
+        target_url = %browser_log_target(&location_url),
+        "browser webview same-document location"
+    );
+    emit_page_event(
+        app,
+        BrowserPageEventVm {
+            kind: "url".into(),
+            page_id: page_id.to_string(),
+            url: Some(url),
+            title: None,
+        },
+    );
 }
 
 fn validate_page_id(page_id: &str) -> CommandResult<&str> {
@@ -2028,6 +2118,7 @@ fn hide_label(app: &AppHandle, page_id: Option<&str>, label: &str) -> CommandRes
 }
 
 fn close_label(app: &AppHandle, label: &str) -> CommandResult<()> {
+    crate::browser_location::detach_document_location_watch(app, label);
     let Some(webview) = app.get_webview(label) else {
         info!(
             target: "gold_band::browser",
@@ -2484,6 +2575,8 @@ mod tests {
                     allowed_file_root: None,
                     view_mode: BrowserViewMode::Desktop,
                     last_http_url: None,
+                    last_location: None,
+                    location_probe: 0,
                 },
             );
         }

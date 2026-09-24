@@ -314,3 +314,23 @@ collector 构造 wire event 前校验：
 - [x] 工作区差异协议、producer、snapshot、Git tree/ref 与专用测试已端到端删除。
 - [x] Task 删除 tombstone、30/90 天 dedup/attempt 窗口、本地超限 rejected 过期与每小时有界清理已完成。
 - [ ] release 性能基线与服务端实现由发布/服务端仓库按 `metrics-server-processing.md` 完成。
+
+## 14. 2026-09-23 ManualCheck 指标回归修复
+
+历史实现曾经在 `emit_intervention_requested` 中发布 `RuntimeLifecycleEvent::InterventionRequested` 后，同时调用 `emit_run_metrics_fact`，因此人工确认节点会上报 `intervention.requested / manual-decision`。2026-09-16 的 `bfa56401` merge 冲突收敛删除了该调用，后续 `d489bdec` 只为 IM 补回了原始 lifecycle 事件，没有恢复 metrics fact，导致所有 `manual_check=true` 节点（包括 `wb-development-cicd` 的 `cicd` 节点）只上报 `started -> paused -> completed`，缺少人工决策事件。
+
+本次修复在 `emit_run_paused_lifecycle_event` 中，仅对 `reason=waiting-for-user-input && manual_check_pending` 的 canonical manual check 暂停补发 `InterventionRequested` metrics fact：
+
+```text
+started
+paused(waiting-for-user-input)
+intervention.requested(manual-decision)
+completed
+```
+
+干预 fact 的主体保持 `WorkflowNodeAttempt`，`interventionKind=manual-decision`，不携带 counters，也不把用户成功/失败判定投影为 resume 或 manualContinue。稳定 fact ID 使用 `<canonicalEventId>:intervention:manual-decision:<executionRevision>`，与既有 pause fact 区分并复用 collector 的 fact dedup。
+
+回归覆盖：
+
+- `manual_check_pause_emits_metrics_for_pause_and_manual_decision` 固定 pause 与 manual-decision 两条 fact 的 event type、subject、intervention kind 和稳定 fact ID。
+- `workflow_manual_check_reports_intervention_without_counters` 在 collector 层固定 wire 顺序及 counters 只在 terminal 出现。

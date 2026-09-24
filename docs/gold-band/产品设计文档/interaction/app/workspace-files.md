@@ -43,7 +43,7 @@
 | 文本、日志 | CodeMirror 查看、查找、行号、换行和编辑 |
 | Markdown | 项目文件与节点附件卡打开的本轮新增附件默认实时预览编辑，可切换源码并保存；系统提示、用户消息附件、运行目录文件与完全新增的历史文件版本固定只读。两类资源复用同一 AtomEditor/WorkspaceFileEditor 契约并共享模式与视口语义；可编辑资源额外共享撤销历史、revision 与自动保存队列。源码/预览切换按钮只在父级传入 `onMarkdownModeChange` 时出现，禁止画出无法切换的空按钮 |
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
-| PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
+| PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，打开时默认播放，不因系统 reduced-motion 停在首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
 | HTML（`.html` / `.htm`） | 工作空间与运行目录树默认打开 CodeMirror 源码，内容区右上角浮层按钮再打开内置浏览器；会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。边界见 [内置浏览器](in-app-browser.md) |
 | PDF、Office、音视频、压缩包、字体、数据库及其他二进制 | 显示明确的不支持状态并提供系统应用打开 |
@@ -58,7 +58,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - Markdown renderer 的构建契约要求 React、CodeMirror 与 Lezer 的身份敏感运行时包在 Vite 产物中保持单实例；生产构建与 Vitest 共用同一份显式 dedupe 清单。包管理器允许存在的多版本或重复物理副本不得改变 parser、Facet、StateField、Context 与 decoration 的模块身份，也不得使实时预览静默退化为源码展示。
 - 用户可直接编辑标题、强调、列表、任务项、链接、代码块和表格；当前结构的 Markdown 标记按成熟组件规则显露。
 - 实时预览正文基准字号为 14px，标题、表格、代码块继续使用相对层级，不放大成文档页式展示。
-- 内容区域右上角提供“复制 Markdown 源码”和“源码 / 实时预览”两个悬浮按钮。复制内容取自当前 `EditorState.doc`，包含尚处于自动保存等待期的最新输入。
+- 内容区域右上角提供“复制 Markdown 源码”和“源码 / 实时预览”两个悬浮按钮。Markdown 默认打开实时预览：编辑器等预览扩展就绪后直接以渲染模式创建，不先展示源码。扩展加载失败时才进入源码，眼睛按钮会重新加载并切回预览。按钮图标表示当前正文实际所在的模式。复制内容取自当前 `EditorState.doc`，包含尚处于自动保存等待期的最新输入。
 - Markdown 始终只挂载一个、身份稳定的 CodeMirror `EditorView`。源码 / 预览是同一编辑器的展示状态，不参与 React `key`，也不通过 props 替换整套扩展。基础扩展拓扑固定，并按生命周期拆成语言、模式、编辑策略三个稳定 `Compartment`：Markdown/GFM language parser 在文档生命周期内持续挂载，源码/预览切换只能重配置展示模式，不能卸载或替换 parser；每个 Compartment 以及独立通过 StateEffect 更新的图片配置都记录已应用 profile，首次 View 创建后不得为相同 profile 再 dispatch，只有对应领域状态真实变化时才允许 reconfigure/update，避免大型 widget 挂载后发生冗余同步布局。普通文本块的视口锚点为源码位置与块内像素偏移；Atomic table 使用“源码 Table 范围 + 渲染行索引 + 行内进度”，通过 CodeMirror 公共 `domAtPos()` 关联 widget DOM，并利用稳定 Markdown parser 在源码行与 `thead/tbody/tr` 之间双向映射，禁止把整个表格像素百分比直接换算成整个 Table 的字符百分比；其他 range widget 保存源码范围、组件内相对进度及往返语义位置。模式 transaction 先用官方 `EditorView.scrollIntoView` 把目标范围带入视口；固定 `scrollHandler` 在 CodeMirror 完成新 decoration 测量、准备执行该滚动目标时，使用真实 widget 几何恢复组件内部位置。巨型 widget 触发 CodeMirror 单次 viewport 稳定上限时，只允许在下一布局帧补发一次官方 measure 调度以消费仍待处理的滚动目标，不做固定帧轮询或 ResizeObserver 重试。视口顶部采样向内容区内缩 1px，避免浮点边界把已恢复的源码行误判成上一行；源码态顶部仍位于同一表格行时，反向切换复用该行原锚点。禁止读取 Atomic 私有 model、销毁 View、估算 widget 高度、保存全局裸 `scrollTop` 或同时常驻两个编辑器。
 - Atomic table、Markdown 图片与 README decoration 只在模式 Compartment 内显式重配置，不随 React extensions props 反复重组；Markdown/GFM parser 只位于语言 Compartment。这样 table `StateField` 每次进入预览时都消费同一棵持续增长的语法树，长文档从源码返回预览不会因重新解析尚未完成而退化成原始 Markdown。图片授权状态继续由稳定 `StateField + StateEffect` 更新；源码切到预览前，对当前源码视口及有限 overscan 内已有 preview grant 的图片执行 `HTMLImageElement.decode()`，解码完成或明确失败后再原子提交模式 transaction。图片 URL 与 token 不因模式切换释放，禁止用截图、遮罩、淡入或固定延迟掩盖重挂载闪烁。
 - 合法 GFM 表格使用 Atomic table widget；只有表格单元格本身含图片时才关闭该 widget，防止上游把原始地址直接交给 `<img>`。文档其他位置含图片不影响表格渲染。表格采用详情容器宽度和 fixed layout，长文本在单元格内部换行，不得把 CodeMirror 或文件详情撑出横向滚动。
@@ -71,11 +71,13 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 - 文本修改先进入 CodeMirror 本地状态，300ms 合并后自动保存；`Ctrl/Cmd+S`、切换资源、收起工作区和关闭 Tab 会立即冲刷保存队列。
 - 撤销、重做使用 CodeMirror 原生历史；撤销或重做得到的内容与普通输入走同一自动保存协议。编辑器历史在运行期随 `FileContentStore` 保留，关闭文件后释放。
+- 文本和 Markdown 的阅读位置与已消费的行号定位 revision 跟编辑器历史放在同一份文件运行期会话里。滚动时记下当前编辑器 scroller 的偏移，并在几何有效时附带视口锚点。编辑器重新挂载后，等本次测量完成再写回该偏移；预览块尚未形成真实高度时不使用会落到文档开头的锚点滚动。滚动容器高度为 0，或非用户操作把偏移打回开头时，不覆盖已记下的位置。新的行号链接仍优先于旧阅读位置。磁盘内容变化形成新的编辑边界时，偏移、锚点和已消费定位与撤销历史一起清空。图片缩放和滚动继续使用现有 image view state。模式切换仍用视口锚点，不把裸 `scrollTop` 当成源码与预览之间的换算。
 - 正常编辑不展示长期 dirty 圆点，也不弹出未保存确认。只有保存失败或磁盘版本冲突时阻止关闭，并在文件头部提供重试、重新载入、重新授权或显式覆盖操作。
 - 后端写入必须携带读取时的 `FileRevisionVm`。revision 不一致时不修改磁盘，前端进入 conflict；所有写入使用原子替换并保留原文件权限。
 - Rust `notify` 事件区分自身 `operationId/revision` 与外部写入。干净文件自动重新载入；存在本地修改时暂停保存并进入冲突状态。
 - watcher 事件必须结合 `operationId`、revision 是否存在以及当前树中是否已有该路径判断领域，不能只按 `kind` 分类。`modified`、自身写入，以及“已知且仍存在的路径被原子替换”都属于文件内容领域；原子写入产生的未知临时路径在重命名后已经不存在，也不属于目录结构。只有节点身份确实新增、消失或改名时才按受影响父目录刷新。目录树不展示 revision 元数据，因此普通自动保存不产生目录请求或树快照更新。
-- 工作区文件面板激活时必须先建立前端事件订阅并确认后端 watcher 已启动，再对已有缓存执行一次权威磁盘对账：目录树静默重读根目录和仍处于展开态的分支，当前选中的 clean 文件静默重读内容；对账保持 `ready`、展开状态和滚动位置，不退回首次 loading。这样面板未挂载期间由 Agent、IDE、脚本新增的空目录、文件或内容不会永久停留在旧缓存。watcher 启动失败不得吞错或保留虚假的引用计数，下次激活必须能够重试；启停、订阅和引用释放保持对称。
+- 工作区文件面板激活时必须先建立前端事件订阅并确认后端 watcher 已启动，再对已有缓存执行一次权威磁盘对账：目录树静默重读根目录和仍处于展开态的分支，当前选中的 clean 文件静默重读内容。若搜索框仍有关键字，同一次对账重跑文件名搜索，并保留上一次结果直到新结果返回。对账保持 `ready`、展开状态和滚动位置，不退回首次 loading。离开会话会停止文件监听并递增正文代际；再进入时这次重读仍然保持已有正文和阅读位置，不能因为代际变化把已打开文件切成 loading。重读结果按目录 identity 合并进已加载子树：仍存在的目录保留已加载后代，列表未变化时不发布新快照，也不把子节点先清成未加载再逐层打开。这样面板未挂载期间由 Agent、IDE、脚本新增的空目录、文件或内容不会永久停留在旧缓存。文件面板的最后一次监听停止时递增该项目的正文代际；代际过期的其他已缓存文件不在激活时批量重读，下次打开才读磁盘。监听持续期间仍复用同一代际的正文，并由文件事件重读干净文件。watcher 启动失败不得吞错或保留虚假的引用计数，下次激活必须能够重试；启停、订阅和引用释放保持对称。
+- 已有文件名搜索结果时，目录结构刷新的同一次去抖也重跑搜索，旧结果保持可见，不把列表换成 loading。只改文件内容不改变文件名搜索，不重跑搜索。用户改关键字后的迟到结果仍由搜索序号丢弃。
 - watcher 仍是唯一实时失效来源，不增加轮询。Rust 事件通道和单批路径集合必须有固定上限，150ms quiet debounce 同时受 1 秒最大延迟约束；持续生成文件不能无限延后前端收敛。notify 错误、事件队列溢出或单批路径溢出统一发送一次 project/file scope `invalidated`，前端据此重读权威目录与 clean 内容。普通第三方文件事件不计算全文哈希；只有匹配应用最近写入、需要恢复 `operationId` 时才计算 revision。前端正常结构事件最多聚合 64 个受影响父目录并只重读最小分支集合，超限或作用域失效才重读根与展开目录。
 - 保存失败或进入冲突后，后续输入只更新内存中的最新内容，不得隐式重试写盘或绕过冲突；只有用户明确选择重试、重新授权或覆盖后才恢复保存。
 - 应用正常关闭、项目切换和项目删除前统一冲刷相关文件的保存队列；冲刷失败时保留运行期内容并阻止破坏性切换。
@@ -106,6 +108,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 ## 7. 实现状态
 
+- 2026-09-22 会话切回时的目录对账改为按目录 identity 合并已加载子树。列表未变化不发布快照，已展开后代不再先清空再逐层打开。
 - 2026-09-20 工作空间文件引用到 Composer 已完成：文件树 / 搜索结果右键、首页与 ACP 草稿、结构化 prompt DTO、Rust admission/dispatch 前解析、queue / promptSubmission 持久化、ACP ResourceLink、Timeline 消息 chip 与浏览器 mock 已接入。引用链路保持轻量 metadata，不读取正文、不复制文件、不进入普通附件路径。
 - 2026-08-16 起文件工作区接入 Theme Contract v2：外层使用稳定 `workspace` wallpaper surface，编辑器使用 `editor` role。主题只改变背景投影、字体变量、边界、形状和材质，不销毁 CodeMirror `EditorView`，也不改变文件加载、保存或 revision 状态。
 - 壁纸仅在工作区 surface 可见时预加载；缺失、损坏或由 performance 档关闭时回退语义底色。编辑器正文继续使用独立 editor 字体栈和字号，locale 切换不重载文件内容。

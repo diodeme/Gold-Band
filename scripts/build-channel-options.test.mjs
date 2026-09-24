@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assertChannelBuildSecrets,
   channelBuildPlan,
+  GOLD_BAND_METRICS_API_KEY,
   parseChannelBuildArgs,
   SUPPORT_DEVTOOLS_FEATURE,
 } from './build-channel-options.mjs';
@@ -46,4 +48,31 @@ test('channel build options retain the legacy positional critical flag and rejec
     () => parseChannelBuildArgs(['wb', '--devtool']),
     /Unsupported build option: --devtool/,
   );
+});
+
+test('metrics-enabled channel requires a non-empty metrics API key', () => {
+  assert.doesNotThrow(() => assertChannelBuildSecrets(
+    'wb',
+    { metricsEnabled: true },
+    { [GOLD_BAND_METRICS_API_KEY]: 'secret' },
+  ));
+
+  for (const invalid of [undefined, '', '   ']) {
+    assert.throws(
+      () => assertChannelBuildSecrets(
+        'wb',
+        { metricsEnabled: true },
+        { [GOLD_BAND_METRICS_API_KEY]: invalid },
+      ),
+      /Missing required build secret GOLD_BAND_METRICS_API_KEY/,
+    );
+  }
+});
+
+test('metrics-disabled channel does not require a metrics API key', () => {
+  assert.doesNotThrow(() => assertChannelBuildSecrets(
+    'default',
+    { metricsEnabled: false },
+    {},
+  ));
 });

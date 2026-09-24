@@ -45,10 +45,15 @@
     "windows": {
       "nsis": {
         "languages": [
+          "English",
           "SimpChinese",
-          "English"
+          "TradChinese",
+          "Japanese",
+          "Korean",
+          "PortugueseBR",
+          "Spanish"
         ],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": false
       }
     }
   },

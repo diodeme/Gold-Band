@@ -702,7 +702,7 @@ fn admit_conversation_prompt_turn(
     }
     let preflight = ensure_conversation_prompt_available(app, locator);
     finish_acp_prompt_preflight(app, locator, &turn_id, &agent_label, preflight)?;
-    let admission = gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission)
+    let admission = gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission, false)
         .map_err(prompt_submission_admission_error)?;
     if admission.started() {
         touch_task_activity_at_best_effort(
@@ -11074,7 +11074,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-26T00:00:00Z".to_string(),
         };
-        gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission).unwrap();
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission, false).unwrap();
         let owner = gold_band::acp::events::request_session_stop_outcome(
             &lifecycle_path,
             "user-stop-operation-1",
@@ -12769,7 +12769,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-26T00:00:03Z".to_string(),
         };
-        gold_band::acp::events::begin_session_turn(&lifecycle_path, &next_submission).unwrap();
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &next_submission, false).unwrap();
         let dispatch_calls = std::cell::Cell::new(0usize);
 
         assert!(!settle_active_session_stop_cleanup_with_dispatch(

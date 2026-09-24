@@ -7,6 +7,9 @@
 use tauri::{AppHandle, Manager};
 use url::Url;
 
+#[cfg(target_os = "macos")]
+use objc2::runtime::NSObjectProtocol;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocumentLocationDecision {
     pub publish_url: Option<String>,
@@ -368,15 +371,15 @@ objc2::define_class!(
         }
     }
 
-    unsafe impl objc2::runtime::NSObjectProtocol for LocationObserver {}
+    unsafe impl NSObjectProtocol for LocationObserver {}
 );
 
 #[cfg(target_os = "macos")]
 impl LocationObserver {
     fn new(app: AppHandle, page_id: String) -> objc2::rc::Retained<Self> {
-        use objc2::ClassType;
         use objc2::msg_send;
         use objc2::rc::Retained;
+        use objc2::ClassType;
 
         let this = Self::alloc().set_ivars(LocationObserverIvars { app, page_id });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };

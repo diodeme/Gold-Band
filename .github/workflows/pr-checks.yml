@@ -2,6 +2,7 @@ name: PR checks
 
 on:
   pull_request:
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -10,7 +11,28 @@ permissions:
   contents: read
 
 jobs:
+  macos-rust:
+    name: Check macOS Rust
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Check macOS desktop crate
+        run: cargo check -p gold-band-desktop --all-targets
+
   verify:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
 
     steps:

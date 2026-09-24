@@ -47,4 +47,3 @@ button:disabled { cursor: default; }
 .rr-controller { color: #202125; }
 .error { font-size: 13px; color: #bd4350; margin-block: 12px; }
 @media (max-width: 640px) { .demo-shell { padding: 16px 12px 24px; } .demo-header { flex-wrap: wrap; padding-bottom: 16px; } .brand h1 { font-size: 20px; } .toolbar { gap: 12px; } .rr-controller { overflow-x: auto; justify-content: flex-start !important; } }
-@media (prefers-reduced-motion: reduce) { .capture-plane iframe { transition: none; } }

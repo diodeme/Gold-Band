@@ -34,6 +34,20 @@ export function routeFromPath(pathname: string): AppRoute {
       }
       return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-detail', projectId: segments[2], scheduledTaskId: segments[4] } };
     }
+    if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6] && segments[7] === 'mode') {
+      return {
+        uiMode: 'conversation',
+        module: 'task-orchestration',
+        taskPage: taskListPage,
+        conversationPage: {
+          kind: 'run-mode-management',
+          projectId: segments[2],
+          taskId: segments[4],
+          runId: segments[6],
+          taskUuid: segments[8],
+        },
+      };
+    }
     if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6]) {
       const roundId = segments[7] === 'rounds' ? segments[8] : undefined;
       const legacyAttemptId = roundId && segments[9] === 'attempts' ? segments[10] : undefined;
@@ -80,7 +94,13 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
     if (conversationPage.kind === 'personal-analytics') return '/chat/personal-analytics';
     if (conversationPage.kind === 'agents') return '/chat/agents';
     if (conversationPage.kind === 'contexts') return '/chat/contexts';
-    if (conversationPage.kind === 'run-mode-management') return '/chat/run-modes';
+    if (conversationPage.kind === 'run-mode-management') {
+      if (conversationPage.projectId && conversationPage.taskId && conversationPage.runId) {
+        const base = `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}/mode`;
+        return conversationPage.taskUuid ? `${base}/${encodeURIComponent(conversationPage.taskUuid)}` : base;
+      }
+      return '/chat/run-modes';
+    }
     if (conversationPage.kind === 'multica-tasks') return '/chat/multica-tasks';
     if (conversationPage.kind === 'scheduled-tasks') return '/chat/scheduled-tasks';
     if (conversationPage.kind === 'scheduled-task-create') return '/chat/scheduled-tasks/new';

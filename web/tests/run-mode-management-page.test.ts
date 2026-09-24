@@ -41,6 +41,37 @@ describe('RunModeTabsToolbar', () => {
     expect(header).not.toContain('<button');
   });
 
+  it('replaces project scope controls with the execution-plan save bar inside a run context', () => {
+    const runContext = { projectId: 'project-a', taskId: 'task-a', taskUuid: 'uuid-a', runId: 'run-a' };
+    const html = renderToStaticMarkup(
+      React.createElement(RunModeManagementPage, {
+        projectId: 'project-a',
+        workspaceName: 'Project A',
+        workspaces: [{ projectId: 'project-a', name: 'Project A', workspacePath: 'D:/a' }],
+        runMode: { mode: 'auto', workflowTemplateId: null, autoConfig: { agentType: 'claude-acp' } },
+        agentRegistry: null,
+        workflowTemplates: null,
+        onProjectChange: () => undefined,
+        onSave: () => undefined,
+        runContext,
+      }),
+    );
+
+    expect(html).toContain('data-execution-plan-save-bar="loading"');
+    expect(html).not.toContain('data-auto-template-library');
+    expect(html).not.toContain('data-testid="run-mode-tabs-toolbar"');
+    expect(html).not.toContain('data-testid="run-mode-project-selector"');
+  });
+
+  it('routes every implicit project run-mode write through the run-context guard', () => {
+    // Inside a run context the Next Run save bar is the only project-level write path,
+    // so no code path may call onSave directly.
+    expect(pageSource).toContain("(mode: ConversationRunModeVm) => (runContext ? undefined : onSave(mode))");
+    expect(pageSource.match(/\bonSave\(/g)).toHaveLength(1);
+    expect(pageSource).toContain('data-auto-template-library="true"');
+    expect(pageSource).toContain('{runContext ? null : <section');
+  });
+
   it('renders only mode tabs because mode changes are applied immediately', () => {
     const html = renderToStaticMarkup(
       React.createElement(RunModeTabsToolbar, {

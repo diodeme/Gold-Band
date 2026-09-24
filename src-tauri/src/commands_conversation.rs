@@ -1454,10 +1454,14 @@ pub fn get_conversation_run_mode(
                         bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                         bootstrap_model_id: cfg.bootstrap_model_id.clone(),
                         bootstrap_config_options: cfg.bootstrap_config_options.clone(),
-                        bootstrap_model_bound_overrides: cfg.bootstrap_model_bound_overrides.clone(),
+                        bootstrap_model_bound_overrides: cfg
+                            .bootstrap_model_bound_overrides
+                            .clone(),
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
                         acceptance_config_options: cfg.acceptance_config_options.clone(),
-                        acceptance_model_bound_overrides: cfg.acceptance_model_bound_overrides.clone(),
+                        acceptance_model_bound_overrides: cfg
+                            .acceptance_model_bound_overrides
+                            .clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
                         auto_accept: cfg.auto_accept,
@@ -1528,6 +1532,11 @@ pub fn save_conversation_run_mode(
                 )),
             );
         };
+        let authoring_revision = state
+            .conversation_run_modes
+            .get(&resolved_project_id)
+            .map(|entry| entry.authoring_revision.saturating_add(1))
+            .unwrap_or(1);
         state.conversation_run_modes.insert(
             resolved_project_id,
             ConversationRunModeEntry {
@@ -1561,7 +1570,7 @@ pub fn save_conversation_run_mode(
                         )
                     })
                     .collect(),
-                    auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
+                auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
                     agent_strategy: cfg.agent_strategy,
                     agent_type: cfg.agent_type,
                     bootstrap_agent_type: cfg.bootstrap_agent_type,
@@ -1612,11 +1621,89 @@ pub fn save_conversation_run_mode(
                     active_template_id: cfg.active_template_id,
                     active_template_name: cfg.active_template_name,
                 }),
+                authoring_revision,
             },
         );
         (true, Ok(()))
     })
     .map_err(command_error)?
+}
+
+fn conversation_project_app(
+    global_app: &App,
+    config: gold_band::config::RuntimeConfig,
+    project_id: &str,
+) -> CommandResult<(App, String)> {
+    let app_state = global_app.load_state().map_err(command_error)?;
+    let Some((workspace_path, _)) = workspace_entry_for_project(&app_state, project_id) else {
+        return Err(CommandErrorVm::new(
+            "workspace.not-found",
+            serde_json::json!({ "projectId": project_id }),
+        ));
+    };
+    let app = global_app.with_repo_root(Utf8PathBuf::from(workspace_path), config);
+    let resolved_project_id = app.paths.project_id.clone();
+    Ok((app, resolved_project_id))
+}
+
+fn execution_plan_app(state: &DesktopState, project_id: &str) -> CommandResult<(App, String)> {
+    let context = state.context().map_err(command_error)?;
+    conversation_project_app(&context.app(), context.config, project_id)
+}
+
+#[tauri::command]
+pub fn get_conversation_execution_plan(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    task_uuid: String,
+    run_id: String,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanView> {
+    let (app, project_id) = execution_plan_app(&state, &project_id)?;
+    app.get_conversation_execution_plan(&project_id, &task_id, &task_uuid, &run_id)
+        .map_err(|error| command_error(anyhow::anyhow!(error)))
+}
+
+#[tauri::command]
+pub fn preflight_conversation_execution_plan_save(
+    state: State<'_, DesktopState>,
+    mut command: gold_band::execution_plan::ExecutionPlanSaveCommand,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanPreflight> {
+    let (app, project_id) = execution_plan_app(&state, &command.project_id)?;
+    command.project_id = project_id;
+    app.preflight_conversation_execution_plan_save(&command)
+        .map_err(|error| command_error(anyhow::anyhow!(error)))
+}
+
+#[tauri::command]
+pub fn save_conversation_execution_plan(
+    state: State<'_, DesktopState>,
+    mut command: gold_band::execution_plan::ExecutionPlanSaveCommand,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanSaveResult> {
+    let (app, project_id) = execution_plan_app(&state, &command.project_id)?;
+    command.project_id = project_id;
+    app.save_conversation_execution_plan(&command)
+        .map_err(|error| command_error(anyhow::anyhow!(error)))
+}
+
+#[tauri::command]
+pub fn recover_conversation_execution_plan_operation(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    task_uuid: String,
+    run_id: String,
+    operation_id: String,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanSaveResult> {
+    let (app, project_id) = execution_plan_app(&state, &project_id)?;
+    app.recover_conversation_execution_plan_operation(
+        &project_id,
+        &task_id,
+        &task_uuid,
+        &run_id,
+        &operation_id,
+    )
+    .map_err(|error| command_error(anyhow::anyhow!(error)))
 }
 
 #[tauri::command]
@@ -2556,10 +2643,10 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
-        conversation_search_task_roots, decode_execution_history_cursor,
-        delete_scheduled_execution_history_items, encode_execution_history_cursor,
-        execution_history_vm, materialize_attachment_files_to_dir,
+        MaterializeAttachmentFileInput, base64_encode, conversation_project_app,
+        conversation_search_result_for_workspace, conversation_search_task_roots,
+        decode_execution_history_cursor, delete_scheduled_execution_history_items,
+        encode_execution_history_cursor, execution_history_vm, materialize_attachment_files_to_dir,
         message_attachment_content_from_attempt_dir, runtime_workspace_entry_for_project,
         scheduled_runtime_settings_vm, scheduled_service_error,
         validate_execution_history_delete_batch, validate_scheduled_runtime_settings_input,
@@ -3236,6 +3323,7 @@ mod tests {
                 direct_config: None,
                 direct_preferences: Default::default(),
                 auto_config: None,
+                authoring_revision: 0,
             },
         );
 
@@ -3248,5 +3336,75 @@ mod tests {
         assert_eq!(state.conversation_pins[0].project_id, "ws-b");
         assert!(state.conversation_run_modes.get("ws-a").is_none());
         assert_eq!(state.last_conversation_workspace.as_deref(), Some("ws-b"));
+    }
+
+    #[test]
+    fn execution_plan_reads_the_registered_conversation_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let previous = gold_band::storage::active_storage_path_config();
+        let path_config = gold_band::storage::StoragePathConfig {
+            app_key: "gold-band-execution-plan-workspace-test",
+            config_dir_name: ".gold-band-execution-plan-workspace-test",
+            home_env_var: "GOLD_BAND_EXECUTION_PLAN_WORKSPACE_TEST_HOME",
+        };
+        let test_home = directory.path().join("user-home");
+        unsafe { std::env::set_var(path_config.home_env_var, &test_home) };
+        gold_band::storage::configure_storage_paths(path_config);
+        struct RestoreStorage(gold_band::storage::StoragePathConfig);
+        impl Drop for RestoreStorage {
+            fn drop(&mut self) {
+                gold_band::storage::configure_storage_paths(self.0);
+                unsafe { std::env::remove_var("GOLD_BAND_EXECUTION_PLAN_WORKSPACE_TEST_HOME") };
+            }
+        }
+        let restore = RestoreStorage(previous);
+
+        let desktop_root = Utf8PathBuf::from_path_buf(directory.path().join("desktop")).unwrap();
+        let foreign_root = Utf8PathBuf::from_path_buf(directory.path().join("foreign")).unwrap();
+        std::fs::create_dir_all(desktop_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(foreign_root.as_std_path()).unwrap();
+        let config = gold_band::config::RuntimeConfig::default();
+        let desktop = App::with_config(desktop_root, config.clone());
+        let foreign = App::with_config(foreign_root.clone(), config.clone());
+        desktop
+            .with_state(|state| {
+                state
+                    .conversation_workspaces
+                    .push(ConversationWorkspaceEntry {
+                        project_id: foreign.paths.project_id.clone(),
+                        workspace_path: foreign_root.to_string(),
+                        name: "Foreign".to_string(),
+                        added_at: "2026-09-23T00:00:00Z".to_string(),
+                    });
+                (true, ())
+            })
+            .unwrap();
+
+        let direct = desktop.get_conversation_execution_plan(
+            &foreign.paths.project_id,
+            "task-missing",
+            "task-uuid",
+            "run-missing",
+        );
+        assert_eq!(
+            direct.unwrap_err().code(),
+            gold_band::execution_plan::error::CURRENT_LOCATOR_CONFLICT
+        );
+
+        let (workspace_app, resolved_project_id) =
+            conversation_project_app(&desktop, config, &foreign.paths.project_id).unwrap();
+        assert_eq!(resolved_project_id, foreign.paths.project_id);
+        assert_eq!(workspace_app.paths.repo_root, foreign.paths.repo_root);
+        let missing = workspace_app.get_conversation_execution_plan(
+            &resolved_project_id,
+            "task-missing",
+            "task-uuid",
+            "run-missing",
+        );
+        assert_eq!(
+            missing.unwrap_err().code(),
+            gold_band::execution_plan::error::NOT_FOUND
+        );
+        drop(restore);
     }
 }

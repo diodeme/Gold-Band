@@ -37,14 +37,18 @@ describe('ConversationSidebar run selection identity', () => {
     })).toBe('scheduled-tasks');
   });
 
-  it('uses a reduced-motion-safe breathing effect for active Direct Agent icons', () => {
-    expect(conversationSidebarActivityIconClass).toContain('motion-safe:animate-pulse');
+  it('breathes active Direct Agent icons even when the system reduces motion', () => {
+    expect(conversationSidebarActivityIconClass).toBe('animate-pulse');
+    expect(conversationSidebarActivityIconClass).not.toContain('motion-safe');
+    expect(conversationSidebarActivityIconClass).not.toContain('motion-reduce');
     expect(conversationSidebarActivityIconClass).not.toContain('animate-spin');
   });
 
   it('uses a blue breathing dot only for running workflow sessions', () => {
     expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('bg-gold-running');
-    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('motion-safe:animate-pulse');
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('animate-pulse');
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).not.toContain('motion-safe');
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).not.toContain('motion-reduce');
     expect(conversationSidebarRunStatusClass({ status: 'paused', outcome: null })).toBe('bg-yellow-500/50');
     expect(conversationSidebarRunStatusClass({ status: 'completed', outcome: 'success' })).toBe('bg-emerald-500/50');
   });

@@ -16,6 +16,8 @@ describe('App window shell style', () => {
     expect(styles).toContain(".app-window-shell[data-window-frame-style='app-outline']");
     expect(styles).toContain('inset 0 0 0 1px var(--gold-window-outline)');
     expect(styles).toContain('inset 0 0 8px var(--gold-window-edge-shadow)');
+    expect(styles).not.toContain('--gold-window-shadow-gutter');
+    expect(styles).not.toContain('data-window-occludes-desktop');
     expect(styles).not.toContain('outline-offset: -1px');
     expect(styles).not.toMatch(/^\.app-window-shell \{/mu);
     expect(styles).not.toMatch(/^\.app-window-shell::before/mu);

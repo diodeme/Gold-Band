@@ -52,7 +52,6 @@ export function createStreamingMarkdownPlayback(
   options: {
     canonical: string;
     streaming: boolean;
-    reducedMotion?: boolean;
   },
 ): StreamingMarkdownPlayback {
   let canonical = options.canonical;
@@ -73,13 +72,11 @@ export function createStreamingMarkdownPlayback(
   let tickDurationSinceDiagnosticSample = 0;
   let longestTickSinceDiagnosticSample = 0;
   const playbackId = nextPlaybackId++;
-  const reducedMotion = options.reducedMotion ?? prefersReducedMotion();
 
   const diagnosticDetails = (extra: Record<string, unknown> = {}) => ({
     playbackId,
     canonicalLength: canonical.length,
     streaming,
-    reducedMotion,
     unitCount,
     revealedUnitCount,
     backlog: Math.max(0, unitCount - revealedUnitCount),
@@ -221,7 +218,7 @@ export function createStreamingMarkdownPlayback(
     const startedAt = performanceNow();
     const previousUnitCount = unitCount;
     const indexUpdate = updatePlaybackIndex(changedBlocks, forceRebuild);
-    if (!streaming || reducedMotion || rewriteBaseline) {
+    if (!streaming || rewriteBaseline) {
       revealedUnitCount = unitCount;
     } else {
       revealedUnitCount = Math.min(revealedUnitCount, unitCount);
@@ -278,7 +275,7 @@ export function createStreamingMarkdownPlayback(
     const tickStartedAt = performanceNow();
     frameId = 0;
     const backlog = unitCount - revealedUnitCount;
-    if (disposed || !streaming || reducedMotion || backlog <= 0) {
+    if (disposed || !streaming || backlog <= 0) {
       resetIdlePlaybackTiming();
       return;
     }
@@ -351,7 +348,6 @@ export function createStreamingMarkdownPlayback(
       disposed
       || frameId !== 0
       || !streaming
-      || reducedMotion
       || revealedUnitCount >= unitCount
     ) return;
     frameId = requestAnimationFrame(tick);
@@ -379,8 +375,8 @@ export function createStreamingMarkdownPlayback(
 
   reconcile(new Set(), true);
   recordAcpStreamingDiagnostic('markdown-playback-init', () => diagnosticDetails());
-  if (reducedMotion || !streaming) {
-    settleAll(reducedMotion ? 'reduced-motion' : 'initial-static');
+  if (!streaming) {
+    settleAll('initial-static');
   }
 
   return {
@@ -398,8 +394,8 @@ export function createStreamingMarkdownPlayback(
     setStreaming(nextStreaming) {
       if (streaming === nextStreaming) return;
       streaming = nextStreaming;
-      if (!streaming || reducedMotion) {
-        settleAll(reducedMotion ? 'reduced-motion' : 'stream-finished', true);
+      if (!streaming) {
+        settleAll('stream-finished', true);
       } else {
         // A controller created in static mode already presented its canonical
         // content in full. Re-entering an active session must establish the
@@ -429,9 +425,4 @@ function performanceNow() {
 
 function roundDuration(value: number) {
   return Math.round(value * 10) / 10;
-}
-
-function prefersReducedMotion() {
-  return typeof window !== 'undefined'
-    && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 }

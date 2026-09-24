@@ -55,6 +55,7 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         assert!(profile.content.contains(match language {
             DesktopLanguage::ZhCn => "子系统号",
             DesktopLanguage::En => "subsystem number",
+            _ => unreachable!(),
         }));
         assert!(profile.content.contains("cicd.build.jobId"));
         assert!(profile.content.contains("cicd.deploy.<S>.selected"));
@@ -101,6 +102,7 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
                 "not blockers",
                 "ask for or confirm the required parameters",
             ],
+            _ => unreachable!(),
         };
         for marker in push_precheck_markers {
             assert!(
@@ -155,6 +157,7 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
                 "Every run must freshly confirm its build and deployment parameters",
                 "A confirmation from a previous run cannot be reused",
             ],
+            _ => unreachable!(),
         } {
             assert!(
                 profile.content.contains(marker),

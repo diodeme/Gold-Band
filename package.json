@@ -1,6 +1,6 @@
 {
   "name": "gold-band-desktop",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -33,7 +33,7 @@
     "web:dev": "npm run themes:build && vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",
     "web:test": "vitest run --config web/vitest.config.ts",
     "web:test:coverage": "vitest run --config web/vitest.config.ts --coverage",
-    "test:channel-config": "node --test scripts/channel-config.test.mjs scripts/build-channel-options.test.mjs",
+    "test:channel-config": "node --test scripts/channel-config.test.mjs scripts/build-channel-options.test.mjs scripts/cargo-bundle-dirs.test.mjs",
     "test:dev-watch-config": "node --test scripts/dev-watch-config.test.mjs",
     "test:dev-channel": "node --test scripts/dev-channel.test.mjs",
     "test:dev-static": "node --test scripts/dev-static-channel.test.mjs",

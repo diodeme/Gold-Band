@@ -182,6 +182,7 @@ import {
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
+  sentAttachmentPreviewAliasKey,
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
@@ -1110,7 +1111,9 @@ export function App() {
   }, [conversationPage, conversationRun]);
 
   useEffect(() => {
-    void i18n.changeLanguage(i18nLanguage(preferences.language));
+    const tag = i18nLanguage(preferences.language);
+    void i18n.changeLanguage(tag);
+    document.documentElement.lang = tag;
   }, [preferences.language]);
 
   useEffect(() => {
@@ -2680,7 +2683,7 @@ export function App() {
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input, multica) => {
+          onSubmit={async (input, multica, sentAttachments) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'direct'
               ? {
                 mode: 'direct',
@@ -2714,15 +2717,36 @@ export function App() {
                 ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
                 : await createConversationRun(input);
               applyConversationTask(task);
+              const conversationScope = createConversationWorkspaceScope({
+                projectId: run.projectId,
+                taskId: run.taskId,
+                taskUuid: run.taskUuid,
+                runId: run.runId,
+              });
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
-                createConversationWorkspaceScope({
-                  projectId: run.projectId,
-                  taskId: run.taskId,
-                  taskUuid: run.taskUuid,
-                  runId: run.runId,
-                }),
+                conversationScope,
               );
+              for (const attachment of sentAttachments ?? []) {
+                conversationWorkspaceStore.aliasDraftAttachmentPreview(
+                  conversationScope.key,
+                  attachment.id,
+                  sentAttachmentPreviewAliasKey({
+                    assetKind: 'input-attachment',
+                    locator: {
+                      projectId: run.projectId,
+                      taskId: run.taskId,
+                      taskUuid: run.taskUuid,
+                      runId: run.runId,
+                      roundId: '',
+                      nodeId: '',
+                      attemptId: '',
+                      branchId: '',
+                    },
+                    name: attachment.name,
+                  }),
+                );
+              }
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null, run);
               applyConversationRunSnapshot(run, 'create');
@@ -2837,6 +2861,15 @@ export function App() {
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+          runContext={conversationPage.projectId && conversationPage.taskId && conversationPage.runId ? {
+            projectId: conversationPage.projectId,
+            taskId: conversationPage.taskId,
+            taskUuid: conversationPage.taskUuid || conversationPage.taskId,
+            runId: conversationPage.runId,
+          } : null}
+          onExecutionPlanSaved={() => {
+            if (conversationPage.projectId) void loadConversationRunMode(conversationPage.projectId);
+          }}
         />
       );
     }
@@ -2913,15 +2946,15 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onEditWorkflow={() => {}}
-          onSaveWorkflow={async (json, modelBindings) => {
-            const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[2];
-            const saved = await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);
+          workflowTemplates={conversationWorkflowTemplates}
+          onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+          onExecutionPlanSaved={async () => {
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
             applyConversationRunSnapshot(refreshed, 'workflow-save', {
               selectedSessionKey: conversationSelectedSessionKeyRef.current,
               preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
             });
-            return saved;
+            void loadConversationRunMode(conversationPage.projectId);
           }}
           onSelectSession={(leaf, followActive) => {
             const key = leaf.outerNodeId

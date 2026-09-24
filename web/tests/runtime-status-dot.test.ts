@@ -5,7 +5,9 @@ import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
 describe('runtimeStatusDotClass', () => {
   it('uses the dedicated visible running token instead of the theme primary', () => {
     expect(runtimeStatusDotClass('running')).toContain('bg-gold-running');
-    expect(runtimeStatusDotClass('running')).toContain('motion-safe:animate-pulse');
+    expect(runtimeStatusDotClass('running')).toContain('animate-pulse');
+    expect(runtimeStatusDotClass('running')).not.toContain('motion-safe');
+    expect(runtimeStatusDotClass('running')).not.toContain('motion-reduce');
   });
 
   it('keeps stopped and unknown states visible', () => {

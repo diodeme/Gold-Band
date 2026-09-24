@@ -28,7 +28,8 @@ import {
   useRightWorkspace,
   type RightWorkspaceResource,
 } from './right-workspace-context';
-import { BrowserNativeLifecycle, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
+import { BrowserNativeLifecycle, notifyBrowserLayoutFrame, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
+import { revokeAttachmentPreviewUrls } from '@/lib/attachment-service';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
@@ -210,6 +211,12 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyDraftAttachmentWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceCloseResolver('draft-attachment', (resource, reason) => {
+    if (reason === 'close' && resource.kind === 'draft-attachment') {
+      revokeAttachmentPreviewUrls([resource.attachment]);
+    }
+    return true;
+  }), [workspace.registerResourceCloseResolver]);
   useEffect(() => workspace.registerResourceRenderer('source-control', (resource: RightWorkspaceResource) => (
     resource.kind === 'source-control'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazySourceControlWorkspacePanel resource={resource} /></Suspense>
@@ -529,6 +536,7 @@ function WorkspaceShellLayout({
           expandedPanels.push(panelId);
         }
         if (expandedPanels.length > 0) applied = group.setLayout(target);
+        if (applied != null) notifyBrowserLayoutFrame();
       } catch {
         // The panel group may be unmounting while the desktop surface changes.
       }
@@ -610,6 +618,7 @@ function WorkspaceShellLayout({
     }));
   }, []);
   const saveWorkspaceLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
+    notifyBrowserLayoutFrame();
     const previousLayout = lastCommittedLayoutRef.current;
     lastCommittedLayoutRef.current = { ...layout };
     const activeElement = typeof document === 'undefined' ? null : document.activeElement;

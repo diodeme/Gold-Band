@@ -50,13 +50,45 @@ function commandErrorCode(reason: unknown, fallback: string) {
     : fallback;
 }
 
+function sameDirectoryEntry(node: FileTreeNode, entry: WorkspaceDirectoryEntryVm) {
+  return node.relativePath === entry.relativePath
+    && node.kind === entry.kind
+    && node.name === entry.name
+    && node.canonicalPath === entry.canonicalPath;
+}
+
+function mergeDirectoryNodes(existing: readonly FileTreeNode[] | null, entries: readonly WorkspaceDirectoryEntryVm[]): FileTreeNode[] {
+  if (
+    existing
+    && existing.length === entries.length
+    && existing.every((node, index) => sameDirectoryEntry(node, entries[index]!))
+  ) {
+    return existing as FileTreeNode[];
+  }
+  const previous = new Map((existing ?? []).map((node) => [node.id, node]));
+  return entries.map((entry) => {
+    const prior = previous.get(entry.relativePath);
+    if (prior && prior.kind === entry.kind) {
+      if (sameDirectoryEntry(prior, entry)) return prior;
+      return {
+        ...prior,
+        ...entry,
+        id: entry.relativePath,
+        children: prior.children,
+        loading: prior.loading,
+      };
+    }
+    return {
+      ...entry,
+      id: entry.relativePath,
+      children: entry.kind === 'directory' ? null : [],
+      loading: false,
+    };
+  });
+}
+
 function nodesFor(entries: WorkspaceDirectoryEntryVm[]): FileTreeNode[] {
-  return entries.map((entry) => ({
-    ...entry,
-    id: entry.relativePath,
-    children: entry.kind === 'directory' ? null : [],
-    loading: false,
-  }));
+  return mergeDirectoryNodes(null, entries);
 }
 
 function viewNodeFor(node: FileTreeNode, displayMode: FileTreeDisplayMode): FileTreeViewNode {
@@ -246,9 +278,12 @@ export class FileExplorerStore {
     }
     try {
       const entries = await listWorkspaceDirectory(projectId, '');
-      this.setSnapshot(runtime, { ...runtime.snapshot, roots: nodesFor(entries), errorCode: null });
+      const roots = mergeDirectoryNodes(runtime.snapshot.roots, entries);
+      if (roots !== runtime.snapshot.roots || runtime.snapshot.errorCode !== null) {
+        this.setSnapshot(runtime, { ...runtime.snapshot, roots, errorCode: null });
+      }
       const expanded = [...runtime.snapshot.expanded].sort((left, right) => pathDepth(left) - pathDepth(right));
-      for (const id of expanded) await this.loadDirectory(projectId, id);
+      for (const id of expanded) await this.loadDirectory(projectId, id, true);
     } catch (reason) {
       this.setSnapshot(runtime, {
         ...runtime.snapshot,
@@ -287,16 +322,22 @@ export class FileExplorerStore {
     if (!force && (target.loading || target.children !== null)) return;
     const request = (runtime.directoryRequests.get(relativePath) ?? 0) + 1;
     runtime.directoryRequests.set(relativePath, request);
-    this.setSnapshot(runtime, {
-      ...runtime.snapshot,
-      roots: updateNode(runtime.snapshot.roots, relativePath, (node) => ({ ...node, loading: true })),
-    });
+    if (target.children === null) {
+      this.setSnapshot(runtime, {
+        ...runtime.snapshot,
+        roots: updateNode(runtime.snapshot.roots, relativePath, (node) => ({ ...node, loading: true })),
+      });
+    }
     try {
       const entries = await listWorkspaceDirectory(projectId, relativePath);
       if (runtime.directoryRequests.get(relativePath) !== request) return;
+      const current = findNode(runtime.snapshot.roots, relativePath);
+      if (!current || current.kind !== 'directory') return;
+      const children = mergeDirectoryNodes(current.children, entries);
+      if (children === current.children && !current.loading) return;
       this.setSnapshot(runtime, {
         ...runtime.snapshot,
-        roots: updateNode(runtime.snapshot.roots, relativePath, (node) => ({ ...node, children: nodesFor(entries), loading: false })),
+        roots: updateNode(runtime.snapshot.roots, relativePath, (node) => ({ ...node, children, loading: false })),
       });
     } catch (reason) {
       if (runtime.directoryRequests.get(relativePath) !== request) return;
@@ -397,7 +438,14 @@ export class FileExplorerStore {
     this.invalidate(event.projectId, event.canonicalPath);
   }
 
-  private async runSearch(runtime: ProjectRuntime, query: string, revision: number) {
+  private refreshActiveSearch(runtime: ProjectRuntime) {
+    const query = runtime.snapshot.searchQuery.trim();
+    if (!query) return Promise.resolve();
+    runtime.searchRevision += 1;
+    return this.runSearch(runtime, query, runtime.searchRevision, true);
+  }
+
+  private async runSearch(runtime: ProjectRuntime, query: string, revision: number, background = false) {
     const requestId = `${runtime.snapshot.projectId}:${revision}`;
     try {
       const result = await searchWorkspaceFiles(runtime.snapshot.projectId, query, requestId, this.config.searchResultLimit);
@@ -405,6 +453,7 @@ export class FileExplorerStore {
       this.setSnapshot(runtime, { ...runtime.snapshot, searchStatus: 'ready', searchResult: result });
     } catch (reason) {
       if (runtime.searchRevision !== revision) return;
+      if (background && runtime.snapshot.searchResult) return;
       this.setSnapshot(runtime, {
         ...runtime.snapshot,
         searchStatus: 'error',
@@ -438,12 +487,15 @@ export class FileExplorerStore {
       : minimalDirectorySet(runtime.pendingRefreshDirectories);
     runtime.refreshAll = false;
     runtime.pendingRefreshDirectories.clear();
-    const request = (refreshAll
-      ? this.refreshRoot(projectId)
-      : directories.reduce(
-          (previous, directory) => previous.then(() => this.refreshDirectory(projectId, directory)),
-          Promise.resolve(),
-        )).finally(() => {
+    const request = Promise.all([
+      refreshAll
+        ? this.refreshRoot(projectId)
+        : directories.reduce(
+            (previous, directory) => previous.then(() => this.refreshDirectory(projectId, directory)),
+            Promise.resolve(),
+          ),
+      this.refreshActiveSearch(runtime),
+    ]).then(() => undefined).finally(() => {
       if (runtime.refreshPromise === request) runtime.refreshPromise = null;
       if (runtime.refreshDirty || runtime.refreshAll || runtime.pendingRefreshDirectories.size > 0) {
         runtime.refreshDirty = false;

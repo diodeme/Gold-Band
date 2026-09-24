@@ -28,8 +28,7 @@ use gold_band::domain::{
     TurnControlTransitionCause,
 };
 use gold_band::dsl::{
-    AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
-    EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
+    END_NODE, EdgeDsl, EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
 use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
@@ -3490,8 +3489,7 @@ pub(crate) fn conversation_session_successor(
         return Ok(None);
     }
     let round = read_json::<RoundState>(&app.paths.round_file(task_id, run_id, round_id))?;
-    let workflow =
-        read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id)).ok();
+    let workflow = app.current_run_workflow(task_id, run_id).ok();
     let successors = conversation_session_successors_from_state(
         app,
         task_id,
@@ -3617,10 +3615,7 @@ pub fn conversation_run_vm(
 
     // Build the session tree from rounds/nodes/attempts
     // Read workflow snapshot once for node order + validity + raw JSON
-    let workflow_snapshot: Option<WorkflowDsl> = gold_band::storage::read_json::<WorkflowDsl>(
-        &app.paths.workflow_snapshot_file(task_id, run_id),
-    )
-    .ok();
+    let workflow_snapshot = app.current_run_workflow(task_id, run_id).ok();
     let workflow_node_order: HashMap<String, usize> = workflow_snapshot
         .as_ref()
         .map(|dsl| {
@@ -4563,168 +4558,69 @@ fn conversation_auto_title(content: &str, max_chars: usize) -> String {
     }
 }
 
-fn dynamic_control_from_vm(control: Option<&ConversationDynamicControlVm>) -> DynamicControlDsl {
-    control
-        .map(|control| DynamicControlDsl {
-            max_dynamic_nodes: control.max_dynamic_nodes,
-            max_fanout: control.max_fanout,
-            max_depth: control.max_depth,
-            max_parallel: control.max_parallel,
-            max_group_depth: control.max_group_depth,
-            max_workflow_invocations: control.max_workflow_invocations,
-            allow_nested_dynamic: control.allow_nested_dynamic,
-        })
-        .unwrap_or_default()
+fn auto_config_from_vm(
+    config: &ConversationAutoConfigVm,
+) -> gold_band::config::ConversationAutoConfig {
+    gold_band::config::ConversationAutoConfig {
+        agent_strategy: config.agent_strategy.clone(),
+        agent_type: config.agent_type.clone(),
+        bootstrap_agent_type: config.bootstrap_agent_type.clone(),
+        bootstrap_model_id: config.bootstrap_model_id.clone(),
+        bootstrap_config_options: config.bootstrap_config_options.clone(),
+        bootstrap_model_bound_overrides: config.bootstrap_model_bound_overrides.clone(),
+        acceptance_model_id: config.acceptance_model_id.clone(),
+        acceptance_config_options: config.acceptance_config_options.clone(),
+        acceptance_model_bound_overrides: config.acceptance_model_bound_overrides.clone(),
+        model_id: config.model_id.clone(),
+        permission_mode: config.permission_mode.clone(),
+        auto_accept: config.auto_accept,
+        config_options: config.config_options.clone(),
+        model_bound_overrides: config.model_bound_overrides.clone(),
+        available_agents: config.available_agents.as_ref().map(|agents| {
+            agents
+                .iter()
+                .map(|agent| gold_band::config::ConversationDynamicAgentRef {
+                    provider: agent.provider.clone(),
+                    model: agent.model.clone(),
+                    permission_mode: agent.permission_mode.clone(),
+                    auto_accept: agent.auto_accept,
+                    config_options: agent.config_options.clone(),
+                    model_bound_overrides: agent.model_bound_overrides.clone(),
+                })
+                .collect()
+        }),
+        routing_prompt: config.routing_prompt.clone(),
+        allowed_workflows: config.allowed_workflows.as_ref().map(|workflows| {
+            workflows
+                .iter()
+                .map(
+                    |workflow| gold_band::config::ConversationAllowedWorkflowRef {
+                        workflow_id: workflow.workflow_id.clone(),
+                    },
+                )
+                .collect()
+        }),
+        allowed_profiles: config.allowed_profiles.clone(),
+        global_goal: config.global_goal.clone(),
+        control: config.control.as_ref().map(|control| {
+            gold_band::config::ConversationDynamicControl {
+                max_dynamic_nodes: control.max_dynamic_nodes,
+                max_fanout: control.max_fanout,
+                max_depth: control.max_depth,
+                max_parallel: control.max_parallel,
+                max_group_depth: control.max_group_depth,
+                max_workflow_invocations: control.max_workflow_invocations,
+                allow_nested_dynamic: control.allow_nested_dynamic,
+            }
+        }),
+        active_template_id: config.active_template_id.clone(),
+        active_template_name: config.active_template_name.clone(),
+    }
 }
 
 fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl {
-    let agent_type = config.map(|c| c.agent_type.as_str()).unwrap_or("");
-    let model_id = config
-        .and_then(|c| c.model_id.as_deref())
-        .filter(|v| !v.trim().is_empty());
-    let bootstrap_model_id = config
-        .and_then(|c| c.bootstrap_model_id.as_deref())
-        .filter(|v| !v.trim().is_empty());
-    let acceptance_model_id = config
-        .and_then(|c| c.acceptance_model_id.as_deref())
-        .filter(|v| !v.trim().is_empty());
-    let permission_mode = config
-        .and_then(|c| c.permission_mode.as_deref())
-        .filter(|v| !v.trim().is_empty());
-    let auto_accept = config.is_some_and(|c| c.auto_accept);
-    let global_goal = config
-        .and_then(|c| c.global_goal.as_deref())
-        .filter(|v| !v.trim().is_empty());
-    let agent_strategy_mode = config
-        .and_then(|c| c.agent_strategy.as_deref())
-        .unwrap_or("fixed");
-
-    let agent_strategy = if agent_strategy_mode == "dynamic" {
-        let bootstrap_provider = config
-            .and_then(|c| c.bootstrap_agent_type.as_deref())
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or(agent_type)
-            .to_string();
-        let available_agents = config
-            .and_then(|c| c.available_agents.as_ref())
-            .map(|agents| {
-                agents
-                    .iter()
-                    .filter_map(|agent| {
-                        let provider = agent.provider.trim();
-                        if provider.is_empty() {
-                            return None;
-                        }
-                        Some(DynamicAgentRef {
-                            provider: provider.to_string(),
-                            model: agent
-                                .model
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .map(str::to_string),
-                            permission_mode: agent
-                                .permission_mode
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .map(str::to_string),
-                            auto_accept: agent.auto_accept,
-                            config_options: agent.config_options.clone(),
-                            model_bound_overrides: agent.model_bound_overrides.clone(),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .filter(|agents| !agents.is_empty())
-            .unwrap_or_else(|| {
-                vec![DynamicAgentRef {
-                    provider: bootstrap_provider.clone(),
-                    model: model_id.map(str::to_string),
-                    permission_mode: None,
-                    auto_accept: false,
-                    config_options: BTreeMap::new(),
-                    model_bound_overrides: Default::default(),
-                }]
-            });
-        AiDynamicAgentStrategy::Dynamic {
-            bootstrap_provider,
-            bootstrap_model: bootstrap_model_id.map(str::to_string),
-            permission_mode: permission_mode.map(str::to_string),
-            auto_accept,
-            bootstrap_config_options: config
-                .map(|config| config.bootstrap_config_options.clone())
-                .unwrap_or_default(),
-            bootstrap_model_bound_overrides: config
-                .map(|config| config.bootstrap_model_bound_overrides.clone())
-                .unwrap_or_default(),
-            acceptance_model: acceptance_model_id.map(str::to_string),
-            acceptance_config_options: config
-                .map(|config| config.acceptance_config_options.clone())
-                .unwrap_or_default(),
-            acceptance_model_bound_overrides: config
-                .map(|config| config.acceptance_model_bound_overrides.clone())
-                .unwrap_or_default(),
-            routing_prompt: config
-                .and_then(|c| c.routing_prompt.as_deref())
-                .map(str::trim)
-                .unwrap_or("")
-                .to_string(),
-            available_agents,
-        }
-    } else {
-        AiDynamicAgentStrategy::Fixed {
-            provider: agent_type.to_string(),
-            model: model_id.map(str::to_string),
-            permission_mode: permission_mode.map(str::to_string),
-            auto_accept,
-        }
-    };
-
-    WorkflowDsl {
-        version: "0.1".to_string(),
-        id: "auto-workflow".to_string(),
-        entry: "ai-dynamic".to_string(),
-        control: Default::default(),
-        nodes: vec![NodeDsl::AiDynamic(AiDynamicNode {
-            id: "ai-dynamic".to_string(),
-            agent_strategy,
-            config_options: config
-                .map(|config| config.config_options.clone())
-                .unwrap_or_default(),
-            model_bound_overrides: config
-                .map(|config| config.model_bound_overrides.clone())
-                .unwrap_or_default(),
-            allowed_profiles: config
-                .and_then(|c| c.allowed_profiles.clone())
-                .unwrap_or_default(),
-            global_goal: global_goal.map(|s| s.to_string()),
-            control: dynamic_control_from_vm(config.and_then(|c| c.control.as_ref())),
-            allowed_workflows: config
-                .and_then(|c| c.allowed_workflows.as_ref())
-                .map(|workflows| {
-                    workflows
-                        .iter()
-                        .filter_map(|workflow| {
-                            let workflow_id = workflow.workflow_id.trim();
-                            (!workflow_id.is_empty()).then(|| {
-                                gold_band::dsl::AllowedWorkflowRefDsl {
-                                    workflow_id: workflow_id.to_string(),
-                                }
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })],
-        edges: vec![EdgeDsl {
-            from: "ai-dynamic".to_string(),
-            to: END_NODE.to_string(),
-            on: EdgeOutcome::Success,
-            session: None,
-            new_round_entry: None,
-        }],
-    }
+    let compiled = config.map(auto_config_from_vm);
+    gold_band::execution_plan::compile_auto_workflow(compiled.as_ref())
 }
 
 fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
@@ -4939,6 +4835,14 @@ pub fn prepare_conversation_task_vm(
         scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
     write_json(&authoring_dir.join("conversation.json"), &meta)?;
+    if input.run_mode == ConversationRunMode::Auto.as_str()
+        && let Some(config) = input.auto_config.as_ref().map(auto_config_from_vm)
+    {
+        let mut config = config;
+        config.active_template_id = None;
+        config.active_template_name = None;
+        write_json(&app.paths.task_auto_config_file(&task_id), &config)?;
+    }
     if let Some(role) = input.role.as_ref() {
         if !role.profile_id.trim().is_empty()
             && !role.name.trim().is_empty()
@@ -5000,7 +4904,15 @@ pub fn create_conversation_run_vm(
     let task_id = prepared_task.task_id().to_string();
     let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
 
-    let prepared_run = if let Some(fork_point) = fork_point {
+    let prepared_run = if input.run_mode == ConversationRunMode::Auto.as_str()
+        && let Some(auto_config) = input.auto_config.as_ref().map(auto_config_from_vm)
+    {
+        if let Some(fork_point) = fork_point {
+            app.prepare_auto_run_in_worktree_at(&task_id, auto_config, fork_point.head_oid)?
+        } else {
+            app.prepare_auto_run(&task_id, auto_config)?
+        }
+    } else if let Some(fork_point) = fork_point {
         app.prepare_run_in_worktree_at(&task_id, None, fork_point.head_oid)?
     } else {
         app.prepare_run(&task_id, None)?
@@ -5079,7 +4991,14 @@ pub fn rerun_conversation_task_vm(
     let work_location = read_conversation_metadata(app, task_id)
         .map(|metadata| metadata.work_location)
         .unwrap_or_default();
-    let prepared_run = if work_location == ConversationWorkLocationVm::Worktree {
+    let prepared_run = if run_mode == Some(ConversationRunMode::Auto) {
+        let auto_config = app.conversation_auto_config_for_task(task_id)?;
+        if work_location == ConversationWorkLocationVm::Worktree {
+            app.prepare_auto_run_in_worktree(task_id, auto_config)?
+        } else {
+            app.prepare_auto_run(task_id, auto_config)?
+        }
+    } else if work_location == ConversationWorkLocationVm::Worktree {
         app.prepare_run_in_worktree(task_id, None)?
     } else {
         app.prepare_run(task_id, None)?

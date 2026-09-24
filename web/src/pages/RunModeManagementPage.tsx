@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Route, Trash2 } from 'lucide-react';
-import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, WorkflowDsl, WorkflowModelBindings, WorkflowRepairTarget, WorkflowTemplate, WorkflowTemplateStore } from '../types';
+import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ExecutionPlanSaveResultVm, WorkflowDsl, WorkflowModelBindings, WorkflowRepairTarget, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import {
@@ -30,6 +30,7 @@ import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDr
 import { cn } from '@/lib/utils';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
+import { RunContextExecutionPlanController, type RunExecutionPlanDraft } from '@/components/conversation/RunContextExecutionPlanController';
 import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 interface RunModeManagementPageProps {
@@ -43,6 +44,11 @@ interface RunModeManagementPageProps {
   onProjectChange: (projectId: string) => void;
   onSave: (mode: ConversationRunModeVm) => void | Promise<void>;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
+  runContext?: { projectId: string; taskId: string; taskUuid: string; runId: string } | null;
+  /** Run context only: a committed execution-plan save so the owner can refresh project-level run mode. */
+  onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void;
+  /** Right-workspace tab: same form, without the standalone management page chrome. */
+  embedded?: boolean;
 }
 
 type RunModeManagementTab = 'auto' | 'workflow';
@@ -256,9 +262,18 @@ export function RunModeManagementPage({
   onProjectChange,
   onSave,
   onWorkflowTemplatesChange,
+  runContext = null,
+  onExecutionPlanSaved,
+  embedded = false,
 }: RunModeManagementPageProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
+  // With a Run context the form only feeds the execution-plan save bar; project-level
+  // run-mode persistence stays with the explicit Next Run save so CAS baselines hold.
+  const persistProjectRunMode = useCallback(
+    (mode: ConversationRunModeVm) => (runContext ? undefined : onSave(mode)),
+    [onSave, runContext],
+  );
   const [mode, setMode] = useState<RunModeManagementTab>(runMode.mode === 'auto' ? 'auto' : 'workflow');
   const [agentStrategy, setAgentStrategy] = useState<'fixed' | 'dynamic'>(runMode.autoConfig?.agentStrategy ?? 'fixed');
   const [agent, setAgent] = useState(runMode.autoConfig?.agentType ?? '');
@@ -343,6 +358,9 @@ export function RunModeManagementPage({
   }, [repairTarget, workflowTemplateList]);
 
   useEffect(() => {
+    // A run-context form is owned by the execution plan. The embedded page passes
+    // an empty run mode, and resetting from it drops the saved template.
+    if (runContext) return;
     const projectChanged = previousProjectIdRef.current !== projectId;
     previousProjectIdRef.current = projectId;
 
@@ -399,7 +417,7 @@ export function RunModeManagementPage({
   // A template-store refresh must not reset the editor to the stale run-mode
   // selection. The run-mode scope is the owner of the initial selection; the
   // store only supplies the template data for that selection.
-  }, [projectId, runMode]);
+  }, [projectId, runContext, runMode]);
 
   function showAutoNotice(notice: { tone: 'success' | 'error' | 'warning'; message: string }) {
     if (autoNoticeTimerRef.current) {
@@ -448,7 +466,7 @@ export function RunModeManagementPage({
     };
     setAllowedWorkflowIds(prunedWorkflows.workflowIds);
     setAllowedProfiles(prunedProfiles.profileIds);
-    void Promise.resolve(onSave({ ...runMode, autoConfig: nextConfig }));
+    void Promise.resolve(persistProjectRunMode({ ...runMode, autoConfig: nextConfig }));
     showAutoNotice({
       tone: 'warning',
       message: t('runMode.invalidAutoReferencesRemoved', {
@@ -456,7 +474,7 @@ export function RunModeManagementPage({
         profiles: prunedProfiles.removedProfileIds.length,
       }),
     });
-  }, [effectiveWorkflowTemplates, profileCatalog.status, profiles, projectId, runMode, t]);
+  }, [effectiveWorkflowTemplates, persistProjectRunMode, profileCatalog.status, profiles, projectId, runMode, t]);
 
   useEffect(() => {
     const activeTemplateId = runMode.autoConfig?.activeTemplateId?.trim();
@@ -548,8 +566,8 @@ export function RunModeManagementPage({
         allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
         allowedProfiles,
         control,
-        activeTemplateId: activeTemplateId || undefined,
-        activeTemplateName: templateName.trim() || undefined,
+        activeTemplateId: runContext ? undefined : (activeTemplateId || undefined),
+        activeTemplateName: runContext ? undefined : (templateName.trim() || undefined),
         ...preservedSessionFields,
         ...templatePatch,
       };
@@ -565,8 +583,8 @@ export function RunModeManagementPage({
       allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
       allowedProfiles,
       control,
-      activeTemplateId: activeTemplateId || undefined,
-      activeTemplateName: templateName.trim() || undefined,
+      activeTemplateId: runContext ? undefined : (activeTemplateId || undefined),
+      activeTemplateName: runContext ? undefined : (templateName.trim() || undefined),
       ...preservedSessionFields,
       ...templatePatch,
     };
@@ -579,7 +597,7 @@ export function RunModeManagementPage({
       workflowTemplateId: templateId || undefined,
       autoConfig: autoConfig ?? buildAutoConfig(),
     };
-    void Promise.resolve(onSave(updated));
+    void Promise.resolve(persistProjectRunMode(updated));
   };
 
   const changeMode = (nextMode: RunModeManagementTab) => {
@@ -875,7 +893,7 @@ export function RunModeManagementPage({
       setActiveTemplateId(savedTemplate?.id ?? '');
       setTemplateName(savedTemplate?.name ?? name);
       setIsAutoTemplateDraft(false);
-      await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
+      await Promise.resolve(persistProjectRunMode({ mode: 'auto', autoConfig: config }));
       showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
       showAutoNotice({ tone: 'error', message: displayAppError(t, error) });
@@ -896,7 +914,7 @@ export function RunModeManagementPage({
       }
       setAutoSaving(true);
       try {
-        await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
+        await Promise.resolve(persistProjectRunMode({ mode: 'auto', autoConfig: config }));
         setActiveTemplateId('');
         showAutoNotice({ tone: 'success', message: t('runMode.saved') });
       } finally {
@@ -922,7 +940,7 @@ export function RunModeManagementPage({
       const config = { ...templateConfig, ...sessionFields() };
       setTemplates(nextStore.templates);
       setTemplateName(name);
-      await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
+      await Promise.resolve(persistProjectRunMode({ mode: 'auto', autoConfig: config }));
       showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
       showAutoNotice({ tone: 'error', message: displayAppError(t, error) });
@@ -942,29 +960,51 @@ export function RunModeManagementPage({
     setAvailableAgents((current) => current.map((item) => item.provider === agentType ? { ...item, ...patch } : item));
   };
 
-  return (
-    <Page flush className="flex flex-col">
-      <PageHeader
-        variant="integrated"
-        icon={<Route />}
-        title={<span className="text-title">{t('runMode.title')}</span>}
-      />
+  const frame = (
+    <>
+      {embedded ? null : (
+        <PageHeader
+          variant="integrated"
+          icon={<Route />}
+          title={<span className="text-title">{t('runMode.title')}</span>}
+        />
+      )}
 
-      <div className={cn('min-h-0 flex-1 px-6 pt-4', mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6')}>
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-          <RunModeTabsToolbar
-            mode={mode}
-            onModeChange={changeMode}
-            workflowLabel={t('runMode.workflowSection')}
-            autoLabel={t('runMode.autoSection')}
-          />
-          <RunModeProjectSelector
-            projectId={projectId}
-            workspaceName={workspaceName}
-            workspaces={workspaces}
-            label={t('runMode.project')}
-            onProjectChange={onProjectChange}
-          />
+      <div className={cn('min-h-0 flex-1', embedded ? 'px-4 py-3' : 'px-6 pt-4', mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6')}>
+        <div className={cn('flex shrink-0 gap-3', runContext ? 'flex-col' : 'flex-wrap items-center justify-between')}>
+          {runContext ? (
+            <RunContextExecutionPlanController
+              projectId={runContext.projectId}
+              taskId={runContext.taskId}
+              taskUuid={runContext.taskUuid}
+              runId={runContext.runId}
+              onRunMode={() => undefined}
+              onSaved={onExecutionPlanSaved}
+              getDraft={() => ({ kind: 'auto', config: buildAutoConfig() })}
+              applyDraft={(draft: RunExecutionPlanDraft) => {
+                if (draft.kind !== 'auto') return;
+                setMode('auto');
+                applyAutoConfig(draft.config);
+                setIsAutoTemplateDraft(false);
+              }}
+            />
+          ) : (
+            <>
+              <RunModeTabsToolbar
+                mode={mode}
+                onModeChange={changeMode}
+                workflowLabel={t('runMode.workflowSection')}
+                autoLabel={t('runMode.autoSection')}
+              />
+              <RunModeProjectSelector
+                projectId={projectId}
+                workspaceName={workspaceName}
+                workspaces={workspaces}
+                label={t('runMode.project')}
+                onProjectChange={onProjectChange}
+              />
+            </>
+          )}
         </div>
 
         {profileCatalog.status === 'error' ? (
@@ -979,7 +1019,7 @@ export function RunModeManagementPage({
 
         {mode === 'auto' ? (
           <div className="space-y-6">
-            <section className="space-y-3">
+            {runContext ? null : <section className="space-y-3" data-auto-template-library="true">
               <TemplateActionRow
                 label={t('runMode.autoTemplate')}
                 picker={(
@@ -1059,7 +1099,7 @@ export function RunModeManagementPage({
                 saveAsLabel={t('runMode.saveAsTemplate')}
                 onSaveAs={() => void saveAsTemplate()}
               />
-            </section>
+            </section>}
             {autoNotice ? (
               autoNotice.tone === 'warning' ? (
                 <Alert data-testid="auto-config-pruned-warning" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
@@ -1524,6 +1564,19 @@ export function RunModeManagementPage({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div data-right-workspace-resource="auto-config" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {frame}
+      </div>
+    );
+  }
+  return (
+    <Page flush className="flex flex-col">
+      {frame}
     </Page>
   );
 }

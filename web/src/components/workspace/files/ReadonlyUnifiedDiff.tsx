@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type Ref } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
-import { unifiedMergeView } from '@codemirror/merge';
+import { getChunks, unifiedMergeView } from '@codemirror/merge';
 import type { FileComparisonVm, GitFileComparisonVm } from '@/types';
 import {
   loadWorkspaceLanguageForPath,
@@ -20,11 +20,13 @@ export function ReadonlyUnifiedDiff({
   editorRef,
   ariaLabel,
   onCreateEditor,
+  onChunksChange,
 }: {
   comparison: ReadonlyComparisonVm;
   editorRef?: Ref<ReactCodeMirrorRef>;
   ariaLabel: string;
   onCreateEditor?: (view: EditorView) => void;
+  onChunksChange?: (count: number) => void;
 }) {
   const [language, setLanguage] = useState<Extension | null>(null);
 
@@ -71,6 +73,11 @@ export function ReadonlyUnifiedDiff({
       editable={false}
       extensions={extensions}
       onCreateEditor={onCreateEditor}
+      onUpdate={(update) => {
+        const changed = update.docChanged || update.transactions.some((transaction) => transaction.reconfigured);
+        if (!onChunksChange || !changed) return;
+        onChunksChange(getChunks(update.state)?.chunks.length ?? 0);
+      }}
       className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
       aria-label={ariaLabel}
     />

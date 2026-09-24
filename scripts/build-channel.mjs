@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync 
 import { basename, join, relative } from 'node:path';
 
 import { assertChannelBuildSecrets, channelBuildPlan, parseChannelBuildArgs } from './build-channel-options.mjs';
+import { findBundleDir, possibleBundleDirs, readCargoTargetDirectory } from './cargo-bundle-dirs.mjs';
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
 let buildOptions;
@@ -90,9 +91,11 @@ writeTauriConfigOverlay(
   buildPlan.tauriConfigBuildOptions,
 );
 
-// Clean stale bundle artifacts from both possible target locations
-// (workspace root target/ takes precedence after Cargo workspace migration)
-for (const dir of possibleBundleDirs()) {
+const cargoTargetDirectory = readCargoTargetDirectory(repoRoot, env);
+const bundleDirs = possibleBundleDirs({ repoRoot, env, cargoTargetDirectory });
+
+// Clean stale updater bundles from the Cargo-resolved target and local fallbacks
+for (const dir of bundleDirs) {
   if (existsSync(dir)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -117,7 +120,7 @@ if (result.status === 0 && config.releaseBaseUrl && buildPlan.shouldCollectRelea
   const releaseDir = join(repoRoot, 'release', channel);
   mkdirSync(releaseDir, { recursive: true });
 
-  const bundleDir = findBundleDir();
+  const bundleDir = findBundleDir({ repoRoot, env, cargoTargetDirectory });
   if (!bundleDir) {
     console.error('Could not locate bundle artifacts directory.');
     process.exit(1);
@@ -159,18 +162,4 @@ function walkDir(dir, fn) {
       fn(full);
     }
   }
-}
-
-function possibleBundleDirs() {
-  return [
-    join(repoRoot, 'target', 'release', 'bundle'),
-    join(repoRoot, 'src-tauri', 'target', 'release', 'bundle'),
-  ];
-}
-
-function findBundleDir() {
-  for (const dir of possibleBundleDirs()) {
-    if (existsSync(dir)) return dir;
-  }
-  return null;
 }

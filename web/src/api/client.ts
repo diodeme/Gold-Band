@@ -440,6 +440,10 @@ export interface RuntimeApi {
   removeRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
   getTaskDetail(taskId: string): Promise<TaskDetailVm>;
   getWorkflow(taskId: string, projectId?: string | null): Promise<WorkflowVm>;
+  getConversationExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string): Promise<import('@/types').ExecutionPlanViewVm>;
+  preflightConversationExecutionPlanSave(command: import('@/types').ExecutionPlanSaveCommandVm): Promise<import('@/types').ExecutionPlanPreflightVm>;
+  saveConversationExecutionPlan(command: import('@/types').ExecutionPlanSaveCommandVm): Promise<import('@/types').ExecutionPlanSaveResultVm>;
+  recoverConversationExecutionPlanOperation(projectId: string, taskId: string, taskUuid: string, runId: string, operationId: string): Promise<import('@/types').ExecutionPlanSaveResultVm>;
   createTask(input: CreateTaskInput): Promise<WorkflowVm>;
   saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowVm>;
   getWorkflowTemplates(): Promise<WorkflowTemplateStore>;

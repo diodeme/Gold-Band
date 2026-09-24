@@ -211,7 +211,7 @@
 
 ### 会话行展示
 - 标题（自动生成或手动修改）
-- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，让既有 Agent icon 使用遵守 reduced-motion 的低强度呼吸效果，结束后立即恢复静态 icon；不增加旋转环，也不使用成功/暂停/失败颜色表达单轮结果。
+- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，让既有 Agent icon 使用低强度呼吸效果，不因系统 reduced-motion 停止；结束后立即恢复静态 icon；不增加旋转环，也不使用成功/暂停/失败颜色表达单轮结果。
 - 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段只取 Task 创建时间或会话元数据 `lastActivityAt`，不再聚合 Run `updatedAt`。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
 - hover 时在行尾显示重命名 / 置顶 / 删除操作；未 hover 时不为操作按钮预留占位，长标题只占用标题和时间可用区域
 - 删除会话前必须弹出不可撤销确认；确认文案明确说明将删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站
@@ -249,7 +249,7 @@
 
 ## Direct 快速会话
 
-- 快速会话模式固定按 `Direct / 工作流 / AUTO` 排列；三种模式各自保留配置，切换模式不清空正文和附件。
+- 快速会话模式固定按 `Direct / 工作流 / AUTO` 排列；三种模式各自保留配置，切换模式不清空正文和附件。各界面语言都保留英文 `Direct` 和 `AUTO`；`工作流` 按当前语言翻译，英文界面仍显示 `Workflow`。
 - Direct 配置区使用 Agent icon 列表。当前 Agent 展示 icon + 名称，其他 Agent 只展示 icon；可用 Agent 与不可用 Agent 分别保持其注册表内的既有顺序并连续排列，两组同时存在时使用一条低对比竖线分隔。不可用 Agent 保留诊断提示但不能选中。
 - Direct 没有任何可选 Agent 时，空状态在提示文案旁展示紧凑的“+”按钮；按钮使用现有会话导航进入 Agent 管理页，用户添加完成后可返回继续当前快速会话草稿。
 - Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。权限下拉同时叠加 Auto Accept 复选框，默认关闭，可与原生 mode 同时选中。
@@ -259,7 +259,7 @@
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限/Auto Accept；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。会话内切模型使用本会话 snapshot 上的 `modelBoundOverrides`，规则与作者态相同，但只属于该 session，不得写回主页 Direct 记忆。会话内改 Auto Accept 同样只写该 ACP session。
-- 发起 Direct 会话时以 `session/new` 活目录为准：作者态思考强度若只是 option id 变了、档位还在，则 remap 后下发；活目录没有的 `thought_level` / `model_config`，或档位不在可选列表中，都回滚为不指定并继续发送，timeline 分割线写「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」两侧横线使用主题 `border`、最低 1.5rem，文案先占用横线空间，横线到最低长度后才换行。`names` 带 option id，例如「思考强度（effort） · 深度思考（thinking） · 上下文（context）」。作者态 `model_config` 来自所选模型最后一次观测（`modelBoundCatalogs[modelId]`，由 Doctor 或正式会话活目录写入）。已观测的 Grok 展示 Grok 的 Fast，Luna 展示 Luna 的 Context / Fast；从未观测过的模型先复用当前这份配置（最后一次 Doctor 或会话观测）去发起，返回后再写入该模型缓存。工作流绑定注入不得因作者态当前表缺少这些绑定项而 fail-closed；工作流编辑器保存校验与 Inspector 菜单共用所选模型投影目录，不得用 Doctor 当前表把 Grok 的 effort / Fast 报成不属于当前 Agent。不支持的项带进 executable，由 `session/new` 回滚。AUTO / 工作流 runtime continue 只传 snapshot 显式覆盖，不得把冻结 `config_options` 再 apply 进已回滚的会话；新节点按已观测 `modelBoundCatalogs[modelId]` 静默 retain。已建立会话的 composer：活目录属于所选模型且带了绑定行时用活目录；否则先本会话 `modelBoundCatalogs[modelId]`，再读同一 Agent 共用的作者态 `modelBoundCatalogs[modelId]`。点选绑定项按同一份投影目录校验并写入 snapshot，不得用上一模型活目录报配置不可用。`set_acp_session_model` 不改挂 live `configOptions.model.currentValue`。真正 apply 模型时 runtime 还原本会话或作者态 catalog，不把省略表写成目标模型。较新 Doctor 的当前表不得盖住本会话活目录。已选值仍只在本会话 `modelBoundOverrides`，不写回主页。会话内切模型由 Rust snapshot 收敛 override，前端只乐观改模型 id。
+- 发起 Direct 会话时以 `session/new` 活目录为准：作者态思考强度若只是 option id 变了、档位还在，则 remap 后下发；活目录没有的 `thought_level` / `model_config`，或档位不在可选列表中，都回滚为不指定并继续发送，timeline 分割线写「当前Agent暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」两侧横线使用主题 `border`、最低 1.5rem，文案先占用横线空间，横线到最低长度后才换行。`names` 带 option id，例如「思考强度（effort） · 深度思考（thinking） · 上下文（context）」。作者态 `model_config` 来自所选模型最后一次观测（`modelBoundCatalogs[modelId]`，由 Doctor 或正式会话活目录写入）。已观测的 Grok 展示 Grok 的 Fast，Luna 展示 Luna 的 Context / Fast；从未观测过的模型先复用当前这份配置（最后一次 Doctor 或会话观测）去发起，返回后再写入该模型缓存。工作流绑定注入不得因作者态当前表缺少这些绑定项而 fail-closed；工作流编辑器保存校验与 Inspector 菜单共用所选模型投影目录，不得用 Doctor 当前表把 Grok 的 effort / Fast 报成不属于当前 Agent。不支持的项带进 executable，由 `session/new` 回滚。AUTO / 工作流 runtime continue 只传 snapshot 显式覆盖，不得把冻结 `config_options` 再 apply 进已回滚的会话；新节点按已观测 `modelBoundCatalogs[modelId]` 静默 retain。已建立会话的 composer：活目录属于所选模型且带了绑定行时用活目录；否则先本会话 `modelBoundCatalogs[modelId]`，再读同一 Agent 共用的作者态 `modelBoundCatalogs[modelId]`。点选绑定项按同一份投影目录校验并写入 snapshot，不得用上一模型活目录报配置不可用。`set_acp_session_model` 不改挂 live `configOptions.model.currentValue`。真正 apply 模型时 runtime 还原本会话或作者态 catalog，不把省略表写成目标模型。较新 Doctor 的当前表不得盖住本会话活目录。已选值仍只在本会话 `modelBoundOverrides`，不写回主页。会话内切模型由 Rust snapshot 收敛 override，前端只乐观改模型 id。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

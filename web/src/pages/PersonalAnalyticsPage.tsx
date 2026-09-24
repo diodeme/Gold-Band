@@ -146,7 +146,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   const progress = operation?.progress.totalUnits
     ? Math.min(100, (operation.progress.processedUnits / operation.progress.totalUnits) * 100)
     : 0;
-  const locale = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
+  const locale = i18n.resolvedLanguage || 'en';
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
 
   useEffect(() => {

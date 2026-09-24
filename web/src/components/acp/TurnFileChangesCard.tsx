@@ -170,7 +170,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
             {hiddenCount > 0 ? (
               <CollapsibleTrigger asChild>
                 <Button type="button" variant="ghost" className="h-8 w-full justify-center gap-1 rounded-none border-t border-border/40 text-xs text-muted-foreground" aria-label={expanded ? t('turnFiles.collapse') : t('turnFiles.showMore', { count: hiddenCount })}>
-                  <ChevronDown className={cn('size-3.5 transition-transform motion-reduce:transition-none', expanded && 'rotate-180')} />
+                  <ChevronDown className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />
                   {expanded ? t('turnFiles.collapse') : t('turnFiles.showMore', { count: hiddenCount })}
                 </Button>
               </CollapsibleTrigger>
@@ -263,7 +263,7 @@ function TurnAttachmentsCard({
             {hiddenCount > 0 ? (
               <CollapsibleTrigger asChild>
                 <Button type="button" variant="ghost" className="h-8 w-full justify-center gap-1 rounded-none border-t border-border/40 text-xs text-muted-foreground" aria-label={expanded ? t('turnFiles.collapse') : t('turnFiles.showMoreAttachments', { count: hiddenCount })}>
-                  <ChevronDown className={cn('size-3.5 transition-transform motion-reduce:transition-none', expanded && 'rotate-180')} />
+                  <ChevronDown className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />
                   {expanded ? t('turnFiles.collapse') : t('turnFiles.showMoreAttachments', { count: hiddenCount })}
                 </Button>
               </CollapsibleTrigger>

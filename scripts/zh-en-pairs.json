@@ -1,0 +1,6072 @@
+[
+  {
+    "zh": "无法创建内置浏览器页面，请重试。",
+    "en": "The in-app browser page could not be created. Try again.",
+    "paths": [
+      "errors.browser.webview.create_failed"
+    ]
+  },
+  {
+    "zh": "当前环境无法使用内置浏览器。",
+    "en": "The in-app browser is unavailable in this environment.",
+    "paths": [
+      "errors.browser.webview.unavailable"
+    ]
+  },
+  {
+    "zh": "内置浏览器操作失败，请重试。",
+    "en": "The in-app browser operation failed. Try again.",
+    "paths": [
+      "errors.browser.webview.operation_failed"
+    ]
+  },
+  {
+    "zh": "无法打开该地址。",
+    "en": "This address cannot be opened.",
+    "paths": [
+      "errors.browser.navigation.invalid"
+    ]
+  },
+  {
+    "zh": "该下载无法另存为。",
+    "en": "This download cannot be saved.",
+    "paths": [
+      "errors.browser.download.unsupported"
+    ]
+  },
+  {
+    "zh": "已取消保存。",
+    "en": "Save cancelled.",
+    "paths": [
+      "errors.browser.download.cancelled"
+    ]
+  },
+  {
+    "zh": "无法授权打开该本地 HTML。",
+    "en": "This local HTML file could not be authorized.",
+    "paths": [
+      "errors.browser.local_html.grant_failed"
+    ]
+  },
+  {
+    "zh": "打开的网页过多，请先关闭部分标签。",
+    "en": "Too many pages are open. Close some tabs first.",
+    "paths": [
+      "errors.browser.page.limit_reached"
+    ]
+  },
+  {
+    "zh": "书签过多，请先删除部分书签。",
+    "en": "Too many bookmarks. Remove some first.",
+    "paths": [
+      "errors.browser.bookmark.limit_reached"
+    ]
+  },
+  {
+    "zh": "无法将这个网站加入门户页。",
+    "en": "This site cannot be added to the start page.",
+    "paths": [
+      "errors.browser.bookmark.invalid"
+    ]
+  },
+  {
+    "zh": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
+    "en": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
+    "paths": [
+      "errors.workflow-model-binding.binding-duplicate"
+    ]
+  },
+  {
+    "zh": "当前模型不支持这项配置，请重新选择后重试。",
+    "en": "This model does not support that setting. Choose another option and try again.",
+    "paths": [
+      "errors.workflow-model-binding.option-unsupported"
+    ]
+  },
+  {
+    "zh": "定时任务运行服务暂不可用，请重试。",
+    "en": "The scheduled task service is unavailable. Try again.",
+    "paths": [
+      "errors.SCHEDULED_COORDINATOR_UNAVAILABLE"
+    ]
+  },
+  {
+    "zh": "待恢复的定时任务执行已不存在，请刷新后重试。",
+    "en": "The scheduled run to resume no longer exists. Refresh and try again.",
+    "paths": [
+      "errors.SCHEDULED_NOT_FOUND"
+    ]
+  },
+  {
+    "zh": "无法更新定时任务执行状态，请重试。",
+    "en": "The scheduled run state could not be updated. Try again.",
+    "paths": [
+      "errors.SCHEDULED_STORAGE_FAILED"
+    ]
+  },
+  {
+    "zh": "当前 Git 版本 {{installedVersion}} 过低，需要 Git {{minimumVersion}} 或更高版本。",
+    "en": "Git {{installedVersion}} is too old. Git {{minimumVersion}} or later is required.",
+    "paths": [
+      "errors.git.version-unsupported"
+    ]
+  },
+  {
+    "zh": "无法识别当前 Git 版本，请修复或重新安装 Git 后重试。",
+    "en": "The installed Git version could not be identified. Repair or reinstall Git and try again.",
+    "paths": [
+      "errors.git.version-unavailable"
+    ]
+  },
+  {
+    "zh": "所选 Worktree 不属于当前项目。",
+    "en": "The selected worktree does not belong to this project.",
+    "paths": [
+      "errors.git.workspace-outside-project"
+    ]
+  },
+  {
+    "zh": "仓库状态已变化，请刷新后重试。",
+    "en": "Repository state changed. Refresh and try again.",
+    "paths": [
+      "errors.git.ref-changed"
+    ]
+  },
+  {
+    "zh": "仓库正在执行其他写操作。",
+    "en": "Another repository write operation is running.",
+    "paths": [
+      "errors.git.repository-locked"
+    ]
+  },
+  {
+    "zh": "当前工作空间正在执行其他写操作。",
+    "en": "Another workspace write operation is running.",
+    "paths": [
+      "errors.git.workspace-locked"
+    ]
+  },
+  {
+    "zh": "当前 Git 流程尚未结束，请完成或中止后重试。",
+    "en": "A Git workflow is still in progress. Complete or abort it and try again.",
+    "paths": [
+      "errors.git.operation-in-progress"
+    ]
+  },
+  {
+    "zh": "当前工作区未检出分支，请先选择分支。",
+    "en": "The current workspace has no checked-out branch. Select a branch first.",
+    "paths": [
+      "errors.git.branch-required"
+    ]
+  },
+  {
+    "zh": "当前仓库还没有可用的 HEAD Commit。",
+    "en": "The repository does not have a usable HEAD commit yet.",
+    "paths": [
+      "errors.git.head-required"
+    ]
+  },
+  {
+    "zh": "没有可保存到 Stash 的更改。",
+    "en": "There are no changes to stash.",
+    "paths": [
+      "errors.git.nothing-to-stash"
+    ]
+  },
+  {
+    "zh": "所选 Stash 已不存在。",
+    "en": "The selected stash no longer exists.",
+    "paths": [
+      "errors.git.stash-not-found"
+    ]
+  },
+  {
+    "zh": "所选远程仓库已不存在。",
+    "en": "The selected remote no longer exists.",
+    "paths": [
+      "errors.git.remote-not-found"
+    ]
+  },
+  {
+    "zh": "所选分支已不存在。",
+    "en": "The selected branch no longer exists.",
+    "paths": [
+      "errors.git.branch-not-found"
+    ]
+  },
+  {
+    "zh": "所选标签已不存在。",
+    "en": "The selected tag no longer exists.",
+    "paths": [
+      "errors.git.tag-not-found"
+    ]
+  },
+  {
+    "zh": "运行时内部分支不能直接推送。",
+    "en": "Runtime-internal branches cannot be pushed directly.",
+    "paths": [
+      "errors.git.runtime-branch-push-forbidden"
+    ]
+  },
+  {
+    "zh": "远程包含本地尚未获取的提交，推送已拒绝。",
+    "en": "The remote contains commits that are not available locally. Push was rejected.",
+    "paths": [
+      "errors.git.non-fast-forward"
+    ]
+  },
+  {
+    "zh": "远程仓库身份验证失败，请检查凭据或重新登录。",
+    "en": "Remote authentication failed. Check your credentials or sign in again.",
+    "paths": [
+      "errors.git.authentication-failed"
+    ]
+  },
+  {
+    "zh": "当前凭据没有访问远程仓库的权限。",
+    "en": "The current credentials do not have permission to access this remote repository.",
+    "paths": [
+      "errors.git.permission-denied"
+    ]
+  },
+  {
+    "zh": "远程仓库不存在，或当前凭据无权查看。",
+    "en": "The remote repository does not exist or is not visible to the current credentials.",
+    "paths": [
+      "errors.git.remote-repository-not-found"
+    ]
+  },
+  {
+    "zh": "无法解析远程仓库主机，请检查远程地址和网络。",
+    "en": "The remote host could not be resolved. Check the remote URL and network connection.",
+    "paths": [
+      "errors.git.remote-host-unreachable"
+    ]
+  },
+  {
+    "zh": "无法连接远程仓库，请检查网络、代理或远程服务状态。",
+    "en": "The remote repository could not be reached. Check the network, proxy, or remote service.",
+    "paths": [
+      "errors.git.remote-unreachable"
+    ]
+  },
+  {
+    "zh": "远程仓库拒绝了这次推送，请根据下方原因处理。",
+    "en": "The remote repository rejected this push. Follow the reason below to resolve it.",
+    "paths": [
+      "errors.git.remote-rejected"
+    ]
+  },
+  {
+    "zh": "Fetch 失败，请根据下方 Git 返回原因检查远程地址、凭据或网络。",
+    "en": "Fetch failed. Use the Git reason below to check the remote URL, credentials, or network.",
+    "paths": [
+      "errors.git.fetch-failed"
+    ]
+  },
+  {
+    "zh": "Pull 失败，请根据下方 Git 返回原因处理。",
+    "en": "Pull failed. Follow the Git reason below to resolve it.",
+    "paths": [
+      "errors.git.pull-failed"
+    ]
+  },
+  {
+    "zh": "Push 失败，请根据下方 Git 返回原因检查远程地址、凭据或权限。",
+    "en": "Push failed. Use the Git reason below to check the remote URL, credentials, or permissions.",
+    "paths": [
+      "errors.git.push-failed"
+    ]
+  },
+  {
+    "zh": "标签推送失败，请根据下方 Git 返回原因处理。",
+    "en": "The tag push failed. Follow the Git reason below to resolve it.",
+    "paths": [
+      "errors.git.push-tag-failed"
+    ]
+  },
+  {
+    "zh": "Stash 保存失败，请根据下方 Git 返回原因处理。",
+    "en": "The stash could not be created. Follow the Git reason below to resolve it.",
+    "paths": [
+      "errors.git.stash-create-failed"
+    ]
+  },
+  {
+    "zh": "Stash 应用失败，请根据下方 Git 返回原因处理。",
+    "en": "The stash could not be applied. Follow the Git reason below to resolve it.",
+    "paths": [
+      "errors.git.stash-apply-failed"
+    ]
+  },
+  {
+    "zh": "Pull 产生冲突，请先处理冲突或中止操作。",
+    "en": "Pull produced conflicts. Resolve them or abort the operation.",
+    "paths": [
+      "errors.git.pull-conflict"
+    ]
+  },
+  {
+    "zh": "应用 Stash 产生冲突，Stash 已保留。",
+    "en": "Applying the stash produced conflicts. The stash was preserved.",
+    "paths": [
+      "errors.git.stash-apply-conflict"
+    ]
+  },
+  {
+    "zh": "Git 当前流程状态已变化，请等待界面同步后重试。",
+    "en": "The Git workflow state changed. Wait for the view to synchronize and try again.",
+    "paths": [
+      "errors.git.operation-state-mismatch"
+    ]
+  },
+  {
+    "zh": "无法读取当前冲突文件。",
+    "en": "The current conflicted files could not be read.",
+    "paths": [
+      "errors.git.conflict-paths-query-failed"
+    ]
+  },
+  {
+    "zh": "无法暂存当前冲突文件，请根据下方 Git 原因处理。",
+    "en": "The current conflicted files could not be staged. Follow the Git reason below.",
+    "paths": [
+      "errors.git.conflict-stage-failed"
+    ]
+  },
+  {
+    "zh": "完成 Merge 失败，请根据下方 Git 原因处理。",
+    "en": "The merge could not be completed. Follow the Git reason below.",
+    "paths": [
+      "errors.git.merge-continue-failed"
+    ]
+  },
+  {
+    "zh": "放弃 Merge 失败，请根据下方 Git 原因处理。",
+    "en": "The merge could not be aborted. Follow the Git reason below.",
+    "paths": [
+      "errors.git.merge-abort-failed"
+    ]
+  },
+  {
+    "zh": "继续 Rebase 失败，请根据下方 Git 原因处理。",
+    "en": "The rebase could not continue. Follow the Git reason below.",
+    "paths": [
+      "errors.git.rebase-continue-failed"
+    ]
+  },
+  {
+    "zh": "跳过当前 Commit 失败，请根据下方 Git 原因处理。",
+    "en": "The current commit could not be skipped. Follow the Git reason below.",
+    "paths": [
+      "errors.git.rebase-skip-failed"
+    ]
+  },
+  {
+    "zh": "放弃 Rebase 失败，请根据下方 Git 原因处理。",
+    "en": "The rebase could not be aborted. Follow the Git reason below.",
+    "paths": [
+      "errors.git.rebase-abort-failed"
+    ]
+  },
+  {
+    "zh": "所选 Worktree 已不存在，请等待列表同步后重试。",
+    "en": "The selected worktree no longer exists. Wait for the list to synchronize and try again.",
+    "paths": [
+      "errors.git.worktree-not-found"
+    ]
+  },
+  {
+    "zh": "不能删除当前正在使用的 Worktree。",
+    "en": "The worktree currently in use cannot be removed.",
+    "paths": [
+      "errors.git.worktree-current-remove-forbidden"
+    ]
+  },
+  {
+    "zh": "Worktree 含有未提交或未跟踪的更改，未执行删除。请先处理这些更改。",
+    "en": "The worktree has uncommitted or untracked changes and was not removed. Resolve those changes first.",
+    "paths": [
+      "errors.git.worktree-remove-dirty"
+    ]
+  },
+  {
+    "zh": "删除 Worktree 失败，请根据下方 Git 原因处理。",
+    "en": "The worktree could not be removed. Follow the Git reason below.",
+    "paths": [
+      "errors.git.worktree-remove-failed"
+    ]
+  },
+  {
+    "zh": "文件过大，无法在应用内显示差异。",
+    "en": "This file is too large to display its diff in the app.",
+    "paths": [
+      "errors.git.diff-too-large"
+    ]
+  },
+  {
+    "zh": "二进制文件暂不支持内容差异预览。",
+    "en": "Binary file content diffs are not supported yet.",
+    "paths": [
+      "errors.git.binary-diff-unsupported"
+    ]
+  },
+  {
+    "zh": "该文件编码暂不支持差异预览。",
+    "en": "This file encoding is not supported by the diff viewer.",
+    "paths": [
+      "errors.git.text-encoding-unsupported"
+    ]
+  },
+  {
+    "zh": "不支持此文件比较来源。",
+    "en": "This file comparison source is not supported.",
+    "paths": [
+      "errors.git.comparison-source-unsupported"
+    ]
+  },
+  {
+    "zh": "所选提交不存在或已不再可达。",
+    "en": "The selected commit does not exist or is no longer reachable.",
+    "paths": [
+      "errors.git.commit-not-found"
+    ]
+  },
+  {
+    "zh": "提交详情加载失败。",
+    "en": "The commit details could not be loaded.",
+    "paths": [
+      "errors.git.commit-detail-query-failed"
+    ]
+  },
+  {
+    "zh": "提交文件变化加载失败。",
+    "en": "The commit file changes could not be loaded.",
+    "paths": [
+      "errors.git.commit-diff-query-failed"
+    ]
+  },
+  {
+    "zh": "提交关系分析失败。",
+    "en": "Commit relation analysis failed.",
+    "paths": [
+      "errors.git.commit-relation-query-failed"
+    ]
+  },
+  {
+    "zh": "请至少选择一个提交。",
+    "en": "Select at least one commit.",
+    "paths": [
+      "errors.git.commit-selection-too-small"
+    ]
+  },
+  {
+    "zh": "一次最多汇总 32 个提交。",
+    "en": "Up to 32 commits can be reviewed at once.",
+    "paths": [
+      "errors.git.commit-selection-limit"
+    ]
+  },
+  {
+    "zh": "无法汇总所选提交的变更。",
+    "en": "Unable to aggregate the selected commit patches.",
+    "paths": [
+      "errors.git.commit-review-query-failed"
+    ]
+  },
+  {
+    "zh": "无法确认所选提交之间的历史关系。",
+    "en": "Unable to determine the history relationship between the selected commits.",
+    "paths": [
+      "errors.git.commit-review-topology-query-failed"
+    ]
+  },
+  {
+    "zh": "无法识别跨分支提交是否包含等价变更。",
+    "en": "Unable to identify whether cross-branch commits contain equivalent changes.",
+    "paths": [
+      "errors.git.commit-review-patch-identity-failed"
+    ]
+  },
+  {
+    "zh": "提交变更汇总任务异常终止。",
+    "en": "The commit review worker stopped unexpectedly.",
+    "paths": [
+      "errors.git.commit-review-worker-failed"
+    ]
+  },
+  {
+    "zh": "无法读取该提交的当前归属。",
+    "en": "Unable to read the commit's current reachability.",
+    "paths": [
+      "errors.git.commit-reachability-query-failed"
+    ]
+  },
+  {
+    "zh": "该 Diff 审阅会话已过期，请从提交历史重新打开。",
+    "en": "This diff review session expired. Reopen it from commit history.",
+    "paths": [
+      "errors.git.diff-review-session-expired"
+    ]
+  },
+  {
+    "zh": "Git 操作失败。",
+    "en": "The Git operation failed.",
+    "paths": [
+      "errors.git.operation-failed"
+    ]
+  },
+  {
+    "zh": "尚未安装 GitHub CLI。",
+    "en": "GitHub CLI is not installed.",
+    "paths": [
+      "errors.github.gh-not-installed"
+    ]
+  },
+  {
+    "zh": "GitHub CLI 尚未登录。",
+    "en": "GitHub CLI is not authenticated.",
+    "paths": [
+      "errors.github.not-authenticated"
+    ]
+  },
+  {
+    "zh": "无法确定当前 GitHub 仓库。",
+    "en": "The current GitHub repository could not be resolved.",
+    "paths": [
+      "errors.github.repository-unresolved"
+    ]
+  },
+  {
+    "zh": "当前 GitHub 账号没有执行此操作的权限。",
+    "en": "The current GitHub account does not have permission for this operation.",
+    "paths": [
+      "errors.github.permission-denied"
+    ]
+  },
+  {
+    "zh": "GitHub API 请求次数已达上限，请稍后重试。",
+    "en": "The GitHub API rate limit was reached. Try again later.",
+    "paths": [
+      "errors.github.rate-limited"
+    ]
+  },
+  {
+    "zh": "GitHub 仓库不存在或当前账号无权访问。",
+    "en": "The GitHub repository does not exist or is not accessible to this account.",
+    "paths": [
+      "errors.github.repository-not-found"
+    ]
+  },
+  {
+    "zh": "GitHub CLI 返回了无法识别的数据。",
+    "en": "GitHub CLI returned data that could not be read.",
+    "paths": [
+      "errors.github.invalid-json"
+    ]
+  },
+  {
+    "zh": "GitHub 返回的数据过大，无法在应用内处理。",
+    "en": "GitHub returned too much data to process in the app.",
+    "paths": [
+      "errors.github.output-too-large"
+    ]
+  },
+  {
+    "zh": "Pull Request 列表加载失败。",
+    "en": "Pull requests could not be loaded.",
+    "paths": [
+      "errors.github.pr-list-failed"
+    ]
+  },
+  {
+    "zh": "Pull Request 详情加载失败。",
+    "en": "Pull request details could not be loaded.",
+    "paths": [
+      "errors.github.pr-detail-failed"
+    ]
+  },
+  {
+    "zh": "Pull Request 编号无效。",
+    "en": "The pull request number is invalid.",
+    "paths": [
+      "errors.github.pr-number-invalid"
+    ]
+  },
+  {
+    "zh": "Pull Request 文件版本标识无效。",
+    "en": "The pull request file revision is invalid.",
+    "paths": [
+      "errors.github.pr-revision-invalid"
+    ]
+  },
+  {
+    "zh": "Pull Request 文件内容加载失败。",
+    "en": "The pull request file content could not be loaded.",
+    "paths": [
+      "errors.github.pr-file-content-failed"
+    ]
+  },
+  {
+    "zh": "Pull Request 的两个版本中都找不到该文件。",
+    "en": "The file is missing from both pull request versions.",
+    "paths": [
+      "errors.github.pr-file-content-unavailable"
+    ]
+  },
+  {
+    "zh": "Issue 列表加载失败。",
+    "en": "Issues could not be loaded.",
+    "paths": [
+      "errors.github.issue-list-failed"
+    ]
+  },
+  {
+    "zh": "Issue 详情加载失败。",
+    "en": "Issue details could not be loaded.",
+    "paths": [
+      "errors.github.issue-detail-failed"
+    ]
+  },
+  {
+    "zh": "GitHub CLI 状态检测失败。",
+    "en": "GitHub CLI status detection failed.",
+    "paths": [
+      "errors.github.capability-failed"
+    ]
+  },
+  {
+    "zh": "无法启动 GitHub 网页登录。",
+    "en": "GitHub browser login could not be started.",
+    "paths": [
+      "errors.github.login-start-failed"
+    ]
+  },
+  {
+    "zh": "GitHub 操作已结束或不存在。",
+    "en": "The GitHub operation has ended or no longer exists.",
+    "paths": [
+      "errors.github.operation-not-found"
+    ]
+  },
+  {
+    "zh": "GitHub 操作失败。",
+    "en": "The GitHub operation failed.",
+    "paths": [
+      "errors.github.operation-failed"
+    ]
+  },
+  {
+    "zh": "仓库映射已经变化，请重新检测后重试。",
+    "en": "The repository mapping changed. Detect it again and retry.",
+    "paths": [
+      "errors.github.repository-mismatch"
+    ]
+  },
+  {
+    "zh": "Head 分支名称无效。",
+    "en": "The head branch name is invalid.",
+    "paths": [
+      "errors.github.pr-head-invalid"
+    ]
+  },
+  {
+    "zh": "Base 分支名称无效。",
+    "en": "The base branch name is invalid.",
+    "paths": [
+      "errors.github.pr-base-invalid"
+    ]
+  },
+  {
+    "zh": "Head 和 Base 不能是同一分支。",
+    "en": "Head and base must be different branches.",
+    "paths": [
+      "errors.github.pr-head-equals-base"
+    ]
+  },
+  {
+    "zh": "本地 Head 分支不存在。",
+    "en": "The local head branch does not exist.",
+    "paths": [
+      "errors.github.pr-head-not-found"
+    ]
+  },
+  {
+    "zh": "本地或远程 Base 分支不存在。",
+    "en": "The base branch does not exist locally or on the mapped remote.",
+    "paths": [
+      "errors.github.pr-base-not-found"
+    ]
+  },
+  {
+    "zh": "Head 分支没有领先 Base 的提交。",
+    "en": "The head branch has no commits ahead of the base branch.",
+    "paths": [
+      "errors.github.pr-no-commits-ahead"
+    ]
+  },
+  {
+    "zh": "无法确认 Head 分支是否已经发布。",
+    "en": "The published state of the head branch could not be checked.",
+    "paths": [
+      "errors.github.pr-head-query-failed"
+    ]
+  },
+  {
+    "zh": "请先显式推送 Head 分支。",
+    "en": "Explicitly push the head branch first.",
+    "paths": [
+      "errors.github.pr-head-not-published"
+    ]
+  },
+  {
+    "zh": "这些分支已经存在打开的 Pull Request。",
+    "en": "These branches already have an open pull request.",
+    "paths": [
+      "errors.github.pr-already-exists"
+    ]
+  },
+  {
+    "zh": "请输入有效的单行 Pull Request 标题。",
+    "en": "Enter a valid single-line pull request title.",
+    "paths": [
+      "errors.github.pr-title-invalid"
+    ]
+  },
+  {
+    "zh": "Pull Request 正文无效或过长。",
+    "en": "The pull request body is invalid or too long.",
+    "paths": [
+      "errors.github.pr-body-invalid"
+    ]
+  },
+  {
+    "zh": "无法启动 Pull Request 创建操作。",
+    "en": "The pull request creation operation could not be started.",
+    "paths": [
+      "errors.github.pr-create-start-failed"
+    ]
+  },
+  {
+    "zh": "Pull Request 创建失败。",
+    "en": "The pull request could not be created.",
+    "paths": [
+      "errors.github.pr-create-failed"
+    ]
+  },
+  {
+    "zh": "创建命令没有返回可识别的 Pull Request 链接。",
+    "en": "The create command did not return a recognizable pull request URL.",
+    "paths": [
+      "errors.github.pr-create-invalid-output"
+    ]
+  },
+  {
+    "zh": "Agent {{agentType}} 已存在。",
+    "en": "Agent {{agentType}} already exists.",
+    "paths": [
+      "errors.agent.already-exists"
+    ]
+  },
+  {
+    "zh": "Agent {{agentType}} 尚未配置。",
+    "en": "Agent {{agentType}} is not configured.",
+    "paths": [
+      "errors.agent.not-configured"
+    ]
+  },
+  {
+    "zh": "请填写 Agent 名称。",
+    "en": "Enter an Agent name.",
+    "paths": [
+      "errors.agent.display-name-required"
+    ]
+  },
+  {
+    "zh": "请填写 Agent 启动命令。",
+    "en": "Enter an Agent launch command.",
+    "paths": [
+      "errors.agent.command-required"
+    ]
+  },
+  {
+    "zh": "输入历史已更新，请清空输入后重试。",
+    "en": "Input history has changed. Clear the input and try again.",
+    "paths": [
+      "errors.acp.composer-history-stale"
+    ]
+  },
+  {
+    "zh": "该条输入历史已不可用。",
+    "en": "This history entry is no longer available.",
+    "paths": [
+      "errors.acp.composer-history-not-found"
+    ]
+  },
+  {
+    "zh": "输入历史加载失败，请重试。",
+    "en": "Could not load input history. Please try again.",
+    "paths": [
+      "errors.acp.composer-history-query-failed"
+    ]
+  },
+  {
+    "zh": "本次消息处理失败，请重试。",
+    "en": "This message could not be processed. Try again.",
+    "paths": [
+      "errors.acp.turn-execution-failed"
+    ]
+  },
+  {
+    "zh": "会话准备失败，请重试。",
+    "en": "The session could not be prepared. Try again.",
+    "paths": [
+      "errors.acp.session-request-failed"
+    ]
+  },
+  {
+    "zh": "当前节点缺少 provider 配置。",
+    "en": "The current node is missing provider configuration.",
+    "paths": [
+      "errors.acp.missing-provider"
+    ]
+  },
+  {
+    "zh": "所选会话配置已不可用，请从最新列表中重新选择。",
+    "en": "The selected session configuration is no longer available. Choose another value from the latest list.",
+    "paths": [
+      "errors.acp.session-config-value-unavailable"
+    ]
+  },
+  {
+    "zh": "该 Agent 会话链接无效或已失效。",
+    "en": "This Agent conversation link is invalid or no longer available.",
+    "paths": [
+      "errors.acp.invalid-conversation-branch-id"
+    ]
+  },
+  {
+    "zh": "会话内容加载失败，请重试。",
+    "en": "The conversation could not be loaded. Try again.",
+    "paths": [
+      "errors.acp.session-query-failed"
+    ]
+  },
+  {
+    "zh": "活动详情加载失败，请重试。",
+    "en": "Activity details could not be loaded. Try again.",
+    "paths": [
+      "errors.acp.activity-detail-query-failed"
+    ]
+  },
+  {
+    "zh": "工具详情加载失败，请重试。",
+    "en": "Tool details could not be loaded. Try again.",
+    "paths": [
+      "errors.acp.tool-detail-query-failed"
+    ]
+  },
+  {
+    "zh": "Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。",
+    "en": "The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.",
+    "paths": [
+      "errors.acp.adapter-exited"
+    ]
+  },
+  {
+    "zh": "Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。",
+    "en": "The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.",
+    "paths": [
+      "errors.acp.adapter-exited-with-code"
+    ]
+  },
+  {
+    "zh": "无法启动 Agent：{{osError}}",
+    "en": "The Agent could not be started: {{osError}}",
+    "paths": [
+      "errors.acp.adapter-start-failed"
+    ]
+  },
+  {
+    "zh": "Agent 环境诊断在 {{method}} 阶段超时。",
+    "en": "Agent environment check timed out during {{method}}.",
+    "paths": [
+      "errors.acp.doctor-timeout"
+    ]
+  },
+  {
+    "zh": "后台任务执行失败。",
+    "en": "Background task failed.",
+    "paths": [
+      "errors.app.task-join-failed"
+    ]
+  },
+  {
+    "zh": "操作失败，请重试。{{message}}",
+    "en": "The operation failed. Please try again. {{message}}",
+    "paths": [
+      "errors.app.unexpected"
+    ]
+  },
+  {
+    "zh": "请选择 PNG、JPEG 或 WebP 图片。",
+    "en": "Choose a PNG, JPEG, or WebP image.",
+    "paths": [
+      "errors.avatar.unsupported-image-type",
+      "errors.wallpaper.unsupported-image-type",
+      "settings.avatar.errors.avatar.unsupported-image-type"
+    ]
+  },
+  {
+    "zh": "图片数据无效，请重新选择。",
+    "en": "The image data is invalid. Choose another image.",
+    "paths": [
+      "errors.avatar.invalid-image-data",
+      "settings.avatar.errors.avatar.invalid-image-data"
+    ]
+  },
+  {
+    "zh": "处理后的头像文件过大，请重新裁剪。",
+    "en": "The processed avatar is too large. Crop it again.",
+    "paths": [
+      "errors.avatar.image-too-large"
+    ]
+  },
+  {
+    "zh": "原图不能超过 10 MB。",
+    "en": "The source image must be 10 MB or smaller.",
+    "paths": [
+      "errors.avatar.source-image-too-large",
+      "settings.avatar.errors.avatar.source-image-too-large"
+    ]
+  },
+  {
+    "zh": "头像裁剪失败，请重试。",
+    "en": "Avatar cropping failed. Please try again.",
+    "paths": [
+      "errors.avatar.crop-failed",
+      "settings.avatar.errors.avatar.crop-failed"
+    ]
+  },
+  {
+    "zh": "最近头像已不存在，请重新上传。",
+    "en": "That recent avatar is no longer available. Upload it again.",
+    "paths": [
+      "errors.avatar.recent-not-found"
+    ]
+  },
+  {
+    "zh": "头像设置加载失败。",
+    "en": "Avatar settings could not be loaded.",
+    "paths": [
+      "errors.avatar.load-failed"
+    ]
+  },
+  {
+    "zh": "头像保存失败。",
+    "en": "Avatar could not be saved.",
+    "paths": [
+      "errors.avatar.save-failed"
+    ]
+  },
+  {
+    "zh": "所选壁纸文件已不可用，请重新选择。",
+    "en": "The selected wallpaper file is unavailable. Choose it again.",
+    "paths": [
+      "errors.wallpaper.source-unavailable"
+    ]
+  },
+  {
+    "zh": "所选壁纸路径无效，请重新选择。",
+    "en": "The selected wallpaper path is invalid. Choose it again.",
+    "paths": [
+      "errors.wallpaper.source-path-invalid"
+    ]
+  },
+  {
+    "zh": "壁纸源文件不能超过 32 MB。",
+    "en": "The wallpaper source file must be 32 MB or smaller.",
+    "paths": [
+      "errors.wallpaper.source-too-large"
+    ]
+  },
+  {
+    "zh": "壁纸图片无效，请重新选择。",
+    "en": "The wallpaper image is invalid. Choose another image.",
+    "paths": [
+      "errors.wallpaper.invalid-image-data"
+    ]
+  },
+  {
+    "zh": "壁纸尺寸不能超过 4096 × 4096 或 1600 万像素。",
+    "en": "The wallpaper must be at most 4096 × 4096 and 16 megapixels.",
+    "paths": [
+      "errors.wallpaper.dimensions-too-large"
+    ]
+  },
+  {
+    "zh": "壁纸处理失败，请更换图片后重试。",
+    "en": "The wallpaper could not be processed. Try another image.",
+    "paths": [
+      "errors.wallpaper.image-processing-failed"
+    ]
+  },
+  {
+    "zh": "最近壁纸已不存在，请重新导入。",
+    "en": "That recent wallpaper no longer exists. Import it again.",
+    "paths": [
+      "errors.wallpaper.recent-not-found"
+    ]
+  },
+  {
+    "zh": "壁纸设置加载失败。",
+    "en": "Wallpaper settings could not be loaded.",
+    "paths": [
+      "errors.wallpaper.load-failed"
+    ]
+  },
+  {
+    "zh": "壁纸保存失败。",
+    "en": "The wallpaper could not be saved.",
+    "paths": [
+      "errors.wallpaper.save-failed"
+    ]
+  },
+  {
+    "zh": "壁纸设置版本暂不受支持。",
+    "en": "This wallpaper settings version is not supported.",
+    "paths": [
+      "errors.wallpaper.store-version-unsupported"
+    ]
+  },
+  {
+    "zh": "当前壁纸选择无效，已恢复主题壁纸。",
+    "en": "The wallpaper selection is invalid. The theme wallpaper has been restored.",
+    "paths": [
+      "errors.personalization.wallpaper-invalid"
+    ]
+  },
+  {
+    "zh": "壁纸可见度必须在 20% 到 100% 之间。",
+    "en": "Wallpaper visibility must be between 20% and 100%.",
+    "paths": [
+      "errors.personalization.wallpaper-opacity-invalid"
+    ]
+  },
+  {
+    "zh": "SKILL {{skillName}} 已存在于 {{directoryPath}}。",
+    "en": "SKILL {{skillName}} already exists at {{directoryPath}}.",
+    "paths": [
+      "errors.skill.already-exists"
+    ]
+  },
+  {
+    "zh": "SKILL {{skillName}} 同步冲突：{{conflicts}}",
+    "en": "SKILL {{skillName}} sync conflict: {{conflicts}}",
+    "paths": [
+      "errors.skill.sync-conflict"
+    ]
+  },
+  {
+    "zh": "内置角色不可直接修改或删除，请另存为新角色。",
+    "en": "Built-in roles cannot be updated or deleted directly. Save them as a new role instead.",
+    "paths": [
+      "errors.profile.readonly-built-in"
+    ]
+  },
+  {
+    "zh": "不能直接创建或保存为内置角色。",
+    "en": "Built-in scope is reserved for internal roles.",
+    "paths": [
+      "errors.profile.built-in-scope-unsupported"
+    ]
+  },
+  {
+    "zh": "动态模板无效：{{reason}}",
+    "en": "The dynamic template is invalid: {{reason}}",
+    "paths": [
+      "errors.profile.dynamic-template-invalid"
+    ]
+  },
+  {
+    "zh": "当前角色仍被 {{templateCount}} 个工作流模板、{{taskCount}} 个任务工作流和 {{runCount}} 个可继续运行快照引用。删除后需要修复关联工作流。",
+    "en": "This role is still referenced by {{templateCount}} workflow templates, {{taskCount}} task workflows, and {{runCount}} resumable run snapshots. Related workflows must be repaired after deletion.",
+    "paths": [
+      "errors.profile.delete-confirmation-required"
+    ]
+  },
+  {
+    "zh": "文件读取失败",
+    "en": "Failed to read file",
+    "paths": [
+      "errors.profile.import.read-failed"
+    ]
+  },
+  {
+    "zh": "Front matter 格式无效",
+    "en": "Invalid front matter",
+    "paths": [
+      "errors.profile.import.invalid-frontmatter"
+    ]
+  },
+  {
+    "zh": "空文件或无有效内容",
+    "en": "Empty file or no usable content",
+    "paths": [
+      "errors.profile.import.empty-file"
+    ]
+  },
+  {
+    "zh": "无法确定角色名称",
+    "en": "Could not determine a role name",
+    "paths": [
+      "errors.profile.import.missing-name"
+    ]
+  },
+  {
+    "zh": "角色创建失败",
+    "en": "Failed to create role",
+    "paths": [
+      "errors.profile.import.create-failed"
+    ]
+  },
+  {
+    "zh": "找不到所选文件夹",
+    "en": "Selected folder could not be found",
+    "paths": [
+      "errors.profile.import.folder-not-found"
+    ]
+  },
+  {
+    "zh": "所选路径不是文件夹",
+    "en": "Selected path is not a folder",
+    "paths": [
+      "errors.profile.import.folder-not-directory"
+    ]
+  },
+  {
+    "zh": "无法完整读取所选文件夹",
+    "en": "Selected folder could not be read completely",
+    "paths": [
+      "errors.profile.import.folder-read-failed"
+    ]
+  },
+  {
+    "zh": "所选文件夹中没有 Markdown 文件",
+    "en": "No Markdown files found in the selected folder",
+    "paths": [
+      "errors.profile.import.no-markdown-files"
+    ]
+  },
+  {
+    "zh": "人工 check 结果无效。",
+    "en": "Manual check outcome is invalid.",
+    "paths": [
+      "errors.manual-check.invalid-outcome"
+    ]
+  },
+  {
+    "zh": "工作流正在运行，暂时不能发送普通消息。",
+    "en": "The workflow is running, so a normal message cannot be sent yet.",
+    "paths": [
+      "errors.runtime.conversation-not-available"
+    ]
+  },
+  {
+    "zh": "当前节点不需要继续，可能已经恢复或不再可继续。",
+    "en": "This node no longer needs to be continued. It may already be active or no longer resumable.",
+    "paths": [
+      "errors.runtime.continue-not-available"
+    ]
+  },
+  {
+    "zh": "工作流正在恢复，请稍候。",
+    "en": "The workflow is already resuming. Please wait.",
+    "paths": [
+      "errors.runtime.continue-already-active"
+    ]
+  },
+  {
+    "zh": "工作流恢复失败，请检查当前状态后重试。",
+    "en": "The workflow could not be resumed. Check its current state and try again.",
+    "paths": [
+      "errors.runtime.continue-launch-failed"
+    ]
+  },
+  {
+    "zh": "工作流恢复未能启动，请重试。",
+    "en": "The workflow resume did not start. Try again.",
+    "paths": [
+      "errors.runtime.continue-launch-channel-closed"
+    ]
+  },
+  {
+    "zh": "找不到该会话。",
+    "en": "This conversation could not be found.",
+    "paths": [
+      "errors.conversation.task-not-found"
+    ]
+  },
+  {
+    "zh": "此会话已由 {{nodeId}} / {{attemptId}} 接续，请前往该 attempt 继续。",
+    "en": "This session was continued by {{nodeId}} / {{attemptId}}. Continue in that attempt.",
+    "paths": [
+      "errors.conversation.session-superseded"
+    ]
+  },
+  {
+    "zh": "该会话仍在运行，请先停止后再删除。",
+    "en": "This conversation is still running. Stop it before deleting.",
+    "paths": [
+      "errors.conversation.task-running"
+    ]
+  },
+  {
+    "zh": "删除会话失败：{{message}}",
+    "en": "Failed to delete conversation: {{message}}",
+    "paths": [
+      "errors.conversation.task-delete-failed"
+    ]
+  },
+  {
+    "zh": "找不到该工作空间。",
+    "en": "This workspace could not be found.",
+    "paths": [
+      "errors.conversation.workspace-not-found"
+    ]
+  },
+  {
+    "zh": "当前 Agent 不支持恢复已有会话。",
+    "en": "This Agent cannot restore an existing session.",
+    "paths": [
+      "errors.conversation.session-restore-unsupported"
+    ]
+  },
+  {
+    "zh": "当前会话缺少可恢复的 Provider 会话引用。",
+    "en": "This session is missing its Provider session reference.",
+    "paths": [
+      "errors.conversation.session-restore-reference-missing"
+    ]
+  },
+  {
+    "zh": "当前 Agent 不支持同步已有会话的完整历史。",
+    "en": "This Agent cannot synchronize the full history of an existing session.",
+    "paths": [
+      "errors.conversation.history-sync-unsupported"
+    ]
+  },
+  {
+    "zh": "请输入要发送的内容。",
+    "en": "Enter a message to send.",
+    "paths": [
+      "errors.conversation.prompt-empty"
+    ]
+  },
+  {
+    "zh": "引用数据无效，请删除后重新引用。",
+    "en": "The quoted text is invalid. Remove it and quote the message again.",
+    "paths": [
+      "errors.conversation.prompt-quote-invalid"
+    ]
+  },
+  {
+    "zh": "引用内容总长度不能超过 {{maxChars}} 个字符。",
+    "en": "Quoted text cannot exceed {{maxChars}} characters in total.",
+    "paths": [
+      "errors.conversation.prompt-quote-limit-exceeded"
+    ]
+  },
+  {
+    "zh": "单条消息最多包含 {{maxQuotes}} 条引用。",
+    "en": "A message can contain at most {{maxQuotes}} quotes.",
+    "paths": [
+      "errors.conversation.prompt-quote-count-exceeded"
+    ]
+  },
+  {
+    "zh": "引用标识过长，请删除后重新引用。",
+    "en": "The quote identifier is too long. Remove the quote and select it again.",
+    "paths": [
+      "errors.conversation.prompt-quote-metadata-too-long"
+    ]
+  },
+  {
+    "zh": "角色数据无效，请重新选择角色后再发送。",
+    "en": "The role data is invalid. Select the role again before sending.",
+    "paths": [
+      "errors.conversation.prompt-role-invalid"
+    ]
+  },
+  {
+    "zh": "角色标识过长，请重新选择角色后再发送。",
+    "en": "The role identifier is too long. Select the role again before sending.",
+    "paths": [
+      "errors.conversation.prompt-role-metadata-too-long"
+    ]
+  },
+  {
+    "zh": "角色定义不能超过 {{maxChars}} 个字符。",
+    "en": "The role definition cannot exceed {{maxChars}} characters.",
+    "paths": [
+      "errors.conversation.prompt-role-limit-exceeded"
+    ]
+  },
+  {
+    "zh": "待发送队列已满，最多可保留 10 条。",
+    "en": "The pending queue is full. It can hold up to 10 prompts.",
+    "paths": [
+      "errors.conversation.prompt-queue-full"
+    ]
+  },
+  {
+    "zh": "这条待发送内容已不存在。",
+    "en": "This queued prompt no longer exists.",
+    "paths": [
+      "errors.conversation.prompt-queue-item-not-found"
+    ]
+  },
+  {
+    "zh": "这条内容正在发送，暂时无法操作。",
+    "en": "This prompt is being sent and cannot be changed right now.",
+    "paths": [
+      "errors.conversation.prompt-queue-item-dispatching"
+    ]
+  },
+  {
+    "zh": "待发送队列为空。",
+    "en": "The pending queue is empty.",
+    "paths": [
+      "errors.conversation.prompt-queue-empty"
+    ]
+  },
+  {
+    "zh": "待发送顺序已发生变化，请在列表更新后重试。",
+    "en": "The pending order changed. Try again after the list updates.",
+    "paths": [
+      "errors.conversation.prompt-queue-revision-conflict"
+    ]
+  },
+  {
+    "zh": "待发送顺序无效，请重试。",
+    "en": "The pending order is invalid. Try again.",
+    "paths": [
+      "errors.conversation.prompt-queue-invalid-order"
+    ]
+  },
+  {
+    "zh": "当前会话仍在运行，请停止后再手动使用。",
+    "en": "Stop the active session before using a queued prompt manually.",
+    "paths": [
+      "errors.conversation.prompt-queue-session-busy"
+    ]
+  },
+  {
+    "zh": "上一条消息仍在处理中，请稍候或先停止当前回复。",
+    "en": "The previous message is still processing. Wait or stop the current response first.",
+    "paths": [
+      "errors.conversation.prompt-session-busy"
+    ]
+  },
+  {
+    "zh": "这条消息的发送标识已被其他内容使用，请重新发送。",
+    "en": "This message identifier is already associated with different content. Send it again.",
+    "paths": [
+      "errors.conversation.prompt-submission-conflict"
+    ]
+  },
+  {
+    "zh": "已接纳的消息内容无法读取，请重新发送。",
+    "en": "The accepted message content could not be read. Send it again.",
+    "paths": [
+      "errors.conversation.prompt-submission-missing"
+    ]
+  },
+  {
+    "zh": "待发送队列保存失败，请重试。",
+    "en": "The pending queue could not be saved. Try again.",
+    "paths": [
+      "errors.conversation.prompt-queue-storage-failed"
+    ]
+  },
+  {
+    "zh": "Agent {{agentType}} 未通过 doctor。",
+    "en": "Agent {{agentType}} has not passed doctor.",
+    "paths": [
+      "errors.workflow.agent-doctor-failed"
+    ]
+  },
+  {
+    "zh": "Agent {{agentType}} 需要先通过 doctor。",
+    "en": "Agent {{agentType}} must pass doctor first.",
+    "paths": [
+      "errors.workflow.agent-doctor-required"
+    ]
+  },
+  {
+    "zh": "Agent {{agentType}} 不支持权限模式 {{permissionMode}}。",
+    "en": "Agent {{agentType}} does not support permission mode {{permissionMode}}.",
+    "paths": [
+      "errors.workflow.permission-mode-unsupported"
+    ]
+  },
+  {
+    "zh": "工作流必须包含结束节点。",
+    "en": "Workflow must include an end node.",
+    "paths": [
+      "errors.workflow.missing-end-node"
+    ]
+  },
+  {
+    "zh": "节点 {{nodeId}} 不可达，请把它接入当前工作流。",
+    "en": "Node {{nodeId}} is unreachable and must be connected to the workflow.",
+    "paths": [
+      "errors.workflow.unreachable-node"
+    ]
+  },
+  {
+    "zh": "{{from}} 的 success 边不能指向 new round。",
+    "en": "{{from}} success edge cannot target new round.",
+    "paths": [
+      "errors.workflow.success-new-round-target"
+    ]
+  },
+  {
+    "zh": "{{from}} 指向 new round 的边必须选择下一轮 Round 起点。",
+    "en": "{{from}} edge targeting new round must choose the next round start.",
+    "paths": [
+      "errors.workflow.missing-new-round-entry"
+    ]
+  },
+  {
+    "zh": "{{from}} 指向 new round 的边选择了不存在的起点 {{entry}}。",
+    "en": "{{from}} edge targeting new round selected missing start node {{entry}}.",
+    "paths": [
+      "errors.workflow.invalid-new-round-entry"
+    ]
+  },
+  {
+    "zh": "工作流模板 {{workflowName}} 的 workflow.id（{{workflowId}}）与 {{conflicts}} 重复，请修改 JSON 后重试。",
+    "en": "Workflow template {{workflowName}} uses workflow.id {{workflowId}}, which duplicates {{conflicts}}. Update the JSON and try again.",
+    "paths": [
+      "errors.workflow.duplicate-id"
+    ]
+  },
+  {
+    "zh": "AI-DYNAMIC 节点关联的工作流 {{workflowName}} 无效：{{reason}}。",
+    "en": "AI-DYNAMIC references invalid workflow {{workflowName}}: {{reason}}.",
+    "paths": [
+      "errors.workflow.ai-dynamic-invalid-workflow"
+    ]
+  },
+  {
+    "zh": "节点 {{nodeId}} 的模型不能为空。",
+    "en": "Model for node {{nodeId}} cannot be blank.",
+    "paths": [
+      "errors.workflow.model-blank"
+    ]
+  },
+  {
+    "zh": "AI-DYNAMIC 节点 {{nodeId}} 的固定模型不能为空。",
+    "en": "Fixed model for AI-DYNAMIC node {{nodeId}} cannot be blank.",
+    "paths": [
+      "errors.workflow.dynamic-fixed-model-blank"
+    ]
+  },
+  {
+    "zh": "AI-DYNAMIC 节点 {{nodeId}} 的可选 agent 列表不能为空。",
+    "en": "Available agents for AI-DYNAMIC node {{nodeId}} cannot be empty.",
+    "paths": [
+      "errors.workflow.dynamic-agents-empty"
+    ]
+  },
+  {
+    "zh": "AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 重复。",
+    "en": "Agent {{provider}} is duplicated in AI-DYNAMIC node {{nodeId}}.",
+    "paths": [
+      "errors.workflow.dynamic-agent-duplicate"
+    ]
+  },
+  {
+    "zh": "AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 模型不能为空。",
+    "en": "Model for agent {{provider}} in AI-DYNAMIC node {{nodeId}} cannot be blank.",
+    "paths": [
+      "errors.workflow.dynamic-agent-model-blank"
+    ]
+  },
+  {
+    "zh": "Agent {{provider}} 的模型不能为空。",
+    "en": "Model for agent {{provider}} cannot be blank.",
+    "paths": [
+      "errors.workflow.agent-model-blank"
+    ]
+  },
+  {
+    "zh": "工作流配置无效。",
+    "en": "Workflow configuration is invalid.",
+    "paths": [
+      "errors.workflow.invalid"
+    ]
+  },
+  {
+    "zh": "选择的工作空间路径不是有效 UTF-8。",
+    "en": "Selected workspace path is not valid UTF-8.",
+    "paths": [
+      "errors.workspace.path-invalid-utf8"
+    ]
+  },
+  {
+    "zh": "无法解析选择的工作空间路径。",
+    "en": "Failed to resolve selected workspace path.",
+    "paths": [
+      "errors.workspace.path-resolve-failed"
+    ]
+  },
+  {
+    "zh": "工作空间不存在或已被移动：{{workspacePath}}。请确认目录位置后重试。",
+    "en": "The workspace does not exist or was moved: {{workspacePath}}. Check the folder location and try again.",
+    "paths": [
+      "errors.workspace.path-not-found"
+    ]
+  },
+  {
+    "zh": "工作空间路径不是文件夹：{{workspacePath}}。请重新选择工作空间。",
+    "en": "The workspace path is not a folder: {{workspacePath}}. Select the workspace again.",
+    "paths": [
+      "errors.workspace.path-not-directory"
+    ]
+  },
+  {
+    "zh": "无法访问工作空间：{{workspacePath}}。请检查磁盘连接、网络位置或目录权限后重试。",
+    "en": "The workspace cannot be accessed: {{workspacePath}}. Check the drive, network location, or folder permissions and try again.",
+    "paths": [
+      "errors.workspace.path-inaccessible"
+    ]
+  },
+  {
+    "zh": "找不到对应的工作空间。",
+    "en": "The workspace could not be found.",
+    "paths": [
+      "errors.workspace.not-found"
+    ]
+  },
+  {
+    "zh": "至少保留一个最近工作空间。",
+    "en": "Keep at least one recent workspace.",
+    "paths": [
+      "errors.workspace.recent-minimum-required"
+    ]
+  },
+  {
+    "zh": "当前工作空间正在使用，不能从最近列表移除。",
+    "en": "The current workspace is in use and cannot be removed from recent workspaces.",
+    "paths": [
+      "errors.workspace.recent-current-locked"
+    ]
+  },
+  {
+    "zh": "更新地址无效。",
+    "en": "Invalid update URL.",
+    "paths": [
+      "errors.updater.invalid-url"
+    ]
+  },
+  {
+    "zh": "检查更新失败：{{message}}",
+    "en": "Failed to check for updates: {{message}}",
+    "paths": [
+      "errors.updater.check-failed"
+    ]
+  },
+  {
+    "zh": "安装更新失败：{{message}}",
+    "en": "Failed to install update: {{message}}",
+    "paths": [
+      "errors.updater.install-failed"
+    ]
+  },
+  {
+    "zh": "无法获取更新上下文，请先选择工作空间。",
+    "en": "Cannot check for updates without a workspace selected.",
+    "paths": [
+      "errors.updater.context-unavailable"
+    ]
+  },
+  {
+    "zh": "当前没有可安装更新。",
+    "en": "No update is available.",
+    "paths": [
+      "errors.updater.no-update"
+    ]
+  },
+  {
+    "zh": "尚未配置 Multica，请先在设置中完成接入。",
+    "en": "Multica is not configured. Complete setup in Settings first.",
+    "paths": [
+      "errors.multica.not-configured"
+    ]
+  },
+  {
+    "zh": "连接地址无效：必须是合法的 http(s) 地址。",
+    "en": "Invalid connection address: must be a valid http(s) URL.",
+    "paths": [
+      "errors.multica.invalid-address"
+    ]
+  },
+  {
+    "zh": "已取消连接。",
+    "en": "Connection cancelled.",
+    "paths": [
+      "errors.multica.connect-cancelled"
+    ]
+  },
+  {
+    "zh": "Multica 鉴权失败：{{message}}",
+    "en": "Multica authentication failed: {{message}}",
+    "paths": [
+      "errors.multica.auth-failed"
+    ]
+  },
+  {
+    "zh": "Multica 网络请求失败：{{message}}",
+    "en": "Multica network request failed: {{message}}",
+    "paths": [
+      "errors.multica.network-failed"
+    ]
+  },
+  {
+    "zh": "Daemon 注册失败：{{message}}",
+    "en": "Daemon registration failed: {{message}}",
+    "paths": [
+      "errors.multica.register-failed"
+    ]
+  },
+  {
+    "zh": "该任务已被其他 Daemon 领取。",
+    "en": "This task has already been claimed by another daemon.",
+    "paths": [
+      "errors.multica.claim-conflict"
+    ]
+  },
+  {
+    "zh": "找不到该 Multica 任务。",
+    "en": "This multica task could not be found.",
+    "paths": [
+      "errors.multica.task-not-found"
+    ]
+  },
+  {
+    "zh": "运行时未就绪，请稍后重试。",
+    "en": "Runtime is not ready. Please try again shortly.",
+    "paths": [
+      "errors.multica.runtime-offline"
+    ]
+  },
+  {
+    "zh": "会话恢复失败，将以全新任务重跑。",
+    "en": "Session resume failed. A fresh run will be started.",
+    "paths": [
+      "errors.multica.session-resume-failed"
+    ]
+  },
+  {
+    "zh": "该工作空间已绑定。",
+    "en": "This workspace is already bound.",
+    "paths": [
+      "errors.multica.workspace-already-bound"
+    ]
+  },
+  {
+    "zh": "找不到该工作空间绑定。",
+    "en": "This workspace binding could not be found.",
+    "paths": [
+      "errors.multica.workspace-not-found"
+    ]
+  },
+  {
+    "zh": "源码管理",
+    "en": "Source Control",
+    "paths": [
+      "sourceControl.title"
+    ]
+  },
+  {
+    "zh": "查看并管理当前工作空间的 Git 状态",
+    "en": "Inspect and manage Git state for this workspace",
+    "paths": [
+      "sourceControl.description"
+    ]
+  },
+  {
+    "zh": "正在读取 Git 状态…",
+    "en": "Reading Git status…",
+    "paths": [
+      "sourceControl.loading"
+    ]
+  },
+  {
+    "zh": "无法读取当前仓库",
+    "en": "Unable to read this repository",
+    "paths": [
+      "sourceControl.loadFailed"
+    ]
+  },
+  {
+    "zh": "尚未安装 Git",
+    "en": "Git is not installed",
+    "paths": [
+      "sourceControl.gitNotInstalled"
+    ]
+  },
+  {
+    "zh": "安装系统 Git 后即可使用源码管理；安装完成后请重新检测。",
+    "en": "Install system Git to use source control, then check again.",
+    "paths": [
+      "sourceControl.gitNotInstalledDescription"
+    ]
+  },
+  {
+    "zh": "打开 Git 下载页面",
+    "en": "Open Git downloads",
+    "paths": [
+      "sourceControl.openGitDownload"
+    ]
+  },
+  {
+    "zh": "重新检测",
+    "en": "Check again",
+    "paths": [
+      "sourceControl.checkAgain",
+      "sourceControl.detectAgain",
+      "conversation.gitRequirement.recheck"
+    ]
+  },
+  {
+    "zh": "当前文件夹不是 Git 仓库",
+    "en": "This folder is not a Git repository",
+    "paths": [
+      "sourceControl.repositoryRequired"
+    ]
+  },
+  {
+    "zh": "初始化只会创建 Git 仓库，不会自动暂存或提交当前文件。",
+    "en": "Initialization only creates the Git repository. It does not stage or commit existing files.",
+    "paths": [
+      "sourceControl.repositoryRequiredDescription"
+    ]
+  },
+  {
+    "zh": "初始化仓库",
+    "en": "Initialize repository",
+    "paths": [
+      "sourceControl.initializeRepository",
+      "conversation.gitRequirement.initialize"
+    ]
+  },
+  {
+    "zh": "正在初始化…",
+    "en": "Initializing…",
+    "paths": [
+      "sourceControl.initializingRepository"
+    ]
+  },
+  {
+    "zh": "Git 版本过低",
+    "en": "Git is out of date",
+    "paths": [
+      "sourceControl.capability.version-unsupported.title",
+      "conversation.branchPicker.versionUnsupportedTitle",
+      "conversation.gitRequirement.versionUnsupportedTitle"
+    ]
+  },
+  {
+    "zh": "当前版本为 {{installedVersion}}，源码管理需要 Git {{minimumVersion}} 或更高版本。",
+    "en": "The installed version is {{installedVersion}}. Source control requires Git {{minimumVersion}} or later.",
+    "paths": [
+      "sourceControl.capability.version-unsupported.description"
+    ]
+  },
+  {
+    "zh": "无法识别 Git 版本",
+    "en": "Git version could not be identified",
+    "paths": [
+      "sourceControl.capability.version-unavailable.title",
+      "conversation.branchPicker.versionUnavailableLabel",
+      "conversation.branchPicker.versionUnavailableTitle",
+      "conversation.gitRequirement.versionUnavailableTitle"
+    ]
+  },
+  {
+    "zh": "当前 Git 无法可靠识别，请修复或重新安装 Git 后重试。",
+    "en": "The installed Git could not be identified reliably. Repair or reinstall Git and try again.",
+    "paths": [
+      "sourceControl.capability.version-unavailable.description",
+      "conversation.branchPicker.versionUnavailableDescription"
+    ]
+  },
+  {
+    "zh": "Git 仓库还没有首次提交",
+    "en": "The repository has no initial commit",
+    "paths": [
+      "sourceControl.capability.head-required.title"
+    ]
+  },
+  {
+    "zh": "可以先在“更改”中选择文件、暂存并创建首次提交。",
+    "en": "Select files in Changes, stage them, and create the initial commit.",
+    "paths": [
+      "sourceControl.capability.head-required.description"
+    ]
+  },
+  {
+    "zh": "当前 Git 不支持 Worktree",
+    "en": "This Git version does not support worktrees",
+    "paths": [
+      "sourceControl.capability.worktree-required.title"
+    ]
+  },
+  {
+    "zh": "请更新系统 Git 后重新检测。",
+    "en": "Update system Git and check again.",
+    "paths": [
+      "sourceControl.capability.worktree-required.description"
+    ]
+  },
+  {
+    "zh": "Git 仓库暂时不可用",
+    "en": "The Git repository is unavailable",
+    "paths": [
+      "sourceControl.capability.repository-unavailable.title"
+    ]
+  },
+  {
+    "zh": "仓库元数据无法读取，请检查目录权限或 Git 状态后重试。",
+    "en": "Repository metadata could not be read. Check directory permissions or Git state and try again.",
+    "paths": [
+      "sourceControl.capability.repository-unavailable.description"
+    ]
+  },
+  {
+    "zh": "Git 操作失败",
+    "en": "Git operation failed",
+    "paths": [
+      "sourceControl.operationFailed"
+    ]
+  },
+  {
+    "zh": "Git 文件差异",
+    "en": "Git file diff",
+    "paths": [
+      "sourceControl.diff"
+    ]
+  },
+  {
+    "zh": "分离 HEAD",
+    "en": "Detached HEAD",
+    "paths": [
+      "sourceControl.detached"
+    ]
+  },
+  {
+    "zh": "当前工作空间正由 {{operation}} 使用",
+    "en": "This workspace is in use by {{operation}}",
+    "paths": [
+      "sourceControl.locked"
+    ]
+  },
+  {
+    "zh": "更改",
+    "en": "Changes",
+    "paths": [
+      "sourceControl.changes"
+    ]
+  },
+  {
+    "zh": "历史",
+    "en": "History",
+    "paths": [
+      "sourceControl.history"
+    ]
+  },
+  {
+    "zh": "正在加载提交历史…",
+    "en": "Loading commit history…",
+    "paths": [
+      "sourceControl.historyLoading"
+    ]
+  },
+  {
+    "zh": "仓库",
+    "en": "Repository",
+    "paths": [
+      "sourceControl.repository"
+    ]
+  },
+  {
+    "zh": "冲突",
+    "en": "Conflicts",
+    "paths": [
+      "sourceControl.conflicts"
+    ]
+  },
+  {
+    "zh": "已暂存",
+    "en": "Staged",
+    "paths": [
+      "sourceControl.staged"
+    ]
+  },
+  {
+    "zh": "未暂存",
+    "en": "Unstaged",
+    "paths": [
+      "sourceControl.unstaged"
+    ]
+  },
+  {
+    "zh": "未跟踪",
+    "en": "Untracked",
+    "paths": [
+      "sourceControl.untracked"
+    ]
+  },
+  {
+    "zh": "暂存",
+    "en": "Stage",
+    "paths": [
+      "sourceControl.stage"
+    ]
+  },
+  {
+    "zh": "取消暂存",
+    "en": "Unstage",
+    "paths": [
+      "sourceControl.unstage"
+    ]
+  },
+  {
+    "zh": "全部暂存",
+    "en": "Stage all",
+    "paths": [
+      "sourceControl.stageAll"
+    ]
+  },
+  {
+    "zh": "全部取消暂存",
+    "en": "Unstage all",
+    "paths": [
+      "sourceControl.unstageAll"
+    ]
+  },
+  {
+    "zh": "工作区没有变更",
+    "en": "Working tree is clean",
+    "paths": [
+      "sourceControl.clean"
+    ]
+  },
+  {
+    "zh": "提交主题",
+    "en": "Commit subject",
+    "paths": [
+      "sourceControl.commitSubject"
+    ]
+  },
+  {
+    "zh": "提交正文（可选）",
+    "en": "Commit body (optional)",
+    "paths": [
+      "sourceControl.commitBody"
+    ]
+  },
+  {
+    "zh": "已暂存 {{count}} 个文件",
+    "en": "{{count}} staged files",
+    "paths": [
+      "sourceControl.stagedCount"
+    ]
+  },
+  {
+    "zh": "提交",
+    "en": "Commit",
+    "paths": [
+      "sourceControl.commit",
+      "sourceControl.commits"
+    ]
+  },
+  {
+    "zh": "加载更多提交",
+    "en": "Load more commits",
+    "paths": [
+      "sourceControl.loadMore"
+    ]
+  },
+  {
+    "zh": "较新",
+    "en": "Newer",
+    "paths": [
+      "sourceControl.newerCommits"
+    ]
+  },
+  {
+    "zh": "较早",
+    "en": "Older",
+    "paths": [
+      "sourceControl.olderCommits"
+    ]
+  },
+  {
+    "zh": "第 {{page}} 页",
+    "en": "Page {{page}}",
+    "paths": [
+      "sourceControl.historyCurrentPage"
+    ]
+  },
+  {
+    "zh": "选择提交 {{oid}}",
+    "en": "Select commit {{oid}}",
+    "paths": [
+      "sourceControl.selectCommit"
+    ]
+  },
+  {
+    "zh": "已选择 {{count}} 个提交",
+    "en": "{{count}} commits selected",
+    "paths": [
+      "sourceControl.selectedCommitCount"
+    ]
+  },
+  {
+    "zh": "运行检查点",
+    "en": "Runtime checkpoint",
+    "paths": [
+      "sourceControl.runtimeCheckpoint"
+    ]
+  },
+  {
+    "zh": "提交列表",
+    "en": "Commit list",
+    "paths": [
+      "sourceControl.commitList"
+    ]
+  },
+  {
+    "zh": "提交变更",
+    "en": "Commit changes",
+    "paths": [
+      "sourceControl.commitReview"
+    ]
+  },
+  {
+    "zh": "正在聚合所选提交的文件变化…",
+    "en": "Aggregating file changes from the selected commits…",
+    "paths": [
+      "sourceControl.commitReviewLoading"
+    ]
+  },
+  {
+    "zh": "{{count}} 个提交的最终变化",
+    "en": "Final changes from {{count}} commits",
+    "paths": [
+      "sourceControl.commitReviewCount"
+    ]
+  },
+  {
+    "zh": "{{count}} 个变更文件",
+    "en": "{{count}} changed files",
+    "paths": [
+      "sourceControl.changedFileCount"
+    ]
+  },
+  {
+    "zh": "选择提交后在这里查看变更文件",
+    "en": "Select a commit to inspect its changed files",
+    "paths": [
+      "sourceControl.selectCommitHint"
+    ]
+  },
+  {
+    "zh": "复制短 SHA（8 位）",
+    "en": "Copy short SHA (8 chars)",
+    "paths": [
+      "sourceControl.copyShortSha"
+    ]
+  },
+  {
+    "zh": "复制完整 SHA",
+    "en": "Copy full SHA",
+    "paths": [
+      "sourceControl.copyFullSha"
+    ]
+  },
+  {
+    "zh": "查看提交归属",
+    "en": "View commit reachability",
+    "paths": [
+      "sourceControl.commitReachability"
+    ]
+  },
+  {
+    "zh": "展示当前仍包含该提交的引用，以及它相对当前分支的可验证路径。",
+    "en": "Shows refs that currently contain this commit and its verifiable path relative to the current branch.",
+    "paths": [
+      "sourceControl.commitReachabilityDescription"
+    ]
+  },
+  {
+    "zh": "包含该提交的分支与标签",
+    "en": "Containing branches and tags",
+    "paths": [
+      "sourceControl.containingRefs"
+    ]
+  },
+  {
+    "zh": "当前没有引用包含该提交",
+    "en": "No current ref contains this commit",
+    "paths": [
+      "sourceControl.noContainingRefs"
+    ]
+  },
+  {
+    "zh": "相对当前分支",
+    "en": "Relative to current branch",
+    "paths": [
+      "sourceControl.targetPath"
+    ]
+  },
+  {
+    "zh": "首次进入主线的 Merge 提交",
+    "en": "First merge into the mainline",
+    "paths": [
+      "sourceControl.firstMerge"
+    ]
+  },
+  {
+    "zh": "父提交",
+    "en": "Parents",
+    "paths": [
+      "sourceControl.parents"
+    ]
+  },
+  {
+    "zh": "Root 提交（无父提交）",
+    "en": "Root commit (no parents)",
+    "paths": [
+      "sourceControl.rootCommit"
+    ]
+  },
+  {
+    "zh": "上一个文件",
+    "en": "Previous file",
+    "paths": [
+      "sourceControl.previousFile"
+    ]
+  },
+  {
+    "zh": "下一个文件",
+    "en": "Next file",
+    "paths": [
+      "sourceControl.nextFile"
+    ]
+  },
+  {
+    "zh": "当前分支顶端",
+    "en": "Current branch tip",
+    "paths": [
+      "sourceControl.targetPaths.tip"
+    ]
+  },
+  {
+    "zh": "位于第一父主线",
+    "en": "On the first-parent mainline",
+    "paths": [
+      "sourceControl.targetPaths.direct"
+    ]
+  },
+  {
+    "zh": "通过 Merge 进入主线",
+    "en": "Entered through a merge",
+    "paths": [
+      "sourceControl.targetPaths.merged"
+    ]
+  },
+  {
+    "zh": "尚未进入当前分支",
+    "en": "Not yet contained by the current branch",
+    "paths": [
+      "sourceControl.targetPaths.not-contained"
+    ]
+  },
+  {
+    "zh": "分支",
+    "en": "Branches",
+    "paths": [
+      "sourceControl.branches",
+      "conversation.branchPicker.label",
+      "conversation.branchPicker.branches"
+    ]
+  },
+  {
+    "zh": "标签",
+    "en": "Tags",
+    "paths": [
+      "sourceControl.tags"
+    ]
+  },
+  {
+    "zh": "Worktree",
+    "en": "Worktrees",
+    "paths": [
+      "sourceControl.worktrees"
+    ]
+  },
+  {
+    "zh": "Stash",
+    "en": "Stashes",
+    "paths": [
+      "sourceControl.stashes"
+    ]
+  },
+  {
+    "zh": "Fetch",
+    "en": "Fetch",
+    "paths": [
+      "sourceControl.fetch",
+      "sourceControl.operationNames.fetch",
+      "sourceControl.actions.fetch.title"
+    ]
+  },
+  {
+    "zh": "Pull",
+    "en": "Pull",
+    "paths": [
+      "sourceControl.pull",
+      "sourceControl.operationNames.pull",
+      "sourceControl.actions.pull.title"
+    ]
+  },
+  {
+    "zh": "Push",
+    "en": "Push",
+    "paths": [
+      "sourceControl.push",
+      "sourceControl.operationNames.push",
+      "sourceControl.actions.push.title"
+    ]
+  },
+  {
+    "zh": "远程仓库",
+    "en": "Remote",
+    "paths": [
+      "sourceControl.remote"
+    ]
+  },
+  {
+    "zh": "名称",
+    "en": "Name",
+    "paths": [
+      "sourceControl.name"
+    ]
+  },
+  {
+    "zh": "起点",
+    "en": "Start point",
+    "paths": [
+      "sourceControl.startPoint"
+    ]
+  },
+  {
+    "zh": "Worktree 路径",
+    "en": "Worktree path",
+    "paths": [
+      "sourceControl.worktreePath"
+    ]
+  },
+  {
+    "zh": "新分支（可选）",
+    "en": "New branch (optional)",
+    "paths": [
+      "sourceControl.newBranchOptional"
+    ]
+  },
+  {
+    "zh": "标签类型",
+    "en": "Tag style",
+    "paths": [
+      "sourceControl.tagStyle"
+    ]
+  },
+  {
+    "zh": "附注标签",
+    "en": "Annotated",
+    "paths": [
+      "sourceControl.annotated"
+    ]
+  },
+  {
+    "zh": "轻量标签",
+    "en": "Lightweight",
+    "paths": [
+      "sourceControl.lightweight"
+    ]
+  },
+  {
+    "zh": "说明（可选）",
+    "en": "Message (optional)",
+    "paths": [
+      "sourceControl.messageOptional"
+    ]
+  },
+  {
+    "zh": "Pull 策略",
+    "en": "Pull strategy",
+    "paths": [
+      "sourceControl.pullStrategy"
+    ]
+  },
+  {
+    "zh": "仅快进（推荐）",
+    "en": "Fast-forward only (recommended)",
+    "paths": [
+      "sourceControl.ffOnly"
+    ]
+  },
+  {
+    "zh": "Merge",
+    "en": "Merge",
+    "paths": [
+      "sourceControl.merge"
+    ]
+  },
+  {
+    "zh": "Rebase",
+    "en": "Rebase",
+    "paths": [
+      "sourceControl.rebase"
+    ]
+  },
+  {
+    "zh": "移除远端已删除的分支记录",
+    "en": "Remove records for branches deleted on the remote",
+    "paths": [
+      "sourceControl.prune"
+    ]
+  },
+  {
+    "zh": "不会删除本地分支或工作区文件。",
+    "en": "Local branches and working-tree files are not deleted.",
+    "paths": [
+      "sourceControl.pruneDescription"
+    ]
+  },
+  {
+    "zh": "创建后切换到新分支",
+    "en": "Switch to the new branch after creation",
+    "paths": [
+      "sourceControl.checkoutAfterCreate"
+    ]
+  },
+  {
+    "zh": "包含未跟踪文件",
+    "en": "Include untracked files",
+    "paths": [
+      "sourceControl.includeUntracked"
+    ]
+  },
+  {
+    "zh": "恢复暂存状态",
+    "en": "Restore staged state",
+    "paths": [
+      "sourceControl.restoreIndex"
+    ]
+  },
+  {
+    "zh": "新建仓库资源",
+    "en": "Create repository resource",
+    "paths": [
+      "sourceControl.repositoryActions"
+    ]
+  },
+  {
+    "zh": "更多更改操作",
+    "en": "More change actions",
+    "paths": [
+      "sourceControl.changeActions"
+    ]
+  },
+  {
+    "zh": "新建分支",
+    "en": "Create branch",
+    "paths": [
+      "sourceControl.createBranch",
+      "sourceControl.actions.branch-create.title"
+    ]
+  },
+  {
+    "zh": "新建标签",
+    "en": "Create tag",
+    "paths": [
+      "sourceControl.createTag",
+      "sourceControl.actions.tag-create.title"
+    ]
+  },
+  {
+    "zh": "新建 Worktree",
+    "en": "Create worktree",
+    "paths": [
+      "sourceControl.createWorktree",
+      "sourceControl.actions.worktree-create.title"
+    ]
+  },
+  {
+    "zh": "删除 Worktree",
+    "en": "Remove worktree",
+    "paths": [
+      "sourceControl.removeWorktree",
+      "sourceControl.actions.worktree-remove.title"
+    ]
+  },
+  {
+    "zh": "正在删除 Worktree…",
+    "en": "Removing worktree…",
+    "paths": [
+      "sourceControl.removingWorktree"
+    ]
+  },
+  {
+    "zh": "{{path}} 的操作",
+    "en": "Actions for {{path}}",
+    "paths": [
+      "sourceControl.worktreeActions"
+    ]
+  },
+  {
+    "zh": "保存到 Stash",
+    "en": "Create stash",
+    "paths": [
+      "sourceControl.createStash",
+      "sourceControl.actions.stash-create.title"
+    ]
+  },
+  {
+    "zh": "关闭操作结果",
+    "en": "Dismiss operation result",
+    "paths": [
+      "sourceControl.dismissOperationResult"
+    ]
+  },
+  {
+    "zh": "切换分支",
+    "en": "Switch branch",
+    "paths": [
+      "sourceControl.switchBranch"
+    ]
+  },
+  {
+    "zh": "重命名",
+    "en": "Rename",
+    "paths": [
+      "sourceControl.rename",
+      "conversation.sidebar.rename"
+    ]
+  },
+  {
+    "zh": "推送标签",
+    "en": "Push tag",
+    "paths": [
+      "sourceControl.pushTag",
+      "sourceControl.operationNames.push-tag",
+      "sourceControl.actions.push-tag.title"
+    ]
+  },
+  {
+    "zh": "应用",
+    "en": "Apply",
+    "paths": [
+      "sourceControl.apply"
+    ]
+  },
+  {
+    "zh": "正在获取远程更新…",
+    "en": "Fetching remote updates…",
+    "paths": [
+      "sourceControl.operationKinds.fetch"
+    ]
+  },
+  {
+    "zh": "正在拉取并整合更新…",
+    "en": "Pulling and integrating updates…",
+    "paths": [
+      "sourceControl.operationKinds.pull"
+    ]
+  },
+  {
+    "zh": "正在推送分支…",
+    "en": "Pushing branch…",
+    "paths": [
+      "sourceControl.operationKinds.push"
+    ]
+  },
+  {
+    "zh": "正在推送标签…",
+    "en": "Pushing tag…",
+    "paths": [
+      "sourceControl.operationKinds.push-tag"
+    ]
+  },
+  {
+    "zh": "正在保存 Stash…",
+    "en": "Creating stash…",
+    "paths": [
+      "sourceControl.operationKinds.stash-create"
+    ]
+  },
+  {
+    "zh": "正在应用 Stash…",
+    "en": "Applying stash…",
+    "paths": [
+      "sourceControl.operationKinds.stash-apply"
+    ]
+  },
+  {
+    "zh": "正在完成 Merge…",
+    "en": "Completing merge…",
+    "paths": [
+      "sourceControl.operationKinds.merge-continue"
+    ]
+  },
+  {
+    "zh": "正在放弃 Merge…",
+    "en": "Aborting merge…",
+    "paths": [
+      "sourceControl.operationKinds.merge-abort"
+    ]
+  },
+  {
+    "zh": "正在继续 Rebase…",
+    "en": "Continuing rebase…",
+    "paths": [
+      "sourceControl.operationKinds.rebase-continue"
+    ]
+  },
+  {
+    "zh": "正在跳过当前 Commit…",
+    "en": "Skipping current commit…",
+    "paths": [
+      "sourceControl.operationKinds.rebase-skip"
+    ]
+  },
+  {
+    "zh": "正在放弃 Rebase…",
+    "en": "Aborting rebase…",
+    "paths": [
+      "sourceControl.operationKinds.rebase-abort"
+    ]
+  },
+  {
+    "zh": "保存 Stash",
+    "en": "Save stash",
+    "paths": [
+      "sourceControl.operationNames.stash-create"
+    ]
+  },
+  {
+    "zh": "应用 Stash",
+    "en": "Apply stash",
+    "paths": [
+      "sourceControl.operationNames.stash-apply",
+      "sourceControl.actions.stash-apply.title"
+    ]
+  },
+  {
+    "zh": "完成 Merge",
+    "en": "Complete merge",
+    "paths": [
+      "sourceControl.operationNames.merge-continue",
+      "sourceControl.conflictWorkflow.completeMerge"
+    ]
+  },
+  {
+    "zh": "放弃 Merge",
+    "en": "Abort merge",
+    "paths": [
+      "sourceControl.operationNames.merge-abort",
+      "sourceControl.conflictWorkflow.abortMerge"
+    ]
+  },
+  {
+    "zh": "继续 Rebase",
+    "en": "Continue rebase",
+    "paths": [
+      "sourceControl.operationNames.rebase-continue",
+      "sourceControl.conflictWorkflow.continueRebase"
+    ]
+  },
+  {
+    "zh": "跳过当前 Commit",
+    "en": "Skip current commit",
+    "paths": [
+      "sourceControl.operationNames.rebase-skip",
+      "sourceControl.conflictWorkflow.skipCommit"
+    ]
+  },
+  {
+    "zh": "放弃 Rebase",
+    "en": "Abort rebase",
+    "paths": [
+      "sourceControl.operationNames.rebase-abort",
+      "sourceControl.conflictWorkflow.abortRebase"
+    ]
+  },
+  {
+    "zh": "{{operation}} 已完成",
+    "en": "{{operation}} completed",
+    "paths": [
+      "sourceControl.operationResults.succeeded"
+    ]
+  },
+  {
+    "zh": "{{operation}} 失败",
+    "en": "{{operation}} failed",
+    "paths": [
+      "sourceControl.operationResults.failed"
+    ]
+  },
+  {
+    "zh": "{{operation}} 已取消",
+    "en": "{{operation}} cancelled",
+    "paths": [
+      "sourceControl.operationResults.cancelled"
+    ]
+  },
+  {
+    "zh": "{{operation}} 产生冲突",
+    "en": "{{operation}} has conflicts",
+    "paths": [
+      "sourceControl.operationResults.conflicted"
+    ]
+  },
+  {
+    "zh": "Merge 进行中",
+    "en": "Merge in progress",
+    "paths": [
+      "sourceControl.conflictWorkflow.mergeInProgress"
+    ]
+  },
+  {
+    "zh": "Rebase 进行中",
+    "en": "Rebase in progress",
+    "paths": [
+      "sourceControl.conflictWorkflow.rebaseInProgress"
+    ]
+  },
+  {
+    "zh": "更多冲突流程操作",
+    "en": "More conflict workflow actions",
+    "paths": [
+      "sourceControl.conflictWorkflow.moreActions"
+    ]
+  },
+  {
+    "zh": "确认继续 {{operation}}？",
+    "en": "Continue {{operation}}?",
+    "paths": [
+      "sourceControl.conflictWorkflow.confirm.continue.title"
+    ]
+  },
+  {
+    "zh": "将只暂存当前所有冲突文件并继续。请先确认冲突内容已经正确处理；普通未冲突改动不会被暂存。",
+    "en": "Only the current conflicted files will be staged before continuing. Confirm their contents are correct; ordinary non-conflict changes will not be staged.",
+    "paths": [
+      "sourceControl.conflictWorkflow.confirm.continue.description"
+    ]
+  },
+  {
+    "zh": "确认放弃 {{operation}}？",
+    "en": "Abort {{operation}}?",
+    "paths": [
+      "sourceControl.conflictWorkflow.confirm.abort.title"
+    ]
+  },
+  {
+    "zh": "Git 将中止当前 {{operation}} 并尽可能恢复到操作开始前的状态。",
+    "en": "Git will abort the current {{operation}} and attempt to restore the state from before it began.",
+    "paths": [
+      "sourceControl.conflictWorkflow.confirm.abort.description"
+    ]
+  },
+  {
+    "zh": "确认跳过当前 Commit？",
+    "en": "Skip the current commit?",
+    "paths": [
+      "sourceControl.conflictWorkflow.confirm.skip.title"
+    ]
+  },
+  {
+    "zh": "当前 Commit {{sha}} {{subject}} 的改动将不会应用，Rebase 会继续处理下一个 Commit。",
+    "en": "Changes from commit {{sha}} {{subject}} will not be applied. Rebase will continue with the next commit.",
+    "paths": [
+      "sourceControl.conflictWorkflow.confirm.skip.description"
+    ]
+  },
+  {
+    "zh": "获取远程引用，不修改当前工作区。",
+    "en": "Fetch remote refs without modifying the working tree.",
+    "paths": [
+      "sourceControl.actions.fetch.description"
+    ]
+  },
+  {
+    "zh": "从当前 upstream 拉取并按所选策略整合。",
+    "en": "Pull from the current upstream using the selected strategy.",
+    "paths": [
+      "sourceControl.actions.pull.description"
+    ]
+  },
+  {
+    "zh": "推送当前分支；首次推送会设置 upstream。",
+    "en": "Push the current branch and set upstream on its first push.",
+    "paths": [
+      "sourceControl.actions.push.description"
+    ]
+  },
+  {
+    "zh": "从指定起点创建本地分支。",
+    "en": "Create a local branch from the selected start point.",
+    "paths": [
+      "sourceControl.actions.branch-create.description"
+    ]
+  },
+  {
+    "zh": "重命名分支",
+    "en": "Rename branch",
+    "paths": [
+      "sourceControl.actions.branch-rename.title"
+    ]
+  },
+  {
+    "zh": "将 {{target}} 重命名为新名称。",
+    "en": "Rename {{target}}.",
+    "paths": [
+      "sourceControl.actions.branch-rename.description"
+    ]
+  },
+  {
+    "zh": "删除分支",
+    "en": "Delete branch",
+    "paths": [
+      "sourceControl.actions.branch-delete.title"
+    ]
+  },
+  {
+    "zh": "仅删除已经合并的本地分支 {{target}}。",
+    "en": "Delete local branch {{target}} only if it is already merged.",
+    "paths": [
+      "sourceControl.actions.branch-delete.description"
+    ]
+  },
+  {
+    "zh": "在指定提交上创建本地标签。",
+    "en": "Create a local tag on the selected commit.",
+    "paths": [
+      "sourceControl.actions.tag-create.description"
+    ]
+  },
+  {
+    "zh": "删除标签",
+    "en": "Delete tag",
+    "paths": [
+      "sourceControl.actions.tag-delete.title"
+    ]
+  },
+  {
+    "zh": "删除本地标签 {{target}}，不会删除远程标签。",
+    "en": "Delete local tag {{target}} without deleting its remote copy.",
+    "paths": [
+      "sourceControl.actions.tag-delete.description"
+    ]
+  },
+  {
+    "zh": "将本地标签 {{target}} 显式推送到远程。",
+    "en": "Explicitly push local tag {{target}} to a remote.",
+    "paths": [
+      "sourceControl.actions.push-tag.description"
+    ]
+  },
+  {
+    "zh": "在指定路径创建关联工作区。",
+    "en": "Create a linked worktree at the selected path.",
+    "paths": [
+      "sourceControl.actions.worktree-create.description"
+    ]
+  },
+  {
+    "zh": "从仓库登记中删除此 Worktree 及其工作目录。不会删除关联分支；存在未提交或未跟踪更改时不会强制删除。",
+    "en": "Remove this worktree registration and working directory. Its branch is preserved, and a worktree with uncommitted or untracked changes is never force-removed.",
+    "paths": [
+      "sourceControl.actions.worktree-remove.description"
+    ]
+  },
+  {
+    "zh": "保存当前更改，不会自动包含未跟踪文件。",
+    "en": "Save current changes; untracked files are excluded by default.",
+    "paths": [
+      "sourceControl.actions.stash-create.description"
+    ]
+  },
+  {
+    "zh": "应用 {{target}} 并保留该 Stash。",
+    "en": "Apply {{target}} and preserve the stash entry.",
+    "paths": [
+      "sourceControl.actions.stash-apply.description"
+    ]
+  },
+  {
+    "zh": "GitHub 能力检测将在此处显示",
+    "en": "GitHub capability detection will appear here",
+    "paths": [
+      "sourceControl.githubPending"
+    ]
+  },
+  {
+    "zh": "正在检测 GitHub CLI…",
+    "en": "Detecting GitHub CLI…",
+    "paths": [
+      "sourceControl.githubDetecting"
+    ]
+  },
+  {
+    "zh": "GitHub CLI 状态检测失败",
+    "en": "GitHub CLI status detection failed",
+    "paths": [
+      "sourceControl.githubDetectionFailed"
+    ]
+  },
+  {
+    "zh": "需要安装 GitHub CLI",
+    "en": "GitHub CLI is required",
+    "paths": [
+      "sourceControl.githubNotInstalled"
+    ]
+  },
+  {
+    "zh": "安装后可在此查看 Pull Request 和 Issue；本地 Git 功能不受影响。",
+    "en": "Install it to view pull requests and issues here. Local Git features remain available.",
+    "paths": [
+      "sourceControl.githubNotInstalledDescription"
+    ]
+  },
+  {
+    "zh": "打开安装页面",
+    "en": "Open install page",
+    "paths": [
+      "sourceControl.openInstallPage"
+    ]
+  },
+  {
+    "zh": "GitHub CLI 尚未登录",
+    "en": "GitHub CLI is not authenticated",
+    "paths": [
+      "sourceControl.githubNotAuthenticated"
+    ]
+  },
+  {
+    "zh": "授权将在浏览器中完成，应用不会读取或保存 GitHub token。",
+    "en": "Authorization completes in your browser. The app never reads or stores your GitHub token.",
+    "paths": [
+      "sourceControl.githubLoginDescription"
+    ]
+  },
+  {
+    "zh": "浏览器登录",
+    "en": "Sign in with browser",
+    "paths": [
+      "sourceControl.loginWithBrowser"
+    ]
+  },
+  {
+    "zh": "等待浏览器完成授权…",
+    "en": "Waiting for browser authorization…",
+    "paths": [
+      "sourceControl.githubLoginWaiting"
+    ]
+  },
+  {
+    "zh": "无法确定 GitHub 仓库",
+    "en": "GitHub repository could not be resolved",
+    "paths": [
+      "sourceControl.githubRepositoryUnresolved"
+    ]
+  },
+  {
+    "zh": "请检查当前分支 upstream 或 origin 是否指向 GitHub 仓库。",
+    "en": "Check that the current branch upstream or origin points to a GitHub repository.",
+    "paths": [
+      "sourceControl.githubRepositoryUnresolvedDescription"
+    ]
+  },
+  {
+    "zh": "Pull Requests",
+    "en": "Pull Requests",
+    "paths": [
+      "sourceControl.pullRequests"
+    ]
+  },
+  {
+    "zh": "Issues",
+    "en": "Issues",
+    "paths": [
+      "sourceControl.issues"
+    ]
+  },
+  {
+    "zh": "打开",
+    "en": "Open",
+    "paths": [
+      "sourceControl.open"
+    ]
+  },
+  {
+    "zh": "已关闭",
+    "en": "Closed",
+    "paths": [
+      "sourceControl.closed"
+    ]
+  },
+  {
+    "zh": "搜索标题和正文…",
+    "en": "Search titles and bodies…",
+    "paths": [
+      "sourceControl.githubSearch"
+    ]
+  },
+  {
+    "zh": "正在加载 Pull Request 详情…",
+    "en": "Loading pull request details…",
+    "paths": [
+      "sourceControl.githubDetailLoading"
+    ]
+  },
+  {
+    "zh": "没有匹配的 Pull Request",
+    "en": "No matching pull requests",
+    "paths": [
+      "sourceControl.noPullRequests"
+    ]
+  },
+  {
+    "zh": "没有匹配的 Issue",
+    "en": "No matching issues",
+    "paths": [
+      "sourceControl.noIssues"
+    ]
+  },
+  {
+    "zh": "在 GitHub 中打开",
+    "en": "Open on GitHub",
+    "paths": [
+      "sourceControl.openOnGitHub"
+    ]
+  },
+  {
+    "zh": "在内置浏览器中打开",
+    "en": "Open in built-in browser",
+    "paths": [
+      "sourceControl.openInBuiltInBrowser"
+    ]
+  },
+  {
+    "zh": "没有正文。",
+    "en": "No description.",
+    "paths": [
+      "sourceControl.noDescription"
+    ]
+  },
+  {
+    "zh": "创建 Pull Request",
+    "en": "Create pull request",
+    "paths": [
+      "sourceControl.createPullRequest"
+    ]
+  },
+  {
+    "zh": "选择比较分支，确认标题和正文后创建。",
+    "en": "Choose the comparison branches, then review the title and body.",
+    "paths": [
+      "sourceControl.createPullRequestDescription"
+    ]
+  },
+  {
+    "zh": "Head 分支",
+    "en": "Head branch",
+    "paths": [
+      "sourceControl.headBranch"
+    ]
+  },
+  {
+    "zh": "Base 分支",
+    "en": "Base branch",
+    "paths": [
+      "sourceControl.baseBranch"
+    ]
+  },
+  {
+    "zh": "标题",
+    "en": "Title",
+    "paths": [
+      "sourceControl.pullRequestTitle"
+    ]
+  },
+  {
+    "zh": "正文",
+    "en": "Body",
+    "paths": [
+      "sourceControl.pullRequestBody"
+    ]
+  },
+  {
+    "zh": "创建为 Draft",
+    "en": "Create as draft",
+    "paths": [
+      "sourceControl.createAsDraft"
+    ]
+  },
+  {
+    "zh": "检查并创建",
+    "en": "Check and create",
+    "paths": [
+      "sourceControl.checkAndCreatePullRequest"
+    ]
+  },
+  {
+    "zh": "分支 {{head}} 尚未发布到 {{remote}}。",
+    "en": "Branch {{head}} has not been published to {{remote}}.",
+    "paths": [
+      "sourceControl.pullRequestHeadNotPublished"
+    ]
+  },
+  {
+    "zh": "先推送分支",
+    "en": "Push branch first",
+    "paths": [
+      "sourceControl.pushHeadFirst"
+    ]
+  },
+  {
+    "zh": "这些分支已有打开的 Pull Request #{{number}}。",
+    "en": "These branches already have open pull request #{{number}}.",
+    "paths": [
+      "sourceControl.pullRequestAlreadyExists"
+    ]
+  },
+  {
+    "zh": "正在创建 Pull Request…",
+    "en": "Creating pull request…",
+    "paths": [
+      "sourceControl.creatingPullRequest"
+    ]
+  },
+  {
+    "zh": "Pull Request 已创建。",
+    "en": "Pull request created.",
+    "paths": [
+      "sourceControl.pullRequestCreated"
+    ]
+  },
+  {
+    "zh": "概览",
+    "en": "Overview",
+    "paths": [
+      "sourceControl.overview"
+    ]
+  },
+  {
+    "zh": "文件（{{count}}）",
+    "en": "Files ({{count}})",
+    "paths": [
+      "sourceControl.githubChangedFiles"
+    ]
+  },
+  {
+    "zh": "没有可查看的变更文件",
+    "en": "No changed files are available",
+    "paths": [
+      "sourceControl.noChangedFiles"
+    ]
+  },
+  {
+    "zh": "设置",
+    "en": "Settings",
+    "paths": [
+      "settings.title",
+      "conversation.sidebar.settings"
+    ]
+  },
+  {
+    "zh": "{{appName}} › 设置",
+    "en": "{{appName}} › Settings",
+    "paths": [
+      "settings.path"
+    ]
+  },
+  {
+    "zh": "外观",
+    "en": "Appearance",
+    "paths": [
+      "settings.appearance"
+    ]
+  },
+  {
+    "zh": "语言",
+    "en": "Language",
+    "paths": [
+      "settings.language"
+    ]
+  },
+  {
+    "zh": "字体",
+    "en": "Typography",
+    "paths": [
+      "settings.typography"
+    ]
+  },
+  {
+    "zh": "高级",
+    "en": "Advanced",
+    "paths": [
+      "settings.advanced",
+      "settings.tabs.advanced"
+    ]
+  },
+  {
+    "zh": "浅色",
+    "en": "Light",
+    "paths": [
+      "settings.light",
+      "settings.schemeLight",
+      "settings.lightThemes"
+    ]
+  },
+  {
+    "zh": "深色",
+    "en": "Dark",
+    "paths": [
+      "settings.dark",
+      "settings.schemeDark",
+      "settings.darkThemes"
+    ]
+  },
+  {
+    "zh": "跟随系统",
+    "en": "System",
+    "paths": [
+      "settings.system",
+      "settings.syncWithOs",
+      "settings.schemeSystem"
+    ]
+  },
+  {
+    "zh": "系统浅色或深色变化时自动切换主题。",
+    "en": "Automatically switch when your system changes light or dark mode.",
+    "paths": [
+      "settings.syncWithOsDescription"
+    ]
+  },
+  {
+    "zh": "明暗模式",
+    "en": "Color scheme",
+    "paths": [
+      "settings.colorScheme"
+    ]
+  },
+  {
+    "zh": "同一设计风格内选择跟随系统、浅色或深色。",
+    "en": "Choose system, light, or dark within the same design style.",
+    "paths": [
+      "settings.colorSchemeDescription"
+    ]
+  },
+  {
+    "zh": "视觉效果",
+    "en": "Visual quality",
+    "paths": [
+      "settings.visualQuality"
+    ]
+  },
+  {
+    "zh": "完整效果保留主题材质，性能优先会降低模糊与阴影开销。",
+    "en": "Full preserves the material; Performance reduces blur and shadow cost.",
+    "paths": [
+      "settings.visualQualityDescription"
+    ]
+  },
+  {
+    "zh": "完整效果",
+    "en": "Full",
+    "paths": [
+      "settings.visualQualityFull"
+    ]
+  },
+  {
+    "zh": "性能优先",
+    "en": "Performance",
+    "paths": [
+      "settings.visualQualityPerformance"
+    ]
+  },
+  {
+    "zh": "当前主题",
+    "en": "Current theme",
+    "paths": [
+      "settings.currentTheme"
+    ]
+  },
+  {
+    "zh": "浅色默认主题",
+    "en": "Light default theme",
+    "paths": [
+      "settings.lightDefaultTheme"
+    ]
+  },
+  {
+    "zh": "深色默认主题",
+    "en": "Dark default theme",
+    "paths": [
+      "settings.darkDefaultTheme"
+    ]
+  },
+  {
+    "zh": "当前生效",
+    "en": "Active now",
+    "paths": [
+      "settings.activeTheme"
+    ]
+  },
+  {
+    "zh": "选择主题",
+    "en": "Choose theme",
+    "paths": [
+      "settings.chooseTheme",
+      "settings.themeDrawerTitle"
+    ]
+  },
+  {
+    "zh": "选择浅色主题",
+    "en": "Choose light theme",
+    "paths": [
+      "settings.chooseLightTheme"
+    ]
+  },
+  {
+    "zh": "选择深色主题",
+    "en": "Choose dark theme",
+    "paths": [
+      "settings.chooseDarkTheme"
+    ]
+  },
+  {
+    "zh": "瓷白",
+    "en": "Porcelain",
+    "paths": [
+      "settings.themeDefaultLight"
+    ]
+  },
+  {
+    "zh": "科技灰",
+    "en": "Tech Gray",
+    "paths": [
+      "settings.themeTechGray"
+    ]
+  },
+  {
+    "zh": "石墨深色",
+    "en": "Graphite Dark",
+    "paths": [
+      "settings.themeGoldDark"
+    ]
+  },
+  {
+    "zh": "终端黑",
+    "en": "Terminal Black",
+    "paths": [
+      "settings.themeBlack"
+    ]
+  },
+  {
+    "zh": "默认字体",
+    "en": "Default font",
+    "paths": [
+      "settings.fontDefault",
+      "settings.editorFontDefault"
+    ]
+  },
+  {
+    "zh": "使用当前主题定义的有序字体回退。",
+    "en": "Use the ordered font fallback defined by the current theme.",
+    "paths": [
+      "settings.fontDefaultDescription"
+    ]
+  },
+  {
+    "zh": "应用内置，作为代码编辑与差异查看的稳定默认字体。",
+    "en": "Bundled for consistent code editing and diff rendering.",
+    "paths": [
+      "settings.editorFontDefaultDescription"
+    ]
+  },
+  {
+    "zh": "字体预览",
+    "en": "Font preview",
+    "paths": [
+      "settings.fontPreview"
+    ]
+  },
+  {
+    "zh": "界面 UI",
+    "en": "Interface UI",
+    "paths": [
+      "settings.uiTypography"
+    ]
+  },
+  {
+    "zh": "侧栏、设置、聊天正文和普通 Markdown。",
+    "en": "Sidebar, settings, chat prose, and regular Markdown.",
+    "paths": [
+      "settings.uiTypographyDescription"
+    ]
+  },
+  {
+    "zh": "编辑器",
+    "en": "Editor",
+    "paths": [
+      "settings.editorTypography"
+    ]
+  },
+  {
+    "zh": "文件查看与编辑、运行产物及所有差异视图。",
+    "en": "File viewing and editing, run artifacts, and all diff views.",
+    "paths": [
+      "settings.editorTypographyDescription"
+    ]
+  },
+  {
+    "zh": "UI 字号",
+    "en": "UI font size",
+    "paths": [
+      "settings.uiFontSize"
+    ]
+  },
+  {
+    "zh": "调整应用界面使用的基准字号。",
+    "en": "Adjust the base font size used across the app interface.",
+    "paths": [
+      "settings.uiFontSizeDescription"
+    ]
+  },
+  {
+    "zh": "编辑器字号",
+    "en": "Editor font size",
+    "paths": [
+      "settings.editorFontSize"
+    ]
+  },
+  {
+    "zh": "调整 CodeMirror 文件与差异视图中的字号。",
+    "en": "Adjust text in CodeMirror file and diff views.",
+    "paths": [
+      "settings.editorFontSizeDescription"
+    ]
+  },
+  {
+    "zh": "恢复默认字号",
+    "en": "Restore default font size",
+    "paths": [
+      "settings.resetFontSize"
+    ]
+  },
+  {
+    "zh": "自定义字体栈",
+    "en": "Custom font stack",
+    "paths": [
+      "settings.localFonts"
+    ]
+  },
+  {
+    "zh": "添加或取消字体",
+    "en": "Add or remove fonts",
+    "paths": [
+      "settings.chooseLocalFont"
+    ]
+  },
+  {
+    "zh": "已载入 {{count}} 个本机字体；越靠前优先级越高。",
+    "en": "{{count}} local fonts loaded. Earlier fonts have higher priority.",
+    "paths": [
+      "settings.localFontsDescription"
+    ]
+  },
+  {
+    "zh": "已选字体优先级",
+    "en": "Selected font priority",
+    "paths": [
+      "settings.selectedFontStack"
+    ]
+  },
+  {
+    "zh": "搜索字体…",
+    "en": "Search fonts…",
+    "paths": [
+      "settings.searchFonts"
+    ]
+  },
+  {
+    "zh": "没有匹配的字体",
+    "en": "No matching fonts",
+    "paths": [
+      "settings.noFontsFound"
+    ]
+  },
+  {
+    "zh": "提高字体优先级",
+    "en": "Increase font priority",
+    "paths": [
+      "settings.moveFontUp"
+    ]
+  },
+  {
+    "zh": "降低字体优先级",
+    "en": "Decrease font priority",
+    "paths": [
+      "settings.moveFontDown"
+    ]
+  },
+  {
+    "zh": "移除字体",
+    "en": "Remove font",
+    "paths": [
+      "settings.removeFont"
+    ]
+  },
+  {
+    "zh": "客户端版本：{{version}}",
+    "en": "Client version: {{version}}",
+    "paths": [
+      "settings.clientVersion"
+    ]
+  },
+  {
+    "zh": "通用",
+    "en": "General",
+    "paths": [
+      "settings.tabs.general"
+    ]
+  },
+  {
+    "zh": "个性化",
+    "en": "Appearance",
+    "paths": [
+      "settings.tabs.appearance"
+    ]
+  },
+  {
+    "zh": "浏览器",
+    "en": "Browser",
+    "paths": [
+      "settings.browser.title"
+    ]
+  },
+  {
+    "zh": "搜索引擎",
+    "en": "Search engine",
+    "paths": [
+      "settings.browser.searchEngine"
+    ]
+  },
+  {
+    "zh": "地址栏输入的内容不是网址时，用所选搜索引擎搜索。",
+    "en": "Use the selected search engine when the address bar input is not a URL.",
+    "paths": [
+      "settings.browser.searchEngineDescription"
+    ]
+  },
+  {
+    "zh": "在内置浏览器中打开 localhost",
+    "en": "Open localhost in the built-in browser",
+    "paths": [
+      "settings.browser.openLocalLinks"
+    ]
+  },
+  {
+    "zh": "对话和文档里的本机服务地址会在内置浏览器打开。关闭后改用系统浏览器。",
+    "en": "Localhost addresses in chats and documents open in the built-in browser. When off, they open in the system browser.",
+    "paths": [
+      "settings.browser.openLocalLinksDescription"
+    ]
+  },
+  {
+    "zh": "在内置浏览器中打开网站",
+    "en": "Open websites in the built-in browser",
+    "paths": [
+      "settings.browser.openWebLinks"
+    ]
+  },
+  {
+    "zh": "对话和文档里的普通网站会在内置浏览器打开。关闭后改用系统浏览器。",
+    "en": "Websites in chats and documents open in the built-in browser. When off, they open in the system browser.",
+    "paths": [
+      "settings.browser.openWebLinksDescription"
+    ]
+  },
+  {
+    "zh": "IM 远程干预与通知",
+    "en": "IM remote intervention and notifications",
+    "paths": [
+      "settings.im.title"
+    ]
+  },
+  {
+    "zh": "启用",
+    "en": "Enabled",
+    "paths": [
+      "settings.im.enabled"
+    ]
+  },
+  {
+    "zh": "一对一私聊：{{name}}",
+    "en": "Private chat: {{name}}",
+    "paths": [
+      "settings.im.privateBinding"
+    ]
+  },
+  {
+    "zh": "通知类型",
+    "en": "Notification types",
+    "paths": [
+      "settings.im.notificationKinds"
+    ]
+  },
+  {
+    "zh": "需要你处理",
+    "en": "Needs your action",
+    "paths": [
+      "settings.im.notificationGroups.needsAction"
+    ]
+  },
+  {
+    "zh": "执行结果提醒",
+    "en": "Execution results",
+    "paths": [
+      "settings.im.notificationGroups.results"
+    ]
+  },
+  {
+    "zh": "保存通知设置",
+    "en": "Save notifications",
+    "paths": [
+      "settings.im.notificationsSave"
+    ]
+  },
+  {
+    "zh": "放弃修改",
+    "en": "Discard changes",
+    "paths": [
+      "settings.im.notificationsDiscard"
+    ]
+  },
+  {
+    "zh": "授权、接收账号与配置管理",
+    "en": "Authorization, recipient, and configuration",
+    "paths": [
+      "settings.im.configurationHint"
+    ]
+  },
+  {
+    "zh": "配置管理",
+    "en": "Configuration menu",
+    "paths": [
+      "settings.im.configurationMenu"
+    ]
+  },
+  {
+    "zh": "重新连接",
+    "en": "Reconnect",
+    "paths": [
+      "settings.im.reconnect"
+    ]
+  },
+  {
+    "zh": "删除配置",
+    "en": "Delete configuration",
+    "paths": [
+      "settings.im.delete"
+    ]
+  },
+  {
+    "zh": "删除 {{channel}} 配置？",
+    "en": "Delete {{channel}} configuration?",
+    "paths": [
+      "settings.im.deleteTitle"
+    ]
+  },
+  {
+    "zh": "将停用连接并从系统凭据存储中删除 secret。待投递消息也会停止发送。",
+    "en": "This disables the connection, removes its secret from the OS credential store, and stops pending deliveries.",
+    "paths": [
+      "settings.im.deleteDescription"
+    ]
+  },
+  {
+    "zh": "删除",
+    "en": "Delete",
+    "paths": [
+      "settings.im.confirmDelete",
+      "conversation.sidebar.delete"
+    ]
+  },
+  {
+    "zh": "扫码接入企业微信",
+    "en": "Connect WeCom by QR code",
+    "paths": [
+      "settings.im.scan.title"
+    ]
+  },
+  {
+    "zh": "使用手机企业微信扫码并确认授权。",
+    "en": "Scan with the WeCom mobile app and confirm authorization.",
+    "paths": [
+      "settings.im.scan.description"
+    ]
+  },
+  {
+    "zh": "尚未接入企业微信。接入后可设置远程干预与通知。",
+    "en": "WeCom is not connected. Connect it to configure remote intervention and notifications.",
+    "paths": [
+      "settings.im.scan.notConfigured"
+    ]
+  },
+  {
+    "zh": "机器人 ID：{{id}}",
+    "en": "Bot ID: {{id}}",
+    "paths": [
+      "settings.im.scan.botId"
+    ]
+  },
+  {
+    "zh": "扫码接入",
+    "en": "Scan to connect",
+    "paths": [
+      "settings.im.scan.connect"
+    ]
+  },
+  {
+    "zh": "重新授权",
+    "en": "Authorize again",
+    "paths": [
+      "settings.im.scan.reauthorize"
+    ]
+  },
+  {
+    "zh": "正在生成二维码…",
+    "en": "Generating QR code…",
+    "paths": [
+      "settings.im.scan.generating"
+    ]
+  },
+  {
+    "zh": "请使用企业微信扫码并确认授权",
+    "en": "Scan with WeCom and confirm authorization",
+    "paths": [
+      "settings.im.scan.waiting"
+    ]
+  },
+  {
+    "zh": "二维码将在 {{countdown}} 后过期",
+    "en": "QR code expires in {{countdown}}",
+    "paths": [
+      "settings.im.scan.expiresIn"
+    ]
+  },
+  {
+    "zh": "授权完成，等待绑定接收账号",
+    "en": "Authorized, waiting for a recipient",
+    "paths": [
+      "settings.im.scan.waitingBinding"
+    ]
+  },
+  {
+    "zh": "企业微信已可用",
+    "en": "WeCom is ready",
+    "paths": [
+      "settings.im.scan.complete"
+    ]
+  },
+  {
+    "zh": "请在企业微信中给机器人发送一条消息，以完成一对一私聊绑定。",
+    "en": "Send the bot a message in WeCom to finish binding the private chat.",
+    "paths": [
+      "settings.im.scan.nextStep"
+    ]
+  },
+  {
+    "zh": "重新生成",
+    "en": "Generate again",
+    "paths": [
+      "settings.im.scan.retry"
+    ]
+  },
+  {
+    "zh": "企业微信授权二维码",
+    "en": "WeCom authorization QR code",
+    "paths": [
+      "settings.im.scan.qrCodeLabel"
+    ]
+  },
+  {
+    "zh": "企业微信",
+    "en": "WeCom",
+    "paths": [
+      "settings.im.channels.wecom.title"
+    ]
+  },
+  {
+    "zh": "未接入",
+    "en": "Not connected",
+    "paths": [
+      "settings.im.status.notConfigured"
+    ]
+  },
+  {
+    "zh": "等待绑定",
+    "en": "Waiting for binding",
+    "paths": [
+      "settings.im.status.waitingBinding"
+    ]
+  },
+  {
+    "zh": "连接中",
+    "en": "Connecting",
+    "paths": [
+      "settings.im.status.connecting"
+    ]
+  },
+  {
+    "zh": "正在重连",
+    "en": "Reconnecting",
+    "paths": [
+      "settings.im.status.reconnecting"
+    ]
+  },
+  {
+    "zh": "连接失败",
+    "en": "Connection failed",
+    "paths": [
+      "settings.im.status.connectionFailed"
+    ]
+  },
+  {
+    "zh": "可用",
+    "en": "Ready",
+    "paths": [
+      "settings.im.status.ready"
+    ]
+  },
+  {
+    "zh": "已暂停",
+    "en": "Paused",
+    "paths": [
+      "settings.im.status.paused",
+      "conversation.runtime.pauseReasonFallback"
+    ]
+  },
+  {
+    "zh": "需要重新授权",
+    "en": "Authorization required",
+    "paths": [
+      "settings.im.status.reauthorize",
+      "settings.im.guidance.reauthorize.title"
+    ]
+  },
+  {
+    "zh": "连接被占用",
+    "en": "Connection in use",
+    "paths": [
+      "settings.im.status.conflict"
+    ]
+  },
+  {
+    "zh": "接入企业微信",
+    "en": "Connect WeCom",
+    "paths": [
+      "settings.im.guidance.notConfigured.title"
+    ]
+  },
+  {
+    "zh": "扫码授权后，通过一对一私聊绑定接收账号。",
+    "en": "Authorize by QR code, then bind a recipient through a private chat.",
+    "paths": [
+      "settings.im.guidance.notConfigured.description"
+    ]
+  },
+  {
+    "zh": "绑定接收账号",
+    "en": "Bind a recipient",
+    "paths": [
+      "settings.im.guidance.waitingBinding.title"
+    ]
+  },
+  {
+    "zh": "请在企业微信中给机器人发送一条消息。持久绑定完成后即可接收干预。",
+    "en": "Send the bot a message in WeCom. Remote intervention becomes available after the binding is persisted.",
+    "paths": [
+      "settings.im.guidance.waitingBinding.description"
+    ]
+  },
+  {
+    "zh": "正在建立连接",
+    "en": "Establishing connection",
+    "paths": [
+      "settings.im.guidance.connecting.title"
+    ]
+  },
+  {
+    "zh": "连接建立后会自动恢复远程干预。",
+    "en": "Remote intervention resumes automatically when the connection is ready.",
+    "paths": [
+      "settings.im.guidance.connecting.description"
+    ]
+  },
+  {
+    "zh": "正在自动重连",
+    "en": "Reconnecting automatically",
+    "paths": [
+      "settings.im.guidance.reconnecting.title"
+    ]
+  },
+  {
+    "zh": "系统正在使用有界退避重试，无需重复操作。",
+    "en": "The bounded retry policy is active. No repeated action is needed.",
+    "paths": [
+      "settings.im.guidance.reconnecting.description"
+    ]
+  },
+  {
+    "zh": "连接已停止",
+    "en": "Connection stopped",
+    "paths": [
+      "settings.im.guidance.connectionFailed.title"
+    ]
+  },
+  {
+    "zh": "自动恢复无法继续，请重新连接。",
+    "en": "Automatic recovery cannot continue. Reconnect to try again.",
+    "paths": [
+      "settings.im.guidance.connectionFailed.description"
+    ]
+  },
+  {
+    "zh": "企业微信可用",
+    "en": "WeCom is ready",
+    "paths": [
+      "settings.im.guidance.ready.title"
+    ]
+  },
+  {
+    "zh": "远程干预和已启用的通知会发送到已绑定私聊。",
+    "en": "Remote interventions and enabled notifications are sent to the bound private chat.",
+    "paths": [
+      "settings.im.guidance.ready.description"
+    ]
+  },
+  {
+    "zh": "远程干预已暂停",
+    "en": "Remote intervention is paused",
+    "paths": [
+      "settings.im.guidance.paused.title"
+    ]
+  },
+  {
+    "zh": "通知偏好会保留，重新启用后继续生效。",
+    "en": "Notification preferences are preserved and resume when enabled.",
+    "paths": [
+      "settings.im.guidance.paused.description"
+    ]
+  },
+  {
+    "zh": "当前凭据不可用，请重新扫码授权。",
+    "en": "The current credentials are unavailable. Authorize the bot again.",
+    "paths": [
+      "settings.im.guidance.reauthorize.description"
+    ]
+  },
+  {
+    "zh": "机器人正在其他客户端连接",
+    "en": "The bot is connected elsewhere",
+    "paths": [
+      "settings.im.guidance.conflict.title"
+    ]
+  },
+  {
+    "zh": "请先关闭其他客户端，再发起一次真实重连。",
+    "en": "Close the other client, then start one real reconnect attempt.",
+    "paths": [
+      "settings.im.guidance.conflict.description"
+    ]
+  },
+  {
+    "zh": "更换接收账号",
+    "en": "Change recipient",
+    "paths": [
+      "settings.im.resetBinding.action"
+    ]
+  },
+  {
+    "zh": "更换接收账号？",
+    "en": "Change the recipient?",
+    "paths": [
+      "settings.im.resetBinding.title"
+    ]
+  },
+  {
+    "zh": "将清除当前一对一私聊绑定，但保留机器人授权、启用状态和通知偏好。之后请使用新账号给机器人发送消息。",
+    "en": "This clears the current private-chat binding while preserving bot authorization, enabled state, and notification preferences. Then message the bot from the new account.",
+    "paths": [
+      "settings.im.resetBinding.description"
+    ]
+  },
+  {
+    "zh": "更换账号",
+    "en": "Change recipient",
+    "paths": [
+      "settings.im.resetBinding.confirm"
+    ]
+  },
+  {
+    "zh": "权限请求",
+    "en": "Permission requests",
+    "paths": [
+      "settings.im.notifications.permission"
+    ]
+  },
+  {
+    "zh": "追问",
+    "en": "Questions",
+    "paths": [
+      "settings.im.notifications.elicitation"
+    ]
+  },
+  {
+    "zh": "人工检查",
+    "en": "Manual checks",
+    "paths": [
+      "settings.im.notifications.manualCheck"
+    ]
+  },
+  {
+    "zh": "Run 成功",
+    "en": "Run succeeded",
+    "paths": [
+      "settings.im.notifications.runSuccess"
+    ]
+  },
+  {
+    "zh": "Run 失败",
+    "en": "Run failed",
+    "paths": [
+      "settings.im.notifications.runFailure"
+    ]
+  },
+  {
+    "zh": "ACP 回合结束",
+    "en": "ACP turn finished",
+    "paths": [
+      "settings.im.notifications.acpTurnFinished"
+    ]
+  },
+  {
+    "zh": "请填写有效的公开标识。",
+    "en": "Enter a valid public identity.",
+    "paths": [
+      "settings.im.errors.IM_CONFIG_INVALID",
+      "settings.im.errors.CONFIG_INVALID"
+    ]
+  },
+  {
+    "zh": "启用前需要配置凭据。",
+    "en": "Credentials are required before enabling this channel.",
+    "paths": [
+      "settings.im.errors.IM_CREDENTIAL_REQUIRED"
+    ]
+  },
+  {
+    "zh": "凭据格式无效。",
+    "en": "The credential format is invalid.",
+    "paths": [
+      "settings.im.errors.IM_CREDENTIAL_INVALID"
+    ]
+  },
+  {
+    "zh": "无法访问系统凭据存储。",
+    "en": "The OS credential store is unavailable.",
+    "paths": [
+      "settings.im.errors.IM_CREDENTIAL_UNAVAILABLE",
+      "settings.im.errors.CREDENTIAL_UNAVAILABLE"
+    ]
+  },
+  {
+    "zh": "平台拒绝了当前凭据。",
+    "en": "The platform rejected these credentials.",
+    "paths": [
+      "settings.im.errors.IM_AUTHENTICATION_REQUIRED",
+      "settings.im.errors.AUTHENTICATION_REQUIRED"
+    ]
+  },
+  {
+    "zh": "平台请求过于频繁，请稍后重试。",
+    "en": "The platform is rate limiting requests. Try again later.",
+    "paths": [
+      "settings.im.errors.IM_RATE_LIMITED",
+      "settings.im.errors.RATE_LIMITED"
+    ]
+  },
+  {
+    "zh": "无法连接 IM 平台。",
+    "en": "The IM platform is unreachable.",
+    "paths": [
+      "settings.im.errors.IM_NETWORK_UNAVAILABLE",
+      "settings.im.errors.NETWORK_UNAVAILABLE"
+    ]
+  },
+  {
+    "zh": "平台返回了无法识别的响应。",
+    "en": "The platform returned an unrecognized response.",
+    "paths": [
+      "settings.im.errors.IM_PROTOCOL_INVALID",
+      "settings.im.errors.PROTOCOL_INVALID"
+    ]
+  },
+  {
+    "zh": "请先与机器人建立一对一私聊。",
+    "en": "Start a private chat with the bot first.",
+    "paths": [
+      "settings.im.errors.IM_PRIVATE_BINDING_REQUIRED",
+      "settings.im.errors.PRIVATE_BINDING_REQUIRED"
+    ]
+  },
+  {
+    "zh": "当前操作用户不是已授权用户。",
+    "en": "The current user is not the authorized user.",
+    "paths": [
+      "settings.im.errors.IM_ACTOR_MISMATCH",
+      "settings.im.errors.ACTOR_MISMATCH"
+    ]
+  },
+  {
+    "zh": "当前会话不是已绑定私聊。",
+    "en": "This is not the bound private chat.",
+    "paths": [
+      "settings.im.errors.IM_CONVERSATION_MISMATCH",
+      "settings.im.errors.CONVERSATION_MISMATCH"
+    ]
+  },
+  {
+    "zh": "当前平台能力不支持此操作。",
+    "en": "The platform does not support this operation.",
+    "paths": [
+      "settings.im.errors.IM_CAPABILITY_UNSUPPORTED",
+      "settings.im.errors.UNSUPPORTED_CAPABILITY"
+    ]
+  },
+  {
+    "zh": "无法访问 IM 投递存储。",
+    "en": "The IM delivery store is unavailable.",
+    "paths": [
+      "settings.im.errors.IM_STORAGE_UNAVAILABLE",
+      "settings.im.errors.STORAGE_UNAVAILABLE"
+    ]
+  },
+  {
+    "zh": "该机器人已在其他客户端连接，请关闭另一处连接后重试。",
+    "en": "This bot is connected by another client. Close the other connection and try again.",
+    "paths": [
+      "settings.im.errors.IM_CONNECTION_CONFLICT"
+    ]
+  },
+  {
+    "zh": "扫码授权已取消。",
+    "en": "QR authorization was cancelled.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_CANCELLED"
+    ]
+  },
+  {
+    "zh": "二维码已过期，请重新生成。",
+    "en": "The QR code expired. Generate a new one.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_EXPIRED"
+    ]
+  },
+  {
+    "zh": "扫码授权已超时，请重新生成。",
+    "en": "QR authorization timed out. Generate a new code.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_TIMEOUT"
+    ]
+  },
+  {
+    "zh": "暂时无法连接企业微信授权服务。",
+    "en": "The WeCom authorization service is temporarily unreachable.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_NETWORK_UNAVAILABLE"
+    ]
+  },
+  {
+    "zh": "企业微信授权响应无效，请重新生成。",
+    "en": "The WeCom authorization response was invalid. Generate a new code.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_PROTOCOL_INVALID"
+    ]
+  },
+  {
+    "zh": "扫码会话无效，请重新打开。",
+    "en": "The QR session is invalid. Reopen it.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_SESSION_INVALID"
+    ]
+  },
+  {
+    "zh": "扫码授权正在处理中。",
+    "en": "QR authorization is already in progress.",
+    "paths": [
+      "settings.im.errors.IM_SCAN_SESSION_CONFLICT"
+    ]
+  },
+  {
+    "zh": "连接状态已更新，请根据最新状态重试。",
+    "en": "The connection state changed. Retry from the latest state.",
+    "paths": [
+      "settings.im.errors.IM_STALE_GENERATION"
+    ]
+  },
+  {
+    "zh": "IM 运行时尚未就绪。",
+    "en": "The IM runtime is not ready.",
+    "paths": [
+      "settings.im.errors.IM_RUNTIME_UNAVAILABLE"
+    ]
+  },
+  {
+    "zh": "配置已删除，本地清理将在后台自动重试。",
+    "en": "The configuration was deleted. Local cleanup will retry in the background.",
+    "paths": [
+      "settings.im.errors.IM_CHANNEL_CLEANUP_PENDING"
+    ]
+  },
+  {
+    "zh": "操作失败，请重试。",
+    "en": "The operation failed. Try again.",
+    "paths": [
+      "settings.im.errors.IM_OPERATION_FAILED"
+    ]
+  },
+  {
+    "zh": "头像",
+    "en": "Avatars",
+    "paths": [
+      "settings.avatar.title"
+    ]
+  },
+  {
+    "zh": "Agent 头像",
+    "en": "Agent avatar",
+    "paths": [
+      "settings.avatar.agent.title"
+    ]
+  },
+  {
+    "zh": "展示在 Agent 回复旁。",
+    "en": "Shown beside Agent responses.",
+    "paths": [
+      "settings.avatar.agent.description"
+    ]
+  },
+  {
+    "zh": "个人头像",
+    "en": "Personal avatar",
+    "paths": [
+      "settings.avatar.user.title"
+    ]
+  },
+  {
+    "zh": "展示在你的消息旁。",
+    "en": "Shown beside your messages.",
+    "paths": [
+      "settings.avatar.user.description"
+    ]
+  },
+  {
+    "zh": "设置{{type}}",
+    "en": "Set {{type}}",
+    "paths": [
+      "settings.avatar.openMenu"
+    ]
+  },
+  {
+    "zh": "使用最近头像",
+    "en": "Use a recent avatar",
+    "paths": [
+      "settings.avatar.recent"
+    ]
+  },
+  {
+    "zh": "使用此最近头像",
+    "en": "Use this recent avatar",
+    "paths": [
+      "settings.avatar.useRecent"
+    ]
+  },
+  {
+    "zh": "暂无最近头像",
+    "en": "No recent avatars",
+    "paths": [
+      "settings.avatar.noRecent"
+    ]
+  },
+  {
+    "zh": "上传头像",
+    "en": "Upload avatar",
+    "paths": [
+      "settings.avatar.upload"
+    ]
+  },
+  {
+    "zh": "恢复主题{{type}}",
+    "en": "Restore theme {{type}}",
+    "paths": [
+      "settings.avatar.remove"
+    ]
+  },
+  {
+    "zh": "头像框",
+    "en": "Avatar frame",
+    "paths": [
+      "settings.avatar.shape"
+    ]
+  },
+  {
+    "zh": "跟随主题",
+    "en": "Follow theme",
+    "paths": [
+      "settings.avatar.followThemeShape"
+    ]
+  },
+  {
+    "zh": "圆形",
+    "en": "Circle",
+    "paths": [
+      "settings.avatar.circle"
+    ]
+  },
+  {
+    "zh": "方形",
+    "en": "Square",
+    "paths": [
+      "settings.avatar.square"
+    ]
+  },
+  {
+    "zh": "裁剪{{type}}",
+    "en": "Crop {{type}}",
+    "paths": [
+      "settings.avatar.cropTitle"
+    ]
+  },
+  {
+    "zh": "拖动图片调整位置，并使用缩放控制取景范围。",
+    "en": "Drag the image to position it and use zoom to adjust the framing.",
+    "paths": [
+      "settings.avatar.cropDescription"
+    ]
+  },
+  {
+    "zh": "缩放",
+    "en": "Zoom",
+    "paths": [
+      "settings.avatar.zoom"
+    ]
+  },
+  {
+    "zh": "应用头像",
+    "en": "Apply avatar",
+    "paths": [
+      "settings.avatar.apply"
+    ]
+  },
+  {
+    "zh": "头像处理失败，请重试。",
+    "en": "Avatar processing failed. Please try again.",
+    "paths": [
+      "settings.avatar.errors.fallback"
+    ]
+  },
+  {
+    "zh": "壁纸",
+    "en": "Wallpaper",
+    "paths": [
+      "settings.wallpaper.title"
+    ]
+  },
+  {
+    "zh": "桌面壁纸",
+    "en": "Desktop wallpaper",
+    "paths": [
+      "settings.wallpaper.chooseTitle"
+    ]
+  },
+  {
+    "zh": "自定义壁纸会覆盖主题包壁纸，并随客户端尺寸自适应。",
+    "en": "A custom wallpaper overrides the theme wallpaper and adapts to the client size.",
+    "paths": [
+      "settings.wallpaper.description"
+    ]
+  },
+  {
+    "zh": "选择壁纸",
+    "en": "Choose wallpaper",
+    "paths": [
+      "settings.wallpaper.choose"
+    ]
+  },
+  {
+    "zh": "最近使用",
+    "en": "Recently used",
+    "paths": [
+      "settings.wallpaper.recent"
+    ]
+  },
+  {
+    "zh": "使用此最近壁纸",
+    "en": "Use this recent wallpaper",
+    "paths": [
+      "settings.wallpaper.useRecent"
+    ]
+  },
+  {
+    "zh": "暂无最近壁纸",
+    "en": "No recent wallpapers",
+    "paths": [
+      "settings.wallpaper.noRecent"
+    ]
+  },
+  {
+    "zh": "导入新壁纸",
+    "en": "Import new wallpaper",
+    "paths": [
+      "settings.wallpaper.import"
+    ]
+  },
+  {
+    "zh": "恢复主题壁纸",
+    "en": "Restore theme wallpaper",
+    "paths": [
+      "settings.wallpaper.restoreTheme"
+    ]
+  },
+  {
+    "zh": "壁纸可见度",
+    "en": "Wallpaper visibility",
+    "paths": [
+      "settings.wallpaper.visibility"
+    ]
+  },
+  {
+    "zh": "壁纸预览",
+    "en": "Wallpaper preview",
+    "paths": [
+      "settings.wallpaper.previewTitle"
+    ]
+  },
+  {
+    "zh": "放大壁纸预览",
+    "en": "Expand wallpaper preview",
+    "paths": [
+      "settings.wallpaper.expandPreview"
+    ]
+  },
+  {
+    "zh": "缩小壁纸预览",
+    "en": "Collapse wallpaper preview",
+    "paths": [
+      "settings.wallpaper.collapsePreview"
+    ]
+  },
+  {
+    "zh": "自定义壁纸",
+    "en": "Custom wallpaper",
+    "paths": [
+      "settings.wallpaper.customActive"
+    ]
+  },
+  {
+    "zh": "主题壁纸",
+    "en": "Theme wallpaper",
+    "paths": [
+      "settings.wallpaper.themeActive"
+    ]
+  },
+  {
+    "zh": "当前主题没有壁纸",
+    "en": "The current theme has no wallpaper",
+    "paths": [
+      "settings.wallpaper.themeEmpty"
+    ]
+  },
+  {
+    "zh": "使用本地 Claude",
+    "en": "Use local Claude",
+    "paths": [
+      "settings.useLocalClaude.label"
+    ]
+  },
+  {
+    "zh": "如果打开，优先本地查找 Claude，可能会有兼容性问题，如果关闭，使用 SDK 携带的 Claude",
+    "en": "If enabled, prioritizes the locally installed Claude executable. May have compatibility issues. If disabled, uses the Claude bundled with the SDK.",
+    "paths": [
+      "settings.useLocalClaude.tooltip"
+    ]
+  },
+  {
+    "zh": "未找到本地 Claude，将使用 SDK 内置版本",
+    "en": "Local Claude not found, using SDK bundled version",
+    "paths": [
+      "settings.useLocalClaude.notFound"
+    ]
+  },
+  {
+    "zh": "记录详细日志",
+    "en": "Verbose runtime logging",
+    "paths": [
+      "settings.verboseLogging.label"
+    ]
+  },
+  {
+    "zh": "开启后 runtime.log 会记录 DEBUG 级别日志，关闭后仅记录常规信息级日志。",
+    "en": "When enabled, runtime.log records DEBUG-level diagnostics. When disabled, it only records normal INFO-level runtime logs.",
+    "paths": [
+      "settings.verboseLogging.description"
+    ]
+  },
+  {
+    "zh": "指标上报",
+    "en": "Metrics Reporting",
+    "paths": [
+      "settings.metrics.title"
+    ]
+  },
+  {
+    "zh": "开启指标上报",
+    "en": "Enable metrics reporting",
+    "paths": [
+      "settings.metrics.enable"
+    ]
+  },
+  {
+    "zh": "开启后，客户端会按应用与任务生命周期事件上报心跳和节点执行指标到配置的服务器。",
+    "en": "When enabled, the client reports heartbeat and node execution metrics from application and task lifecycle events.",
+    "paths": [
+      "settings.metrics.enableDescription"
+    ]
+  },
+  {
+    "zh": "上报服务地址",
+    "en": "Reporting server URL",
+    "paths": [
+      "settings.metrics.baseUrl"
+    ]
+  },
+  {
+    "zh": "心跳接口地址",
+    "en": "Heartbeat endpoint",
+    "paths": [
+      "settings.metrics.heartbeatEndpoint"
+    ]
+  },
+  {
+    "zh": "节点详情接口地址",
+    "en": "Node metrics endpoint",
+    "paths": [
+      "settings.metrics.nodeMetricsEndpoint"
+    ]
+  },
+  {
+    "zh": "API Key",
+    "en": "API Key",
+    "paths": [
+      "settings.metrics.apiKey"
+    ]
+  },
+  {
+    "zh": "(已设置)",
+    "en": "(Already set)",
+    "paths": [
+      "settings.metrics.apiKeySet"
+    ]
+  },
+  {
+    "zh": "保存",
+    "en": "Save",
+    "paths": [
+      "settings.metrics.save"
+    ]
+  },
+  {
+    "zh": "更新",
+    "en": "Updates",
+    "paths": [
+      "settings.updater.title"
+    ]
+  },
+  {
+    "zh": "更新地址",
+    "en": "Update URL",
+    "paths": [
+      "settings.updater.currentUrl"
+    ]
+  },
+  {
+    "zh": "修改地址",
+    "en": "Edit URL",
+    "paths": [
+      "settings.updater.editUrl"
+    ]
+  },
+  {
+    "zh": "渠道",
+    "en": "Channel",
+    "paths": [
+      "settings.updater.channelLabel"
+    ]
+  },
+  {
+    "zh": "内置更新地址",
+    "en": "Built-in update URL",
+    "paths": [
+      "settings.updater.builtInUrl"
+    ]
+  },
+  {
+    "zh": "覆盖更新地址",
+    "en": "Override update URL",
+    "paths": [
+      "settings.updater.overrideUrl"
+    ]
+  },
+  {
+    "zh": "当前更新地址",
+    "en": "Current update URL",
+    "paths": [
+      "settings.updater.effectiveUrl"
+    ]
+  },
+  {
+    "zh": "留空使用内置地址",
+    "en": "Leave empty to use built-in URL",
+    "paths": [
+      "settings.updater.overridePlaceholder"
+    ]
+  },
+  {
+    "zh": "保存地址",
+    "en": "Save URL",
+    "paths": [
+      "settings.updater.saveOverride"
+    ]
+  },
+  {
+    "zh": "恢复内置地址",
+    "en": "Use built-in URL",
+    "paths": [
+      "settings.updater.resetToBuiltIn"
+    ]
+  },
+  {
+    "zh": "检查更新",
+    "en": "Check update",
+    "paths": [
+      "settings.updater.checkNow"
+    ]
+  },
+  {
+    "zh": "下载并安装",
+    "en": "Download and install",
+    "paths": [
+      "settings.updater.install"
+    ]
+  },
+  {
+    "zh": "上次检查：{{time}}",
+    "en": "Last checked: {{time}}",
+    "paths": [
+      "settings.updater.lastCheckedAt"
+    ]
+  },
+  {
+    "zh": "发现新版本 {{version}}",
+    "en": "New version {{version}} available",
+    "paths": [
+      "settings.updater.announcement.title",
+      "settings.updater.announcement.dialogTitle"
+    ]
+  },
+  {
+    "zh": "可前往 设置 → 高级 → 更新 查看并安装。",
+    "en": "Go to Settings → Advanced → Updates to review and install it.",
+    "paths": [
+      "settings.updater.announcement.description"
+    ]
+  },
+  {
+    "zh": "关闭",
+    "en": "Close",
+    "paths": [
+      "settings.updater.announcement.dismiss"
+    ]
+  },
+  {
+    "zh": "查看更新",
+    "en": "View update",
+    "paths": [
+      "settings.updater.announcement.view"
+    ]
+  },
+  {
+    "zh": "检测到新的客户端版本。请前往 设置 → 高级 → 更新 完成下载和安装。",
+    "en": "A new client version has been detected. Go to Settings → Advanced → Updates to download and install it.",
+    "paths": [
+      "settings.updater.announcement.dialogDescription"
+    ]
+  },
+  {
+    "zh": "前往设置更新",
+    "en": "Go to Settings",
+    "paths": [
+      "settings.updater.announcement.goToSettings"
+    ]
+  },
+  {
+    "zh": "默认",
+    "en": "Default",
+    "paths": [
+      "settings.updater.channel.default"
+    ]
+  },
+  {
+    "zh": "WB",
+    "en": "WB",
+    "paths": [
+      "settings.updater.channel.wb"
+    ]
+  },
+  {
+    "zh": "尚未检查",
+    "en": "Not checked yet",
+    "paths": [
+      "settings.updater.status.idle"
+    ]
+  },
+  {
+    "zh": "正在检查",
+    "en": "Checking",
+    "paths": [
+      "settings.updater.status.checking"
+    ]
+  },
+  {
+    "zh": "发现新版本",
+    "en": "Update available",
+    "paths": [
+      "settings.updater.status.available"
+    ]
+  },
+  {
+    "zh": "正在下载更新...",
+    "en": "Downloading update...",
+    "paths": [
+      "settings.updater.status.downloading"
+    ]
+  },
+  {
+    "zh": "已是最新版本",
+    "en": "Up to date",
+    "paths": [
+      "settings.updater.status.not-available"
+    ]
+  },
+  {
+    "zh": "检查失败",
+    "en": "Check failed",
+    "paths": [
+      "settings.updater.status.error"
+    ]
+  },
+  {
+    "zh": "会话",
+    "en": "Conversation",
+    "paths": [
+      "conversation.title"
+    ]
+  },
+  {
+    "zh": "新会话",
+    "en": "New Conversation",
+    "paths": [
+      "conversation.newConversation"
+    ]
+  },
+  {
+    "zh": "暂无会话",
+    "en": "No conversations",
+    "paths": [
+      "conversation.noConversations"
+    ]
+  },
+  {
+    "zh": "切换到工作台",
+    "en": "Switch to Workbench",
+    "paths": [
+      "conversation.toggleToWorkbench"
+    ]
+  },
+  {
+    "zh": "切换到会话",
+    "en": "Switch to Conversation",
+    "paths": [
+      "conversation.toggleToConversation"
+    ]
+  },
+  {
+    "zh": "不支持的文件类型: {{names}}",
+    "en": "Unsupported file type: {{names}}",
+    "paths": [
+      "conversation.attachmentUnsupportedFile"
+    ]
+  },
+  {
+    "zh": "最多支持 {{max}} 个附件",
+    "en": "Maximum {{max}} attachments allowed",
+    "paths": [
+      "conversation.attachmentCountExceeded"
+    ]
+  },
+  {
+    "zh": "附件总大小超过限制",
+    "en": "Total attachment size exceeds limit",
+    "paths": [
+      "conversation.attachmentTotalTooLarge"
+    ]
+  },
+  {
+    "zh": "附件保存失败，请重新选择后再发送",
+    "en": "Could not save attachments. Choose them again before sending.",
+    "paths": [
+      "conversation.attachmentMaterializeFailed"
+    ]
+  },
+  {
+    "zh": "内容不能为空",
+    "en": "Content is required",
+    "paths": [
+      "conversation.validation.content.required"
+    ]
+  },
+  {
+    "zh": "AUTO 模式需要选择 Agent",
+    "en": "Agent is required for AUTO mode",
+    "paths": [
+      "conversation.validation.agent.required"
+    ]
+  },
+  {
+    "zh": "Direct 模式需要选择 Agent",
+    "en": "Agent is required for Direct mode",
+    "paths": [
+      "conversation.validation.direct.agent.required"
+    ]
+  },
+  {
+    "zh": "所选 Direct Agent 尚未配置",
+    "en": "Selected Direct Agent is not configured",
+    "paths": [
+      "conversation.validation.direct.agent.not-found"
+    ]
+  },
+  {
+    "zh": "所选 Direct Agent 当前不可用",
+    "en": "Selected Direct Agent is unavailable",
+    "paths": [
+      "conversation.validation.direct.agent.unavailable"
+    ]
+  },
+  {
+    "zh": "所选模型不受当前 Direct Agent 支持",
+    "en": "Selected model is not supported by this Direct Agent",
+    "paths": [
+      "conversation.validation.direct.model.not-found"
+    ]
+  },
+  {
+    "zh": "所选权限模式不受当前 Direct Agent 支持",
+    "en": "Selected permission mode is not supported by this Direct Agent",
+    "paths": [
+      "conversation.validation.direct.permission.not-found"
+    ]
+  },
+  {
+    "zh": "所选 Agent 尚未配置",
+    "en": "Selected Agent is not configured",
+    "paths": [
+      "conversation.validation.agent.not-found"
+    ]
+  },
+  {
+    "zh": "所选模型不受当前 Agent 支持",
+    "en": "Selected model is not supported by this Agent",
+    "paths": [
+      "conversation.validation.model.not-found"
+    ]
+  },
+  {
+    "zh": "所选权限模式不受当前 Agent 支持",
+    "en": "Selected permission mode is not supported by this Agent",
+    "paths": [
+      "conversation.validation.permission.not-found"
+    ]
+  },
+  {
+    "zh": "需要选择工作流模板",
+    "en": "Workflow template is required",
+    "paths": [
+      "conversation.validation.workflow.required"
+    ]
+  },
+  {
+    "zh": "所选工作流模板不存在",
+    "en": "Selected workflow template not found",
+    "paths": [
+      "conversation.validation.workflow.not-found"
+    ]
+  },
+  {
+    "zh": "附件数量不能超过 10 个",
+    "en": "Cannot attach more than 10 files",
+    "paths": [
+      "conversation.validation.conversation.attachment-count-exceeded"
+    ]
+  },
+  {
+    "zh": "单个附件不能超过 25 MB",
+    "en": "Single file cannot exceed 25 MB",
+    "paths": [
+      "conversation.validation.conversation.attachment-too-large"
+    ]
+  },
+  {
+    "zh": "附件总大小不能超过 100 MB",
+    "en": "Total attachment size cannot exceed 100 MB",
+    "paths": [
+      "conversation.validation.conversation.attachment-total-too-large"
+    ]
+  },
+  {
+    "zh": "不支持的附件类型",
+    "en": "Unsupported file type",
+    "paths": [
+      "conversation.validation.conversation.attachment-unsupported-type"
+    ]
+  },
+  {
+    "zh": "附件文件不存在",
+    "en": "Attachment file not found",
+    "paths": [
+      "conversation.validation.conversation.attachment-not-found"
+    ]
+  },
+  {
+    "zh": "附件文件不可读",
+    "en": "Attachment file is unreadable",
+    "paths": [
+      "conversation.validation.conversation.attachment-unreadable"
+    ]
+  },
+  {
+    "zh": "快捷操作",
+    "en": "Quick Actions",
+    "paths": [
+      "conversation.sidebar.quickActions"
+    ]
+  },
+  {
+    "zh": "快速对话",
+    "en": "New Chat",
+    "paths": [
+      "conversation.sidebar.newChat"
+    ]
+  },
+  {
+    "zh": "搜索",
+    "en": "Search",
+    "paths": [
+      "conversation.sidebar.search"
+    ]
+  },
+  {
+    "zh": "Agent",
+    "en": "Agent",
+    "paths": [
+      "conversation.sidebar.agentManagement"
+    ]
+  },
+  {
+    "zh": "上下文",
+    "en": "Context",
+    "paths": [
+      "conversation.sidebar.contextManagement"
+    ]
+  },
+  {
+    "zh": "运行模式",
+    "en": "Run Mode",
+    "paths": [
+      "conversation.sidebar.runModeManagement"
+    ]
+  },
+  {
+    "zh": "更多",
+    "en": "More",
+    "paths": [
+      "conversation.sidebar.more"
+    ]
+  },
+  {
+    "zh": "需求管理",
+    "en": "Requirements",
+    "paths": [
+      "conversation.sidebar.multicaTaskManagement"
+    ]
+  },
+  {
+    "zh": "置顶",
+    "en": "Pinned",
+    "paths": [
+      "conversation.sidebar.pinned",
+      "conversation.sidebar.pinToTop"
+    ]
+  },
+  {
+    "zh": "置顶会话会显示在这里",
+    "en": "Pinned conversations appear here",
+    "paths": [
+      "conversation.sidebar.noPinned"
+    ]
+  },
+  {
+    "zh": "尚未添加工作空间",
+    "en": "No workspaces added",
+    "paths": [
+      "conversation.sidebar.noWorkspaces"
+    ]
+  },
+  {
+    "zh": "工作空间",
+    "en": "Workspaces",
+    "paths": [
+      "conversation.sidebar.workspaces",
+      "conversation.home.workspace"
+    ]
+  },
+  {
+    "zh": "拖拽排序",
+    "en": "Drag to reorder",
+    "paths": [
+      "conversation.sidebar.dragToReorder"
+    ]
+  },
+  {
+    "zh": "取消置顶",
+    "en": "Unpin",
+    "paths": [
+      "conversation.sidebar.unpin"
+    ]
+  },
+  {
+    "zh": "删除会话？",
+    "en": "Delete conversation?",
+    "paths": [
+      "conversation.sidebar.deleteConfirmTitle"
+    ]
+  },
+  {
+    "zh": "会话“{{title}}”将从 ~/.gold-band 对应 task 目录移除，此操作不可撤销。若系统支持，将优先移入回收站。是否继续？",
+    "en": "Conversation “{{title}}” will be removed from its task directory under ~/.gold-band. This cannot be undone. When supported, it will be moved to the recycle bin first. Continue?",
+    "paths": [
+      "conversation.sidebar.deleteConfirmDescription"
+    ]
+  },
+  {
+    "zh": "确认删除",
+    "en": "Delete",
+    "paths": [
+      "conversation.sidebar.deleteConfirmAction"
+    ]
+  },
+  {
+    "zh": "添加工作空间",
+    "en": "Add Workspace",
+    "paths": [
+      "conversation.sidebar.addWorkspace",
+      "conversation.sidebar.multica.addWorkspace",
+      "conversation.sidebar.multica.dialog.title"
+    ]
+  },
+  {
+    "zh": "移除工作空间",
+    "en": "Remove Workspace",
+    "paths": [
+      "conversation.sidebar.removeWorkspace"
+    ]
+  },
+  {
+    "zh": "移除工作空间 {{name}}",
+    "en": "Remove workspace {{name}}",
+    "paths": [
+      "conversation.sidebar.removeWorkspaceNamed"
+    ]
+  },
+  {
+    "zh": "移除 {{name}}？",
+    "en": "Remove {{name}}?",
+    "paths": [
+      "conversation.sidebar.removeWorkspaceTitle"
+    ]
+  },
+  {
+    "zh": "这会将该工作空间从侧栏中移除。磁盘上的文件和历史会话不会被删除。",
+    "en": "This removes the workspace from the sidebar. Files on disk and conversation history will not be deleted.",
+    "paths": [
+      "conversation.sidebar.removeWorkspaceDescription"
+    ]
+  },
+  {
+    "zh": "取消",
+    "en": "Cancel",
+    "paths": [
+      "conversation.sidebar.removeWorkspaceCancel"
+    ]
+  },
+  {
+    "zh": "移除",
+    "en": "Remove",
+    "paths": [
+      "conversation.sidebar.removeWorkspaceConfirm"
+    ]
+  },
+  {
+    "zh": "正在移除…",
+    "en": "Removing…",
+    "paths": [
+      "conversation.sidebar.removingWorkspace"
+    ]
+  },
+  {
+    "zh": "正在加载工作空间…",
+    "en": "Loading workspaces…",
+    "paths": [
+      "conversation.sidebar.loadingWorkspaces"
+    ]
+  },
+  {
+    "zh": "工作空间加载失败，点击重试",
+    "en": "Workspace loading failed. Click to retry",
+    "paths": [
+      "conversation.sidebar.retryWorkspaces"
+    ]
+  },
+  {
+    "zh": "正在加载会话…",
+    "en": "Loading conversations…",
+    "paths": [
+      "conversation.sidebar.loadingConversations"
+    ]
+  },
+  {
+    "zh": "会话加载失败，点击重试",
+    "en": "Conversation loading failed. Click to retry",
+    "paths": [
+      "conversation.sidebar.retryConversations"
+    ]
+  },
+  {
+    "zh": "加载更多会话",
+    "en": "Load more conversations",
+    "paths": [
+      "conversation.sidebar.loadMoreConversations"
+    ]
+  },
+  {
+    "zh": "正在加载置顶会话…",
+    "en": "Loading pinned conversations…",
+    "paths": [
+      "conversation.sidebar.loadingPinned"
+    ]
+  },
+  {
+    "zh": "置顶会话加载失败，点击重试",
+    "en": "Pinned conversations failed to load. Click to retry",
+    "paths": [
+      "conversation.sidebar.retryPinned"
+    ]
+  },
+  {
+    "zh": "加载更多置顶会话",
+    "en": "Load more pinned conversations",
+    "paths": [
+      "conversation.sidebar.loadMorePinned"
+    ]
+  },
+  {
+    "zh": "正在加载运行历史…",
+    "en": "Loading run history…",
+    "paths": [
+      "conversation.sidebar.loadingRuns"
+    ]
+  },
+  {
+    "zh": "运行历史加载失败，点击重试",
+    "en": "Run history failed to load. Click to retry",
+    "paths": [
+      "conversation.sidebar.retryRuns"
+    ]
+  },
+  {
+    "zh": "加载更多运行记录",
+    "en": "Load more runs",
+    "paths": [
+      "conversation.sidebar.loadMoreRuns"
+    ]
+  },
+  {
+    "zh": "已完成，尚未查看",
+    "en": "Completed, not viewed",
+    "paths": [
+      "conversation.sidebar.terminalResult.completed"
+    ]
+  },
+  {
+    "zh": "已停止，尚未查看",
+    "en": "Stopped, not viewed",
+    "paths": [
+      "conversation.sidebar.terminalResult.stopped"
+    ]
+  },
+  {
+    "zh": "执行异常，尚未查看",
+    "en": "Failed, not viewed",
+    "paths": [
+      "conversation.sidebar.terminalResult.failed"
+    ]
+  },
+  {
+    "zh": "需求",
+    "en": "Requirements",
+    "paths": [
+      "conversation.sidebar.multica.sectionTitle"
+    ]
+  },
+  {
+    "zh": "尚未连接 Multica",
+    "en": "Not connected to Multica",
+    "paths": [
+      "conversation.sidebar.multica.emptyTitle"
+    ]
+  },
+  {
+    "zh": "连接后可在此查看并领取 Multica 需求。",
+    "en": "Connect to view and claim Multica requirements.",
+    "paths": [
+      "conversation.sidebar.multica.emptyDescription"
+    ]
+  },
+  {
+    "zh": "连接 Multica",
+    "en": "Connect Multica",
+    "paths": [
+      "conversation.sidebar.multica.connectButton"
+    ]
+  },
+  {
+    "zh": "连接地址设置",
+    "en": "Connection address settings",
+    "paths": [
+      "conversation.sidebar.multica.connectionSettings"
+    ]
+  },
+  {
+    "zh": "取消任务",
+    "en": "Cancel task",
+    "paths": [
+      "conversation.sidebar.multica.cancelTask"
+    ]
+  },
+  {
+    "zh": "执行",
+    "en": "Run",
+    "paths": [
+      "conversation.sidebar.multica.executeTask"
+    ]
+  },
+  {
+    "zh": "尚未绑定工作空间",
+    "en": "No workspaces bound",
+    "paths": [
+      "conversation.sidebar.multica.noWorkspacesBound"
+    ]
+  },
+  {
+    "zh": "待办",
+    "en": "Todo",
+    "paths": [
+      "conversation.sidebar.multica.status.queued"
+    ]
+  },
+  {
+    "zh": "进行中",
+    "en": "Running",
+    "paths": [
+      "conversation.sidebar.multica.status.running"
+    ]
+  },
+  {
+    "zh": "已完成",
+    "en": "Done",
+    "paths": [
+      "conversation.sidebar.multica.status.completed"
+    ]
+  },
+  {
+    "zh": "失败",
+    "en": "Failed",
+    "paths": [
+      "conversation.sidebar.multica.status.failed"
+    ]
+  },
+  {
+    "zh": "远程工作空间",
+    "en": "Remote workspace",
+    "paths": [
+      "conversation.sidebar.multica.dialog.remoteWorkspace"
+    ]
+  },
+  {
+    "zh": "Provider",
+    "en": "Provider",
+    "paths": [
+      "conversation.sidebar.multica.dialog.provider"
+    ]
+  },
+  {
+    "zh": "添加",
+    "en": "Add",
+    "paths": [
+      "conversation.sidebar.multica.dialog.add"
+    ]
+  },
+  {
+    "zh": "请选择远程工作空间",
+    "en": "Please select a remote workspace",
+    "paths": [
+      "conversation.sidebar.multica.dialog.needWorkspace"
+    ]
+  },
+  {
+    "zh": "服务端暂无可绑定的工作空间，请先在 multica Web 创建工作空间。",
+    "en": "No bindable workspaces on the server yet. Create one in multica Web first.",
+    "paths": [
+      "conversation.sidebar.multica.dialog.noServerWorkspaces"
+    ]
+  },
+  {
+    "zh": "所有远程工作空间均已绑定。",
+    "en": "All remote workspaces are already bound.",
+    "paths": [
+      "conversation.sidebar.multica.dialog.allWorkspacesBound"
+    ]
+  },
+  {
+    "zh": "请先添加本地工作空间，再执行需求",
+    "en": "Add a local workspace before running a requirement",
+    "paths": [
+      "conversation.composer.multicaNeedLocalWorkspace"
+    ]
+  },
+  {
+    "zh": "Multica · {{title}}",
+    "en": "Multica · {{title}}",
+    "paths": [
+      "conversation.composer.multicaBindingTag"
+    ]
+  },
+  {
+    "zh": "解除任务绑定",
+    "en": "Unbind task",
+    "paths": [
+      "conversation.composer.removeMulticaBinding"
+    ]
+  },
+  {
+    "zh": "搜索 {{workspace}} 分支",
+    "en": "Search {{workspace}} branches",
+    "paths": [
+      "conversation.branchPicker.search"
+    ]
+  },
+  {
+    "zh": "搜索分支",
+    "en": "Search branches",
+    "paths": [
+      "conversation.branchPicker.searchGeneric"
+    ]
+  },
+  {
+    "zh": "正在读取分支…",
+    "en": "Loading branches…",
+    "paths": [
+      "conversation.branchPicker.loading"
+    ]
+  },
+  {
+    "zh": "无分支",
+    "en": "No branch",
+    "paths": [
+      "conversation.branchPicker.unavailable"
+    ]
+  },
+  {
+    "zh": "Git 版本不受支持",
+    "en": "Git version unsupported",
+    "paths": [
+      "conversation.branchPicker.versionUnsupportedLabel"
+    ]
+  },
+  {
+    "zh": "当前版本为 {{installedVersion}}，分支功能需要 Git {{minimumVersion}} 或更高版本。",
+    "en": "The installed version is {{installedVersion}}. Branch features require Git {{minimumVersion}} or later.",
+    "paths": [
+      "conversation.branchPicker.versionUnsupportedDescription"
+    ]
+  },
+  {
+    "zh": "没有匹配的本地分支",
+    "en": "No matching local branches",
+    "paths": [
+      "conversation.branchPicker.empty"
+    ]
+  },
+  {
+    "zh": "未提交：{{count}} 个文件",
+    "en": "Uncommitted: {{count}} files",
+    "paths": [
+      "conversation.branchPicker.dirtyFiles"
+    ]
+  },
+  {
+    "zh": "已在其他 Worktree 中检出",
+    "en": "Checked out in another worktree",
+    "paths": [
+      "conversation.branchPicker.checkedOutElsewhere"
+    ]
+  },
+  {
+    "zh": "创建并检出新分支…",
+    "en": "Create and check out new branch…",
+    "paths": [
+      "conversation.branchPicker.createAndCheckout"
+    ]
+  },
+  {
+    "zh": "创建并检出新分支",
+    "en": "Create and check out a new branch",
+    "paths": [
+      "conversation.branchPicker.createTitle"
+    ]
+  },
+  {
+    "zh": "从 {{branch}} 创建新分支，并将当前工作区切换到该分支。",
+    "en": "Create a branch from {{branch}} and switch the current workspace to it.",
+    "paths": [
+      "conversation.branchPicker.createDescription"
+    ]
+  },
+  {
+    "zh": "Git 正在执行其他写操作，暂时不能切换分支。",
+    "en": "Another Git write is running. Branch switching is temporarily unavailable.",
+    "paths": [
+      "conversation.branchPicker.locked"
+    ]
+  },
+  {
+    "zh": "{{operation}} 正在进行，完成或中止后才能切换分支。",
+    "en": "A {{operation}} is in progress. Complete or abort it before switching branches.",
+    "paths": [
+      "conversation.branchPicker.operationInProgress"
+    ]
+  },
+  {
+    "zh": "早上好，今天想一起做点什么？",
+    "en": "Good morning. What shall we work on?",
+    "paths": [
+      "conversation.home.greeting.morning"
+    ]
+  },
+  {
+    "zh": "上午好，今天想一起做点什么？",
+    "en": "Good morning. What shall we work on?",
+    "paths": [
+      "conversation.home.greeting.lateMorning"
+    ]
+  },
+  {
+    "zh": "中午好，今天想一起做点什么？",
+    "en": "Good afternoon. What shall we work on?",
+    "paths": [
+      "conversation.home.greeting.noon"
+    ]
+  },
+  {
+    "zh": "下午好，今天想一起做点什么？",
+    "en": "Good afternoon. What shall we work on?",
+    "paths": [
+      "conversation.home.greeting.afternoon"
+    ]
+  },
+  {
+    "zh": "晚上好，今天想一起做点什么？",
+    "en": "Good evening. What shall we work on?",
+    "paths": [
+      "conversation.home.greeting.evening"
+    ]
+  },
+  {
+    "zh": "夜深了，想一起做点什么？",
+    "en": "It's late. What shall we work on?",
+    "paths": [
+      "conversation.home.greeting.lateNight"
+    ]
+  },
+  {
+    "zh": "输入你的需求…",
+    "en": "Describe what you need…",
+    "paths": [
+      "conversation.home.inputPlaceholder"
+    ]
+  },
+  {
+    "zh": "选择工作空间",
+    "en": "Select workspace",
+    "paths": [
+      "conversation.home.selectWorkspace"
+    ]
+  },
+  {
+    "zh": "工作位置",
+    "en": "Work location",
+    "paths": [
+      "conversation.home.workLocation"
+    ]
+  },
+  {
+    "zh": "主工作区",
+    "en": "Main workspace",
+    "paths": [
+      "conversation.home.workLocationMain"
+    ]
+  },
+  {
+    "zh": "工作树",
+    "en": "worktree",
+    "paths": [
+      "conversation.home.workLocationWorktree",
+      "conversation.runtime.worktree"
+    ]
+  },
+  {
+    "zh": "新工作树",
+    "en": "New worktree",
+    "paths": [
+      "conversation.home.workLocationNewWorktree"
+    ]
+  },
+  {
+    "zh": "创建副本，以便并行工作",
+    "en": "Create a copy for parallel work",
+    "paths": [
+      "conversation.home.worktreeTip"
+    ]
+  },
+  {
+    "zh": "处理模式",
+    "en": "Run Mode",
+    "paths": [
+      "conversation.home.runMode"
+    ]
+  },
+  {
+    "zh": "AUTO",
+    "en": "AUTO",
+    "paths": [
+      "conversation.home.auto"
+    ]
+  },
+  {
+    "zh": "Direct",
+    "en": "Direct",
+    "paths": [
+      "conversation.home.direct"
+    ]
+  },
+  {
+    "zh": "工作流",
+    "en": "Workflow",
+    "paths": [
+      "conversation.home.workflow"
+    ]
+  },
+  {
+    "zh": "选择 Agent",
+    "en": "Select agent",
+    "paths": [
+      "conversation.home.selectAgent"
+    ]
+  },
+  {
+    "zh": "选择模型",
+    "en": "Select model",
+    "paths": [
+      "conversation.home.selectModel"
+    ]
+  },
+  {
+    "zh": "不指定",
+    "en": "Unspecified",
+    "paths": [
+      "conversation.home.unspecifiedModel",
+      "conversation.home.unspecifiedPermissionMode"
+    ]
+  },
+  {
+    "zh": "选择工作流模板",
+    "en": "Select workflow template",
+    "paths": [
+      "conversation.home.selectWorkflowTemplate"
+    ]
+  },
+  {
+    "zh": "请先在 Agent 管理中添加 Agent",
+    "en": "Add an agent in Agent Management first",
+    "paths": [
+      "conversation.home.noAgent"
+    ]
+  },
+  {
+    "zh": "暂无有效工作流模板",
+    "en": "No valid workflow templates",
+    "paths": [
+      "conversation.home.noWorkflowTemplate"
+    ]
+  },
+  {
+    "zh": "动态 Agent",
+    "en": "Dynamic Agent",
+    "paths": [
+      "conversation.home.dynamicAgent"
+    ]
+  },
+  {
+    "zh": "附件",
+    "en": "Attachments",
+    "paths": [
+      "conversation.home.attachments"
+    ]
+  },
+  {
+    "zh": "添加附件",
+    "en": "Add attachments",
+    "paths": [
+      "conversation.home.addAttachments"
+    ]
+  },
+  {
+    "zh": "配置运行模式",
+    "en": "Configure Run Mode",
+    "paths": [
+      "conversation.home.guideTitle"
+    ]
+  },
+  {
+    "zh": "首次使用需要先配置运行模式，包括 Agent 和工作流设置。",
+    "en": "Configure your run mode settings including agent and workflow preferences before getting started.",
+    "paths": [
+      "conversation.home.guideDescription"
+    ]
+  },
+  {
+    "zh": "去配置",
+    "en": "Configure",
+    "paths": [
+      "conversation.home.configureNow"
+    ]
+  },
+  {
+    "zh": "修改 AUTO",
+    "en": "Edit AUTO",
+    "paths": [
+      "conversation.home.configureAuto"
+    ]
+  },
+  {
+    "zh": "修改工作流",
+    "en": "Edit Workflow",
+    "paths": [
+      "conversation.home.configureWorkflow",
+      "conversation.runtime.composerFixWorkflow",
+      "conversation.runtime.repairWorkflow"
+    ]
+  },
+  {
+    "zh": "需求采访",
+    "en": "Requirement Interview",
+    "paths": [
+      "conversation.home.includeInterview"
+    ]
+  },
+  {
+    "zh": "需求拷问",
+    "en": "Requirement Grilling",
+    "paths": [
+      "conversation.home.includeGrill"
+    ]
+  },
+  {
+    "zh": "刚刚",
+    "en": "Just now",
+    "paths": [
+      "conversation.runtime.justNow"
+    ]
+  },
+  {
+    "zh": "会话切换",
+    "en": "Session Switcher",
+    "paths": [
+      "conversation.runtime.sessionSwitcher"
+    ]
+  },
+  {
+    "zh": "重跑该任务",
+    "en": "Rerun task",
+    "paths": [
+      "conversation.runtime.rerun"
+    ]
+  },
+  {
+    "zh": "停止当前 Run 并重跑？",
+    "en": "Stop current run and rerun?",
+    "paths": [
+      "conversation.runtime.rerunConfirmTitle"
+    ]
+  },
+  {
+    "zh": "当前 Run 仍在运行中，重跑会先停止当前 Run，然后创建一个新的 Run。历史 Run 会保留。",
+    "en": "The current run is still active. Rerunning will stop it first, then create a new run. Run history is preserved.",
+    "paths": [
+      "conversation.runtime.rerunConfirmDescription"
+    ]
+  },
+  {
+    "zh": "停止并重跑",
+    "en": "Stop and rerun",
+    "paths": [
+      "conversation.runtime.rerunConfirmAction"
+    ]
+  },
+  {
+    "zh": "编辑工作流",
+    "en": "Edit workflow",
+    "paths": [
+      "conversation.runtime.editWorkflow"
+    ]
+  },
+  {
+    "zh": "查看工作流",
+    "en": "View workflow",
+    "paths": [
+      "conversation.runtime.viewWorkflow"
+    ]
+  },
+  {
+    "zh": "打开目录",
+    "en": "Open directory",
+    "paths": [
+      "conversation.runtime.openInFileManager"
+    ]
+  },
+  {
+    "zh": "修改标题",
+    "en": "Edit title",
+    "paths": [
+      "conversation.runtime.titleEdit"
+    ]
+  },
+  {
+    "zh": "正在加载会话",
+    "en": "Loading conversation",
+    "paths": [
+      "conversation.runtime.loadingSession"
+    ]
+  },
+  {
+    "zh": "暂无活跃会话",
+    "en": "No active session",
+    "paths": [
+      "conversation.runtime.noActiveSession"
+    ]
+  },
+  {
+    "zh": "活跃会话",
+    "en": "Active sessions",
+    "paths": [
+      "conversation.runtime.activeSessions"
+    ]
+  },
+  {
+    "zh": "运行出错",
+    "en": "Runtime error",
+    "paths": [
+      "conversation.runtime.composerError",
+      "conversation.runtime.runError"
+    ]
+  },
+  {
+    "zh": "工作流无效，请修复后再试",
+    "en": "Workflow is invalid, please repair",
+    "paths": [
+      "conversation.runtime.workflowInvalid"
+    ]
+  },
+  {
+    "zh": "当前会话已暂停，可继续运行",
+    "en": "Current session is paused and can continue",
+    "paths": [
+      "conversation.runtime.sessionPaused"
+    ]
+  },
+  {
+    "zh": "修复",
+    "en": "Repair",
+    "paths": [
+      "conversation.runtime.repairAction"
+    ]
+  },
+  {
+    "zh": "当前会话运行失败，请查看错误原因",
+    "en": "The current session failed. Review the reason.",
+    "paths": [
+      "conversation.runtime.runtimeSessionFailed"
+    ]
+  },
+  {
+    "zh": "当前会话已终止，请查看错误原因",
+    "en": "The current session was stopped. Review the reason.",
+    "paths": [
+      "conversation.runtime.runtimeSessionKilled"
+    ]
+  },
+  {
+    "zh": "进程已中断",
+    "en": "Process interrupted",
+    "paths": [
+      "conversation.runtime.pauseReasonProcessInterrupted"
+    ]
+  },
+  {
+    "zh": "运行异常，可继续处理",
+    "en": "Runtime abnormal. You can continue.",
+    "paths": [
+      "conversation.runtime.pauseReasonRuntimeAbnormal"
+    ]
+  },
+  {
+    "zh": "因错误阻塞，处理后可继续",
+    "en": "Error blocked. Resolve it and continue.",
+    "paths": [
+      "conversation.runtime.pauseReasonErrorBlocked"
+    ]
+  },
+  {
+    "zh": "当前运行因错误阻塞，请查看错误原因",
+    "en": "The current run is blocked by an error. Review the reason.",
+    "paths": [
+      "conversation.runtime.runtimeErrorBlocked"
+    ]
+  },
+  {
+    "zh": "等待用户输入",
+    "en": "Waiting for user input",
+    "paths": [
+      "conversation.runtime.pauseReasonWaitingForUserInput"
+    ]
+  },
+  {
+    "zh": "当前选择的模型不支持思考强度，请清除思考强度或更换模型后重试",
+    "en": "The selected model does not support reasoning effort. Clear the reasoning effort or switch models, then retry.",
+    "paths": [
+      "conversation.runtime.sessionConfigThoughtLevelUnsupported"
+    ]
+  },
+  {
+    "zh": "思考强度 {{value}} 不可用，可选：{{values}}",
+    "en": "Reasoning effort {{value}} is unavailable. Available: {{values}}",
+    "paths": [
+      "conversation.runtime.sessionConfigThoughtLevelValueUnavailable"
+    ]
+  },
+  {
+    "zh": "配置项 {{configId}} 不支持所选值 {{value}}，可选：{{values}}",
+    "en": "Config option {{configId}} does not support value {{value}}. Available: {{values}}",
+    "paths": [
+      "conversation.runtime.sessionConfigValueUnavailable"
+    ]
+  },
+  {
+    "zh": "配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试",
+    "en": "Config option {{configId}} does not support value {{value}}. Adjust it and retry.",
+    "paths": [
+      "conversation.runtime.sessionConfigValueUnavailableNoValues"
+    ]
+  },
+  {
+    "zh": "无法创建新工作树，请检查当前仓库的工作树状态后重试",
+    "en": "Unable to create a new worktree. Check the repository worktree state and try again.",
+    "paths": [
+      "conversation.runtime.worktreeCreateFailed"
+    ]
+  },
+  {
+    "zh": "拉起下一节点中",
+    "en": "Launching next node",
+    "paths": [
+      "conversation.runtime.launchingNextNode"
+    ]
+  },
+  {
+    "zh": "正在准备开发环境…",
+    "en": "Preparing development environment…",
+    "paths": [
+      "conversation.runtime.preparingDevelopmentEnvironment"
+    ]
+  },
+  {
+    "zh": "正在处理工作区…",
+    "en": "Processing workspace…",
+    "paths": [
+      "conversation.runtime.processingWorkspace"
+    ]
+  },
+  {
+    "zh": "当前会话由 runtime 运行中，暂不可输入",
+    "en": "This session is being controlled by the runtime, so input is temporarily unavailable",
+    "paths": [
+      "conversation.runtime.composerRuntimeControlledPlaceholder"
+    ]
+  },
+  {
+    "zh": "正在停止当前会话…",
+    "en": "Stopping current session…",
+    "paths": [
+      "conversation.runtime.composerStoppingPlaceholder"
+    ]
+  },
+  {
+    "zh": "当前会话已停止，你可以输入任何内容继续运行",
+    "en": "This session has stopped. You can enter any message to continue the run",
+    "paths": [
+      "conversation.runtime.composerStoppedPlaceholder"
+    ]
+  },
+  {
+    "zh": "当前版本为 {{installedVersion}}，Gold Band 的 Git 功能需要 Git {{minimumVersion}} 或更高版本。",
+    "en": "The installed version is {{installedVersion}}. Gold Band Git features require Git {{minimumVersion}} or later.",
+    "paths": [
+      "conversation.gitRequirement.versionUnsupportedDescription"
+    ]
+  },
+  {
+    "zh": "Gold Band 无法识别当前 Git 版本。请修复或重新安装 Git 后重新检测。",
+    "en": "Gold Band could not identify the installed Git version. Repair or reinstall Git, then check again.",
+    "paths": [
+      "conversation.gitRequirement.versionUnavailableDescription"
+    ]
+  },
+  {
+    "zh": "当前文件夹还不是 Git 仓库",
+    "en": "This folder is not a Git repository",
+    "paths": [
+      "conversation.gitRequirement.repositoryTitle"
+    ]
+  },
+  {
+    "zh": "Git 仓库需要首次提交",
+    "en": "An initial Git commit is required",
+    "paths": [
+      "conversation.gitRequirement.headTitle"
+    ]
+  },
+  {
+    "zh": "Auto 模式需要 Git",
+    "en": "Auto mode requires Git",
+    "paths": [
+      "conversation.gitRequirement.autoTitle"
+    ]
+  },
+  {
+    "zh": "此工作流需要 Git",
+    "en": "This workflow requires Git",
+    "paths": [
+      "conversation.gitRequirement.workflowTitle"
+    ]
+  },
+  {
+    "zh": "新工作树需要 Git",
+    "en": "A new worktree requires Git",
+    "paths": [
+      "conversation.gitRequirement.worktreeTitle"
+    ]
+  },
+  {
+    "zh": "初始化仓库后还需要在 Git 工作区完成首次提交，Gold Band 不会自动暂存或提交整个目录。",
+    "en": "After initialization, create the first commit in the Git workspace. Gold Band will not stage or commit the whole folder automatically.",
+    "paths": [
+      "conversation.gitRequirement.repositoryDescription"
+    ]
+  },
+  {
+    "zh": "请在右侧 Git 工作区完成首次提交。Gold Band 不会替你选择或提交文件。",
+    "en": "Create the first commit in the Git workspace. Gold Band will not choose or commit files for you.",
+    "paths": [
+      "conversation.gitRequirement.headDescription"
+    ]
+  },
+  {
+    "zh": "安装 Git 并重新检测后即可使用 Auto 模式。你也可以选择其他不包含 AI-DYNAMIC 的工作流。",
+    "en": "Install Git and check again to use Auto mode, or choose a workflow without AI-DYNAMIC.",
+    "paths": [
+      "conversation.gitRequirement.autoDescription"
+    ]
+  },
+  {
+    "zh": "此工作流包含 AI-DYNAMIC，需要 Git、有效 HEAD 和 worktree 能力才能运行。",
+    "en": "This workflow contains AI-DYNAMIC and requires Git, a valid HEAD, and worktree support.",
+    "paths": [
+      "conversation.gitRequirement.workflowDescription"
+    ]
+  },
+  {
+    "zh": "创建工作树需要 Git、有效 HEAD 和 worktree 能力。完成配置后重新检测即可选择新工作树。",
+    "en": "Creating a worktree requires Git, a valid HEAD, and worktree support. Check again after the repository is ready.",
+    "paths": [
+      "conversation.gitRequirement.worktreeDescription"
+    ]
+  },
+  {
+    "zh": "使用其他工作流",
+    "en": "Use another workflow",
+    "paths": [
+      "conversation.gitRequirement.useOtherWorkflow"
+    ]
+  },
+  {
+    "zh": "使用主工作区",
+    "en": "Use main workspace",
+    "paths": [
+      "conversation.gitRequirement.useMainWorkspace"
+    ]
+  },
+  {
+    "zh": "打开源码管理",
+    "en": "Open source control",
+    "paths": [
+      "conversation.gitRequirement.openSourceControl"
+    ]
+  },
+  {
+    "zh": "检测中…",
+    "en": "Checking…",
+    "paths": [
+      "conversation.gitRequirement.checking"
+    ]
+  },
+  {
+    "zh": "搜索会话",
+    "en": "Search Conversations",
+    "paths": [
+      "conversation.search.title"
+    ]
+  },
+  {
+    "zh": "输入关键词搜索…",
+    "en": "Type to search…",
+    "paths": [
+      "conversation.search.placeholder"
+    ]
+  },
+  {
+    "zh": "没有找到匹配的会话",
+    "en": "No matching conversations",
+    "paths": [
+      "conversation.search.noResults"
+    ]
+  },
+  {
+    "zh": "搜索失败，请稍后重试",
+    "en": "Search failed. Please try again",
+    "paths": [
+      "conversation.search.failed"
+    ]
+  },
+  {
+    "zh": "{{count}} 个结果",
+    "en": "{{count}} results",
+    "paths": [
+      "conversation.search.resultCount"
+    ]
+  },
+  {
+    "zh": "打开最近 Run",
+    "en": "Open latest run",
+    "paths": [
+      "conversation.search.openLatestRun"
+    ]
+  },
+  {
+    "zh": "已创建新 Run",
+    "en": "New run created",
+    "paths": [
+      "conversation.rerun.started"
+    ]
+  },
+  {
+    "zh": "已停止当前 Run 并创建新 Run",
+    "en": "Stopped current run and created new run",
+    "paths": [
+      "conversation.rerun.stoppedAndStarted"
+    ]
+  }
+]

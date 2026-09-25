@@ -4,20 +4,20 @@
 
 # Gold Band
 
-> 本地优先的 AI Agent 桌面客户端
+> 想成为你最后一款 Agent 桌面客户端
 >
-> 直接对话、固定工作流与 AI 动态编排，统一管理本地 Coding Agent
+> 主流 Agent 客户端的体验 + 完整的工作流设计，兼顾日常开发与大型需求的长时间无人值守开发
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#平台与语言)
 [![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)
 
-[下载](https://github.com/diodeme/Gold-Band/releases)
+[下载](https://github.com/diodeme/Gold-Band/releases) · [在线 UI 预览](https://gold-band.dion.blue/zh/demo#)
 
 <!-- README-I18N:START -->
 
-[English](./README.md) | **中文**
+[English](./README.md) | **简体中文** | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
 
 <!-- README-I18N:END -->
 
@@ -25,43 +25,66 @@
 
 ---
 
-Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Agent Client Protocol（ACP）连接 Claude Code、Codex 等本地 Agent，并提供统一的会话、工作空间、权限、附件、历史记录和运行观测体验。
+Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Agent Client Protocol（ACP）连接 Claude Code、Codex 等主流 Agent：一个交互设计，多套 harness 随时切换；同时提供完整的工作流与 AUTO 编排，让长程任务更稳定、更可观测，不依赖模型抽奖式分发。
 
-你既可以像使用普通 Agent 客户端一样持续对话，也可以通过固定工作流或 AI 动态编排执行更长、更复杂、需要验证和失败恢复的 Coding 任务。
-
-![alt text](docs/images/README/gold-band-readme-hero-zh.png)
+> [!TIP]
+> 想先看看长什么样？打开 [在线 UI 预览](https://gold-band.dion.blue/zh/demo#)，推荐使用桌面端浏览器。在线预览能力受限，最终效果以客户端为准。
 
 > [!NOTE]
-> Gold Band 仍处于 **Developer Preview**。Claude Code 和 Codex 是当前推荐的体验入口；其他 Agent 的可用性取决于本机环境及其 ACP 支持情况。
+> Gold Band 仍处于 **Developer Preview**。核心能力已稳定可用，交互细节仍在快速迭代。
 
-## 为什么做 Gold Band
+## 亮点
 
-本地 Coding Agent 已经很强，但不同工具之间的会话、配置和任务执行方式仍然割裂；复杂任务还会遇到上下文漂移、缺少独立验收、失败后难以恢复等问题。
+- **一个客户端接入主流 Agent**：内置 Claude Code、Codex、Cursor、Gemini CLI、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi，也可以自定义接入任何支持 ACP 的 Agent。
+- **三种运行模式**：DIRECT 直接会话、WORKFLOW 固定工作流、AUTO 动态编排，覆盖从日常问答到大型需求的各类任务。
+- **工程化管理的工作流**：每个节点可单独配置 Agent、模型、角色和结果判定方式；支持回到过去的会话进行修复，也支持发起新的 round 继续实现需求。
+- **面向大型任务的 AUTO 模式**：由节点拆分子任务并分发，每个子任务在独立 Git worktree 上执行，完成后由 merge 节点合并、accept 节点验收，再根据结果进入下一轮分发。
+- **主流 Agent 客户端能力基本齐全**：SKILL、MCP、角色（Profile）管理，定时任务，需求管理（对接 Multica），文件查看与编辑，源码管理，内置浏览器，IM 远程干预与通知，壁纸、头像、字体、主题等个性化设置。
+- **轻量**：基于 Tauri 2 + Rust，安装包仅几十 MB，多会话并行时内存占用约 300 MB。
 
-Gold Band 希望提供一个统一的桌面入口：
+## 支持的 Agent
 
-- 简单任务直接与 Agent 对话，不增加额外工作流约束。
-- 复杂任务使用固定工作流，把方案、开发、审查、测试和验收分开。
-- 开放目标交给 AI 动态拆解，同时由 Gold Band runtime 管理状态和边界。
-- 会话、附件、产物、Token、耗时和交互请求保留在同一套可恢复记录中。
+| 内置 Agent | |
+| --- | --- |
+| Claude Code、Codex | 当前推荐的体验入口 |
+| Cursor、Gemini CLI、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi | 内置接入，可用性取决于本机环境及其 ACP 支持情况 |
+| 自定义 Agent | 任何支持 ACP 协议的 Agent 都可以在 Agent 管理中手动接入 |
 
-## 核心能力
+## 运行模式
 
-- **Direct Agent**：选择一个 Agent 持续对话，不注入 Gold Band runtime system prompt。
-- **WORKFLOW**：通过可视化工作流组织开发、审查、测试、验收和失败回环。
-- **AUTO / AI-DYNAMIC**：由 AI 在约束内动态拆分任务、并行执行、合并和验收。
-- **可恢复 ACP 会话**：支持流式输出、继续追问、历史恢复、会话复用和可选的外部会话同步。
-- **统一会话配置**：在 composer 中选择模型、思考等级、权限模式和 Agent Slash Command。
-- **附件与产物**：支持文件选择、拖拽、图片粘贴、附件预览和节点产物归档。
+### DIRECT
+
+接近直接使用 Agent 本身。Gold Band 不注入工作流 system prompt，只负责统一的桌面 UI、会话保存、附件、模型与权限配置、停止恢复、Token 和耗时统计。
+
+适合日常问答、代码修改、调试，以及希望保留持续上下文的开发会话。
+
+### WORKFLOW
+
+使用显式工作流。每个节点代表一次 Agent 执行，可以为节点单独选择 Agent、模型、角色和结果判定方式；边定义成功、失败或人工确认后的流转方向。运行后可以回到历史会话修复问题，或发起新的 round 继续推进。
+
+适合需要明确开发阶段、独立审查与测试、失败回环和结构化验收的任务。
+
+### AUTO / AI-DYNAMIC
+
+由 AI-DYNAMIC 根据目标动态提出后续节点：拆分子任务、在各自的 worktree 中并行执行、由 merge 节点合并结果、由 accept 节点验收，再根据当前结果进行新一轮分发。Gold Band runtime 会校验 proposal 并管理真实运行状态，Agent 不能直接修改 runtime。
+
+适合难以预先确定完整流程、但仍需要运行边界和可观测性的大型或复杂任务。
+
+## 更多能力
+
+- **会话体验**：流式输出、继续追问、历史恢复、会话复用、可选外部会话同步；在 composer 中选择模型、思考等级、权限模式和 Slash Command。
+- **附件与产物**：文件选择、拖拽、图片粘贴、工作空间文件引用、附件预览和节点产物归档。
 - **运行观测**：查看 Agent 消息、工具调用、系统提示、原始帧、Token、耗时和运行状态。
-- **Agent 与上下文管理**：统一维护 Agent、Profile、MCP、SKILL 及用户级、项目级上下文。
-- **桌面体验**：提供系统通知、响应式窗口、主题和用户/Agent 自定义头像。
+- **工作空间**：文件浏览与实时编辑、Git 源码管理、内置浏览器。
+- **自动化与协作**：定时任务、Multica 需求管理、IM 远程干预与通知（目前支持企业微信）、系统通知。
+- **Agent 与上下文管理**：统一维护 Agent、Profile、MCP、SKILL 及用户级、项目级上下文，并提供 Agent 环境诊断。
+- **个性化**：主题、壁纸、字体、用户与 Agent 自定义头像，以及个人数据分析。
 
 ## 快速开始
 
 1. 从 [Releases](https://github.com/diodeme/Gold-Band/releases) 下载桌面安装包，或从源码构建。
 2. 打开 Gold Band，添加一个本地工作空间。
-3. 在 Agent 管理中配置 Claude Code、Codex 或其他可用 ACP Agent。
+3. 在 Agent 管理中启用 Claude Code、Codex 或其他 ACP Agent，并确认环境诊断通过。
 4. 回到会话首页，选择运行模式：
    - `DIRECT`：直接与指定 Agent 持续对话，推荐首次使用。
    - `WORKFLOW`：使用固定工作流，适合流程明确、需要强验证的任务。
@@ -71,81 +94,45 @@ Gold Band 希望提供一个统一的桌面入口：
 > [!IMPORTANT]
 > 项目目前尚未取得 Apple Developer Program 开发者帐号，因此 macOS Release 尚未使用 Developer ID 签名和 Apple 公证。安装方式与 Gatekeeper 排错请参考 [macOS 安装与排错指南](docs/guide/macos-install.zh-CN.md)。
 
-## 运行模式
+## 平台与语言
 
-### DIRECT
+- **平台**：提供 Windows、macOS、Linux 安装包。当前优先保证 Windows 10 / 11 的使用体验，其次是 Apple Silicon 与 Intel Mac；Linux 版本尚未完成完整测试。
+- **界面语言**：简体中文、繁體中文、English、日本語、한국어、Português (Brasil)、Español。
 
-DIRECT 模式接近直接使用 Agent 本身。Gold Band 不注入工作流 system prompt，只负责统一的桌面 UI、会话保存、附件、模型与权限配置、停止恢复、Token 和耗时统计。
+## 常见问题
 
-适合日常问答、代码修改、调试，以及希望保留持续上下文的开发会话。
+### 和 Coding Agent 内部的工作流有什么区别？
 
-### WORKFLOW
+Coding Agent 内部的工作流主要是「主 Agent 编排子 Agent」或「脚本编排 Agent」，编排的是 **session**；Gold Band 编排的是 **harness**。只要支持 ACP，任何 Agent 都可以成为一个节点：例如用内置 browser 与 computer use 能力的 Codex 作为验收节点，用极简、快速的 Pi 作为开发节点。节点之间的差异可以是一整套 harness 的差异，而不只是上下文的差异。
 
-WORKFLOW 模式使用显式工作流。每个节点代表一次 Agent 执行，边定义成功、失败或人工确认后的流转方向。
+### 和 Codex App 这类 Agent 客户端有什么区别？
 
-适合需要明确开发阶段、独立审查测试、失败回环和结构化验收的任务。
+这类客户端围绕某一个固定 Agent 构建；Gold Band 位于 Agent 的上层，可以切换并组合不同架构的 Agent，同时继承它们各自的能力。代价是 Gold Band 无法侵入 Agent 内部循环，例如在 Agent loop 中途插入用户引导这类能力实现成本更高。
 
-### AUTO / AI-DYNAMIC
+### 和其他 ACP 客户端有什么区别？
 
-AUTO 模式由 AI-DYNAMIC 根据目标动态提出后续节点，可以拆分子任务、并行处理、合并结果并创建验收或修复节点。Gold Band runtime 会校验 proposal 并管理真实运行状态，Agent 不能直接修改 runtime。
+Gold Band 从工作流出发，ACP 客户端能力是在此基础上补齐的。工作流不只是简单调度，还包括验收标准、前文摘要、停止与继续、AUTO 模式下的节点归并等工程能力，由 runtime 统一管理节点推进与失败处理，Agent 专注于当前节点的任务。
 
-适合难以预先确定完整流程、但仍需要运行边界和可观测性的复杂任务。
+## 当前状态与规划
 
-## 界面
+已知问题：
 
-### 会话首页
+- 交互设计上仍有一些小 Bug，正在持续修复。
+- 工作流和 AUTO 模式基于对抗式验证和 loop 思想，耗时与 Token 消耗会高于直接让 Agent 干活，但能减少返工。
+- 内置终端和移动端远程控制尚未提供。
 
-从一个入口选择工作空间、运行模式、Agent、模型和权限，然后直接发起任务。
+后续规划：
 
-![alt text](docs/images/README/image.png)
-
-### Direct 会话与运行观测
-
-持续查看 Agent 输出、思考过程、工具调用、结构化提问、附件、产物、Token 和耗时，并在需要时停止或继续会话。
-
-![alt text](docs/images/README/image-5.png)
-
-### Agent 管理
-
-配置 Agent 启动方式、目录、环境变量、外部会话同步，并查看环境诊断结果。
-
-![alt text](docs/images/README/image-1.png)
-
-### 工作流编排
-
-在可视化画布中维护节点、边、Profile、权限、输出契约和失败流转策略。
-
-![alt text](docs/images/README/image-3.png)
-
-### 上下文管理
-
-管理用户级和项目级 Profile、MCP 与 SKILL，并按运行需要复用。
-
-![alt text](docs/images/README/image-4.png)
-
-## 当前状态
-
-当前已经可用的主路径：
-
-- 以会话首页为核心的桌面交互。
-- DIRECT、WORKFLOW 和 AUTO 三种运行模式。
-- Claude Code 与 Codex 的 ACP 主路径。
-- ACP 长连接、历史恢复、上下文压缩后的状态保持和可选外部会话同步。
-- Slash Command、模型、思考等级和权限模式配置。
-- 多工作空间会话、搜索、附件、产物、Token、耗时和桌面通知。
-- 工作流、Agent、Profile、MCP 和 SKILL 管理。
-
-仍在持续打磨：
-
-- 多 ACP Agent 的兼容性。
-- AUTO / AI-DYNAMIC 在复杂真实任务中的稳定性和规划质量。
-- Developer Preview 阶段的异常恢复、性能和产品细节。
+1. 持续优化客户端交互体验，修复已知 UI Bug。
+2. 完善工作流的工程化与易用性，例如任意节点重跑、自然语言创建工作流。
+3. 使用工作流和 AUTO 模式完成一个典型的极复杂需求，公开展示编排的有效性。
+4. 按 client → p2p / relay → host 架构重构，支持本地与远程目录作为工作空间，以及多端 client 操控同一个 host。
 
 ## 适合与不适合
 
 适合：
 
-- 希望用统一桌面客户端使用多个本地 Coding Agent。
+- 希望用一个桌面客户端使用多个本地 Coding Agent。
 - 需要持续对话、历史恢复和附件协作的开发任务。
 - 需要把开发、审查、测试和验收分开的长程任务。
 - 希望保留运行过程、产物并支持失败恢复的任务。
@@ -183,6 +170,6 @@ npm run web:build
 
 ## 社区与反馈
 
-本项目积极参与和支持 [linux.do 社区](https://linux.do)。欢迎通过 Issue 和 Pull Request 反馈 Agent 接入、会话体验、工作流、AUTO 拆解质量及异常恢复问题。
+本项目积极参与和支持 [linux.do 社区](https://linux.do)。欢迎 Star、试用，并通过 Issue 和 Pull Request 反馈 Agent 接入、会话体验、工作流、AUTO 拆解质量及异常恢复问题。
 
 AGPL-3.0-only，详见 [LICENSE](LICENSE)。

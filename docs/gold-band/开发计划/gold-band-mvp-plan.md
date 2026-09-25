@@ -2604,6 +2604,6 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 ## 2026-09-26：README 多语言与特性同步
 
 - [x] 根因：README 只维护英文与简体中文两份，客户端已支持七种界面语言；内容仍停留在早期能力，缺少多 Agent 内置目录、工作流节点配置与 round、AUTO worktree / merge / accept 循环、定时任务、Multica、IM、源码管理、内置浏览器等能力，截图也随 UI 迭代持续过期。
-- [x] 方案：README 语言集合与 `DESKTOP_LANGUAGE_OPTIONS` 对齐，英文为 `README.md`，其余为 `README.{tag}.md`（zh-CN / zh-TW / ja-JP / ko-KR / pt-BR / es），各版本内容结构一致并互相链接。移除全部 README 截图与 `docs/images/README*` 资源，只在头部提供在线 UI 预览：简体 / 繁体中文指向 `/zh/demo#`，其他语言指向 `/en/demo#`。
-- [x] 验收：`web/tests/brand-logo-asset.test.ts` 按界面语言列表检查每份 README 存在、头标引用 canonical `web/public/logo.svg`，并链接其余所有语言版本；新增界面语言而未补 README 时测试失败。
+- [x] 方案：README 语言集合与 `DESKTOP_LANGUAGE_OPTIONS` 对齐，英文 `README.md` 保留在仓库根目录作为 GitHub 首页，其余语言统一放在 `docs/i18n/README.{tag}.md`（zh-CN / zh-TW / ja-JP / ko-KR / pt-BR / es），避免根目录散落多语言文件；各版本内容结构一致，相对链接按自身位置解析并互相链接。移除全部 README 截图与 `docs/images/README*` 资源，只在头部提供在线 UI 预览：简体 / 繁体中文指向 `/zh/demo#`，其他语言指向 `/en/demo#`。
+- [x] 验收：`web/tests/brand-logo-asset.test.ts` 按界面语言列表检查每份 README 存在，按文件自身位置解析后头标指向 canonical `web/public/logo.svg`，语言切换器恰好链接其余所有语言版本；新增界面语言而未补 README 时测试失败。
 - 性能与过度设计评审：仅文档与测试变更，不影响运行时；不引入翻译工具链或生成脚本，README 语言集合直接复用已有界面语言常量。

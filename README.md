@@ -17,7 +17,7 @@
 
 <!-- README-I18N:START -->
 
-**English** | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
+**English** | [简体中文](./docs/i18n/README.zh-CN.md) | [繁體中文](./docs/i18n/README.zh-TW.md) | [日本語](./docs/i18n/README.ja-JP.md) | [한국어](./docs/i18n/README.ko-KR.md) | [Português (Brasil)](./docs/i18n/README.pt-BR.md) | [Español](./docs/i18n/README.es.md)
 
 <!-- README-I18N:END -->
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/public/logo.svg" alt="Gold Band" width="128" />
+<img src="../../web/public/logo.svg" alt="Gold Band" width="128" />
 
 # Gold Band
 
@@ -9,7 +9,7 @@
 > 主流 Agent 客戶端的體驗 + 完整的工作流設計，兼顧日常開發與大型需求的長時間無人值守開發
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](../../LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#平台與語言)
 [![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)
 
@@ -17,7 +17,7 @@
 
 <!-- README-I18N:START -->
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | **繁體中文** | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
+[English](../../README.md) | [简体中文](./README.zh-CN.md) | **繁體中文** | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
 
 <!-- README-I18N:END -->
 
@@ -92,7 +92,7 @@ Gold Band 是一款面向本機專案的 AI Agent 桌面客戶端。它透過 Ag
 5. 輸入需求，並在對話詳情中檢視輸出、互動請求、附件、產物與執行狀態。
 
 > [!IMPORTANT]
-> 專案目前尚未取得 Apple Developer Program 開發者帳號，因此 macOS Release 尚未使用 Developer ID 簽署與 Apple 公證。安裝方式與 Gatekeeper 排錯請參考 [macOS 安裝與排錯指南](docs/guide/macos-install.zh-CN.md)（簡體中文）。
+> 專案目前尚未取得 Apple Developer Program 開發者帳號，因此 macOS Release 尚未使用 Developer ID 簽署與 Apple 公證。安裝方式與 Gatekeeper 排錯請參考 [macOS 安裝與排錯指南](../guide/macos-install.zh-CN.md)（簡體中文）。
 
 ## 平台與語言
 
@@ -172,4 +172,4 @@ npm run web:build
 
 本專案積極參與並支持 [linux.do 社群](https://linux.do)。歡迎 Star、試用，並透過 Issue 與 Pull Request 回饋 Agent 接入、對話體驗、工作流、AUTO 拆解品質及異常恢復問題。
 
-AGPL-3.0-only，詳見 [LICENSE](LICENSE)。
+AGPL-3.0-only，詳見 [LICENSE](../../LICENSE)。

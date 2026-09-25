@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/public/logo.svg" alt="Gold Band" width="128" />
+<img src="../../web/public/logo.svg" alt="Gold Band" width="128" />
 
 # Gold Band
 
@@ -9,7 +9,7 @@
 > 주요 Agent 클라이언트의 사용 경험과 완전한 워크플로 설계로, 일상 개발부터 대규모 요구 사항의 장시간 무인 개발까지 지원
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](../../LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#플랫폼과-언어)
 [![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)
 
@@ -17,7 +17,7 @@
 
 <!-- README-I18N:START -->
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | **한국어** | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
+[English](../../README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | **한국어** | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
 
 <!-- README-I18N:END -->
 
@@ -92,7 +92,7 @@ AI-DYNAMIC이 목표에 따라 다음 노드를 동적으로 제안합니다. �
 5. 요구 사항을 입력하고 대화 상세 화면에서 출력, 상호작용 요청, 첨부 파일, 산출물, 실행 상태를 확인합니다.
 
 > [!IMPORTANT]
-> 이 프로젝트는 아직 Apple Developer Program 계정이 없어 macOS 릴리스가 Developer ID로 서명되거나 Apple의 공증을 받지 않았습니다. 설치 방법과 Gatekeeper 문제 해결은 [macOS Installation and Troubleshooting Guide](docs/guide/macos-install.md)(영어)를 참고하세요.
+> 이 프로젝트는 아직 Apple Developer Program 계정이 없어 macOS 릴리스가 Developer ID로 서명되거나 Apple의 공증을 받지 않았습니다. 설치 방법과 Gatekeeper 문제 해결은 [macOS Installation and Troubleshooting Guide](../guide/macos-install.md)(영어)를 참고하세요.
 
 ## 플랫폼과 언어
 
@@ -172,4 +172,4 @@ npm run web:build
 
 이 프로젝트는 [linux.do 커뮤니티](https://linux.do)에 적극적으로 참여하고 이를 지원합니다. Star와 사용 후기, 그리고 Agent 연동, 대화 경험, 워크플로, AUTO 분할 품질, 오류 복구에 관한 Issue와 Pull Request를 환영합니다.
 
-AGPL-3.0-only. 자세한 내용은 [LICENSE](LICENSE)를 참고하세요.
+AGPL-3.0-only. 자세한 내용은 [LICENSE](../../LICENSE)를 참고하세요.

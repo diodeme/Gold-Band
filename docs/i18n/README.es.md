@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/public/logo.svg" alt="Gold Band" width="128" />
+<img src="../../web/public/logo.svg" alt="Gold Band" width="128" />
 
 # Gold Band
 
@@ -9,7 +9,7 @@
 > La experiencia de los principales clientes de Agents más un sistema completo de workflows, para el desarrollo diario y el trabajo largo y desatendido en requisitos grandes
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](../../LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#plataformas-e-idiomas)
 [![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)
 
@@ -17,7 +17,7 @@
 
 <!-- README-I18N:START -->
 
-[English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | **Español**
+[English](../../README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | **Español**
 
 <!-- README-I18N:END -->
 
@@ -92,7 +92,7 @@ Adecuado para tareas grandes o complejas cuyo flujo completo no se puede definir
 5. Escribe un requisito y revisa la salida, las solicitudes de interacción, los adjuntos, los artefactos y el estado de la ejecución en la vista de detalle de la conversación.
 
 > [!IMPORTANT]
-> El proyecto aún no dispone de una cuenta del Apple Developer Program, por lo que la versión para macOS no está firmada con Developer ID ni notarizada por Apple. Consulta la [macOS Installation and Troubleshooting Guide](docs/guide/macos-install.md) (en inglés) para ver las opciones de instalación y resolver problemas de Gatekeeper.
+> El proyecto aún no dispone de una cuenta del Apple Developer Program, por lo que la versión para macOS no está firmada con Developer ID ni notarizada por Apple. Consulta la [macOS Installation and Troubleshooting Guide](../guide/macos-install.md) (en inglés) para ver las opciones de instalación y resolver problemas de Gatekeeper.
 
 ## Plataformas e idiomas
 
@@ -172,4 +172,4 @@ npm run web:build
 
 Este proyecto participa activamente en la [comunidad linux.do](https://linux.do) y la apoya. Las estrellas, las pruebas, los issues y los pull requests sobre integración de Agents, experiencia de conversación, workflows, calidad de la descomposición en AUTO y recuperación de errores son bienvenidos.
 
-AGPL-3.0-only. Consulta [LICENSE](LICENSE).
+AGPL-3.0-only. Consulta [LICENSE](../../LICENSE).

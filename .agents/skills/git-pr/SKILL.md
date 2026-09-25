@@ -48,6 +48,8 @@ Follow the repository PR template. Remove inapplicable optional sections instead
 - Performance impact and overdesign review conclusions when meaningful.
 - Known risks, limitations, migrations, or follow-up work.
 
+Never add agent attribution to the title, body, or commits: no "Generated with" line, `Co-Authored-By` trailer, or other credit for Claude, Codex, or any AI agent, even if the host environment suggests one.
+
 Generate a title that satisfies the repository's current semantic-title rules. Prefer Conventional Commits form:
 
 ```text

@@ -4,20 +4,20 @@
 
 # Gold Band
 
-> A local-first desktop client for AI Agents
+> Aiming to be the last Agent desktop client you need
 >
-> Direct conversations, fixed workflows, and AI-driven orchestration for local Coding Agents
+> The experience of mainstream Agent clients plus a complete workflow system, for everyday development and long-running unattended work on large requirements
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#platforms-and-languages)
 [![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)
 
-[Download](https://github.com/diodeme/Gold-Band/releases)
+[Download](https://github.com/diodeme/Gold-Band/releases) · [Live UI Preview](https://gold-band.dion.blue/en/demo#)
 
 <!-- README-I18N:START -->
 
-**English** | [中文](./README.zh-CN.md)
+**English** | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
 
 <!-- README-I18N:END -->
 
@@ -25,43 +25,66 @@
 
 ---
 
-Gold Band is a desktop AI Agent client for local projects. It connects to local Agents such as Claude Code and Codex through Agent Client Protocol (ACP), providing one place for conversations, workspaces, permissions, attachments, history, and runtime observability.
+Gold Band is a desktop AI Agent client for local projects. It connects to mainstream Agents such as Claude Code and Codex through Agent Client Protocol (ACP): one interaction design, many harnesses you can switch between. It also provides complete workflow and AUTO orchestration, so long-running tasks stay stable and observable instead of depending on a lucky single model run.
 
-You can use it as a regular Agent client for continuous conversations, or run longer and more complex Coding tasks through fixed workflows or AI-driven orchestration with validation and failure recovery.
-
-![alt text](docs/images/README.en/gold-band-readme-hero-wide.png)
+> [!TIP]
+> Want to see it first? Open the [Live UI Preview](https://gold-band.dion.blue/en/demo#). A desktop browser is recommended. The online preview is limited; the desktop client is the reference experience.
 
 > [!NOTE]
-> Gold Band is still in **Developer Preview**. Claude Code and Codex are the recommended starting points. Availability of other Agents depends on the local environment and their ACP support.
+> Gold Band is still in **Developer Preview**. Core capabilities are stable, while interaction details are iterating quickly.
 
-## Why Gold Band
+## Highlights
 
-Local Coding Agents are already powerful, but their conversations, configuration, and execution models remain fragmented. Complex tasks also suffer from context drift, weak independent validation, and poor recovery after failure.
+- **One client for mainstream Agents**: built-in support for Claude Code, Codex, Cursor, Gemini CLI, CodeBuddy, Goose, Qwen Code, OpenCode, Kimi Code, Amp, and Pi, plus custom integration of any ACP-compatible Agent.
+- **Three run modes**: DIRECT conversations, fixed WORKFLOW, and AUTO orchestration cover everything from quick questions to large requirements.
+- **Engineered workflows**: configure the Agent, model, role, and result evaluation per node; go back to a previous session to repair it, or start a new round to keep implementing the requirement.
+- **AUTO mode for large tasks**: a node splits the goal into subtasks and dispatches them; each subtask runs in its own Git worktree, a merge node combines the results, an accept node validates them, and the next round is dispatched based on the outcome.
+- **What you expect from an Agent client**: SKILL, MCP, and role (Profile) management, scheduled tasks, requirement management (Multica integration), file viewing and editing, source control, a built-in browser, IM remote intervention and notifications, plus wallpapers, avatars, fonts, and themes.
+- **Lightweight**: built with Tauri 2 and Rust. The installer is only tens of MB, and memory usage stays around 300 MB with multiple sessions running in parallel.
 
-Gold Band provides a unified desktop entry point:
+## Supported Agents
 
-- Use an Agent directly for simple work without adding workflow constraints.
-- Use fixed workflows to separate planning, development, review, testing, and acceptance.
-- Let AI dynamically decompose open-ended goals while Gold Band manages runtime state and boundaries.
-- Keep conversations, attachments, artifacts, tokens, duration, and interaction requests in one recoverable record.
+| Built-in Agents | |
+| --- | --- |
+| Claude Code, Codex | Recommended starting points |
+| Cursor, Gemini CLI, CodeBuddy, Goose, Qwen Code, OpenCode, Kimi Code, Amp, Pi | Built in; availability depends on the local environment and each Agent's ACP support |
+| Custom Agents | Any ACP-compatible Agent can be added manually in Agent Management |
 
-## Core Capabilities
+## Run Modes
 
-- **Direct Agent**: continuously chat with a selected Agent without injecting a Gold Band runtime system prompt.
-- **WORKFLOW**: organize development, review, testing, acceptance, and failure loops in a visual workflow.
-- **AUTO / AI-DYNAMIC**: let AI dynamically split, parallelize, merge, and validate work within runtime constraints.
-- **Recoverable ACP sessions**: support streaming, follow-up prompts, history recovery, session reuse, and optional external session sync.
-- **Unified session configuration**: choose models, thought levels, permission modes, and Agent Slash Commands from the composer.
-- **Attachments and artifacts**: support file selection, drag-and-drop, pasted images, previews, and node artifact archival.
+### DIRECT
+
+Close to using the Agent itself. Gold Band does not inject a workflow system prompt; it only provides a unified desktop UI, session storage, attachments, model and permission configuration, stop and recovery controls, and token and duration metrics.
+
+Suitable for everyday questions, code changes, debugging, and development conversations that need persistent context.
+
+### WORKFLOW
+
+Uses an explicit workflow. Each node represents one Agent execution and can use its own Agent, model, role, and result evaluation; edges define transitions after success, failure, or manual confirmation. After a run, you can go back to a previous session to repair issues, or start a new round to keep going.
+
+Suitable for tasks that need clear development stages, independent review and testing, failure loops, and structured acceptance.
+
+### AUTO / AI-DYNAMIC
+
+AI-DYNAMIC proposes the next nodes from the goal: it splits subtasks, runs them in parallel in separate worktrees, merges results through a merge node, validates them through an accept node, and dispatches a new round based on the current outcome. The Gold Band runtime validates proposals and owns the real runtime state; Agents cannot mutate the runtime directly.
+
+Suitable for large or complex tasks whose complete workflow cannot be determined in advance but still require execution boundaries and observability.
+
+## More Capabilities
+
+- **Conversations**: streaming, follow-up prompts, history recovery, session reuse, and optional external session sync; choose models, thought levels, permission modes, and Slash Commands from the composer.
+- **Attachments and artifacts**: file selection, drag-and-drop, pasted images, workspace file references, previews, and node artifact archival.
 - **Runtime observability**: inspect Agent messages, tool calls, system prompts, raw frames, tokens, duration, and runtime state.
-- **Agent and context management**: manage Agents, Profiles, MCP, SKILL, and user-level or project-level context.
-- **Desktop experience**: system notifications, responsive windows, themes, and customizable user and Agent avatars.
+- **Workspace**: file browsing and live editing, Git source control, and a built-in browser.
+- **Automation and collaboration**: scheduled tasks, Multica requirement management, IM remote intervention and notifications (WeCom for now), and system notifications.
+- **Agent and context management**: manage Agents, Profiles, MCP, SKILL, and user-level or project-level context, with Agent environment diagnostics.
+- **Personalization**: themes, wallpapers, fonts, custom user and Agent avatars, and personal usage analytics.
 
 ## Quick Start
 
 1. Download a desktop package from [Releases](https://github.com/diodeme/Gold-Band/releases), or build from source.
 2. Open Gold Band and add a local workspace.
-3. Configure Claude Code, Codex, or another available ACP Agent in Agent Management.
+3. Enable Claude Code, Codex, or another ACP Agent in Agent Management and make sure its environment diagnostics pass.
 4. Return to the conversation home and choose a run mode:
    - `DIRECT`: continuously chat with a selected Agent. Recommended for first-time use.
    - `WORKFLOW`: use a fixed workflow for tasks with clear stages and stronger validation.
@@ -71,75 +94,39 @@ Gold Band provides a unified desktop entry point:
 > [!IMPORTANT]
 > The project does not yet have Apple Developer Program credentials, so the macOS Release is not signed with Developer ID or notarized by Apple. Follow the [macOS Installation and Troubleshooting Guide](docs/guide/macos-install.md) for installation options and Gatekeeper troubleshooting.
 
-## Run Modes
+## Platforms and Languages
 
-### DIRECT
+- **Platforms**: packages are available for Windows, macOS, and Linux. Windows 10 / 11 is the primary target, followed by Apple Silicon and Intel Macs; the Linux build has not been fully tested yet.
+- **UI languages**: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, Portuguese (Brazil), and Spanish.
 
-DIRECT mode is close to using the Agent itself. Gold Band does not inject a workflow system prompt; it only provides a unified desktop UI, session storage, attachments, model and permission configuration, stop and recovery controls, and token and duration metrics.
+## FAQ
 
-It is suitable for everyday questions, code changes, debugging, and development conversations that need persistent context.
+### How is this different from the workflows inside Coding Agents?
 
-### WORKFLOW
+Workflows inside Coding Agents are usually "a main Agent orchestrating sub-Agents" or "scripts orchestrating an Agent"; they orchestrate **sessions**. Gold Band orchestrates **harnesses**. Any ACP-compatible Agent can become a node: for example, Codex with its built-in browser and computer use tools as an acceptance node, and the minimal, fast Pi as a development node. Nodes can differ by an entire harness, not just by context.
 
-WORKFLOW mode uses an explicit workflow. Each node represents one Agent execution, while edges define transitions after success, failure, or manual confirmation.
+### How is this different from Agent clients like the Codex App?
 
-It is suitable for tasks that require clear development stages, independent review and testing, failure loops, and structured acceptance.
+Those clients are built around one fixed Agent. Gold Band sits above the Agents, so it can switch between and combine Agents with different architectures while inheriting their capabilities. The trade-off is that Gold Band cannot reach inside an Agent's loop; features such as steering an Agent mid-loop with a user prompt are harder to build.
 
-### AUTO / AI-DYNAMIC
+### How is this different from other ACP clients?
 
-AUTO mode lets AI-DYNAMIC propose the next nodes from the goal. It can split subtasks, run branches in parallel, merge results, and create acceptance or repair nodes. The Gold Band runtime validates proposals and owns the real runtime state; Agents cannot mutate the runtime directly.
+Gold Band started from workflows, and the ACP client capabilities were built on top. Its workflows go beyond simple scheduling: acceptance criteria, prior-context summaries, stop and resume, and node merging in AUTO mode. The runtime drives node progression and failure handling, so each Agent can focus on its current node.
 
-It is suitable for complex tasks whose complete workflow cannot be determined in advance but still require execution boundaries and observability.
+## Status and Roadmap
 
-## Interface
+Known issues:
 
-### Conversation Home
+- There are still some minor interaction bugs, and they are being fixed continuously.
+- WORKFLOW and AUTO rely on adversarial validation and loops, so they take more time and tokens than asking an Agent directly, but they reduce rework.
+- A built-in terminal and mobile remote control are not available yet.
 
-Choose a workspace, run mode, Agent, model, and permission mode from one entry point, then start a task directly.
+Roadmap:
 
-![alt text](docs/images/README.en/image-1.png)
-
-### Direct Session and Runtime Observation
-
-Inspect Agent output, thoughts, tool calls, structured questions, attachments, artifacts, tokens, and duration, then stop or continue the session when needed.
-
-![alt text](docs/images/README.en/image-6.png)
-
-### Agent Management
-
-Configure Agent launch settings, directories, environment variables, external session sync, and environment diagnostics.
-
-![alt text](docs/images/README.en/image-2.png)
-
-### Workflow Orchestration
-
-Maintain nodes, edges, Profiles, permissions, output contracts, and failure transition strategies on a visual canvas.
-
-![alt text](docs/images/README.en/image-3.png)
-
-### Context Management
-
-Manage user-level and project-level Profiles, MCP, and SKILL assets, then reuse them as needed during execution.
-
-![alt text](docs/images/README.en/image-4.png)
-
-## Current Status
-
-Main paths currently available:
-
-- A conversation-first desktop experience.
-- DIRECT, WORKFLOW, and AUTO run modes.
-- The primary Claude Code and Codex ACP paths.
-- ACP long-lived connections, history recovery, state preservation after context compaction, and optional external session sync.
-- Slash Commands, model, thought-level, and permission-mode configuration.
-- Multi-workspace conversations, search, attachments, artifacts, tokens, duration, and desktop notifications.
-- Workflow, Agent, Profile, MCP, and SKILL management.
-
-Areas still being improved:
-
-- Compatibility with more ACP Agents.
-- AUTO / AI-DYNAMIC stability and planning quality on complex real-world tasks.
-- Error recovery, performance, and product details during Developer Preview.
+1. Keep improving the client experience and fixing known UI bugs.
+2. Make workflows more robust and easier to use, such as rerunning any node and creating workflows from natural language.
+3. Complete a typical, highly complex requirement with WORKFLOW and AUTO to publicly demonstrate the value of orchestration.
+4. Rebuild around a client → p2p / relay → host architecture, supporting local and remote directories as workspaces and multiple clients controlling one host.
 
 ## Good Fit
 
@@ -183,6 +170,6 @@ npm run web:build
 
 ## Community and Feedback
 
-This project actively participates in and supports the [linux.do community](https://linux.do). Issues and pull requests about Agent integration, conversation UX, workflows, AUTO decomposition quality, and error recovery are welcome.
+This project actively participates in and supports the [linux.do community](https://linux.do). Stars, trials, issues, and pull requests about Agent integration, conversation UX, workflows, AUTO decomposition quality, and error recovery are all welcome.
 
 AGPL-3.0-only. See [LICENSE](LICENSE).

@@ -2600,3 +2600,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 方案：诊断 snapshot 使用结构化错误码；`acp.adapter-exited` / `acp.adapter-start-failed` / `acp.doctor-timeout` 由前端本地化。连接层缓存有界故障 stderr（2000 字符）到 `params.reason`，Agent 管理横幅和帮助 Tooltip 在主句下展示原始输出，选择器只展示主句。不改聊天 transport 文案、默认 INFO 策略，也不为 npx 特判。
 - [x] 验收：`doctor_initialize_exit_keeps_classified_failure_stderr` 固定 ENOENT 进入 `params.reason` 且不含英文 transport Display；映射测试覆盖 `acp.adapter-exited` / `acp.adapter-start-failed`；stderr 有界拼接测试通过。桌面 `background_doctor` 4 项通过。前端诊断 copy/横幅/Agent 管理/workflow 健康相关 9 个文件 37 项通过，`tsc -p web/tsconfig.build.json --noEmit` 通过。Doctor `session/new` 超时回归通过。
 - 性能与过度设计评审：复用既有 stderr 分类和 Git `params.reason` 模式。故障缓冲有界，仅 doctor 失败路径最多等待 250ms 排空 reader；无新状态机、缓存、队列或热路径扫描。
+
+## 2026-09-26：README 多语言与特性同步
+
+- [x] 根因：README 只维护英文与简体中文两份，客户端已支持七种界面语言；内容仍停留在早期能力，缺少多 Agent 内置目录、工作流节点配置与 round、AUTO worktree / merge / accept 循环、定时任务、Multica、IM、源码管理、内置浏览器等能力，截图也随 UI 迭代持续过期。
+- [x] 方案：README 语言集合与 `DESKTOP_LANGUAGE_OPTIONS` 对齐，英文为 `README.md`，其余为 `README.{tag}.md`（zh-CN / zh-TW / ja-JP / ko-KR / pt-BR / es），各版本内容结构一致并互相链接。移除全部 README 截图与 `docs/images/README*` 资源，只在头部提供在线 UI 预览：简体 / 繁体中文指向 `/zh/demo#`，其他语言指向 `/en/demo#`。
+- [x] 验收：`web/tests/brand-logo-asset.test.ts` 按界面语言列表检查每份 README 存在、头标引用 canonical `web/public/logo.svg`，并链接其余所有语言版本；新增界面语言而未补 README 时测试失败。
+- 性能与过度设计评审：仅文档与测试变更，不影响运行时；不引入翻译工具链或生成脚本，README 语言集合直接复用已有界面语言常量。

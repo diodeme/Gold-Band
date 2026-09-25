@@ -4,6 +4,8 @@ import { inflateSync } from 'node:zlib';
 
 import { describe, expect, it } from 'vitest';
 
+import { DESKTOP_LANGUAGE_OPTIONS } from '../src/languages';
+
 const webLogoPath = fileURLToPath(new URL('../public/logo.svg', import.meta.url));
 const webLogo = readFileSync(webLogoPath, 'utf8');
 const tauriLogoSource = readFileSync(
@@ -140,11 +142,15 @@ describe('brand logo asset', () => {
     }
   });
 
-  it('keeps the README header on the canonical source asset', () => {
-    for (const relative of ['../../README.md', '../../README.zh-CN.md']) {
-      const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
+  it('keeps every localized README header on the canonical source asset and language switcher', () => {
+    const readmes = DESKTOP_LANGUAGE_OPTIONS.map(({ tag }) => (tag === 'en' ? 'README.md' : `README.${tag}.md`));
+    for (const readme of readmes) {
+      const source = readFileSync(fileURLToPath(new URL(`../../${readme}`, import.meta.url)), 'utf8');
       expect(source).toContain('<img src="web/public/logo.svg"');
       expect(source).not.toContain('src-tauri/icons/icon.png');
+      for (const other of readmes.filter(name => name !== readme)) {
+        expect(source).toContain(`(./${other})`);
+      }
     }
   });
 

@@ -6,6 +6,23 @@
 - 实现：策略改为读取连接 initialize 已协商的 `agentCapabilities._meta.claudeCode`，删除 provider ID 常量与 `spawn_adapter` 的 provider 参数；进程启动环境不再单独注入，统一走会话 options env / settings env。同一策略在调用方未给出时注入 `thinking={type: adaptive, display: summarized}`。
 - 验收：修复前最小测试证明自定义 provider 不注入策略、`thinking` 缺失；修复后 adapter 单测 4 项与 `tests/acp_claude_execution_policy.rs` 4 项通过，fixture 按 initialize 返回能力，覆盖自定义 provider 生效、无能力不注入、非会话方法不改写、保留调用方 `thinking` 与幂等。真实 claude-agent-acp 0.81.2 + 本机 Claude 登录，同一推理 prompt：不带选项 0 个 thought chunk，带 summarized 24 个。`acp::` 其余测试通过；`resolve_command_uses_resolved_path` 修复前已失败，`doctor_session_new_timeout_reclaims_adapter_and_retains_evidence` 仅全量并行时超时，单跑稳定通过，均与本次无关。
 - 过度设计与性能评审：复用连接已缓存的 initialize 能力，无新增状态或依赖；只在四个会话方法上读取一次能力并合并参数。思考流新增的 chunk 与文本 chunk 同路径处理，原诊断显示单帧处理远低于瓶颈。
+## 2026-09-25 Win10 拖拽后的原生客户区尺寸适配
+
+- 原始意图与根因：应用真实 border 独立于系统阴影和壁纸的设计保留；缺陷是将 WebView 页面视口当作原生可见客户区。Win10 19045、WebView2 153.0.4234.48、175% 缩放下，真实客户端 native innerSize 与 WebView size 均为 1795×1260，而 visualViewport×DPR 为约 1796×1262。独立 Wry 隐藏窗口再次复现：controller.Bounds、WebView bounds 与 native innerSize 一致，但 DOM 视口仍扩大。证据指向 WebView2 缩放后的页面视口取整，不是 Tauri 将子窗口设置过大，也不是边框 CSS 被覆盖。
+- 最小失败证据：原生宽度 1792→1793→1794→1795→1796→1800、固定高度 1260 时，DOM 宽度分别约为 1792/1794/1796/1796/1798/1801，高度始终约为 1262。修复前 CDP 截图在原生可见边界上/右/下/左采样为 RGB 188/244/255/188；原生尺寸投影实验后同样四点全部为 RGB 188。完整 CDP 截图包含宿主之外的像素，只采其最外沿会误报通过。新增接口 DOM 测试首先失败于外框未消费原生尺寸；它固定同步契约，不冒充像素证据。
+- 实现：仅 `app-outline` 桌面外框复用 Tauri onResized/onScaleChanged 与一次 innerSize，按 WebView devicePixelRatio 投影物理尺寸；DOM resize 负责 DPR 更新后的重新投影。先订阅后读取，revision 拒绝迟到初始快照，零尺寸不替换可用布局。一个可取消 RAF 合并 width/height 写入；卸载或策略切换清理原生订阅、DOM 监听、RAF 和内联尺寸。原有壁纸归属、阴影、主题 token、最大化/全屏隐藏策略保持不变。
+- 性能与过度设计评审：单个外框、常数大小尺寸、两项原生订阅和一项可释放 DOM 监听；挂载读取一次，无逐像素 IPC 查询、轮询、业务加载、React 尺寸 state、持久化、缓存或新依赖。每帧最多处理一次最新尺寸，测试要求连续 resize 不重渲染子内容；原生 compositor 和普通浏览器不启用适配。
+- 验收：9 个定向测试文件共 59 项通过，包含尺寸事件、启动竞态、DPR 更新、零尺寸、订阅迟到释放、RAF 清理和子内容不重渲染；主题生成、TypeScript、Web 生产构建通过。真实 EXE 在 175% 缩放下验证 8 组原生尺寸（1792/1793/1794/1795/1796/1800×1260、1457×1003、2240×1260），四边各采样 5 点，共 160 点全部为预期边框色；实际最大化隐藏边框，还原后四边像素恢复。独立前端浏览器验证明暗主题、175%/125% 缩放和窄窗口，页面无横向溢出、控制台无错误。
+- 验收边界：自动化使用真实客户端原生 setSize 重现 resize，不等同于鼠标拖拽命中测试；桌面控制包缺失，实际鼠标拖边仍需人工复核。真实 EXE 像素验收仅覆盖本机 175% DPI，其他 DPI 由接口测试和普通浏览器模拟覆盖，不冒充跨显示器实机测试。证据文件位于本机临时目录 `border-native-before.png`、`border-native-size-probe.png`、`border-native-fixed-results.json`、`border-native-fixed-*.png` 和 `border-native-restored.png`；验证结束恢复客户端原尺寸，清理本次浏览器连接、独立浏览器、Vite 和探针进程，不关闭用户客户端。
+
+## 2026-09-25 Win10 窗口边框与壁纸绘制所有权修复
+
+- 根因及纠正：上一次以宿主或 DPI 裁切解释右/下缺线，没有可靠证据。随后新增的边框 `::after` 与现有 wallpaper overlay 共用了同一伪元素；未分层的壁纸 CSS 将 z-index 覆盖成 -1，边框落在内容下方。这是绘制所有权冲突造成的回归，不能靠加深颜色或提高局部 z-index 修补。
+- 修复前证据：真实 `/chat` 注入 Win10 policy 后，computed border=1px 但 z-index=-1。1000×720 浅色截图上/右/下/左边缘采样分别为 (255,255,255)、(255,255,255)、(251,251,251)、(255,255,255)，期望约 (187,187,187)，像素断言稳定失败；这比旧 CSS 字符串测试直接反映可见结果。
+- 实现：复用 CSS border 与 flex 布局，新增共享 `DesktopWindowFrame` 外层负责真实边框和 overflow 裁切，不承载 theme role/wallpaper slot；内层 shell 独占壁纸与伪元素，改为 flex-1/min-h-0/min-w-0 填满边框内部。删除透明 gutter 和边框伪元素。最大化/全屏沿用现有标题栏状态隐藏 border，Win11 native policy 不增加 border。
+- 验证：同一四边像素断言修复后得到 (188,188,188) 转绿。两套主题、明暗配色与 100%/125%/150%/200% deviceScaleFactor 的 16 组截图每组采样四边各 5 点，共 320 点均符合主题色合成预期（每通道容差 3）；含 701×601 与 1001×721 非整数物理尺寸。另验证最大化、还原、native policy 的 border 切换。浏览器缩放模拟不等于 Win10 EXE 宿主验收；原右/下缺线的宿主成因仍未确认，不以猜测替代证据。
+- 性能与过度设计评审：每个 shell 增加一个静态布局 div，共享实现避免两处绘制策略分叉；删除原伪元素，无新依赖、状态、监听、请求、缓存、计时器或持久字段，边框随浏览器布局绘制，不扩大 React 状态订阅和 resize 热路径。
+- 最终检查：8 个相关测试文件共 52 项通过，覆盖 frame DOM 所有权、平台策略、窗口状态、原生浏览器 viewport 与右工作区；TypeScript、主题生成和 Web 生产构建通过。浏览器侧栏收起/展开正常，1280×800 时内部内容矩形严格为 (1,1)-(1279,799)。测试浏览器和服务按本次创建的会话与端口清理。
 
 ## 2026-09-24 全量回归契约补齐
 

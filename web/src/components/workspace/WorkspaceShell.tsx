@@ -6,6 +6,7 @@ import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } f
 import { ProjectMemorySheet } from '../conversation/ProjectMemorySheet';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
+import { DesktopWindowFrame } from '../DesktopWindowFrame';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -705,12 +706,12 @@ function WorkspaceShellLayout({
 
   return (
     <WorkspaceFileReferencePresentationProvider value={workspaceFileReferencePresentation}>
+    <DesktopWindowFrame frameStyle={windowFrameStyle}>
     <div
       ref={shellRef}
-      className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+      className="app-window-shell flex min-h-0 min-w-0 flex-1 flex-col bg-gold-workspace text-foreground"
       data-theme-role="shell"
       data-theme-wallpaper-slot="app"
-      data-window-frame-style={windowFrameStyle}
       onContextMenu={(event) => event.preventDefault()}
     >
       <FileWorkspaceIntegration
@@ -875,6 +876,7 @@ function WorkspaceShellLayout({
         </SheetContent>
       </Sheet>
     </div>
+    </DesktopWindowFrame>
     </WorkspaceFileReferencePresentationProvider>
   );
 }

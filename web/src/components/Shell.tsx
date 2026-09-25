@@ -8,6 +8,7 @@ import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import type { ConversationSidebarWorkspaceRevealRequest } from '@/components/conversation/ConversationSidebar';
 import type { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
 import { AppTitleBar } from './AppTitleBar';
+import { DesktopWindowFrame } from './DesktopWindowFrame';
 import { cn } from '@/lib/utils';
 import { ThemeIcon, useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 
@@ -142,11 +143,11 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
   const { t } = useTranslation();
   return (
     <TooltipProvider>
+      <DesktopWindowFrame frameStyle={windowFrameStyle}>
       <div
-        className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+        className="app-window-shell flex min-h-0 min-w-0 flex-1 flex-col bg-gold-workspace text-foreground"
         data-theme-role="shell"
         data-theme-wallpaper-slot="app"
-        data-window-frame-style={windowFrameStyle}
         onContextMenu={(event) => event.preventDefault()}
       >
         <AppTitleBar
@@ -198,6 +199,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
           <main className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-2xl border-l border-t border-workspace-divider bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]">{children}</main>
         </div>
       </div>
+      </DesktopWindowFrame>
     </TooltipProvider>
   );
 }

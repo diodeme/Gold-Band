@@ -761,11 +761,11 @@ pub async fn create_scheduled_task(
             .workspace_name(&record.definition.project_id)
             .map_err(scheduled_service_error)?;
         Ok(
-        crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-            &record.definition,
-            &workspace_name,
-            record.next_run_at,
-        ),
+            crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
+                &record.definition,
+                &workspace_name,
+                record.next_run_at,
+            ),
         )
     })
     .await
@@ -790,14 +790,14 @@ pub async fn update_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::UpdateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
-    let service = state
-        .scheduled_service()
-        .map_err(command_error)?;
+    let service = state.scheduled_service().map_err(command_error)?;
     spawn_blocking_command(move || {
         let record = service.update(input).map_err(scheduled_service_error)?;
-        Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(
-            &record.definition,
-        ))
+        Ok(
+            crate::view_models_conversation::ScheduledTaskEditVm::from_definition(
+                &record.definition,
+            ),
+        )
     })
     .await
 }

@@ -1789,10 +1789,7 @@ pub(crate) fn begin_location_probe(app: &AppHandle, page_id: &str) -> Option<u64
     Some(page.location_probe)
 }
 
-pub(crate) fn log_document_location_failure<E: std::fmt::Display + ?Sized>(
-    label: &str,
-    error: &E,
-) {
+pub(crate) fn log_document_location_failure<E: std::fmt::Display + ?Sized>(label: &str, error: &E) {
     log_webview_failure("watch-document-location", None, label, error);
 }
 

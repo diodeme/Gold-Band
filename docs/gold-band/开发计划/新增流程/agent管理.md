@@ -35,7 +35,7 @@ Catalog 与实例必须分域管理：
 - 新建时复制模板用户字段；内置 Agent 的命令和参数始终由当前 Catalog 提供，既有实例随客户端升级更新启动配置，其余用户字段不受影响。自定义 Agent 全部配置由用户维护。
 - 构建/发版前拉取 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，校验精选十一项齐全后生成 Registry 快照、Catalog JSON 和官方 SVG 图标并打包
 - 提供显式离线脚本，允许基于已提交 Registry 快照重建 Catalog；常规发版刷新失败时必须失败退出，不发布残缺 Catalog
-- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "0.72.0"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot；已有内置实例在新客户端中使用覆盖后的启动配置。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
+- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "<exact-version>"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot；已有内置实例在新客户端中使用覆盖后的启动配置。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
 - Kimi 的主/兼容 Skills 目录为 `.kimi-code` / `.agents`；Amp 为 `.agents` / `.claude`；Pi 的全局主目录为 `.pi/agent`、项目主目录为 `.pi`、两端兼容目录均为 `.agents`
 
 主 Skills 目录默认由全局与项目作用域共用。编辑 Sheet 在标题右侧提供带 Tooltip 的分裂图标按钮；开启后按钮呈选中态，单输入框拆为“全局主目录 / 项目主目录”，关闭后恢复共用主目录。数据层以可选项目主目录字段表达拆分状态，不维护独立布尔值。目录策略按作用域生成：全局写入全局主目录，项目写入项目主目录；两端读取时都在各自主目录后追加共用兼容目录，兼容目录始终只读。Catalog、设置实例、Tauri 输入/VM、SkillManager、原生命令扫描和同步状态必须消费同一目录策略接口，禁止在 Pi 调用点判断 Agent ID。
@@ -105,6 +105,10 @@ Agent 实例新增两个独立能力配置：
 - 验收完成：原 session/new 与跨 Agent 阻塞复现测试转绿；ACP client 138 项通过（另有 1 个仅由父测试启动的 ignored adapter fixture），桌面 state 相关 38 项通过，前端 Agent 诊断/启动字段/workflow 健康相关 6 项通过。覆盖 initialize、session/new、session/delete、session/close 超时及阶段错误码，超时后 adapter 的 TCP listener 已关闭、PID 文件移除，成功后能力保留且临时目录删除。
 - 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
 - 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
+
+### 2026-09-25 解除 Claude / Codex 版本固定
+
+- 删除 `claude-acp` `0.72.0` 与 `codex-acp` `1.12.0` 两项 pin，`versionPins` 为空对象；在线刷新后 Catalog 为 claude-agent-acp `0.81.2`、codex-acp `1.13.1`，其余模板随 Registry 小版本更新。原 `0.72.0` 用于规避 SDK `0.3.257` 的 macOS 12 启动回归，解除后需要在 macOS 12 回归验证。
 
 ### 2026-09-08 构建期本地版本覆盖
 

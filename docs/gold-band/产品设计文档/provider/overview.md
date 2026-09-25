@@ -32,7 +32,7 @@ Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-v
 
 ### 构建期 Agent 版本策略
 
-`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前 `claude-acp` 固定为 `0.72.0`，规避其后 SDK `0.3.257` 在 macOS 12 上的启动回归。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前无固定项，`claude-acp` 与 `codex-acp` 均跟随 Registry。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
 
 正式 build 继续在线刷新 Registry，再应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略，基于本地 snapshot 应用相同规则。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。
 

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-25 Claude 会话思考流与执行策略按能力协商生效
+
+- 根因：长会话前两分钟无任何输出后一次性出结果。raw 帧与 pipeline 诊断显示客户端排队最长 164ms，瓶颈不在 Gold Band；claude-agent-acp 0.81.2 对新模型默认 `thinking.display=omitted`，只流出无文本签名块，本轮 0 个 `agent_thought_chunk`。同时 `session/new` 参数不含 `_meta`：Claude 私有策略按 provider ID `claude-acp` 判定，用户自建 `my-claude` 实例连 Monitor / 后台任务禁用也未生效。属于设计把 adapter 扩展能力错挂在用户可命名的 provider ID 上，并且缺少思考展示选项。
+- 实现：策略改为读取连接 initialize 已协商的 `agentCapabilities._meta.claudeCode`，删除 provider ID 常量与 `spawn_adapter` 的 provider 参数；进程启动环境不再单独注入，统一走会话 options env / settings env。同一策略在调用方未给出时注入 `thinking={type: adaptive, display: summarized}`。
+- 验收：修复前最小测试证明自定义 provider 不注入策略、`thinking` 缺失；修复后 adapter 单测 4 项与 `tests/acp_claude_execution_policy.rs` 4 项通过，fixture 按 initialize 返回能力，覆盖自定义 provider 生效、无能力不注入、非会话方法不改写、保留调用方 `thinking` 与幂等。真实 claude-agent-acp 0.81.2 + 本机 Claude 登录，同一推理 prompt：不带选项 0 个 thought chunk，带 summarized 24 个。`acp::` 其余测试通过；`resolve_command_uses_resolved_path` 修复前已失败，`doctor_session_new_timeout_reclaims_adapter_and_retains_evidence` 仅全量并行时超时，单跑稳定通过，均与本次无关。
+- 过度设计与性能评审：复用连接已缓存的 initialize 能力，无新增状态或依赖；只在四个会话方法上读取一次能力并合并参数。思考流新增的 chunk 与文本 chunk 同路径处理，原诊断显示单帧处理远低于瓶颈。
+
 ## 2026-09-24 macOS 原生浏览器监听恢复构建门禁
 
 - 根因：同文档地址同步为 macOS 新增 `objc2::define_class!` KVO observer 时，在协议实现位置写入了 `objc2::runtime::NSObjectProtocol` 限定路径；`objc2 0.6.4` 的宏这里只匹配单个标识符。首个解析错误还遮住了 `DefinedClass` / `AnyThread` trait 未导入、裸 observer pointer 不满足 Tauri UI 回调 `Send` 边界、字符串日志参数受隐式 `Sized` 限制三处同源编译缺陷。Linux 和 Windows 会跳过 macOS 条件编译分支，现有 PR Checks 又只有 Ubuntu，因此错误直到 release 的 macOS runner 才暴露。

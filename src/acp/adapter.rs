@@ -14,9 +14,14 @@ use crate::process::{
 };
 
 const REQUIRE_LOCAL_CLAUDE_ENV: &str = "GOLD_BAND_REQUIRE_LOCAL_CLAUDE";
-const CLAUDE_ACP_PROVIDER: &str = "claude-acp";
+const CLAUDE_CODE_META_KEY: &str = "claudeCode";
 const DISABLE_BACKGROUND_TASKS_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const MONITOR_TOOL: &str = "Monitor";
+const THINKING_OPTION: &str = "thinking";
+const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
+// Recent Claude models default thinking display to "omitted", which streams
+// signature-only blocks and leaves the timeline silent while the model thinks.
+const THINKING_DISPLAY_SUMMARIZED: &str = "summarized";
 
 #[derive(Debug, thiserror::Error)]
 #[error("{code}: {msg}")]
@@ -34,21 +39,34 @@ impl InvalidSessionOptions {
     }
 }
 
+pub(crate) fn is_session_options_method(method: &str) -> bool {
+    matches!(
+        method,
+        "session/new" | "session/load" | "session/resume" | "session/fork"
+    )
+}
+
+/// Claude Code session options travel in `_meta.claudeCode.options`; only
+/// adapters that negotiated the `claudeCode` extension at initialize accept
+/// them, whatever provider id or launch command the user configured.
+pub(crate) fn supports_claude_code_session_options(agent_capabilities: &Value) -> bool {
+    agent_capabilities
+        .pointer(&format!("/_meta/{CLAUDE_CODE_META_KEY}"))
+        .is_some_and(Value::is_object)
+}
+
 pub(crate) fn apply_session_execution_policy(
-    provider_id: &str,
+    agent_capabilities: Option<&Value>,
     method: &str,
     params: &mut Value,
 ) -> Result<()> {
-    if provider_id != CLAUDE_ACP_PROVIDER
-        || !matches!(
-            method,
-            "session/new" | "session/load" | "session/resume" | "session/fork"
-        )
+    if !is_session_options_method(method)
+        || !agent_capabilities.is_some_and(supports_claude_code_session_options)
     {
         return Ok(());
     }
     let mut options = params;
-    for key in ["_meta", "claudeCode", "options"] {
+    for key in ["_meta", CLAUDE_CODE_META_KEY, "options"] {
         let object = options
             .as_object_mut()
             .ok_or_else(|| InvalidSessionOptions::expected(key, "object"))?;
@@ -69,6 +87,12 @@ pub(crate) fn apply_session_execution_policy(
     if !tools.iter().any(|tool| tool == MONITOR_TOOL) {
         tools.push(json!(MONITOR_TOOL));
     }
+    options.entry(THINKING_OPTION).or_insert_with(|| {
+        json!({
+            "type": THINKING_TYPE_ADAPTIVE,
+            "display": THINKING_DISPLAY_SUMMARIZED,
+        })
+    });
     // Claude settings are applied after the child environment. Enforce the same
     // policy at both tiers so project settings cannot re-enable background work.
     let env = options.entry("env").or_insert_with(|| json!({}));
@@ -110,7 +134,6 @@ pub fn resolve_adapter(config: &AcpAdapterConfig) -> Result<ResolvedAcpAdapter> 
 }
 
 pub fn spawn_adapter(
-    provider_id: &str,
     config: &AcpAdapterConfig,
     cwd: &std::path::Path,
     use_local_claude: bool,
@@ -130,9 +153,6 @@ pub fn spawn_adapter(
         .stderr(Stdio::piped());
     for (key, value) in &resolved_env {
         command.env(key, value);
-    }
-    if provider_id == CLAUDE_ACP_PROVIDER {
-        command.env(DISABLE_BACKGROUND_TASKS_ENV, "1");
     }
     match local_claude_executable_for_env(use_local_claude, &resolved_env) {
         Some(claude_path) => {
@@ -367,13 +387,87 @@ fn command_requires_path_lookup(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        local_claude_executable_for_env, resolve_command_with_path,
+        apply_session_execution_policy, local_claude_executable_for_env, resolve_command_with_path,
         resolve_local_claude_executable, should_require_local_claude_resolution, spawn_adapter,
     };
     use crate::config::AcpAdapterConfig;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
+
+    fn claude_code_capabilities() -> Value {
+        json!({ "_meta": { "claudeCode": { "promptQueueing": true } } })
+    }
+
+    #[test]
+    fn session_policy_follows_negotiated_claude_code_capability() {
+        let mut params = json!({ "cwd": "D:/work" });
+        apply_session_execution_policy(
+            Some(&claude_code_capabilities()),
+            "session/new",
+            &mut params,
+        )
+        .unwrap();
+
+        let options = params.pointer("/_meta/claudeCode/options").unwrap();
+        assert_eq!(options["disallowedTools"], json!(["Monitor"]));
+        assert_eq!(options["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"], "1");
+        assert_eq!(
+            options["settings"]["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"],
+            "1"
+        );
+        assert_eq!(
+            options["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
+    }
+
+    #[test]
+    fn session_policy_skips_adapters_without_claude_code_capability() {
+        for capabilities in [
+            None,
+            Some(json!({})),
+            Some(json!({ "_meta": { "claudeCode": true } })),
+        ] {
+            let mut params = json!({ "cwd": "D:/work" });
+            apply_session_execution_policy(capabilities.as_ref(), "session/new", &mut params)
+                .unwrap();
+            assert_eq!(params, json!({ "cwd": "D:/work" }));
+        }
+    }
+
+    #[test]
+    fn session_policy_only_touches_session_options_methods() {
+        let mut params = json!({ "sessionId": "s1", "prompt": [] });
+        apply_session_execution_policy(
+            Some(&claude_code_capabilities()),
+            "session/prompt",
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(params, json!({ "sessionId": "s1", "prompt": [] }));
+    }
+
+    #[test]
+    fn session_policy_keeps_caller_thinking_and_merges_disallowed_tools() {
+        let mut params = json!({
+            "_meta": { "claudeCode": { "options": {
+                "thinking": { "type": "disabled" },
+                "disallowedTools": ["WebFetch", "Monitor"],
+            } } }
+        });
+        apply_session_execution_policy(
+            Some(&claude_code_capabilities()),
+            "session/resume",
+            &mut params,
+        )
+        .unwrap();
+
+        let options = params.pointer("/_meta/claudeCode/options").unwrap();
+        assert_eq!(options["thinking"], json!({ "type": "disabled" }));
+        assert_eq!(options["disallowedTools"], json!(["WebFetch", "Monitor"]));
+    }
 
     #[test]
     fn resolve_command_uses_resolved_path() {
@@ -560,7 +654,7 @@ CALL :find_dp0
             env: Default::default(),
         };
 
-        let error = spawn_adapter("fixture", &config, temp.path(), false, false).unwrap_err();
+        let error = spawn_adapter(&config, temp.path(), false, false).unwrap_err();
         let message = error.to_string();
 
         assert!(message.contains("missing-acp-command-for-test"));

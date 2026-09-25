@@ -7,8 +7,29 @@ use gold_band::config::AcpAdapterConfig;
 use serde_json::{Value, json};
 
 const BACKGROUND_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+const CLAUDE_CODE_FIXTURE_ENV: &str = "GOLD_BAND_POLICY_CLAUDE_CODE";
 
-fn with_adapter(provider: &str, check: impl FnOnce(&AdapterConnection)) {
+fn summarized_thinking() -> Value {
+    json!({"type": "adaptive", "display": "summarized"})
+}
+
+fn initialize(connection: &AdapterConnection) {
+    connection
+        .initialize_once(|| {
+            Ok(request(
+                connection,
+                "initialize",
+                json!({"protocolVersion": 1, "clientCapabilities": {},
+                "clientInfo": {"name": "policy-test", "version": "1"}}),
+            )["agentCapabilities"]
+                .clone())
+        })
+        .unwrap();
+}
+
+/// The provider id is user-defined and must not determine the policy; only the
+/// capabilities the adapter negotiates at initialize do.
+fn with_adapter(provider: &str, claude_code: bool, check: impl FnOnce(&AdapterConnection)) {
     let temp = tempfile::tempdir().unwrap();
     let config = AcpAdapterConfig {
         command: std::env::current_exe()
@@ -25,6 +46,10 @@ fn with_adapter(provider: &str, check: impl FnOnce(&AdapterConnection)) {
             ("GOLD_BAND_POLICY_FIXTURE".to_string(), "1".to_string()),
             (BACKGROUND_ENV.to_string(), "0".to_string()),
             ("DIAGNOSTIC_SENTINEL".to_string(), "preserved".to_string()),
+            (
+                CLAUDE_CODE_FIXTURE_ENV.to_string(),
+                if claude_code { "1" } else { "0" }.to_string(),
+            ),
         ]
         .into(),
     };
@@ -37,7 +62,10 @@ fn with_adapter(provider: &str, check: impl FnOnce(&AdapterConnection)) {
         false,
     )
     .unwrap();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&connection)));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        initialize(&connection);
+        check(&connection)
+    }));
     connection.shutdown(AdapterShutdownReason::StandaloneRelease);
     assert_eq!(serde_json::to_value(config).unwrap(), original);
     if let Err(panic) = result {
@@ -51,17 +79,17 @@ fn request(connection: &AdapterConnection, method: &str, params: Value) -> Value
 }
 
 #[test]
-fn claude_launch_disables_background_without_rewriting_user_configuration() {
-    with_adapter("claude-acp", |connection| {
+fn adapter_launch_keeps_user_environment() {
+    with_adapter("my-claude", true, |connection| {
         let result = request(connection, "fixture/environment", json!({}));
-        assert_eq!(result["background"], "1");
+        assert_eq!(result["background"], "0");
         assert_eq!(result["diagnostic"], "preserved");
     });
 }
 
 #[test]
 fn claude_session_creation_and_restore_disable_monitor_and_preserve_options() {
-    with_adapter("claude-acp", |connection| {
+    with_adapter("my-claude", true, |connection| {
         for method in [
             "session/new",
             "session/load",
@@ -88,6 +116,7 @@ fn claude_session_creation_and_restore_disable_monitor_and_preserve_options() {
                 "{method}"
             );
             assert_eq!(options["maxTurns"], 7);
+            assert_eq!(options["thinking"], summarized_thinking(), "{method}");
             assert_eq!(options["env"]["DIAGNOSTIC_SENTINEL"], "session");
             assert_eq!(options["env"][BACKGROUND_ENV], "1");
             assert_eq!(options["settings"]["env"][BACKGROUND_ENV], "1");
@@ -102,9 +131,17 @@ fn claude_session_creation_and_restore_disable_monitor_and_preserve_options() {
             "session/new",
             json!({"cwd": "/fixture", "mcpServers": []}),
         );
+        let options = &result["params"]["_meta"]["claudeCode"]["options"];
+        assert_eq!(options["disallowedTools"], json!(["Monitor"]));
+        assert_eq!(options["thinking"], summarized_thinking());
+        let params = json!({
+            "cwd": "/fixture", "mcpServers": [],
+            "_meta": {"claudeCode": {"options": {"thinking": {"type": "disabled"}}}}
+        });
         assert_eq!(
-            result["params"]["_meta"]["claudeCode"]["options"]["disallowedTools"],
-            json!(["Monitor"])
+            request(connection, "session/new", params)["params"]["_meta"]["claudeCode"]["options"]
+                ["thinking"],
+            json!({"type": "disabled"})
         );
         let params = json!({"sessionId": "original", "prompt": []});
         assert_eq!(
@@ -116,7 +153,7 @@ fn claude_session_creation_and_restore_disable_monitor_and_preserve_options() {
 
 #[test]
 fn other_agents_do_not_receive_claude_runtime_restrictions() {
-    with_adapter("codex-acp", |connection| {
+    with_adapter("claude-acp", false, |connection| {
         let params = json!({"cwd": "/fixture", "mcpServers": []});
         let result = request(connection, "session/new", params.clone());
         assert_eq!(result["background"], "0");
@@ -126,7 +163,7 @@ fn other_agents_do_not_receive_claude_runtime_restrictions() {
 
 #[test]
 fn malformed_claude_options_fail_before_transport_without_poisoning_connection() {
-    with_adapter("claude-acp", |connection| {
+    with_adapter("my-claude", true, |connection| {
         for options in [json!({"disallowedTools": "Monitor"}), json!({"env": []})] {
             let result = connection.begin_request(
                 "session/new",
@@ -143,7 +180,7 @@ fn malformed_claude_options_fail_before_transport_without_poisoning_connection()
         }
         assert_eq!(
             request(connection, "fixture/environment", json!({}))["background"],
-            "1"
+            "0"
         );
     });
 }
@@ -199,12 +236,7 @@ fn installed_claude_policy_probe() {
         AdapterConnection::spawn_standalone("claude-acp", &config, &workspace, false, false)
             .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        request(
-            &connection,
-            "initialize",
-            json!({"protocolVersion": 1,
-            "clientCapabilities": {}, "clientInfo": {"name": "policy-probe", "version": "1"}}),
-        );
+        initialize(&connection);
         for mode in ["synchronous", "background", "monitor", "subagent"] {
             let created = request(
                 &connection,
@@ -250,6 +282,21 @@ fn adapter_fixture() {
     std::io::stdout().flush().unwrap();
     for line in std::io::stdin().lock().lines() {
         let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if frame["method"] == "initialize" {
+            let capabilities = if std::env::var(CLAUDE_CODE_FIXTURE_ENV).as_deref() == Ok("1") {
+                json!({"_meta": {"claudeCode": {"promptQueueing": true}}})
+            } else {
+                json!({})
+            };
+            println!(
+                "{}",
+                json!({"jsonrpc": "2.0", "id": frame["id"], "result": {
+                    "protocolVersion": 1, "agentCapabilities": capabilities,
+                }})
+            );
+            std::io::stdout().flush().unwrap();
+            continue;
+        }
         println!(
             "{}",
             json!({"jsonrpc": "2.0", "id": frame["id"], "result": {

@@ -143,14 +143,19 @@ describe('brand logo asset', () => {
   });
 
   it('keeps every localized README header on the canonical source asset and language switcher', () => {
-    const readmes = DESKTOP_LANGUAGE_OPTIONS.map(({ tag }) => (tag === 'en' ? 'README.md' : `README.${tag}.md`));
+    const repoRoot = new URL('../../', import.meta.url);
+    const readmes = DESKTOP_LANGUAGE_OPTIONS.map(({ tag }) =>
+      new URL(tag === 'en' ? 'README.md' : `docs/i18n/README.${tag}.md`, repoRoot),
+    );
     for (const readme of readmes) {
-      const source = readFileSync(fileURLToPath(new URL(`../../${readme}`, import.meta.url)), 'utf8');
-      expect(source).toContain('<img src="web/public/logo.svg"');
+      const source = readFileSync(fileURLToPath(readme), 'utf8');
+      const logoSrc = source.match(/<img src="([^"]+)"/)?.[1] ?? '';
+      expect(new URL(logoSrc, readme).href).toBe(new URL('web/public/logo.svg', repoRoot).href);
       expect(source).not.toContain('src-tauri/icons/icon.png');
-      for (const other of readmes.filter(name => name !== readme)) {
-        expect(source).toContain(`(./${other})`);
-      }
+
+      const switcher = source.match(/<!-- README-I18N:START -->([\s\S]*?)<!-- README-I18N:END -->/)?.[1] ?? '';
+      const linked = Array.from(switcher.matchAll(/\]\(([^)]+)\)/g), match => new URL(match[1], readme).href);
+      expect(linked.sort()).toEqual(readmes.filter(other => other.href !== readme.href).map(other => other.href).sort());
     }
   });
 

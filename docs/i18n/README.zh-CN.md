@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/public/logo.svg" alt="Gold Band" width="128" />
+<img src="../../web/public/logo.svg" alt="Gold Band" width="128" />
 
 # Gold Band
 
@@ -9,7 +9,7 @@
 > 主流 Agent 客户端的体验 + 完整的工作流设计，兼顾日常开发与大型需求的长时间无人值守开发
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](../../LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#平台与语言)
 [![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)
 
@@ -17,7 +17,7 @@
 
 <!-- README-I18N:START -->
 
-[English](./README.md) | **简体中文** | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
+[English](../../README.md) | **简体中文** | [繁體中文](./README.zh-TW.md) | [日本語](./README.ja-JP.md) | [한국어](./README.ko-KR.md) | [Português (Brasil)](./README.pt-BR.md) | [Español](./README.es.md)
 
 <!-- README-I18N:END -->
 
@@ -92,7 +92,7 @@ Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Ag
 5. 输入需求，并在会话详情中查看输出、交互请求、附件、产物和运行状态。
 
 > [!IMPORTANT]
-> 项目目前尚未取得 Apple Developer Program 开发者帐号，因此 macOS Release 尚未使用 Developer ID 签名和 Apple 公证。安装方式与 Gatekeeper 排错请参考 [macOS 安装与排错指南](docs/guide/macos-install.zh-CN.md)。
+> 项目目前尚未取得 Apple Developer Program 开发者帐号，因此 macOS Release 尚未使用 Developer ID 签名和 Apple 公证。安装方式与 Gatekeeper 排错请参考 [macOS 安装与排错指南](../guide/macos-install.zh-CN.md)。
 
 ## 平台与语言
 
@@ -172,4 +172,4 @@ npm run web:build
 
 本项目积极参与和支持 [linux.do 社区](https://linux.do)。欢迎 Star、试用，并通过 Issue 和 Pull Request 反馈 Agent 接入、会话体验、工作流、AUTO 拆解质量及异常恢复问题。
 
-AGPL-3.0-only，详见 [LICENSE](LICENSE)。
+AGPL-3.0-only，详见 [LICENSE](../../LICENSE)。

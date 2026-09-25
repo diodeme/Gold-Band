@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/diodeme/Gold-Band/compare/v0.17.1...v0.17.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **acp:** gate Claude session options on negotiated capability ([b4e8e2a](https://github.com/diodeme/Gold-Band/commit/b4e8e2ad9e9a944d81bc6312c8113bb9cdaa8840))
+
 ## [0.17.1](https://github.com/diodeme/Gold-Band/compare/v0.17.0...v0.17.1) (2026-09-24)
 
 

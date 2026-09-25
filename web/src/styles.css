@@ -6,11 +6,11 @@
 @source "../../node_modules/streamdown/dist/*.js";
 
 @layer utilities {
-  .app-window-shell[data-window-frame-style='app-outline'] {
+  .app-window-frame[data-window-frame-style='app-outline'] {
     border: var(--gb-border-hairline) solid var(--gold-window-outline);
   }
 
-  .app-window-shell[data-window-frame-style='app-outline']:has(> [data-window-occludes-desktop='true']) {
+  .app-window-frame[data-window-frame-style='app-outline']:has(> .app-window-shell > [data-window-occludes-desktop='true']) {
     border-width: 0;
   }
 }

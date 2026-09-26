@@ -143,7 +143,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
     const commonProps = {
       appName: 'Gold Band', windowFrameStyle: 'native-compositor' as const,
       appConfig: { acpSessionTitleRefreshEnabled: false, acpChatEventPageSize: 360, acpChatEventWindowPageCount: 3, acpChatResourceCacheSessionCount: 8, turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 }, workspaceLayout: FALLBACK_WORKSPACE_LAYOUT },
-      vm: { loadStatus: 'ready' as const, workspaces: [{ projectId: 'p1', name: 'Workspace', workspacePath: '/workspace' }], pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready-empty' as const, nextCursor: null }, tasksByWorkspace: {}, workspaceTaskPages: {}, lastActiveWorkspaceId: null },
+      vm: { loadStatus: 'ready' as const, workspaces: [{ projectId: 'p1', name: 'Workspace', workspacePath: '/workspace' }], pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' as const, nextCursor: null }, tasksByWorkspace: {}, workspaceTaskPages: {}, lastActiveWorkspaceId: null },
       conversationWorkspaceStore: new ConversationWorkspaceStore(), onSelect: () => {}, onToggleSidebar: () => {}, onNewConversation: () => {}, onSearch: () => {}, onPinTask: () => {}, onUnpinTask: () => {}, onRenameTask: () => {}, onDeleteTask: () => {},
       onNewConversationInWorkspace: () => {}, onRemoveWorkspace: async () => {},
     };

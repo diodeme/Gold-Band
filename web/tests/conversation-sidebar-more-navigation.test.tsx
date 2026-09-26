@@ -33,7 +33,7 @@ const sidebarVm: ConversationSidebarVm = {
   workspaces: [],
   pinRefs: [],
   pinnedTasks: [],
-  pinnedTaskPage: { status: 'ready-empty', nextCursor: null },
+  pinnedTaskPage: { status: 'ready', nextCursor: null },
   tasksByWorkspace: {},
   workspaceTaskPages: {},
   lastActiveWorkspaceId: null,

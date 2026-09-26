@@ -13,16 +13,11 @@ Prerrequisito de lectura de artifacts predecesores: cuando el contexto de runtim
    - Opcional: si el motivo del fallo anterior fue rechazo de review, o la cadena/contexto predecesor contiene un nodo de review, `review-report.md`, artifact de review o ruta, lee ese informe para iterar según la retroalimentación de review
    - Opcional: si el motivo del fallo anterior fue fallo de prueba, o la cadena/contexto predecesor contiene un nodo de prueba, `test-report.md`, artifact de prueba o ruta, lee ese informe para iterar según la retroalimentación de prueba
    - Opcional: si el motivo del fallo anterior fue fallo de aceptación, o la cadena/contexto predecesor contiene un nodo de aceptación, `accept-report.md`, artifact de aceptación o ruta, lee ese informe para iterar según la retroalimentación de aceptación
-2. Crea TodoWrite y comienza la ejecución
+2. Haz seguimiento de las tareas del plan con tu herramienta de tareas/todo si hay una disponible
 
 ### Paso 2: Ejecutar tareas
 
-Para cada tarea del plan:
-1. Márcala como in_progress
-2. Ejecuta estrictamente según los pasos planificados
-3. Márcala como completed al terminar
-
-Sincroniza el estado de las tareas en la lista todo; si esta ronda usa `tech-plan.md`, sincroniza también el estado de las tareas allí.
+Ejecuta las tareas del plan siguiendo los pasos planificados. Si esta ronda usa `tech-plan.md`, mantén sus casillas de tareas sincronizadas con el progreso real.
 
 ### Paso 3: Registrar cambios
 

@@ -77,7 +77,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
@@ -87,6 +87,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check disallowed methods
+        run: cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods
 
       - name: Test Rust workspace
         run: cargo test --workspace --all-targets

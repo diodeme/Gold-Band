@@ -4,8 +4,6 @@
 
 核心メカニズム：一度に 1 質問、最も弱い明確性次元を標的、加重曖昧性スコアで要件明確性を定量化、曖昧性が閾値以下になるまで掘り下げ、最後にインタビュー結論を plan ノードを直接駆動する仕様文書に結晶化する。
 
-**重要：インタビュー仕様のみ生成できる。コードまたは業務ファイルを変更してはならない。**
-
 ---
 
 ## インタラクション方法
@@ -87,15 +85,7 @@ Round 0 | Topology confirmation | Ambiguity: not scored yet
 
 **Ontology 安定性追跡：**
 
-ラウンド 1 ですべて entity は新規。安定性を計算しない。ラウンド 2 以降、前ラウンド entity リストと比較：
-
-- `stable_entities`：両ラウンドで同一名の entity
-- `changed_entities`：異なる名だが同一 type で field 重複 50% 超（rename として扱い、add-plus-delete ではない）
-- `new_entities`：前ラウンドのいずれにもマッチしない現在ラウンド entity
-- `removed_entities`：現在ラウンドのいずれにもマッチしない前ラウンド entity
-- `stability_ratio`：`(stable + changed) / total_entities`
-
-異なる名だが同一 type で field 重複 50% 超の 2 entity は changed（rename）に分類し、1 removed plus 1 added ではない。
+ラウンド 2 以降、主要 entity を前ラウンドと比較し、stable（安定）、changed（rename：同一 type で field がおおむね同じ）、new（新規）、removed（削除）に分類する。`stability_ratio = (stable + changed) / total_entities` を報告する。
 
 **進捗表示：** 各スコアリングラウンド後ユーザーに表示：
 
@@ -117,11 +107,11 @@ Round {n} 完了。
 
 ### Phase 3: Challenge モード
 
-特定ラウンド閾値で質問視点を切り替える。各モードは 1 回使用。その後通常ソクラテス式質問に戻る。
+インタビューが必要とするときに質問視点を切り替える。各モードは最大 1 回使用。その後通常ソクラテス式質問に戻る。
 
-- **Round 4+: Contrarian.** 次の質問はユーザー核心仮定に挑戦：「逆が真なら？」または「この制約は実際には存在しないとしたら？」
-- **Round 6+: Simplifier.** 複雑性除去を探る：「それでも価値ある最も単純な版は？」または「これらの制約のうち、実際に必要なのと仮定したものは？」
-- **Round 8+ (ambiguity 依然 > 0.3): Ontologist.** 本質を見つける：「これは本当は何か？」または「これら entity を見ると、どれが CORE concept でどれが supporting か？」最新 ontology スナップショットの entity リストを使用。
+- **Contrarian**：回答が未検証の核心仮定に依拠しているとき、その仮定に挑戦：「逆が真なら？」または「この制約は実際には存在しないとしたら？」
+- **Simplifier**：スコープや制約が膨らみ続けるとき、複雑性除去を探る：「それでも価値ある最も単純な版は？」または「これらの制約のうち、実際に必要なのと仮定したものは？」
+- **Ontologist**：核心名詞が変わり続ける、または曖昧性が停滞するとき、本質を見つける：「これら entity を見ると、どれが核心 concept でどれが supporting か？」最新 ontology スナップショットの entity リストを使用。
 
 ### Phase 4: Spec 結晶化
 

@@ -15,16 +15,11 @@ Pré-requisito de leitura de artifact predecessor: quando o contexto de runtime,
    - Opcional: se o motivo da falha anterior foi rejeição de review, ou a cadeia/contexto de predecessores contiver um node de review, `review-report.md`, artifact de review ou caminho, leia esse relatório para iterar sobre feedback de review
    - Opcional: se o motivo da falha anterior foi falha de teste, ou a cadeia/contexto de predecessores contiver um node de teste, `test-report.md`, artifact de teste ou caminho, leia esse relatório para iterar sobre feedback de teste
    - Opcional: se o motivo da falha anterior foi falha de aceitação, ou a cadeia/contexto de predecessores contiver um node de aceitação, `accept-report.md`, artifact de aceitação ou caminho, leia esse relatório para iterar sobre feedback de aceitação
-2. Crie TodoWrite e inicie a execução
+2. Acompanhe as tasks do plano com sua ferramenta de task/todo, se houver uma disponível
 
 ### Passo 2: Executar tasks
 
-Para cada task no plano:
-1. Marque como in_progress
-2. Execute estritamente conforme os passos planejados
-3. Marque como completed ao terminar
-
-Sincronize o status das tasks na lista todo; se este round usar `tech-plan.md`, sincronize também o status das tasks lá.
+Execute as tasks do plano seguindo os passos planejados. Se este round usar `tech-plan.md`, mantenha as checkboxes das tasks nele sincronizadas com o progresso real.
 
 ### Passo 3: Registrar alterações
 

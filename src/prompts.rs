@@ -525,8 +525,10 @@ mod tests {
                     "不属于任何已批准验收条款",
                     "`PARTIAL`",
                     "`MISSING`",
-                    "仅因环境或人工条件无法执行的验证记为 `FOLLOW_UP`",
-                    "不属于本轮需求所要求范围的问题记为 `FOLLOW_UP`",
+                    "`FOLLOW_UP` 只用于三类观察",
+                    "仅因环境或人工条件无法执行的验证",
+                    "不属于本轮需求所要求范围的问题",
+                    "本轮需求所要求的条款一律不得降为 `FOLLOW_UP`",
                 ],
             );
         }
@@ -549,8 +551,10 @@ mod tests {
                     "does not belong to any approved acceptance criterion",
                     "`PARTIAL`",
                     "`MISSING`",
-                    "A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`",
-                    "A problem outside the scope required by this round's requirement is a `FOLLOW_UP`",
+                    "`FOLLOW_UP` is limited to three kinds of observation",
+                    "a check that cannot be executed solely because of environment or manual conditions",
+                    "problems outside the scope this round's requirement asks for",
+                    "A criterion this round's requirement asks for is never downgraded to `FOLLOW_UP`",
                 ],
             );
         }

@@ -561,7 +561,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         {t('conversation.sidebar.retryConversations')}
                       </Button>
                     ) : null}
-                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready-empty' ? (
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready'
+                      && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
+                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length === 0 ? (
                       <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && vm.workspaceTaskPages[ws.projectId]?.nextCursor ? (
@@ -586,7 +588,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </button>
             ) : null}
 
-            {vm.loadStatus === 'ready-empty' ? (
+            {vm.loadStatus === 'ready' && vm.workspaces.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs text-muted-foreground">
                 {t('conversation.sidebar.noWorkspaces')}
               </div>

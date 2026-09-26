@@ -83,7 +83,7 @@ export function createEmptyConversationSidebar(): ConversationSidebarVm {
 }
 
 export function beginConversationSidebarBootstrap(sidebar: ConversationSidebarVm): ConversationSidebarVm {
-  if (sidebar.loadStatus === 'ready' || sidebar.loadStatus === 'ready-empty') return sidebar;
+  if (sidebar.loadStatus === 'ready') return sidebar;
   return { ...sidebar, loadStatus: 'loading' };
 }
 
@@ -106,12 +106,12 @@ export function applyConversationSidebarBootstrap(
   ]));
   const next: ConversationSidebarVm = {
     ...sidebar,
-    loadStatus: bootstrap.workspaces.length === 0 ? 'ready-empty' : 'ready',
+    loadStatus: 'ready',
     workspaces: bootstrap.workspaces,
     pinRefs: bootstrap.pinRefs,
     pinnedTasks: sidebar.pinnedTasks.filter((task) => projectIds.has(task.projectId)),
     pinnedTaskPage: bootstrap.pinRefs.length === 0
-      ? { status: 'ready-empty', nextCursor: null }
+      ? { status: 'ready', nextCursor: null }
       : { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace,
     workspaceTaskPages,
@@ -161,14 +161,13 @@ export function applyConversationTaskPage(
   const incoming = page.tasks.map(normalizeTask);
   const current = sidebar.tasksByWorkspace[page.projectId] ?? [];
   const tasks = append ? mergeTasks(current, incoming) : mergeTasks(incoming, current);
-  const status = tasks.length === 0 && !page.nextCursor ? 'ready-empty' : 'ready';
   const next: ConversationSidebarVm = {
     ...sidebar,
     tasksByWorkspace: { ...sidebar.tasksByWorkspace, [page.projectId]: tasks },
     workspaceTaskPages: {
       ...sidebar.workspaceTaskPages,
       [page.projectId]: {
-        status,
+        status: 'ready',
         nextCursor: tasks.length >= CONVERSATION_SIDEBAR_TASK_WINDOW ? null : page.nextCursor ?? null,
       },
     },
@@ -195,7 +194,7 @@ export function applyConversationPinnedTaskPage(
     ...sidebar,
     pinnedTasks,
     pinnedTaskPage: {
-      status: pinnedTasks.length === 0 && !page.nextCursor ? 'ready-empty' : 'ready',
+      status: 'ready',
       nextCursor: pinnedTasks.length >= CONVERSATION_SIDEBAR_TASK_WINDOW ? null : page.nextCursor ?? null,
     },
   };
@@ -256,7 +255,7 @@ export function applyConversationRunSummaryPage(
       ...task,
       latestRun: !append && page.runs[0] ? page.runs[0] : task.latestRun,
       runs,
-      runHistoryStatus: runs.length === 0 && !page.nextCursor ? 'ready-empty' : 'ready',
+      runHistoryStatus: 'ready',
       runsNextCursor: runs.length >= CONVERSATION_SIDEBAR_RUN_WINDOW ? null : page.nextCursor ?? null,
     };
   });

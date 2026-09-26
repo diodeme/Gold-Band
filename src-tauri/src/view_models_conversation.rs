@@ -1373,11 +1373,7 @@ fn conversation_task_row_vm_from_task(
         unread_terminal_result,
         latest_run,
         runs,
-        run_history_status: if run_list.is_empty() {
-            "ready-empty".to_string()
-        } else {
-            "ready".to_string()
-        },
+        run_history_status: "ready".to_string(),
         runs_next_cursor: None,
         pinned,
         pinned_order: pin_order,

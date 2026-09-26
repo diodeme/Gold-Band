@@ -2527,7 +2527,7 @@ export interface ConversationWorkspaceVm {
   name: string;
 }
 
-export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'ready-empty' | 'error';
+export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'error';
 
 export interface ConversationPageLoadVm {
   status: ConversationLoadStatus;

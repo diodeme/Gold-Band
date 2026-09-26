@@ -21,7 +21,7 @@ browserApi.getAcpSession = async () => structuredClone(run.selectedSession!);
 browserApi.getAcpActivityDetail = async () => ({ items: structuredClone(run.selectedSession!.events.filter(event => event.kind === 'toolCall')), hasMoreEarlier: false, earlierCursor: null });
 browserApi.getAcpToolDetail = async () => ({ event: structuredClone(run.selectedSession!.events.find(event => event.kind === 'toolCall') ?? null) });
 browserApi.getConversationSidebarBootstrap = async () => ({ workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Gold Band' }], pinRefs: [], lastActiveWorkspaceId: 'default', preferences: {} });
-browserApi.getConversationTaskPage = async (projectId) => ({ projectId, tasks: [{ projectId, taskId: run.taskId, taskUuid: run.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'direct', lastActivityAt: run.selectedSession!.sessionStartedAt!, runs: [], runHistoryStatus: 'ready-empty', runsNextCursor: null, pinned: false, pinnedOrder: null }], nextCursor: null, errors: [] });
+browserApi.getConversationTaskPage = async (projectId) => ({ projectId, tasks: [{ projectId, taskId: run.taskId, taskUuid: run.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'direct', lastActivityAt: run.selectedSession!.sessionStartedAt!, runs: [], runHistoryStatus: 'ready', runsNextCursor: null, pinned: false, pinnedOrder: null }], nextCursor: null, errors: [] });
 browserApi.subscribeAcpSessionUpdates = async (listener) => { sessions.add(listener); return () => { sessions.delete(listener); }; };
 browserApi.subscribeConversationRunStateUpdates = async (listener) => { runs.add(listener); return () => { runs.delete(listener); }; };
 const originalChanges = browserApi.getTurnFileChangeSet.bind(browserApi);

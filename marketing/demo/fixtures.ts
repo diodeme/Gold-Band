@@ -148,11 +148,11 @@ export function demoSidebar(language: DesktopLanguage): ConversationSidebarVm {
     })() : null,
     latestRun: taskId === 'demo-review' ? workflowRuns[0] : { runId: DEMO_RUN_ID, status: 'completed', outcome: 'success', resumable: false, startedAt: '2026-09-01T08:00:00Z', updatedAt: '2026-09-01T08:01:00Z' },
     runs: taskId === 'demo-review' ? workflowRuns : [],
-    runHistoryStatus: taskId === 'demo-review' ? 'ready' : 'ready-empty', runsNextCursor: null, pinned: false,
+    runHistoryStatus: 'ready', runsNextCursor: null, pinned: false,
   }));
   return {
     loadStatus: 'ready', workspaces: [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }],
-    pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready-empty' },
+    pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' },
     tasksByWorkspace: { [DEMO_PROJECT_ID]: tasks }, workspaceTaskPages: { [DEMO_PROJECT_ID]: { status: 'ready' } },
     lastActiveWorkspaceId: DEMO_PROJECT_ID, preferences: {},
   };

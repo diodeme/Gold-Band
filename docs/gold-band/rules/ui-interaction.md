@@ -86,8 +86,7 @@
 
 ### 5.4 页签轨道
 
-- default / bare 分段页签可以在紧凑轨道内均分宽度。
-- line 页签跟随标签内容宽度；TabsList 的 `w-full` 只画满宽底边，Trigger 不得 `flex-1` 把标签均分成半栏。
+- default / bare 分段页签可以在紧凑轨道内均分宽度；line 页签跟随标签内容宽度，不均分成半栏。各变体的宽度规则由共享 Tabs 组件固定，契约见 `web/tests/ui-tabs-theme.test.ts`。
 - 需要吃满剩余工作区的 TabsContent 必须是 column flex，让子节点沿交叉轴撑满；禁止默认 row flex 把子内容按固有宽度收缩成半栏。
 
 ## 6. 选择器与滚动组件
@@ -96,7 +95,7 @@
 - 仅在共享组件无法提供所需平台能力或无障碍能力时允许例外；必须在同一改动中记录理由、保留键盘/焦点/读屏能力，并为全局契约测试增加范围最小且可审计的例外。
 - 日期、时间、时区等选择器优先使用 shadcn/ui、Radix 或成熟组合组件。
 - 选择器不能只支持滚轮或点击，必须保留键盘操作和直接输入能力。
-- 对话栏内的 Select、Dropdown Menu、Popover、Context Menu 必须以对话栏容器为 collision boundary，宽度不超过 Radix available-width，不得画进右侧工作区网页矩形。受该约束的菜单不得触发内置浏览器 hide。
+- 对话栏内的浮层菜单以对话栏容器为碰撞边界，不得覆盖右侧工作区网页区域；契约见 `web/tests/overlay-collision-boundary.test.tsx` 和 `web/tests/overlay-portal-and-menu-motion.test.ts`。
 - 选中态统一使用主题 `accent`，不得硬编码亮色、黑色或独立品牌色。
 - 列表行高度和间距必须连续，不能出现 `00/01` 等视觉断层。
 - 滚动期间不得因重新排序、动态 key、重复定位或受控值回写导致列表回跳。
@@ -137,7 +136,7 @@
 - 静态图标需要弱底色时，底色与前景必须来自同一主题语义，例如 `bg-foreground/10 + text-foreground`；不得使用浅色模式看似正常、深色模式接近背景的硬编码颜色或强调色组合。
 - 同一业务语义跨页面出现时必须共享颜色规则。例如定时任务标识在管理列表、会话侧栏、会话标题、配置面板和详情页中应保持一致，不能逐页自行决定颜色。
 - 不得机械全局替换颜色类。修改前应审计每个命中的语义，保留链接、按钮、选中态、加载态和结果状态的必要强调色。
-- 图标的视觉说明统一使用项目 Tooltip 组件；`aria-label` 负责无障碍名称，不替代视觉提示；不得使用浏览器原生 `title` 作为产品 Tooltip。共享 `TooltipContent` 默认 `pointer-events-none`，包含它的 Radix Popper wrapper 也必须 `pointer-events: none`，避免说明层或其定位壳抢走触发器命中并在边沿反复开关；只有内容需要滚动或接受指针时，才在该次调用的 `TooltipContent` 上显式覆盖为 `pointer-events-auto`。截断全文类 Tooltip 的 trigger 必须是整颗控件，不得锚在内部截断文字上。带链接的帮助说明使用 Popover / Dialog，不放进默认 Tooltip。
+- 图标的视觉说明统一使用项目 Tooltip 组件；`aria-label` 负责无障碍名称，不替代视觉提示；不得使用浏览器原生 `title` 作为产品 Tooltip。Tooltip 说明层不得抢走触发器的指针命中，这由共享组件固定（契约见 `web/tests/ui-tooltip-pointer-events-contract.test.ts`），调用处只在内容需要滚动或交互时显式覆盖。截断全文类 Tooltip 的 trigger 必须是整颗控件，不得锚在内部截断文字上。带链接的帮助说明使用 Popover / Dialog，不放进默认 Tooltip。
 
 ## 10. 异步操作中间态
 
@@ -169,6 +168,5 @@
 - 主题 recipe 生成的展示声明必须位于 CSS `components` layer，作为主题 role 的组件默认值；不得使用未分层的高优先级选择器或 `!important` 越过组件显式 utility/variant。桌面端、官网和内部 rrweb 演示都不读取系统 `prefers-reduced-motion`。主题 motion token 只决定过渡时长，不能因系统关闭窗口动画把 role 的 animation 或 transition 压成 0。页面隐藏时暂停回放不受此限制。
 - 组件覆盖只用于真实变体、交互状态和组件拓扑，例如 focus ring、单边 separator、joined control、透明 variant，以及显式声明的阴影、圆角和动效；禁止在组件中按 `themeId` 特判视觉样式。
 - 迁移现有主题时，必须由各主题 recipe 明确声明需要保持的边框、圆角、阴影、颜色、材质、状态和动效，不得把旧主题外观硬编码回共享组件。
-- Dialog、Sheet、AlertDialog 必须 Portal 到 `body` 的专用 overlay host；host 不得包含非 `none` 的 `transform`、`filter`、`backdrop-filter`、`contain`，也不得使用会裁剪后代的 `overflow`。
-- Dropdown Menu、Context Menu 的 Radix Content/SubContent 定位节点只负责定位、焦点和外部交互事件；位移、缩放、淡入淡出、材质、圆角和内容裁剪必须放在其内部视觉层，禁止在定位节点上施加开合 transform 动画或 filter。
+- 模态浮层挂载到 `body` 下不裁剪、不建立新定位上下文的专用 host；菜单的定位节点只负责定位和交互，视觉动画放在内部视觉层。契约见 `web/tests/overlay-portal-and-menu-motion.test.ts`。
 - 验收时必须检查生成 CSS 的 layer 与顺序，并至少在两个主题下通过 computed style 覆盖代表性静态态、hover/focus 态、outline 按钮、input 和 joined/split control，确认主题默认值生效且组件显式变体可覆盖。

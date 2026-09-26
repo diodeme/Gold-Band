@@ -475,6 +475,7 @@ fn windows_executable_candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
 /// MCP stdio checks, and Windows shell fallbacks so the app does not surface a
 /// transient console window while the command runs.
 pub fn background_command(program: impl AsRef<OsStr>) -> ProcessCommand {
+    #[allow(clippy::disallowed_methods)] // The single sanctioned constructor.
     let mut command = ProcessCommand::new(program);
     apply_background_process_flags(&mut command);
     command

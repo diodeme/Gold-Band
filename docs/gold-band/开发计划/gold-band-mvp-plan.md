@@ -2607,3 +2607,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 方案：README 语言集合与 `DESKTOP_LANGUAGE_OPTIONS` 对齐，英文 `README.md` 保留在仓库根目录作为 GitHub 首页，其余语言统一放在 `docs/i18n/README.{tag}.md`（zh-CN / zh-TW / ja-JP / ko-KR / pt-BR / es），避免根目录散落多语言文件；各版本内容结构一致，相对链接按自身位置解析并互相链接。移除全部 README 截图与 `docs/images/README*` 资源，只在头部提供在线 UI 预览：简体 / 繁体中文指向 `/zh/demo#`，其他语言指向 `/en/demo#`。
 - [x] 验收：`web/tests/brand-logo-asset.test.ts` 按界面语言列表检查每份 README 存在，按文件自身位置解析后头标指向 canonical `web/public/logo.svg`，语言切换器恰好链接其余所有语言版本；新增界面语言而未补 README 时测试失败。
 - 性能与过度设计评审：仅文档与测试变更，不影响运行时；不引入翻译工具链或生成脚本，README 语言集合直接复用已有界面语言常量。
+
+## 2026-09-26：内置提示词与 Agent 规则审计清理
+
+- [x] 根因：内置角色正文部分移植自外部 skill，带入了特定 Agent 独有的工具名（`lsp_diagnostics`、`TodoWrite`）和面向旧模型的写法；验收类 `FOLLOW_UP` 定义经多次追加补丁，同一句重复 3～4 次；审查角色把风格经验定为 HIGH，与“HIGH 导致 REJECT”和规划角色“不为理想结构重构大文件”冲突。`AGENTS.md` 开头早于“路由 + rules 单一真源”结构，仍复制并与 rules 表述不一致，另有“不能手写”与“优先使用”冲突，以及每次改动都强制输出评审结论。
+- [x] 方案：七种语言同步精简 `review`、`dev`、`plan`、`interview`、`GrillMe`、`accept` 与 AI-DYNAMIC `acceptance`：工具名改为能力描述，`FOLLOW_UP` 合并为单一定义，严重度按实际影响定级，删除重复加粗声明、固定轮次挑战模式与自算字段重叠规则。`AGENTS.md` 迁移 Bug 修复规则到 `bug-fix-verification.md`，合并组件策略冲突，文档同步与方案评审限定为非琐碎改动；新增 `rules/prompt-authoring.md` 及路由；`ui-interaction.md` 中已有契约测试固定的实现细节改为原则加测试指向；新增 `clippy.toml` 以 `disallowed-methods` 拦截 `std::process::Command::new`，PR 检查增加对应 clippy 步骤。
+- [x] 验收：`tests/authoring_workflow.rs` 24 项与 `prompts::tests` 10 项通过（提示词契约断言同步改为合并后的 `FOLLOW_UP` 定义）；`cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods` 通过，并发现 `tests/tao_windows_message_reentrancy.rs` 自启子进程需继承控制台，已显式豁免；rules 指向的 4 个前端契约测试 13 项通过；七种语言对应文件行数一致。完整 `cargo test --workspace --all-targets --no-fail-fast` 共 2598 项通过；其余 9 项失败与本次改动无关（断言文案在改动前的提示词中同样不存在、他人未提交改动或本机环境相关），另行处理。
+- 性能与过度设计评审：仅提示词、规则文本与编译期 lint 配置变更，无运行时代码、状态或依赖新增；提示词缩短减少各节点调用的输入 token。

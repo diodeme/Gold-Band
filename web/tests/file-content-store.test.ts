@@ -124,6 +124,23 @@ describe('FileContentStore autosave contract', () => {
     expect(store.snapshot(resource.key).saveState.kind).toBe('clean');
   });
 
+  it('flushes and then releases open files below a renamed or deleted folder', async () => {
+    const store = createStore();
+    await store.load(resource);
+    store.updateText(resource.key, 'pending edit');
+
+    expect(store.hasUnsavedWithin('project-1', 'D:/repo')).toBe(true);
+    expect(store.hasUnsavedWithin('project-1', 'D:/rep')).toBe(false);
+    expect(store.hasUnsavedWithin('project-2', 'D:/repo')).toBe(false);
+
+    await expect(store.flushWithin('project-1', 'D:\\repo')).resolves.toBe(true);
+    expect(api.writeFileResource.mock.calls[0]?.[0].content).toBe('pending edit');
+    expect(store.hasUnsavedWithin('project-1', 'D:/repo')).toBe(false);
+
+    await store.releaseWithin('project-1', 'd:/REPO');
+    expect(store.snapshot(resource.key).status).toBe('idle');
+  });
+
   it('serializes a newer edit behind an in-flight write without losing it', async () => {
     const store = createStore();
     await store.load(resource);

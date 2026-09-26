@@ -657,6 +657,18 @@
       "openHtmlInBrowser": "Abrir no navegador",
       "externalMarkdownImages": "Este documento referencia {{count}} imagens locais fora do seu diretório",
       "loadExternalMarkdownImages": "Carregar estas imagens",
+      "newFile": "Novo arquivo",
+      "newFolder": "Nova pasta",
+      "rename": "Renomear",
+      "delete": "Excluir",
+      "deleting": "Excluindo…",
+      "cancel": "Cancelar",
+      "entryName": "Nome",
+      "deleteTitle": "Excluir \"{{name}}\"?",
+      "deleteFileDescription": "O arquivo será movido para a lixeira.",
+      "deleteDirectoryDescription": "A pasta e todo o seu conteúdo serão movidos para a lixeira.",
+      "deleteUnsavedWarning": "As alterações não salvas serão perdidas.",
+      "operationFailed": "A operação falhou. Tente novamente.",
       "limitations": {
         "workspace-file": {
           "too-large": "O arquivo excede o limite de visualização no app. Abra-o com um app do sistema.",
@@ -685,7 +697,13 @@
           "read-failed": "Não foi possível ler o arquivo. Tente novamente.",
           "write-failed": "Não foi possível salvar o arquivo. Tente novamente.",
           "search-failed": "A pesquisa de arquivos falhou. Tente novamente.",
-          "watch-failed": "O monitoramento de alterações de arquivo falhou. Tente novamente."
+          "watch-failed": "O monitoramento de alterações de arquivo falhou. Tente novamente.",
+          "already-exists": "Já existe um arquivo ou pasta com este nome.",
+          "name-invalid": "Este nome não pode ser usado. Escolha outro nome.",
+          "not-a-directory": "O caminho selecionado não é uma pasta.",
+          "trash-failed": "Não foi possível mover para a lixeira. Tente novamente.",
+          "restore-unavailable": "Não é possível desfazer: o item não está mais na lixeira.",
+          "unsaved-changes": "Não foi possível salvar as alterações pendentes, então a renomeação foi cancelada."
         }
       }
     },

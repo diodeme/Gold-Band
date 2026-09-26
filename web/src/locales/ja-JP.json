@@ -657,6 +657,18 @@
       "openHtmlInBrowser": "ブラウザで開く",
       "externalMarkdownImages": "このドキュメントはディレクトリ外の {{count}} ローカル イメージを参照しています",
       "loadExternalMarkdownImages": "これらの画像をロードします",
+      "newFile": "新しいファイル",
+      "newFolder": "新しいフォルダー",
+      "rename": "名前の変更",
+      "delete": "削除",
+      "deleting": "削除中…",
+      "cancel": "キャンセル",
+      "entryName": "名前",
+      "deleteTitle": "「{{name}}」を削除しますか？",
+      "deleteFileDescription": "ファイルはゴミ箱に移動されます。",
+      "deleteDirectoryDescription": "フォルダーとその中身はすべてゴミ箱に移動されます。",
+      "deleteUnsavedWarning": "保存されていない変更は失われます。",
+      "operationFailed": "操作に失敗しました。もう一度やり直してください。",
       "limitations": {
         "workspace-file": {
           "too-large": "ファイルはアプリ内の表示制限を超えています。システムアプリで開きます。",
@@ -685,7 +697,13 @@
           "read-failed": "ファイルを読み取れませんでした。もう一度やり直してください。",
           "write-failed": "ファイルを保存できませんでした。もう一度やり直してください。",
           "search-failed": "ファイル検索に失敗しました。もう一度やり直してください。",
-          "watch-failed": "ファイル変更監視に失敗しました。もう一度やり直してください。"
+          "watch-failed": "ファイル変更監視に失敗しました。もう一度やり直してください。",
+          "already-exists": "同じ名前のファイルまたはフォルダーが既に存在します。",
+          "name-invalid": "この名前は使用できません。別の名前を指定してください。",
+          "not-a-directory": "選択したパスはフォルダーではありません。",
+          "trash-failed": "ゴミ箱に移動できませんでした。もう一度やり直してください。",
+          "restore-unavailable": "元に戻せません：項目はすでにゴミ箱にありません。",
+          "unsaved-changes": "未保存の変更を保存できなかったため、名前の変更を取り消しました。"
         }
       }
     },

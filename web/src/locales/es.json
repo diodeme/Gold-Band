@@ -657,6 +657,18 @@
       "openHtmlInBrowser": "Abrir en el navegador",
       "externalMarkdownImages": "Este documento referencia {{count}} imágenes locales fuera de su directorio",
       "loadExternalMarkdownImages": "Cargar estas imágenes",
+      "newFile": "Nuevo archivo",
+      "newFolder": "Nueva carpeta",
+      "rename": "Cambiar nombre",
+      "delete": "Eliminar",
+      "deleting": "Eliminando…",
+      "cancel": "Cancelar",
+      "entryName": "Nombre",
+      "deleteTitle": "¿Eliminar \"{{name}}\"?",
+      "deleteFileDescription": "El archivo se moverá a la papelera.",
+      "deleteDirectoryDescription": "La carpeta y todo su contenido se moverán a la papelera.",
+      "deleteUnsavedWarning": "Se perderán los cambios sin guardar.",
+      "operationFailed": "La operación falló. Inténtalo de nuevo.",
       "limitations": {
         "workspace-file": {
           "too-large": "El archivo supera el límite de visualización en la aplicación. Ábrelo con una aplicación del sistema.",
@@ -685,7 +697,13 @@
           "read-failed": "No se pudo leer el archivo. Inténtalo de nuevo.",
           "write-failed": "No se pudo guardar el archivo. Inténtalo de nuevo.",
           "search-failed": "Error en la búsqueda de archivos. Inténtalo de nuevo.",
-          "watch-failed": "Error en el monitoreo de cambios de archivos. Inténtalo de nuevo."
+          "watch-failed": "Error en el monitoreo de cambios de archivos. Inténtalo de nuevo.",
+          "already-exists": "Ya existe un archivo o una carpeta con este nombre.",
+          "name-invalid": "Este nombre no se puede usar. Elige otro nombre.",
+          "not-a-directory": "La ruta seleccionada no es una carpeta.",
+          "trash-failed": "No se pudo mover a la papelera. Inténtalo de nuevo.",
+          "restore-unavailable": "No se puede deshacer: el elemento ya no está en la papelera.",
+          "unsaved-changes": "No se pudieron guardar los cambios pendientes, así que se canceló el cambio de nombre."
         }
       }
     },

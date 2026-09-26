@@ -1,6 +1,6 @@
 import { getRuntimeApi } from './api/client';
 import type { RuntimeApi } from './api/client';
-import type { ResolvedColorScheme } from './types';
+import type { CreateWorkspaceEntryInput, ResolvedColorScheme } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -814,6 +814,22 @@ export function listWorkspaceDirectory(projectId: string, relativePath = '') {
 
 export function openWorkspacePathInFileManager(projectId: string, relativePath = '') {
   return getRuntimeApi().openWorkspacePathInFileManager(projectId, relativePath);
+}
+
+export function createWorkspaceEntry(input: CreateWorkspaceEntryInput) {
+  return getRuntimeApi().createWorkspaceEntry(input);
+}
+
+export function renameWorkspaceEntry(projectId: string, relativePath: string, newName: string) {
+  return getRuntimeApi().renameWorkspaceEntry(projectId, relativePath, newName);
+}
+
+export function deleteWorkspaceEntry(projectId: string, relativePath: string) {
+  return getRuntimeApi().deleteWorkspaceEntry(projectId, relativePath);
+}
+
+export function restoreWorkspaceEntry(projectId: string, receiptId: string) {
+  return getRuntimeApi().restoreWorkspaceEntry(projectId, receiptId);
 }
 
 export function listConversationDirectory(input: import('./api/client').ConversationDirectoryInput) {

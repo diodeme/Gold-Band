@@ -91,6 +91,128 @@ pub(crate) fn resolve_workspace_relative_path(
     Ok(canonical)
 }
 
+/// Resolve an existing workspace entry without following a final symlink, so
+/// mutating a link never mutates the target it points to.
+pub(crate) fn resolve_workspace_entry_path(
+    root: &ResolvedWorkspaceRoot,
+    relative_path: &str,
+) -> CommandResult<PathBuf> {
+    let normalized = relative_path.replace('\\', "/");
+    let trimmed = normalized.trim_matches('/');
+    let Some((parent, name)) = trimmed
+        .rsplit_once('/')
+        .or_else(|| (!trimmed.is_empty()).then_some(("", trimmed)))
+    else {
+        return Err(error(
+            "workspace-file.path-invalid",
+            serde_json::json!({ "path": relative_path }),
+        ));
+    };
+    if matches!(name, "." | "..") {
+        return Err(error(
+            "workspace-file.path-outside-workspace",
+            serde_json::json!({ "path": relative_path }),
+        ));
+    }
+    let parent = resolve_workspace_directory(root, parent)?;
+    let entry = parent.join(name);
+    std::fs::symlink_metadata(&entry)
+        .map_err(|io_error| io_path_error(io_error, &entry, "read"))?;
+    Ok(entry)
+}
+
+pub(crate) fn resolve_workspace_directory(
+    root: &ResolvedWorkspaceRoot,
+    relative_path: &str,
+) -> CommandResult<PathBuf> {
+    let directory = resolve_workspace_relative_path(root, relative_path)?;
+    if !directory.is_dir() {
+        return Err(error(
+            "workspace-file.not-a-directory",
+            serde_json::json!({ "path": display_path(&directory) }),
+        ));
+    }
+    Ok(directory)
+}
+
+/// Stable sub-reasons for `workspace-file.name-invalid`; the frontend owns the
+/// user-facing wording.
+pub(crate) fn validate_entry_name(name: &str) -> CommandResult<()> {
+    let invalid = |reason: &str| {
+        Err(error(
+            "workspace-file.name-invalid",
+            serde_json::json!({ "name": name, "reason": reason }),
+        ))
+    };
+    if name.trim().is_empty() {
+        return invalid("empty");
+    }
+    if name != name.trim() {
+        return invalid("surrounding-whitespace");
+    }
+    if matches!(name, "." | "..") {
+        return invalid("reserved");
+    }
+    if name.len() > MAX_ENTRY_NAME_BYTES {
+        return invalid("too-long");
+    }
+    if name
+        .chars()
+        .any(|character| matches!(character, '/' | '\\' | '\0'))
+    {
+        return invalid("invalid-character");
+    }
+    if cfg!(windows) {
+        if name.chars().any(|character| {
+            character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        }) {
+            return invalid("invalid-character");
+        }
+        if name.ends_with('.') {
+            return invalid("trailing-dot");
+        }
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end()
+            .to_ascii_uppercase();
+        if WINDOWS_RESERVED_NAMES.contains(&stem.as_str()) {
+            return invalid("reserved");
+        }
+    }
+    Ok(())
+}
+
+const MAX_ENTRY_NAME_BYTES: usize = 255;
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Whether two paths name the same filesystem entry. Case-only renames on
+/// case-insensitive filesystems report the target as already existing.
+#[cfg(unix)]
+pub(crate) fn same_entry(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (
+        std::fs::symlink_metadata(left),
+        std::fs::symlink_metadata(right),
+    ) {
+        (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn same_entry(left: &Path, right: &Path) -> bool {
+    comparable_path(left) == comparable_path(right)
+}
+
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
+    comparable_path(left) == comparable_path(right)
+}
+
 pub(crate) fn canonicalize_file(path: &Path, operation: &str) -> CommandResult<PathBuf> {
     let canonical =
         std::fs::canonicalize(path).map_err(|io_error| io_path_error(io_error, path, operation))?;
@@ -340,6 +462,7 @@ pub(crate) fn io_path_error(
     let code = match io_error.kind() {
         std::io::ErrorKind::NotFound => "workspace-file.not-found",
         std::io::ErrorKind::PermissionDenied => "workspace-file.permission-denied",
+        std::io::ErrorKind::AlreadyExists => "workspace-file.already-exists",
         _ if operation == "write" => "workspace-file.write-failed",
         _ => "workspace-file.read-failed",
     };
@@ -480,6 +603,56 @@ mod tests {
         let target = target.unwrap();
         assert_eq!(target.line, Some(10));
         assert_eq!(target.end_line, Some(20));
+    }
+
+    #[test]
+    fn entry_resolution_rejects_the_root_and_parent_traversal() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src").join("main.rs"), "").unwrap();
+        let workspace = root(dir.path());
+
+        assert_eq!(
+            resolve_workspace_entry_path(&workspace, "src/main.rs").unwrap(),
+            workspace.path.join("src").join("main.rs")
+        );
+        assert_eq!(
+            resolve_workspace_entry_path(&workspace, "")
+                .unwrap_err()
+                .code,
+            "workspace-file.path-invalid"
+        );
+        for path in ["..", "src/..", "../outside"] {
+            assert_eq!(
+                resolve_workspace_entry_path(&workspace, path)
+                    .unwrap_err()
+                    .code,
+                "workspace-file.path-outside-workspace",
+                "{path}"
+            );
+        }
+        assert_eq!(
+            resolve_workspace_entry_path(&workspace, "src/missing.rs")
+                .unwrap_err()
+                .code,
+            "workspace-file.not-found"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn entry_resolution_keeps_a_final_symlink_instead_of_its_target() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("target.txt"), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("target.txt"), dir.path().join("link"))
+            .unwrap();
+        let workspace = root(dir.path());
+
+        assert_eq!(
+            resolve_workspace_entry_path(&workspace, "link").unwrap(),
+            workspace.path.join("link")
+        );
     }
 
     #[test]

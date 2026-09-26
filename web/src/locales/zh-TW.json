@@ -657,6 +657,18 @@
       "openHtmlInBrowser": "在瀏覽器中開啟",
       "externalMarkdownImages": "此檔案引用了 {{count}} 張目錄外本機圖片",
       "loadExternalMarkdownImages": "載入這些圖片",
+      "newFile": "新增檔案",
+      "newFolder": "新增資料夾",
+      "rename": "重新命名",
+      "delete": "刪除",
+      "deleting": "正在刪除…",
+      "cancel": "取消",
+      "entryName": "名稱",
+      "deleteTitle": "刪除「{{name}}」？",
+      "deleteFileDescription": "檔案將移至資源回收筒。",
+      "deleteDirectoryDescription": "資料夾及其中所有內容將移至資源回收筒。",
+      "deleteUnsavedWarning": "其中未儲存的修改將遺失。",
+      "operationFailed": "操作失敗，請重試。",
       "limitations": {
         "workspace-file": {
           "too-large": "檔案超過應用內查看上限，可使用系統應用開啟。",
@@ -685,7 +697,13 @@
           "read-failed": "檔案讀取失敗，請重試。",
           "write-failed": "檔案儲存失敗，請重試。",
           "search-failed": "檔案搜尋失敗，請重試。",
-          "watch-failed": "檔案變化監聽失敗，請重試。"
+          "watch-failed": "檔案變化監聽失敗，請重試。",
+          "already-exists": "已存在同名的檔案或資料夾。",
+          "name-invalid": "此名稱無法使用，請換一個名稱。",
+          "not-a-directory": "所選路徑不是資料夾。",
+          "trash-failed": "無法移至資源回收筒，請重試。",
+          "restore-unavailable": "無法復原：該項目已不在資源回收筒中。",
+          "unsaved-changes": "未儲存的修改寫入失敗，已取消重新命名。"
         }
       }
     },

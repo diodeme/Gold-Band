@@ -1,7 +1,9 @@
 mod models;
+mod mutations;
 mod paths;
 mod runtime;
 mod service;
+mod trash_bin;
 mod watcher;
 
 use std::path::{Path, PathBuf};
@@ -39,7 +41,8 @@ pub(crate) fn revision_for_preview(path: &Path) -> CommandResult<FileRevisionVm>
 
 use paths::{
     canonicalize_file, locator_for_path, parse_file_link_from, path_is_within,
-    resolve_workspace_relative_path, resolve_workspace_root,
+    resolve_workspace_directory, resolve_workspace_entry_path, resolve_workspace_relative_path,
+    resolve_workspace_root,
 };
 
 #[tauri::command]
@@ -392,6 +395,58 @@ pub async fn write_file_resource(
     )?;
     let runtime = runtime.inner().clone();
     spawn_blocking_command(move || service::write_file(&runtime, &path, &input)).await
+}
+
+#[tauri::command]
+pub async fn create_workspace_entry(
+    state: State<'_, DesktopState>,
+    input: CreateWorkspaceEntryInput,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let parent = resolve_workspace_directory(&root, &input.parent_relative_path)?;
+    spawn_blocking_command(move || mutations::create_entry(&root, &parent, &input.name, input.kind))
+        .await
+}
+
+#[tauri::command]
+pub async fn rename_workspace_entry(
+    state: State<'_, DesktopState>,
+    input: RenameWorkspaceEntryInput,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let source = resolve_workspace_entry_path(&root, &input.relative_path)?;
+    spawn_blocking_command(move || mutations::rename_entry(&root, &source, &input.new_name)).await
+}
+
+/// Move a workspace entry to the system trash. The returned receipt backs a
+/// later `restore_workspace_entry` for undo within this app session.
+#[tauri::command]
+pub async fn delete_workspace_entry(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: DeleteWorkspaceEntryInput,
+) -> CommandResult<WorkspaceEntryDeletionVm> {
+    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let path = resolve_workspace_entry_path(&root, &input.relative_path)?;
+    let project_id = root.project_id.clone();
+    let (entry, trashed) =
+        spawn_blocking_command(move || mutations::delete_entry(&root, &path)).await?;
+    let receipt_id = runtime.record_trash_receipt(project_id, trashed)?;
+    Ok(WorkspaceEntryDeletionVm { receipt_id, entry })
+}
+
+#[tauri::command]
+pub async fn restore_workspace_entry(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: RestoreWorkspaceEntryInput,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let receipt = runtime.trash_receipt(&root.project_id, &input.receipt_id)?;
+    let entry =
+        spawn_blocking_command(move || mutations::restore_entry(&root, &receipt.entry)).await?;
+    runtime.forget_trash_receipt(&input.receipt_id)?;
+    Ok(entry)
 }
 
 #[tauri::command]

@@ -21,6 +21,7 @@ import type {
 } from '@/types';
 import type { FileWorkspaceResource } from '../right-workspace-context';
 import type { EditorViewportAnchor } from './WorkspaceFileEditor';
+import { workspacePathIsWithin } from './workspace-path';
 
 export type FileSaveState =
   | { kind: 'clean' }
@@ -578,6 +579,31 @@ export class FileContentStore {
       .map(([key]) => key);
     const results = await Promise.all(keys.map((key) => this.flush(key)));
     return results.every(Boolean);
+  }
+
+  private keysWithin(projectId: string, canonicalPath: string) {
+    return [...this.entries.entries()]
+      .filter(([, entry]) => entry.resource.projectId === projectId
+        && workspacePathIsWithin(entry.resource.locator.canonicalPath, canonicalPath))
+      .map(([key]) => key);
+  }
+
+  /** Whether an open file at or below `canonicalPath` has edits not yet written to disk. */
+  hasUnsavedWithin(projectId: string, canonicalPath: string) {
+    return this.keysWithin(projectId, canonicalPath).some((key) => {
+      const entry = this.entries.get(key);
+      return entry !== undefined && entry.localRevision > entry.savedLocalRevision;
+    });
+  }
+
+  async flushWithin(projectId: string, canonicalPath: string) {
+    const results = await Promise.all(this.keysWithin(projectId, canonicalPath).map((key) => this.flush(key)));
+    return results.every(Boolean);
+  }
+
+  /** Drop cached content for paths that no longer exist after a rename or delete. */
+  async releaseWithin(projectId: string, canonicalPath: string) {
+    await Promise.all(this.keysWithin(projectId, canonicalPath).map((key) => this.release(key)));
   }
 
   async releaseProject(projectId: string) {

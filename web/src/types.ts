@@ -293,6 +293,20 @@ export interface WorkspaceDirectoryEntryVm {
   modifiedAtNs: string | null;
 }
 
+export type WorkspaceEntryKind = 'file' | 'directory';
+
+export interface CreateWorkspaceEntryInput {
+  projectId: string;
+  parentRelativePath: string;
+  name: string;
+  kind: WorkspaceEntryKind;
+}
+
+export interface WorkspaceEntryDeletionVm {
+  receiptId: string;
+  entry: WorkspaceDirectoryEntryVm;
+}
+
 export interface WorkspaceFileSearchVm {
   requestId: string;
   entries: WorkspaceDirectoryEntryVm[];

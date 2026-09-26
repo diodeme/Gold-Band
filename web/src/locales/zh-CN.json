@@ -656,6 +656,18 @@
       "openHtmlInBrowser": "在浏览器中打开",
       "externalMarkdownImages": "此文档引用了 {{count}} 张目录外本地图片",
       "loadExternalMarkdownImages": "加载这些图片",
+      "newFile": "新建文件",
+      "newFolder": "新建文件夹",
+      "rename": "重命名",
+      "delete": "删除",
+      "deleting": "正在删除…",
+      "cancel": "取消",
+      "entryName": "名称",
+      "deleteTitle": "删除“{{name}}”？",
+      "deleteFileDescription": "文件将移到回收站。",
+      "deleteDirectoryDescription": "文件夹及其中所有内容将移到回收站。",
+      "deleteUnsavedWarning": "其中未保存的修改将丢失。",
+      "operationFailed": "操作失败，请重试。",
       "limitations": {
         "workspace-file": {
           "too-large": "文件超过应用内查看上限，可使用系统应用打开。",
@@ -684,7 +696,13 @@
           "read-failed": "文件读取失败，请重试。",
           "write-failed": "文件保存失败，请重试。",
           "search-failed": "文件搜索失败，请重试。",
-          "watch-failed": "文件变化监听失败，请重试。"
+          "watch-failed": "文件变化监听失败，请重试。",
+          "already-exists": "已存在同名文件或文件夹。",
+          "name-invalid": "该名称不可用，请换一个名称。",
+          "not-a-directory": "所选路径不是文件夹。",
+          "trash-failed": "无法移到回收站，请重试。",
+          "restore-unavailable": "无法撤销：该项目已不在回收站中。",
+          "unsaved-changes": "未保存的修改写入失败，已取消重命名。"
         }
       }
     },

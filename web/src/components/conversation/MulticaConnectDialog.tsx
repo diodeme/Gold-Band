@@ -30,6 +30,8 @@ interface MulticaConnectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settingsVm: MulticaSettingsVm | null;
+  /// 来源展示名（调用方经注册表名片解析）：标题 {{source}} 插值，不在弹窗内散写品牌名。
+  sourceLabel: string;
   /// 连接成功后的回调（调用方刷新任务列表 + 连接态）。
   onConnected?: () => void;
 }
@@ -47,6 +49,7 @@ export function MulticaConnectDialog({
   open,
   onOpenChange,
   settingsVm,
+  sourceLabel,
   onConnected,
 }: MulticaConnectDialogProps) {
   const { t } = useTranslation();
@@ -106,8 +109,8 @@ export function MulticaConnectDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="max-w-md gap-0 p-0">
         <AlertDialogHeader className="p-6 pb-0">
-          <AlertDialogTitle>{t('multica.connect.title')}</AlertDialogTitle>
-          <AlertDialogDescription>{t('multica.connect.body')}</AlertDialogDescription>
+          <AlertDialogTitle>{t('remote.connect.title', { source: sourceLabel })}</AlertDialogTitle>
+          <AlertDialogDescription>{t('remote.connect.body')}</AlertDialogDescription>
         </AlertDialogHeader>
 
         <div className="space-y-2 p-6">
@@ -118,10 +121,10 @@ export function MulticaConnectDialog({
             placeholder="http://localhost:8080"
             className="h-9 font-mono text-xs"
             spellCheck={false}
-            aria-label={t('multica.connection.addressLabel')}
+            aria-label={t('remote.connection.addressLabel')}
           />
           {addressInvalid && (
-            <p className="text-[11px] text-destructive">{t('multica.connection.invalidUrl')}</p>
+            <p className="text-[11px] text-destructive">{t('remote.connection.invalidUrl')}</p>
           )}
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
@@ -136,7 +139,7 @@ export function MulticaConnectDialog({
               void handleCancelConnect();
             }}
           >
-            {connecting ? t('multica.connect.cancelConnect') : t('common.cancel')}
+            {connecting ? t('remote.connect.cancelConnect') : t('common.cancel')}
           </AlertDialogCancel>
           <AlertDialogAction
             disabled={!canConnect || connecting}
@@ -149,10 +152,10 @@ export function MulticaConnectDialog({
             {connecting ? (
               <>
                 <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                {t('multica.connect.connecting')}
+                {t('remote.connect.connecting')}
               </>
             ) : (
-              t('multica.connect.confirm')
+              t('remote.connect.confirm')
             )}
           </AlertDialogAction>
         </AlertDialogFooter>

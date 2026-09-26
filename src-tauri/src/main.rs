@@ -24,6 +24,7 @@ mod metrics;
 mod multica;
 mod notifications;
 mod personal_analytics;
+mod remote;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -101,9 +102,10 @@ use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
-    add_multica_workspace, cancel_multica_task, get_multica_task_requirement, get_multica_tasks,
-    list_server_multica_workspaces, recover_multica_work_dir_sessions, remove_multica_workspace,
-    set_active_multica_workspace, start_multica_conversation_run,
+    add_multica_workspace, cancel_remote_task, get_remote_task_requirement, get_remote_tasks,
+    list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
+    recover_remote_work_dir_sessions, remove_multica_workspace, remove_remote_completed_task,
+    set_active_multica_workspace, start_remote_conversation_run,
 };
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
@@ -273,7 +275,7 @@ fn run() -> anyhow::Result<()> {
                     }
                 });
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                // home repo 自愈（单一 repo、有界）：multica work_dir 定点自愈移入下方 spawn_blocking
+                // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
                 // 恢复管线（P2），不再阻塞窗口启动关键路径。
                 let _ = runtime_app.recover_interrupted_running_sessions();
             }
@@ -282,11 +284,11 @@ fn run() -> anyhow::Result<()> {
                 let blocking_handle = recovery_handle.clone();
                 let recovery = tauri::async_runtime::spawn_blocking(move || {
                     let state = blocking_handle.state::<DesktopState>();
-                    // multica work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
+                    // 远程来源 work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
                     // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
                     // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
                     if let Ok(runtime_app) = state.app() {
-                        recover_multica_work_dir_sessions(&runtime_app);
+                        recover_remote_work_dir_sessions(&runtime_app);
                     }
                     state.recover_interrupted_conversation_workspaces()
                 })
@@ -555,11 +557,14 @@ fn run() -> anyhow::Result<()> {
             disconnect_multica,
             cancel_multica_connect,
             save_multica_connection_address,
-            get_multica_tasks,
-            get_multica_task_requirement,
-            start_multica_conversation_run,
-            cancel_multica_task,
+            get_remote_tasks,
+            get_remote_task_requirement,
+            start_remote_conversation_run,
+            cancel_remote_task,
+            remove_remote_completed_task,
             list_server_multica_workspaces,
+            list_remote_skills,
+            pull_remote_skills,
             add_multica_workspace,
             remove_multica_workspace,
             set_active_multica_workspace,

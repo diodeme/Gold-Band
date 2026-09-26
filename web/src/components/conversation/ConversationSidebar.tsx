@@ -49,13 +49,13 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'conversation-run':
     case 'personal-analytics':
     case 'settings':
-    case 'multica-tasks':
+    case 'remote-tasks':
       return null;
   }
 }
 
 export function isConversationSidebarMoreNavigationActive(page: ConversationPage): boolean {
-  return page.kind === 'multica-tasks'
+  return page.kind === 'remote-tasks'
     || page.kind === 'scheduled-tasks'
     || page.kind === 'scheduled-task-detail';
 }
@@ -341,12 +341,12 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             >
               <SidebarButton
                 compact
-                active={active.kind === 'multica-tasks'}
+                active={active.kind === 'remote-tasks'}
                 icon={<Globe />}
-                label={t('conversation.sidebar.multicaTaskManagement')}
+                label={t('conversation.sidebar.remoteTaskManagement')}
                 onClick={() => {
                   setMoreNavigationOpen(true);
-                  onSelect({ kind: 'multica-tasks' });
+                  onSelect({ kind: 'remote-tasks' });
                 }}
               />
               <SidebarButton

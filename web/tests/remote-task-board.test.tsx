@@ -16,6 +16,7 @@ vi.mock('lucide-react', () => ({
   Ban: () => null,
   Loader2: () => null,
   Play: () => null,
+  Trash2: () => null,
 }));
 
 vi.mock('@/lib/utils', () => ({
@@ -42,17 +43,20 @@ vi.mock('@/components/ui/tooltip', () => ({
 
 import { formatLocalDateTime } from '@/lib/datetime';
 import {
-  MulticaRemoteTaskBoard,
+  RemoteTaskBoard,
   bucketTasksByStatus,
+  visibleIssueKind,
+  isTaskNotReady,
   BOARD_COLUMNS,
-  MULTICA_STATUS_TONE,
-} from '@/components/conversation/MulticaRemoteTaskBoard';
+  REMOTE_STATUS_TONE,
+  REMOTE_ISSUE_KIND_TONE,
+} from '@/components/conversation/RemoteTaskBoard';
 import type { RemoteTaskVm } from '@/types';
 
 function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
   return {
     id: 'rt-1',
-    issueId: null,
+    issueRef: null,
     status: 'queued',
     workspaceId: 'ws-1',
     title: 'Task',
@@ -61,6 +65,8 @@ function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
     localTaskId: null,
     runId: null,
     projectId: null,
+    kind: null,
+    readiness: null,
     ...overrides,
   };
 }
@@ -112,13 +118,44 @@ describe('bucketTasksByStatus', () => {
 });
 
 // 4 canonical status → 看板词汇配色（待办=灰、进行中=黄、已完成=绿、失败=红）。
-describe('multica status tone config', () => {
+describe('remote status tone config', () => {
   it('maps every canonical status to its board-vocabulary color', () => {
-    expect(MULTICA_STATUS_TONE.queued).toMatch(/muted/);
-    expect(MULTICA_STATUS_TONE.running).toMatch(/amber/);
-    expect(MULTICA_STATUS_TONE.completed).toMatch(/emerald/);
-    expect(MULTICA_STATUS_TONE.failed).toMatch(/destructive/);
-    expect(Object.keys(MULTICA_STATUS_TONE).sort()).toEqual(['completed', 'failed', 'queued', 'running']);
+    expect(REMOTE_STATUS_TONE.queued).toMatch(/muted/);
+    expect(REMOTE_STATUS_TONE.running).toMatch(/amber/);
+    expect(REMOTE_STATUS_TONE.completed).toMatch(/emerald/);
+    expect(REMOTE_STATUS_TONE.failed).toMatch(/destructive/);
+    expect(Object.keys(REMOTE_STATUS_TONE).sort()).toEqual(['completed', 'failed', 'queued', 'running']);
+  });
+});
+
+// issue 类型徽标 + 未就绪提醒谓词（story dev/test 拆分；仅提醒不阻断，§12.42）。
+describe('remote issue kind badge and not-ready predicate', () => {
+  it('renders badges only for dev/test/bug and hides general/missing kinds', () => {
+    expect(visibleIssueKind('dev')).toBe('dev');
+    expect(visibleIssueKind('test')).toBe('test');
+    expect(visibleIssueKind('bug')).toBe('bug');
+    // general 与缺字段不渲染徽标（对齐 multica 自有 views 的 hideGeneral 惯例）。
+    expect(visibleIssueKind('general')).toBeNull();
+    expect(visibleIssueKind(null)).toBeNull();
+    // 未知类型同样不渲染（前向兼容：新类型不猜文案）。
+    expect(visibleIssueKind('epic')).toBeNull();
+  });
+
+  it('maps every badge kind to its own tone', () => {
+    expect(REMOTE_ISSUE_KIND_TONE.dev).toMatch(/sky/);
+    expect(REMOTE_ISSUE_KIND_TONE.test).toMatch(/violet/);
+    expect(REMOTE_ISSUE_KIND_TONE.bug).toMatch(/destructive/);
+  });
+
+  it('flags only test kind as not-ready (提醒谓词：缺失按未就绪展示，不阻断执行)', () => {
+    // 非 test（含旧 server 的 null）恒无未就绪提醒，不受 readiness 影响。
+    expect(isTaskNotReady({ kind: 'dev', readiness: false })).toBe(false);
+    expect(isTaskNotReady({ kind: 'bug', readiness: null })).toBe(false);
+    expect(isTaskNotReady({ kind: null, readiness: null })).toBe(false);
+    // test：readiness !== true（false / null）都展示未就绪提醒（仅提醒，§12.42）。
+    expect(isTaskNotReady({ kind: 'test', readiness: true })).toBe(false);
+    expect(isTaskNotReady({ kind: 'test', readiness: false })).toBe(true);
+    expect(isTaskNotReady({ kind: 'test', readiness: null })).toBe(true);
   });
 });
 
@@ -127,6 +164,7 @@ async function renderBoard(props: {
   busyTaskId?: string | null;
   onPrepare?: (t: RemoteTaskVm) => void;
   onCancel?: (t: RemoteTaskVm) => void;
+  onRemove?: (t: RemoteTaskVm) => void;
   onSelectRun?: (p: string, t: string, r: string) => void;
 }) {
   const container = document.createElement('div');
@@ -134,22 +172,24 @@ async function renderBoard(props: {
   const root = createRoot(container);
   const onPrepare = props.onPrepare ?? vi.fn();
   const onCancel = props.onCancel ?? vi.fn();
+  const onRemove = props.onRemove ?? vi.fn();
   const onSelectRun = props.onSelectRun ?? vi.fn();
   await act(async () => {
     root.render(
-      <MulticaRemoteTaskBoard
+      <RemoteTaskBoard
         tasks={props.tasks}
         busyTaskId={props.busyTaskId ?? null}
         onPrepare={onPrepare}
         onCancel={onCancel}
+        onRemove={onRemove}
         onSelectRun={onSelectRun}
       />,
     );
   });
-  return { container, onPrepare, onCancel, onSelectRun };
+  return { container, onPrepare, onCancel, onRemove, onSelectRun };
 }
 
-describe('MulticaRemoteTaskBoard render', () => {
+describe('RemoteTaskBoard render', () => {
   it('renders the 4 column headers and a task in each column', async () => {
     const { container } = await renderBoard({
       tasks: [
@@ -161,7 +201,7 @@ describe('MulticaRemoteTaskBoard render', () => {
     });
     // 4 列头（status 标签走 i18n key，mock t 返回 key）。
     for (const status of BOARD_COLUMNS) {
-      expect(container.textContent).toContain(`conversation.sidebar.multica.status.${status}`);
+      expect(container.textContent).toContain(`conversation.sidebar.remoteTasks.status.${status}`);
     }
     expect(container.textContent).toContain('Todo');
     expect(container.textContent).toContain('Doing');
@@ -171,7 +211,7 @@ describe('MulticaRemoteTaskBoard render', () => {
 
   it('shows the empty hint for every column when there are no tasks', async () => {
     const { container } = await renderBoard({ tasks: [] });
-    expect(container.textContent).toContain('multica.taskManagement.column.empty');
+    expect(container.textContent).toContain('remote.taskManagement.column.empty');
   });
 
   it('renders a prepare button only for queued tasks and forwards onPrepare', async () => {
@@ -180,7 +220,7 @@ describe('MulticaRemoteTaskBoard render', () => {
       tasks: [task({ id: 'q', status: 'queued', title: 'Todo' })],
       onPrepare,
     });
-    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.executeTask"]') as HTMLButtonElement;
     expect(claimBtn).toBeTruthy();
     await act(async () => { claimBtn.click(); });
     expect(onPrepare).toHaveBeenCalledTimes(1);
@@ -193,7 +233,7 @@ describe('MulticaRemoteTaskBoard render', () => {
       tasks: [task({ id: 'r', status: 'running', title: 'Doing' })],
       onCancel,
     });
-    const cancelBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.cancelTask"]') as HTMLButtonElement;
+    const cancelBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.cancelTask"]') as HTMLButtonElement;
     expect(cancelBtn).toBeTruthy();
     await act(async () => { cancelBtn.click(); });
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -234,6 +274,66 @@ describe('MulticaRemoteTaskBoard render', () => {
     expect(container.textContent).toContain('NoLink');
   });
 
+  it('renders the issue-kind badge for dev/test/bug but not for general', async () => {
+    const { container } = await renderBoard({
+      tasks: [
+        task({ id: 'd', status: 'queued', title: 'DevTask', kind: 'dev' }),
+        task({ id: 't', status: 'queued', title: 'TestTask', kind: 'test', readiness: true }),
+        task({ id: 'b', status: 'queued', title: 'BugTask', kind: 'bug' }),
+        task({ id: 'g', status: 'queued', title: 'GeneralTask', kind: 'general' }),
+      ],
+    });
+    expect(container.textContent).toContain('remote.taskManagement.issueKind.dev');
+    expect(container.textContent).toContain('remote.taskManagement.issueKind.test');
+    expect(container.textContent).toContain('remote.taskManagement.issueKind.bug');
+    // general 不渲染类型徽标（仅有状态徽标）。
+    expect(container.textContent).not.toContain('remote.taskManagement.issueKind.general');
+  });
+
+  it('marks a queued test task whose dev parent is not done as not-ready but still allows execution', async () => {
+    const onPrepare = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 't', status: 'queued', title: 'TestTask', kind: 'test', readiness: false })],
+      onPrepare,
+    });
+    // 未就绪标记 + 原因提示（Tooltip 文案）都在卡片上（仅提醒，§12.42 产品决策）。
+    expect(container.textContent).toContain('remote.taskManagement.readiness.notReady');
+    expect(container.textContent).toContain('remote.taskManagement.readiness.notReadyHint');
+    // 执行入口照常可用：未就绪不阻断（后端 claim 拦截已随门控一并移除）。
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.executeTask"]') as HTMLButtonElement;
+    expect(claimBtn).toBeTruthy();
+    expect(claimBtn.disabled).toBe(false);
+    await act(async () => { claimBtn.click(); });
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows executing a ready test task and shows no not-ready marker', async () => {
+    const onPrepare = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 't', status: 'queued', title: 'TestTask', kind: 'test', readiness: true })],
+      onPrepare,
+    });
+    expect(container.textContent).not.toContain('remote.taskManagement.readiness.notReady');
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.executeTask"]') as HTMLButtonElement;
+    expect(claimBtn.disabled).toBe(false);
+    await act(async () => { claimBtn.click(); });
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no not-ready marker for a queued dev task even when the server reports readiness=false', async () => {
+    // 非 test 不受就绪字段影响（服务端对非 test 亦可能回传 is_ready=false）。
+    const onPrepare = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'd', status: 'queued', title: 'DevTask', kind: 'dev', readiness: false })],
+      onPrepare,
+    });
+    expect(container.textContent).not.toContain('remote.taskManagement.readiness.notReady');
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.executeTask"]') as HTMLButtonElement;
+    expect(claimBtn.disabled).toBe(false);
+    await act(async () => { claimBtn.click(); });
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+  });
+
   it('renders task timestamps in the local timezone, not raw UTC', async () => {
     const ts = '2026-08-06T02:30:00Z';
     const { container } = await renderBoard({
@@ -241,5 +341,38 @@ describe('MulticaRemoteTaskBoard render', () => {
     });
     expect(container.textContent).toContain(formatLocalDateTime(ts));
     expect(container.textContent).not.toContain('2026-08-06T02:30:00Z');
+  });
+
+  // 移出列表（全状态可用）：纯本地视图过滤、刷新即恢复——此处固化「每列都有入口 + 转发 onRemove」。
+  it('renders a remove button for every status and forwards onRemove', async () => {
+    const onRemove = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [
+        task({ id: 'q', status: 'queued', title: 'Todo' }),
+        task({ id: 'r', status: 'running', title: 'Doing' }),
+        task({ id: 'c', status: 'completed', title: 'Done' }),
+        task({ id: 'f', status: 'failed', title: 'Boom' }),
+      ],
+      onRemove,
+    });
+    const removeButtons = container.querySelectorAll(
+      'button[aria-label="conversation.sidebar.remoteTasks.removeTask"]',
+    );
+    // 四个 canonical 状态各一张卡片 → 四个移出入口。
+    expect(removeButtons.length).toBe(4);
+    await act(async () => { (removeButtons[2] as HTMLButtonElement).click(); });
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect((onRemove.mock.calls[0] as [RemoteTaskVm])[0].id).toBe('c');
+  });
+
+  it('disables the remove button while the card is busy', async () => {
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'q', status: 'queued', title: 'Todo' })],
+      busyTaskId: 'q',
+    });
+    const removeBtn = container.querySelector(
+      'button[aria-label="conversation.sidebar.remoteTasks.removeTask"]',
+    ) as HTMLButtonElement;
+    expect(removeBtn.disabled).toBe(true);
   });
 });

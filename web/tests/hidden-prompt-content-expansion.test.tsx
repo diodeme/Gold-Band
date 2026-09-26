@@ -62,6 +62,42 @@ describe('hidden prompt content links', () => {
     }
   });
 
+  it('localizes the remote task context section title in the zh-CN UI', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<HiddenPromptMessageContent content={[
+          '把登录页改成深色',
+          '<hidden data-gold-band-hidden="true" title="Gold Band remote task context">',
+          'remote task dpms + completion protocol',
+          '</hidden>',
+        ].join('\n')} onOpenSection={vi.fn()} />);
+      });
+
+      const link = container.firstElementChild?.querySelector<HTMLButtonElement>('[data-hidden-prompt-link="true"]');
+      expect(link?.textContent).toContain('acp.hiddenRemoteTaskContext');
+      expect(link?.textContent).not.toContain('Gold Band remote task context');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('opens each hidden section by its stable parsed part index without inline expansion', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}

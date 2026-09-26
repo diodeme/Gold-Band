@@ -1029,19 +1029,8 @@
       "context-unavailable": "Cannot check for updates without a workspace selected.",
       "no-update": "No update is available."
     },
-    "multica": {
-      "not-configured": "Multica is not configured. Complete setup in Settings first.",
-      "invalid-address": "Invalid connection address: must be a valid http(s) URL.",
-      "connect-cancelled": "Connection cancelled.",
-      "auth-failed": "Multica authentication failed: {{message}}",
-      "network-failed": "Multica network request failed: {{message}}",
-      "register-failed": "Daemon registration failed: {{message}}",
-      "claim-conflict": "This task has already been claimed by another daemon.",
-      "task-not-found": "This multica task could not be found.",
-      "runtime-offline": "Runtime is not ready. Please try again shortly.",
-      "session-resume-failed": "Session resume failed. A fresh run will be started.",
-      "workspace-already-bound": "This workspace is already bound.",
-      "workspace-not-found": "This workspace binding could not be found."
+    "remote": {
+      "source-not-configured": "Task source is not configured. Connect first."
     }
   },
   "status": {
@@ -1320,7 +1309,35 @@
       "globalHint": "Available across every project. Saved to ~/.gold-band/skills/<name>/SKILL.md",
       "projectHint": "Only available when this project is open. Saved to <project>/.gold-band/skills/<name>/SKILL.md",
       "storageGlobal": "Available across every project. Saved to {{path}}",
-      "storageProject": "Project-level. Saved to {{path}}"
+      "storageProject": "Project-level. Saved to {{path}}",
+      "remoteSync": {
+        "action": "Sync remote SKILLs",
+        "title": "Sync SKILLs from remote",
+        "workspace": "Workspace",
+        "reload": "Reload",
+        "newBadge": "New",
+        "existsBadge": "Exists, will overwrite",
+        "selectAll": "Select all",
+        "selectedCount": "{{selected}} / {{total}} selected",
+        "confirm": "Sync",
+        "confirmWithOverwrite": "Sync (overwrite {{count}})",
+        "empty": "No SKILLs in this workspace",
+        "notConnected": "Not connected to {{source}}",
+        "connect": "Connect {{source}}",
+        "loadFailed": "Failed to load remote SKILLs",
+        "reportTitle": "Sync Results",
+        "reportSummary": "Created {{created}} · Overwritten {{overwritten}} · Skipped {{skipped}} · Failed {{failed}}",
+        "outcomeCreated": "Created",
+        "outcomeOverwritten": "Overwritten",
+        "outcomeSkipped": "Skipped",
+        "outcomeFailed": "Failed",
+        "reason": {
+          "multica.skill.not-found": "Already deleted on the remote",
+          "multica.skill.name-collision": "Name conflict within this batch",
+          "multica.remote-error": "Server error",
+          "multica.not-connected": "Remote source not connected"
+        }
+      }
     },
     "importProfile": "Import Roles",
     "importSettingsDescription": "Batch import role Markdown files from a folder. Missing names and summaries are filled automatically.",
@@ -2284,7 +2301,8 @@
       "cacheRead": "Cache Read",
       "cacheWrite": "Cache Write",
       "total": "Total"
-    }
+    },
+    "hiddenRemoteTaskContext": "Hidden remote task context"
   },
   "graph": {
     "emptyGraph": "No work graph",
@@ -2623,43 +2641,6 @@
       }
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "Requirements",
-      "source": {
-        "label": "Task source",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "Workspace",
-        "remove": "Remove workspace",
-        "removeConfirm": "Remove this workspace? Its requirements will no longer be shown."
-      },
-      "column": {
-        "empty": "No tasks"
-      },
-      "account": {
-        "connected": "Connected",
-        "switchAccount": "Switch account",
-        "disconnect": "Disconnect"
-      }
-    },
-    "connection": {
-      "title": "Connection Address",
-      "addressLabel": "Connection address",
-      "save": "Save",
-      "invalidUrl": "Enter a valid http(s) address",
-      "restoreDefault": "Restore default address",
-      "restoring": "Restoring…"
-    },
-    "connect": {
-      "title": "Connect Multica",
-      "body": "About to connect to:",
-      "confirm": "Connect",
-      "connecting": "Connecting…",
-      "cancelConnect": "Cancel connection"
-    }
-  },
   "conversation": {
     "title": "Conversation",
     "newConversation": "New Conversation",
@@ -2698,7 +2679,6 @@
       "contextManagement": "Context",
       "runModeManagement": "Run Mode",
       "more": "More",
-      "multicaTaskManagement": "Requirements",
       "pinned": "Pinned",
       "noPinned": "Pinned conversations appear here",
       "noWorkspaces": "No workspaces added",
@@ -2736,14 +2716,18 @@
         "failed": "Failed, not viewed"
       },
       "settings": "Settings",
-      "multica": {
+      "remoteTaskManagement": "Requirements",
+      "remoteTasks": {
         "sectionTitle": "Requirements",
-        "emptyTitle": "Not connected to Multica",
-        "emptyDescription": "Connect to view and claim Multica requirements.",
-        "connectButton": "Connect Multica",
+        "emptyTitle": "Not connected to {{source}}",
+        "emptyDescription": "Connect to view and claim {{source}} requirements.",
+        "connectButton": "Connect {{source}}",
         "connectionSettings": "Connection address settings",
         "cancelTask": "Cancel task",
         "executeTask": "Run",
+        "removeTask": "Remove from list",
+        "removeTaskHint": "Removed on this side only; refresh restores it",
+        "removeTaskTerminalHint": "Removes the local completion record; it will not reappear on refresh",
         "addWorkspace": "Add Workspace",
         "noWorkspacesBound": "No workspaces bound",
         "status": {
@@ -2764,9 +2748,9 @@
       }
     },
     "composer": {
-      "multicaNeedLocalWorkspace": "Add a local workspace before running a requirement",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "Unbind task"
+      "remoteNeedLocalWorkspace": "Add a local workspace before running a requirement",
+      "remoteBindingTag": "{{source}} · {{title}}",
+      "removeRemoteBinding": "Unbind task"
     },
     "branchPicker": {
       "label": "Branch",
@@ -2948,5 +2932,55 @@
     "validationPositiveNumber": "{{field}} must be greater than 0",
     "validationTemplateNameRequired": "Template name is required",
     "validationTemplateNameDuplicated": "Template name {{name}} already exists"
+  },
+  "remote": {
+    "taskManagement": {
+      "title": "Requirements",
+      "source": {
+        "label": "Task source",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "Workspace",
+        "remove": "Remove workspace",
+        "removeConfirm": "Remove this workspace? Its requirements will no longer be shown."
+      },
+      "issueKind": {
+        "dev": "Dev",
+        "test": "Test",
+        "bug": "Bug"
+      },
+      "issueKindFilter": {
+        "label": "Type",
+        "all": "All",
+        "dev": "Dev",
+        "test": "Test"
+      },
+      "readiness": {
+        "notReady": "Not ready",
+        "notReadyHint": "The matching dev task is not done yet; consider waiting for it"
+      },
+      "column": {
+        "empty": "No tasks"
+      },
+      "account": {
+        "connected": "Connected"
+      }
+    },
+    "connection": {
+      "title": "Connection Address",
+      "addressLabel": "Connection address",
+      "save": "Save",
+      "invalidUrl": "Enter a valid http(s) address",
+      "restoreDefault": "Restore default address",
+      "restoring": "Restoring…"
+    },
+    "connect": {
+      "title": "Connect {{source}}",
+      "body": "About to connect to:",
+      "confirm": "Connect",
+      "connecting": "Connecting…",
+      "cancelConnect": "Cancel connection"
+    }
   }
 }

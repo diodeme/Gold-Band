@@ -3605,6 +3605,7 @@ fn scheduled_create_input(
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
+        first_prompt_hidden_sections: None,
         role: None,
     })
 }
@@ -3721,6 +3722,7 @@ mod tests {
             outcome: RunOutcome::Success,
             task_title: None,
             completion_agent_label: None,
+            attempt_dir: None,
         };
         entry.guard.stop().await;
         finish_occurrence_for_event(
@@ -4059,6 +4061,7 @@ mod tests {
             scheduled_task_id: Some("scheduled-1".to_string()),
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
                 project_id: "project-b".to_string(),
@@ -6398,6 +6401,7 @@ mod tests {
                 outcome: RunOutcome::Success,
                 task_title: None,
                 completion_agent_label: None,
+                attempt_dir: None,
             },
         )
         .unwrap();
@@ -6436,6 +6440,7 @@ mod tests {
                 outcome: gold_band::app::AcpTurnOutcome::Failed,
                 batch_progress: gold_band::app::AcpTurnBatchProgress::terminal(1),
                 task_title: None,
+                attempt_dir: None,
             },
         )
         .unwrap();

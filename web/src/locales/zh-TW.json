@@ -999,20 +999,6 @@
       "install-failed": "安裝更新失敗：{{message}}",
       "context-unavailable": "無法獲取更新上下文，請先選擇工作區。",
       "no-update": "目前沒有可安裝更新。"
-    },
-    "multica": {
-      "not-configured": "尚未設定 Multica，請先在設定中完成接入。",
-      "invalid-address": "連接地址無效：必須是合法的 http(s) 地址。",
-      "connect-cancelled": "已取消連接。",
-      "auth-failed": "Multica 鑑權失敗：{{message}}",
-      "network-failed": "Multica 網路請求失敗：{{message}}",
-      "register-failed": "Daemon 註冊失敗：{{message}}",
-      "claim-conflict": "該任務已被其他 Daemon 領取。",
-      "task-not-found": "找不到該 Multica 任務。",
-      "runtime-offline": "執行時未就緒，請稍後重試。",
-      "session-resume-failed": "工作階段還原失敗，將以全新任務重跑。",
-      "workspace-already-bound": "該工作區已綁定。",
-      "workspace-not-found": "找不到該工作區綁定。"
     }
   },
   "status": {
@@ -2594,43 +2580,6 @@
       }
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "需求管理",
-      "source": {
-        "label": "任務來源",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "工作區",
-        "remove": "移除工作區",
-        "removeConfirm": "確定移除該工作區？該空間的需求將不再展示。"
-      },
-      "column": {
-        "empty": "暫無任務"
-      },
-      "account": {
-        "connected": "已連接",
-        "switchAccount": "切換帳號",
-        "disconnect": "斷開連接"
-      }
-    },
-    "connection": {
-      "title": "連接地址設定",
-      "addressLabel": "連接地址",
-      "save": "儲存",
-      "invalidUrl": "請輸入合法的 http(s) 地址",
-      "restoreDefault": "還原預設地址",
-      "restoring": "還原中…"
-    },
-    "connect": {
-      "title": "連接 Multica",
-      "body": "即將連接以下地址：",
-      "confirm": "連接",
-      "connecting": "連接中…",
-      "cancelConnect": "取消連接"
-    }
-  },
   "conversation": {
     "title": "工作階段",
     "newConversation": "新工作階段",
@@ -2669,7 +2618,6 @@
       "contextManagement": "上下文",
       "runModeManagement": "執行模式",
       "more": "更多",
-      "multicaTaskManagement": "需求管理",
       "pinned": "置頂",
       "noPinned": "置頂工作階段會顯示在這裡",
       "noWorkspaces": "尚未添加工作區",
@@ -2706,39 +2654,9 @@
         "stopped": "已停止，尚未查看",
         "failed": "執行異常，尚未查看"
       },
-      "settings": "設定",
-      "multica": {
-        "sectionTitle": "需求",
-        "emptyTitle": "尚未連接 Multica",
-        "emptyDescription": "連接後可在此查看並領取 Multica 需求。",
-        "connectButton": "連接 Multica",
-        "connectionSettings": "連接地址設定",
-        "cancelTask": "取消任務",
-        "executeTask": "執行",
-        "addWorkspace": "添加工作區",
-        "noWorkspacesBound": "尚未綁定工作區",
-        "status": {
-          "queued": "待辦",
-          "running": "進行中",
-          "completed": "已完成",
-          "failed": "失敗"
-        },
-        "dialog": {
-          "title": "添加工作區",
-          "remoteWorkspace": "遠端工作區",
-          "provider": "Provider",
-          "add": "添加",
-          "needWorkspace": "請選擇遠端工作區",
-          "noServerWorkspaces": "服務端暫無可綁定的工作區，請先在 multica Web 建立工作區。",
-          "allWorkspacesBound": "所有遠端工作區均已綁定。"
-        }
-      }
+      "settings": "設定"
     },
-    "composer": {
-      "multicaNeedLocalWorkspace": "請先添加本機工作區，再執行需求",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "解除任務綁定"
-    },
+    "composer": {},
     "branchPicker": {
       "label": "分支",
       "search": "搜尋 {{workspace}} 分支",

@@ -1,9 +1,9 @@
 //! multica 远程任务命令（开发设计 2.4 / 第 6 章表）。
 //!
-//! - [`get_multica_tasks`]：按 workspace 分组的远程 pending 列表 + 本地终态历史（`multica_completed_tasks`）。
-//! - [`get_multica_task_requirement`]：claim-at-send 只读取——拉任务详情 + 需求正文预填 composer、绑定 chip，
+//! - [`get_remote_tasks`]：按 workspace 分组的远程 pending 列表 + 本地终态历史（`remote_completed_tasks`）。
+//! - [`get_remote_task_requirement`]：claim-at-send 只读取——拉任务详情 + 需求正文预填 composer、绑定 chip，
 //!   不改 server 状态（任务仍 queued）。删除 chip 即解绑回普通会话。
-//! - [`start_multica_conversation_run`]：发送预填好的远程任务——发送即事务边界：先 claim（pending→dispatched）
+//! - [`start_remote_conversation_run`]：发送预填好的远程任务——发送即事务边界：先 claim（pending→dispatched）
 //!   再**复用**本地会话创建链路（`create_conversation_run_vm`：建工作流 + 建任务 + 写 conversation.json + 启动 run）
 //!   + start_task（dispatched→running）；claim 后、running 前任意失败由 release 回滚（dispatched→queued）。
 
@@ -11,14 +11,14 @@ use std::collections::{BTreeMap, HashSet};
 
 use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
-use gold_band::config::{MulticaTaskConversation, MulticaWorkspaceRef};
+use gold_band::config::{RemoteTaskConversation, RemoteWorkspaceRef};
 use gold_band::domain::{PauseReason, RunStatus};
 use tauri::{AppHandle, State};
 use tracing::{info, warn};
 
 use crate::commands::{
     CommandErrorVm, CommandResult, acp_live_update_emitter_for_app, acp_session_update_emitter,
-    command_error,
+    command_error, schedule_agent_command_catalog_refresh,
 };
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::multica::client::{MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, WorkspaceInfo};
@@ -26,8 +26,15 @@ use crate::multica::config::{
     MulticaSettingsVm, get_daemon_id, get_pat, multica_base_url, multica_settings,
 };
 use crate::multica::error::MulticaError;
+use crate::multica::local_skills::{
+    assemble_pulled_skill_md, multica_skill_dir_name, own_global_skill_dir,
+};
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
-use crate::multica::vm::{RemoteConversationSidebarVm, RemoteTaskVm};
+use crate::multica::vm::{
+    MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
+    RemoteConversationSidebarVm, RemoteTaskVm, remote_task_hidden_section,
+};
+use crate::remote::remote_task_source;
 use crate::state::DesktopState;
 use crate::view_models_conversation::{
     ConversationCreateInputVm, ConversationCreateResultVm, conversation_run_vm,
@@ -41,10 +48,10 @@ const MULTICA_RESUME_STARTUP_GATE_TIMEOUT: std::time::Duration = std::time::Dura
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
 ///
 /// 数据源：远程 queued（`list_pending_tasks`，逐已注册 workspace）+ 本地终态历史
-/// （`multica_completed_tasks`，按 workspace 归组）。未连接（无 PAT）→ 空状态 sidebar
+/// （`remote_completed_tasks`，按 workspace 归组）。未连接（无 PAT）→ 空状态 sidebar
 /// （`connected=false`，前端展示连接入口，不报错、不另查 patSet）。
 #[tauri::command]
-pub async fn get_multica_tasks(
+pub async fn get_remote_tasks(
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
 ) -> CommandResult<RemoteConversationSidebarVm> {
@@ -56,6 +63,7 @@ pub async fn get_multica_tasks(
     // 未连接 → 空状态（前端展示连接入口，开发设计 2.4）。
     if !settings.connected {
         return Ok(RemoteConversationSidebarVm {
+            source: remote_task_source(&context.config),
             workspaces,
             tasks_by_workspace: BTreeMap::new(),
             last_active_workspace_id,
@@ -67,14 +75,14 @@ pub async fn get_multica_tasks(
     let pat = get_pat(&context.config).unwrap_or_default();
     let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
 
-    // 本地终态历史（multica_completed_tasks，最新在前）：同一次 load_state 读取。读失败不阻断列表（仅记日志返回空）。
+    // 本地终态历史（remote_completed_tasks，最新在前）：同一次 load_state 读取。读失败不阻断列表（仅记日志返回空）。
     // 改动六：终态行不再进扁平全局「最近完成」桶，改为按 workspace_id 归入对应工作空间组。
     let completed_by_workspace = match context.app().load_state() {
         Ok(state_cfg) => {
             // 终态行按 workspace_id 分组。local_project_id 在 finalize 时从 ActiveRemoteRun 快照到
-            // MulticaCompletedTask（绑定模型下沉到任务级），terminal 行据此做本地深链，无需再查工作区绑定。
+            // RemoteCompletedTask（绑定模型下沉到任务级），terminal 行据此做本地深链，无需再查工作区绑定。
             let mut by_ws: BTreeMap<String, Vec<RemoteTaskVm>> = BTreeMap::new();
-            for c in state_cfg.multica_completed_tasks.iter() {
+            for c in state_cfg.remote_completed_tasks.iter() {
                 by_ws
                     .entry(c.workspace_id.clone())
                     .or_default()
@@ -136,6 +144,7 @@ pub async fn get_multica_tasks(
     }
 
     Ok(RemoteConversationSidebarVm {
+        source: remote_task_source(&context.config),
         workspaces,
         tasks_by_workspace,
         last_active_workspace_id,
@@ -199,7 +208,7 @@ enum ResumeDecision {
 /// 续跑门，会把一个实际可续（locator 齐 → attempt 已起 → worker-ref 已写 session）的 run 误判新建。
 /// 可续性以 run 的真实状态（`is_run_continuable`）为准；真无可续 session 时续跑执行会失败并落 Fresh 兜底。
 fn classify_resume_from(
-    conv: Option<&MulticaTaskConversation>,
+    conv: Option<&RemoteTaskConversation>,
     run: Option<&gold_band::runtime::RunState>,
 ) -> ResumeDecision {
     let Some(conv) = conv else {
@@ -225,10 +234,10 @@ fn classify_resume_from(
 /// 2. miss 且有 `parent_task_id` → 查父任务（auto-retry 子任务场景：server 克隆新 id 子任务 T'，
 ///    父任务 T 的本地索引才是续跑指针——「崩溃/关闭重启后领取重试子任务」续跑的关键）。
 fn resolve_resume_checkpoint(
-    map: &std::collections::HashMap<String, MulticaTaskConversation>,
+    map: &std::collections::HashMap<String, RemoteTaskConversation>,
     remote_task_id: &str,
     parent_task_id: Option<&str>,
-) -> Option<MulticaTaskConversation> {
+) -> Option<RemoteTaskConversation> {
     map.get(remote_task_id)
         .cloned()
         .or_else(|| parent_task_id.and_then(|pid| map.get(pid).cloned()))
@@ -236,7 +245,7 @@ fn resolve_resume_checkpoint(
 
 /// 断点续跑判定（start 续跑分支用，决定续既有 run vs 新建）。
 ///
-/// 读 home-repo `multica_task_conversations` → [`resolve_resume_checkpoint`] 两级解析出 checkpoint →
+/// 读 home-repo `remote_task_conversations` → [`resolve_resume_checkpoint`] 两级解析出 checkpoint →
 /// 由 `work_dir` 构造 workspace-bound App 查本地 run 状态 → 委托 [`classify_resume_from`]
 /// （`is_run_continuable` 校验）。仅判定，不改状态：start 命中 Resume 才真正续跑。
 fn classify_resume(
@@ -247,7 +256,7 @@ fn classify_resume(
     let map = home_app
         .load_state()
         .ok()
-        .and_then(|state_cfg| state_cfg.multica_task_conversations);
+        .and_then(|state_cfg| state_cfg.remote_task_conversations);
     // checkpoint 解析路径（诊断用）：literal = 子 task id 直接命中；parent = 经 parent_task_id 反查命中。
     let (conv, resolved_via) = match map.as_ref() {
         Some(m) => {
@@ -303,19 +312,19 @@ fn classify_resume(
 /// 用本次续跑的实际 run）；移除被取代的 `parent_task_id` 条目。父条目缺失时仍插入 child
 /// （local ids 已知，session/work_dir 置 None 待 bridge 回填），保证多次重试 T→T'→T'' 链式可续。
 fn migrate_resume_index_map(
-    mut map: std::collections::HashMap<String, MulticaTaskConversation>,
+    mut map: std::collections::HashMap<String, RemoteTaskConversation>,
     child_task_id: &str,
     parent_task_id: &str,
     local_task_id: &str,
     local_run_id: &str,
-) -> std::collections::HashMap<String, MulticaTaskConversation> {
+) -> std::collections::HashMap<String, RemoteTaskConversation> {
     let (session_id, work_dir) = map
         .get(parent_task_id)
         .map(|p| (p.session_id.clone(), p.work_dir.clone()))
         .unwrap_or((None, None));
     map.insert(
         child_task_id.into(),
-        MulticaTaskConversation {
+        RemoteTaskConversation {
             local_task_id: local_task_id.into(),
             local_run_id: local_run_id.into(),
             session_id,
@@ -340,7 +349,7 @@ fn migrate_resume_index(
 ) {
     // RMW 经 with_state 原子化：迁移 task_conversations 与终态/取消收尾并发 save 互不覆盖（lost-update）。
     if let Err(error) = home_app.with_state(|state| {
-        let conversations = state.multica_task_conversations.take().unwrap_or_default();
+        let conversations = state.remote_task_conversations.take().unwrap_or_default();
         let migrated = migrate_resume_index_map(
             conversations,
             child_task_id,
@@ -348,7 +357,7 @@ fn migrate_resume_index(
             local_task_id,
             local_run_id,
         );
-        state.multica_task_conversations = Some(migrated);
+        state.remote_task_conversations = Some(migrated);
         (true, ())
     }) {
         warn!(
@@ -367,7 +376,7 @@ fn migrate_resume_index(
 /// **根因修复**：`main.rs` 启动时的 `recover_interrupted_running_sessions()` 只跑在 home repo 上，其
 /// `pause_all_running_sessions` 仅遍历单一 repo 的 `task_list`；而 multica 远程任务的 run 落在 task 自身
 /// `work_dir`（独立 repo）→ 重启后残留 stale `Running` → `classify_resume` 读 `is_run_continuable` = false
-/// → 误落 Fresh（断点续跑失效）。此函数按 `multica_task_conversations` 每个 checkpoint 的
+/// → 误落 Fresh（断点续跑失效）。此函数按 `remote_task_conversations` 每个 checkpoint 的
 /// `(work_dir, local_task_id, local_run_id)` **定点**收敛，与 `classify_resume` 读同一张权威表，
 /// 保证被判定为可续的 run 在判定前已被 pause。
 ///
@@ -381,12 +390,12 @@ fn migrate_resume_index(
 ///
 /// 安全前提：启动瞬间磁盘上所有 `Running` 都是上一轮崩溃遗留的孤儿态（进程刚起，无在飞 run）。
 /// 单条目收敛失败（盘 I/O）仅 `warn!` 不阻断其余。
-pub fn recover_multica_work_dir_sessions(home_app: &App) {
+pub fn recover_remote_work_dir_sessions(home_app: &App) {
     // 无条件打一条 beacon：存在即证明定点自愈代码已编进二进制（区分旧 binary 仍落 Fresh）。
     let conversations = home_app
         .load_state()
         .ok()
-        .and_then(|state_cfg| state_cfg.multica_task_conversations)
+        .and_then(|state_cfg| state_cfg.remote_task_conversations)
         .unwrap_or_default();
     let conv_count = conversations.len();
     if conversations.is_empty() {
@@ -465,10 +474,10 @@ pub fn recover_multica_work_dir_sessions(home_app: &App) {
 ///
 /// 点击「认领执行」只读拉任务详情 + 需求正文，预填 composer、绑定 chip——**不**改 server 任务状态
 /// （任务仍 queued、可被其它 runtime 领取；删除 chip 即解绑回普通会话，不涉 server）。真正 claim
-/// （pending→dispatched）推迟到用户点「发送」时由 [`start_multica_conversation_run`] 执行——兑现
+/// （pending→dispatched）推迟到用户点「发送」时由 [`start_remote_conversation_run`] 执行——兑现
 /// 「删除 chip 不影响任务待办态、点发送才开始」的契约。`auth_token` 不回显（执行凭证不进 VM）。
 #[tauri::command]
-pub async fn get_multica_task_requirement(
+pub async fn get_remote_task_requirement(
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
     task_id: String,
@@ -496,7 +505,11 @@ pub async fn get_multica_task_requirement(
         .await
         .map_err(|e| command_error(e.into()))?;
 
-    Ok(RemoteTaskVm::from_detail(&task, &workspace_id))
+    Ok(RemoteTaskVm::from_detail(
+        &task,
+        &workspace_id,
+        context.config.desktop_language,
+    ))
 }
 
 /// claim-at-send 失败回滚（开发设计 2.5 / 接入方案 B4）。
@@ -590,7 +603,7 @@ async fn mark_issue_in_progress(
 ) {
     if let Some(issue) = in_progress_target(issue_id) {
         if let Err(e) = client
-            .update_issue_status(workspace_id, issue, MULTICA_ISSUE_IN_PROGRESS_STATUS)
+            .update_issue_status(workspace_id, issue, MULTICA_ISSUE_IN_PROGRESS_STATUS, None)
             .await
         {
             warn!(
@@ -616,11 +629,14 @@ fn in_progress_target(issue_id: Option<&str>) -> Option<&str> {
 /// 与本地工作空间「+」号进入的是**同一创建链路**：解析 workspace 绑定目录 → 构造 workspace-bound App
 /// （注入与 `create_conversation_run` 同款的 ACP emitter，NodeCompleted/RunCompleted 流向前端）→
 /// `validate_conversation_create_vm` → **复用** `create_conversation_run_vm`（建工作流 + 建任务 +
-/// 写 conversation.json + 拷附件 + 启动 run）。远程任务预填的需求即 `input.requirement`，用户在 composer
-/// 已选好模型/模式（与本地完全一致）。
+/// 写 conversation.json + 拷附件 + 启动 run）。远程任务预填的需求即 `input.requirement`（由
+/// [`get_remote_task_requirement`] 组装为「DPMS 溯源块 + 上游交付说明块 + 需求正文」，用户发送前可核对
+/// 目标环境与父任务交付内容），用户在 composer 已选好模型/模式（与本地完全一致）。完成输出协议**不进
+/// composer**：claim 响应构建隐藏区段经 `input.first_prompt_hidden_sections` 随首条 prompt 隐式下发
+/// （改动四十八 + 二次修正 + 三次调整）。
 ///
 /// **claim-at-send**：发送即事务边界——先 `claim_specific_task`（pending→dispatched），再走本地创建链路 +
-/// `start_task`（dispatched→running）。点击「认领执行」时不 claim（只 [`get_multica_task_requirement`]
+/// `start_task`（dispatched→running）。点击「认领执行」时不 claim（只 [`get_remote_task_requirement`]
 /// 只读拉正文），故删除 chip 不影响任务待办态。
 ///
 /// **失败回滚**：claim 成功后、任务尚未进入 running 前的任意失败（workspace 解析 / 模型校验 / 本地建 run /
@@ -628,12 +644,12 @@ fn in_progress_target(issue_id: Option<&str>) -> Option<&str> {
 /// 45s 自然过期兜底，lease 已移除）。claim 本身失败（404/409）则任务未被领取，直接报错、无须回滚。
 ///
 /// multica 专属叠加（成功建 run 后）：① `register_active_run`（真实 run.id，先于事件归属反查）；
-/// ② 持久化 `multica_task_conversations`（断点续跑索引，session_id 待 bridge 回填）；③ `start_task`
+/// ② 持久化 `remote_task_conversations`（断点续跑索引，session_id 待 bridge 回填）；③ `start_task`
 /// （dispatched→running）。
 ///
 /// 库层 sync App 调用经 `spawn_blocking` 执行；HTTP（claim/start/release）留在 async 上下文。
 #[tauri::command]
-pub async fn start_multica_conversation_run(
+pub async fn start_remote_conversation_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
@@ -690,6 +706,12 @@ pub async fn start_multica_conversation_run(
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let mut input = input;
     input.project_id = resolved_project_id.clone();
+    // 远程任务上下文隐式注入（改动四十八 + 二次修正 + 三次调整）：claim 响应构建仅含「完成输出协议」
+    // 的隐藏区段，随首条 prompt 隐式下发；DPMS 溯源块、上游交付说明块与需求正文都在可见预填侧
+    // （`get_remote_task_requirement` → `detail_prefill`），故**不**重复进区段。claim 时刻数据即执行
+    // 依据（multica 设计：领取即定版），前端不感知该字段。
+    input.first_prompt_hidden_sections =
+        remote_task_hidden_section(&task, context.config.desktop_language).map(|s| vec![s]);
     // 先算 emitter（借 workspace_app）再 move——避免在 with_acp_live_update 表达式内同时借与 move。
     let live_update = acp_live_update_emitter_for_app(
         &workspace_app,
@@ -814,6 +836,7 @@ pub async fn start_multica_conversation_run(
                             issue_id: issue_id.clone(),
                             title: title.clone(),
                             started_at: chrono::Utc::now().to_rfc3339(),
+                            issue_kind: task.issue_kind.clone(),
                         },
                     );
                 }
@@ -831,7 +854,7 @@ pub async fn start_multica_conversation_run(
                     if action == StartFailureAction::Continue {
                         // start 实际成功（响应丢失）：续跑 run 正在执行、server running，一致 → 继续。
                         mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
-                        crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                        crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                         return Ok(vm);
                     }
                     // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
@@ -856,13 +879,13 @@ pub async fn start_multica_conversation_run(
                         &register_task_id,
                         &register_run_id,
                     );
-                    crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                    crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                     return Err(command_error(start_err.into()));
                 }
                 // start 成功 → 把关联 issue 流转到「进行中」（改动五：与完成时 done 对称）。
                 mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
                 // 通知侧栏刷新：active_runs 已登记，前端即时显示 running 行（改动七）。
-                crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                 return Ok(vm);
             }
             Err(error) => {
@@ -904,6 +927,7 @@ pub async fn start_multica_conversation_run(
                         issue_id: issue,
                         title,
                         started_at: chrono::Utc::now().to_rfc3339(),
+                        issue_kind: task.issue_kind.clone(),
                     },
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
@@ -911,23 +935,22 @@ pub async fn start_multica_conversation_run(
             // 落断点续跑索引（home-repo StateConfig）：新 run 的 local ids + work_dir；session_id 待 bridge 回填。
             // RMW 经 with_state 原子化：与 bridge NodeCompleted/终态收尾并发 save 互不覆盖（lost-update）。
             ctx_clone.app().with_state(|state| {
-                let mut conversations = state.multica_task_conversations.take().unwrap_or_default();
-                let entry =
-                    conversations
-                        .entry(remote.clone())
-                        .or_insert(MulticaTaskConversation {
-                            local_task_id: run.task_id.clone(),
-                            local_run_id: run.run_id.clone(),
-                            session_id: None,
-                            work_dir: Some(ws_path.clone()),
-                        });
+                let mut conversations = state.remote_task_conversations.take().unwrap_or_default();
+                let entry = conversations
+                    .entry(remote.clone())
+                    .or_insert(RemoteTaskConversation {
+                        local_task_id: run.task_id.clone(),
+                        local_run_id: run.run_id.clone(),
+                        session_id: None,
+                        work_dir: Some(ws_path.clone()),
+                    });
                 entry.local_task_id = run.task_id.clone();
                 entry.local_run_id = run.run_id.clone();
                 // 命中 stale checkpoint 时重置 session_id（旧 session 随旧 run 失效；新 run 的 session_id
                 // 待 bridge 在 NodeCompleted 回填）。修旧漏：此前 Fresh 覆盖既有 checkpoint 时漏清 session_id。
                 entry.session_id = None;
                 entry.work_dir = Some(ws_path.clone());
-                state.multica_task_conversations = Some(conversations);
+                state.remote_task_conversations = Some(conversations);
                 (true, ())
             })?;
             Ok(created)
@@ -953,7 +976,7 @@ pub async fn start_multica_conversation_run(
                 if action == StartFailureAction::Continue {
                     // start 实际成功（响应丢失）：本地 run 正在执行、server running，一致 → 继续。
                     mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
-                    crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                    crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                     return Ok(created);
                 }
                 // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
@@ -977,13 +1000,13 @@ pub async fn start_multica_conversation_run(
                     &created.run.task_id,
                     &created.run.run_id,
                 );
-                crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                 return Err(command_error(start_err.into()));
             }
             // start 成功 → 把关联 issue 流转到「进行中」（改动五：与完成时 done 对称）。
             mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
             // 通知侧栏刷新：active_runs 已登记，前端即时显示 running 行（改动七）。
-            crate::multica::bridge::emit_multica_task_updated(&app_handle);
+            crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
             Ok(created)
         }
         Err(error) => {
@@ -1010,7 +1033,7 @@ pub async fn start_multica_conversation_run(
 /// 注：取消检测（remote 已 cancelled/failed/404，loop 命中）是**独立路径**，不经本命令；那里 remote 已
 /// terminal，无需 fail。本命令恒为「码灵侧 running 任务的主动取消」。
 #[tauri::command]
-pub async fn cancel_multica_task(
+pub async fn cancel_remote_task(
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
     task_id: String,
@@ -1077,16 +1100,44 @@ pub async fn cancel_multica_task(
     Ok(())
 }
 
+/// 移出终态行的「最近完成」历史条目（`remote_completed_tasks`，真删除）。
+///
+/// 终态行的唯一数据源是本地历史（服务端不回传终态），视图过滤无法阻止刷新「复活」；
+/// pending/running 行不经此命令（pending 每次从服务端拉取，服务端删除自然消失）。
+/// 不存在时幂等成功（用户意图「不在列表」已满足）；删除后广播任务列表刷新（同步侧栏等视图）。
+#[tauri::command]
+pub fn remove_remote_completed_task(
+    state: State<'_, DesktopState>,
+    app_handle: AppHandle,
+    remote_task_id: String,
+) -> CommandResult<()> {
+    let context = state.context().map_err(command_error)?;
+    let removed = context
+        .app()
+        .with_state(|state_cfg| {
+            let removed = crate::multica::bridge::remove_completed_task_entry(
+                state_cfg,
+                &remote_task_id,
+            );
+            (removed, removed)
+        })
+        .map_err(command_error)?;
+    if removed {
+        crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
+    }
+    Ok(())
+}
+
 // ===== M3.5 / M5-c：multica workspace 绑定 CRUD（开发设计 2.2.1 / 2.5）=====
 //
 // 一个 multica workspace 只绑定一个执行 provider（绑定后不可变）；**本地工作目录不在工作区级
 // 绑定**，推迟到每次任务执行时由用户在 composer 下拉选定，并随任务生命周期落到任务级结构体
-// （`ActiveRemoteRun` / `MulticaCompletedTask`，见 Multica远程任务管理设计 §3）。故此处不再派生
+// （`ActiveRemoteRun` / `RemoteCompletedTask`，见 Multica远程任务管理设计 §3）。故此处不再派生
 // project_id、不再落 conversation_workspaces 条目。
 
 /// 列出 multica server 侧可见的 workspace（下拉单选用，id+name）。
 ///
-/// 未连接（无 PAT）-> `multica.not-configured`，前端引导连接。
+/// 未连接（无 PAT）-> `remote.source-not-configured`，前端引导连接。
 #[tauri::command]
 pub async fn list_server_multica_workspaces(
     state: State<'_, DesktopState>,
@@ -1136,7 +1187,7 @@ pub async fn add_multica_workspace(
             serde_json::json!({ "workspaceId": workspace_id }),
         ));
     }
-    workspaces.push(MulticaWorkspaceRef {
+    workspaces.push(RemoteWorkspaceRef {
         id: workspace_id.clone(),
         name: workspace_name,
         slug: workspace_id.clone(),
@@ -1154,7 +1205,7 @@ pub async fn add_multica_workspace(
     register_workspace_best_effort(&state, &shared, &workspace_id, &provider).await;
 
     // 工作空间绑定变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
 
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
@@ -1239,7 +1290,7 @@ pub fn remove_multica_workspace(
         .update_settings_config(&settings)
         .map_err(command_error)?;
     // 工作空间绑定变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
 }
@@ -1272,9 +1323,227 @@ pub fn set_active_multica_workspace(
         .update_settings_config(&settings)
         .map_err(command_error)?;
     // 工作空间绑定变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
+}
+
+// ===== SKILL 同步：「从 Multica 同步」拉取落库（设计 §5-§6）=====
+
+/// 「从 Multica 同步」列表（设计 §5.1）：远端 workspace skills + 本地全局自有库**一次性**扫描，
+/// 逐项标记 `local_state`（"new" 默认勾选 / "exists" 同步将覆盖默认不勾选）。
+///
+/// 列表阶段不预取详情/文件（无 N+1）：文件数判空推迟到拉取落库时逐项做（设计 §5.3）。
+/// 命令级失败（未连接 / 网络错误）走 `multica.*` 错误码，前端引导连接或提示重载。
+#[tauri::command]
+pub async fn list_remote_skills(
+    state: State<'_, DesktopState>,
+    workspace_id: String,
+) -> CommandResult<Vec<MulticaSkillListItemVm>> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Err(command_error(MulticaError::NotConfigured.into()));
+    }
+    let base_url = multica_base_url(&context.config).unwrap_or_default();
+    let pat = get_pat(&context.config).unwrap_or_default();
+    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+
+    let remote = client
+        .list_remote_skills(&workspace_id)
+        .await
+        .map_err(|e| command_error(e.into()))?;
+
+    // 本地全局自有库单次扫描（exists 判定基准；与 discovery 上报同源，spawn_blocking 隔离盘 I/O）。
+    let scan_app = context.app();
+    let local = tauri::async_runtime::spawn_blocking(move || scan_app.skill_manager().list())
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+        .map_err(command_error)?;
+
+    Ok(remote
+        .into_iter()
+        .map(|s| {
+            let dir_name = multica_skill_dir_name(&s.name, &s.id);
+            let exists = own_global_skill_dir(&local.global, &dir_name).is_some();
+            MulticaSkillListItemVm {
+                id: s.id,
+                name: s.name,
+                description: s.description,
+                local_state: if exists { "exists" } else { "new" },
+            }
+        })
+        .collect())
+}
+
+/// 「从 Multica 同步」拉取落库（设计 §5.3-§5.4）：逐项 详情 → 支撑文件（含正文）→ 清洗目录名 →
+/// 批内重名判定 → [`SkillManager::write_bundle_instance`] 落全局自有库（SKILL.md + 支撑文件
+/// 整目录镜像写入，覆盖时远端为权威事实源）。
+///
+/// 逐项独立成败（per-item report，单项失败不阻断批次）：
+/// - 404 → skipped `multica.skill.not-found`（远端已删）；
+/// - 批内清洗后同名（含前项 created 造成的同名）→ skipped `multica.skill.name-collision`；
+/// - 网络类失败 → failed `multica.remote-error`；
+/// - 本地落库失败（含 bundle 尺寸/路径契约超限）→ failed 且 reason 透传原始错误文本（诊断用）。
+///
+/// exists 判定基于**批前**扫描 + `seen` 集合：同批先 created 的目录名会被 seen 捕获为
+/// name-collision，不会误判 overwritten。落库后统一刷新 agent 命令目录（与 `write_skill` 同款）。
+#[tauri::command]
+pub async fn pull_remote_skills(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    workspace_id: String,
+    skill_ids: Vec<String>,
+) -> CommandResult<MulticaPullReportVm> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Err(command_error(MulticaError::NotConfigured.into()));
+    }
+    let base_url = multica_base_url(&context.config).unwrap_or_default();
+    let pat = get_pat(&context.config).unwrap_or_default();
+    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+
+    // 批前一次性扫描本地全局自有库（exists 判定基准）。
+    let scan_app = context.app();
+    let local = tauri::async_runtime::spawn_blocking(move || scan_app.skill_manager().list())
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+        .map_err(command_error)?;
+    let global_metas = local.global;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut results: Vec<MulticaPullItemResultVm> = Vec::new();
+    let mut any_written = false;
+
+    for skill_id in skill_ids {
+        // ① 详情（含 SKILL.md 正文）。
+        let detail = match client.get_remote_skill(&workspace_id, &skill_id).await {
+            Ok(detail) => detail,
+            Err(MulticaError::TaskNotFound) => {
+                results.push(skipped_result(
+                    &skill_id,
+                    &skill_id,
+                    "multica.skill.not-found",
+                ));
+                continue;
+            }
+            Err(error) => {
+                warn!(skill = %skill_id, %error, "multica pull: get skill detail failed");
+                results.push(failed_result(&skill_id, &skill_id, "multica.remote-error"));
+                continue;
+            }
+        };
+        let name = detail.name.clone();
+
+        // ② 支撑文件（含正文；根 SKILL.md 由 detail.content 承载，不在 files 列表——multica 契约）。
+        let files = match client
+            .get_remote_skill_files(&workspace_id, &skill_id)
+            .await
+        {
+            Ok(files) => files,
+            Err(MulticaError::TaskNotFound) => {
+                results.push(skipped_result(&skill_id, &name, "multica.skill.not-found"));
+                continue;
+            }
+            Err(error) => {
+                warn!(skill = %skill_id, %error, "multica pull: get skill files failed");
+                results.push(failed_result(&skill_id, &name, "multica.remote-error"));
+                continue;
+            }
+        };
+
+        // ③ 清洗目录名 + 批内重名（seen 含本批已 created 的目录名）。
+        let dir_name = multica_skill_dir_name(&detail.name, &skill_id);
+        if !seen.insert(dir_name.clone()) {
+            results.push(skipped_result(
+                &skill_id,
+                &name,
+                "multica.skill.name-collision",
+            ));
+            continue;
+        }
+        // 既有目录绝对路径（None = 新建）；作为 write_bundle_instance 的 current_directory_path，
+        // 不能传裸目录名（会被当作相对路径按进程 CWD 解析 → `SKILL dir not found`）。
+        let existing_dir = own_global_skill_dir(&global_metas, &dir_name);
+        let exists = existing_dir.is_some();
+
+        // ④ 落库：SKILL.md = 远端正文 + 名称/描述覆写组装（设计 §5.3）；支撑文件原样落盘。
+        //    new 建目录；exists 经 directory_path 定位既有目录做镜像覆盖（远端已删的本地
+        //    支撑文件随之清除）。bundle 尺寸/路径契约在写入入口统一校验，超限整项 failed。
+        let content = assemble_pulled_skill_md(&detail.name, &detail.description, &detail.content);
+        let support_files: Vec<(String, String)> = files
+            .into_iter()
+            .map(|file| (file.path, file.content))
+            .collect();
+        let write_app = context.app();
+        let write_name = if exists {
+            detail.name.clone()
+        } else {
+            dir_name.clone()
+        };
+        let write_dir = existing_dir;
+        let write = tauri::async_runtime::spawn_blocking(move || {
+            write_app.skill_manager().write_bundle_instance(
+                &write_name,
+                gold_band::config::SkillSource::Global,
+                &content,
+                &support_files,
+                None,
+                write_dir.as_deref(),
+                None,
+            )
+        })
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+
+        match write {
+            Ok(_) => {
+                any_written = true;
+                results.push(MulticaPullItemResultVm {
+                    id: skill_id,
+                    name,
+                    outcome: if exists { "overwritten" } else { "created" },
+                    reason: None,
+                });
+            }
+            Err(error) => {
+                warn!(skill = %skill_id, %error, "multica pull: write_instance failed");
+                results.push(MulticaPullItemResultVm {
+                    id: skill_id,
+                    name,
+                    outcome: "failed",
+                    reason: Some(format!("{error:#}")),
+                });
+            }
+        }
+    }
+
+    // 落库后统一刷新 agent 命令目录（后台线程，与 write_skill 同款；全局库 → home repo root）。
+    if any_written {
+        let app = context.app();
+        schedule_agent_command_catalog_refresh(app_handle, app.paths.repo_root.clone());
+    }
+
+    Ok(MulticaPullReportVm { results })
+}
+
+/// 逐项报告构造助手：skipped + 结构化原因码（前端 i18n 映射）。
+fn skipped_result(id: &str, name: &str, reason: &str) -> MulticaPullItemResultVm {
+    MulticaPullItemResultVm {
+        id: id.to_string(),
+        name: name.to_string(),
+        outcome: "skipped",
+        reason: Some(reason.to_string()),
+    }
+}
+
+/// 逐项报告构造助手：failed + 结构化原因码。
+fn failed_result(id: &str, name: &str, reason: &str) -> MulticaPullItemResultVm {
+    MulticaPullItemResultVm {
+        id: id.to_string(),
+        name: name.to_string(),
+        outcome: "failed",
+        reason: Some(reason.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -1285,8 +1554,8 @@ mod tests {
     use gold_band::domain::{PauseReason, RunStatus};
     use gold_band::runtime::RunState;
 
-    fn checkpoint(session_id: Option<&str>, work_dir: Option<&str>) -> MulticaTaskConversation {
-        MulticaTaskConversation {
+    fn checkpoint(session_id: Option<&str>, work_dir: Option<&str>) -> RemoteTaskConversation {
+        RemoteTaskConversation {
             local_task_id: "local-task".into(),
             local_run_id: "local-run".into(),
             session_id: session_id.map(String::from),
@@ -1462,7 +1731,7 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "t-parent".into(),
-            MulticaTaskConversation {
+            RemoteTaskConversation {
                 local_task_id: "old-task".into(),
                 local_run_id: "old-run".into(),
                 session_id: Some("acp-sess".into()),
@@ -1599,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    fn recover_multica_work_dir_sessions_pauses_only_checkpointed_orphan_runs() {
+    fn recover_remote_work_dir_sessions_pauses_only_checkpointed_orphan_runs() {
         let directory = tempdir().unwrap();
         let work_dir = Utf8PathBuf::from_path_buf(directory.path().join("ws")).unwrap();
         std::fs::create_dir_all(work_dir.as_std_path()).unwrap();
@@ -1625,9 +1894,9 @@ mod tests {
 
         home_app
             .with_state(|state| {
-                state.multica_task_conversations = Some(std::collections::HashMap::from([(
+                state.remote_task_conversations = Some(std::collections::HashMap::from([(
                     "t-remote".to_string(),
-                    MulticaTaskConversation {
+                    RemoteTaskConversation {
                         local_task_id: "task-ckpt".to_string(),
                         local_run_id: "run-ckpt".to_string(),
                         session_id: Some("acp-sess".to_string()),
@@ -1638,7 +1907,7 @@ mod tests {
             })
             .unwrap();
 
-        recover_multica_work_dir_sessions(&home_app);
+        recover_remote_work_dir_sessions(&home_app);
 
         let workspace_app = home_app.with_repo_root(work_dir, home_app.config.clone());
         let checkpointed = workspace_app.run_status("task-ckpt", "run-ckpt").unwrap();
@@ -1656,7 +1925,7 @@ mod tests {
     }
 
     #[test]
-    fn recover_multica_work_dir_sessions_skips_missing_and_non_running_checkpoints() {
+    fn recover_remote_work_dir_sessions_skips_missing_and_non_running_checkpoints() {
         let directory = tempdir().unwrap();
         let work_dir = Utf8PathBuf::from_path_buf(directory.path().join("ws")).unwrap();
         std::fs::create_dir_all(work_dir.as_std_path()).unwrap();
@@ -1674,10 +1943,10 @@ mod tests {
 
         home_app
             .with_state(|state| {
-                state.multica_task_conversations = Some(std::collections::HashMap::from([
+                state.remote_task_conversations = Some(std::collections::HashMap::from([
                     (
                         "t-paused".to_string(),
-                        MulticaTaskConversation {
+                        RemoteTaskConversation {
                             local_task_id: "task-paused".to_string(),
                             local_run_id: "run-paused".to_string(),
                             session_id: None,
@@ -1686,7 +1955,7 @@ mod tests {
                     ),
                     (
                         "t-deleted".to_string(),
-                        MulticaTaskConversation {
+                        RemoteTaskConversation {
                             local_task_id: "task-deleted".to_string(),
                             local_run_id: "run-deleted".to_string(),
                             session_id: None,
@@ -1699,7 +1968,7 @@ mod tests {
             .unwrap();
 
         // 两者皆跳过：Paused 保持原状态（pause_reason 不被改写），缺失 run 不报错。
-        recover_multica_work_dir_sessions(&home_app);
+        recover_remote_work_dir_sessions(&home_app);
 
         let workspace_app = home_app.with_repo_root(work_dir, home_app.config.clone());
         let paused = workspace_app
@@ -1767,7 +2036,7 @@ mod tests {
     fn task_vm(id: &str, status: &str) -> RemoteTaskVm {
         RemoteTaskVm {
             id: id.into(),
-            issue_id: None,
+            issue_ref: None,
             status: status.into(),
             workspace_id: String::new(),
             title: id.into(),
@@ -1776,6 +2045,8 @@ mod tests {
             local_task_id: None,
             run_id: None,
             project_id: None,
+            kind: None,
+            readiness: None,
         }
     }
 

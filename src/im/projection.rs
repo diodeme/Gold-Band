@@ -756,6 +756,7 @@ mod tests {
             outcome: RunOutcome::Success,
             task_title: Some("Task".into()),
             completion_agent_label: None,
+            attempt_dir: None,
         }
     }
 

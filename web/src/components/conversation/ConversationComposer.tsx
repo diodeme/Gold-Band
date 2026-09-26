@@ -14,9 +14,10 @@ import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForA
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
-import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
+import { useConversationComposerDraft, type ConversationComposerRemoteBinding } from '@/lib/conversation-composer-draft';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
-import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
+import { shouldBackspaceClearRemoteBinding } from '@/lib/conversation-composer-remote-chip';
+import { remoteTaskSourceLabel } from '@/lib/remote-sources';
 import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
@@ -75,7 +76,7 @@ interface ConversationComposerProps {
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null, sentAttachments?: readonly { id: string; name: string }[]) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, remote?: ConversationComposerRemoteBinding | null, sentAttachments?: readonly { id: string; name: string }[]) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
@@ -93,7 +94,7 @@ interface ConversationWorkspaceControlProps {
   workspaces: ConversationWorkspaceVm[];
   onWorkspaceChange: (projectId: string) => void;
   variant?: 'toolbar' | 'info';
-  // multica decision d: while a remote task binding is active, render the selector even with a
+  // remote decision d: while a remote task binding is active, render the selector even with a
   // single local workspace so the local landing workspace stays an explicit choice.
   forceSelector?: boolean;
 }
@@ -245,7 +246,7 @@ interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControl
   busy: boolean;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   showWorkLocation?: boolean;
-  // multica decision e: when a remote task binding is active but no local workspace exists,
+  // remote decision e: when a remote task binding is active but no local workspace exists,
   // replace the workspace control with this hint guiding the user to add one first (send is
   // already disabled by canSubmit).
   emptyWorkspaceHint?: string;
@@ -557,11 +558,11 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
-  // After a multica remote task is prefilled via "click to run", the draft carries a multica
-  // binding. While bound, the workspace dropdown is force-shown (decision d) so the local landing
+  // After a remote task is prefilled via "click to run", the draft carries a remote binding.
+  // While bound, the workspace dropdown is force-shown (decision d) so the local landing
   // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
   // user is guided to add one first (decision e).
-  const multicaBinding = composerDraft.draft.multica;
+  const remoteBinding = composerDraft.draft.remote;
   const workspaceFiles = composerDraft.draft.workspaceFiles;
   const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
   const attachmentsRef = useRef(composerDraft.draft.attachments);
@@ -601,7 +602,7 @@ export function ConversationComposer({
       .then(() => setContextError(null))
       .catch(error => setContextError(displayAppError(t, error)));
   }, [rightWorkspace, t]);
-  const multicaActive = multicaBinding !== null;
+  const remoteActive = remoteBinding !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
@@ -610,7 +611,7 @@ export function ConversationComposer({
     && !busy
     && !submittingAttachments
     && !branchMutationPending
-    && !(multicaActive && !hasLocalWorkspaces);
+    && !(remoteActive && !hasLocalWorkspaces);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
     : null;
@@ -754,13 +755,13 @@ export function ConversationComposer({
     ? selectedDirectAgentObj?.iconKey
     : selectedAgentObj?.iconKey;
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  // The multica binding chip and the slash-command label are both leading adornments at the very
+  // The remote binding chip and the slash-command label are both leading adornments at the very
   // front of the body. They are mutually exclusive (slash wins — the binding prefills task
   // requirement text, not a slash command) and share the same text-indent mechanism: the first
   // line indents to clear the label width, wrapped lines return to the left edge (standard CSS
   // text-indent behavior, which only affects the first line).
-  const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
-  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
+  const remoteChipActive = Boolean(remoteBinding) && !committedSlashCommand;
+  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || remoteChipActive);
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -968,14 +969,14 @@ export function ConversationComposer({
       }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      // Forward the draft's multica binding to onSubmit: the caller routes remote task vs. local
+      // Forward the draft's remote binding to onSubmit: the caller routes remote task vs. local
       // new conversation accordingly. The composer itself makes no decision here — it only forwards.
       const submitError = await onSubmit(
         {
           ...inputBase,
           attachmentPaths: paths.length > 0 ? paths : undefined,
         },
-        composerDraft.draft.multica,
+        composerDraft.draft.remote,
         attachments.map(({ id, name }) => ({ id, name })),
       );
       if (submitError) {
@@ -1055,31 +1056,31 @@ export function ConversationComposer({
     }
   };
 
-  // Drop the multica binding (claim-at-send): the click only read the requirement without claiming
+  // Drop the remote binding (claim-at-send): the click only read the requirement without claiming
   // the task, so removing the chip is a purely local unbind — the server is untouched (the task
   // stays queued). Body text and attachments are kept: the draft degrades to a normal local
   // conversation (send goes through create_conversation_run).
-  const handleUnbindMultica = useCallback(() => {
-    if (!composerDraft.draft.multica) return;
-    composerDraft.clearMultica();
+  const handleUnbindRemoteTask = useCallback(() => {
+    if (!composerDraft.draft.remote) return;
+    composerDraft.clearRemote();
   }, [composerDraft]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
-    // The multica binding chip is a leading adornment at the very front of the body; the Backspace
-    // removal rule lives in shouldBackspaceClearMulticaBinding: the chip is deleted only when the
+    // The remote binding chip is a leading adornment at the very front of the body; the Backspace
+    // removal rule lives in shouldBackspaceClearRemoteBinding: the chip is deleted only when the
     // cursor sits at the very start with no selection (mimicking deleting the first token); all
     // other cases delete a character normally. When a slash command is committed, the slash
     // controller takes over.
-    if (shouldBackspaceClearMulticaBinding({
+    if (shouldBackspaceClearRemoteBinding({
       key: e.key,
-      multicaActive,
+      remoteActive,
       hasCommittedSlashCommand: Boolean(committedSlashCommand),
       selectionStart: composerTextareaRef.current?.selectionStart ?? -1,
       selectionEnd: composerTextareaRef.current?.selectionEnd ?? -1,
     })) {
       e.preventDefault();
-      handleUnbindMultica();
+      handleUnbindRemoteTask();
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1120,16 +1121,19 @@ export function ConversationComposer({
             onWorkspaceChange={handleWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
-            forceSelector={multicaActive}
-            emptyWorkspaceHint={multicaActive ? t('conversation.composer.multicaNeedLocalWorkspace') : undefined}
+            forceSelector={remoteActive}
+            emptyWorkspaceHint={remoteActive ? t('conversation.composer.remoteNeedLocalWorkspace') : undefined}
             showBranch={!scheduledMode && !readOnly}
             onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
           />
+          {/* maxHeight=null: autosize is uncapped and the textarea never scrolls itself;
+              scrolling is owned by the inputScrollContainerClassName wrapper below, so the
+              chip / slash tag scroll away with the first content line instead of floating. */}
           <PromptInput
           value={visibleContent}
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
-          maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
+          maxHeight={null}
           onSubmit={() => { void handleSubmit(); }}
           disabled={readOnly || busy || submittingAttachments || branchMutationPending}
           className={cn(
@@ -1160,7 +1164,7 @@ export function ConversationComposer({
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
           >
-            <div className="relative min-w-0">
+            <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
                   <SlashCommandInputTag
@@ -1178,7 +1182,7 @@ export function ConversationComposer({
                       : undefined}
                   />
                 </span>
-              ) : multicaBinding ? (
+              ) : remoteBinding ? (
                 <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
                   {/* accent/accent-foreground is the theme contract's guaranteed-contrast pair for
                       emphasized surfaces (same pairing as permission-card and recipe hover/selected
@@ -1191,12 +1195,15 @@ export function ConversationComposer({
                   >
                     <Globe className="size-3 shrink-0" />
                     <span className="max-w-[260px] truncate">
-                      {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
+                      {t('conversation.composer.remoteBindingTag', {
+                        source: remoteTaskSourceLabel(t, remoteBinding.source),
+                        title: remoteBinding.title,
+                      })}
                     </span>
                     <button
                       type="button"
-                      aria-label={t('conversation.composer.removeMulticaBinding')}
-                      onClick={handleUnbindMultica}
+                      aria-label={t('conversation.composer.removeRemoteBinding')}
+                      onClick={handleUnbindRemoteTask}
                       className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
                     >
                       <X className="size-3" />

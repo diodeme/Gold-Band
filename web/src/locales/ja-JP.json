@@ -999,20 +999,6 @@
       "install-failed": "アップデートのインストールに失敗しました: {{message}}",
       "context-unavailable": "ワークスペースが選択されていないと更新を確認できません。",
       "no-update": "利用可能なアップデートはありません。"
-    },
-    "multica": {
-      "not-configured": "マルチカが設定されていません。まず設定でセットアップを完了してください。",
-      "invalid-address": "無効な接続アドレス: 有効な http(s) URL である必要があります。",
-      "connect-cancelled": "接続がキャンセルされました。",
-      "auth-failed": "Multica 認証が失敗しました: {{message}}",
-      "network-failed": "Multica ネットワーク要求が失敗しました: {{message}}",
-      "register-failed": "デーモンの登録に失敗しました: {{message}}",
-      "claim-conflict": "このタスクはすでに別のデーモンによって要求されています。",
-      "task-not-found": "この multica タスクが見つかりませんでした。",
-      "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
-      "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
-      "workspace-already-bound": "このワークスペースはすでにバインドされています。",
-      "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
     }
   },
   "status": {
@@ -2594,43 +2580,6 @@
       }
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "要件",
-      "source": {
-        "label": "タスクソース",
-        "multica": "マルチカ"
-      },
-      "workspace": {
-        "label": "ワークスペース",
-        "remove": "ワークスペースを削除する",
-        "removeConfirm": "このワークスペースを削除しますか?その要件は表示されなくなります。"
-      },
-      "column": {
-        "empty": "タスクがありません"
-      },
-      "account": {
-        "connected": "接続済み",
-        "switchAccount": "アカウントを切り替える",
-        "disconnect": "切断する"
-      }
-    },
-    "connection": {
-      "title": "接続アドレス",
-      "addressLabel": "接続アドレス",
-      "save": "保存",
-      "invalidUrl": "有効な http アドレスを入力してください",
-      "restoreDefault": "デフォルトのアドレスを復元する",
-      "restoring": "復元中…"
-    },
-    "connect": {
-      "title": "マルチカを接続する",
-      "body": "接続しようとしています:",
-      "confirm": "接続する",
-      "connecting": "接続中…",
-      "cancelConnect": "接続をキャンセルする"
-    }
-  },
   "conversation": {
     "title": "会話",
     "newConversation": "新しい会話",
@@ -2669,7 +2618,6 @@
       "contextManagement": "コンテクスト",
       "runModeManagement": "実行モード",
       "more": "もっと",
-      "multicaTaskManagement": "要件",
       "pinned": "固定された",
       "noPinned": "固定された会話がここに表示されます",
       "noWorkspaces": "ワークスペースは追加されていません",
@@ -2706,39 +2654,9 @@
         "stopped": "停止している、見られていない",
         "failed": "失敗、表示されませんでした"
       },
-      "settings": "設定",
-      "multica": {
-        "sectionTitle": "要件",
-        "emptyTitle": "マルチカに接続されていません",
-        "emptyDescription": "接続して Multica 要件を表示し、要求します。",
-        "connectButton": "マルチカを接続する",
-        "connectionSettings": "接続アドレスの設定",
-        "cancelTask": "タスクをキャンセルする",
-        "executeTask": "走る",
-        "addWorkspace": "ワークスペースの追加",
-        "noWorkspacesBound": "バインドされたワークスペースはありません",
-        "status": {
-          "queued": "藤堂",
-          "running": "ランニング",
-          "completed": "終わり",
-          "failed": "失敗した"
-        },
-        "dialog": {
-          "title": "ワークスペースの追加",
-          "remoteWorkspace": "リモートワークスペース",
-          "provider": "プロバイダー",
-          "add": "追加",
-          "needWorkspace": "リモート ワークスペースを選択してください",
-          "noServerWorkspaces": "サーバー上にはバインド可能なワークスペースがまだありません。まず multica Web で作成します。",
-          "allWorkspacesBound": "すべてのリモート ワークスペースはすでにバインドされています。"
-        }
-      }
+      "settings": "設定"
     },
-    "composer": {
-      "multicaNeedLocalWorkspace": "要件を実行する前にローカル ワークスペースを追加する",
-      "multicaBindingTag": "マルチカ · {{title}}",
-      "removeMulticaBinding": "タスクのバインド解除"
-    },
+    "composer": {},
     "branchPicker": {
       "label": "支店",
       "search": "{{workspace}}支店を検索",

@@ -1029,19 +1029,8 @@
       "no-update": "当前没有可安装更新。",
       "context-unavailable": "无法获取更新上下文，请先选择工作空间。"
     },
-    "multica": {
-      "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
-      "invalid-address": "连接地址无效：必须是合法的 http(s) 地址。",
-      "connect-cancelled": "已取消连接。",
-      "auth-failed": "Multica 鉴权失败：{{message}}",
-      "network-failed": "Multica 网络请求失败：{{message}}",
-      "register-failed": "Daemon 注册失败：{{message}}",
-      "claim-conflict": "该任务已被其他 Daemon 领取。",
-      "task-not-found": "找不到该 Multica 任务。",
-      "runtime-offline": "运行时未就绪，请稍后重试。",
-      "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
-      "workspace-already-bound": "该工作空间已绑定。",
-      "workspace-not-found": "找不到该工作空间绑定。"
+    "remote": {
+      "source-not-configured": "尚未配置任务来源，请先完成连接。"
     }
   },
   "status": {
@@ -1320,7 +1309,35 @@
       "globalHint": "所有项目可用。保存到 ~/.gold-band/skills/<name>/SKILL.md",
       "projectHint": "仅当前项目可用。保存到 <project>/.gold-band/skills/<name>/SKILL.md",
       "storageGlobal": "所有项目可用。保存到 {{path}}",
-      "storageProject": "项目级。保存到 {{path}}"
+      "storageProject": "项目级。保存到 {{path}}",
+      "remoteSync": {
+        "action": "同步远程 SKILL",
+        "title": "从远程同步 SKILL",
+        "workspace": "工作空间",
+        "reload": "重新加载",
+        "newBadge": "新增",
+        "existsBadge": "已存在，将覆盖",
+        "selectAll": "全选",
+        "selectedCount": "已选 {{selected}} / {{total}}",
+        "confirm": "同步",
+        "confirmWithOverwrite": "同步（覆盖 {{count}}）",
+        "empty": "该工作空间暂无 SKILL",
+        "notConnected": "未连接{{source}}",
+        "connect": "连接{{source}}",
+        "loadFailed": "加载远端 SKILL 失败",
+        "reportTitle": "同步结果",
+        "reportSummary": "新建 {{created}} · 覆盖 {{overwritten}} · 跳过 {{skipped}} · 失败 {{failed}}",
+        "outcomeCreated": "新建",
+        "outcomeOverwritten": "覆盖",
+        "outcomeSkipped": "跳过",
+        "outcomeFailed": "失败",
+        "reason": {
+          "multica.skill.not-found": "远端已被删除",
+          "multica.skill.name-collision": "本批次内名称冲突",
+          "multica.remote-error": "服务器错误",
+          "multica.not-connected": "未连接远程来源"
+        }
+      }
     },
     "importProfile": "导入角色",
     "importSettingsDescription": "选择文件夹批量导入角色 Markdown 文件，缺失的名称和摘要会自动兜底。",
@@ -2284,7 +2301,8 @@
       "cacheRead": "缓存读取",
       "cacheWrite": "缓存写入",
       "total": "总计"
-    }
+    },
+    "hiddenRemoteTaskContext": "隐藏远程任务上下文"
   },
   "graph": {
     "emptyGraph": "暂无工作图",
@@ -2623,43 +2641,6 @@
       }
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "需求管理",
-      "source": {
-        "label": "任务来源",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "工作空间",
-        "remove": "移除工作空间",
-        "removeConfirm": "确定移除该工作空间？该空间的需求将不再展示。"
-      },
-      "column": {
-        "empty": "暂无任务"
-      },
-      "account": {
-        "connected": "已连接",
-        "switchAccount": "切换账号",
-        "disconnect": "断开连接"
-      }
-    },
-    "connection": {
-      "title": "连接地址设置",
-      "addressLabel": "连接地址",
-      "save": "保存",
-      "invalidUrl": "请输入合法的 http(s) 地址",
-      "restoreDefault": "恢复默认地址",
-      "restoring": "恢复中…"
-    },
-    "connect": {
-      "title": "连接 Multica",
-      "body": "即将连接以下地址：",
-      "confirm": "连接",
-      "connecting": "连接中…",
-      "cancelConnect": "取消连接"
-    }
-  },
   "conversation": {
     "title": "会话",
     "newConversation": "新会话",
@@ -2698,7 +2679,6 @@
       "contextManagement": "上下文",
       "runModeManagement": "运行模式",
       "more": "更多",
-      "multicaTaskManagement": "需求管理",
       "pinned": "置顶",
       "noPinned": "置顶会话会显示在这里",
       "noWorkspaces": "尚未添加工作空间",
@@ -2736,14 +2716,18 @@
         "failed": "执行异常，尚未查看"
       },
       "settings": "设置",
-      "multica": {
+      "remoteTaskManagement": "需求管理",
+      "remoteTasks": {
         "sectionTitle": "需求",
-        "emptyTitle": "尚未连接 Multica",
-        "emptyDescription": "连接后可在此查看并领取 Multica 需求。",
-        "connectButton": "连接 Multica",
+        "emptyTitle": "尚未连接{{source}}",
+        "emptyDescription": "连接后可在此查看并领取{{source}}需求。",
+        "connectButton": "连接{{source}}",
         "connectionSettings": "连接地址设置",
         "cancelTask": "取消任务",
         "executeTask": "执行",
+        "removeTask": "移出列表",
+        "removeTaskHint": "仅从码灵侧列表移除，刷新后恢复",
+        "removeTaskTerminalHint": "移出并删除本地完成记录，刷新不再显示",
         "addWorkspace": "添加工作空间",
         "noWorkspacesBound": "尚未绑定工作空间",
         "status": {
@@ -2764,9 +2748,9 @@
       }
     },
     "composer": {
-      "multicaNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "解除任务绑定"
+      "remoteNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
+      "remoteBindingTag": "{{source}} · {{title}}",
+      "removeRemoteBinding": "解除任务绑定"
     },
     "branchPicker": {
       "label": "分支",
@@ -2948,5 +2932,55 @@
     "validationPositiveNumber": "{{field}} 必须大于 0",
     "validationTemplateNameRequired": "模板名称不能为空",
     "validationTemplateNameDuplicated": "模板名称 {{name}} 已存在"
+  },
+  "remote": {
+    "taskManagement": {
+      "title": "需求管理",
+      "source": {
+        "label": "任务来源",
+        "multica": "Multica"
+      },
+      "workspace": {
+        "label": "工作空间",
+        "remove": "移除工作空间",
+        "removeConfirm": "确定移除该工作空间？该空间的需求将不再展示。"
+      },
+      "issueKind": {
+        "dev": "开发",
+        "test": "测试",
+        "bug": "缺陷"
+      },
+      "issueKindFilter": {
+        "label": "类型",
+        "all": "全部",
+        "dev": "开发",
+        "test": "测试"
+      },
+      "readiness": {
+        "notReady": "未就绪",
+        "notReadyHint": "对应开发任务尚未完成，建议等待其完成后再执行"
+      },
+      "column": {
+        "empty": "暂无任务"
+      },
+      "account": {
+        "connected": "已连接"
+      }
+    },
+    "connection": {
+      "title": "连接地址设置",
+      "addressLabel": "连接地址",
+      "save": "保存",
+      "invalidUrl": "请输入合法的 http(s) 地址",
+      "restoreDefault": "恢复默认地址",
+      "restoring": "恢复中…"
+    },
+    "connect": {
+      "title": "连接{{source}}",
+      "body": "即将连接以下地址：",
+      "confirm": "连接",
+      "connecting": "连接中…",
+      "cancelConnect": "取消连接"
+    }
   }
 }

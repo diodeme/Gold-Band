@@ -605,6 +605,80 @@ fn render_non_runtime_message_keeps_contract_but_adds_suspension_context() {
 }
 
 #[test]
+fn render_raw_agent_first_prompt_appends_titled_hidden_sections() {
+    // RawAgent 信封首条 prompt（multica 远程任务等）：隐式隐藏区段以独立标题 <hidden> 块
+    // 追加在可见正文之后，正文本身不变（改动四十八）。
+    let mut req = invocation();
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+    req.extra_hidden_sections = vec![PromptHiddenSection {
+        title: "Gold Band remote task context".to_string(),
+        content: "本任务来自 DPMS 关联的工作项\n上游（父工作项）交付说明：https://t.example.com".to_string(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.system_prompt.is_empty());
+    assert!(prompt.user_prompt.starts_with("Need an implementation"));
+    assert!(
+        prompt
+            .user_prompt
+            .contains("title=\"Gold Band remote task context\"")
+    );
+    assert!(prompt.user_prompt.contains("本任务来自 DPMS 关联的工作项"));
+    // 区段在正文之后（正文不被改写为前缀注入）。
+    let body_end = prompt.user_prompt.find("Need an implementation").unwrap();
+    let section_start = prompt.user_prompt.find("本任务来自 DPMS").unwrap();
+    assert!(body_end < section_start);
+}
+
+#[test]
+fn render_raw_agent_first_prompt_with_hidden_sections_suppresses_verbatim_display() {
+    // 含隐式隐藏区段的首条 prompt 不回退为需求原文：气泡正文必须以完整 user_prompt 投影，
+    // 否则前端 parseGoldBandHiddenSections 解析不到 <hidden> 块，审计入口丢失（M5-bk 契约）。
+    let mut req = invocation();
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+    req.extra_hidden_sections = vec![PromptHiddenSection {
+        title: "Gold Band remote task context".to_string(),
+        content: "本任务来自 DPMS 关联的工作项".to_string(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.display_text.is_none());
+}
+
+#[test]
+fn render_raw_agent_first_prompt_without_sections_falls_back_to_requirement() {
+    // 无隐式区段时保留 main 的回落意图：新的 RawAgent 首条 turn 以需求原文作为气泡投影。
+    let mut req = invocation();
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(prompt.display_text.as_deref(), Some("Need an implementation"));
+}
+
+#[test]
+fn render_raw_agent_continue_prompt_skips_hidden_sections() {
+    // Continue（追问 / 续跑）不重放首条区段。真实数据流下 build_worker_invocation 在 Continue
+    // 时不加载区段（见 node_executor 侧测试），此处按该契约构造：正文即 resume prompt，无隐藏块。
+    let mut req = invocation();
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+    req.resume_prompt = Some("补充：加上分页".to_string());
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(prompt.user_prompt, "补充：加上分页");
+    assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
+}
+
+#[test]
 fn render_runtime_resume_is_a_hidden_control_turn() {
     let mut req = invocation();
     req.session_mode = SessionMode::Continue;

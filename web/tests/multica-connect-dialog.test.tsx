@@ -108,6 +108,7 @@ async function renderDialog(
         open
         onOpenChange={onOpenChange}
         settingsVm={overrides.settingsVm ?? baseSettings()}
+        sourceLabel="Multica"
         onConnected={onConnected}
       />,
     );
@@ -120,19 +121,19 @@ describe('MulticaConnectDialog (连接确认弹窗：确认 + 可改地址)', ()
   it('prefills the editable address input (无提示文案)', async () => {
     const { container } = await renderDialog();
 
-    expect(container.textContent).toContain('multica.connect.title');
-    expect(container.textContent).toContain('multica.connect.body');
+    expect(container.textContent).toContain('remote.connect.title');
+    expect(container.textContent).toContain('remote.connect.body');
     const input = container.querySelector('input') as HTMLInputElement;
     expect(input.value).toBe('https://m.example');
     // 调整轮：弹窗内直接改地址，不再渲染「如需修改…」指引。
-    expect(container.textContent).not.toContain('multica.connect.changeHint');
+    expect(container.textContent).not.toContain('remote.connect.changeHint');
   });
 
   it('connects without saving when the address is unchanged (防分端口默认被同址覆盖)', async () => {
     mocks.connectMultica.mockResolvedValue(baseSettings({ connected: true, patSet: true }));
     const { container, onOpenChange, onConnected } = await renderDialog();
 
-    const confirmBtn = findButton(container, 'multica.connect.confirm');
+    const confirmBtn = findButton(container, 'remote.connect.confirm');
     expect(confirmBtn).toBeTruthy();
     await act(async () => { confirmBtn!.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
@@ -154,7 +155,7 @@ describe('MulticaConnectDialog (连接确认弹窗：确认 + 可改地址)', ()
     setNativeInputValue(container.querySelector('input') as HTMLInputElement, 'https://new.example');
     await act(async () => { await Promise.resolve(); });
 
-    await act(async () => { findButton(container, 'multica.connect.confirm')!.click(); });
+    await act(async () => { findButton(container, 'remote.connect.confirm')!.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     expect(mocks.saveMulticaConnectionAddress).toHaveBeenCalledWith('https://new.example', 'https://new.example');
@@ -170,8 +171,8 @@ describe('MulticaConnectDialog (连接确认弹窗：确认 + 可改地址)', ()
     setNativeInputValue(container.querySelector('input') as HTMLInputElement, 'not-a-url');
     await act(async () => { await Promise.resolve(); });
 
-    expect(container.textContent).toContain('multica.connection.invalidUrl');
-    expect(findButton(container, 'multica.connect.confirm')?.disabled).toBe(true);
+    expect(container.textContent).toContain('remote.connection.invalidUrl');
+    expect(findButton(container, 'remote.connect.confirm')?.disabled).toBe(true);
     expect(mocks.connectMultica).not.toHaveBeenCalled();
   });
 
@@ -179,13 +180,13 @@ describe('MulticaConnectDialog (连接确认弹窗：确认 + 可改地址)', ()
     mocks.connectMultica.mockRejectedValue({ code: 'multica.connect-failed', params: {} });
     const { container, onOpenChange } = await renderDialog();
 
-    await act(async () => { findButton(container, 'multica.connect.confirm')!.click(); });
+    await act(async () => { findButton(container, 'remote.connect.confirm')!.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     expect(container.textContent).toContain('mock-error');
     expect(onOpenChange).not.toHaveBeenCalled();
     // connecting 态复位：主按钮恢复可点、取消恢复普通取消文案。
-    expect(findButton(container, 'multica.connect.confirm')?.disabled).toBe(false);
+    expect(findButton(container, 'remote.connect.confirm')?.disabled).toBe(false);
     expect(findButton(container, 'common.cancel')).toBeTruthy();
   });
 
@@ -193,7 +194,7 @@ describe('MulticaConnectDialog (连接确认弹窗：确认 + 可改地址)', ()
     mocks.connectMultica.mockRejectedValue({ code: 'multica.connect-cancelled', params: {} });
     const { container, onOpenChange } = await renderDialog();
 
-    await act(async () => { findButton(container, 'multica.connect.confirm')!.click(); });
+    await act(async () => { findButton(container, 'remote.connect.confirm')!.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -206,13 +207,13 @@ describe('MulticaConnectDialog (连接确认弹窗：确认 + 可改地址)', ()
     mocks.cancelMulticaConnect.mockResolvedValue(undefined);
     const { container, onOpenChange } = await renderDialog();
 
-    await act(async () => { findButton(container, 'multica.connect.confirm')!.click(); });
+    await act(async () => { findButton(container, 'remote.connect.confirm')!.click(); });
     await act(async () => { await Promise.resolve(); });
 
     // 连接中：主按钮禁用转「连接中…」、地址输入禁用，取消转「取消连接」。
-    expect(findButton(container, 'multica.connect.connecting')?.disabled).toBe(true);
+    expect(findButton(container, 'remote.connect.connecting')?.disabled).toBe(true);
     expect((container.querySelector('input') as HTMLInputElement).disabled).toBe(true);
-    const cancelConnectBtn = findButton(container, 'multica.connect.cancelConnect');
+    const cancelConnectBtn = findButton(container, 'remote.connect.cancelConnect');
     expect(cancelConnectBtn).toBeTruthy();
 
     // 点「取消连接」只发取消信号，不直接关窗（关窗走 cancelled 收尾路径）。

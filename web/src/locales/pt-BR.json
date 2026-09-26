@@ -999,20 +999,6 @@
       "install-failed": "Falha ao instalar atualização: {{message}}",
       "context-unavailable": "Não é possível verificar atualizações sem um workspace selecionado.",
       "no-update": "Nenhuma atualização disponível."
-    },
-    "multica": {
-      "not-configured": "Multica não está configurado. Conclua a configuração em Configurações primeiro.",
-      "invalid-address": "Endereço de conexão inválido: deve ser uma URL http(s) válida.",
-      "connect-cancelled": "Conexão cancelada.",
-      "auth-failed": "Falha na autenticação Multica: {{message}}",
-      "network-failed": "Falha na solicitação de rede Multica: {{message}}",
-      "register-failed": "Falha no registro do daemon: {{message}}",
-      "claim-conflict": "Esta tarefa já foi reivindicada por outro daemon.",
-      "task-not-found": "Esta tarefa multica não foi encontrada.",
-      "runtime-offline": "Runtime não está pronto. Tente novamente em breve.",
-      "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
-      "workspace-already-bound": "Este workspace já está vinculado.",
-      "workspace-not-found": "Esta vinculação de workspace não foi encontrada."
     }
   },
   "status": {
@@ -2594,43 +2580,6 @@
       }
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "Requisitos",
-      "source": {
-        "label": "Origem da tarefa",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "Workspace",
-        "remove": "Remover workspace",
-        "removeConfirm": "Remover este workspace? Seus requisitos não serão mais exibidos."
-      },
-      "column": {
-        "empty": "Nenhuma tarefa"
-      },
-      "account": {
-        "connected": "Conectado",
-        "switchAccount": "Alternar conta",
-        "disconnect": "Desconectar"
-      }
-    },
-    "connection": {
-      "title": "Endereço de conexão",
-      "addressLabel": "Endereço de conexão",
-      "save": "Salvar",
-      "invalidUrl": "Informe um endereço http(s) válido",
-      "restoreDefault": "Restaurar endereço padrão",
-      "restoring": "Restaurando…"
-    },
-    "connect": {
-      "title": "Conectar Multica",
-      "body": "Prestes a conectar a:",
-      "confirm": "Conectar",
-      "connecting": "Conectando…",
-      "cancelConnect": "Cancelar conexão"
-    }
-  },
   "conversation": {
     "title": "Conversa",
     "newConversation": "Nova conversa",
@@ -2669,7 +2618,6 @@
       "contextManagement": "Contexto",
       "runModeManagement": "Modo de execução",
       "more": "Mais",
-      "multicaTaskManagement": "Requisitos",
       "pinned": "Fixado",
       "noPinned": "Conversas fixadas aparecem aqui",
       "noWorkspaces": "Nenhum workspace adicionado",
@@ -2706,39 +2654,9 @@
         "stopped": "Parado, não visualizado",
         "failed": "Falhou, não visualizado"
       },
-      "settings": "Configurações",
-      "multica": {
-        "sectionTitle": "Requisitos",
-        "emptyTitle": "Não conectado ao Multica",
-        "emptyDescription": "Conecte para ver e reivindicar requisitos Multica.",
-        "connectButton": "Conectar Multica",
-        "connectionSettings": "Configurações de endereço de conexão",
-        "cancelTask": "Cancelar tarefa",
-        "executeTask": "Executar",
-        "addWorkspace": "Adicionar workspace",
-        "noWorkspacesBound": "Nenhum workspace vinculado",
-        "status": {
-          "queued": "A fazer",
-          "running": "Em execução",
-          "completed": "Concluído",
-          "failed": "Falhou"
-        },
-        "dialog": {
-          "title": "Adicionar workspace",
-          "remoteWorkspace": "Workspace remoto",
-          "provider": "Provider",
-          "add": "Adicionar",
-          "needWorkspace": "Selecione um workspace remoto",
-          "noServerWorkspaces": "Nenhum workspace vinculável no servidor ainda. Crie um no multica Web primeiro.",
-          "allWorkspacesBound": "Todos os workspaces remotos já estão vinculados."
-        }
-      }
+      "settings": "Configurações"
     },
-    "composer": {
-      "multicaNeedLocalWorkspace": "Adicione um workspace local antes de executar um requisito",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "Desvincular tarefa"
-    },
+    "composer": {},
     "branchPicker": {
       "label": "Branch",
       "search": "Pesquisar branches de {{workspace}}",

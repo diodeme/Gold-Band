@@ -1,5 +1,5 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
-import { Ban, Loader2, Play } from 'lucide-react';
+import { Ban, Loader2, Play, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -13,13 +13,14 @@ import type { RemoteTaskVm } from '../../types';
  * 远程任务看板（presentational）。
  *
  * 数据/订阅/动作（connect/prepare/cancel/refresh/workspace 选择）由容器页
- * `MulticaTaskManagementPage` 持有；本组件只接收「选定工作空间的扁平任务列表」，
+ * `RemoteTaskManagementPage` 持有；本组件只接收「选定工作空间的扁平任务列表」，
  * 按 canonical status 分桶到 4 列（待办 / 进行中 / 已完成 / 失败），逐任务渲染卡片。
  *
  * 列与动作 1:1（pinned 不展示后，展示中的任务都不可重试 → 无 rerun）：
  * - queued   → 准备执行(prepare)：只读取需求正文 + 绑定 composer，任务仍 queued，发送时才 claim+start
  * - running  → 取消(cancel)
  * - completed/failed（带本地 run 链接）→ 点击回看会话(onSelectRun)
+ * - 全状态   → 移出列表(remove)：纯本地视图过滤，刷新即恢复（服务端不动）
  */
 
 /// 看板列定义：4 canonical status，与 `RemoteTaskVm.status` 1:1
@@ -30,12 +31,42 @@ export type BoardColumnStatus = (typeof BOARD_COLUMNS)[number];
 /// 远程任务状态 → 徽章 / 列头计数色调（看板词汇：待办=灰、进行中=黄、已完成=绿、失败=红）。
 /// 结构化管理（杜绝硬编码）：每个 canonical status 一个色调类，经 Badge className（twMerge 合并）应用。
 /// 导出供单测固化「4 个 canonical status 各有色调」这一接口层验收。
-export const MULTICA_STATUS_TONE: Record<BoardColumnStatus, string> = {
+export const REMOTE_STATUS_TONE: Record<BoardColumnStatus, string> = {
   queued: 'border-transparent bg-muted text-muted-foreground',
   running: 'border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-300',
   completed: 'border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
   failed: 'border-transparent bg-destructive/15 text-destructive',
 };
+
+/// 工作项类型徽标：只有 dev/test/bug 渲染（story dev/test 拆分）。
+///
+/// `general` 与无类型任务不渲染——对齐来源自有 views 的 `hideGeneral` 惯例，降低噪音；
+/// 闭集外的未知值同样不渲染（版本前向兼容：新类型不猜文案）。
+export const REMOTE_ISSUE_KINDS = ['dev', 'test', 'bug'] as const;
+export type RemoteIssueKind = (typeof REMOTE_ISSUE_KINDS)[number];
+
+/// 工作项类型 → 徽标色调（与 `REMOTE_STATUS_TONE` 同款 token 风格：语义色调 + 明暗双主题变体）。
+/// dev = 开发（sky）、test = 测试（violet）、bug = 缺陷（destructive，与 failed 同色系）。
+export const REMOTE_ISSUE_KIND_TONE: Record<RemoteIssueKind, string> = {
+  dev: 'border-transparent bg-sky-500/15 text-sky-600 dark:text-sky-300',
+  test: 'border-transparent bg-violet-500/15 text-violet-600 dark:text-violet-300',
+  bug: 'border-transparent bg-destructive/15 text-destructive',
+};
+
+/// 纯函数：中立 `kind` → 可渲染的类型徽标（不可渲染返回 null）。
+/// 导出供单测固化「哪些类型渲染徽标」这一接口层验收。
+export function visibleIssueKind(kind: string | null): RemoteIssueKind | null {
+  return REMOTE_ISSUE_KINDS.find((value) => value === kind) ?? null;
+}
+
+/// 未就绪展示谓词（仅提醒，不阻断执行——§12.42 产品决策：经实测评审，
+/// 未就绪 test 任务保留「未就绪」徽标与原因提示，但执行入口照常可用）：
+/// test 且 `readiness !== true`（缺失按未就绪展示——覆盖服务端灰度窗口）。
+/// 旧 server（两字段皆 null）→ `null !== 'test'` → 无提醒，行为与拆分前一致。
+/// 导出供单测固化「哪些任务渲染未就绪提醒」这一接口层契约。
+export function isTaskNotReady(task: Pick<RemoteTaskVm, 'kind' | 'readiness'>): boolean {
+  return task.kind === 'test' && task.readiness !== true;
+}
 
 /// 纯函数：把「选定工作空间的扁平任务列表」按 canonical status 分桶到 4 列。
 /// 未知 status（理论不会出现——normalize 已收敛）不入任何列，作为接口层兜底。
@@ -60,7 +91,7 @@ export function bucketTasksByStatus(tasks: RemoteTaskVm[]): Record<BoardColumnSt
   return buckets;
 }
 
-interface MulticaRemoteTaskBoardProps {
+interface RemoteTaskBoardProps {
   /// 选定工作空间的全部远程任务（active queued/running + 终态 completed/failed）。
   tasks: RemoteTaskVm[];
   /// 当前正在执行异步动作的任务 id（prepare/cancel），对应卡片禁用 + spin。
@@ -70,17 +101,20 @@ interface MulticaRemoteTaskBoardProps {
   onPrepare: (task: RemoteTaskVm) => void;
   /// 取消 running 任务。
   onCancel: (task: RemoteTaskVm) => void;
+  /// 移出列表（全状态可用）：纯本地视图过滤，刷新即恢复——容器负责，服务端不动。
+  onRemove: (task: RemoteTaskVm) => void;
   /// 终态行（带本地 run 链接）整块点击 → 直达本地 conversation-run。
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
 }
 
-export function MulticaRemoteTaskBoard({
+export function RemoteTaskBoard({
   tasks,
   busyTaskId,
   onPrepare,
   onCancel,
+  onRemove,
   onSelectRun,
-}: MulticaRemoteTaskBoardProps) {
+}: RemoteTaskBoardProps) {
   const { t } = useTranslation();
   const buckets = bucketTasksByStatus(tasks);
 
@@ -92,11 +126,11 @@ export function MulticaRemoteTaskBoard({
           <section key={status} className="flex min-h-0 min-w-0 flex-col gap-2">
             <header className="flex items-center justify-between gap-2 px-1">
               <h2 className="truncate text-sm font-semibold tracking-tight text-foreground">
-                {t(`conversation.sidebar.multica.status.${status}`)}
+                {t(`conversation.sidebar.remoteTasks.status.${status}`)}
               </h2>
               <Badge
                 variant="outline"
-                className={cn('h-5 shrink-0 px-1.5 text-[11px] leading-none', MULTICA_STATUS_TONE[status])}
+                className={cn('h-5 shrink-0 px-1.5 text-[11px] leading-none', REMOTE_STATUS_TONE[status])}
               >
                 {colTasks.length}
               </Badge>
@@ -104,19 +138,20 @@ export function MulticaRemoteTaskBoard({
             <div className="space-y-2">
               {colTasks.length > 0 ? (
                 colTasks.map((task) => (
-                  <MulticaRemoteTaskCard
+                  <RemoteTaskCard
                     key={task.id}
                     task={task}
                     busy={busyTaskId === task.id}
                     onPrepare={onPrepare}
                     onCancel={onCancel}
+                    onRemove={onRemove}
                     onSelectRun={onSelectRun}
                     t={t}
                   />
                 ))
               ) : (
                 <p className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-[11px] text-muted-foreground">
-                  {t('multica.taskManagement.column.empty')}
+                  {t('remote.taskManagement.column.empty')}
                 </p>
               )}
             </div>
@@ -129,11 +164,12 @@ export function MulticaRemoteTaskBoard({
 
 type TranslationFn = ReturnType<typeof useTranslation>['t'];
 
-function MulticaRemoteTaskCard({
+function RemoteTaskCard({
   task,
   busy,
   onPrepare,
   onCancel,
+  onRemove,
   onSelectRun,
   t,
 }: {
@@ -141,13 +177,23 @@ function MulticaRemoteTaskCard({
   busy: boolean;
   onPrepare: (task: RemoteTaskVm) => void;
   onCancel: (task: RemoteTaskVm) => void;
+  onRemove: (task: RemoteTaskVm) => void;
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   t: TranslationFn;
 }) {
   const readOnly = useReadOnlyExperience();
-  const canClaim = task.status === 'queued';
+  const queued = task.status === 'queued';
+  /// 未就绪的 test 任务（父 dev issue 未 done）：仅徽标 + 原因 Tooltip 提醒，**不阻断执行**
+  /// （§12.42 产品决策：提醒而非门控，执行入口照常可用）。
+  const notReady = queued && isTaskNotReady(task);
+  const canClaim = queued;
   const canCancel = task.status === 'running';
-  const statusTone = MULTICA_STATUS_TONE[task.status as BoardColumnStatus] ?? MULTICA_STATUS_TONE.queued;
+  // 终态行（completed/failed）：唯一数据源是本地完成历史——「移出列表」语义与 active 行不同
+  // （真删除 vs 视图过滤），hint 按此分派（见 onRemove 按钮）。
+  const terminal = task.status === 'completed' || task.status === 'failed';
+  const statusTone = REMOTE_STATUS_TONE[task.status as BoardColumnStatus] ?? REMOTE_STATUS_TONE.queued;
+  const issueKind = visibleIssueKind(task.kind);
+  const notReadyHint = t('remote.taskManagement.readiness.notReadyHint');
 
   // 终态行（completed/failed 且带本地 run 链接）：内容区整块可点 → 直达本地 conversation-run。
   // active 行（queued/running）无本地链接，不绑点击，走右侧 prepare/cancel。
@@ -158,9 +204,36 @@ function MulticaRemoteTaskCard({
     <div className="space-y-1.5">
       <div className="truncate text-[13px] font-medium leading-snug text-foreground">{task.title}</div>
       <div className="flex items-center gap-1.5">
+        {issueKind && (
+          <Badge
+            variant="outline"
+            className={cn('h-4 shrink-0 px-1 text-[10px] leading-none', REMOTE_ISSUE_KIND_TONE[issueKind])}
+          >
+            {t(`remote.taskManagement.issueKind.${issueKind}`)}
+          </Badge>
+        )}
         <Badge variant="outline" className={cn('h-4 shrink-0 px-1 text-[10px] leading-none', statusTone)}>
-          {t(`conversation.sidebar.multica.status.${task.status}`, task.status)}
+          {t(`conversation.sidebar.remoteTasks.status.${task.status}`, task.status)}
         </Badge>
+        {notReady && (
+          /* 未就绪标记（仅提醒不阻断）：原因（对应开发任务尚未完成）经项目 Tooltip 说明；
+             tabIndex 让键盘也能触发提示；执行入口照常可用。 */
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                tabIndex={0}
+                aria-label={notReadyHint}
+                className={cn(
+                  'inline-flex h-4 shrink-0 items-center rounded-full px-1 text-[10px] leading-none',
+                  REMOTE_STATUS_TONE.queued,
+                )}
+              >
+                {t('remote.taskManagement.readiness.notReady')}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">{notReadyHint}</TooltipContent>
+          </Tooltip>
+        )}
         {task.lastActivityAt && (
           <span className="ml-auto shrink-0 truncate text-[10px] tabular-nums text-muted-foreground">
             {formatLocalDateTime(task.lastActivityAt)}
@@ -188,14 +261,16 @@ function MulticaRemoteTaskCard({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            {canClaim && (
+            {queued && (
+              /* 执行入口对所有 queued 任务可用（含未就绪 test——仅提醒不阻断，§12.42），
+                 原因说明在卡片「未就绪」标记的 Tooltip。 */
               <Button
                 size="icon"
                 variant="ghost"
                 className="size-7"
-                disabled={busy}
+                disabled={busy || !canClaim}
                 onClick={() => onPrepare(task)}
-                aria-label={t('conversation.sidebar.multica.executeTask')}
+                aria-label={t('conversation.sidebar.remoteTasks.executeTask')}
               >
                 {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
               </Button>
@@ -209,14 +284,32 @@ function MulticaRemoteTaskCard({
                     className="size-7 hover:text-destructive"
                     disabled={readOnly || busy}
                     onClick={() => onCancel(task)}
-                    aria-label={t('conversation.sidebar.multica.cancelTask')}
+                    aria-label={t('conversation.sidebar.remoteTasks.cancelTask')}
                   >
                     {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Ban className="size-3.5" />}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.multica.cancelTask')}</TooltipContent>
+                <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.remoteTasks.cancelTask')}</TooltipContent>
               </Tooltip>
             )}
+            {/* 移出列表（全状态可用），按行数据源分派：终态行真删除本地完成历史（刷新不复活），
+                pending/running 行纯视图过滤（刷新即恢复）——hint 如实说明差异；不弹确认框
+                （可逆操作无数据丢失，ui-interaction §1 删除确认针对破坏性删除）。 */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-7 hover:text-destructive"
+                  disabled={readOnly || busy}
+                  onClick={() => onRemove(task)}
+                  aria-label={t('conversation.sidebar.remoteTasks.removeTask')}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-xs">{t(terminal ? 'conversation.sidebar.remoteTasks.removeTaskTerminalHint' : 'conversation.sidebar.remoteTasks.removeTaskHint')}</TooltipContent>
+            </Tooltip>
             {(!canClaim && !canCancel) && busy && (
               <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
             )}

@@ -187,6 +187,50 @@ pub struct RemoteTask {
     pub issue_description: Option<String>,
     #[serde(default)]
     pub last_activity_at: Option<String>,
+    /// issue 类型（`dev`|`test`|`bug`|`general`，story dev/test 拆分改造）。
+    ///
+    /// wire 键名 `issue_kind`（**不复用 `kind`**——该键是任务来源判别符
+    /// `comment|autopilot|chat|quick_create|direct`，与 issue 类型是两个概念）。旧 server 不发 → None，
+    /// 看板不渲染类型徽标、无门控——行为与拆分前一致（版本解耦：码灵可先于服务端发版）。
+    #[serde(default)]
+    pub issue_kind: Option<String>,
+    /// test 任务就绪标记（服务端派生：父 dev issue `Effective(status)==done` 才 true）。
+    ///
+    /// 仅作看板提醒展示（未就绪徽标 + 原因 Tooltip），**不做执行门控**——经实测评审，
+    /// 未就绪 test 任务提醒但放行（§12.42）。旧 server 不发 → None，不渲染提醒。
+    #[serde(default)]
+    pub is_ready: Option<bool>,
+    /// DPMS 发布计划 ID（issue 行镜像字段，2026-09-17 daemon 任务接口新增）。
+    ///
+    /// 仅 issue 来源任务、且 DPMS 列非 NULL 时 server 才发（`omitempty`：缺 key 而非发 0/null）。
+    /// 纯展示/溯源语义，**无门控语义**（门控仍只看 `is_ready` + `issue_kind`）。旧 server /
+    /// 非 issue 任务（chat / autopilot / quick-create）→ None。
+    #[serde(default)]
+    pub release_plan_id: Option<i64>,
+    /// DPMS 开发负责人（逗号分隔账号串，如 `"alice,bob"`，码灵侧原样使用不 split）。
+    /// 可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub dev_user: Option<String>,
+    /// DPMS 测试负责人（逗号分隔账号串）。可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub test_user: Option<String>,
+    /// DPMS 业务需求 ID。可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub business_story_id: Option<i64>,
+    /// DPMS 需求链接（故事页 URL）。可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub origin_url: Option<String>,
+    /// 直接父 issue 的完成输出（multica `AgentTaskResponse.ParentOutput`，JSON `parent_output`，
+    /// issue 完成输出传递特性）。
+    ///
+    /// 服务端 claim 时派生读取父行、不物化到子任务（父 done 后补写/改写，子任务下次 claim 拿新值）。
+    /// 仅 issue 来源任务、且直接父 issue 有 `completion_output` 时 server 才发（`omitempty`：缺 key
+    /// 而非发 null）。码灵消费点：`detail_prefill` 渲染为「上游交付说明」块、随 DPMS 溯源与需求正文
+    /// 一起预填 composer（用户可见可编辑，三次调整）。
+    /// 纯上下文语义，**无门控语义**（门控仍只看 `is_ready` + `issue_kind`；父曾 done 又 reopen 时
+    /// 本字段仍可能存在，任务是否执行继续按 is_ready 判定）。旧 server / 非 issue 任务 → None。
+    #[serde(default)]
+    pub parent_output: Option<String>,
 }
 
 impl RemoteTask {
@@ -281,9 +325,178 @@ pub struct PinTaskSessionRequest {
 ///
 /// 码灵完成远程任务后用自身 PAT 把关联 issue 流转到 [`MULTICA_ISSUE_DONE_STATUS`]（码灵作为中介，
 /// 非 agent 直调 multica API）。issue 维度接口，path 不含 workspace，靠 `X-Workspace-ID` 头路由。
+///
+/// `completion_output`（issue 完成输出传递特性）：码灵从 agent 最终回复提取的交付说明，与 `status`
+/// 同一 PUT 原子写入——对齐 multica「写输出 + 标 done 单请求」的时序设计。None 时键整体缺席：
+/// 服务端「未触摸字段保留现值」，旧 server 未知键被忽略；码灵无清除场景，永不发显式 null。
 #[derive(Debug, Serialize)]
 struct UpdateIssueStatusRequest {
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_output: Option<String>,
+}
+
+/// issue 迟到输出补发请求（issue 完成输出传递特性，多 run 场景）。
+///
+/// 与 [`UpdateIssueStatusRequest`] 同一 `PUT /api/issues/{id}` 端点，但**只写
+/// `completion_output`、不带 `status` 键**——服务端字段级 merge「未触摸字段保留现值」，
+/// 用于任务终态后的追问 run 补交交付说明的场景：issue 状态（可能已被服务端 reopen 或
+/// 人工流转）不被码灵的迟到写入强行拉回 done。结构体上不存在 status 字段即契约本身。
+#[derive(Debug, Serialize)]
+struct UpdateIssueCompletionOutputRequest {
+    completion_output: String,
+}
+
+// ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
+//
+// 心跳 ack（C-link 推送侧）与发现/导入上报 body（此文件定义），拉取 REST 响应（同上）。
+// 上报结构 `status` 用 `&'static str`：值域固定 completed/failed，编译期约束 + 零 String 分配；
+// Option 字段**不加** skip_serializing_if——multica 端按显式 null/缺失区分上报形态（测试锁定该契约）。
+
+/// 心跳 ack（`POST /api/daemon/heartbeat` 响应，multica `pkg/protocol/messages.go:315-329`）。
+///
+/// server 只回非空 pending 字段（缺失 = 无待办）；`pending_update`/`pending_model_list` 为 v1 占位，
+/// 仅反序列化不消费（模型/更新推送后续版本接入）。单数旧字段 `pending_local_skill_import` 不在结构体上，
+/// serde 未知字段容忍即忽略——码灵已声明 `supports_batch_import: true`，服务端按批量形式下发。
+#[derive(Debug, Deserialize)]
+pub struct HeartbeatAck {
+    pub status: String,
+    pub pending_local_skills: Option<PendingLocalSkillsRef>,
+    pub pending_local_skill_imports: Option<Vec<PendingLocalSkillImportRef>>,
+    /// v1 占位不消费。
+    pub pending_update: Option<serde_json::Value>,
+    /// v1 占位不消费。
+    pub pending_model_list: Option<serde_json::Value>,
+    /// 就绪变化 diff（story dev/test 拆分，R8 方案 1；wire 最终形态由 multica 定稿，
+    /// 码灵按此提案实现，不一致时仅调整本结构反序列化）。
+    ///
+    /// 码灵**只把它当刷新信号**：非空 → 发 `remote-tasks-updated` 事件 → 页面重取 pending
+    /// （pending 列表是唯一事实源，不做本地 is_ready 增量 patch）。旧 server 不发 → None。
+    #[serde(default)]
+    pub pending_readiness_changes: Option<Vec<ReadinessChange>>,
+}
+
+/// 心跳 ack：本地 skill 发现待办引用（仅 requestId，详情由发现处理自行扫描）。
+#[derive(Debug, Deserialize)]
+pub struct PendingLocalSkillsRef {
+    pub id: String,
+}
+
+/// 心跳 ack：就绪变化 diff 的单条记录（`{task_id, is_ready}`）。
+///
+/// 与 ack 现有 `pending_local_skill_imports` 等复数 pending 字段同构。仅作刷新信号消费，
+/// `is_ready` 的权威事实源是 pending/claim/detail 载荷（见 [`HeartbeatAck`] 注释）。
+///
+/// 两字段带 `#[serde(default)]`：wire 形态尚未定稿（本字段是码灵提案），字段命名/取值一旦与提案
+/// 不一致，解析必须退化为「有变化但内容不可用」而不是 `Err`——ack 是**整条**反序列化的，失败会连带
+/// 跳过同一 tick 的 skill 待办派发，并只留一句通用心跳失败日志（故障不可归因）。
+/// 码灵只消费「diff 是否非空」，条目内容不参与任何判定，故缺省值不影响语义。
+#[derive(Debug, Default, Deserialize)]
+pub struct ReadinessChange {
+    #[serde(default)]
+    pub task_id: String,
+    #[serde(default)]
+    pub is_ready: bool,
+}
+
+/// 心跳 ack：本地 skill 导入待办引用（requestId + 目标 skill_key）。
+#[derive(Debug, Deserialize)]
+pub struct PendingLocalSkillImportRef {
+    pub id: String,
+    pub skill_key: String,
+}
+
+/// 发现上报 body（`POST .../local-skills/{requestId}/result`，multica `runtime_local_skills.go`）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillListReport {
+    pub status: &'static str,
+    pub skills: Vec<LocalSkillSummary>,
+    pub supported: bool,
+    /// 码灵不支持 MCP skill 上报，恒 false（如实上报能力，server 据此不下发 MCP 待办）。
+    pub mcp_supported: bool,
+    pub error: Option<String>,
+}
+
+/// 发现上报的单个 skill summary。`key` = 本地目录名（canonical 身份，导入待办回传它定位目录）；
+/// `root` 恒 `"provider"`（v1 只上报码灵自有全局库一层）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillSummary {
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub source_path: String,
+    pub provider: String,
+    pub root: &'static str,
+    pub file_count: i64,
+}
+
+/// 导入上报 body（`POST .../local-skills/import/{requestId}/result`）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillImportReport {
+    pub status: &'static str,
+    pub skill: Option<LocalSkillBundle>,
+    pub error: Option<String>,
+}
+
+/// 导入上报的 skill 打包。`content` = SKILL.md **原文**（含 frontmatter 与附加字段，Q5 修正：原样透传）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillBundle {
+    pub name: String,
+    pub description: String,
+    pub content: String,
+    pub source_path: String,
+    pub provider: String,
+    pub files: Vec<LocalSkillFile>,
+}
+
+/// 导入上报的支撑文件（`path` 为相对 skill 目录的 `/` 分隔路径）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// 拉取：`GET /api/skills` 列表项（summary 不含 content——列表性能刻意省略，正文按需 GET 详情）。
+#[derive(Debug, Deserialize)]
+pub struct RemoteSkillSummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub updated_at: Option<String>,
+}
+
+/// 拉取：`GET /api/skills/{id}` 详情（content 可能带 frontmatter——multica DB 不强制 body-only，
+/// 组装端判别剥离，见 `local_skills::assemble_pulled_skill_md`）。
+#[derive(Debug, Deserialize)]
+pub struct RemoteSkillDetail {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub content: String,
+}
+
+/// 拉取：`GET /api/skills/{id}/files` 的支撑文件项（端点默认 `includeContent=true` 返回正文）。
+///
+/// files 列表**不含根 SKILL.md**——它单独由 detail 的 `content` 承载（multica 契约硬约定，
+/// 每层显式排除：`builtin_skills.go:85-93` WalkDir 跳过、daemon `local_skills.go:363` 发现排除、
+/// `execenv/context.go:976-994` 落盘兜底去重）。落库侧仍校验防御（拒绝根 `SKILL.md` 混入）。
+#[derive(Debug, Deserialize)]
+pub struct RemoteSkillFile {
+    pub path: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub content: String,
+}
+
+/// 拉取：files 响应容错包装（`{files:[...]}` 或裸数组，照搬 [`WorkspacesResponse`] untagged 惯例）。
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum SkillFilesResponse {
+    Wrapped { files: Vec<RemoteSkillFile> },
+    Bare(Vec<RemoteSkillFile>),
 }
 
 /// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
@@ -340,16 +553,21 @@ impl MulticaClient {
     ///
     /// `per_request_timeout` 覆盖 client 级 30s 默认——liveness/轻量调用（取消检测）传短超时，
     /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（15s 周期，单 tick 阻塞会延误
-    /// runtime 在线维持与取消检测）。
+    /// runtime 在线维持与取消检测）。`workspace_id` 注入 `X-Workspace-ID` 头（skill 拉取 REST 是
+    /// workspace 维度接口，与 [`json_send`] 对称）。
     async fn send(
         &self,
         method: Method,
         path: &str,
+        workspace_id: Option<&str>,
         per_request_timeout: Option<Duration>,
     ) -> Result<Response, MulticaError> {
         let mut req = self.http.request(method.clone(), self.url(path));
         if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
             req = req.bearer_auth(t);
+        }
+        if let Some(ws) = workspace_id {
+            req = req.header("X-Workspace-ID", ws);
         }
         if let Some(d) = per_request_timeout {
             req = req.timeout(d);
@@ -480,7 +698,7 @@ impl MulticaClient {
 
     /// `GET /api/me` —— 验证 PAT 有效，返回用户信息。
     pub async fn verify_pat(&self) -> Result<UserInfo, MulticaError> {
-        let resp = self.send(Method::GET, "/api/me", None).await?;
+        let resp = self.send(Method::GET, "/api/me", None, None).await?;
         resp.json::<UserInfo>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/me failed: {e}")))
@@ -521,7 +739,9 @@ impl MulticaClient {
 
     /// `GET /api/workspaces` —— workspace 成员列表（容错包装/裸数组）。
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>, MulticaError> {
-        let resp = self.send(Method::GET, "/api/workspaces", None).await?;
+        let resp = self
+            .send(Method::GET, "/api/workspaces", None, None)
+            .await?;
         let parsed = resp.json::<WorkspacesResponse>().await.map_err(|e| {
             MulticaError::NetworkFailed(format!("decode /api/workspaces failed: {e}"))
         })?;
@@ -568,17 +788,19 @@ impl MulticaClient {
         })
     }
 
-    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）。
+    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）并取回待办 ack。
     ///
-    /// body `{runtime_id, supports_batch_import: true}`。失败仅记日志（下一 tick 自然重试），
-    /// 不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**（覆盖 client 级 30s），
-    /// 防 server 慢响应拖垮整个心跳 tick（单 tick 阻塞会延误 runtime 在线维持与取消检测）。
-    pub async fn heartbeat(&self, runtime_id: &str) -> Result<(), MulticaError> {
+    /// body `{runtime_id, supports_batch_import: true}`。响应携带 skill 发现/导入待办
+    /// （[`HeartbeatAck`]，仅非空时下发）——调用方（心跳 tick）据 ack 分发处理，**绝不**在本方法内
+    /// 处理待办（保持 liveness 单次请求短超时有界，待办处理 spawn 独立任务）。失败仅记日志
+    /// （下一 tick 自然重试），不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**
+    /// （覆盖 client 级 30s），防 server 慢响应拖垮整个心跳 tick。
+    pub async fn heartbeat(&self, runtime_id: &str) -> Result<HeartbeatAck, MulticaError> {
         let body = serde_json::json!({
             "runtime_id": runtime_id,
             "supports_batch_import": true,
         });
-        let _resp = self
+        let resp = self
             .json_send(
                 Method::POST,
                 "/api/daemon/heartbeat",
@@ -587,7 +809,9 @@ impl MulticaClient {
                 Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
             )
             .await?;
-        Ok(())
+        resp.json::<HeartbeatAck>().await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("decode /api/daemon/heartbeat ack failed: {e}"))
+        })
     }
 
     /// `POST /api/daemon/runtimes/{rid}/recover-orphans` —— 启动时清理残留的在飞任务（无条件置失败态）。
@@ -597,6 +821,109 @@ impl MulticaClient {
         let path = format!("/api/daemon/runtimes/{runtime_id}/recover-orphans");
         let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
         Ok(())
+    }
+
+    // ===== skill 同步：发现/导入上报 + 拉取 REST（设计 §3-§5）=====
+
+    /// `POST /api/daemon/runtimes/{rid}/local-skills/{requestId}/result` —— 上报发现结果。
+    ///
+    /// 一般请求（`with_network_retry` 3 次）：上报由 spawn 出的独立任务驱动，无循环兜底，重试在 client 内
+    /// 完成；3 次仍失败由调用方记日志放弃，服务端 60s running 超时终态化兜底（multica 对迟到/重复上报幂等）。
+    pub async fn report_local_skill_list_result(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+        report: &LocalSkillListReport,
+    ) -> Result<(), MulticaError> {
+        self.with_network_retry("report_local_skill_list", || async {
+            let path =
+                format!("/api/daemon/runtimes/{runtime_id}/local-skills/{request_id}/result");
+            self.json_send(Method::POST, &path, None, report, None)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `POST /api/daemon/runtimes/{rid}/local-skills/import/{requestId}/result` —— 上报导入结果。
+    pub async fn report_local_skill_import_result(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+        report: &LocalSkillImportReport,
+    ) -> Result<(), MulticaError> {
+        self.with_network_retry("report_local_skill_import", || async {
+            let path = format!(
+                "/api/daemon/runtimes/{runtime_id}/local-skills/import/{request_id}/result"
+            );
+            self.json_send(Method::POST, &path, None, report, None)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `GET /api/skills` —— workspace 维度远端 skill 列表（`X-Workspace-ID` 头路由，PAT 认证）。
+    ///
+    /// 列表只含 summary（无 content），正文/文件在拉取落库时按需 GET 详情，避免列表 N+1 预取。
+    pub async fn list_remote_skills(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<RemoteSkillSummary>, MulticaError> {
+        self.with_network_retry("list_remote_skills", || async {
+            let resp = self
+                .send(Method::GET, "/api/skills", Some(workspace_id), None)
+                .await?;
+            resp.json::<Vec<RemoteSkillSummary>>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/skills failed: {e}")))
+        })
+        .await
+    }
+
+    /// `GET /api/skills/{id}` —— 单个远端 skill 详情（含 content）。
+    pub async fn get_remote_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<RemoteSkillDetail, MulticaError> {
+        self.with_network_retry("get_remote_skill", || async {
+            let path = format!("/api/skills/{skill_id}");
+            let resp = self
+                .send(Method::GET, &path, Some(workspace_id), None)
+                .await?;
+            resp.json::<RemoteSkillDetail>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
+        })
+        .await
+    }
+
+    /// `GET /api/skills/{id}/files` —— 远端 skill 支撑文件（含正文；多文件拉取消费）。
+    ///
+    /// 端点默认 `includeContent=true`（multica 答复调整 2，`skill.go:2430` + `resolveSkillInclude`），
+    /// 返回全部支撑文件正文；根 SKILL.md 不在列表中（见 [`RemoteSkillFile`] 注释）。落库前由
+    /// `gold_band::skill::validate_skill_bundle_entries` 复核尺寸/路径契约，超限整项 failed。
+    pub async fn get_remote_skill_files(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Vec<RemoteSkillFile>, MulticaError> {
+        self.with_network_retry("get_remote_skill_files", || async {
+            let path = format!("/api/skills/{skill_id}/files");
+            let resp = self
+                .send(Method::GET, &path, Some(workspace_id), None)
+                .await?;
+            let parsed = resp
+                .json::<SkillFilesResponse>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))?;
+            Ok(match parsed {
+                SkillFilesResponse::Wrapped { files } => files,
+                SkillFilesResponse::Bare(v) => v,
+            })
+        })
+        .await
     }
 
     // ===== M3 任务列表/领取/启动/状态（开发设计 2.3 / 接入方案 B/C）=====
@@ -610,7 +937,7 @@ impl MulticaClient {
     ) -> Result<Vec<RemoteTask>, MulticaError> {
         self.with_network_retry("list_pending", || async {
             let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/pending");
-            let resp = self.send(Method::GET, &path, None).await?;
+            let resp = self.send(Method::GET, &path, None, None).await?;
             let parsed = resp
                 .json::<TasksListResponse>()
                 .await
@@ -640,7 +967,7 @@ impl MulticaClient {
     ) -> Result<RemoteTask, MulticaError> {
         self.with_network_retry("get_task_requirement", || async {
             let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}");
-            let resp = self.send(Method::GET, &path, None).await?;
+            let resp = self.send(Method::GET, &path, None, None).await?;
             resp.json::<RemoteTask>()
                 .await
                 .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -714,6 +1041,7 @@ impl MulticaClient {
             .send(
                 Method::GET,
                 &path,
+                None,
                 Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
             )
             .await?;
@@ -803,19 +1131,53 @@ impl MulticaClient {
     /// （3 次）；该步骤**失败仅记日志、不阻断任务终态**——complete 已送达、任务已 done，issue 状态推进
     /// 失败由调用方兜底（issue 保持原状，不影响 multica 任务生命周期）。
     ///
+    /// `completion_output`：done 流转时随同一请求写入的交付说明（agent 最终回复提取，见
+    /// `multica/handoff.rs`）。None = 不带该键（服务端保留现值；in_progress 流转恒 None）。
+    ///
     /// [`complete_task`]: MulticaClient::complete_task
     pub async fn update_issue_status(
         &self,
         workspace_id: &str,
         issue_id: &str,
         status: &str,
+        completion_output: Option<&str>,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/issues/{issue_id}");
         let body = UpdateIssueStatusRequest {
             status: status.to_string(),
+            completion_output: completion_output.map(str::to_string),
         };
         self.with_network_retry("update_issue_status", || async {
             // body 丢弃：issue 状态更新只关心 HTTP 状态（map_status 已校验），无需解码响应。
+            let _resp = self
+                .json_send(Method::PUT, &path, Some(workspace_id), &body, None)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `PUT /api/issues/{id}` —— 只补写 `completion_output`（**不带 status 键**，多 run 场景）。
+    ///
+    /// 任务终态后的追问 run 补交了交付说明时（首 run fail-open 标 done 时未提取到块），
+    /// 由 bridge 按 local_task_id 反查 completed 历史找回 issue 关联后调用（见
+    /// `multica/bridge.rs` 的 `relay_late_completion_output`）。服务端字段级 merge：
+    /// 未触摸的 `status` 保留现值——迟到写入不把已 reopen/人工流转的 issue 拉回 done；
+    /// 单值覆盖语义（每次 run 整体覆盖前值）与首 run 同一 PUT 内写入一致。
+    ///
+    /// 该步骤失败仅记日志、不重试——迟到的自愈写入，下次补交会整体覆盖。走一般网络重试（3 次）。
+    pub async fn update_issue_completion_output(
+        &self,
+        workspace_id: &str,
+        issue_id: &str,
+        completion_output: &str,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/issues/{issue_id}");
+        let body = UpdateIssueCompletionOutputRequest {
+            completion_output: completion_output.to_string(),
+        };
+        self.with_network_retry("update_issue_completion_output", || async {
+            // body 丢弃：同 update_issue_status，只关心 HTTP 状态（map_status 已校验）。
             let _resp = self
                 .json_send(Method::PUT, &path, Some(workspace_id), &body, None)
                 .await?;
@@ -1203,6 +1565,114 @@ mod tests {
         assert!(first.parent_task_id.is_none());
     }
 
+    // ===== story dev/test 拆分：issue_kind / is_ready 契约（仅提醒展示，不门控——§12.42）=====
+
+    #[test]
+    fn remote_task_parses_issue_kind_and_is_ready() {
+        // 键名 `issue_kind`（multica 已确认；`kind` 已被任务来源判别符占用，不可复用）。
+        // pending / claim / detail 三接口共用 AgentTaskResponse，三处载荷均带此两键。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_kind":"test","is_ready":false}"#,
+        )
+        .unwrap();
+        assert_eq!(task.issue_kind.as_deref(), Some("test"));
+        assert_eq!(task.is_ready, Some(false));
+
+        let ready: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-2","status":"queued","issue_kind":"test","is_ready":true}"#,
+        )
+        .unwrap();
+        assert_eq!(ready.issue_kind.as_deref(), Some("test"));
+        assert_eq!(ready.is_ready, Some(true));
+    }
+
+    #[test]
+    fn remote_task_missing_issue_fields_parse_as_none() {
+        // 旧 server 契约（版本解耦）：两字段皆无 → None/None，不渲染类型徽标与未就绪提醒。
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.issue_kind.is_none());
+        assert!(legacy.is_ready.is_none());
+    }
+
+    // ===== DPMS 溯源字段（2026-09-17 daemon 任务接口新增，仅 issue 任务携带）=====
+
+    #[test]
+    fn remote_task_parses_dpms_provenance_fields() {
+        // wire 契约：release_plan_id / dev_user / test_user / business_story_id / origin_url
+        // 五键，列非 NULL 才上 wire（缺 key 而非 0/null），pending / detail / claim 三接口
+        // 共用 AgentTaskResponse。纯溯源语义，无门控——不参与 is_ready/issue_kind 判定。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_kind":"dev","is_ready":true,"release_plan_id":538181,"dev_user":"alice,bob","test_user":"carol","business_story_id":674290,"origin_url":"https://dpms.example.com/story/674290"}"#,
+        )
+        .unwrap();
+        assert_eq!(task.release_plan_id, Some(538181));
+        assert_eq!(task.dev_user.as_deref(), Some("alice,bob"));
+        assert_eq!(task.test_user.as_deref(), Some("carol"));
+        assert_eq!(task.business_story_id, Some(674290));
+        assert_eq!(
+            task.origin_url.as_deref(),
+            Some("https://dpms.example.com/story/674290")
+        );
+    }
+
+    #[test]
+    fn remote_task_missing_dpms_fields_parse_as_none() {
+        // 旧 server / 非 issue 任务（chat / autopilot / quick-create）：五键全缺省 → 全 None，
+        // 不报错、不回退默认值（会话起始输入不拼溯源块）。
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.release_plan_id.is_none());
+        assert!(legacy.dev_user.is_none());
+        assert!(legacy.test_user.is_none());
+        assert!(legacy.business_story_id.is_none());
+        assert!(legacy.origin_url.is_none());
+    }
+
+    // ===== 父任务完成输出 parent_output（issue 完成输出传递特性，仅 issue 任务 + 父有输出时携带）=====
+
+    #[test]
+    fn remote_task_parses_parent_output() {
+        // wire 契约：`parent_output` = 直接父 issue 的 completion_output，服务端 claim 时
+        // 派生读取父行。omitempty——父无输出/无父/非 issue 任务时键整体缺席。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_kind":"test","is_ready":true,"parent_output":"部署地址: https://t.example.com\n测试要点: 回归登录链路"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            task.parent_output.as_deref(),
+            Some("部署地址: https://t.example.com\n测试要点: 回归登录链路")
+        );
+    }
+
+    #[test]
+    fn remote_task_missing_parent_output_parses_as_none() {
+        // 旧 server / 父无输出 / 无父 / 非 issue 任务：键缺席 → None（会话起始输入不拼
+        // 「上游交付说明」块），与拆分前行为一致（版本解耦）。
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.parent_output.is_none());
+    }
+
+    #[test]
+    fn pending_list_response_carries_readiness_fields() {
+        // pending 列表是看板的数据源：包装形态与裸数组形态都必须带出两字段
+        // （类型徽标 / 未就绪提醒依赖它们）。
+        let wrapped: TasksListResponse = serde_json::from_str(
+            r#"{"tasks":[{"id":"t-1","status":"queued","issue_kind":"test","is_ready":false},{"id":"t-2","status":"queued","issue_kind":"dev"}]}"#,
+        )
+        .unwrap();
+        let TasksListResponse::Wrapped { tasks } = wrapped else {
+            panic!("包装形态应解为 Wrapped");
+        };
+        assert_eq!(tasks[0].issue_kind.as_deref(), Some("test"));
+        assert_eq!(tasks[0].is_ready, Some(false));
+        assert_eq!(tasks[1].issue_kind.as_deref(), Some("dev"));
+        assert_eq!(tasks[1].is_ready, None);
+
+        // 裸数组形态（旧 server 兼容路径）同样解析且缺字段不阻断。
+        let bare: TasksListResponse =
+            serde_json::from_str(r#"[{"id":"t-1","status":"queued"}]"#).unwrap();
+        assert!(matches!(bare, TasksListResponse::Bare(v) if v.len() == 1));
+    }
+
     #[test]
     fn remote_task_requirement_text_picks_source_by_priority() {
         // 镜像 server computeTaskKind 来源互斥优先级：
@@ -1396,12 +1866,48 @@ mod tests {
 
     #[test]
     fn update_issue_status_request_serializes_status_key() {
-        // 接入方案 D2：PUT /api/issues/{id} body {status}。锁定 wire body 契约（status 为唯一键）。
+        // 接入方案 D2：PUT /api/issues/{id} body {status}。completion_output 为 None 时键
+        // 整体缺席——锁定「未触摸字段保留现值 + 旧 server 未知键忽略」的兼容契约
+        // （in_progress 流转与无交付说明的 done 流转均走此形态）。
         let body = serde_json::to_value(UpdateIssueStatusRequest {
             status: "done".into(),
+            completion_output: None,
         })
         .unwrap();
         assert_eq!(body, serde_json::json!({"status": "done"}));
+    }
+
+    #[test]
+    fn update_issue_status_request_serializes_completion_output_when_present() {
+        // issue 完成输出传递特性：status + completion_output 同一 PUT 原子写入（对齐 multica
+        // 「写输出 + 标 done 单请求」的时序设计——分两次请求存在 test 恰好 claim 在中间的竞态窗口）。
+        let body = serde_json::to_value(UpdateIssueStatusRequest {
+            status: "done".into(),
+            completion_output: Some("部署地址: https://t.example.com".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "status": "done",
+                "completion_output": "部署地址: https://t.example.com"
+            })
+        );
+    }
+
+    #[test]
+    fn update_issue_completion_output_request_omits_status_key() {
+        // 多 run 迟到补发（终态后追问 run 补交交付说明）：同一 PUT 端点**只写
+        // completion_output、不带 status 键**——服务端字段级 merge「未触摸字段保留现值」，
+        // 迟到写入不得把 issue（可能已被 reopen/人工流转）强行拉回 done。锁定 body 恰为单键。
+        let body = serde_json::to_value(UpdateIssueCompletionOutputRequest {
+            completion_output: "部署地址: https://t.example.com".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"completion_output": "部署地址: https://t.example.com"})
+        );
     }
 
     #[test]
@@ -1442,5 +1948,236 @@ mod tests {
         // 覆盖 client 级 30s，使单 tick 在退化网络下快速失败。锁定上界 < 30s 且 > 0。
         assert!(LIVENESS_TIMEOUT_SECS > 0 && LIVENESS_TIMEOUT_SECS < 30);
         assert_eq!(LIVENESS_TIMEOUT_SECS, 10);
+    }
+
+    // ===== skill 同步：心跳 ack 契约（multica server/pkg/protocol/messages.go:315-329）=====
+
+    #[test]
+    fn heartbeat_ack_parses_full_pending_payloads() {
+        // HTTP 响应只含 status + 非空 pending 字段；完整形态四类 pending 齐备。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_local_skills":{"id":"req-1"},"pending_local_skill_imports":[{"id":"req-2","skill_key":"pr-review"}],"pending_update":{},"pending_model_list":{"x":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(ack.status, "ok");
+        assert_eq!(
+            ack.pending_local_skills.as_ref().map(|p| p.id.as_str()),
+            Some("req-1")
+        );
+        let imports = ack.pending_local_skill_imports.expect("批量导入应解析");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].id, "req-2");
+        assert_eq!(imports[0].skill_key, "pr-review");
+        // v1 不消费，仅反序列化占位（解析不失败即契约成立）。
+        assert!(ack.pending_update.is_some());
+        assert!(ack.pending_model_list.is_some());
+    }
+
+    // ===== story dev/test 拆分：心跳 ack 就绪变化 diff 契约（R8 方案 1）=====
+
+    #[test]
+    fn heartbeat_ack_parses_pending_readiness_changes() {
+        // diff 列表形态 [{task_id, is_ready}]，与 ack 现有复数 pending_* 字段同构。
+        // 码灵只作刷新信号消费：非空 → remote-tasks-updated 事件 → 重取 pending。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1","is_ready":true},{"task_id":"t-2","is_ready":false}]}"#,
+        )
+        .unwrap();
+        let changes = ack.pending_readiness_changes.expect("diff 应解析");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].task_id, "t-1");
+        assert!(changes[0].is_ready);
+        assert_eq!(changes[1].task_id, "t-2");
+        assert!(!changes[1].is_ready);
+    }
+
+    #[test]
+    fn heartbeat_ack_without_readiness_changes() {
+        // 旧 server / 无变化 → 字段缺失（None），不触发刷新信号。
+        let ack: HeartbeatAck = serde_json::from_str(r#"{"status":"ok"}"#).unwrap();
+        assert!(ack.pending_readiness_changes.is_none());
+    }
+
+    #[test]
+    fn heartbeat_ack_tolerates_diverged_readiness_change_shape() {
+        // wire 形态尚未定稿（S4 目前是码灵提案）：条目字段与提案不一致时必须退化为「无信号」，
+        // 绝不能因这个可选字段让**整条 ack** 解码失败——ack 同时承载 skill 待办派发
+        // （loop_.rs `dispatch_pending_skill_work`），解码失败会连带跳过本 tick 的 skill 工作，
+        // 且日志只留一句通用的 `multica heartbeat failed (will retry next tick)`，故障无法归因。
+        let missing_flag: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1"}]}"#,
+        )
+        .expect("条目缺 is_ready 不应让整条 ack 解码失败");
+        let changes = missing_flag
+            .pending_readiness_changes
+            .expect("diverged 形态仍应解出 diff");
+        assert_eq!(changes.len(), 1, "非空即刷新信号，条目内容不参与判定");
+
+        // 键名风格不一致（camelCase）同样退化为「有变化但内容不可用」——只取「非空」这一事实。
+        let camel: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"taskId":"t-1","isReady":true}]}"#,
+        )
+        .expect("键名不一致不应让整条 ack 解码失败");
+        assert_eq!(camel.pending_readiness_changes.map(|c| c.len()), Some(1));
+    }
+
+    #[test]
+    fn heartbeat_ack_tolerates_missing_pending_and_unknown_fields() {
+        // 无 pending 时字段整体缺失（server 只回非空 pending）+ 未知字段忽略（serde 默认）。
+        let ack: HeartbeatAck =
+            serde_json::from_str(r#"{"status":"ok","future_field":true}"#).unwrap();
+        assert_eq!(ack.status, "ok");
+        assert!(ack.pending_local_skills.is_none());
+        assert!(ack.pending_local_skill_imports.is_none());
+        assert!(ack.pending_update.is_none());
+        assert!(ack.pending_model_list.is_none());
+    }
+
+    #[test]
+    fn heartbeat_ack_ignores_singular_legacy_import_field() {
+        // 兼容字段 pending_local_skill_import（单条旧形式）不在结构体上——serde 未知字段忽略；
+        // 码灵已声明 supports_batch_import: true，服务端按批量形式下发（批量数组必含同内容首条）。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_local_skill_import":{"id":"req-9","skill_key":"x"}}"#,
+        )
+        .unwrap();
+        assert!(ack.pending_local_skill_imports.is_none());
+    }
+
+    // ===== skill 同步：发现/导入上报 body 契约 =====
+
+    #[test]
+    fn local_skill_list_report_serializes_wire_contract() {
+        // 发现上报 body：status/skills[]/supported/mcp_supported；key=目录名、root 恒 "provider"。
+        let report = LocalSkillListReport {
+            status: "completed",
+            skills: vec![LocalSkillSummary {
+                key: "pr-review".into(),
+                name: "PR review".into(),
+                description: "Review pull requests".into(),
+                source_path: "C:/home/.gold-band/skills/pr-review".into(),
+                provider: "claude-acp".into(),
+                root: "provider",
+                file_count: 2,
+            }],
+            supported: true,
+            mcp_supported: false,
+            error: None,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["supported"], true);
+        assert_eq!(json["mcp_supported"], false);
+        assert_eq!(json["skills"][0]["key"], "pr-review");
+        assert_eq!(json["skills"][0]["name"], "PR review");
+        assert_eq!(
+            json["skills"][0]["source_path"],
+            "C:/home/.gold-band/skills/pr-review"
+        );
+        assert_eq!(json["skills"][0]["provider"], "claude-acp");
+        assert_eq!(json["skills"][0]["root"], "provider");
+        assert_eq!(json["skills"][0]["file_count"], 2);
+
+        // 失败形态：status=failed + error 文本（skills 为空数组、能力标志仍如实上报）。
+        let failed = LocalSkillListReport {
+            status: "failed",
+            skills: Vec::new(),
+            supported: true,
+            mcp_supported: false,
+            error: Some("scan failed".into()),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["error"], "scan failed");
+    }
+
+    #[test]
+    fn local_skill_import_report_serializes_wire_contract() {
+        // 导入上报 body：status/skill{content=SKILL.md 全文含 frontmatter}/files[]；
+        // content 原样透传（multica DB 不强制 body-only，2026-09-09 Q5 修正）。
+        let report = LocalSkillImportReport {
+            status: "completed",
+            skill: Some(LocalSkillBundle {
+                name: "PR review".into(),
+                description: "Review pull requests".into(),
+                content: "---\nname: PR review\nallowed-tools: Read\n---\n\nBody".into(),
+                source_path: "C:/home/.gold-band/skills/pr-review".into(),
+                provider: "claude-acp".into(),
+                files: vec![LocalSkillFile {
+                    path: "assets/template.md".into(),
+                    content: "# template".into(),
+                }],
+            }),
+            error: None,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["skill"]["name"], "PR review");
+        assert_eq!(
+            json["skill"]["content"],
+            "---\nname: PR review\nallowed-tools: Read\n---\n\nBody"
+        );
+        assert_eq!(json["skill"]["files"][0]["path"], "assets/template.md");
+        assert_eq!(json["skill"]["files"][0]["content"], "# template");
+
+        // 失败形态：skill 缺失 + error 文本（如 skill not found: <key>）。
+        let failed = LocalSkillImportReport {
+            status: "failed",
+            skill: None,
+            error: Some("skill not found: deleted-skill".into()),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["error"], "skill not found: deleted-skill");
+        assert!(json["skill"].is_null());
+    }
+
+    // ===== skill 同步：拉取 REST 契约（multica handler/skill.go:60-72 / 43-53）=====
+
+    #[test]
+    fn remote_skill_summary_parses_server_shape() {
+        // GET /api/skills（X-Workspace-ID 路由）返回裸数组；summary 不含 content（列表性能刻意省略）。
+        let list: Vec<RemoteSkillSummary> = serde_json::from_str(
+            r#"[{"id":"sk-1","name":"PR review","description":"Review PRs","updated_at":"2026-09-01T00:00:00Z"},{"id":"sk-2","name":"Empty","description":""}]"#,
+        )
+        .unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "sk-1");
+        assert_eq!(list[0].name, "PR review");
+        assert_eq!(list[1].updated_at, None);
+    }
+
+    #[test]
+    fn remote_skill_detail_parses_server_shape() {
+        // GET /api/skills/{id} 返回含 content 的详情（content 可能带 frontmatter——DB 不强制 body-only）。
+        let detail: RemoteSkillDetail = serde_json::from_str(
+            r#"{"id":"sk-1","name":"PR review","description":"Review PRs","content":"---\nname: PR review\n---\n\nBody"}"#,
+        )
+        .unwrap();
+        assert_eq!(detail.id, "sk-1");
+        assert_eq!(detail.name, "PR review");
+        assert!(detail.content.starts_with("---\n"));
+    }
+
+    #[test]
+    fn skill_files_response_accepts_wrapped_and_bare() {
+        // GET /api/skills/{id}/files（默认 includeContent=true）的容错：包装 {files:[...]} 或裸数组
+        // （照搬 WorkspacesResponse/TasksListResponse 的 untagged 容错惯例）；项含正文，根 SKILL.md
+        // 不在列表（由 detail.content 承载）。
+        let wrapped: SkillFilesResponse = serde_json::from_str(
+            r##"{"files":[{"path":"assets/a.md","size":6,"content":"# tpl"},{"path":"nested/b.md","content":"b"}]}"##,
+        )
+        .unwrap();
+        let SkillFilesResponse::Wrapped { files } = &wrapped else {
+            panic!("expected wrapped shape");
+        };
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "assets/a.md");
+        assert_eq!(files[0].content, "# tpl");
+        assert_eq!(files[1].size, 0); // size 缺失时 serde default，正文才是事实源
+        assert!(!files.iter().any(|file| file.path == "SKILL.md"));
+
+        let bare: SkillFilesResponse = serde_json::from_str(r#"[]"#).unwrap();
+        assert!(matches!(bare, SkillFilesResponse::Bare(ref v) if v.is_empty()));
     }
 }

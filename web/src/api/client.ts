@@ -74,6 +74,8 @@ import type {
   WeComScanAuthorizationVm,
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
+  RemoteSkillListItemVm,
+  RemoteSkillPullReportVm,
   MulticaWorkspaceRefVm,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
@@ -537,19 +539,26 @@ export interface RuntimeApi {
   saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null): Promise<MulticaSettingsVm>;
   /// 取消进行中的 multica 连接（连接确认弹窗「取消连接」）；无进行中连接时幂等 no-op。
   cancelMulticaConnect(): Promise<void>;
-  getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
+  getRemoteTasks(): Promise<RemoteConversationSidebarVm>;
   /// claim-at-send 的只读取：点击 queued 任务时拉取需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
   /// **不改动服务端任务状态**（任务仍 queued）；本地仅据此预填 composer + 绑定 chip。
-  getMulticaTaskRequirement(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
+  getRemoteTaskRequirement(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
   /// 远程任务「发送」时复用本地 composer 链：claim（pending→dispatched）+ start（dispatched→running）+ 建会话
-  /// + 叠加 multica 簿记（register_active_run）。claim 成功但 start 失败时后端自动 release（dispatched→queued）回滚。
-  startMulticaConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationCreateResultVm>;
-  cancelMulticaTask(taskId: string): Promise<void>;
+  /// + 叠加远程簿记（register_active_run）。claim 成功但 start 失败时后端自动 release（dispatched→queued）回滚。
+  startRemoteConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationCreateResultVm>;
+  cancelRemoteTask(taskId: string): Promise<void>;
+  /// 移出终态行的「最近完成」本地历史条目（真删除，刷新不复活）；不存在时幂等成功。
+  /// 仅终态行（completed/failed）有意义——pending/running 行不来自本地历史。
+  removeRemoteCompletedTask(remoteTaskId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;
   removeMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   setActiveMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
+  /// 「从远程同步」勾选列表：远端 workspace skill + 本地同名匹配（1 次 GET + 本地匹配）。
+  listRemoteSkills(workspaceId: string): Promise<RemoteSkillListItemVm[]>;
+  /// 拉取选中项落全局库；返回逐项结果（created/overwritten/skipped/failed + 结构化错误码）。
+  pullRemoteSkills(workspaceId: string, skillIds: string[]): Promise<RemoteSkillPullReportVm>;
   recordActivity(): Promise<void>;
   reportFrontendError(input: FrontendErrorReportInput): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
@@ -610,8 +619,8 @@ export interface RuntimeApi {
   startWorkspaceFileWatch(projectId: string): Promise<void>;
   stopWorkspaceFileWatch(projectId: string): Promise<void>;
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
-  subscribeMulticaTaskUpdates?(listener: () => void): Promise<() => void>;
-  subscribeMulticaSettingsUpdates?(listener: () => void): Promise<() => void>;
+  subscribeRemoteTaskUpdates?(listener: () => void): Promise<() => void>;
+  subscribeRemoteSourceSettingsUpdates?(listener: () => void): Promise<() => void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;

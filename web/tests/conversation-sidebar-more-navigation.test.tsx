@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const labels: Record<string, string> = {
   'conversation.sidebar.more': '更多',
-  'conversation.sidebar.multicaTaskManagement': '需求管理',
+  'conversation.sidebar.remoteTaskManagement': '需求管理',
   'scheduled.management.title': '定时任务',
 };
 
@@ -97,7 +97,7 @@ describe('ConversationSidebar more navigation', () => {
       expect(findButton(container, '定时任务')).toBeDefined();
 
       await act(async () => requirementsButton?.click());
-      expect(onSelect).toHaveBeenCalledWith({ kind: 'multica-tasks' });
+      expect(onSelect).toHaveBeenCalledWith({ kind: 'remote-tasks' });
     } finally {
       await act(async () => root.unmount());
     }
@@ -124,7 +124,7 @@ describe('ConversationSidebar more navigation', () => {
       await render({ kind: 'conversation-home' });
       expect(findButton(container, '更多')?.getAttribute('aria-expanded')).toBe('false');
 
-      await render({ kind: 'multica-tasks' });
+      await render({ kind: 'remote-tasks' });
       expect(findButton(container, '更多')?.getAttribute('aria-expanded')).toBe('true');
       expect(findButton(container, '需求管理')).toBeDefined();
 

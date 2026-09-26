@@ -999,20 +999,6 @@
       "install-failed": "업데이트 설치에 실패했습니다: {{message}}",
       "context-unavailable": "워크스페이스를 선택하지 않으면 업데이트를 확인할 수 없습니다.",
       "no-update": "사용 가능한 업데이트가 없습니다."
-    },
-    "multica": {
-      "not-configured": "Multica가 구성되어 있지 않습니다. 먼저 설정에서 구성을 완료해 주세요.",
-      "invalid-address": "연결 주소가 유효하지 않습니다. 유효한 http(s) URL이어야 합니다.",
-      "connect-cancelled": "연결이 취소되었습니다.",
-      "auth-failed": "Multica 인증에 실패했습니다: {{message}}",
-      "network-failed": "Multica 네트워크 요청에 실패했습니다: {{message}}",
-      "register-failed": "데몬 등록에 실패했습니다: {{message}}",
-      "claim-conflict": "이 작업은 이미 다른 데몬에서 가져갔습니다.",
-      "task-not-found": "이 multica 작업을 찾을 수 없습니다.",
-      "runtime-offline": "runtime이 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.",
-      "session-resume-failed": "세션 재개에 실패했습니다. 새 실행이 시작됩니다.",
-      "workspace-already-bound": "이 워크스페이스는 이미 바인딩되어 있습니다.",
-      "workspace-not-found": "이 워크스페이스 바인딩을 찾을 수 없습니다."
     }
   },
   "status": {
@@ -2594,43 +2580,6 @@
       }
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "요구사항",
-      "source": {
-        "label": "작업 소스",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "워크스페이스",
-        "remove": "워크스페이스 제거",
-        "removeConfirm": "이 워크스페이스를 제거할까요? 해당 요구사항은 더 이상 표시되지 않습니다."
-      },
-      "column": {
-        "empty": "작업 없음"
-      },
-      "account": {
-        "connected": "연결됨",
-        "switchAccount": "계정 전환",
-        "disconnect": "연결 해제"
-      }
-    },
-    "connection": {
-      "title": "연결 주소",
-      "addressLabel": "연결 주소",
-      "save": "저장",
-      "invalidUrl": "올바른 http(s) 주소를 입력하세요",
-      "restoreDefault": "기본 주소 복원",
-      "restoring": "복원 중…"
-    },
-    "connect": {
-      "title": "Multica 연결",
-      "body": "다음에 연결합니다:",
-      "confirm": "연결",
-      "connecting": "연결 중…",
-      "cancelConnect": "연결 취소"
-    }
-  },
   "conversation": {
     "title": "대화",
     "newConversation": "새 대화",
@@ -2669,7 +2618,6 @@
       "contextManagement": "컨텍스트",
       "runModeManagement": "실행 모드",
       "more": "더 보기",
-      "multicaTaskManagement": "요구사항",
       "pinned": "고정됨",
       "noPinned": "고정된 대화가 여기에 표시됩니다",
       "noWorkspaces": "추가된 워크스페이스 없음",
@@ -2706,39 +2654,9 @@
         "stopped": "중지됨, 아직 보지 않음",
         "failed": "실패함, 아직 보지 않음"
       },
-      "settings": "설정",
-      "multica": {
-        "sectionTitle": "요구사항",
-        "emptyTitle": "Multica에 연결되지 않음",
-        "emptyDescription": "연결하면 Multica 요구사항을 보고 가져올 수 있습니다.",
-        "connectButton": "Multica 연결",
-        "connectionSettings": "연결 주소 설정",
-        "cancelTask": "작업 취소",
-        "executeTask": "실행",
-        "addWorkspace": "워크스페이스 추가",
-        "noWorkspacesBound": "바인딩된 워크스페이스 없음",
-        "status": {
-          "queued": "할 일",
-          "running": "실행 중",
-          "completed": "완료",
-          "failed": "실패"
-        },
-        "dialog": {
-          "title": "워크스페이스 추가",
-          "remoteWorkspace": "원격 워크스페이스",
-          "provider": "제공자",
-          "add": "추가",
-          "needWorkspace": "원격 워크스페이스를 선택해 주세요",
-          "noServerWorkspaces": "서버에 아직 바인딩 가능한 워크스페이스가 없습니다. 먼저 multica 웹에서 워크스페이스를 만드세요.",
-          "allWorkspacesBound": "모든 원격 워크스페이스가 이미 바인딩되어 있습니다."
-        }
-      }
+      "settings": "설정"
     },
-    "composer": {
-      "multicaNeedLocalWorkspace": "요구사항을 실행하기 전에 로컬 워크스페이스를 추가해 주세요",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "작업 바인딩 해제"
-    },
+    "composer": {},
     "branchPicker": {
       "label": "브랜치",
       "search": "{{workspace}} 브랜치 검색",

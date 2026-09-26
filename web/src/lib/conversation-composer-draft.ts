@@ -12,18 +12,20 @@ import type { ComposerWorkspaceFileRef } from './composer-context';
  * 不会清空草稿，与 createTaskDraft 跨页面保留同一心智。
  */
 /**
- * multica 远程任务「点击执行」的 prepare 绑定（claim-at-send）。
+ * 远程任务「点击执行」的 prepare 绑定（claim-at-send）。
  *
- * 点远程任务执行按钮时**只读取**需求正文（get_multica_task_requirement，任务仍 queued），写入 draft
+ * 点远程任务执行按钮时**只读取**需求正文（get_remote_task_requirement，任务仍 queued），写入 draft
  * 预填 composer，同时记下这份绑定；composer 复用本地『+』页（选模型/模式 → 发送）。发送时若 draft 仍带
- * 这份绑定，则走 `start_multica_conversation_run`（claim+start + 复用本地发送链 + 叠加 multica 簿记），
+ * 这份绑定，则走 `start_remote_conversation_run`（claim+start + 复用本地发送链 + 叠加远程簿记），
  * 否则走本地 `create_conversation_run`。删 chip 只清这份绑定、不触碰服务端（任务仍 queued，可再次点执行）。
- * 草稿 reset（发送成功）即清掉绑定，无需各 reset 点单独清理——这是把 multica 绑定纳入 draft 生命周期的根本收益。
+ * 草稿 reset（发送成功）即清掉绑定，无需各 reset 点单独清理——这是把远程绑定纳入 draft 生命周期的根本收益。
  */
-export interface ConversationComposerMulticaBinding {
-  /// multica remote task id（start_multica_conversation_run 寻址）。
+export interface ConversationComposerRemoteBinding {
+  /// 来源标识（`desktop_remote_task_source` 指针取值，如 "multica"）——通用层路由键。
+  source: string;
+  /// 远程任务 id（start_remote_conversation_run 寻址）。
   remoteTaskId: string;
-  /// multica workspace id（start_multica_conversation_run 寻址）。
+  /// 远程工作空间 id（start_remote_conversation_run 寻址）。
   workspaceId: string;
   /// 任务标题，仅用于 composer 绑定 chip 的展示（不参与发送寻址）。
   title: string;
@@ -33,22 +35,16 @@ export interface ConversationComposerDraftState {
   content: string;
   attachments: AttachmentItem[];
   workspaceFiles: ComposerWorkspaceFileRef[];
-  /// 当前 prepare 中的 multica 远程任务绑定（null = 普通本地新建会话，走 create_conversation_run）。
-  multica: ConversationComposerMulticaBinding | null;
-  /// 提交意图：普通发送，或从 composer 直接创建 scheduled task。与 multica 绑定互斥（见 prefill / enterScheduledTask）。
+  /// 当前 prepare 中的远程任务绑定（null = 普通本地新建会话，走 create_conversation_run）。
+  remote: ConversationComposerRemoteBinding | null;
+  /// 提交意图：普通发送，或从 composer 直接创建 scheduled task。与远程绑定互斥（见 prefill / enterScheduledTask）。
   submission:
     | { kind: 'send' }
     | { kind: 'scheduled-task'; config: ScheduledTaskConfig | null };
 }
 
 export function createInitialConversationComposerDraft(): ConversationComposerDraftState {
-    return {
-        content: '',
-        attachments: [],
-        workspaceFiles: [],
-        multica: null,
-        submission: { kind: 'send' },
-      };
+  return { content: '', attachments: [], workspaceFiles: [], remote: null, submission: { kind: 'send' } };
 }
 
 /**
@@ -60,8 +56,8 @@ export type ConversationComposerDraftAction =
   | { type: 'setAttachments'; attachments: AttachmentItem[] }
   | { type: 'setWorkspaceFiles'; workspaceFiles: ComposerWorkspaceFileRef[] }
   | { type: 'changeWorkspace'; projectId: string | null }
-  | { type: 'prefill'; content: string; multica: ConversationComposerMulticaBinding }
-  | { type: 'clearMultica' }
+  | { type: 'prefill'; content: string; remote: ConversationComposerRemoteBinding }
+  | { type: 'clearRemote' }
   | { type: 'enterScheduledTask' }
   | { type: 'setScheduledTaskConfig'; config: ScheduledTaskConfig }
   | { type: 'exitScheduledTask' }
@@ -85,23 +81,18 @@ export function conversationComposerDraftReducer(
       // absolute path, so switching the composer workspace must not drop them.
       return state;
     case 'prefill':
-      // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 multica + 清空附件，并回到 send 提交意图
-      // （scheduled-task 与 multica 绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿）。
-      return {
-          content: action.content,
-          attachments: [],
-          workspaceFiles: [],
-          multica: action.multica,
-          submission: { kind: 'send' },
-        };
-    case 'clearMultica':
-      // 解除 multica 绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
-      return state.multica === null ? state : { ...state, multica: null };
+      // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 remote + 清空附件与工作区文件引用，并回到 send
+      // 提交意图（scheduled-task 与远程绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿；
+      // 远程任务在远程工作空间执行，本地工作区文件引用不适用）。
+      return { content: action.content, attachments: [], workspaceFiles: [], remote: action.remote, submission: { kind: 'send' } };
+    case 'clearRemote':
+      // 解除远程绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
+      return state.remote === null ? state : { ...state, remote: null };
     case 'enterScheduledTask':
-      // scheduled-task 与 multica 绑定互斥：进入排程模式即本地解绑远程任务（任务仍在服务端 queued，可再次点执行）。
+      // scheduled-task 与远程绑定互斥：进入排程模式即本地解绑远程任务（任务仍在服务端 queued，可再次点执行）。
       return state.submission.kind === 'scheduled-task'
         ? state
-        : { ...state, multica: null, submission: { kind: 'scheduled-task', config: null } };
+        : { ...state, remote: null, submission: { kind: 'scheduled-task', config: null } };
     case 'setScheduledTaskConfig':
       return { ...state, submission: { kind: 'scheduled-task', config: action.config } };
     case 'exitScheduledTask':
@@ -123,10 +114,10 @@ export interface ConversationComposerDraftContextValue {
   ) => void;
   setWorkspaceFiles: (next: ComposerWorkspaceFileRef[] | ((prev: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])) => void;
   changeWorkspace: (projectId: string | null) => void;
-  /// 远程任务点击执行后预填：写正文 + 绑定 multica，清空既有附件。仅在 draft boundary 内可用。
-  prefill: (content: string, multica: ConversationComposerMulticaBinding) => void;
-  /// 解除 multica 绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
-  clearMultica: () => void;
+  /// 远程任务点击执行后预填：写正文 + 绑定 remote，清空既有附件与工作区文件引用。仅在 draft boundary 内可用。
+  prefill: (content: string, remote: ConversationComposerRemoteBinding) => void;
+  /// 解除远程绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
+  clearRemote: () => void;
   enterScheduledTask: () => void;
   setScheduledTaskConfig: (config: ScheduledTaskConfig) => void;
   exitScheduledTask: () => void;
@@ -221,11 +212,11 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
   }, []);
 
   const prefill = useCallback(
-    (content: string, multica: ConversationComposerMulticaBinding) => {
+    (content: string, remote: ConversationComposerRemoteBinding) => {
       setDraft((prev) => {
-        // 覆盖式预填：释放上一份附件的预览 URL（与 reset 一致），再写入新草稿 + multica 绑定。
+        // 覆盖式预填：释放上一份附件的预览 URL（与 reset 一致），再写入新草稿 + remote 绑定。
         revokeAttachmentPreviewUrls(prev.attachments);
-        return conversationComposerDraftReducer(prev, { type: 'prefill', content, multica });
+        return conversationComposerDraftReducer(prev, { type: 'prefill', content, remote });
       });
     },
     [],
@@ -250,8 +241,8 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     });
   }, []);
 
-  const clearMultica = useCallback(() => {
-    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'clearMultica' }));
+  const clearRemote = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'clearRemote' }));
   }, []);
 
   return useMemo(
@@ -262,12 +253,12 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
       setWorkspaceFiles,
       changeWorkspace,
       prefill,
-      clearMultica,
+      clearRemote,
       enterScheduledTask,
       setScheduledTaskConfig,
       exitScheduledTask,
       reset,
     }),
-    [draft, setContent, setAttachments, setWorkspaceFiles, changeWorkspace, prefill, clearMultica, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
+    [draft, setContent, setAttachments, setWorkspaceFiles, changeWorkspace, prefill, clearRemote, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
   );
 }

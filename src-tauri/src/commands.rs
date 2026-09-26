@@ -847,6 +847,9 @@ fn emit_acp_turn_finished(
         outcome,
         batch_progress,
         task_title: task.and_then(|task| task.title),
+        // 追问 turn 的 timeline 就写在该 attempt 下：随事件携带路径，multica 迟到补发
+        // 免于跨 repo root 反推（对齐 RunCompleted::attempt_dir 的先例与理由）。
+        attempt_dir: Some(locator.attempt_dir(app).to_string()),
     });
 }
 
@@ -5133,7 +5136,7 @@ pub async fn connect_multica(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     // 连接态变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     // 即时注册所有已绑定 workspace（根因修复 Bug 1：旧实现 connect 不注册，首连后心跳空转）。
     // await：claim 需 runtime_id，注册完成后才返回，避免用户连上立即领取撞 RuntimeOffline。
     crate::multica::loop_::register_all_bound_workspaces(&app_handle).await;
@@ -5174,7 +5177,7 @@ pub fn disconnect_multica(
         guard.clear_runtime_ids();
     }
     // 连接态变更 → 通知任务列表 + 设置页 re-fetch（回到「连接 Multica」空状态）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
 }
@@ -5239,7 +5242,7 @@ pub fn save_multica_connection_address(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     // 地址覆盖变更 → 通知任务列表 + 设置页 re-fetch（弹窗回显与侧栏连接态同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
 }
@@ -10891,7 +10894,10 @@ pub fn update_skill_sync_targets(
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
-fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8PathBuf) {
+pub(crate) fn schedule_agent_command_catalog_refresh(
+    app_handle: AppHandle,
+    workspace: Utf8PathBuf,
+) {
     std::thread::spawn(move || {
         let state = app_handle.state::<DesktopState>();
         let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
@@ -11221,6 +11227,7 @@ mod tests {
             outcome,
             task_title: None,
             completion_agent_label: Some("Claude".to_string()),
+            attempt_dir: None,
         }
     }
 
@@ -11246,6 +11253,7 @@ mod tests {
                 continues,
             },
             task_title: None,
+            attempt_dir: None,
         }
     }
 
@@ -13321,6 +13329,7 @@ mod tests {
                 agent_label,
                 outcome,
                 batch_progress,
+                attempt_dir,
                 ..
             } => {
                 assert_eq!(
@@ -13334,6 +13343,17 @@ mod tests {
                 assert_eq!(agent_label, "Claude");
                 assert_eq!(*outcome, AcpTurnOutcome::Failed);
                 assert_eq!(*batch_progress, AcpTurnBatchProgress::terminal(1));
+                // 追问 turn 的 timeline 就写在该 attempt 下：事件必须携带 attempt_dir，
+                // 让 multica 迟到补发（relay_late_completion_output）免于跨 repo root 反推路径
+                // （对齐 RunCompleted::attempt_dir 的先例与理由）。
+                assert_eq!(
+                    attempt_dir.as_deref(),
+                    Some(
+                        app.paths
+                            .attempt_dir("task-001", "run-001", "round-001", "node-001", "attempt-001")
+                            .as_str()
+                    )
+                );
             }
             event => panic!("expected AcpTurnFinished, got {event:?}"),
         }
@@ -13841,6 +13861,7 @@ mod tests {
                 outcome: RunOutcome::Success,
                 task_title: None,
                 completion_agent_label: None,
+                attempt_dir: None,
             })
             .unwrap();
         assert_eq!(completed.event_kind, "run-completed");

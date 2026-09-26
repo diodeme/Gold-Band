@@ -1,7 +1,7 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Folders, Globe, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -9,12 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,24 +24,24 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Page, PageHeader } from '@/components/PageScaffold';
-import { MulticaRemoteTaskBoard } from '@/components/conversation/MulticaRemoteTaskBoard';
+import { RemoteTaskBoard } from '@/components/conversation/RemoteTaskBoard';
 import { MulticaAddWorkspaceDialog } from '@/components/conversation/MulticaAddWorkspaceDialog';
 import { MulticaConnectDialog } from '@/components/conversation/MulticaConnectDialog';
 import { MulticaConnectionSettingsDialog } from '@/components/conversation/MulticaConnectionSettingsDialog';
 import { cn } from '@/lib/utils';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
+import { isRemoteTaskSource, REMOTE_TASK_SOURCES, remoteTaskSourceLabel, type RemoteTaskSource } from '@/lib/remote-sources';
 import {
-  cancelMulticaTask,
-  disconnectMultica,
+  cancelRemoteTask,
   getMulticaSettings,
-  getMulticaTaskRequirement,
-  getMulticaTasks,
-  openExternalUrl,
+  getRemoteTaskRequirement,
+  getRemoteTasks,
   removeMulticaWorkspace,
+  removeRemoteCompletedTask,
   setActiveMulticaWorkspace,
-  subscribeMulticaSettingsUpdates,
-  subscribeMulticaTaskUpdates,
+  subscribeRemoteSourceSettingsUpdates,
+  subscribeRemoteTaskUpdates,
 } from '@/api';
 import { displayAppError } from '@/i18n';
 import type {
@@ -58,20 +52,30 @@ import type {
 } from '@/types';
 
 /**
- * 远程任务来源（灵活接入，当前仅 multica）。新增来源 = 向 `REMOTE_TASK_SOURCES` 加一项
- * + 在 body 按 `source` 分支渲染对应来源组件（各来源自带数据/刷新）。数据先于接口：
- * `source` 是渲染分流的唯一键，未来扩展无需改动既有 multica 路径。
+ * issue 类型过滤（story dev/test 拆分）：`all` = 不过滤；`dev`/`test` = 仅该类型。
+ *
+ * `bug`/`general` 只在「全部」出现——三档贴合本次拆分场景（开发/测试两条主线），
+ * 不为闭集枚举铺全量过滤 UI；后续需要再扩一档，成本为零。
+ * 纯客户端过滤已加载列表（O(n)，无新请求）：multica 已确认无需 `?kind=` 服务端过滤。
+ * 瞬时 UI 状态（useState），不持久化（ui-interaction §7：不记忆临时业务输入）。
  */
-const REMOTE_TASK_SOURCES = [
-  { value: 'multica', labelKey: 'multica.taskManagement.source.multica' },
-] as const;
-type RemoteTaskSource = (typeof REMOTE_TASK_SOURCES)[number]['value'];
+const ISSUE_KIND_FILTERS = ['all', 'dev', 'test'] as const;
+type IssueKindFilter = (typeof ISSUE_KIND_FILTERS)[number];
 
-interface MulticaTaskManagementPageProps {
+/// 纯函数：按类型过滤任务（接口层可单测）。`all` 原样返回；dev/test 仅保留该类型。
+/// 未知/缺失 kind 只在「全部」出现——旧 server 不发类型字段时所有任务都是 `null`，
+/// 此时选开发/测试会把任务**全部过滤掉**（四列皆空）。这是版本解耦下的既定行为（默认「全部」
+/// 故不影响用户），不是遗漏：类型过滤的前提就是拿到了类型字段。
+export function filterTasksByIssueKind(tasks: RemoteTaskVm[], filter: IssueKindFilter): RemoteTaskVm[] {
+  if (filter === 'all') return tasks;
+  return tasks.filter((task) => task.kind === filter);
+}
+
+interface RemoteTaskManagementPageProps {
   /// 直达指定远程/本地 run 的会话页（复用本地侧栏 onSelectRun 同路径）。
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   /// 远程任务「点击执行」claim 后进入会话准备页（落 conversation-home，预选最近活跃本地工作区）。
-  onPrepareMulticaTask: () => void;
+  onPrepareRemoteTask: () => void;
 }
 
 /**
@@ -86,10 +90,10 @@ interface MulticaTaskManagementPageProps {
  * 对齐定时任务 delete 模式 + ui-interaction §1）。选定值持久化到 `active_workspace_id`
  * （`setActiveMulticaWorkspace`），默认 `lastActiveWorkspaceId`。
  */
-export function MulticaTaskManagementPage({
+export function RemoteTaskManagementPage({
   onSelectRun,
-  onPrepareMulticaTask,
-}: MulticaTaskManagementPageProps) {
+  onPrepareRemoteTask,
+}: RemoteTaskManagementPageProps) {
   const { t } = useTranslation();
   const readOnly = useReadOnlyExperience();
   const composerDraft = useConversationComposerDraft();
@@ -103,17 +107,30 @@ export function MulticaTaskManagementPage({
   const [connectionDialog, setConnectionDialog] = useState<'connect' | 'settings' | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [source, setSource] = useState<RemoteTaskSource>('multica');
+  const [issueKindFilter, setIssueKindFilter] = useState<IssueKindFilter>('all');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [pendingRemoveWorkspace, setPendingRemoveWorkspace] = useState<MulticaWorkspaceRefVm | null>(null);
+  // 「移出列表」的任务 id（本页视图过滤层）：终态行（completed/failed）的唯一数据源是本地
+  // remote_completed_tasks 历史（服务端不回传终态），移出时已真删除本地条目（见
+  // handleRemoveTask）——此集合只为删除到下一次 fetch 之间提供即时移除；pending/running 行
+  // 每次从服务端/内存重建，视图过滤即全部语义（服务端删除后自然消失）。任何一次成功
+  // re-fetch 都清空此集合。瞬时 UI 状态，不持久化（ui-interaction §7）。
+  const [removedTaskIds, setRemovedTaskIds] = useState<ReadonlySet<string>>(new Set());
   const mountRef = useRef(true);
 
   const fetchTasks = useCallback(() => {
     setError(null);
     // 返回 promise 供手动刷新链接 refreshing 收尾（mount/event 调用忽略返回值）。
-    return getMulticaTasks()
-      .then((next) => { if (mountRef.current) setVm(next); })
+    return getRemoteTasks()
+      .then((next) => {
+        if (mountRef.current) {
+          setVm(next);
+          // 新数据到达 = 一次「刷新」：视图级移出全部恢复（刷新即恢复语义）。
+          setRemovedTaskIds(new Set());
+        }
+      })
       .catch((err) => { if (mountRef.current) setError(displayAppError(t, err)); })
       .finally(() => { if (mountRef.current) setLoading(false); });
   }, [t]);
@@ -142,14 +159,23 @@ export function MulticaTaskManagementPage({
     return () => { mountRef.current = false; };
   }, []);
 
-  // 任务生命周期（multica-task-updated）+ 连接/工作空间配置变更（multica-settings-updated）
+  // 任务生命周期（remote-tasks-updated）+ 连接/工作空间配置变更（remote-source-settings-updated）
   // 都触发 refreshAll；两通道经 useEventDrivenRefresh 合并去重（事件风暴→1 in-flight + 1 pending，
   // 不再每事件双 fetch），并修复异步 unlisten 泄漏 + 解耦 refreshAll 身份变化（不再因 t 重订阅）。
   useEventDrivenRefresh(
     refreshAll,
-    [subscribeMulticaTaskUpdates, subscribeMulticaSettingsUpdates],
+    [subscribeRemoteTaskUpdates, subscribeRemoteSourceSettingsUpdates],
     { refreshOnMount: true },
   );
+
+  // 来源指针来自服务端 VM（`desktop_remote_task_source`，如 "multica"）：vm 到达后同步到本地选择器
+  // 镜像 state。注册表外的值不进选择器（保持 UI 闭集），prefill 绑定仍以 vm.source 为准。
+  const vmSource = vm?.source;
+  useEffect(() => {
+    if (vmSource && vmSource !== source && isRemoteTaskSource(vmSource)) {
+      setSource(vmSource);
+    }
+  }, [vmSource, source]);
 
   const connected = vm?.connected ?? false;
   const workspaces = vm?.workspaces ?? [];
@@ -169,7 +195,15 @@ export function MulticaTaskManagementPage({
   }, [workspaces, selectedWorkspaceId, vm?.lastActiveWorkspaceId]);
 
   const hasWorkspaces = workspaces.length > 0;
-  const selectedTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
+  const workspaceTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
+  // 投影 = 类型过滤 ∩ 未移出：两级都是纯客户端过滤，不触碰数据源。
+  const selectedTasks = useMemo(
+    () =>
+      filterTasksByIssueKind(workspaceTasks, issueKindFilter).filter(
+        (task) => !removedTaskIds.has(task.id),
+      ),
+    [workspaceTasks, issueKindFilter, removedTaskIds],
+  );
   const activeWorkspaceName = workspaces.find((w) => w.id === effectiveWorkspaceId)?.name ?? '';
 
   async function handlePrepareRemoteTask(task: RemoteTaskVm) {
@@ -178,19 +212,21 @@ export function MulticaTaskManagementPage({
     setError(null);
     try {
       // claim-at-send 的只读取：拿到需求正文（pending 列表只有 thread_name，正文仅任务详情里有），
-      // **不领取任务**（任务仍 queued）——只在发送时由 start_multica_conversation_run claim+start。
+      // **不领取任务**（任务仍 queued）——只在发送时由 start_remote_conversation_run claim+start。
       // 删 chip 只清本地绑定、不触碰服务端，故此处不持有任何 lease。
-      const detail = await getMulticaTaskRequirement(task.id, task.workspaceId);
+      const detail = await getRemoteTaskRequirement(task.id, task.workspaceId);
       const requirement = detail.requirement ?? detail.title ?? '';
-      // 绑定只记 remoteTaskId + workspaceId（决策 a/c）：本地工作区延迟到执行时由 composer 下拉选，
-      // 不再随绑定钉死。发送时 input.projectId（下拉值）-> startMulticaConversationRun。
+      // 绑定记 source + remoteTaskId + workspaceId（决策 a/c）：source 是通用层路由键，
+      // 本地工作区延迟到执行时由 composer 下拉选，不再随绑定钉死。
+      // 发送时 input.projectId（下拉值）-> startRemoteConversationRun。
       composerDraft.prefill(requirement, {
+        source: vmSource ?? source,
         remoteTaskId: task.id,
         workspaceId: task.workspaceId,
         title: task.title,
       });
-      // 落 conversation-home：composer 已预填正文 + multica 绑定；本地工作区由 App 预选最近活跃，用户可改（决策 c/d）。
-      onPrepareMulticaTask();
+      // 落 conversation-home：composer 已预填正文 + 远程绑定；本地工作区由 App 预选最近活跃，用户可改（决策 c/d）。
+      onPrepareRemoteTask();
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -203,7 +239,7 @@ export function MulticaTaskManagementPage({
     setBusyTaskId(task.id);
     setError(null);
     try {
-      await cancelMulticaTask(task.id);
+      await cancelRemoteTask(task.id);
       fetchTasks();
     } catch (err) {
       setError(displayAppError(t, err));
@@ -212,25 +248,37 @@ export function MulticaTaskManagementPage({
     }
   }
 
-  async function handleDisconnect() {
+  // 行级「移出列表」，按行数据源分派：
+  // - 终态行（completed/failed）：唯一数据源是本地 remote_completed_tasks 历史——真删除
+  //   本地条目（后端命令），刷新不再「复活」；删除的是列表回看索引，不动本地会话本体。
+  // - pending/running 行：每次 re-fetch 从服务端/内存重建——纯视图过滤即全部语义
+  //   （服务端侧删除后自然消失），不调服务端。
+  async function handleRemoveTask(task: RemoteTaskVm) {
     if (readOnly) return;
-    setError(null);
-    try {
-      await disconnectMultica();
-      refreshAll();
-    } catch (err) {
-      setError(displayAppError(t, err));
+    const terminal = task.status === 'completed' || task.status === 'failed';
+    if (terminal) {
+      setBusyTaskId(task.id);
+      setError(null);
+      try {
+        await removeRemoteCompletedTask(task.id);
+        markRemovedFromView(task.id);
+      } catch (err) {
+        setError(displayAppError(t, err));
+      } finally {
+        setBusyTaskId(null);
+      }
+      return;
     }
+    markRemovedFromView(task.id);
   }
 
-  // 切换账号逃生口：码灵把认证委托给浏览器，浏览器 cookie 不受控--若连到了非预期账号，
-  // 此处打开 multica Web（在浏览器内登出当前账号 / 登录目标账号），再回此页重连。
-  // 根因（webank 见 cookie 即签 JWT）需在 multica-webank 侧加授权确认屏，见设计文档 M5-l。
-  async function handleSwitchAccount() {
-    if (readOnly) return;
-    const appUrl = settingsVm?.multicaAppUrl;
-    if (!appUrl) return;
-    await openExternalUrl(appUrl);
+  function markRemovedFromView(taskId: string) {
+    setRemovedTaskIds((prev) => {
+      if (prev.has(taskId)) return prev;
+      const next = new Set(prev);
+      next.add(taskId);
+      return next;
+    });
   }
 
   async function handleWorkspaceChange(id: string) {
@@ -270,18 +318,20 @@ export function MulticaTaskManagementPage({
 
   const accountLabel = settingsVm?.connectedAccount?.email
     ?? settingsVm?.connectedAccount?.name
-    ?? t('multica.taskManagement.account.connected');
+    ?? t('remote.taskManagement.account.connected');
+  /// 来源展示名（注册表名片）：空状态/连接弹窗文案的 {{source}} 插值来源，不散写品牌名。
+  const sourceLabel = remoteTaskSourceLabel(t, source);
 
   return (
     <Page flush className="flex flex-col">
       <PageHeader
         variant="integrated"
         icon={<Globe />}
-        title={<span className="text-title">{t('multica.taskManagement.title')}</span>}
+        title={<span className="text-title">{t('remote.taskManagement.title')}</span>}
         actions={
           /* 来源（根选择器）放页头：与定时任务管理页 actions 槽同构；为未来多来源保留切换位，当前仅 multica */
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">{t('multica.taskManagement.source.label')}</span>
+            <span className="text-xs text-muted-foreground">{t('remote.taskManagement.source.label')}</span>
             <Select value={source} onValueChange={(v) => setSource(v as RemoteTaskSource)}>
               <SelectTrigger size="sm" className="w-[140px]">
                 <SelectValue />
@@ -304,13 +354,13 @@ export function MulticaTaskManagementPage({
         ) : !connected ? (
           <div className="flex flex-col items-center gap-3 px-3 py-8 text-center">
             <WifiOff className="size-5 text-muted-foreground" />
-            <p className="text-sm font-medium text-sidebar-foreground">{t('conversation.sidebar.multica.emptyTitle')}</p>
-            <p className="text-xs text-muted-foreground">{t('conversation.sidebar.multica.emptyDescription')}</p>
+            <p className="text-sm font-medium text-sidebar-foreground">{t('conversation.sidebar.remoteTasks.emptyTitle', { source: sourceLabel })}</p>
+            <p className="text-xs text-muted-foreground">{t('conversation.sidebar.remoteTasks.emptyDescription', { source: sourceLabel })}</p>
             <div className="flex items-center gap-1.5">
               {/* 连接按钮先弹纯确认弹窗（展示生效地址，可连接中取消）；改地址走旁边的设置 icon */}
               <Button size="sm" variant="outline" onClick={() => setConnectionDialog('connect')}>
                 <Wifi className="mr-1.5 size-3.5" />
-                {t('conversation.sidebar.multica.connectButton')}
+                {t('conversation.sidebar.remoteTasks.connectButton', { source: sourceLabel })}
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -318,30 +368,31 @@ export function MulticaTaskManagementPage({
                     size="icon"
                     variant="ghost"
                     className="size-7 text-muted-foreground"
-                    aria-label={t('conversation.sidebar.multica.connectionSettings')}
+                    aria-label={t('conversation.sidebar.remoteTasks.connectionSettings')}
                     onClick={() => setConnectionDialog('settings')}
                   >
                     <Settings className="size-3.5" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.multica.connectionSettings')}</TooltipContent>
+                <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.remoteTasks.connectionSettings')}</TooltipContent>
               </Tooltip>
             </div>
           </div>
         ) : !hasWorkspaces ? (
           /* 未绑定任何工作空间 -> 引导添加（工作空间 picker 内亦可进添加弹窗） */
           <div className="flex flex-col items-center gap-3 px-3 py-8 text-center">
-            <p className="text-xs text-muted-foreground">{t('conversation.sidebar.multica.noWorkspacesBound')}</p>
+            <p className="text-xs text-muted-foreground">{t('conversation.sidebar.remoteTasks.noWorkspacesBound')}</p>
             <Button size="sm" variant="outline" onClick={() => setAddWorkspaceOpen(true)}>
-              {t('conversation.sidebar.multica.addWorkspace')}
+              {t('conversation.sidebar.remoteTasks.addWorkspace')}
             </Button>
           </div>
         ) : (
-          <MulticaRemoteTaskBoard
+          <RemoteTaskBoard
             tasks={selectedTasks}
             busyTaskId={busyTaskId}
             onPrepare={(task) => void handlePrepareRemoteTask(task)}
             onCancel={(task) => void handleCancel(task)}
+            onRemove={handleRemoveTask}
             onSelectRun={onSelectRun}
           />
         )}
@@ -380,7 +431,7 @@ export function MulticaTaskManagementPage({
                         }}
                       >
                         <Plus className="size-3.5" />
-                        {t('conversation.sidebar.multica.addWorkspace')}
+                        {t('conversation.sidebar.remoteTasks.addWorkspace')}
                       </Button>
                     </div>
                     <Separator />
@@ -410,7 +461,7 @@ export function MulticaTaskManagementPage({
                             className="size-6 shrink-0 hover:text-destructive"
                             disabled={readOnly}
                             data-testid={`ws-remove-${w.id}`}
-                            aria-label={t('multica.taskManagement.workspace.remove')}
+                            aria-label={t('remote.taskManagement.workspace.remove')}
                             onClick={() => handleRemoveWorkspaceRequest(w.id)}
                           >
                             <Trash2 className="size-3.5" />
@@ -421,30 +472,32 @@ export function MulticaTaskManagementPage({
                   </PopoverContent>
                 </Popover>
               )}
+
+              {/* 类型过滤（story dev/test 拆分）：纯客户端过滤已加载列表，瞬时状态不持久化。 */}
+              {hasWorkspaces && (
+                <Select value={issueKindFilter} onValueChange={(v) => setIssueKindFilter(v as IssueKindFilter)}>
+                  <SelectTrigger size="sm" className="w-[120px]" aria-label={t('remote.taskManagement.issueKindFilter.label')}>
+                    <ListFilter className="size-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {ISSUE_KIND_FILTERS.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {t(`remote.taskManagement.issueKindFilter.${value}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
-              {/* 账号菜单：multica 连接/PAT 专属（切换账号 / 断开连接）；设置页不再暴露 multica */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="max-w-[200px] gap-1.5">
-                    <User className="size-3.5 shrink-0" />
-                    <span className="truncate">{accountLabel}</span>
-                    <ChevronDown className="size-3 shrink-0 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuItem
-                    disabled={readOnly || !settingsVm?.multicaAppUrl}
-                    onClick={() => void handleSwitchAccount()}
-                  >
-                    {t('multica.taskManagement.account.switchAccount')}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem disabled={readOnly} className="text-destructive" onClick={() => void handleDisconnect()}>
-                    {t('multica.taskManagement.account.disconnect')}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* 账号标识（纯展示）：连接身份信息。不设切换账号/断开连接入口——用户只在首次连接，
+                  后续无切换/断开场景（换账号/换地址走连接与地址设置弹窗即可覆盖）。 */}
+              <span className="flex min-w-0 max-w-[200px] items-center gap-1.5 text-xs text-muted-foreground">
+                <User className="size-3.5 shrink-0" />
+                <span className="truncate">{accountLabel}</span>
+              </span>
 
               {/* 手动刷新 */}
               <Tooltip>
@@ -479,6 +532,7 @@ export function MulticaTaskManagementPage({
         open={connectionDialog === 'connect'}
         onOpenChange={(open) => { if (!open) setConnectionDialog(null); }}
         settingsVm={settingsVm}
+        sourceLabel={sourceLabel}
         onConnected={refreshAll}
       />
       <MulticaConnectionSettingsDialog
@@ -491,8 +545,8 @@ export function MulticaTaskManagementPage({
       <AlertDialog open={!!pendingRemoveWorkspace} onOpenChange={(open) => { if (!open) setPendingRemoveWorkspace(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('multica.taskManagement.workspace.remove')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('multica.taskManagement.workspace.removeConfirm')}</AlertDialogDescription>
+            <AlertDialogTitle>{t('remote.taskManagement.workspace.remove')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('remote.taskManagement.workspace.removeConfirm')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>

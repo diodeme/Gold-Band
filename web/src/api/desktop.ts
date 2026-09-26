@@ -1,6 +1,25 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
+import {
+  ACP_SESSION_UPDATED_EVENT,
+  APP_EXIT_REQUESTED_EVENT,
+  CONVERSATION_RUN_STATE_UPDATED_EVENT,
+  CONVERSATION_TERMINAL_RESULT_UPDATED_EVENT,
+  GIT_OPERATION_UPDATED_EVENT,
+  GIT_STATE_CHANGED_EVENT,
+  GITHUB_OPERATION_UPDATED_EVENT,
+  INTERVENTION_NAVIGATE_EVENT,
+  PERSONAL_ANALYTICS_UPDATED_EVENT,
+  REMOTE_SOURCE_SETTINGS_UPDATED_EVENT,
+  REMOTE_TASKS_UPDATED_EVENT,
+  SCHEDULED_NOTIFICATION_EVENT,
+  SCHEDULED_OCCURRENCE_UPDATED_EVENT,
+  SCHEDULED_TASK_UPDATED_EVENT,
+  UPDATE_DOWNLOAD_PROGRESS_EVENT,
+  UPDATE_STATUS_EVENT,
+  WORKSPACE_FILE_CHANGED_EVENT,
+} from '../lib/app-events';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -97,14 +116,14 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeGitOperationUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<GitOperationVm>('gold-band://git-operation-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<GitOperationVm>(GIT_OPERATION_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
   },
   async subscribeGitStateChanges(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<GitStateChangedEventVm>('gold-band://git-state-changed', (event) => {
+    const unlisten: UnlistenFn = await listen<GitStateChangedEventVm>(GIT_STATE_CHANGED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -123,7 +142,7 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeGitHubOperationUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<import('../types').GitHubOperationVm>('gold-band://github-operation-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<import('../types').GitHubOperationVm>(GITHUB_OPERATION_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -154,21 +173,21 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>(ACP_SESSION_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
   },
   async subscribeConversationRunStateUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<ConversationRunStateUpdatedEventVm>('gold-band://conversation-run-state-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<ConversationRunStateUpdatedEventVm>(CONVERSATION_RUN_STATE_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
   },
   async subscribeConversationTerminalResultUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<ConversationTerminalResultUpdatedEventVm>('gold-band://conversation-terminal-result-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<ConversationTerminalResultUpdatedEventVm>(CONVERSATION_TERMINAL_RESULT_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -183,7 +202,7 @@ export const desktopApi: RuntimeApi = {
       }).catch(() => {});
       return drain;
     };
-    const unlisten: UnlistenFn = await listen('gold-band://intervention-navigate', () => {
+    const unlisten: UnlistenFn = await listen(INTERVENTION_NAVIGATE_EVENT, () => {
       void drainPending();
     });
     await drainPending();
@@ -191,7 +210,7 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeAppExitRequested(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<AppExitRequestVm>('gold-band://app-exit-requested', (event) => {
+    const unlisten: UnlistenFn = await listen<AppExitRequestVm>(APP_EXIT_REQUESTED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -201,19 +220,19 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeWorkspaceFileChanges(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<WorkspaceFileChangedEventVm>('gold-band://workspace-file-changed', (event) => {
+    const unlisten: UnlistenFn = await listen<WorkspaceFileChangedEventVm>(WORKSPACE_FILE_CHANGED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
   },
-  async subscribeMulticaTaskUpdates(listener) {
+  async subscribeRemoteTaskUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen('gold-band://multica-task-updated', () => listener());
+    const unlisten: UnlistenFn = await listen(REMOTE_TASKS_UPDATED_EVENT, () => listener());
     return () => unlisten();
   },
-  async subscribeMulticaSettingsUpdates(listener) {
+  async subscribeRemoteSourceSettingsUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen('gold-band://multica-settings-updated', () => listener());
+    const unlisten: UnlistenFn = await listen(REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, () => listener());
     return () => unlisten();
   },
   checkLocalClaude() {
@@ -249,7 +268,7 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribePersonalAnalyticsUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<PersonalAnalyticsSnapshotVm>('gold-band://personal-analytics-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<PersonalAnalyticsSnapshotVm>(PERSONAL_ANALYTICS_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -534,17 +553,20 @@ export const desktopApi: RuntimeApi = {
   cancelMulticaConnect() {
     return invokeCommand<void>('cancel_multica_connect');
   },
-  getMulticaTasks() {
-    return invokeCommand<RemoteConversationSidebarVm>('get_multica_tasks');
+  getRemoteTasks() {
+    return invokeCommand<RemoteConversationSidebarVm>('get_remote_tasks');
   },
-  getMulticaTaskRequirement(taskId: string, workspaceId: string) {
-    return invokeCommand<RemoteTaskVm>('get_multica_task_requirement', { taskId, workspaceId });
+  getRemoteTaskRequirement(taskId: string, workspaceId: string) {
+    return invokeCommand<RemoteTaskVm>('get_remote_task_requirement', { taskId, workspaceId });
   },
-  startMulticaConversationRun(input, remoteTaskId, workspaceId) {
-    return invokeCommand<ConversationCreateResultVm>('start_multica_conversation_run', { input, remoteTaskId, workspaceId });
+  startRemoteConversationRun(input, remoteTaskId, workspaceId) {
+    return invokeCommand<ConversationCreateResultVm>('start_remote_conversation_run', { input, remoteTaskId, workspaceId });
   },
-  cancelMulticaTask(taskId: string) {
-    return invokeCommand<void>('cancel_multica_task', { taskId });
+  cancelRemoteTask(taskId: string) {
+    return invokeCommand<void>('cancel_remote_task', { taskId });
+  },
+  removeRemoteCompletedTask(remoteTaskId: string) {
+    return invokeCommand<void>('remove_remote_completed_task', { remoteTaskId });
   },
   listServerMulticaWorkspaces() {
     return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');
@@ -565,6 +587,12 @@ export const desktopApi: RuntimeApi = {
   },
   setActiveMulticaWorkspace(workspaceId: string) {
     return invokeCommand<MulticaSettingsVm>('set_active_multica_workspace', { workspaceId });
+  },
+  listRemoteSkills(workspaceId: string) {
+    return invokeCommand<RemoteSkillListItemVm[]>('list_remote_skills', { workspaceId });
+  },
+  pullRemoteSkills(workspaceId: string, skillIds: string[]) {
+    return invokeCommand<RemoteSkillPullReportVm>('pull_remote_skills', { workspaceId, skillIds });
   },
   recordActivity() {
     return invokeCommand('record_activity');
@@ -613,7 +641,7 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeScheduledNotifications(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<ScheduledNotificationEventVm>('gold-band://scheduled-notification', (event) => {
+    const unlisten: UnlistenFn = await listen<ScheduledNotificationEventVm>(SCHEDULED_NOTIFICATION_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -663,14 +691,14 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeScheduledTaskUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<ScheduledTaskUpdatedEventVm>('gold-band://scheduled-task-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<ScheduledTaskUpdatedEventVm>(SCHEDULED_TASK_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
   },
   async subscribeScheduledOccurrenceUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<ScheduledOccurrenceUpdatedEventVm>('gold-band://scheduled-occurrence-updated', (event) => {
+    const unlisten: UnlistenFn = await listen<ScheduledOccurrenceUpdatedEventVm>(SCHEDULED_OCCURRENCE_UPDATED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();

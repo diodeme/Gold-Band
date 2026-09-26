@@ -271,6 +271,7 @@ r.Post("/runtimes/{runtimeId}/tasks/{taskId}/claim", h.ClaimSpecificTask)
 | `multica/loop_.rs` | 启动全量 register / 新添加 register / **常驻 15s 心跳 + prepare-lease 续期（Req D）** / recover-orphans / 取消检测 | `metrics::start_heartbeat_polling`(metrics.rs:218-242) spawn + 三层 guard 样板 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus，不走 Tauri command 层）；**执行注入（M5-z）**：发送时由 `start_multica_conversation_run` 接收 composer 下拉选中的 `local_project_id` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_config(workspace_path, config).with_lifecycle_bus(shared_bus)`(app/mod.rs) → 构造 Direct WorkflowDsl → `create_task_from_requirement` + `run_start_background` | `metrics::create_metrics_subscriber`(metrics.rs:365-638)；`lifecycle_bus.subscribe_named`(observability.rs:43-49)；`view_models_conversation.rs:2579`（Direct workflow preset 范本） |
 | `multica/error.rs` | `MulticaError` 枚举 + 映射 `CommandErrorVm` | `CommandErrorVm`(commands.rs:581-634) + `command_error`(commands.rs:3529-3547) |
+| `multica/handoff.rs` | **issue 完成输出传递（M5-bj）**：`extract_completion_output`（最终 assistant 回复中 info 恰为 `completion-output` 的围栏块、取最后一个、trim 空→None）+ `completion_output_from_reply`（组合 16k rune 截断，2026-09-21 服务端从 64k 收紧）+ `final_assistant_reply`（`AcpAttemptPaths` 定位 `acp.timeline.jsonl` → `load_timeline_items` → 取最后一条非占位 `textDelta`，复用 `is_semantically_empty_agent_content` 与 UI 投影同源）；全 fail-open。提示词侧篇幅契约（非 run 日志 / ≤2k / 超长走工作区文件 + 路径引用）见 `src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md` | `acp/events.rs AcpAttemptPaths::from_attempt_dir`(acp/events.rs:925) / `load_timeline_items` / `is_semantically_empty_agent_content`(3011) |
 
 > ⚠️ `loop` 是 Rust 关键字，模块文件用 `loop_.rs`（`mod loop_;`，下划线后缀是 Rust 规避关键字的标准做法）。
 > ⚠️ **无 `App::metrics_callback`**：metrics 不在 library crate 内，靠 `lifecycle_bus` 解耦（App 只暴露 `lifecycle_bus` 字段 + `with_lifecycle_subscriber`，app/mod.rs:680-694/997-1016）。multica 的**状态上报**完全照抄——正确做法是在 `register_lifecycle_subscribers`(commands.rs:481-497) 加一行 `subscribe_named("desktop.multica", ...)`，**不要给 App 加方法**。注：**会话执行**调的是 App **已有**公开方法（`create_task_from_requirement` / `run_start_background` / `worker_ref_show` / `run_continue_background_with_config_overrides`），不是新增 App 方法；库层唯一改动是把会话 VM 私有 Direct/Auto workflow 构造上提到 `gold_band::dsl::presets`（见 2.5）。
@@ -439,7 +440,7 @@ pub struct RegisterRequest {
 pub struct RuntimeSpec { pub name: String, pub r#type: String /*=provider 固定*/, pub version: String, pub status: String }
 pub struct RegisterResponse { pub runtimes: Vec<RuntimeRow> }
 pub struct RuntimeRow { pub id: String /*=runtime_id*/ }
-pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status: String, pub auth_token: Option<String> /*=server 回传 mat_；Option B 中介下不消费，§12.29 起定点 #[allow(dead_code)]*/, pub prior_session_id: Option<String> /*=响应回填，客户端只消费不发送；§12.29 起定点 #[allow(dead_code)]（主路径 parent_task_id）*/, pub parent_task_id: Option<String> /*=auto-retry 子任务 T' 指向父 T；客户端续跑反查主路径（§12.14）*/, pub title: Option<String> /*=wire thread_name*/, pub requirement: Option<String>, pub last_activity_at: Option<String> }
+pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status: String, pub auth_token: Option<String> /*=server 回传 mat_；Option B 中介下不消费，§12.29 起定点 #[allow(dead_code)]*/, pub prior_session_id: Option<String> /*=响应回填，客户端只消费不发送；§12.29 起定点 #[allow(dead_code)]（主路径 parent_task_id）*/, pub parent_task_id: Option<String> /*=auto-retry 子任务 T' 指向父 T；客户端续跑反查主路径（§12.14）*/, pub title: Option<String> /*=wire thread_name*/, pub requirement: Option<String>, pub last_activity_at: Option<String>, pub issue_kind: Option<String> /*=wire issue_kind：issue 类型 dev/test/bug/general；**不复用 kind**（那是任务来源判别符）。#[serde(default)] 版本解耦（旧 server 缺失→None）（§12.40）*/, pub is_ready: Option<bool> /*=wire is_ready：仅 test 型有意义（父 dev issue 是否 done）。#[serde(default)]（§12.40）*/ }
 pub struct ClaimRequest {}   // 服务端 claim 处理器不解码 body；prior_session_id 是「响应只输出」字段（agent.go:311），客户端消费响应而非塞请求体（§12.14）
 pub struct PinTaskSessionRequest { pub session_id: String, pub work_dir: Option<String> }
 pub struct StartRequest { pub force_fresh_session: bool }          // rerun 时 true（详见 4.4 / 接入方案 3.2.7）
@@ -465,6 +466,9 @@ pub enum MulticaError {
     // 改走 silent fresh-fallback（更稳，无需 fragile 串匹配）。变体标 #[allow(dead_code)]（§12.29）。
     #[allow(dead_code)]
     #[error("session resume failed, will rerun")] SessionResumeFailed,
+    // §12.40（M5-ba）：test 型任务未就绪（父 dev issue 未 done）即被领取。claim 时码灵主动拦截并回滚
+    // 自己刚发出的 claim（release_after_run_start_failure），错误上抛给用户。
+    #[error("multica task not ready")] TaskNotReady,
 }
 // §12.29（M5-aq）dead_code 清理：WorkspaceEmpty / PinSessionFailed 变体删除（全链路零构造——
 // 前端空态 UI 守卫 / pin 失败仅记日志），i18n workspace-empty + pin-session-failed 同步删除。
@@ -486,7 +490,8 @@ pub enum MulticaError {
 - `recover_orphans(runtime_id) -> ()`
 - `list_pending_tasks(runtime_id) -> Vec<RemoteTask>`（只读）
 - `claim_specific_task(runtime_id, task_id, prior_session_id?) -> RemoteTask`（断点续跑：命中本地 `task_conversations` 时带 prior_session_id）。`RemoteTask` claim 响应携带需求来源字段（quick_create_prompt / chat_message / trigger_comment_content / autopilot_description / handoff_note / **issue_description**——改动四新增，webank `buildClaimedTaskResponse` issue 分支回填 `issue.Description.String`，pgtype.Text NULL→""）；`requirement_text(&self) -> Option<String>` 按来源互斥优先级取首个非空（issue 型取 issue_description 正文，无正文才回退 title），供 claim VM 回填 `requirement` 预填 composer
-- `start_task(task_id, force_fresh_session) / heartbeat / get_task_status`（本期状态只基础：start/complete/fail + 心跳，不接入 step/total 进度上报）
+- `start_task(task_id, force_fresh_session) / heartbeat / get_task_status`（本期状态只基础：start/complete/fail + 心跳，不接入 step/total 进度上报）。`heartbeat` 的 ack 含 `pending_readiness_changes: Option<Vec<ReadinessChange{task_id, is_ready}>>`（§12.40；仅作**刷新信号**，不本地改状态——事实源仍是 pending 列表）
+- `RemoteTask::executable_ready(&self) -> bool`（**统一准入谓词**，§12.40）：`issue_kind != Some("test") || is_ready.unwrap_or(false)`——非 test 恒可执行、test 需显式 `is_ready==true`、旧 server（两字段皆 None）行为与拆分前逐字节一致。看板置灰 / claim 拦截 / 前端 `isTaskExecutable` 三处同源
 - `pin_task_session(task_id, session_id, work_dir) -> ()`（写 task 行的 session_id/work_dir，断点续跑依据，对应接入方案 C8）
 - `complete_task / fail_task`（**重试幂等**：4/8/16/32/64s 共 6 次，确保终态送达）
 - `update_issue_status(workspace_id, issue_id, status) -> ()`（改动二：`PUT /api/issues/{id}` body `{status}` + `X-Workspace-ID` 头，`with_network_retry` 3 次；常量 `MULTICA_ISSUE_DONE_STATUS="done"` 用于完成流转，**`MULTICA_ISSUE_IN_PROGRESS_STATUS="in_progress"`（改动五新增）用于开始执行时流转**）
@@ -620,6 +625,7 @@ pub struct ActiveRemoteRun { pub local_task_uuid: String, pub local_project_id: 
 - **（Req D）执行注入不在 bridge**：建 App + `create_conversation_run_vm`（requirement 作首轮 prompt，首轮 prompt=requirement.md，不走 submit）+ `client.start_task`（dispatched→running）发生在 `start_multica_conversation_run` 命令里——用户在预填 composer 点「发送」时才触发（claim 与发送之间常驻循环续期 45s lease，见 §2.6）。bridge 的职责是**订阅 lifecycle**：`NodeCompleted` 后用 attempt locator 调 `worker_ref_show` 采集 ACP session_id（worker-ref.json）→ `pin_task_session` 回填 task 行 + 本地 `multica_task_conversations` 索引；run outcome → complete/fail。绑定目录不存在/未绑定 → 引导用户绑定。
 - 订阅 `RuntimeLifecycleBus`，把会话事件转译为 multica **基础状态**。**订阅 match 必须穷举 run 终态 4 分支**（见 2.5 终态表），不能只 match success：`NodeStarted` → 任务 running；`NodeCompleted` → 采集 session_id（见下）；`RunCompleted{Success}` → `complete`、`RunCompleted{Failure}` → `fail`、`RunCompleted{Killed}` → 不主动上报（取消检测已命中则仅清本地索引，否则 `fail(timeout)` 兜底）；`RunPaused`/`InterventionRequested` → **不上报终态**，转本地 elicitation/permission 处理（Paused 盲区，multica 继续显示 running，见 2.5）。**本期只上报 start/complete/fail + 心跳，不上报 step/total 进度**（接入方案 3.2.6 状态策略）。`RuntimeLifecycleEvent` 本身不带 session_id——session_id 在 `NodeCompleted` 后主动 `worker_ref_show` 读出（见 2.5）。**单轮即完成**：首轮 run 跑完自然 `RunCompleted`（码灵不在单 remote task 上承载追问）；「多轮」= 新 remote task 续跑同 ACP session（4.4），非单 task 多轮。**不监听 `AcpTurnFinished`**（当前未实现，见 2.5）。
 - run outcome 转译：success → `complete_task(output=会话产物摘要, session_id=ACP session_id, work_dir=绑定目录)`；failure → `fail_task(error, failure_reason)`（`failure_reason` 如实传值：runtime_offline / agent_error / runtime_recovery 等，供 server 决定是否 auto-retry，见 4.4）。
+- **issue 完成输出传递（M5-bj，issue done 中继的输出附带）**：`RunCompleted` 事件增 `attempt_dir: Option<String>`（编排器构造点透传，镜像 `NodeCompleted`；非 ACP 完成路径 None——bridge 不自行反推路径，desktop_context 是 home app 非 workspace app，repo root 不对会静默提取失败）。Success 分支在 `complete_task` 送达后、`update_issue_status(done)` 前做 `completion_output_for_issue_done(attempt_dir)`：投影最终 assistant 回复 → 提取 `completion-output` 围栏块（§2.1 handoff.rs）→ **status 与 completion_output 一次 PUT 原子上送**（`UpdateIssueStatusRequest.completion_output`，`skip_serializing_if`——缺键 = 服务端保持原值）。提取失败 fail-open：issue 照常 done，写作可选、不门控；有 attempt 却提不出内容时记一条 warn（仅用于观察指令层遵从度，不重试、不阻断）。提示词协议见 `src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md`（**M5-bk 起随首条 prompt 的隐式隐藏区段下发，不再进 composer 预填尾部**）；读路径 `parent_output` 三块隐式区段见 §2.2、接入方案 B2/D2 与 §12.50（改动四十八）。
 - 用 multica `task_id`（remote_task_id）作为 remote_task ↔ 本地 `multica_task_conversations` 条目的关联键（remote_task_id → {local_task_id, local_run_id, session_id}）。
 
 **复用**：
@@ -967,6 +973,7 @@ start_multica_runtime()
 | C8 | `/api/daemon/tasks/{tid}/session` | POST | PAT | PinTaskSession：写 `session_id`/`work_dir` 到 task 行（断点续跑依据） |
 | C7 | `/api/daemon/tasks/{tid}/fail` | POST | PAT | 重试幂等 |
 | D1 | `/api/issues/{id}/rerun` | POST | PAT | X-Workspace-ID；用户手动重试 |
+| D2 | `/api/issues/{id}` | PUT | PAT | X-Workspace-ID；issue 状态流转（M5-w in_progress / M5-t done）；**M5-bj 起 done 可带 `completion_output`**（≤16k rune，2026-09-21 从 64k 收紧；`completion-output` 围栏块提取，一次 PUT 原子上送，缺键=服务端保持原值） |
 
 > 业务接口（D1/E1/E2）需带 `X-Workspace-ID` 头。完整字段见接入方案 4.2 与 multica `daemon/types.go`。
 
@@ -2037,6 +2044,458 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.39 改动三十七：SKILL 双向同步——心跳 ack 推送上报 + PAT REST 拉取落库（M5-az，2026-09-09）
+
+**背景 / 根因分类**：新能力开发（非缺陷修复）。multica server 侧已具备 skill 列表/详情/文件接口与 pending 引用下发能力，码灵本地有既有 SkillManager global skill 体系。设计先行：`.claude/design/multica_skill/码灵Multica-Skill同步设计与接口文档.md` 为实现权威（Q1–Q7 已关闭），推送复用 C-link 心跳 ack + result 端点既有模式（server 零改动），拉取用 PAT REST 三接口按需落库。实现期一处设计偏差并回写设计文档：非 UTF-8 文件从「跳过」改为「整包 failed」——静默跳过二进制文件会产生不完整 skill 且用户无感知，整包失败给出明确信号（错误信息含文件相对路径）。
+
+**数据 / 接口**（先定数据再定接口）：
+- **wire 类型**（client.rs，序列化测试锁定）：`HeartbeatAck { status, pending_local_skills: Option<PendingLocalSkillsRef{id}>, pending_local_skill_imports: Option<Vec<PendingLocalSkillImportRef{id, skill_key}>>, pending_update/pending_model_list: Option<serde_json::Value>（v1 占位） }`；`LocalSkillListReport { status, skills, supported, mcp_supported: false, error }`（None→null 序列化，**无 skip_serializing_if**——server 契约要求字段恒在）；`LocalSkillSummary { key, name, description, source_path, provider, root: "provider", file_count }`；`LocalSkillImportReport { status, skill, error }`；`LocalSkillBundle { name, description, content, source_path, provider, files }`；`LocalSkillFile { path, content }`；`RemoteSkillSummary { id, name, description(#[serde(default)]), updated_at }`；`RemoteSkillDetail { id, name, description(default), content }`；`RemoteSkillFileMeta { path, size(default) }`；`SkillFilesResponse` untagged Wrapped/Bare 两形态兼容。
+- **client 方法**：`report_local_skill_list_result` / `report_local_skill_import_result`（推送上报，走既有 with_network_retry）；`list_remote_skills` / `get_remote_skill` / `list_remote_skill_files`（拉取，files 必须 `?include=metadata`）；`send()` 已是 4 参（workspace_id → `X-Workspace-ID` header）。
+- **local_skills.rs（新模块）**：本地 global skill 扫描与 bundle 组装（限额常量集中模块顶部：1MiB/文件、8MiB/整包、256 文件、深度≤4）；拉取侧 `multica_skill_dir_name`（名称清洗 + 短 id 后缀防跨 skill 冲突）、`own_global_skill_exists`、`assemble_pulled_skill_md`（远端 name/description/content 合成 SKILL.md）。
+- **loop_.rs**：ack 分发 `dispatch_pending_skill_work` + `provider_for_workspace`（按任务 workspace 解析 agent provider 后上报，复用心跳线程既有节奏）。
+- **命令层**：`list_multica_skills`（1 远端请求 + 1 次 spawn_blocking 本地扫描投影 `localState`，无 N+1）；`pull_multica_skills`（批前一次扫描 + `seen: HashSet` 批内去重；每项 detail→files 判空→目录名→exists 判定→`spawn_blocking(write_instance)`）；`write_instance` 7 参语义：新建 name=清洗目录名 directory_path=None，已存在 name=远端展示名 directory_path=Some(已存在目录名)（重写 frontmatter name、保留未知字段）；写入后 `schedule_agent_command_catalog_refresh`（pub(crate) 化，刷新 agent 命令目录）。新错误码 `multica.skill.not-found` / `multica.skill.has-files` / `multica.skill.name-collision`（reason 透传给前端映射文案，复用 `multica.remote-error`）；VM：`MulticaSkillListItemVm{id,name,description,localState}` / `MulticaPullItemResultVm{id,name,outcome,reason}` / `MulticaPullReportVm{results}`。
+- **前端**：`MulticaSkillSyncDialog`（列表 + new/exists 徽标 + 勾选 + 覆盖数量插值确认 + outcome 汇总报告 + reason 错误码 zh/en 文案映射）；API 层四层（client/desktop/api/browser mock）同步；i18n zh/en 对等。
+
+**方案自评审**：过度设计——零新增持久字段/表/队列/缓存：推送复用心跳 ack 通道与 result 端点既有模式（server 零改动、码灵侧不新增循环）；拉取是命令层按需 REST + 批前一次本地扫描（O(本地 skills) 一次），seen HashSet 批内 O(1) 去重；限额/深度常量集中模块顶部管理，无硬编码散落。未新增 aggregate——localState 是消费端投影（远端 id+本地目录名比对），不复制 canonical 数据。性能——心跳 ack 分支仅 Option 判空，无 pending 时零成本；list = 1 远端 + 1 本地扫描；pull 每项 = 2 远端请求（detail + files metadata）+ 1 次写盘，N=用户勾选数且有确认门与进度态；报告汇总 O(N)。无全量扫描/无界队列/长持锁/流式热路径改动。风险：pull 写盘与本地并发编辑——write_instance 原子重写既有语义 + 覆盖前确认弹窗。无需 benchmark（数据规模=用户 skill 数，几十量级）。
+
+**验证**：Rust 单测已编写（`local_skills.rs` 16 项：目录名清洗幂等/非法字符/空回退、frontmatter 组装覆盖与 body-only/horizontal-rule/description 回退、库发现与存在判定按目录名作用域、bundle 读取/缺目录缺 SKILL.md/文件数·深度·大小限额/非 UTF-8 整包失败、skill key 越权校验、递归文件计数；另有 loop ack 分发与 client wire 单测），`cargo check --bin gold-band-desktop -j 1` 通过；`cargo test` 运行被本机内存阻塞（`windows` crate rlib 编码单进程峰值 ~4GB commit > 实测可用 1.9GB，rustc OOM 退出——环境问题与本次改动无关，待内存释放后以 `cargo test -p gold-band-desktop --bin gold-band-desktop multica::` 固化回归）；tsc 零错；vitest multica 8 套件 **54 过**（新增 `multica-skill-sync-i18n` 3 测：全 key 双语解析、含点错误码 reason 子 key——固化 i18next ignoreJSONStructure 默认开启前提、覆盖数量与汇总插值；回归 add-workspace-dialog / connect-dialog / connection-settings-dialog / requirements-i18n / remote-task-board / task-management-page / conversation-composer-multica-chip 7 套件 51 过）；内置浏览器双主题验收「从 Multica 同步」弹窗（深链 Context 管理 SKILL 全局 Tab；dark 以 tech-neutral 深色 token 实测——主题引擎按 inline CSS 变量下发，`bg-background` 正确解析 #111111，无浅色残留；报告页 reason 文案正确映射 `multica.skill.has-files`）。
+
+**修复记录（2026-09-10，用户实测：拉取覆盖同名 skill 报错）**：
+- **症状**：对远端同名 skill 执行「从 Multica 同步」覆盖时，报告项失败，reason 透出 `SKILL dir not found: "to-spec"`。
+- **根因（设计正确、实现走样）**：`pull_multica_skills` 把**裸目录名**（`dir_name`）当作 `write_instance` 的 `current_directory_path` 传入。该参数是**路径**而非目录名——`save_target_dir` 原样取作目标目录，`write_instance` 校验 `current_dir.exists()`，裸名按进程 CWD 解析为相对路径必然不存在 → 命中 `bail!("SKILL dir not found: {current_dir}")`（`src/skill/mod.rs:389-393`）。设计 §5.3 本来就要求传「已存在目录」，正常编辑器链路传的也是前端 `skill.directoryPath`（绝对路径）。上游诱因：判定函数 `own_global_skill_exists` 只返回 bool，丢弃了 `SkillMeta` 上唯一携带既有目录的 `directory_path`，调用方无从取得绝对路径。附带后果（同一根因）：即便绕过校验，`merge_skill_edit_content` 也拿不到旧内容，覆盖会丢失本地未知 frontmatter 字段。
+- **修复**：`own_global_skill_exists` → `own_global_skill_dir(skills, dir_name) -> Option<String>`，命中时返回该 skill 的绝对 `directory_path`（无命中 None）；`list_multica_skills` 用 `is_some()` 保持 `localState` 判定，`pull_multica_skills` 原样作为 `current_directory_path` 传入（`exists` 同步改为 `is_some()`）。设计文档 §5.3 把该参数语义收紧为「既有 skill 的 directory_path（绝对路径，不是裸目录名）」。
+- **验证**：新增 2 项回归单测——`own_global_skill_dir_returns_absolute_dir_of_matching_own_library_skill`（返回绝对路径且仍限自有库作用域）、`overwrite_requires_absolute_existing_dir_not_bare_name`（裸目录名失败并给出 `SKILL dir not found`，绝对路径覆盖成功且写在既有目录内）；修复前该契约不存在（编译失败，即缺陷证据），修复后 `cargo test -p gold-band-desktop --bin gold-band-desktop multica::` 110 过 / 6 失败（该 6 例为同一批次代码的独立根因，见下节）。
+
+**修复记录（2026-09-10，本批次 6 例失败用例）**：
+- **分诊（三类根因，按 `bug-fix-verification.md` 逐项建立红态证据后再改实现）**：
+  - **(C) 重复计数——设计正确、实现不完整。** `collect_files_recursive` 未跳过根 `SKILL.md`，与调用方注释（`read_local_skill_bundle` 第 161 行「跳过根 SKILL.md」）和 `LocalSkillFile` 定义（设计 §4.4「支撑文件（不含 SKILL.md）」）直接相悖：正文被上报两遍，且同一文件同时占掉 content 与支撑两份文件数/字节限额，使恰好 256 个文件的 skill 被误判超限（推送导入链路真实功能缺陷）。
+  - **(B) 空白/控制符优先级未定义——设计表述不完整。** `\t`/`\n`/`\r` 同时满足「控制符删除」与「空白折叠」两条规则，实现先判控制符使其永久绕过空白折叠，`a\tb` 得 `ab` 而非 `a-b`（粘连会改变 skill 身份）。
+  - **(A) 测试期望错误。** 4 例 `assemble_*` 按字面未加引号的格式书写断言，实现走 canonical `render_frontmatter_document`/`yaml_scalar`（与编辑器写盘同源，值含非 `[A-Za-z0-9._-]` 字符即加双引号）——实现正确，测试假定了不存在的格式。
+- **红态证据（修复前实测，与分析一致）**：`assemble_*` 左侧 `name: "PR review"` / 右侧 `name: PR review`；`dir_name_strips_illegal_and_collapses_whitespace` 左侧 `"abc"` / 右侧 `"a-b-c"`；`bundle_reads_skill_md_verbatim_and_support_files` 左侧 `3` / 右侧 `2`。为 (C) 新增边界用例 `bundle_does_not_count_root_skill_md_toward_file_limit`（255 支撑文件 + SKILL.md 恰好到顶，必须通过），修复前实测 `panicked ... Err("skill bundle exceeds 256 file limit: edge-files (257 files)")`——257 = 255 + SKILL.md 重复计 2 次，精确复现分析。
+- **修复**：(C) 引入 `gold_band::config::SKILL_FILE_NAME`（消除 `"SKILL.md"` 字面量散落）并在根层跳过同名文件（子目录内的 `SKILL.md` 仍是普通支撑文件）；(B) 调整 `multica_skill_dir_name` 判定顺序，空白先于控制符/非法字符；(A) 按 canonical 引号规则更新 4 处断言并注明引号来源（防止被反向「修回」）；设计文档 §4.5 / §5.2 / §9 同步显式化计数口径与优先级。
+- **验证（同一测试转绿）**：`cargo test -p gold-band-desktop --bin gold-band-desktop multica::` **117 过 / 0 失败**（110 基线 + 6 修复 + 1 新增边界用例）；相邻不变量未受影响（目录名幂等与空回退、限额各边界、非 UTF-8 整包 failed 均保持通过）。
+
+---
+
+### 12.40 改动三十八：需求管理适配 story dev/test 拆分——类型标记 + 类型过滤 + 未就绪可查（M5-ba，2026-09-10）
+
+**背景 / 根因分类**：新能力开发（非缺陷修复）。multica server 发布 `2-story-dev-test-split` 规格：issue 增加 `issue_kind ∈ (dev|test|bug|general)`，test 型 issue 派生 `is_ready`（父 dev issue 是否 done）。用户需求两条：① 需求管理页支持开发/测试两类 issue，块上有类型标记且可按类型过滤；② test 型可查「是否 ready」。内网确认清单（`.claude/design/multica-story-refactor/`）已与 multica 侧对齐**契约**：`AgentTaskResponse`（pending/claim/detail 三处共用）新增 `issue_kind`(string, omitempty) + `is_ready`(bool)；心跳 ack 增加就绪变更 diff。**server 侧对 pending 不做任何过滤**（未就绪的 test 任务照常下发），因此**门控责任在客户端**——这是本改动的核心约束。
+
+**契约关键决策**：
+- **字段命名不复用 `kind`**：`AgentTaskResponse.kind` 已是「任务来源判别符」（issue/chat/autopilot/quick-create 互斥），语义不同，故新增独立 `issue_kind`。码灵 `RemoteTask` 同名同义。
+- **版本解耦**：码灵两个新字段全部 `#[serde(default)]` / Option，旧 server（无这两键）→ `None`，行为与拆分前逐字节一致；码灵可先于 server 上线。
+- **保守缺省**：test 型缺 `is_ready` 按**未就绪**处理（覆盖 server 灰度期只发 `issue_kind` 不发 `is_ready` 的窗口），非 test 型 `is_ready` 无论真假都不参与判定（server 对非 test 亦可能回传 `is_ready=false`）。
+- **就绪变更用「刷新信号」而非「本地 patch」**（state-lifecycle 规则：投影不得反向成为事实源）：心跳 ack 的 diff 非空 → 只发既有 `multica-task-updated` 事件 → 页面按既有订阅重拉 pending。**禁止**用 diff 直接改本地任务列表——那会让本地成为第二份事实源。
+
+**数据 / 接口（先定数据、再定接口、再补实现）**：
+- **wire 层（`client.rs`）**：`RemoteTask` 加 `issue_kind: Option<String>` / `is_ready: Option<bool>`（皆 `#[serde(default)]`）；新增 `HeartbeatAck.pending_readiness_changes: Option<Vec<ReadinessChange>>`（`ReadinessChange{task_id, is_ready}`，`#[serde(default)]`）；新增**唯一**准入谓词 `RemoteTask::executable_ready()`。
+- **持久化（先定数据归属）**：`ActiveRemoteRun.issue_kind`（内存，per-claim 快照）+ `MulticaCompletedTask.issue_kind`（StateConfig 终态历史，`#[serde(default)]` 兼容旧条目）。**`is_ready` 刻意不落盘**——终态行没有就绪语义，落盘只会产生永不消费的死字段（`from_completed` 固定 `is_ready: None`）。
+- **VM 层（`vm.rs`）**：`RemoteTaskVm` 加 `issueKind` / `isReady`（camelCase 序列化）；`from_remote` 直传、`from_active_run` 直传 issue_kind、`from_completed` 取持久化值 + `isReady: None`。
+- **命令层（`commands.rs` / `loop_.rs`）**：claim 成功后、解析工作区前插入准入拦截——不通过则 `release_after_run_start_failure`（CAS dispatched→queued，复用既有回滚路径，无新增接口）并返回 `multica.task-not-ready`；`loop_.rs` 心跳 `Ok(ack)` 分支在 dispatch 前做就绪刷新判定，判定抽成纯函数 `ack_signals_readiness_change(ack) -> bool`（可单测，无需 Tauri `AppHandle`）。
+- **三层门控不冗余（各自覆盖不同窗口）**：看板置灰（**显示**：用户根本点不到）、prepare 只读直通（**数据**：拉正文不受就绪影响，用户可见需求内容）、claim 时拦截（**契约**：覆盖 prepare→send 之间父 dev 任务被回退的就绪翻转竞态窗口）。
+- **错误码**：新增 `MulticaError::TaskNotReady` → `multica.task-not-ready`（结构体错误码，后端零对客文案；前端 i18n `errors.multica.task-not-ready` zh/en 映射）。
+- **前端**：`MulticaRemoteTaskBoard` 导出 `MULTICA_ISSUE_KINDS` / `MULTICA_ISSUE_KIND_TONE` / `visibleIssueKind` / `isTaskExecutable`（与后端 `executable_ready` **同构**）；类型徽标只在 dev/test/bug 渲染（`general` 与未知值不渲染——对齐 multica 自有 views 的 `hideGeneral` 惯例、且新类型不猜文案）；未就绪 test 卡片置灰 + 「未就绪」标记（原因经项目 Tooltip，用既有「span + tabIndex」惯例承载——`Badge` 不转发 ref，不能做 `TooltipTrigger asChild`）+ 执行入口**保留但禁用**（入口消失会被读成任务不可用）。`MulticaTaskManagementPage` 导出 `filterTasksByIssueKind`，页脚新增 shadcn `Select` 类型过滤（all/dev/test，**纯客户端过滤已加载列表**，瞬时状态不持久化；bug/general 归 all 可见）；i18n zh/en 各补 `issueKind.{dev,test,bug}` / `issueKindFilter.{label,all,dev,test}` / `readiness.{notReady,notReadyHint}` + 新错误码文案。
+
+**方案自评审**：
+- **过度设计**：零新增 aggregate / 状态机 / 队列 / 缓存 / 持久字段类型——`issue_kind` 只是既有 `ActiveRemoteRun`/`MulticaCompletedTask` 上加一个透传字段；就绪刷新复用**既有**事件与**既有**重拉路径（不新增轮询、不新增订阅通道）；claim 回滚复用**既有** `release_after_run_start_failure`；过滤是 `useMemo` 投影（不新增索引/不复制 canonical 列表）。`is_ready` 不落盘即为「现有事实足够时不复制数据模型」的直接体现。
+- **性能**：无新增 I/O 频率（就绪刷新搭在既有 15s 心跳 tick 上，且**仅 diff 非空**才触发重拉）；过滤 O(已加载任务数) 且 `useMemo` 依赖 `[workspaceTasks, issueKindFilter]`，无每渲染重算；claim 拦截是一次 **O(1)** 比较，且在解析工作区/建目录**之前**返回，反而省掉一次无谓的失败路径准备；卡片新增字段读取为常量级。无全量扫描 / N+1 / 无界缓存 / 长持锁。无需 benchmark。
+- **依赖与破坏式更新**：不新增依赖；不建兼容层（旧字段形状未变，新字段纯增量）。
+
+**验证**：
+- **Rust 定向单测** `cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` → **127 过 / 0 失败**。新增覆盖：`RemoteTask` 解析两字段 / 缺字段仍可执行 / `executable_ready` 遍历 dev·bug·general + test(true/false/缺失)；`HeartbeatAck` diff 解析与缺失两态；`ClaimResponse`（denied/allowed/dev 三例）与 `TasksListResponse`（Wrapped/Bare 两形态）承载就绪字段；`ack_signals_readiness_change`（非空 true / `[]` false / 缺失 false）；`RemoteTaskVm::from_pending_passes_through_test_readiness`；`MulticaCompletedTask` JSON roundtrip + 旧条目（无键）→ None。
+- **前端**：`npx vitest run --config web/vitest.config.ts web/tests/multica-*` → **8 套件 / 69 过**（含 board 19 + page 19 + requirements-i18n 3 及 5 套既有 multica 套件零回归）。board 新增类型徽标渲染（dev/test/bug 渲染、general 不渲染）、未就绪置灰 + 执行按钮禁用且不触发 `onPrepare`、就绪 test 可执行、dev 即使 `isReady=false` 仍可执行；page 新增类型过滤切换往返（all→dev→test→all，且不产生额外拉取）、无 workspace 时过滤入口不渲染、`filterTasksByIssueKind` 四则纯函数不变量；requirements-i18n 新增类型/过滤/就绪/新错误码的**双语精确值**断言（文案是用户可见验收面，防漂移成 key 或英文兜底）。
+- `npx tsc -p web/tsconfig.build.json --noEmit` 零错（顺带修 `api/browser.ts` 的 `getMulticaTaskRequirement` 浏览器桩缺两字段）；`npm run web:build` 生产构建通过（构建产物中的主题生成文件仅 CRLF 行尾差异，已还原不入库）。
+- **未做的验证（如实披露）**：**未跑浏览器视觉验收**。本会话无内置浏览器工具，`agent-browser` CLI 亦未安装（`command not found`，其 Windows CDP helper 脚本属另一用户路径）；且该页面的看板数据必须来自已连接的 multica server，而内网地址在本机不可达（`http://maling.weoa.com:5005` 连接超时），故类型徽标 / 未就绪置灰 / 类型过滤三种新状态无法在此环境呈现。上述状态的验收证据为 **jsdom 渲染测试 + 双语精确值断言 + tsc + 生产构建**；**双主题视觉（sky/violet/destructive 三色调、`opacity-60` 置灰）仍待用户在桌面端连上 multica 后目视确认**。
+- **未覆盖项（如实披露）**：`commands.rs` 的 claim 拦截**接线**无自动化覆盖——该模块无 HTTP stub 基建（既有测试全为纯逻辑，唯一 stub 先例在 `metrics/heartbeat.rs` 且未设 `no_proxy`，有环境代理抖动风险）。故契约改由**包装层**固化（`ClaimResponse` / `TasksListResponse` 解析 + `executable_ready`），拦截动作本身（含回滚调用）依赖人工验收与代码评审。若后续需要端到端，应先补 `commands.rs` 的 stub-server 基建而非为单点加特例。
+
+**待 multica 侧最终确认（不阻塞码灵上线）**：心跳 ack 的就绪 diff 线格式 `pending_readiness_changes: [{task_id, is_ready}]` 仍是码灵侧提议方案，multica 侧尚未给出最终定义。若最终字段名/形状不同，**仅需改 `client.rs` 的反序列化**（后续消费路径与 `ack_signals_readiness_change` 判定不变）——这是把它做成独立 `ReadinessChange` 类型而非就地解析的原因。两条附加约束见 §12.41（diff 必须是**增量**；claim 路径**必须**回填 `is_ready`）。
+
+---
+
+### 12.41 改动三十九：story dev/test 拆分评审整改——ack fail-soft / 拦截路径刷新事件 / C1 终态快照固化（M5-ba 收尾，2026-09-11）
+
+**背景**：§12.40 上线后用户实测通过（类型徽标 / 类型过滤 / 未就绪在连接 multica 的桌面端均已生效；首帧缺字段、经一次心跳收敛的现象见文末），随后做**独立代码评审**（独立评审 agent + 改动人逐条复核），产出 6 条问题。**根因分类：全部为「设计正确、实现不完整」**——无设计缺陷、无业务逻辑错误、无补丁式修复需求：三层门控、diff 作信号、`is_ready` 不落盘等设计均在评审中被逐条验证成立（含"旧 server 逐字节一致"与"diff 值在测试外零读取"两项独立确认）。整改如下。
+
+**① 心跳 ack 无法 fail-soft（实现不完整）→ 修复**
+- **根因与路径**：`ReadinessChange { task_id: String, is_ready: bool }` 内层字段无 serde 缺省，而 ack 是**整条**反序列化（`client.rs` `heartbeat()` 的 `resp.json::<HeartbeatAck>()`）。该字段的 wire 形态**尚未定稿**（S4 仍是码灵提案），一旦服务端键名/取值与提案不一致，失败的不是这个可选字段而是**整条 ack**：`loop_.rs` 落进通用 `multica heartbeat failed (will retry next tick)` 分支，**并连带跳过同一 tick 的 `dispatch_pending_skill_work`**——新字段把既有 skill 双向同步能力连坐，且日志无法归因。
+- **修复**：两字段加 `#[serde(default)]`（`ReadinessChange` 加 `Default`）。码灵只消费「diff 是否非空」，条目内容不参与任何判定，故缺省值不改变语义；未知键本就被 serde 忽略，外层键名不同只会退化成 `None`（无信号），同样是 fail-soft。
+- **最小失败测试**：`heartbeat_ack_tolerates_diverged_readiness_change_shape`——先红（`Error("missing field is_ready", line: 1, column: 61)`，精确复现"整条 ack 解码失败"），修复后转绿；并覆盖 camelCase 键名（`taskId`/`isReady`）退化为"有变化但内容不可用"。
+
+**② claim 拦截路径缺刷新事件（实现不完整）→ 修复**
+- **根因与路径**：`MulticaError::TaskNotReady` 的注释承诺"前端按此码提示…**并刷新看板**"，但拦截路径只 `release` 后 `return Err`，**没有** emit（同函数其他失败分支在回滚后均发 `multica-task-updated`）。后果：能让该错误码出现的唯一前提就是调用方缓存的 `is_ready` 已过期（看板把它当可执行），不发事件则该过期投影会一直留在任何已挂载的消费端，用户看到"按钮可点 → 领取必失败"，与错误码文案自相矛盾。
+- **修复**：`release_after_run_start_failure(...).await` 之后补 `emit_multica_task_updated(&app_handle)`，与同函数失败分支惯例一致（remote 状态已回滚，必须通知刷新）。
+- **未覆盖项（沿用 §12.40 披露）**：该 emit 与拦截动作本身仍无自动化覆盖（`commands.rs` 无 HTTP stub 基建），依赖代码评审 + 人工验收。
+
+**③ C1 终态快照无单测固化（验收未固化）→ 补测**
+- **根因与路径**：`MulticaCompletedTask.issue_kind` 的唯一正确来源是 `run.issue_kind`（claim 落盘的类型快照），但原实现是 `finalize_terminal` 内的内联结构体字面量——编译器只强制该字段**被赋值**、不强制取值**来源**，改成 `None` 时全部测试仍绿而终态行类型徽标静默丢失（而 `finalize_terminal` 因依赖 `AppHandle` 无法直测）。
+- **修复**：抽出纯函数 `completed_task_from_run(remote_task_id, run, status, completed_at)`（不碰 AppHandle/StateConfig，`finalize_terminal` 改为调用它），新增 `completed_task_from_run_keeps_claim_kind_snapshot`：固化四类 kind 透传、无 kind（旧数据/无 issue 任务）→ `None` 不臆造、标题空/纯空白 → 回退 `remote_task_id`。
+
+**④ 文档与注释订正**
+- 两张错误码表补齐 `multica.task-not-ready`：开发设计第 5 章（含前端处理列）、接入方案码清单。
+- 修正 `MulticaTaskManagementPage` 的过滤注释：原文"旧 server 无类型字段时**不过滤掉任何任务**"与实现相反——旧 server 下所有任务 `issueKind === null`，选开发/测试会把任务**全部过滤掉**（默认「全部」，故用户无感，属可接受的既定行为，但注释不能写成不存在的性质）。
+- 接入方案 §5.1 S3 补**服务端上线的实测证据**（2026-09-11 客户端实测 pending 已带 `issue_kind`，徽标/过滤生效）。
+
+**新增契约约束（待 multica 确认，已记入接入方案 §5.1 S3）**
+- **claim 路径必须回填 `is_ready`**：门控判定的是 claim 响应里的字段。若 claim 只回 `issue_kind` 不回 `is_ready`，保守缺省判未就绪 → **全部 test 任务不可领**。方向本身正确（服务端零特判下客户端拦截是唯一防线，不放宽为"缺字段即放行"），但必须作为硬约束确认，否则症状是"按钮可点、领取必失败且提示误导"。
+- **心跳 diff 必须是增量**：客户端无法区分"增量 diff"与"全量集合"，若服务端每 tick 下发全量，则流量变成每 15s 一次全量 pending 重取。约束应固化在契约侧，而非在客户端加变更检测状态。
+
+**首帧缺字段现象（实测观察，非缺陷）**：用户首次实测时看板无徽标、类型过滤选开发/测试为空、看不到就绪态，一段时间（经一次心跳）后自行恢复正常。逐条核验后的结论——码灵读路径**无缓存、无"稍后补"**，看板只是单次 HTTP 响应的投影，故"先无后有"只可能来自"响应变了"；而该页面的刷新触发源穷举后，空闲态下**唯一**的自动触发源就是心跳 ack 非空 diff（`loop_.rs`）→ 这既解释了收敛，也反证了码灵链路正确（缺投影代码则永远不会出现徽标）与 multica 侧已下发该 diff。剩余解释收敛为服务端发布窗口或多实例滚动，判别方式为"重启后首帧即带徽标（一次性）vs 首个心跳后才有（系统性）"，两者都不需要码灵改动。
+
+**性能影响**：仅两处实现改动且不改变复杂度——拦截路径多一次事件 emit，且只发生在**被拒绝**的领取上（该路径同时省掉了后续工作区解析/建 run，仍比原失败路径更便宜）；`completed_task_from_run` 是纯字段搬运，无分配变化。无新增 I/O 频率、无新增状态、无新增订阅。新增测试为零运行时开销。
+
+**未做（评审后保留项，已知并记录）**：前端 `isTaskExecutable` 与后端 `executable_ready` 仍是两份同构谓词（评审建议收敛为 VM 派生字段 `executableReady` 单源）——本轮不改，避免为一致性在 VM 上新增派生字段；两侧各自有测试锁定同一真值表，漂移风险已知。`src/config/mod.rs` 的 `MulticaCompletedTask.issue_kind` 上 `#[serde(default)]` 对 `Option` 冗余（serde 本就把缺失映射为 `None`），无害保留。
+
+**验证**：`cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` → **129 过 / 0 失败**（§12.40 基线 127 + 心跳 fail-soft + 终态快照 2 例）；两个新测试单独复跑确认通过。web 侧本轮无行为改动（仅注释订正），既有 multica 8 套件 / 69 过不受影响（复跑确认 41 + 28 全绿）。
+
+---
+
+### 12.42 改动四十：未就绪 test 任务改为「仅提醒、不阻断」——删除三层门控（M5-bb，2026-09-11）
+
+**背景与定性**：M5-ba 的 fail-closed 门控（看板置灰 + 禁用执行入口 + claim 后拦截回 `multica.task-not-ready`）上线并经用户实测后，产品决策主动放宽：**就绪是建议性信息而非硬前置**——父 dev issue 未 done 时执行 test 任务在业务上可接受，阻断带来的操作成本高于收益。这不是缺陷修复（三层门控经 §12.41 评审验证成立），而是产品行为语义变更；按开发阶段破坏式更新规则，直接删除旧阻断路径，不加兼容层或开关。
+
+**删除（前后端两侧同源删除，杜绝「按钮可点、领取必失败」的单侧残留）**
+- **前端**（`MulticaRemoteTaskBoard.tsx`）：去卡片置灰（`opacity-60`）、执行入口 disabled 收敛为仅 `busy`；准入谓词 `isTaskExecutable` 改为展示谓词 `isTaskNotReady`（`issueKind === 'test' && isReady !== true`，只驱动未就绪徽标渲染，与后端无谓词耦合）。
+- **后端命令层**（`commands.rs`）：删除 claim 后 `executable_ready()` 拦截块（release 回滚 + `emit_multica_task_updated` + 错误码返回）——不删则前端放行后领取必失败，正是 §12.41 ②所防的症状。claim 后本地建 run 失败的其他回滚路径不变。
+- **后端契约层**（`client.rs`）：删除 `RemoteTask::executable_ready()` 及其门控单测（`executable_ready_gates_only_test_kind` / `claim_response_surfaces_readiness_for_gate`）；`issue_kind` / `is_ready` 解析保留（pending → VM → 看板徽标的事实源不变），解析测试改回纯字段断言。
+- **错误码**（`error.rs` / i18n）：删除 `MulticaError::TaskNotReady`（variant、码表、`errors.multica.task-not-ready` zh/en 文案及测试断言）。
+- **保留**：未就绪徽标 + 原因 Tooltip；文案改为建议语义（zh「对应开发任务尚未完成，建议等待其完成后再执行」/ en "The matching dev task is not done yet; consider waiting for it"）；心跳 ack 就绪 diff 刷新链路不变（S4 落地后徽标仍自动纠正）。
+
+**连带失效的契约约束**：§12.41 记录的「claim 路径必须回填 `is_ready`」随门控移除而失效（`is_ready` 事实源只剩 pending 列表，claim 载荷不再被消费判定）——接入方案 §5.1 S3 已订正。「心跳 diff 必须是增量」约束仍然有效（diff 仍驱动页面重拉 pending）。
+
+**§12.41 保留项的解决**：「前端 `isTaskExecutable` 与后端 `executable_ready` 两份同构谓词」的漂移风险随两侧谓词一并删除而消失，无需再收敛为 VM 派生字段。
+
+**性能影响**：纯删除——claim 拦截路径（一次 release HTTP + 一次事件 emit）整体消失，未就绪任务的领取与普通任务等价；无新增状态、订阅或 I/O。新增/更新测试为零运行时开销。
+
+**验证（2026-09-12）**：Rust `cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` **127 过 / 0 失败**（删 3 例门控测试、2 例改回解析断言）；web vitest board / i18n 两套件按新语义更新后 **22 过 / 0 失败**（未就绪任务徽标渲染且执行按钮可点、点击触发 onPrepare；提醒文案双语精确值）；`tsc -p web/tsconfig.build.json` 零错。
+
+---
+
+### 12.43 改动四十一：拉取落库支持多文件 skill——`write_bundle_instance` 整目录镜像写入（M5-bc，2026-09-15）
+
+**背景与定性**：§12.39（M5-az）的拉取链路只落单文件 SKILL.md，多文件远端 skill 被 skipped（`multica.skill.has-files`）——这是 v1 的**有意设计裁剪**（非实现缺陷），但推送侧多文件感知，形成「出得去、进不来」的单向不对称。本轮经用户确认服务端契约后补齐设计（权威设计 `.claude/design/multica_skill/` 2026-09-15 修订版）：**files 列表不含根 SKILL.md**，它单独走 detail 的 `content` 字段（multica 侧每层显式排除——WalkDir 跳过 / daemon 发现排除 / execenv 落盘兜底去重），故码灵侧无需防御性处理 files 混入根 SKILL.md（落库校验拒绝即兜底）。
+
+**写入层（`gold_band::skill` 新增 `write_bundle_instance`，与 `write_instance` 分立）**
+- 分立原因：编辑器写入是 **merge 语义**（旧内容 + 增量编辑），拉取覆盖是**镜像语义**（远端是权威事实源，整目录替换），文件集与合并行为均不同，共用签名会迫使两语义互相妥协。
+- 镜像覆盖：远端已删的本地支撑文件随之清除（用户确认的「远端镜像」语义）。staged 临时目录（同父同卷，`.mstaging-{目录名}-{pid}`）写满后两步 rename swap（目标→`.mbackup-*`→staging→目标），任一步失败回滚；提交后 backup 先删 SKILL.md 再整体清除（残留对扫描器不可见）。
+- 扫描器不可见性：`scan_skills_dir` 只列含 SKILL.md 的目录 → staging **最后写 SKILL.md**、backup 清理**最先删 SKILL.md**。
+- agent 同步不变：目录级 symlink 按路径身份工作，目录换目标（swap）对链接透明；`reconcile_skill_instance_links` / `restore_skill_links` / `previous_sync_targets` 回滚契约与 `write_instance` 同款。
+- 无 `old_name` 参数：拉取不重命名（推送侧同步更新本地的场景不存在），`current_directory_path` 即覆盖目标（`save_target_dir` 原样返回）。
+- 入口校验前置为纯函数 `validate_skill_bundle_entries`：尺寸（单文件 1MiB / 整包 8MiB）、总数（SKILL.md + 支撑 ≤256）、路径安全（无穿越段 / 绝对路径 / 反斜杠 / Windows 非法字符 / 尾点尾空格 / 根 SKILL.md 混入 / 重复路径）、深度 ≤4——超限整体失败不部分写入。
+
+**限额单一事实源**：`SKILL_BUNDLE_MAX_FILE_BYTES/MAX_BUNDLE_BYTES/MAX_FILES/MAX_DEPTH` 上移 `gold_band::skill`，推送打包（`local_skills.rs`）与拉取落库共用；桌面端 `IMPORT_MAX_*` 改为 re-export（消除两份常量漂移）。
+
+**client / 命令层**
+- `list_remote_skill_files` → `get_remote_skill_files`：路径 `/api/skills/{id}/files`（服务端默认 `includeContent=true` 返回正文，去掉原 `?include=metadata`）；`RemoteSkillFileMeta` → `RemoteSkillFile` 含 `#[serde(default)] content`（size 保留仅作 wire 契约文档）；wrapped/bare 容错不变。
+- `pull_multica_skills`：detail → files（含正文）→ 目录名清洗 + 批内 seen 去重 → `spawn_blocking(write_bundle_instance)`；404 → skipped not-found、网络 → failed remote-error、写失败（含超限/路径违规）→ failed 原始错误透传。
+- **`multica.skill.has-files` 错误码退役**（破坏式更新）：拉取分支、VM 注释、i18n 双语 reason 映射、i18n 测试数组一并删除。
+
+**性能影响**：拉取为用户手动触发的低频操作；每 skill 多一次 files 请求，受 8MiB 整包上限硬约束；写入走同卷 rename（O(1) 元数据操作），staging 写入是 ≤255 文件的顺序 I/O，数据规模上界明确。前端零新增渲染路径（纯删除）。
+
+**验证（2026-09-15）**：lib `cargo test -p gold-band --lib` 全量 **1189 过 / 0 失败**（含 skill:: 20 项，bundle 新增 4 项：镜像落盘、覆盖删除 stale 文件且 symlink 不失效、当前目录缺失失败、校验拒绝越权路径/超限条目）；desktop multica:: **127 过 / 0 失败**；`tsc -p web/tsconfig.build.json` 零错；web vitest multica **8 套件 69 过**。**顺带修复**：HEAD 既有的两处 lib 测试夹具编译错（`MulticaCompletedTask` 缺 `issue_kind`，M5-ba 加字段时漏改 `src/app/mod.rs` / `src/config/mod.rs`）。
+
+**评审整改（2026-09-15，实现完成后独立 review，三条）**
+- **测试断言失效**：两处「staging/backup 无残留」断言用 `Utf8PathBuf::iter()`——迭代的是**路径组件**而非目录条目，恒真 → 改 `fs::read_dir` 逐条目检查（`assert_no_staging_leftovers`）。
+- **崩溃残留清扫改前缀匹配**（`remove_stale_bundle_staging`，任意 pid）：原 pid 隔离清扫在进程崩溃重启后永远够不到残留，而「SKILL.md 已写完、swap 未完成」的崩溃残留含 SKILL.md、对 `scan_skills_dir` **可见**（其不跳点前缀目录）→ 幽灵 skill 永久残留。前缀按 skill 目录名隔离；单实例 app（`tauri-plugin-single-instance`）+ 拉取弹窗 UI 串行化保证无并发写同一 skill 的在飞 staging 被误删。
+- **评审测试抓到真 bug**：`write_staged_bundle` 对零支撑文件的单文件 skill 从不创建 staging 目录（`create_dir_all` 只由支撑文件父目录触发，原 4 项 bundle 测试都有支撑文件未覆盖）→ 最常见的单文件远端 skill 拉取必失败（os error 3）。补 staging 首行 `create_dir_all` 修复。
+- 回归：skill:: **21 过 / 0 失败**（新增 `bundle_write_sweeps_crash_leftovers_across_pids`：跨 pid 残留被清除、其他 skill 残留不受影响，同时固化零支撑文件路径）；desktop multica:: **127 过 / 0 失败**。
+
+---
+
+### 12.44 改动四十二：同步弹窗选择阶段滚动修复与全选开关（M5-bd，2026-09-15）
+
+**背景与根因**：skill 过多时「从 Multica 同步」弹窗被拉长且无法滑动——选择阶段 body 容器（`min-h-0 flex-1 space-y-3`）不是 flex 容器，子级 ScrollArea 的 `min-h-0 flex-1` 在非 flex 父级下失效，列表自然高度溢出被 DialogContent 的 `overflow-hidden` 裁掉（无滚动条出现）。报告阶段本就正确（body 自身 `overflow-y-auto`）。定性为「好设计但实现不完善」：ui-interaction.md §5.1 固定头/中滚动/固定脚的布局原则在选择阶段漏配了 flex 链，非设计缺陷。同时用户要求补全选开关（只想同步个别 skill 时逐个取消太繁琐）。
+
+**修复（`MulticaSkillSyncDialog.tsx`，纯前端，零后端改动）**
+- flex 链：选择阶段 body 改 `flex min-h-0 flex-1 flex-col gap-3`；工作区选择行与全选行 `shrink-0`；ScrollArea 保持 `min-h-0 flex-1` 成为唯一滚动区（列表过长时内部滚动，弹窗 `max-h-[85vh]` 封顶）。
+- 全选三态开关（列表非空且非 loading 时显示，同步进行中禁用）：shadcn Checkbox `checked` 三态——全选 `true` / 部分 `indeterminate`（默认「新增勾选、已存在不勾」）/ 全不选 `false`；点一次全选、再点一次全不选（连点两下即清空，再单独勾选想要的），旁附已选计数。状态仍收敛在 `selected` 单一事实源，全选是 O(n) 批量投影（`handleToggleSelectAll`），无新增状态机/派生 state。
+- i18n：`contextManagement.skills.multicaSync.selectAll` / `selectedCount`（双语 + 测试键数组 + 插值断言同步）。
+
+**性能评审**：无新增渲染路径与数据加载；全选一次 O(n) setState（n = 远端 skill 数，几十量级）；无虚拟化需求（ui-interaction.md §6，短列表不虚拟化）。复用既有 shadcn Checkbox/ScrollArea，无新组件。
+
+**验证（2026-09-15）**：`tsc -p web/tsconfig.build.json` 零错；vitest 新增 `web/tests/multica-skill-sync-dialog.test.tsx` 2 例——① 滚动区 flex 契约（ScrollArea `min-h-0`+`flex-1`）；② 三态全选交互（默认 indeterminate → 全选 → 全不选且同步按钮禁用 → 单选后 `pullMulticaSkills('ws-1', ['s-exists'])` 仅拉取勾中项）；`multica-skill-sync-i18n.test.ts` 补 2 键与双插值断言。multica 相关套件全过（全量 vitest 另有 4 项分支既有失败，涉及文件均未触碰：ConversationSidebar/AgentManagementPage 原生 title 契约、Composer onPaste 源契约、App agent-registry listen 源契约、acp-activity scrollIntoView 行为）。浏览器视觉验证本会话不可用（M5-ba 先例：留待用户桌面端目验，重点：长列表滚动 + 全选三态样式）。
+
+**评审整改（2026-09-15，实现完成后独立 review，三条）**
+- **indeterminate 视觉缺陷**：copy-in `checkbox.tsx` 原版只渲染 CheckIcon、只有 `data-[state=checked]` 主题色样式；Radix Indicator 对 indeterminate 也渲染 → 全选部分勾选态显示「无填充方框里的对勾」，无减号、无 accent（违反 ui-interaction.md §8 选中态用主题色）。组件测试把 Checkbox mock 掉了故未抓到。修复：copy-in 补 `MinusIcon`（`props.checked === "indeterminate"` 条件渲染）+ `data-[state=indeterminate]` 主题色填充（含 dark 变体），Root 的 props spread 不变、boolean/未传 checked 的既有消费方零行为变化；新增 `web/tests/checkbox-indeterminate.test.tsx` 3 例固化真实渲染契约（indeterminate→minus+accent、checked→check、unchecked→无 Indicator）。
+- **死键删除**：`multicaSync.pulling` 双语定义 + i18n 测试 KEYS 断言俱在，但无任何组件使用（同步按钮 loading 只渲染 Loader2 图标）——按开发阶段破坏式更新原则删除（i18n 双语 + KEYS 数组）。
+- **测试死分支**：dialog 测试 `syncButton` 帮助函数里永不匹配的 `${BASE}.pulling` 文本分支一并移除。
+- 回归：`tsc` 零错；vitest 3 套件（checkbox-indeterminate / multica-skill-sync-i18n / multica-skill-sync-dialog）**8 例全过**；全量 vitest 仍仅 4 项分支既有失败，无新增。
+
+**用户实测反馈整改（2026-09-15，第二迭代：列表仍不滚动）**
+- **根因**：flex 链修复方向正确但不充分——列表滚动走 Radix ScrollArea，真正滚动的 viewport 是 `height:100%`（size-full），其高度依赖父级（ScrollArea Root，自身无 overflow）经 flex 收缩得到的尺寸。在「高度 auto + `max-h-[85vh]` 封顶」的弹窗容器内，孙子级百分比高度解析不可靠：视口塌到内容高度、Root 无裁剪 → 溢出内容被 DialogContent 的 overflow-hidden 裁掉且无任何滚动。判定依据：代码库所有弹窗（AddWorkspace / ConnectionSettings / 本弹窗报告阶段 / ConversationSearch）均把 `overflow-y-auto` 直接放 flex item，ScrollArea 从未用于弹窗内此位置（页面内 ScrollArea 均处于确定高度布局或自带 max-h/h-* 约束）。
+- **修复（`MulticaSkillSyncDialog.tsx`）**：列表容器 ScrollArea → plain div（`gold-themed-scrollbar min-h-0 flex-1 overflow-y-auto rounded-md border`），滚动直接挂在 flex item 上（与 AddWorkspace / 报告阶段同款已验证模式）；报告阶段滚动体补 `gold-themed-scrollbar`（同弹窗滚动条视觉一致）；删除 ScrollArea import。
+- **测试同步**：`multica-skill-sync-dialog.test.tsx` 移除 ScrollArea 桩，结构契约改写为「滚动容器必须是 flex item 本身（overflow-y-auto + min-h-0 + flex-1 + gold-themed-scrollbar），不得经 size-full 视口百分比链」。
+- **验证局限（诚实记录）**：jsdom 无布局引擎，滚动行为无法自动化复现（bug-fix-verification 规则的替代证据：结构契约测试 + 桌面端目验）。`tsc` 零错，vitest 3 套件 8 例过。
+
+### 12.45 改动四十三：远程来源解耦 P1——词表与组件改名（M5-be，2026-09-17）
+
+**背景与根因**：P1 三项断连/重连排查（①定时器空转断连 ②重连后列表不清空 ③multica 状态编辑不回传客户端）最终判定全部为服务端语义或既有设计（webank 源码逐条对证），客户端忠实。但排查过程暴露出真正的工程问题：**前端词表与组件命名以 multica 品牌散写**——i18n 文案直接写死「Multica」、组件名 `Multica*`、类型 `MulticaTask`、命令 `multica_*`，来源信息本应是「数据」却被编译进「代码」，换来源 = 全库改代码。
+
+**设计（三条不变量）**：① 方言不出模块（品牌词只允许出现在 adapter 模块内部）；② 按名片渲染不按来源特判（消费方只读来源注册表名片，不写 `if source === 'multica'`）；③ 任务与 skill 来源互不感知。
+
+**实现**
+- P1a（Rust）：`src-tauri/src/multica/` → `src-tauri/src/remote/`，模块内 `multica_*` 命令保留（adapter 域白名单：`disconnect_multica`、`connect_multica` 等），对外词汇统一 remote。命令更名（如 `list_multica_tasks`→`list_remote_tasks`）与前端同 commit 提交保证 bisect 绿。
+- P1b（前端）：新增 `web/src/lib/remote-sources.ts`——`REMOTE_TASK_SOURCES` 注册表、`isRemoteTaskSource` 类型守卫、`remoteTaskSourceLabel(t, source)` 名片解析；新增 `web/src/lib/app-events.ts` 收敛事件常量。组件改名 `MulticaRemoteTaskBoard`→`RemoteTaskBoard`、`MulticaTaskManagementPage`→`RemoteTaskManagementPage`、`MulticaSkillSyncDialog`→`RemoteSkillSyncDialog`（文件同步 rename）。
+- 一 commit 合并 P1a+P1b（7085a5a7，62 文件），已 push。
+
+**验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` + demo 双零错；vitest multica/remote 相关套件全过；①②③ 由用户桌面端实测确认（服务端语义结论，非回归）。
+
+**遗留（记入 P2/P3）**：skill 页文案仍含品牌名（无前端 skill 来源字段，P2 随 SkillSource 提取一并处理）；`errors.remote.*` 错误文案品牌名（displayAppError 路径无来源上下文，需传 wire 改动）；`disconnect_multica` 后端命令暂留（adapter 域白名单，P3 清理）；TaskSource 整合与 capabilities 卡片为 P3。
+
+---
+
+### 12.46 改动四十四：需求管理页产品形态一期——{{source}} 参数化与账号菜单移除（M5-bf，2026-09-17）
+
+**背景**：P1 重命名完成后，用户提出产品形态问题：需求管理/skill 管理页如何展示得不与 multica 耦合过深。定调为「来源名对用户是数据不是代码」——所有用户可见的来源名一律走注册表名片（`remoteTaskSourceLabel`），i18n 文案用 `{{source}}` 插值，不在文案里散写品牌名。
+
+**实现（`RemoteTaskManagementPage.tsx` / `MulticaConnectDialog.tsx` / `web/src/i18n.ts`）**
+- {{source}} 参数化 8 处双语：空状态 `emptyTitle`「尚未连接{{source}}」/ `emptyDescription`「连接后可在此查看并领取{{source}}需求。」/ `connectButton`「连接{{source}}」；连接弹窗 `remote.connect.title`「连接{{source}}」。页面在 `accountLabel` 后新增 `sourceLabel = remoteTaskSourceLabel(t, source)` 作为插值唯一来源；`MulticaConnectDialog` 新增必填 prop `sourceLabel`（弹窗内不散写品牌名，测试同步补传）。
+- 账号菜单移除（产品决策）：右下角「切换账号/断开连接」下拉删除——用户只在首次连接远程，后续无切换/断开场景；换账号/换地址走连接与地址设置弹窗即可覆盖。footer 改为纯展示账号标识（User 图标 + truncate 账号名）。i18n 按开发阶段破坏式更新删除 `account.switchAccount`/`account.disconnect` 键（保留 `connected`）。
+- 后端 `disconnect_multica` 命令与 API wrapper **保留**（adapter 域白名单，避免刚 push 的 P1 commit 之后再翻动 Rust 层；P3 统一清理）。
+
+**明确不做（过度设计防护）**：设置页不加「远程来源」集中管理区（当前单来源在架，集中管理是假设性需求）；skill 页文案参数化推 P2（无前端 skill 来源 wire 字段）；错误文案参数化推后续（displayAppError 无来源上下文，需改 wire）。
+
+**性能评审**：无新增渲染路径/数据加载；`remoteTaskSourceLabel` 为同步查表 O(1)；footer 从 DropdownMenu（含 Radix portal）简化为纯 span，渲染成本反降。
+
+**验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` + demo 双零错；vitest 4 套件 48 例全过（含 multica-connect-dialog 补 `sourceLabel` prop 后全绿）。视觉验证按 M5-ba 先例留待用户桌面端目验（重点：空状态/连接弹窗的来源名插值、footer 纯账号标识无下拉）。
+
+---
+
+### 12.47 改动四十五：skill 管理页来源解耦一期——通用同步入口与弹窗内来源选择（M5-bg，2026-09-17）
+
+**背景与根因**：M5-bf 遗留的 skill 页品牌耦合（按钮「从 Multica 同步」、弹窗标题、未连接提示、失败原因共 4 处散写品牌名）。用户设计决策指明方向：来源是 skill 同步的**选择维度**而非文案参数——「任务连着来源 A、skill 想从来源 B 同步」的场景下，{{source}} 参数化无法表达；正确形态是通用同步按钮 + 弹窗内来源选择器（与需求管理页 A6 来源选择器同款模式：注册表驱动、单来源也显示）。
+
+**实现（`RemoteSkillSyncDialog.tsx` / `web/src/i18n.ts`，纯前端零 wire 改动）**
+- 文案通用化（双语）：`remoteSync.action`「同步远程 SKILL」、`remoteSync.title`「从远程同步 SKILL」、`reason["multica.not-connected"]`「未连接远程来源」——文案零来源名，来源名只作为选择器数据出现。
+- 弹窗顶部来源选择器：`REMOTE_TASK_SOURCES.map` 渲染，复用 `remote.taskManagement.source.label`；`handleSourceChange` 换来源时重置工作空间与勾选（fallback effect 重选默认空间后列表 effect 重拉）。
+- 未连接分支升级：`notConnected`「未连接{{source}}」+ 新增 `connect`「连接{{source}}」按钮，就地打开 `MulticaConnectDialog`（复用 M5-bf 的 `sourceLabel` prop 与弹窗内已持有的 settingsVm）；`onConnected` 重拉设置（`fetchSettings` 单一 helper 收口），工作空间/列表级联刷新。顺带修复原文案指向已改名页面（「远程任务」→ 现名「需求管理」）的死引导。
+- **wire 分期决策**：`list_remote_skills`/`pull_remote_skills` 的 source 参数随 P2 落地——当前选择器值恒为 'multica'（单来源注册表），单独加参数是恒传单值的伪接缝；P2 随第二来源接入时命令参数 + 按来源路由 + per-source 连接状态同批落地。前端接缝：设置拉取收敛在 `fetchSettings`，P2 按 source 分发只扩该 helper。
+
+**性能评审**：零新增数据加载路径（连接成功后的重拉复用既有 getMulticaSettings 单次调用）；来源选择器为静态注册表渲染 O(1)；未连接分支复用弹窗内已持有 settingsVm，无额外请求。无性能风险。
+
+**验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` 零错（tsconfig.json 全量检查的报错均在未触碰文件，属既有环境噪音）；vitest 3 套件（remote-skill-sync-dialog / remote-skill-sync-i18n / multica-connect-dialog）17 例全过——新增：①未连接 → 来源选择器 + 就地连接按钮 → 连接弹窗携带注册表名片 sourceLabel → 连接成功重拉设置、未连接分支消失（全链路契约）；②notConnected/connect 的 {{source}} 双语插值断言。i18n 测试 KEYS 数组补 `connect` 键。视觉验证按 M5-ba 先例留待用户桌面端目验（重点：来源选择器单来源显示、未连接分支就地连接、层叠弹窗交互）。
+
+### 12.48 改动四十六：任务接口 DPMS 溯源字段对接——会话起始输入前缀溯源块（M5-bh，2026-09-17）
+
+**背景**：webank dev 分支 `feat(daemon): 任务接口补齐 DPMS溯源字段` 给 `AgentTaskResponse` 新增 5 个可空溯源字段（`release_plan_id` / `dev_user` / `test_user` / `business_story_id` / `origin_url`，issue 行镜像，pending / detail / claim 三接口同构，对接文档 `.claude/design/multica_issue_management/2026-09-17-daemon-task-dpms-fields-api.md`）。码灵侧对接目标：issue 任务进会话时，起始输入开头先写 DPMS 溯源信息、再写 issue 内容，统一作为会话首条输入。
+
+**根因定性**：好设计、实现待扩展——claim-at-send 预填链（`get_remote_task_requirement` → `from_detail` → composer 预填 → `input.requirement` 即会话首条输入）早已把「详情正文 → 会话起始输入」打通，DPMS 溯源只是在该链路的 `requirement` 组装点做前缀拼接，前端与发送链路零改动。
+
+**实现（三 layer）**
+- **Layer 1 wire 解析（`client.rs`）**：`RemoteTask` 加 5 个 `#[serde(default)]` 可空字段。列 NULL → 缺 key → None（不报错、不回退默认值）；纯溯源语义，不参与 `is_ready`/`issue_kind` 门控判定。旧 server / 非 issue 任务（chat / autopilot / quick-create）恒 None（版本解耦）。
+- **Layer 2 提示词模板（`src/prompts/{zh-CN,en}/runtime/remote_task_context.md`）**：双语同构、逐字段 `{% if %}` 条件渲染（minijinja strict，字段恒序列化为 null/值）；`src/prompts.rs` 注册 `RUNTIME_REMOTE_TASK_CONTEXT_{ZH_CN,EN}`，复用 `prompt_by_language` + `render`（与 `scheduled_task_context` 同款机制）。中文标签：发布计划 ID / 开发负责人 / 测试负责人 / 业务需求 ID / 需求链接。
+- **Layer 3 组装（`vm.rs`）**：`from_detail` 增 `language: DesktopLanguage` 参数（调用方 `get_remote_task_requirement` 取 `context.config.desktop_language`）；`session_start_input` = 溯源块（`dpms_context_block`，5 字段全缺省/纯空白 → None）+ 空行 + `requirement_text()` 正文。字符串字段逐个空白过滤；正文缺失但溯源存在时只发块。`requirement_text()` 来源优先级不动——溯源块是上下文前缀，不是需求来源。（**M5-bk 反转并取代，二次修正后部分回到本形态**：`session_start_input` 已删除、`language` 参数经 M5-bk 移除后于二次修正中恢复；溯源块回到 composer 预填（`detail_prefill`，放需求正文之前），三次调整后上游交付说明块也进预填、仅完成输出协议留在隐式区段，见 §12.50 末「二次修正」「三次调整」。本行「正文缺失但溯源存在时只发块」语义在二次修正后重新生效。）
+
+**设计判断**：溯源块放 user prompt（会话起始输入）而非 hidden context（`scheduled_task_context` 先例路径）——DPMS 溯源是工作项自身的需求上下文（随任务变化、与执行目标直接相关），按 AGENTS.md system/user prompt 划分标准归 user prompt，且用户与 agent 都需在会话内可见。发送时不从 claim 响应二次注入：预填即起始输入，用户编辑/删除是明确意图，二次注入属重复机制。（**M5-bk 反转、二次修正后回到本判断**：M5-bk 一度把三块一律判为隐式侧，属分层判断过度收敛——DPMS 溯源确为用户需在发送前核对的目标环境信息（user 侧）。三次调整后仅写侧协议指令必须留隐式侧（误删即静默断链），上游交付说明按同一分层标准划归 user 侧（子任务赖以执行的父交付内容，用户同样需在发送前核对）。当前形态 = 溯源块 + 上游交付说明可见预填 + 仅协议块隐式区段，见 §12.50 末「二次修正」「三次调整」。）
+
+**性能评审**：一次「认领执行」预填多一次 minijinja 模板渲染（微秒级纯内存字符串操作），无新增 I/O / 状态订阅 / 数据加载路径；前端零改动。无性能风险。
+
+**验证（2026-09-17）**：lib `remote_task_context_templates_render_all_and_partial_fields` 过（全字段/部分字段渲染 + 中英文标签锁定 + 无空行残留）；desktop multica 单测新增 `remote_task_parses_dpms_provenance_fields` / `remote_task_missing_dpms_fields_parse_as_none`（wire 契约：有值/缺 key）与 `from_detail_prepends_dpms_context_block_to_requirement` / `from_detail_without_dpms_fields_keeps_plain_requirement`（前缀拼接 / 无字段退化 / 空白过滤 / 双语）全过。**无需 webank server 改动**（server 已随 dev 分支发版）。
+
+---
+
+### 12.49 改动四十七：会话主页 composer 滚动收口迁移——multica chip 随正文滚动（M5-bi，2026-09-17）
+
+**背景**：用户实测发现，issue 任务认领进会话后，输入框最前的 multica chip 一直悬浮在输入框左上角；正文较长需要滚动时，chip 保持悬浮遮挡后续内容行。
+
+**根因定性**：好设计（leading adornment 首行内嵌 + text-indent 让位）、实现不完整——chip 绝对定位挂在非滚动的包装 div 上，而滚动容器是 textarea 自身（autosize 到 `maxHeight` 上限后 `overflow-y: auto`）。adornment 的定位语义是「正文首行」，却挂在视口层，滚动时首行移出视野而 chip 不动，两者脱离。text-indent 只能让位首行，天然无法覆盖滚动态。
+
+**实现（结构统一，非补丁式 JS 滚动同步）**
+- **prompt-kit copy-in（`prompt-input.tsx`）**：`maxHeight` 类型扩为 `number | string | null`，`null` 语义 = 自适应不设上限、textarea 自身永不滚动（`height: scrollHeight, overflowY: hidden`），滚动收口交由祖先容器。纯增量，既有 number/string 行为不变。
+- **布局常量（`conversation-composer-layout.ts`）**：`textareaMaxHeightPx: 320` 删除，新增 `inputScrollContainerClassName: 'relative min-w-0 max-h-80 overflow-y-auto'`（max-h-80 = 320px，上限原值迁移，杜绝双处硬编码）。
+- **ConversationComposer**：`PromptInput maxHeight={null}`；chip / 斜杠标签所在的包装 div 改用 `inputScrollContainerClassName`。chip 仍在包装层内绝对定位（`absolute left-0 top-2`），随正文首行一起滚出视野；斜杠命令标签共用同一 slot 同步修复。
+
+**影响面**：仅会话主页 `ConversationComposer`（ACP 会话为独立组件 + 独立布局常量，不受影响）；斜杠命令菜单 inline 弹层是包装层兄弟节点（挂 SlashCommandMenu 外层 root），不被滚动容器裁剪，行为不变。
+
+**性能评审**：纯 CSS/结构迁移，无新增 JS 监听、无滚动同步逻辑、无重渲染路径变化；autosize 仍是一次 `scrollHeight` 读写（原机制不变，只是不再封顶）。无性能风险。
+
+**验证（2026-09-17）**：`conversation-composer-autosize.test.ts` 契约更新并新增用例——null maxHeight 不封顶不滚动、composer `maxHeight={null}` 且滚动容器为包装层、chip span 位于滚动容器内部（源码契约）；浏览器（deep link 会话主页）注入 40 行文本实测：textarea 976px 不封顶 `overflow-y: hidden`、包装层 320px 收口接管滚动、chip 随滚动移出视野（offset +8px → -492px）；`tsc -p web/tsconfig.build.json` + 生产构建 + 全量 vitest 过。顺手修正 `composer-context-alignment.test.ts` 中 HEAD 上已陈旧的 onPaste 契约断言（readOnly 演示守卫早已合入但测试未同步）。
+
+---
+
+### 12.50 改动四十八：远程任务上下文隐式区段下发 + 完成输出协议提示词精简（M5-bk，2026-09-21）
+
+**背景（用户内网实测两点）**：① 完成输出协议提示词（`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md`）冗长——多段说明性文字；② 该协议块与 DPMS 溯源块、上游交付说明块一起，以四段拼装（改动四十六/四十七）**全量预填进 composer**：输入框里躺着三块内部上下文，且**可编辑、可删除**——误删协议块即静默破坏写侧契约（agent 不再产出 `completion-output`，issue done 时无输出可中继，无任何提示）。用户问：「码灵是否支持把这类的 prompt 不显式地在输入框展示出来，而是隐含地给到模型？」
+
+**先例检索（实施前，先看有没有现成机制）**：有，且是项目内既有的成熟通道——`gold_band_hidden_block(title, content)`（`provider/mod.rs`）产出 `<hidden data-gold-band-hidden="true" title="...">` 块，已被三处同类需求使用：`RUNTIME_HIDDEN_CONTEXT`（基础运行上下文）、AI-DYNAMIC 运行上下文、`scheduled_task_context`（定时任务上下文——与 `parent_output` 同形：任务变化带来的外部输入）；前端 `parseGoldBandHiddenSections` 把这些块渲染为用户气泡内**默认折叠的模块**（acp-ui.md:186）。即：通道现成（`PromptHiddenSection` 已是 `WorkerInvocation` 的一等字段）、可见性语义现成——**隐藏 ≠ 不可见**，发送后用户仍可展开审计，只是发送前不出现在输入框。
+
+**根因定性**：原始设计缺陷（非「好设计但实现不完整」）。改动四十六/四十七把三块「由 runtime 决定、不随任务变化、需稳定执行」的上下文当成「随任务变化的需求正文」，一起塞进用户可编辑文本；更严重的是**写侧协议指令（issue 完成输出的唯一约束）落在用户可编辑文本里**——用户无从知道删除它会断链。修根因的做法不是「把文本挪走」的表面修补，而是按 AGENTS.md 的 system/user prompt 划分标准重新分层，并让 claim 时刻的 runtime 值成为唯一权威来源。
+
+**实现（五跳，复用既有通道，零新机制）**
+
+| 跳 | 位置 | 动作 |
+| --- | --- | --- |
+| 1 | `multica/vm.rs` | `from_detail` 回到裸 `requirement_text()` 预填（删除 `language` 参数）；新增 `remote_task_hidden_section(task, language) -> Option<PromptHiddenSection>`（title = `Gold Band remote task context`，与既有 `Gold Band runtime context` / `Gold Band stable system prompt` 同构且不含对内产品名，内容 = DPMS 溯源块 → 上游交付说明块 → 完成输出协议块，三块渲染条件/空白过滤/双语选择全部不变，仅去掉需求正文段）。**（二次修正：DPMS 溯源块回到预填、区段收敛为两块；三次调整：上游交付说明块也进预填、区段收敛为仅协议块，见本节末「二次修正」「三次调整」）** |
+| 2 | `multica/commands.rs` `start_remote_conversation_run` | claim 成功后构建区段并写入 `input.first_prompt_hidden_sections`（claim 时刻的值即执行依据，前端不感知该字段） |
+| 3 | `view_models_conversation.rs` | `ConversationCreateInputVm` 增 `#[serde(default)] first_prompt_hidden_sections: Option<Vec<PromptHiddenSection>>`；`prepare_conversation_task_vm` 在 conversation.json 之后落盘 `task_dir/authoring/first-prompt-hidden-sections.json`（storage 加 `first_prompt_hidden_sections_file` 路径 helper） |
+| 4 | `app/node_executor.rs` | 抽出策略函数 `first_prompt_hidden_sections(app, task_id, session_mode)`（仅 `SessionMode::New` 返回区段——覆盖首次执行 + 自动重试；追问/续跑 `Continue` 不重放），`build_worker_invocation` 据此填 `extra_hidden_sections`；私有 `load_first_prompt_hidden_sections` 负责读盘，fail-open（缺失 → 空；损坏/不可读 → `warn!` + 空，区段是附加上下文而非执行前提） |
+| 5 | `provider/mod.rs` `render_prompt_bundle` | RawAgent 信封 + `RequirementTask`（直接对话首条 prompt）→ `append_titled_hidden_sections`（每个区段保留自身标题渲染为独立 `<hidden>` 块，追加在可见正文之后）；RuntimeManaged 信封已有 `render_hidden_context` 消费 `extra_hidden_sections`，零改动 |
+
+**两个执行面必须同时覆盖（评审发现，已修）**：Auto 模式入口即 AI-DYNAMIC 节点，其 invocation 由 `build_dynamic_worker_invocation` 独立构造（`orchestrator.rs`），与本表第 4 跳的 `build_worker_invocation`（workflow worker）是两条构造路径。若只在后者填 `extra_hidden_sections`，Auto 模式全部运行将拿不到三块——`completion-output` 协议不可达、issue done 时无输出可中继（回归）。修法不是复制一份加载逻辑，而是把策略抽为 `node_executor::first_prompt_hidden_sections` 单一入口，`build_dynamic_worker_invocation` 在 `dynamic_hidden_sections(...)` 之后 `extend` 同一函数结果——**一处策略、两个消费面**，SessionMode 语义天然一致。
+
+**分层依据（AGENTS.md 固定标准）**：runtime 决定、用户不需操心、需稳定执行的上下文 → system/hidden 侧（三块全属此类）；与本次执行目标直接相关、随任务变化 → user 侧（只剩需求正文）。
+
+**设计反转记录（两处，均为原始设计缺陷）**
+
+1. 改动四十六判断「溯源块放 user prompt、发送时不从 claim 响应二次注入」→ **反转**：runtime 上下文属隐式侧；claim 时刻注入才是正确权威来源（用户可编辑的只剩他自己的执行目标）。
+2. 改动四十七「四段组装进 composer 预填」→ **收敛为**「预填 = 需求正文，上下文 = 隐式区段」。
+
+两处反转的代价为零兼容层：前端渲染面不变（折叠模块是既有能力）、无新增前端字段、旧字段（`session_start_input` / `from_detail` 的 `language`）直接删除（开发阶段破坏式更新）。
+
+**提示词精简**：`remote_task_completion_protocol.md`（zh/en）由多段说明文改为要点式三条——交付说明覆盖内容 / 篇幅 ≤2000 字符与超长后果（完成请求被整体拒绝、工作项无法标记完成；详细材料走工作区文件 + 路径引用）/ 随完成传递给下游子任务。契约关键词（`completion-output` 围栏、最终交付说明、非 run 日志、≤2000 字符、文件路径引用、下游子任务）全部保留，`src/prompts.rs` 契约测试同步锁定中英文版本；双语目录结构保持一致。
+
+**过度设计评审**：零新增抽象、零新增状态机、零新增持久结构——复用 `PromptHiddenSection` 既有通道（改动前已被三处使用），新增的只有一个 input 字段（`#[serde(default)]`）、一个路径 helper、一个 KB 级 JSON 落盘文件、一个策略函数与一个 fail-open 读取函数；没有为「防止用户误删」引入校验、提示、恢复机制（把这些文本移出用户可编辑范围即根除该类问题）。AI-DYNAMIC 面修的是「同一策略被两个构造路径共享」，而非新建第二套加载机制。
+
+**性能评审**：新增一次首条 prompt 的 KB 级小文件读取（仅 `SessionMode::New`，非热路径；两个执行面共用同一函数，读取次数不随执行面翻倍——同一 invocation 只构造一次）；无新增轮询/订阅/缓存/队列/锁；模板渲染次数与路径不变；composer 预填文本量反而减少。无性能风险，不设专项 benchmark。
+
+**独立评审与处理（2026-09-21）**
+
+| # | 级别 | 发现 | 处理 |
+| --- | --- | --- | --- |
+| 1 | 高 | AI-DYNAMIC 执行面（Auto 模式）未拿到三块 → 完成输出协议不可达 | **已修**：策略抽为 `first_prompt_hidden_sections`，`build_dynamic_worker_invocation` 同步消费；新增 `dynamic_invocation_receives_first_prompt_hidden_sections_on_new_only` 固化 |
+| 2 | 低 | 新区段标题未本地化——`hiddenPromptTitle` 落到 raw title（zh-CN UI 出英文） | **已修**：标题改 `Gold Band remote task context`（去对内产品名，与另两个标题同构），前端 `hiddenPromptTitle` 映射 + i18n 增 `acp.hiddenRemoteTaskContext`（zh「隐藏远程任务上下文」/ en「Hidden remote task context」） |
+| 3 | 低 | 「标题与正文皆空的 issue 型远程任务」→ 区段为 None、预填文本为空 → 发送被拒、claim 回滚 | **接受**：该输入本身即不可执行（无任何需求正文），拒绝并回滚 claim 是正确行为而非缺陷；由既有前置校验门控，不新增机制 |
+| 4 | 低 | 精简 en 协议提示词时丢失「工作项无法标记完成」后果句 | **已修**：补回 `and the work item cannot be marked done`，`src/prompts.rs` 契约测试同步锁定中英两侧 |
+
+**验证（2026-09-21，改动落地后）**
+
+| 层 | 命令 / 目标 | 结果 |
+| --- | --- | --- |
+| 提示词契约 | `cargo test -p gold-band --lib remote_task` | 6 passed（含 `remote_task_completion_protocol_templates_lock_fence_contract` 精简后中英契约：`最终交付说明` / `run 日志` / `2000 字符` / `文件路径引用` / `下游子任务` / `工作项无法标记完成` ↔ `final deliverable handoff` / `run log` / `2,000 characters` / `file path references` / `downstream sub-tasks` / `cannot be marked done`） |
+| 首条 prompt 渲染 | `cargo test -p gold-band --test provider_prompt_bundle` | 33 passed（新增 `render_raw_agent_first_prompt_appends_titled_hidden_sections`：独立标题 `<hidden>` 块在正文之后；`render_raw_agent_continue_prompt_skips_hidden_sections`） |
+| 区段加载（两执行面） | `cargo test -p gold-band --lib first_prompt_hidden` | 2 passed（`first_prompt_hidden_sections_load_on_new_only`：workflow 面 New 命中 / Continue 空 + 策略层直接断言；`dynamic_invocation_receives_first_prompt_hidden_sections_on_new_only`：AI-DYNAMIC 面 New 命中 / Continue 空——两例共享同一策略函数，共 1 处策略定义；损坏文件 fail-open 空） |
+| 区段组装 | `cargo test -p gold-band-desktop --bins multica::` | 148 passed（vm.rs 5 例：`remote_task_hidden_section_assembles_blocks_in_order`（块序 DPMS→上游→协议）/ `_renders_dpms_block_with_protocol` / `_without_dpms_fields_omits_block` / `_without_parent_output_omits_upstream_block`（含空白过滤）/ `_issue_linked_without_body_yields_protocol_only`（非 issue → None）） |
+| 落盘 | `cargo test -p gold-band-desktop --bins hidden_section` | 6 passed（含 `conversation_task_creation_persists_first_prompt_hidden_sections`：携带区段 → 文件存在且可反序列化；本地会话 → 不落盘） |
+| 前端标题本地化 | `npx vitest run --config web/vitest.config.ts hidden-prompt-content-expansion` | 4 passed（新增 `localizes the remote task context section title in the zh-CN UI`：标题显示为 `acp.hiddenRemoteTaskContext`，不再落到 raw title） |
+| 回归 | `cargo test -p gold-band-desktop --bins view_models_conversation::` / `--bins scheduled` | 94 passed / 127 passed（`ConversationCreateInputVm` 全部构造点已同步新字段，零回归） |
+
+预填文本变短、隐藏区段渲染是既有能力（本轮前端只增标题映射），故无需启动前端做交互验证；端到端需打包内网验证（本地 multica 无最新 server）。
+
+**二次修正（2026-09-21，用户实测反馈）：DPMS 溯源回到 composer 预填**
+
+用户运行后发现「之前可以在输入框显示 DPMS 的信息，现在不行了」，要求按原设计恢复为**在需求正文之前展示**。
+
+- **根因定性**：不是实现错误，是**分层判断过度收敛**——M5-bk 把三块一律判为「runtime 决定、用户不需操心」，但 DPMS 溯源（发布计划 / 开发·测试负责人 / 需求链接）是**用户在发送前需要核对的目标环境信息**，具备 user 侧价值；只有「上游交付说明」（纯执行上下文，用户无需核对）与「完成输出协议」（写侧契约，误删即静默断链）才必须留在隐式侧。修法是按实际消费主体拆开两类上下文，而不是整体回退（整体回退会把协议块重新塞回用户可编辑文本，那才是 M5-bk 修掉的原始缺陷）。
+- **实现**：`vm.rs` 恢复 `from_detail(task, workspace_id, language)`，预填 = `detail_prefill(task, language)` = DPMS 溯源块（可选）+ 空行 + 需求正文（含「正文缺失但溯源存在 → 只发块」，与 M5-bh 语义一致）；`remote_task_hidden_section` 收敛为**上游交付说明块 → 完成输出协议块**两块。**同一份上下文只下发一次**：溯源块已进预填，故从区段中移除，避免模型收到两份。
+- **连带效果**：低发现 #3（「标题与正文皆空的 issue 型远程任务」预填为空 → 发送被拒 + claim 回滚）在该形态下自然消失——有 DPMS 字段的任务预填不再为空。
+- **措辞更正（评审追踪）**：隐藏区段在会话气泡中的呈现是**「图标 + 标题 + 字符数」的链接按钮 → 打开右侧工作区只读面板**，不是内联折叠模块（`web/src/components/acp/HiddenPromptMessageContent.tsx`；前端测试断言 `[data-slot="collapsible"]` 为 null）；链接可点需 `branchLocator && scopeKey && !optimistic`，否则按钮 disabled。另：multica 首条 prompt 含隐式区段 → 不适用 main 的需求原文 `display_text` 回落，气泡正文以完整 `user_prompt` 投影、区段可审计（详见本节末「合并接缝修正」）；追问路径（Continue + `UserMessage`）气泡只显示键入文本。
+- **测试（同一轮验证）**：`cargo test -p gold-band-desktop --bins multica::` → 149 passed，其中 `from_detail_prepends_dpms_context_block_to_requirement`（溯源块在前、正文在后、双语同构、**预填不含 `completion-output`**）/ `from_detail_without_dpms_fields_keeps_plain_requirement`（全缺省退化纯正文 + 逐字段空白过滤 + 正文缺失只发块）/ `remote_task_hidden_section_excludes_prefilled_dpms_block`（**防重复下发**：区段无 DPMS 字段值、无正文）/ `remote_task_hidden_section_assembles_blocks_in_order`（上游→协议锚点递增）。管道层 fixture 文本同步改为 `upstream handoff + completion protocol`（原名含 dpms 已不符实际）；`first_prompt_hidden` 2 / `provider_prompt_bundle` 33 / `view_models_conversation::` 94 全部保持绿。
+
+**三次调整（2026-09-21，用户指定）：上游交付说明（父任务 completion-output）进 composer 预填**
+
+用户确认二次修正生效后提出：完成输出协议保持隐式（现行为准），但子任务从父任务拿到的输出内容（`parent_output`，即 completion-output 中继内容）应**显式放在子任务输入框里**。
+
+- **分层依据（沿用二次修正的判据，非新标准）**：按实际消费主体划侧——上游交付说明是**子任务赖以执行的父任务交付内容**（部署/验证地址、变更范围、测试要点），用户需在发送前核对「父任务到底交付了什么」，归 user 侧可见预填；完成输出协议仍是写侧契约（落在可编辑文本里误删即静默断链），留在隐式区段。二次修正把上游块判为「纯执行上下文、用户无需核对」在这一点上欠收敛，本次按同一判据补齐，不是标准变更。
+- **实现**：`detail_prefill` = DPMS 溯源块（可选）+ 上游交付说明块（可选）+ 需求正文，块间空行分隔（`parent_output` 缺省/纯空白跳过该块，版本解耦；正文缺失但任一块存在 → 只发块）；`remote_task_hidden_section` 收敛为**仅完成输出协议块**（非 issue 关联 → None）。**同一份上下文只下发一次**：上游块进预填后从区段移除。模板 `remote_task_parent_output.md` 本身零改动（预填即首条 user prompt，模板指令语气本就面向 agent）。`client.rs` `parent_output` 字段注释的消费点同步改指 `detail_prefill`。
+- **连带效果**：低发现 #3 的残余场景进一步消失——只要父任务有交付内容，即使任务无正文/无 DPMS 字段，预填也不为空。
+- **测试（同一轮验证）**：`cargo test -p gold-band-desktop --bins multica::` → 149 passed。重写/新增：`from_detail_prefills_upstream_handoff_between_dpms_and_body`（预填三段锚点严格递增 DPMS→上游→正文、正文收尾、父输出文本不丢、区段无上游块且含协议、双语同构）/ `from_detail_without_parent_output_omits_upstream_block`（缺省/纯空白跳过上游块、协议块不受影响）/ `remote_task_hidden_section_issue_linked_without_body_yields_protocol_only`（扩展：正文缺失但父输出存在 → 预填只剩上游块、区段仍协议块）。管道层 fixture 文本同步改为 `completion protocol`；`first_prompt_hidden` 2 / `provider_prompt_bundle` 33 / `view_models_conversation::` 94 全部保持绿；前端零改动（区段标题与 i18n 映射不变）。
+
+**合并接缝修正（2026-09-22，合并 main `361eeb3c` 后功能 review 发现）**
+
+- **回归现象**：合并 main 后，远程任务首条 prompt 的聊天气泡不再出现隐藏区段审计入口（「图标 + 标题 + 字符数」链接按钮），二次修正措辞更正中「气泡正文回退为完整 `user_prompt`，故区段确实可审计」的前提被破坏。
+- **根因定性（合并接缝，非原设计缺陷）**：main `53491fc1`（session input history navigation）在 `render_prompt_bundle` 新增 `display_text` 回落——条件 RawAgent + New + RequirementTask 恰好精确命中远程任务首条 prompt 三元组，使 `display_text = Some(纯需求正文)`，经 `client.rs` 的 `display_text` 优先级压过 `session_prompt_text`（完整 `user_prompt`），`<hidden>` 块从气泡文本中被剥离、前端解析不到。两个设计意图各自正确（main：本地直接对话显示用户原话；M5-bk：后端注入上下文必须可审计），冲突在 main 的回落条件未考虑「user_prompt 已被 runtime 追加隐式区段」的场景。
+- **修复（收紧守卫而非补投影）**：回落条件追加 `extra_hidden_sections.is_empty()`——仅当 prompt 未被 runtime 追加任何隐式区段时才回退需求原文。本地直接对话保持 main 原话显示意图；含区段的首条 prompt 恢复完整投影、审计入口回归。不选「给远程任务补 `prompt_display`」：那会复制投影逻辑、且 display_text 与 user_prompt 形成双真源易漂移。
+- **最小失败测试先行**：新增 `render_raw_agent_first_prompt_with_hidden_sections_suppresses_verbatim_display`（先失败：`display_text` 为 Some）+ `render_raw_agent_first_prompt_without_sections_falls_back_to_requirement`（保护 main 回落意图不被误删），修复后同测试转绿。`provider_prompt_bundle` → 35 passed；`multica:: / view_models_conversation:: / scheduled_service:: / scheduled_runtime::` → 369 passed 零回归。main 侧无测试锁定「无 prompt_display + RawAgent」场景的回退，修改无破坏面。
+
+**main 合并适配（2026-09-23 第十次合并，PR #131 workspace file references）**
+
+- main 新增 composer 工作区文件引用（draft `workspaceFiles` 状态）与本分支远程绑定并集后，`prefill`（远程任务覆盖式新草稿）同时清空 `workspaceFiles`——远程任务在远程工作空间执行，本地工作区文件引用不适用（draft 测试 `prefill writes requirement text + remote binding and drops prior attachments and workspace files` 锁定）。
+- main 新测试 `render_prompt_bundle_does_not_add_builtin_output_contracts` 曾锁定「RawAgent 首条 prompt 区段不进 user_prompt + display 回退原文」，与 M5-bk 契约在同一输入形态互斥；经取证（main 无 M5-bk 追加块、生产路径直接对话不设区段）并经用户确认，适配该测试到 M5-bk 语义（区段以标题 `<hidden>` 块受控追加 + `display_text = None`，其余 MUST NOT LEAK 断言保留）。详见 `merge-conflict-analysis-2026-09-22.md` 第十次合并章节。
+
+**main 合并适配（2026-09-24 第十一次合并，七语言 i18n JSON 化 + prompts LocalizedText 化）**
+
+- main 将 `web/src/i18n.ts` 内联翻译资源拆分为 `web/src/locales/*.json`（七语言，`fallbackLng: en`）。本分支 81 个 remote 系列 i18n key（taskManagement/connection/connect/sidebar.remoteTask\*/composer.remote\*/skills.remoteSync.\*/hiddenRemoteTaskContext/errors.remote.source-not-configured）随迁 `zh-CN.json` + `en.json`；其余五语言经 main 既有 fallback 覆盖（main 自身 25 key 缺口同走此路径）。七个 JSON 中 main 早期带入的旧 `multica.*` key 树（顶层 multica / errors.multica / sidebar.multica(TaskManagement) / composer.multica\*）按既定 Remote\* rename 决策全部删除，破坏式不留 fallback。
+- main 将 `src/prompts.rs` 重构为 `LocalizedText` 结构化对象 + `localized_prompt!`/`localized_prompt_zh_en!` 宏（七语言）。remote 系列 3 个运行时提示词（remote_task_context / remote_task_parent_output / remote_task_completion_protocol）以 `localized_prompt_zh_en!` 适配（仅中英，其他语言 resolve 降级英文，与 main 的 CICD 同模式）；`vm.rs` 三处 `prompt_by_language` 调用随 main 新签名收敛为传 `LocalizedText` 常量。AGENTS.md 七语言例外条款同步补入 `runtime/remote_task_*.md`。
+- 验证：provider_prompt_bundle 35 过、lib provider/prompts/dsl/config 196 过、desktop bins 371 过；tsc web/src 零错误；vitest 稳定失败集 138 例与 origin/main 逐文件一致（新增 1 例 conversation-greeting 系 main 拆 JSON 未更新 source-contract 测试），零合并回归。详见 `merge-conflict-analysis-2026-09-22.md` 第十一次合并章节。
+
+### 12.51 改动四十九：终态后追问 run 的迟到 completion-output 补发（M5-bl，2026-09-21）
+
+**背景（用户内网实测）**：父任务 direct 模式首 run 完成时未产出 `completion-output` 块，用户输入「完成」让 agent 在**同一本地会话**补交了块，但子任务 claim 时 `parent_output` 仍为空。
+
+**根因追溯**：首 run Success 时 `handle_run_completed` 提不出块 → fail-open（issue 照标 done、无输出，bridge 记 warn）→ `finalize_terminal` 清 active_runs + task_conversations（终态收尾，语义正确）；追问 run 的 `RunCompleted` 到达时 `lookup_active_run` 落空 → 订阅器直接 return——**补交的块没有任何上报路径**，服务端 `completion_output` 恒空。定性：**好设计、实现不完整**——服务端设计本就支持迟到写入（`开发设计方案-issue-completion-output.md`：「不锁 done 才能写」「done 后补写自愈」），多 run 覆盖语义也已定义（每次 run 标 done 整体覆盖前值）；缺的只是客户端「本地追问 run」这条路径的中继接线。不属设计缺陷，无需动服务端或状态模型。
+
+**实现（bridge.rs + client.rs，复用既有提取与历史，零新状态）**
+
+| 位置 | 动作 |
+| --- | --- |
+| `bridge.rs` 订阅器 RunCompleted 分支 | `lookup_active_run` 落空且 `outcome == Success` → spawn `relay_late_completion_output`（state 反查是磁盘读，不进热路径；Failure/Killed 无补发语义不进 spawn） |
+| `bridge.rs` `relay_late_completion_output` | 顺序即成本递增：multica 连接检查（纯内存）→ `completion_output_for_issue_done` 提块（普通本地 run 到此返回，零 state/网络开销）→ `load_state` → `find_completed_issue_task` 反查 → output-only PATCH。失败仅 warn；本地状态零改动 |
+| `bridge.rs` `find_completed_issue_task`（纯函数） | 按 local_task_id 反查「最近完成」历史，命中条件 `status == completed && issue_ref 非空`，多条取最新；返回 `(workspace_id, issue_id, remote_task_id)` |
+| `client.rs` `update_issue_completion_output` | 同一 `PUT /api/issues/{id}` 端点、**只写 `completion_output` 不带 status 键**（`UpdateIssueCompletionOutputRequest` 结构体上不存在 status 字段即契约本身）——issue 可能已被服务端 reopen/人工流转，迟到写入不得强行拉回 done；服务端字段级 merge「未触摸字段保留现值」 |
+
+**关键决策**：无块不补发（不发空写；与首 run fail-open 一致，且普通本地 run 常态走此分支必须静默——逐 run warn 会成噪音）；不做去重/重试（迟到的自愈写入，下次补交整体覆盖，服务端单值语义兜底）。
+
+**最小失败测试先行**：先写 4 个测试确认失败原因与根因分析一致（E0422/E0425——补发链路请求结构体与反查函数不存在），再实现转绿。测试固化：`find_completed_issue_task_returns_relay_target_for_completed_issue_entry` / `_skips_failed_blank_issue_and_foreign_local_tasks`（failed、空/空白 issue、异 local_task_id 三类不命中——后者保护普通本地 run 不误发）/ `_prefers_newest_match`；client 侧 `update_issue_completion_output_request_omits_status_key`（body 恰为单键，wire 契约）。`cargo test -p gold-band-desktop --bins multica::` → 153 passed。端到端需打包内网验证（本地无最新 server，`create_multica_subscriber` 环境依赖无法本地自动复现，以纯函数固化 + 代码路径审查为替代证据）。
+
+**过度设计评审**：零新增持久字段、零状态机、零队列——反查目标是既有「最近完成」历史（本来就在），PATCH 端点是既有 issue 更新端点的字段子集；唯一新抽象是一个纯函数 + 一个薄 HTTP 方法，与「迟到写入」这一实际问题规模相称。
+
+**性能评审**：热路径（订阅器回调）仍只有内存锁查找 + 条件 spawn；spawn 内按「内存检查 → 单文件读 → 小 JSON state 读 → 网络调用」成本递增短路，普通本地 run（绝大多数）止步于提块阶段的一次 attempt timeline 读；无轮询、无缓存、无锁竞争。RunCompleted 为每 run 一次的低频事件，无性能风险。
+
+### 12.52 改动五十：需求管理页「移出列表」——纯本地视图过滤、刷新即恢复（M5-bm，2026-09-21）
+
+**背景（用户需求）**：需求管理页可删除任务，但只在码灵侧删除；点刷新后仍从 multica 侧拉回（含待办与已完成）。
+
+**语义定型（用户选定「刷新即恢复」）**：删除 = 本页内存态视图过滤（`removedTaskIds: Set<task.id>`），不删本地历史（completed 快照保留、终态行深链不受影响）、不调任何服务端接口；任何一次 `fetchTasks` 成功（手动刷新 / 事件刷新 / 取消后回拉）即清空集合，任务随新数据回到看板。服务端始终是任务列表唯一事实源，码灵侧零持久化删除痕迹（对齐 data-loading / 状态规则：不为本页建旁路状态）。
+
+**实现**
+
+| 位置 | 动作 |
+| --- | --- |
+| `RemoteTaskManagementPage.tsx` | `removedTaskIds` state（瞬时 UI 态不持久化，ui-interaction §7）；`fetchTasks().then` 内清空（= 刷新语义）；投影 = 类型过滤 ∩ 未移出（两级纯客户端过滤叠加，不动数据源）；`handleRemoveTask` 纯本地 set 操作 |
+| `RemoteTaskBoard.tsx` | 卡片动作区增 Trash2「移出列表」按钮，**四列全状态可用**（含待办/已完成）；`disabled={readOnly \|\| busy}`；hover destructive 色与 cancel 同语义 |
+| `web/src/i18n.ts` | `conversation.sidebar.remoteTasks.removeTask` / `removeTaskHint`（zh「移出列表」/「仅从码灵侧列表移除，刷新后恢复」；en 对应） |
+
+**不弹确认框的依据**：操作可逆且零数据丢失（刷新即恢复），ui-interaction §1 的「删除确认用 Dialog」针对破坏性删除；按钮 Tooltip 说明语义即足。
+
+**测试（接口层固化）**：board 侧「四状态各有移出入口 + 转发 onRemove」「busy 时禁用」；容器侧「移出后卡片消失、无任何 API 调用（getRemoteTasks 仍 1 次、cancel 未触发）」「手动刷新后任务恢复（getRemoteTasks → 2 次、卡片回来）」。`npx --prefix web vitest run --config web/vitest.config.ts tests/remote-task-board.test.tsx tests/remote-task-management-page.test.tsx` → 42 passed；`npm run web:build`（tsc -p web/tsconfig.build.json + vite）通过。
+
+**过度设计评审**：一个 Set + 一个过滤谓词 + 一个按钮，无新组件/新抽象/新接口；未引入「本地删除清单」持久化（那会制造第二事实源，与刷新即恢复语义矛盾）。
+
+**性能评审**：过滤是 O(n) 纯客户端投影（与既有类型过滤同层同量级，n = 单工作空间任务数）；删除操作零 IO；不新增订阅/请求。
+
+### 12.53 改动五十一：迟到补发触发事件修正——挂到 AcpTurnFinished（M5-bn，2026-09-21）
+
+**背景（用户内网实测）**：12.51（M5-bl）上线后，「非首次会话完成的任务 output 未送达 multica」依然存在。
+
+**根因追溯**：M5-bl 假定「追问会产生一次新的 `RunCompleted`」——该假定对 Direct 模式后续追问**不成立**。证据链：① 前端 `submitPrompt` 对已完成任务的追问带**同一** (task/run/round/node/attempt) 五元组调 `submit_conversation_prompt`；② Direct 分支把 prompt 入队到**同一 attempt** 的 ACP prompt queue，run 已 Completed 时经 `notify_prompt_turn_finished` 触发排空，排空把 prompt 发进**同一 session/attempt**——不新建 run；③ 该 turn 的终态信号是 `RuntimeLifecycleEvent::AcpTurnFinished`（`src/app/mod.rs` 文档注释明示「Direct 后续对话……统一走该事件」），而 multica 订阅器此前**显式忽略**该事件；④ `RunCompleted` 全局唯一发射点在 orchestrator 的 run 级收尾，追问 turn 不经过。即 M5-bl 的 fallback 在等一个**永远不会来的事件**。定性：**好设计（迟到补发 + output-only PATCH）、实现不完整（触发事件挂错）**。次要问题：relay 四个静默 return 无日志，触发缺失在排查中完全不可见。
+
+**实现（bridge.rs + app/mod.rs + commands.rs）**
+
+| 位置 | 动作 |
+| --- | --- |
+| `src/app/mod.rs` `AcpTurnFinished` | 新增 `attempt_dir: Option<String>` 字段——对齐 `RunCompleted::attempt_dir` 先例（同为 multica completion-output 提取而设，免于跨 repo root 反推路径）。全项目仅 1 个真实发射点（`emit_acp_turn_finished`），消费方 match 均 `..`，非破坏 |
+| `commands.rs` `emit_acp_turn_finished` | 用 `locator.attempt_dir(app)` 填充（动态节点场景由该 helper 归一到 outer attempt 路径） |
+| `bridge.rs` 订阅器 | 新增 `AcpTurnFinished` 分支：`outcome == Completed` → spawn `relay_late_completion_output(task_id, attempt_dir)`（同一补写通道，PUT 幂等覆盖）。不查 active_run——relay 按 completed 历史反查，在飞任务天然不在历史里（run 级收尾仍由 RunCompleted 主路径负责）；Failed/Cancelled 无交付语义不上报 |
+| `bridge.rs` `relay_late_completion_output` | 过滤顺序重排为「内存检查（连接态）→ state.json（小文件，历史反查）→ attempt timeline（大文件，提块）」——turn 级触发逐消息发生，先用小文件过滤非 multica 任务；补观测日志：命中任务但无块 → info（诊断分界点），state 读失败 → info，成功送达 → info（含字符数） |
+
+**最小失败测试先行**：先在既有 `acp_turn_finished_event_preserves_turn_identity_outcome_and_batch_continuation` 补 `attempt_dir` 断言确认红（E0026——字段不存在），再实现转绿。测试固化：事件携带 `app.paths.attempt_dir(五元组)` 路径（追问 turn 的 timeline 就写在该 attempt 下）。**替代证据说明**：「事件 → spawn relay」路由依赖 Tauri AppHandle + 异步 spawn + 真实 HTTP，单测无法稳定复现（M5-bl 的 RunCompleted 路由同样未覆盖——正是漏洞溜过去的原因）；以编译器穷尽性（match 新增分支）+ 发射点测试 + 新增运行时 info 日志为可审计轨迹，端到端打包内网验证。`cargo test -p gold-band-desktop --bins multica::` → 154 passed；`acp_turn*` / `notification*` 套件全绿。
+
+**过度设计评审**：一个事件字段（有 RunCompleted 同构先例）+ 一个 match 分支 + 日志，零新状态/抽象/队列；failed 任务补发、batch 中断补偿等场景明确不进 scope（维持 M5-bl 语义边界）。
+
+**性能评审**：订阅器热路径仅 outcome 比较 + spawn（与既有 RunCompleted 分支同模式）；磁盘读全在 spawn 内，且重排后**普通本地会话**（绝大多数）止步于 state.json 小文件读、不再每条追问消息读大 timeline；频率 = 每条追问消息一次；未连接 multica 时纯内存检查直接返回。
+
+### 12.54 改动五十二：终态行「移出列表」升级为真删除本地历史（M5-bo，2026-09-21）
+
+**背景（用户内网实测）**：码灵侧移出 + multica 侧删除后，点击刷新任务仍在需求管理页「复活」。
+
+**根因追溯**：12.52（M5-bm）把「服务端是任务列表唯一事实源」当作全部行的前提，但该前提只对 pending/running 行成立——`get_remote_tasks` 三源合并中，**终态行（completed/failed）的唯一数据源是本地 `remote_completed_tasks` 历史（state.json）**，服务端根本不回传终态。视图过滤 + 「任何成功 fetch 清空移出集合」的语义组合下，终态行被移出后任何一次刷新必然「复活」（不是从 multica 拉回，是从本地历史读出）；multica 侧删除对此完全无效。定性：**好设计（服务端真源）但实现不完整（对终态行前提不成立）**。
+
+**实现（按行数据源分派，bridge.rs + multica/commands.rs + 前端）**
+
+| 位置 | 动作 |
+| --- | --- |
+| `bridge.rs` `remove_completed_task_entry` | `record_completed_task` 的逆操作：按 remote_task_id 删「最近完成」历史条目；返回是否删到（false = 幂等 no-op，不落盘） |
+| `multica/commands.rs` `remove_remote_completed_task`（新 Tauri 命令） | `with_state` 原子 RMW 删除条目；不存在时幂等成功（用户意图「不在列表」已满足）；删到才 `emit_remote_tasks_updated` 广播刷新 |
+| `RemoteTaskManagementPage.tsx` `handleRemoveTask` | 终态行（completed/failed）→ 调 `removeRemoteCompletedTask` 真删 + 即时移除（busy/error 处理对齐 cancel 模式）；pending/running 行 → 维持纯视图过滤（每次从服务端/内存重建，服务端删除自然消失）。`removedTaskIds` 集合语义收窄为「删除到下一次 fetch 之间的即时移除层」 |
+| `RemoteTaskBoard.tsx` | `terminal` 判定 + hint 按行分派：`removeTaskTerminalHint`（zh「移出并删除本地完成记录，刷新不再显示」/ en 对应）vs 既有 `removeTaskHint`。删除的是列表回看索引，**不删本地会话本体**；仍不弹确认框（对齐 ui-interaction §1，hint 如实说明语义） |
+
+**最小失败测试先行**：Rust 侧先写 `remove_completed_task_entry_deletes_by_remote_id_and_is_noop_when_absent` 确认红（E0425——函数不存在），再实现转绿（存在→删且其余保序、不存在→no-op 幂等）。前端改写既有移出测试为新语义：「终态行移出 → 调 `removeRemoteCompletedTask('rt-done')` + 刷新后不复活」「pending 行移出 → 不调删除 API + 刷新后随服务端数据恢复（服务端真源）」。`cargo test -p gold-band-desktop --bins multica::` → 154 passed；页面 21 passed + 看板 21 passed；改动文件 tsc 无错。
+
+**过度设计评审**：一个纯函数 + 一个薄命令 + 前端回调分派，无新组件/状态机；不为 pending 行引入本地删除清单（服务端真源语义保持不变）。
+
+**性能评审**：`remove_remote_completed_task` 为用户手动触发的一次 state.json RMW（上限 50 条的小文件），无热路径；前端零新增渲染开销（仅既有过滤层复用）；删除后的事件广播复用既有 `remote-tasks-updated` 通道。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）
@@ -2047,5 +2506,5 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - ✅ 复用库层会话执行 API：一个 remote_task = 一个本地 task（`create_task_from_requirement` + `run_start_background`，库层 App API），不重复造 runtime、不走 command 层；Direct/Auto workflow preset 上提 `gold_band::dsl::presets` 公开复用；浏览器登录复用 multica 原生（localhost callback），server 零改动
 - ✅ 破坏式更新：旧配置 Option+serde(default) 兼容，不建兼容层/灰度/fallback；无需升 schema 版本（2.2.6）
 - ✅ 外部命令约束：multica 不起外部子进程（执行用 gold-band runtime），不涉及 background_command；若 future 需 helper 则经 `background_command`(process.rs:44)
-- ⏳ 提示词 src/prompts/：本期 remote_task.requirement 作为本地 task 的 user prompt，不新增 system prompt，不触发该规则；若后续需 multica 专用 prompt 则入 src/prompts/ zh-CN/en 双语
+- ✅ 提示词 src/prompts/：multica 专用提示词已入 `src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 双语同构（12.48 改动四十六），不在实现代码硬编码长 prompt 文本
 - ⏳ 同步维护 docs/gold-band/产品设计文档 + 开发计划：实现时同步（CLAUDE.md 强制）

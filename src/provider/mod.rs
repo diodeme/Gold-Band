@@ -2353,6 +2353,15 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     {
         user_prompt = append_extra_hidden_sections(&user_prompt, &req.extra_hidden_sections);
     }
+    // RawAgent 信封（直接对话等）的首条 prompt：隐式隐藏区段（远程任务上下文等）以独立标题
+    // `<hidden>` 块追加在可见正文之后（改动四十八）。RequirementTask 即首条 prompt（追问为
+    // Continue+resume_prompt），自动重试复用同一渲染路径故同样生效。
+    if req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
+        && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask
+        && !req.extra_hidden_sections.is_empty()
+    {
+        user_prompt = append_titled_hidden_sections(&user_prompt, &req.extra_hidden_sections);
+    }
     let (user_prompt, visibility, hidden_reason) = project_scheduled_execution(req, user_prompt)?;
 
     let mut attachment_metas = Vec::new();
@@ -2413,9 +2422,12 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         .map(|input| input.display_text.clone())
         .or_else(|| {
             // A new RawAgent turn receives the requirement verbatim, before any runtime assembly.
+            // 仅当 prompt 未被 runtime 追加隐式隐藏区段时才回退为需求原文：含区段的 prompt
+            // 必须以完整 user_prompt 作为气泡投影，否则前端解析不到 <hidden> 块、审计入口丢失。
             (req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
                 && req.session_mode == SessionMode::New
-                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask)
+                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask
+                && req.extra_hidden_sections.is_empty())
                 .then(|| requirement_text.clone())
         });
     Ok(PromptBundle {
@@ -2536,6 +2548,21 @@ fn append_extra_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) 
         prompt.trim(),
         gold_band_hidden_block("Gold Band runtime context", &content)
     )
+}
+
+/// RawAgent 首条 prompt 的隐式隐藏区段：与 `append_extra_hidden_sections` 合并为单一
+/// "Gold Band runtime context" 块不同，这里每个区段保留自身标题渲染为独立 `<hidden>` 块
+/// （前端按标题折叠展示，区段边界可审计）。
+fn append_titled_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) -> String {
+    let blocks = sections
+        .iter()
+        .filter(|section| !section.content.trim().is_empty())
+        .map(|section| gold_band_hidden_block(&section.title, &section.content))
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        return prompt.to_string();
+    }
+    format!("{}\n\n{}", prompt.trim(), blocks.join("\n\n"))
 }
 
 fn project_scheduled_execution(
@@ -4964,11 +4991,26 @@ mod tests {
         }];
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.system_prompt, "");
-        assert_eq!(prompt.user_prompt, "  original direct prompt\n");
-        assert_eq!(
-            prompt.display_text.as_deref(),
-            Some("  original direct prompt\n")
+        // M5-bk（合并适配）：RawAgent 首条 prompt 携带隐式隐藏区段时，区段以独立标题
+        // <hidden> 块追加在可见正文之后——这是远程任务上下文的受控下发通道，不是泄漏；
+        // profile / task_instruction / system 区段仍然不进入 prompt。display_text 不回退
+        // 需求原文：气泡需投影完整 user_prompt，前端才能解析 <hidden> 块提供审计入口。
+        // 正文以 trim 后的需求原文开头（追加块对正文做了 trim 归一，前导空白不保留）。
+        assert!(prompt.user_prompt.starts_with("original direct prompt"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("data-gold-band-hidden=\"true\" title=\"hidden\"")
         );
+        assert!(prompt.user_prompt.contains("HIDDEN MUST NOT LEAK"));
+        assert!(
+            prompt.user_prompt.find("original direct prompt").unwrap()
+                < prompt.user_prompt.find("HIDDEN MUST NOT LEAK").unwrap()
+        );
+        assert!(!prompt.user_prompt.contains("PROFILE MUST NOT LEAK"));
+        assert!(!prompt.user_prompt.contains("RUNTIME MUST NOT LEAK"));
+        assert!(!prompt.user_prompt.contains("SYSTEM MUST NOT LEAK"));
+        assert!(prompt.display_text.is_none());
 
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;

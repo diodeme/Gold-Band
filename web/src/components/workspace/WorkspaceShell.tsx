@@ -76,7 +76,7 @@ interface WorkspaceShellProps {
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
   onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
-  // 必填：App 恒提供（Shell.onConversationNewInWorkspace），ConversationSidebar/MulticaRemoteTaskList
+  // 必填：App 恒提供（Shell.onConversationNewInWorkspace），ConversationSidebar/远程任务列表
   // 均要求非空；此前误标可选导致与下游必填声明类型不一致。
   onNewConversationInWorkspace: (projectId: string) => void;
   onAddWorkspace?: () => void;

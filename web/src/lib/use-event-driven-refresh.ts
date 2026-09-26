@@ -11,7 +11,7 @@ export interface UseEventDrivenRefreshOptions {
 /**
  * 事件驱动刷新：把多个事件订阅合并为单一去重刷新流。
  *
- * 提炼自 App.tsx 既有内联模式，统一解决三类竞态（原 `MulticaTaskManagementPage` 同时踩中三者：
+ * 提炼自 App.tsx 既有内联模式，统一解决三类竞态（原 `RemoteTaskManagementPage` 同时踩中三者：
  * 每事件双 fetch 风暴 + 异步 unlisten 泄漏 + 因 `t`/回调身份变化反复订阅）：
  *
  * 1. **事件风暴去重**——一次运行会连发 NodeProgress/NodeCompleted 等数十事件。用 in-flight + pending

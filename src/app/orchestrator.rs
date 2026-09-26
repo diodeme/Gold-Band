@@ -4223,6 +4223,11 @@ fn emit_run_completed_lifecycle_event(
         outcome,
         task_title: task_title(app, task_id),
         completion_agent_label: super::notification::direct_conversation_agent_label(app, task_id),
+        attempt_dir: Some(
+            app.paths
+                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+                .to_string(),
+        ),
     });
     emit_run_metrics_fact(
         app,
@@ -12783,7 +12788,7 @@ fn build_dynamic_worker_invocation(
         .map(|contract| contract.emission_mode);
     let has_output_contract = control_emission_mode == Some(OutputEmissionMode::InlineControl);
     let extra_system_sections = dynamic_system_sections(ctx, control_emission_mode)?;
-    let extra_hidden_sections = dynamic_hidden_sections(
+    let mut extra_hidden_sections = dynamic_hidden_sections(
         ctx,
         graph,
         node,
@@ -12791,6 +12796,15 @@ fn build_dynamic_worker_invocation(
         session_mode,
         has_output_contract,
     )?;
+    // 任务级首条 prompt 隐式区段（multica 远程任务上下文等，改动四十八）：AI-DYNAMIC 执行面与
+    // workflow 面共用同一策略（`SessionMode::New` 才加载）——Auto 模式入口即 AI-DYNAMIC 节点，
+    // 若只让 workflow 面加载，远程任务的完成输出协议会在这条路径上丢失。
+    // 排在动态区段之后：动态上下文（本节点身份与目录）在前，任务级上下文收尾。
+    extra_hidden_sections.extend(crate::app::node_executor::first_prompt_hidden_sections(
+        ctx.app,
+        ctx.task_id,
+        session_mode,
+    ));
     if let Some(contract) = output_contract
         .as_mut()
         .filter(|contract| contract.emission_mode == OutputEmissionMode::PostTurnProjection)
@@ -20368,6 +20382,72 @@ mod tests {
         assert!(!prompt.user_prompt.contains("## Current task"));
         assert!(prompt.user_prompt.contains("remaining dynamic nodes"));
         assert!(prompt.user_prompt.contains("bootstrap"));
+    }
+
+    #[test]
+    fn dynamic_invocation_receives_first_prompt_hidden_sections_on_new_only() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let node = test_worktree_node("bootstrap");
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+        let title = "Gold Band remote task context";
+        let sections = vec![crate::provider::PromptHiddenSection {
+            title: title.to_string(),
+            content: "completion protocol".to_string(),
+        }];
+        let sections_file = app.paths.first_prompt_hidden_sections_file("task-006");
+        std::fs::create_dir_all(sections_file.parent().unwrap().as_std_path()).unwrap();
+        crate::storage::write_json(&sections_file, &sections).unwrap();
+
+        let has_remote_section = |invocation: &WorkerInvocation| {
+            invocation
+                .extra_hidden_sections
+                .iter()
+                .any(|section| section.title == title)
+        };
+
+        // AI-DYNAMIC 执行面（Auto 模式入口）必须与 workflow 面共用首条 prompt 隐式区段策略。
+        let invocation_new = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(has_remote_section(&invocation_new));
+
+        let invocation_continue = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!has_remote_section(&invocation_continue));
     }
 
     #[test]

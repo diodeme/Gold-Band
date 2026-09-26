@@ -23,7 +23,7 @@ type PromptInputContextType = {
   isLoading: boolean
   value: string
   setValue: (value: string) => void
-  maxHeight: number | string
+  maxHeight: number | string | null
   onSubmit?: () => void
   disabled?: boolean
   textareaRef: React.RefObject<HTMLTextAreaElement | null>
@@ -45,8 +45,18 @@ function usePromptInput() {
 
 export function promptInputTextareaSize(
   scrollHeight: number,
-  maxHeight: number | string,
+  maxHeight: number | string | null,
 ): { height: string; overflowY: "auto" | "hidden" } {
+  if (maxHeight === null) {
+    // maxHeight=null：自适应不设上限。textarea 始终撑到内容高度且自身不滚动，
+    // 滚动收口由外层容器（如 leading adornment 所在的包装 div）统一接管，
+    // 让绝对定位的 adornment 随内容首行一起滚动而不是悬浮遮挡。
+    return {
+      height: `${scrollHeight}px`,
+      overflowY: "hidden",
+    }
+  }
+
   if (typeof maxHeight === "number") {
     return {
       height: `${Math.min(scrollHeight, maxHeight)}px`,
@@ -88,7 +98,8 @@ export type PromptInputProps = {
   isLoading?: boolean
   value?: string
   onValueChange?: (value: string) => void
-  maxHeight?: number | string
+  /** null = autosize without a cap; the textarea never scrolls itself — an ancestor scroll container owns scrolling. */
+  maxHeight?: number | string | null
   onSubmit?: () => void
   children: React.ReactNode
   className?: string

@@ -628,7 +628,9 @@ pub(crate) fn build_worker_invocation(
         predecessors,
         new_round_trigger,
         extra_system_sections: Vec::new(),
-        extra_hidden_sections: Vec::new(),
+        // 首条 prompt 的隐式隐藏区段（multica 远程任务上下文等，改动四十八）：策略见
+        // [`first_prompt_hidden_sections`]——仅首次执行 / 自动重试加载，追问与续跑不重放。
+        extra_hidden_sections: first_prompt_hidden_sections(app, task_id, session_mode),
         task_instruction,
         user_tips_instruction: None,
         resume_task_instruction: None,
@@ -661,6 +663,47 @@ pub(crate) fn build_worker_invocation(
         scheduled_context: app.scheduled_task_context().cloned(),
         workspace_file_roots,
     })
+}
+
+/// 任务级首条 prompt 隐式区段（远程任务上下文等，改动四十八）。
+///
+/// 所有执行面（workflow worker / AI-DYNAMIC）共用本策略：`SessionMode::New` 才加载——首次执行
+/// 与自动重试（新 ACP session + `RequirementTask`）命中；追问 / 续跑（`Continue`，session 已有
+/// 首条 prompt 的历史）不重放。策略收在此处，避免两个 invocation 构造点各写一份而分叉。
+pub(crate) fn first_prompt_hidden_sections(
+    app: &App,
+    task_id: &str,
+    session_mode: SessionMode,
+) -> Vec<crate::provider::PromptHiddenSection> {
+    if session_mode != SessionMode::New {
+        return Vec::new();
+    }
+    load_first_prompt_hidden_sections(app, task_id)
+}
+
+/// 首条 prompt 的隐式隐藏区段加载（改动四十八）：任务创建时随 authoring 落盘
+/// （`first-prompt-hidden-sections.json`）。fail-open：
+/// 文件缺失（非远程任务 / 旧任务）→ 空区段；损坏或不可读 → `warn!` + 空区段，不阻断执行
+/// ——区段是附加上下文而非执行前提，坏文件不应让任务无法启动。
+fn load_first_prompt_hidden_sections(
+    app: &App,
+    task_id: &str,
+) -> Vec<crate::provider::PromptHiddenSection> {
+    let path = app.paths.first_prompt_hidden_sections_file(task_id);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(sections) => sections,
+            Err(e) => {
+                warn!(task_id, path = %path, %e, "first prompt hidden sections file corrupt, skipping");
+                Vec::new()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            warn!(task_id, path = %path, %e, "first prompt hidden sections file unreadable, skipping");
+            Vec::new()
+        }
+    }
 }
 
 fn current_acp_config_option_overrides(attempt_dir: &camino::Utf8Path) -> BTreeMap<String, String> {
@@ -1748,5 +1791,83 @@ mod tests {
             invocation.turn_control_mode,
             TurnControlMode::NonRuntimeControlled
         );
+    }
+
+    #[test]
+    fn first_prompt_hidden_sections_load_on_new_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let task_id = "task-001";
+        let sections = vec![crate::provider::PromptHiddenSection {
+            title: "Gold Band remote task context".to_string(),
+            content: "completion protocol".to_string(),
+        }];
+        let sections_file = app.paths.first_prompt_hidden_sections_file(task_id);
+        std::fs::create_dir_all(sections_file.parent().unwrap().as_std_path()).unwrap();
+        crate::storage::write_json(&sections_file, &sections).unwrap();
+
+        let invocation_new = build_worker_invocation(
+            &app,
+            task_id,
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+        assert_eq!(invocation_new.extra_hidden_sections.len(), 1);
+        assert_eq!(
+            invocation_new.extra_hidden_sections[0].title,
+            "Gold Band remote task context"
+        );
+        assert!(invocation_new.extra_hidden_sections[0]
+            .content
+            .contains("completion protocol"));
+
+        // Continue（追问 / 续跑）不重放首条区段。
+        let invocation_continue = build_worker_invocation(
+            &app,
+            task_id,
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+        assert!(invocation_continue.extra_hidden_sections.is_empty());
+
+        // 策略层直接断言：该策略是 workflow 面与 AI-DYNAMIC 面的共同入口
+        //（`build_dynamic_worker_invocation` 同样调用它），因此 New/Continue 的语义在此固化。
+        assert_eq!(first_prompt_hidden_sections(&app, task_id, SessionMode::New).len(), 1);
+        assert!(first_prompt_hidden_sections(&app, task_id, SessionMode::Continue).is_empty());
+
+        // fail-open：文件损坏 → 空区段，不阻断执行。
+        std::fs::write(sections_file.as_std_path(), "not json").unwrap();
+        assert!(load_first_prompt_hidden_sections(&app, task_id).is_empty());
     }
 }

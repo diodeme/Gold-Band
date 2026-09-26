@@ -2287,18 +2287,19 @@ export const browserApi: RuntimeApi = {
     // 浏览器态无连接流程，取消为幂等 no-op（与 desktop cancel_multica_connect 语义对齐）。
     return Promise.resolve();
   },
-  getMulticaTasks() {
+  getRemoteTasks() {
     return Promise.resolve({
+      source: 'multica',
       workspaces: [],
       tasksByWorkspace: {},
       lastActiveWorkspaceId: null,
       connected: false,
     });
   },
-  getMulticaTaskRequirement(_taskId: string, _workspaceId: string) {
+  getRemoteTaskRequirement(_taskId: string, _workspaceId: string) {
     return Promise.resolve({
       id: 'mock-remote-task',
-      issueId: null,
+      issueRef: null,
       status: 'queued',
       workspaceId: 'mock-workspace',
       title: 'Mock remote task',
@@ -2307,13 +2308,18 @@ export const browserApi: RuntimeApi = {
       localTaskId: null,
       runId: null,
       projectId: null,
+      kind: null,
+      readiness: null,
     });
   },
-  startMulticaConversationRun(input, _remoteTaskId, _workspaceId) {
+  startRemoteConversationRun(input, _remoteTaskId, _workspaceId) {
     // 浏览器桩：复用本地 createConversationRun 桩返回同样的会话 VM（多机端仅桌面端真实执行）。
     return this.createConversationRun(input);
   },
-  cancelMulticaTask(_taskId: string) {
+  cancelRemoteTask(_taskId: string) {
+    return Promise.resolve();
+  },
+  removeRemoteCompletedTask(_remoteTaskId: string) {
     return Promise.resolve();
   },
   listServerMulticaWorkspaces() {
@@ -2330,6 +2336,12 @@ export const browserApi: RuntimeApi = {
   },
   setActiveMulticaWorkspace(_workspaceId: string) {
     return this.getMulticaSettings();
+  },
+  listRemoteSkills(_workspaceId: string) {
+    return Promise.resolve([]);
+  },
+  pullRemoteSkills(_workspaceId: string, _skillIds: string[]) {
+    return Promise.resolve({ results: [] });
   },
   getUpdateStatus() {
     return Promise.resolve(browserPreviewState.getUpdateStatus());
@@ -3027,10 +3039,10 @@ export const browserApi: RuntimeApi = {
     browserWorkspaceFileListeners.add(listener);
     return Promise.resolve(() => browserWorkspaceFileListeners.delete(listener));
   },
-  subscribeMulticaTaskUpdates() {
+  subscribeRemoteTaskUpdates() {
     return Promise.resolve(() => {});
   },
-  subscribeMulticaSettingsUpdates() {
+  subscribeRemoteSourceSettingsUpdates() {
     return Promise.resolve(() => {});
   },
   workspaceFilePreviewUrl(token, _staticFrame = false) {

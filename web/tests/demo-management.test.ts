@@ -4,7 +4,7 @@ import { demoPageFromHash } from '../../marketing/demo/routes';
 
 describe('demo management read contracts', () => {
   it('routes management pages and schedule creation without a server rewrite', () => {
-    for (const kind of ['multica-tasks', 'scheduled-tasks', 'scheduled-task-create']) expect(demoPageFromHash(`#${kind}`)).toEqual({ kind });
+    for (const kind of ['remote-tasks', 'scheduled-tasks', 'scheduled-task-create']) expect(demoPageFromHash(`#${kind}`)).toEqual({ kind });
     expect(demoPageFromHash('#scheduled-task-detail?id=demo-weekly')).toEqual({ kind: 'scheduled-task-detail', projectId: 'default', scheduledTaskId: 'demo-weekly' });
   });
   it('provides isolated schedule definitions, accepted Run history and valid conversation links', async () => {
@@ -24,12 +24,12 @@ describe('demo management read contracts', () => {
   });
   it('exposes four requirement states and reads only the selected requirement', async () => {
     const api = createDemoApi();
-    const board = await api.getMulticaTasks();
+    const board = await api.getRemoteTasks();
     const tasks = board.tasksByWorkspace[board.workspaces[0].id];
     expect(tasks.map((item) => item.status)).toEqual(['queued', 'running', 'completed', 'failed']);
     expect(tasks.every((item) => item.requirement === null)).toBe(true);
-    expect((await api.getMulticaTaskRequirement(tasks[0].id, tasks[0].workspaceId)).requirement).toBe(tasks[0].title);
-    await expect(api.getMulticaTaskRequirement(tasks[0].id, 'other')).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+    expect((await api.getRemoteTaskRequirement(tasks[0].id, tasks[0].workspaceId)).requirement).toBe(tasks[0].title);
+    await expect(api.getRemoteTaskRequirement(tasks[0].id, 'other')).rejects.toMatchObject({ code: 'demo.resource-not-found' });
   });
   it('reads fake source control and run files while rejecting arbitrary paths and writes', async () => {
     const api = createDemoApi();
@@ -41,7 +41,7 @@ describe('demo management read contracts', () => {
     expect(await api.readConversationDirectoryFile({ ...locator, relativePath: files[0].relativePath })).toMatchObject({ kind: 'text', editable: false });
     await expect(api.readConversationDirectoryFile({ ...locator, relativePath: '../../secret' })).rejects.toMatchObject({ code: 'demo.resource-not-found' });
     await expect(api.listConversationDirectory({ ...locator, runId: 'other' })).rejects.toMatchObject({ code: 'demo.resource-not-found' });
-    for (const method of ['createScheduledTask', 'updateScheduledTask', 'deleteScheduledTask', 'setScheduledTaskEnabled', 'runScheduledTaskNow', 'cancelMulticaTask', 'disconnectMultica', 'setActiveMulticaWorkspace', 'executeGitMutation', 'startGitOperation', 'openConversationDirectoryPathInFileManager'] as const) {
+    for (const method of ['createScheduledTask', 'updateScheduledTask', 'deleteScheduledTask', 'setScheduledTaskEnabled', 'runScheduledTaskNow', 'cancelRemoteTask', 'disconnectMultica', 'setActiveMulticaWorkspace', 'executeGitMutation', 'startGitOperation', 'openConversationDirectoryPathInFileManager'] as const) {
       await expect(Reflect.apply(api[method], api, [])).rejects.toMatchObject({ code: 'demo.operation-unavailable' });
     }
   });

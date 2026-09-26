@@ -105,6 +105,12 @@ pub const RUNTIME_INVALID_OUTPUT_REPAIR: LocalizedText =
     localized_prompt!("runtime/invalid_output_repair.md");
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT: LocalizedText =
     localized_prompt!("runtime/scheduled_task_context.md");
+pub const RUNTIME_REMOTE_TASK_CONTEXT: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_context.md");
+pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_parent_output.md");
+pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_completion_protocol.md");
 pub const RUNTIME_ARTIFACT_FINALIZE: LocalizedText =
     localized_prompt!("runtime/artifact_finalize.md");
 pub const RUNTIME_CONTROL_RESUME: LocalizedText =
@@ -176,11 +182,18 @@ pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str = RUNTIME_INVALID_OUTPUT_REP
 pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str = RUNTIME_INVALID_OUTPUT_REPAIR.en;
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str = RUNTIME_SCHEDULED_TASK_CONTEXT.zh_cn;
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str = RUNTIME_SCHEDULED_TASK_CONTEXT.en;
+pub const RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN: &str = RUNTIME_REMOTE_TASK_CONTEXT.zh_cn;
+pub const RUNTIME_REMOTE_TASK_CONTEXT_EN: &str = RUNTIME_REMOTE_TASK_CONTEXT.en;
+pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN: &str = RUNTIME_REMOTE_TASK_PARENT_OUTPUT.zh_cn;
+pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT_EN: &str = RUNTIME_REMOTE_TASK_PARENT_OUTPUT.en;
+pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN: &str =
+    RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.zh_cn;
+pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
+    RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.en;
 pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str = RUNTIME_ARTIFACT_FINALIZE.zh_cn;
 pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str = RUNTIME_ARTIFACT_FINALIZE.en;
 pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str = RUNTIME_CONTROL_RESUME.zh_cn;
-pub const RUNTIME_CONTROL_RESUME_EN: &str = RUNTIME_CONTROL_RESUME.en;
-pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
+pub const RUNTIME_CONTROL_RESUME_EN: &str = RUNTIME_CONTROL_RESUME.en;pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
     RUNTIME_CONTROL_RESUME_WITH_MESSAGE.zh_cn;
 pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str = RUNTIME_CONTROL_RESUME_WITH_MESSAGE.en;
 pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str = RUNTIME_WORKFLOW_RESUME.zh_cn;
@@ -243,6 +256,18 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     (
         "runtime/scheduled_task_context.md",
         RUNTIME_SCHEDULED_TASK_CONTEXT,
+    ),
+    (
+        "runtime/remote_task_context.md",
+        RUNTIME_REMOTE_TASK_CONTEXT,
+    ),
+    (
+        "runtime/remote_task_parent_output.md",
+        RUNTIME_REMOTE_TASK_PARENT_OUTPUT,
+    ),
+    (
+        "runtime/remote_task_completion_protocol.md",
+        RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
     ),
     ("runtime/artifact_finalize.md", RUNTIME_ARTIFACT_FINALIZE),
     ("runtime/runtime_control_resume.md", RUNTIME_CONTROL_RESUME),
@@ -410,6 +435,89 @@ mod tests {
                 }),
             );
         }
+    }
+
+    #[test]
+    fn remote_task_context_templates_render_all_and_partial_fields() {
+        // 远程任务 DPMS 溯源块（multica 预填 composer / 会话起始输入）：全字段与部分字段
+        // （其余 null，对应 wire 缺省键）都需完整渲染，且中文标签锁定（发布计划 ID / 业务需求 ID / 需求链接）。
+        let full = json!({
+            "release_plan_id": 538181,
+            "dev_user": "alice,bob",
+            "test_user": "carol",
+            "business_story_id": 674290,
+            "origin_url": "https://dpms.example.com/story/674290"
+        });
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, full.clone());
+        assert!(zh.contains("- 发布计划 ID: 538181"));
+        assert!(zh.contains("- 开发负责人: alice,bob"));
+        assert!(zh.contains("- 业务需求 ID: 674290"));
+        assert!(zh.contains("- 需求链接: https://dpms.example.com/story/674290"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, full);
+        assert!(en.contains("- Release plan ID: 538181"));
+        assert!(en.contains("- Business story ID: 674290"));
+        assert!(en.contains("- Requirement link: https://dpms.example.com/story/674290"));
+
+        // 部分字段（其余 null）：仅渲染存在的行，缺席字段不出行、无空行残留。
+        let partial = json!({
+            "release_plan_id": 538181,
+            "dev_user": null,
+            "test_user": null,
+            "business_story_id": null,
+            "origin_url": null
+        });
+        let zh_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, partial.clone());
+        assert!(zh_partial.contains("- 发布计划 ID: 538181"));
+        assert!(!zh_partial.contains("开发负责人"));
+        assert!(!zh_partial.contains("\n\n"));
+        let en_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, partial);
+        assert!(!en_partial.contains("Dev owner"));
+    }
+
+    #[test]
+    fn remote_task_parent_output_templates_render_handoff() {
+        // 上游交付说明块（issue 完成输出传递特性；三次调整后随预填进 composer）：parent_output 渲染
+        // 进模板正文，中英文都需完整渲染且锁定关键语义（执行上下文 + 交付说明）。
+        let ctx = json!({"parent_output": "部署地址: https://t.example.com\n测试要点: 回归登录链路"});
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN, ctx.clone());
+        assert!(zh.contains("执行上下文"));
+        assert!(zh.contains("部署地址: https://t.example.com"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_PARENT_OUTPUT_EN, ctx);
+        assert!(en.contains("execution context"));
+        assert!(en.contains("部署地址: https://t.example.com"));
+    }
+
+    #[test]
+    fn remote_task_completion_protocol_templates_lock_fence_contract() {
+        // 完成输出协议（写侧）：模板不含变量、无条件渲染；中英文都必须锁定围栏块 info 串
+        // `completion-output`（提取函数按该 info 串精确匹配，两语言漂移即提取失效）。
+        // 服务端上限 16k 收紧（2026-09-21）后另锁四点篇幅契约：非 run 日志（最终交付说明）、
+        // 2k 字符以内、超长走工作区文件 + 块内路径引用（超长 400 会卡整个 done 请求）、
+        // 传递给下游子任务（读侧 parent_output 的消费方）。协议块改由隐式隐藏区段注入（M5-bk），
+        // 文案同步精简为要点列表，契约锚点不变。
+        for template in [
+            RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN,
+            RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN,
+        ] {
+            let rendered = assert_fully_rendered(template, json!({}));
+            assert!(rendered.contains("completion-output"));
+        }
+        let zh = RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN;
+        let en = RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN;
+        assert!(zh.contains("最终交付说明"));
+        assert!(zh.contains("run 日志"));
+        assert!(zh.contains("2000 字符"));
+        assert!(zh.contains("工作项无法标记完成"));
+        assert!(zh.contains("文件路径引用"));
+        assert!(zh.contains("下游子任务"));
+        assert!(en.contains("final deliverable handoff"));
+        assert!(en.contains("run log"));
+        assert!(en.contains("2,000 characters"));
+        assert!(en.contains("cannot be marked done"));
+        assert!(en.contains("file path references"));
+        assert!(en.contains("downstream sub-tasks"));
     }
 
     #[test]

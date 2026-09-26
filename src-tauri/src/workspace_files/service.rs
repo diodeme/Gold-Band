@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
-use std::fs::{File, Metadata};
+use std::fs::{File, FileType, Metadata};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
@@ -64,34 +64,12 @@ pub(crate) fn list_directory(
         let file_type = entry
             .file_type()
             .map_err(|io_error| io_path_error(io_error, &path, "read"))?;
-        let (kind, canonical_path, has_children) = if file_type.is_symlink() {
-            match std::fs::canonicalize(&path) {
-                Ok(target) if path_is_within(&target, &root.path) && target.is_dir() => {
-                    ("directory", target, directory_has_children(&path))
-                }
-                Ok(target) => ("symlink", target, false),
-                Err(_) => ("symlink", path.clone(), false),
-            }
-        } else if file_type.is_dir() {
-            ("directory", path.clone(), directory_has_children(&path))
-        } else if file_type.is_file() {
-            ("file", path.clone(), false)
-        } else {
-            ("other", path.clone(), false)
-        };
-        let metadata = entry.metadata().ok();
-        entries.push(WorkspaceDirectoryEntryVm {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            relative_path: relative_display(&path, &root.path),
-            canonical_path: display_path(&canonical_path),
-            kind: kind.to_string(),
-            has_children,
-            byte_length: metadata
-                .as_ref()
-                .filter(|_| kind == "file")
-                .map(Metadata::len),
-            modified_at_ns: metadata.as_ref().and_then(modified_at_ns),
-        });
+        entries.push(directory_entry_vm(
+            root,
+            &path,
+            file_type,
+            entry.metadata().ok(),
+        ));
     }
     entries.sort_by(|left, right| {
         let left_rank = usize::from(left.kind != "directory");
@@ -101,6 +79,65 @@ pub(crate) fn list_directory(
             .then_with(|| natord::compare_ignore_case(&left.name, &right.name))
     });
     Ok(entries)
+}
+
+/// Project one filesystem entry into the tree VM. A symlink to a directory
+/// inside the workspace behaves as a directory; any other link stays opaque.
+pub(crate) fn directory_entry_vm(
+    root: &ResolvedWorkspaceRoot,
+    path: &Path,
+    file_type: FileType,
+    metadata: Option<Metadata>,
+) -> WorkspaceDirectoryEntryVm {
+    let (kind, canonical_path, has_children) = if file_type.is_symlink() {
+        match std::fs::canonicalize(path) {
+            Ok(target) if path_is_within(&target, &root.path) && target.is_dir() => {
+                ("directory", target, directory_has_children(path))
+            }
+            Ok(target) => ("symlink", target, false),
+            Err(_) => ("symlink", path.to_path_buf(), false),
+        }
+    } else if file_type.is_dir() {
+        (
+            "directory",
+            path.to_path_buf(),
+            directory_has_children(path),
+        )
+    } else if file_type.is_file() {
+        ("file", path.to_path_buf(), false)
+    } else {
+        ("other", path.to_path_buf(), false)
+    };
+    WorkspaceDirectoryEntryVm {
+        name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        relative_path: relative_display(path, &root.path),
+        canonical_path: display_path(&canonical_path),
+        kind: kind.to_string(),
+        has_children,
+        byte_length: metadata
+            .as_ref()
+            .filter(|_| kind == "file")
+            .map(Metadata::len),
+        modified_at_ns: metadata.as_ref().and_then(modified_at_ns),
+    }
+}
+
+pub(crate) fn entry_vm_for_path(
+    root: &ResolvedWorkspaceRoot,
+    path: &Path,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|io_error| io_path_error(io_error, path, "read"))?;
+    let file_type = metadata.file_type();
+    let metadata = if file_type.is_symlink() {
+        std::fs::metadata(path).ok()
+    } else {
+        Some(metadata)
+    };
+    Ok(directory_entry_vm(root, path, file_type, metadata))
 }
 
 pub(crate) fn search_files(

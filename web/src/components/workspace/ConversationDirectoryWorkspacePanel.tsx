@@ -240,5 +240,5 @@ export function ConversationDirectoryWorkspacePanel({ resource, layout }: { reso
         : snapshot.kind === 'image' ? <div className="flex h-full items-center justify-center overflow-auto p-4"><img src={workspaceFilePreviewUrl(snapshot.previewGrant.token)} alt={snapshot.name} className="max-h-full max-w-full object-contain" /></div>
           : <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.unsupportedTitle')}</div>;
   const tree = <ConversationDirectoryTree roots={roots} loading={loading} selectedPath={selected?.canonicalPath ?? null} actionFailure={actionFailure} onLoadDirectory={load} onOpenFile={openFile} onCopyFailed={onCopyFailed} onOpenInFileManager={openInManager} />;
-  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} selectedFileKey={selected?.canonicalPath ?? null} content={content} tree={tree} treeWidth={null} onTreeWidthChange={() => undefined} />;
+  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} revealFileKey={selected?.canonicalPath ?? null} content={content} tree={tree} treeWidth={null} onTreeWidthChange={() => undefined} />;
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -10,6 +10,11 @@ use crate::commands::{CommandErrorVm, CommandResult};
 
 use super::models::{ExternalFileAccessGrantVm, FileRevisionVm, WorkspaceFilePreviewGrantVm};
 use super::paths::{display_path, error};
+use super::trash_bin::TrashedEntry;
+
+/// Undo history is session-scoped on the frontend; this bound only keeps the
+/// receipts that back it from growing without limit.
+const MAX_TRASH_RECEIPTS: usize = 64;
 
 #[derive(Clone, Default)]
 pub struct WorkspaceFileRuntime {
@@ -21,6 +26,14 @@ struct WorkspaceFileRuntimeInner {
     external_grants: HashMap<String, ExternalGrant>,
     preview_grants: HashMap<String, PreviewGrant>,
     recent_writes: HashMap<PathBuf, RecentWrite>,
+    trash_receipts: VecDeque<TrashReceipt>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TrashReceipt {
+    pub id: String,
+    pub project_id: String,
+    pub entry: TrashedEntry,
 }
 
 #[derive(Clone)]
@@ -187,6 +200,45 @@ impl WorkspaceFileRuntime {
             .recent_writes
             .get(path)
             .map(|write| (write.operation_id.clone(), write.revision.clone()))
+    }
+
+    pub(crate) fn record_trash_receipt(
+        &self,
+        project_id: String,
+        entry: TrashedEntry,
+    ) -> CommandResult<String> {
+        let id = Uuid::new_v4().to_string();
+        let mut inner = self.lock()?;
+        inner.trash_receipts.push_back(TrashReceipt {
+            id: id.clone(),
+            project_id,
+            entry,
+        });
+        while inner.trash_receipts.len() > MAX_TRASH_RECEIPTS {
+            inner.trash_receipts.pop_front();
+        }
+        Ok(id)
+    }
+
+    pub(crate) fn trash_receipt(&self, project_id: &str, id: &str) -> CommandResult<TrashReceipt> {
+        self.lock()?
+            .trash_receipts
+            .iter()
+            .find(|receipt| receipt.id == id && receipt.project_id == project_id)
+            .cloned()
+            .ok_or_else(|| {
+                error(
+                    "workspace-file.restore-unavailable",
+                    serde_json::json!({ "reason": "receipt-not-found" }),
+                )
+            })
+    }
+
+    pub(crate) fn forget_trash_receipt(&self, id: &str) -> CommandResult<()> {
+        self.lock()?
+            .trash_receipts
+            .retain(|receipt| receipt.id != id);
+        Ok(())
     }
 
     pub fn preview_protocol_response(&self, token: &str, static_frame: bool) -> Response<Vec<u8>> {

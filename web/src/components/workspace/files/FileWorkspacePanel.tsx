@@ -7,7 +7,7 @@ import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
-import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
+import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
 import { isHtmlDocumentPath } from '../browser/web-target';
 import { openWebTarget } from '../browser/open-web-target';
@@ -21,7 +21,8 @@ import {
   type RightWorkspaceResource,
 } from '../right-workspace-context';
 import { fileContentStore, useFileContentEntry } from './file-content-store';
-import { fileExplorerStore } from './file-explorer-store';
+import { fileExplorerStore, type FileTreeEntryMutation } from './file-explorer-store';
+import { remapWorkspacePath, workspacePathIsWithin } from './workspace-path';
 import { WorkspaceFileEditor, type EditorViewportAnchor } from './WorkspaceFileEditor';
 import { markdownImageSources } from './markdown-image-preview';
 import { isMarkdownDocumentPath } from './markdown-document';
@@ -50,6 +51,30 @@ function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], en
     },
     target: null,
     targetRevision: 0,
+  };
+}
+
+/**
+ * Where the open file lives after a tree mutation: `undefined` when unaffected,
+ * `null` when it was removed, or the entry it moved to with its parent.
+ */
+export function selectedFileAfterEntryMutation(
+  locator: WorkspaceFileLocatorVm,
+  mutation: FileTreeEntryMutation,
+): WorkspaceDirectoryEntryVm | null | undefined {
+  const affected = mutation.kind === 'removed' ? mutation.entry : mutation.from;
+  if (!workspacePathIsWithin(locator.canonicalPath, affected.canonicalPath)) return undefined;
+  if (mutation.kind === 'removed') return null;
+  const canonicalPath = remapWorkspacePath(locator.canonicalPath, mutation.from.canonicalPath, mutation.to.canonicalPath);
+  const relativePath = remapWorkspacePath(locator.relativePath ?? '', mutation.from.relativePath, mutation.to.relativePath);
+  return {
+    name: relativePath.slice(relativePath.lastIndexOf('/') + 1),
+    relativePath,
+    canonicalPath,
+    kind: 'file',
+    hasChildren: false,
+    byteLength: null,
+    modifiedAtNs: null,
   };
 }
 
@@ -84,6 +109,35 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
     workspace.openResource(fileResourceFromEntry(resource, entry));
   }, [resource, workspace.openResource]);
 
+  // A file that follows a rename is still the same file; only a new selection reveals the content view.
+  const followedFileKey = useRef<string | null>(null);
+  const [revealFileKey, setRevealFileKey] = useState(selected?.key ?? null);
+  useEffect(() => {
+    const key = selected?.key ?? null;
+    if (key !== null && key === followedFileKey.current) return;
+    followedFileKey.current = null;
+    setRevealFileKey(key);
+  }, [selected?.key]);
+
+  const latestRef = useRef({ resource, selected, openResource: workspace.openResource, closeTab: workspace.closeTab });
+  latestRef.current = { resource, selected, openResource: workspace.openResource, closeTab: workspace.closeTab };
+  useEffect(() => fileExplorerStore.subscribeEntryMutations((mutation) => {
+    const { resource: current, selected: file, openResource, closeTab } = latestRef.current;
+    if (mutation.projectId !== current.projectId || !file) return;
+    const next = selectedFileAfterEntryMutation(file.locator, mutation);
+    if (next === undefined) return;
+    if (next) {
+      if (current.kind === 'file') void closeTab(current.key);
+      const followed = fileResourceFromEntry(current, next);
+      followedFileKey.current = followed.key;
+      void openResource(followed);
+    } else if (current.kind === 'file-browser') {
+      void openResource({ ...current, selectedFile: null });
+    } else {
+      void closeTab(current.key);
+    }
+  }), []);
+
   const content = selected ? <FileContent key={selected.key} resource={selected} /> : <FileEmptyState />;
   const tree = (
     <WorkspaceFileTree
@@ -92,13 +146,13 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
       onOpenFile={openFile}
     />
   );
-  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} selectedFileKey={selected?.key ?? null} content={content} tree={tree} treeWidth={fileExplorerStore.snapshot(resource.projectId).treeWidth} onTreeWidthChange={(width) => fileExplorerStore.setTreeWidth(resource.projectId, width)} />;
+  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} revealFileKey={revealFileKey} content={content} tree={tree} treeWidth={fileExplorerStore.snapshot(resource.projectId).treeWidth} onTreeWidthChange={(width) => fileExplorerStore.setTreeWidth(resource.projectId, width)} />;
 }
 
-export function FileWorkspaceSplitLayout({ layout, hasFile, selectedFileKey, content, tree, treeWidth, onTreeWidthChange }: { layout: FileWorkspaceLayoutVm; hasFile: boolean; selectedFileKey: string | null; content: React.ReactNode; tree: React.ReactNode; treeWidth: number | null; onTreeWidthChange: (width: number) => void }) {
+export function FileWorkspaceSplitLayout({ layout, hasFile, revealFileKey, content, tree, treeWidth, onTreeWidthChange }: { layout: FileWorkspaceLayoutVm; hasFile: boolean; revealFileKey: string | null; content: React.ReactNode; tree: React.ReactNode; treeWidth: number | null; onTreeWidthChange: (width: number) => void }) {
   const { t } = useTranslation(); const { ref, responsiveState, currentWidth } = useWorkspaceResponsiveState(layout.splitMinWidth);
   const [compactView, setCompactView] = useState<'content' | 'tree'>(hasFile ? 'content' : 'tree');
-  useEffect(() => { if (selectedFileKey) setCompactView('content'); }, [selectedFileKey]);
+  useEffect(() => { if (revealFileKey) setCompactView('content'); }, [revealFileKey]);
   const width = Math.min(layout.treeMaxWidth, Math.max(layout.treeMinWidth, treeWidth ?? layout.treeDefaultWidth)); const percent = Math.min(60, Math.max(20, responsiveState.widthAtTransition > 0 ? width / responsiveState.widthAtTransition * 100 : 38));
   return <div ref={ref} className="flex min-h-0 flex-1 flex-col" data-file-workspace-panel="true">{!responsiveState.split ? <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/50 px-2"><Button size="sm" variant={compactView === 'content' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setCompactView('content')} disabled={!hasFile}>{t('workspace.filesPanel.file')}</Button><Button size="sm" variant={compactView === 'tree' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setCompactView('tree')}>{t('workspace.filesPanel.directory')}</Button></div> : null}<div className="min-h-0 flex-1">{responsiveState.split ? <ResizablePanelGroup orientation="horizontal" className="h-full" onLayoutChanged={(panelLayout, meta) => { if (!meta.isUserInteraction) return; const next = resolveWorkspacePanelWidthFromLayout({ layout: panelLayout, panelId: 'file-tree', groupWidth: currentWidth(), minWidth: layout.treeMinWidth, maxWidth: layout.treeMaxWidth }); if (next != null) onTreeWidthChange(next); }}><ResizablePanel id="file-content" defaultSize={`${100 - percent}%`} minSize={280} className="min-w-0">{content}</ResizablePanel><ResizableHandle className="bg-border/50" /><ResizablePanel id="file-tree" defaultSize={`${percent}%`} minSize={layout.treeMinWidth} maxSize={layout.treeMaxWidth} className="min-w-0">{tree}</ResizablePanel></ResizablePanelGroup> : compactView === 'content' && hasFile ? content : tree}</div></div>;
 }

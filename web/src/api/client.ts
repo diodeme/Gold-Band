@@ -132,6 +132,8 @@ import type {
   FileRevisionVm,
   ResolvedWorkspaceFileLinkVm,
   WorkspaceDirectoryEntryVm,
+  WorkspaceEntryDeletionVm,
+  CreateWorkspaceEntryInput,
   WorkspaceFileChangedEventVm,
   WorkspaceFileSearchVm,
   WorkspaceFileSnapshotVm,
@@ -596,6 +598,10 @@ export interface RuntimeApi {
   saveLastConversationWorkspace(projectId: string): Promise<void>;
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
   openWorkspacePathInFileManager(projectId: string, relativePath?: string): Promise<void>;
+  createWorkspaceEntry(input: CreateWorkspaceEntryInput): Promise<WorkspaceDirectoryEntryVm>;
+  renameWorkspaceEntry(projectId: string, relativePath: string, newName: string): Promise<WorkspaceDirectoryEntryVm>;
+  deleteWorkspaceEntry(projectId: string, relativePath: string): Promise<WorkspaceEntryDeletionVm>;
+  restoreWorkspaceEntry(projectId: string, receiptId: string): Promise<WorkspaceDirectoryEntryVm>;
   listConversationDirectory(input: ConversationDirectoryInput): Promise<WorkspaceDirectoryEntryVm[]>;
   openConversationDirectoryPathInFileManager(input: ConversationDirectoryInput): Promise<void>;
   readConversationDirectoryFile(input: ConversationDirectoryInput): Promise<WorkspaceFileSnapshotVm>;

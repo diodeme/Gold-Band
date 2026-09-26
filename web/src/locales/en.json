@@ -657,6 +657,18 @@
       "openHtmlInBrowser": "Open in browser",
       "externalMarkdownImages": "This document references {{count}} local images outside its directory",
       "loadExternalMarkdownImages": "Load these images",
+      "newFile": "New File",
+      "newFolder": "New Folder",
+      "rename": "Rename",
+      "delete": "Delete",
+      "deleting": "Deleting…",
+      "cancel": "Cancel",
+      "entryName": "Name",
+      "deleteTitle": "Delete \"{{name}}\"?",
+      "deleteFileDescription": "The file will be moved to the trash.",
+      "deleteDirectoryDescription": "The folder and everything in it will be moved to the trash.",
+      "deleteUnsavedWarning": "Unsaved changes in it will be lost.",
+      "operationFailed": "The operation failed. Try again.",
       "limitations": {
         "workspace-file": {
           "too-large": "The file exceeds the in-app viewing limit. Open it with a system app.",
@@ -685,7 +697,13 @@
           "read-failed": "The file could not be read. Try again.",
           "write-failed": "The file could not be saved. Try again.",
           "search-failed": "File search failed. Try again.",
-          "watch-failed": "File change monitoring failed. Try again."
+          "watch-failed": "File change monitoring failed. Try again.",
+          "already-exists": "A file or folder with this name already exists.",
+          "name-invalid": "This name can’t be used. Choose a different name.",
+          "not-a-directory": "The selected path is not a folder.",
+          "trash-failed": "Could not move the item to the trash. Try again.",
+          "restore-unavailable": "Can’t undo: the item is no longer in the trash.",
+          "unsaved-changes": "Unsaved changes could not be saved, so the rename was canceled."
         }
       }
     },

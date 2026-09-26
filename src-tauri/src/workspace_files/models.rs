@@ -224,3 +224,51 @@ pub struct WorkspaceFileWatchInput {
 pub struct WorkspaceFileTokenInput {
     pub token: String,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceEntryKindInput {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkspaceEntryInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub parent_relative_path: String,
+    pub name: String,
+    pub kind: WorkspaceEntryKindInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameWorkspaceEntryInput {
+    pub project_id: String,
+    pub relative_path: String,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkspaceEntryInput {
+    pub project_id: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreWorkspaceEntryInput {
+    pub project_id: String,
+    pub receipt_id: String,
+}
+
+/// Result of moving an entry to the system trash. `receipt_id` is an opaque
+/// session-scoped handle for `restore_workspace_entry`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntryDeletionVm {
+    pub receipt_id: String,
+    pub entry: WorkspaceDirectoryEntryVm,
+}

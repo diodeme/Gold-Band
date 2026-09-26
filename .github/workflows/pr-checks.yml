@@ -31,6 +31,9 @@ jobs:
       - name: Check macOS desktop crate
         run: cargo check -p gold-band-desktop --all-targets
 
+      - name: Verify macOS trash round trip
+        run: cargo test -p gold-band-desktop --bin gold-band-desktop workspace_files::trash_bin -- --include-ignored
+
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04

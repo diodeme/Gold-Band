@@ -1,11 +1,22 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, File, FileCode2, Folder, FolderOpen, ListCollapse, ListTree, LoaderCircle, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, FileCode2, FilePlus, Folder, FolderOpen, FolderPlus, ListCollapse, ListTree, LoaderCircle, Search, X } from 'lucide-react';
 import { Tree, type NodeRendererProps, type TreeApi } from 'react-arborist';
 import { useTranslation } from 'react-i18next';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { cn } from '@/lib/utils';
 import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
@@ -18,13 +29,17 @@ import {
 } from '../workspace-file-reference-bridge';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import {
+  FILE_TREE_DRAFT_ID,
   fileExplorerStore,
   fileTreeView,
+  fileTreeWithDraft,
   useFileExplorerSnapshot,
   type FileTreeDisplayMode,
+  type FileTreeOperationResult,
   type FileTreeViewNode,
 } from './file-explorer-store';
-import { WorkspaceDirectoryContextMenu } from './WorkspaceDirectoryContextMenu';
+import { fileContentStore } from './file-content-store';
+import { WorkspaceDirectoryContextMenu, type WorkspaceEntryMenuActions } from './WorkspaceDirectoryContextMenu';
 
 interface WorkspaceFileTreeProps {
   projectId: string;
@@ -42,6 +57,86 @@ interface TreeRowContextValue {
   onContextMenuOpenChange: (open: boolean) => void;
   canActivateFile: () => boolean;
   displayMode: FileTreeDisplayMode;
+  entryActions: WorkspaceEntryMenuActions | null;
+  onMenuCloseAutoFocus: (event: Event) => void;
+  renamingId: string | null;
+  pendingPath: string | null;
+  onSubmitName: (entry: FileTreeViewNode, name: string) => void;
+  onCancelName: (entry: FileTreeViewNode) => void;
+}
+
+/** A tree edit requested from a context menu; applied once the menu has released focus. */
+type PendingTreeEdit =
+  | { kind: 'create'; parentRelativePath: string; entryKind: 'file' | 'directory' }
+  | { kind: 'rename'; nodeId: string };
+
+interface TreeActionFailure {
+  messageKey: string;
+  params?: Record<string, unknown>;
+}
+
+const ACTION_FAILURE_VISIBLE_MS = 1_500;
+const OPERATION_FAILURE_VISIBLE_MS = 3_000;
+
+export function treeCreateParentPath(entry: Pick<WorkspaceDirectoryEntryVm, 'kind' | 'relativePath'>) {
+  if (entry.kind === 'directory') return entry.relativePath;
+  const index = entry.relativePath.lastIndexOf('/');
+  return index < 0 ? '' : entry.relativePath.slice(0, index);
+}
+
+/** Ctrl+Z (⌘Z on macOS) outside text inputs undoes the last tree operation. */
+export function isTreeUndoShortcut(event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey' | 'target'>) {
+  if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return false;
+  if (event.key.toLowerCase() !== 'z') return false;
+  const target = event.target as Partial<Pick<Element, 'closest'>> | null;
+  return !target?.closest?.('input, textarea, [contenteditable]:not([contenteditable="false"])');
+}
+
+/** Preselect the base name so typing replaces it and keeps the extension. */
+export function entryNameSelectionEnd(name: string, kind: string) {
+  const extensionStart = name.lastIndexOf('.');
+  return kind === 'file' && extensionStart > 0 ? extensionStart : name.length;
+}
+
+function operationFailure(result: FileTreeOperationResult): TreeActionFailure | null {
+  if (result.status !== 'failed') return null;
+  return { messageKey: `workspace.filesPanel.errors.${result.errorCode}`, params: result.params };
+}
+
+function TreeEntryNameEditor({ entry, pending, onSubmit, onCancel }: {
+  entry: FileTreeViewNode;
+  pending: boolean;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const [value, setValue] = useState(entry.name);
+  const settledRef = useRef(false);
+  const settle = (submit: boolean) => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    const name = value.trim();
+    if (submit && name && name !== entry.name) onSubmit(name);
+    else onCancel();
+  };
+  return (
+    <Input
+      autoFocus
+      value={value}
+      disabled={pending}
+      aria-label={t('workspace.filesPanel.entryName')}
+      className="h-6 min-w-0 flex-1 rounded-sm px-1.5 py-0 text-xs"
+      onFocus={(event) => event.currentTarget.setSelectionRange(0, entryNameSelectionEnd(entry.name, entry.kind))}
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === 'Enter') settle(true);
+        else if (event.key === 'Escape') settle(false);
+      }}
+      onBlur={() => settle(true)}
+    />
+  );
 }
 
 const TreeRowContext = createContext<TreeRowContextValue | null>(null);
@@ -111,6 +206,29 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
   const entry = node.data;
   const isDirectory = entry.kind === 'directory';
   const Icon = isDirectory ? (node.isOpen ? FolderOpen : Folder) : fileIcon(entry.name);
+  const isDraft = node.id === FILE_TREE_DRAFT_ID;
+  const pending = context.pendingPath !== null && (isDraft || context.pendingPath === entry.relativePath);
+  if (isDraft || context.renamingId === node.id) {
+    return (
+      <div
+        ref={dragHandle}
+        style={{ ...style, ...treeRowOverflowStyle('tree', node.level) }}
+        className="flex h-full w-full items-center gap-1.5 rounded-md px-1.5 text-xs"
+      >
+        <span style={{ width: node.level * 14 }} className="shrink-0" aria-hidden="true" />
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          {pending ? <LoaderCircle className="size-3 animate-spin" /> : null}
+        </span>
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <TreeEntryNameEditor
+          entry={entry}
+          pending={pending}
+          onSubmit={(name) => context.onSubmitName(entry, name)}
+          onCancel={() => context.onCancelName(entry)}
+        />
+      </div>
+    );
+  }
   const row = (
     <div
       ref={dragHandle}
@@ -118,9 +236,11 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
         ...style,
         ...treeRowOverflowStyle(context.displayMode, node.level),
       }}
+      aria-busy={pending || undefined}
       className={cn(
         'group flex h-full w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs outline-none transition-[background-color,color,box-shadow]',
         fileTreeRowStateClassName(context.selectedPath === entry.canonicalPath, node.isFocused),
+        pending && 'opacity-60',
       )}
       onClick={(event) => {
         event.stopPropagation();
@@ -131,9 +251,9 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
       onDoubleClick={(event) => event.preventDefault()}
     >
       <span style={{ width: node.level * 14 }} className="shrink-0" aria-hidden="true" />
-      {isDirectory ? (
+      {isDirectory || pending ? (
         <span className="flex size-4 shrink-0 items-center justify-center">
-          {entry.loading ? <LoaderCircle className="size-3 animate-spin" /> : node.isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+          {entry.loading || pending ? <LoaderCircle className="size-3 animate-spin" /> : node.isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
       ) : <span className="size-4 shrink-0" />}
       <Icon className={cn('size-3.5 shrink-0', fileTreeIconStateClassName(context.selectedPath === entry.canonicalPath))} />
@@ -146,11 +266,13 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
   );
   return (
     <ContextMenu dir="ltr" onOpenChange={context.onContextMenuOpenChange}>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      {/* Keep the blank-area menu of the tree from opening underneath this row menu. */}
+      <ContextMenuTrigger asChild onContextMenu={(event) => event.stopPropagation()}>{row}</ContextMenuTrigger>
       <ContextMenuContent
         className="w-40 min-w-40 p-1"
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
+        onCloseAutoFocus={context.onMenuCloseAutoFocus}
       >
         <WorkspaceDirectoryContextMenu
           canonicalPath={entry.canonicalPath}
@@ -160,6 +282,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
           onCopyFailed={context.onCopyFailed}
           onOpenInFileManager={context.onOpenInFileManager}
           onReferenceToConversation={context.onReferenceToConversation ?? undefined}
+          entryActions={context.pendingPath === null ? (context.entryActions ?? undefined) : undefined}
         />
       </ContextMenuContent>
     </ContextMenu>
@@ -171,9 +294,13 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const workspaceFileReferenceCommands = useWorkspaceFileReferenceCommands();
   const workspaceFileReferencePresentation = useWorkspaceFileReferencePresentation();
   const canReferenceToConversation = workspaceFileReferenceCommands?.available === true;
+  const readOnly = useReadOnlyExperience();
   const snapshot = useFileExplorerSnapshot(projectId);
   const displayModeToggle = fileTreeDisplayModeToggle(snapshot.displayMode);
-  const treeNodes = useMemo(() => fileTreeView(snapshot.roots, snapshot.displayMode), [snapshot.displayMode, snapshot.roots]);
+  const treeNodes = useMemo(
+    () => fileTreeView(fileTreeWithDraft(snapshot.roots, snapshot.draft), snapshot.displayMode),
+    [snapshot.displayMode, snapshot.draft, snapshot.roots],
+  );
   const { ref, height } = useMeasuredElementHeight(320, measureTreeViewportHeight);
   const treeRef = useRef<TreeApi<FileTreeViewNode> | null>(null);
   const pendingRevealPathRef = useRef<string | null>(null);
@@ -182,8 +309,13 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const contextMenuOpenRef = useRef(false);
   const suppressContextMenuActivationRef = useRef(false);
   const contextMenuFrameRef = useRef<number | null>(null);
-  const [actionFailure, setActionFailure] = useState<'copy' | 'file-manager' | null>(null);
+  const [actionFailure, setActionFailure] = useState<TreeActionFailure | null>(null);
   const actionFailureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const asideRef = useRef<HTMLElement | null>(null);
+  const pendingEditRef = useRef<PendingTreeEdit | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ entry: WorkspaceDirectoryEntryVm; unsaved: boolean } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     void fileExplorerStore.loadRoot(projectId);
@@ -234,18 +366,85 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     return () => cancelAnimationFrame(frame);
   }, [selectedPath, treeNodes]);
 
-  const onCopyFailed = useCallback(() => {
+  useEffect(() => {
+    if (!snapshot.draft) return;
+    const frame = requestAnimationFrame(() => treeRef.current?.scrollTo(FILE_TREE_DRAFT_ID));
+    return () => cancelAnimationFrame(frame);
+  }, [snapshot.draft]);
+
+  const showActionFailure = useCallback((failure: TreeActionFailure, visibleMs = ACTION_FAILURE_VISIBLE_MS) => {
     if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
-    setActionFailure('copy');
-    actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), 1_500);
+    setActionFailure(failure);
+    actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), visibleMs);
   }, []);
+  const reportOperation = useCallback((result: FileTreeOperationResult) => {
+    const failure = operationFailure(result);
+    if (failure) showActionFailure(failure, OPERATION_FAILURE_VISIBLE_MS);
+  }, [showActionFailure]);
+  const onCopyFailed = useCallback(() => {
+    showActionFailure({ messageKey: 'workspace.filesPanel.pathCopyFailed' });
+  }, [showActionFailure]);
   const onOpenInFileManager = useCallback((relativePath: string) => {
     void openWorkspacePathInFileManager(projectId, relativePath).catch(() => {
-      if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
-      setActionFailure('file-manager');
-      actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), 1_500);
+      showActionFailure({ messageKey: 'workspace.filesPanel.fileManagerOpenFailed' });
     });
+  }, [projectId, showActionFailure]);
+  const focusTree = useCallback(() => asideRef.current?.focus({ preventScroll: true }), []);
+  const treeNodesRef = useRef(treeNodes);
+  treeNodesRef.current = treeNodes;
+  const entryActions = useMemo<WorkspaceEntryMenuActions | null>(() => (readOnly ? null : {
+    onCreate: (entry, kind) => {
+      pendingEditRef.current = { kind: 'create', parentRelativePath: treeCreateParentPath(entry), entryKind: kind };
+    },
+    onRename: (entry) => {
+      const node = findTreeNodeByRelativePath(treeNodesRef.current, entry.relativePath);
+      if (node) pendingEditRef.current = { kind: 'rename', nodeId: node.id };
+    },
+    onDelete: (entry) => {
+      setDeleteTarget({ entry, unsaved: fileContentStore.hasUnsavedWithin(projectId, entry.canonicalPath) });
+    },
+  }), [projectId, readOnly]);
+  /** Radix restores focus to the trigger on close, which would blur a freshly mounted name editor. */
+  const onMenuCloseAutoFocus = useCallback((event: Event) => {
+    const edit = pendingEditRef.current;
+    if (!edit) return;
+    pendingEditRef.current = null;
+    event.preventDefault();
+    if (edit.kind === 'rename') setRenamingId(edit.nodeId);
+    else void fileExplorerStore.startDraft(projectId, edit.parentRelativePath, edit.entryKind);
   }, [projectId]);
+  const onSubmitName = useCallback((entry: FileTreeViewNode, name: string) => {
+    void (async () => {
+      if (entry.id === FILE_TREE_DRAFT_ID) {
+        const result = await fileExplorerStore.createEntry(projectId, name);
+        reportOperation(result);
+        if (result.status === 'done' && result.entry?.kind === 'file') onOpenFile(result.entry);
+      } else {
+        const result = await fileExplorerStore.renameEntry(projectId, entry, name);
+        setRenamingId(null);
+        reportOperation(result);
+      }
+      focusTree();
+    })();
+  }, [focusTree, onOpenFile, projectId, reportOperation]);
+  const onCancelName = useCallback((entry: FileTreeViewNode) => {
+    if (entry.id === FILE_TREE_DRAFT_ID) fileExplorerStore.cancelDraft(projectId);
+    else setRenamingId(null);
+    focusTree();
+  }, [focusTree, projectId]);
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    const result = await fileExplorerStore.deleteEntry(projectId, deleteTarget.entry);
+    setDeleting(false);
+    setDeleteTarget(null);
+    reportOperation(result);
+  }, [deleteTarget, projectId, reportOperation]);
+  const onTreeKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (readOnly || !isTreeUndoShortcut(event.nativeEvent)) return;
+    event.preventDefault();
+    void fileExplorerStore.undo(projectId).then(reportOperation);
+  }, [projectId, readOnly, reportOperation]);
   const onReferenceToConversation = useCallback((entry: WorkspaceDirectoryEntryVm) => {
     if (!workspaceFileReferenceCommands?.available) return { kind: 'unavailable' } as const;
     return workspaceFileReferenceCommands.addWorkspaceFileRef(
@@ -278,12 +477,24 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     onContextMenuOpenChange,
     canActivateFile,
     displayMode: snapshot.displayMode,
-  }), [canActivateFile, canReferenceToConversation, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, onReferenceToConversation, selectedPath, snapshot.displayMode]);
+    entryActions,
+    onMenuCloseAutoFocus,
+    renamingId,
+    pendingPath: snapshot.pendingPath,
+    onSubmitName,
+    onCancelName,
+  }), [canActivateFile, canReferenceToConversation, entryActions, onCancelName, onContextMenuOpenChange, onCopyFailed, onMenuCloseAutoFocus, onOpenFile, onOpenInFileManager, onReferenceToConversation, onSubmitName, renamingId, selectedPath, snapshot.displayMode, snapshot.pendingPath]);
   const searchEntries = snapshot.searchResult?.entries ?? [];
   const searching = snapshot.searchQuery.trim().length > 0;
 
   return (
-    <aside className="relative flex h-full min-h-0 flex-col bg-muted/10" aria-label={t('workspace.filesPanel.workspaceTree')}>
+    <aside
+      ref={asideRef}
+      tabIndex={-1}
+      onKeyDown={onTreeKeyDown}
+      className="relative flex h-full min-h-0 flex-col bg-muted/10 outline-none"
+      aria-label={t('workspace.filesPanel.workspaceTree')}
+    >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-border/50 p-2">
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -325,7 +536,11 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           </TooltipContent>
         </Tooltip>
       </div>
-      {actionFailure ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-ui-caption text-destructive shadow-sm">{t(actionFailure === 'copy' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.fileManagerOpenFailed')}</div> : null}
+      {actionFailure ? (
+        <div role="status" className="pointer-events-none absolute right-2 top-12 z-20 max-w-[calc(100%-1rem)] rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-ui-caption text-destructive shadow-sm">
+          {t(actionFailure.messageKey, { ...actionFailure.params, defaultValue: t('workspace.filesPanel.operationFailed') })}
+        </div>
+      ) : null}
       <div ref={ref} className="min-h-0 flex-1 overflow-hidden p-1.5">
         {snapshot.status === 'loading' || snapshot.searchStatus === 'loading' ? (
           <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loading')}</div>
@@ -371,6 +586,9 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           </div>
         ) : (
           <TreeRowContext.Provider value={contextValue}>
+            <ContextMenu dir="ltr">
+            <ContextMenuTrigger asChild disabled={readOnly || snapshot.pendingPath !== null}>
+            <div className="h-full">
             <Tree<FileTreeViewNode>
               key={snapshot.displayMode}
               ref={treeRef}
@@ -408,9 +626,61 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
             >
               {TreeNodeRow}
             </Tree>
+            </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="w-40 min-w-40 p-1" onCloseAutoFocus={onMenuCloseAutoFocus}>
+              <ContextMenuItem className="h-8 gap-2 px-2 py-1 text-xs" onSelect={() => { pendingEditRef.current = { kind: 'create', parentRelativePath: '', entryKind: 'file' }; }}>
+                <FilePlus className="size-3.5" />
+                {t('workspace.filesPanel.newFile')}
+              </ContextMenuItem>
+              <ContextMenuItem className="h-8 gap-2 px-2 py-1 text-xs" onSelect={() => { pendingEditRef.current = { kind: 'create', parentRelativePath: '', entryKind: 'directory' }; }}>
+                <FolderPlus className="size-3.5" />
+                {t('workspace.filesPanel.newFolder')}
+              </ContextMenuItem>
+            </ContextMenuContent>
+            </ContextMenu>
           </TreeRowContext.Provider>
         )}
       </div>
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null); }}>
+        <AlertDialogContent
+          size="sm"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            focusTree();
+          }}
+        >
+          <AlertDialogHeader className="gap-1.5">
+            <AlertDialogTitle className="break-all text-base font-semibold">
+              {t('workspace.filesPanel.deleteTitle', { name: deleteTarget?.entry.name ?? '' })}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm leading-6">
+              {t(deleteTarget?.entry.kind === 'directory'
+                ? 'workspace.filesPanel.deleteDirectoryDescription'
+                : 'workspace.filesPanel.deleteFileDescription')}
+              {deleteTarget?.unsaved ? <span className="mt-1 block text-destructive">{t('workspace.filesPanel.deleteUnsavedWarning')}</span> : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-1.5">
+            <AlertDialogCancel variant="ghost" size="sm" disabled={deleting}>
+              {t('workspace.filesPanel.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="ghost"
+              size="sm"
+              className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault();
+                void confirmDelete();
+              }}
+            >
+              {deleting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              {t(deleting ? 'workspace.filesPanel.deleting' : 'workspace.filesPanel.delete')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </aside>
   );
 }
@@ -431,6 +701,13 @@ function findTreeNodeByCanonicalPath(nodes: FileTreeViewNode[], canonicalPath: s
       const child = findTreeNodeByCanonicalPath(node.children, canonicalPath);
       if (child) return child;
     }
+  }
+  return null;
+}
+
+function findTreeNodeByRelativePath(nodes: FileTreeViewNode[], relativePath: string): FileTreeViewNode | null {
+  for (const node of visibleTreeNodes(nodes)) {
+    if (node.relativePath === relativePath) return node;
   }
   return null;
 }

@@ -776,6 +776,18 @@ export const desktopApi: RuntimeApi = {
   openWorkspacePathInFileManager(projectId, relativePath = '') {
     return invokeCommand('open_workspace_path_in_file_manager', { input: { projectId, relativePath } });
   },
+  createWorkspaceEntry(input) {
+    return invokeCommand('create_workspace_entry', { input });
+  },
+  renameWorkspaceEntry(projectId, relativePath, newName) {
+    return invokeCommand('rename_workspace_entry', { input: { projectId, relativePath, newName } });
+  },
+  deleteWorkspaceEntry(projectId, relativePath) {
+    return invokeCommand('delete_workspace_entry', { input: { projectId, relativePath } });
+  },
+  restoreWorkspaceEntry(projectId, receiptId) {
+    return invokeCommand('restore_workspace_entry', { input: { projectId, receiptId } });
+  },
   listConversationDirectory(input) {
     return invokeCommand('list_conversation_directory', { input });
   },

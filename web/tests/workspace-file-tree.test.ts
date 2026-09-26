@@ -177,3 +177,31 @@ describe('workspace file tree path actions', () => {
     expect(canReferenceWorkspaceFileToConversation('other', true, false)).toBe(false);
   });
 });
+
+describe('workspace file tree entry editing', () => {
+  it('creates next to a file and inside a folder', async () => {
+    const { treeCreateParentPath } = await import('@/components/workspace/files/WorkspaceFileTree');
+    expect(treeCreateParentPath({ kind: 'file', relativePath: 'README.md' })).toBe('');
+    expect(treeCreateParentPath({ kind: 'file', relativePath: 'src/lib/mod.rs' })).toBe('src/lib');
+    expect(treeCreateParentPath({ kind: 'directory', relativePath: 'src/lib' })).toBe('src/lib');
+  });
+
+  it('preselects the base name of a file and the whole name of a folder', async () => {
+    const { entryNameSelectionEnd } = await import('@/components/workspace/files/WorkspaceFileTree');
+    expect(entryNameSelectionEnd('main.test.ts', 'file')).toBe(9);
+    expect(entryNameSelectionEnd('.gitignore', 'file')).toBe(10);
+    expect(entryNameSelectionEnd('v1.2', 'directory')).toBe(4);
+  });
+
+  it('treats Ctrl+Z and Cmd+Z as tree undo only outside text inputs', async () => {
+    const { isTreeUndoShortcut } = await import('@/components/workspace/files/WorkspaceFileTree');
+    const key = (overrides: Partial<Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>>) => ({
+      key: 'z', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, target: null, ...overrides,
+    });
+    expect(isTreeUndoShortcut(key({ ctrlKey: true }))).toBe(true);
+    expect(isTreeUndoShortcut(key({ metaKey: true, key: 'Z' }))).toBe(true);
+    expect(isTreeUndoShortcut(key({ ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(isTreeUndoShortcut(key({}))).toBe(false);
+    expect(isTreeUndoShortcut(key({ ctrlKey: true, key: 'y' }))).toBe(false);
+  });
+});

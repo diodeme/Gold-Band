@@ -1,7 +1,45 @@
 import { useSyncExternalStore } from 'react';
-import { listWorkspaceDirectory, searchWorkspaceFiles } from '@/api';
-import type { WorkspaceDirectoryEntryVm, WorkspaceFileChangedEventVm, WorkspaceFileSearchVm, WorkspaceFilesVm } from '@/types';
+import {
+  createWorkspaceEntry,
+  deleteWorkspaceEntry,
+  listWorkspaceDirectory,
+  renameWorkspaceEntry,
+  restoreWorkspaceEntry,
+  searchWorkspaceFiles,
+} from '@/api';
+import type {
+  WorkspaceDirectoryEntryVm,
+  WorkspaceEntryKind,
+  WorkspaceFileChangedEventVm,
+  WorkspaceFileSearchVm,
+  WorkspaceFilesVm,
+} from '@/types';
 import { FALLBACK_WORKSPACE_FILES } from '../workspace-layout';
+import { fileContentStore } from './file-content-store';
+
+/** Tree node id of the inline "new file / new folder" row. NUL never occurs in a relative path. */
+export const FILE_TREE_DRAFT_ID = '\0draft';
+
+export interface FileTreeDraft {
+  parentRelativePath: string;
+  kind: WorkspaceEntryKind;
+}
+
+/** A completed tree mutation, kept so Ctrl+Z can invert it. */
+export type FileTreeOperation =
+  | { kind: 'create'; entry: WorkspaceDirectoryEntryVm }
+  | { kind: 'rename'; from: WorkspaceDirectoryEntryVm; to: WorkspaceDirectoryEntryVm }
+  | { kind: 'delete'; receiptId: string; entry: WorkspaceDirectoryEntryVm };
+
+/** Path identity changes other domains (open file selection) must follow. */
+export type FileTreeEntryMutation =
+  | { projectId: string; kind: 'removed'; entry: WorkspaceDirectoryEntryVm }
+  | { projectId: string; kind: 'moved'; from: WorkspaceDirectoryEntryVm; to: WorkspaceDirectoryEntryVm };
+
+export type FileTreeOperationResult =
+  | { status: 'done'; entry: WorkspaceDirectoryEntryVm | null }
+  | { status: 'failed'; errorCode: string; params: Record<string, unknown> }
+  | { status: 'skipped' };
 
 export interface FileTreeNode extends WorkspaceDirectoryEntryVm {
   id: string;
@@ -28,10 +66,14 @@ export interface FileExplorerSnapshot {
   treeScrollTop: number;
   treeWidth: number | null;
   displayMode: FileTreeDisplayMode;
+  draft: FileTreeDraft | null;
+  /** Relative path of the entry a create/rename/delete/undo is writing; null when idle. */
+  pendingPath: string | null;
 }
 
 interface ProjectRuntime {
   snapshot: FileExplorerSnapshot;
+  operations: FileTreeOperation[];
   revealedSelectionPath: string | null;
   directoryRequests: Map<string, number>;
   searchRevision: number;
@@ -48,6 +90,56 @@ function commandErrorCode(reason: unknown, fallback: string) {
   return typeof reason === 'object' && reason && 'code' in reason && typeof reason.code === 'string'
     ? reason.code
     : fallback;
+}
+
+function failedOperation(reason: unknown, fallback: string): FileTreeOperationResult {
+  const params = typeof reason === 'object' && reason && 'params' in reason
+    && typeof reason.params === 'object' && reason.params
+    ? reason.params as Record<string, unknown>
+    : {};
+  return { status: 'failed', errorCode: commandErrorCode(reason, fallback), params };
+}
+
+function parentRelativePath(relativePath: string) {
+  const index = relativePath.lastIndexOf('/');
+  return index < 0 ? '' : relativePath.slice(0, index);
+}
+
+function draftNode(draft: FileTreeDraft): FileTreeNode {
+  return {
+    id: FILE_TREE_DRAFT_ID,
+    name: '',
+    relativePath: FILE_TREE_DRAFT_ID,
+    canonicalPath: '',
+    kind: draft.kind,
+    hasChildren: false,
+    byteLength: null,
+    modifiedAtNs: null,
+    children: [],
+    loading: false,
+  };
+}
+
+/** Folders go first and files after the last folder, matching the listing order. */
+function insertDraft(children: readonly FileTreeNode[], draft: FileTreeDraft) {
+  const index = draft.kind === 'directory'
+    ? 0
+    : children.findIndex((child) => child.kind !== 'directory');
+  const at = index < 0 ? children.length : index;
+  return [...children.slice(0, at), draftNode(draft), ...children.slice(at)];
+}
+
+export function fileTreeWithDraft(nodes: FileTreeNode[], draft: FileTreeDraft | null): FileTreeNode[] {
+  if (!draft) return nodes;
+  if (!draft.parentRelativePath) return insertDraft(nodes, draft);
+  return updateNode(nodes, draft.parentRelativePath, (node) => (
+    node.kind === 'directory' ? { ...node, children: insertDraft(node.children ?? [], draft) } : node
+  ));
+}
+
+function remapRelativePath(path: string, from: string, to: string) {
+  if (path === from) return to;
+  return path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : path;
 }
 
 function sameDirectoryEntry(node: FileTreeNode, entry: WorkspaceDirectoryEntryVm) {
@@ -109,6 +201,7 @@ function viewNodeFor(node: FileTreeNode, displayMode: FileTreeDisplayMode): File
     tail.kind === 'directory'
     && tail.children?.length === 1
     && tail.children[0]?.kind === 'directory'
+    && tail.children[0].id !== FILE_TREE_DRAFT_ID
   ) {
     tail = tail.children[0];
     names.push(tail.name);
@@ -195,17 +288,22 @@ function idleSnapshot(projectId: string): FileExplorerSnapshot {
     treeScrollTop: 0,
     treeWidth: null,
     displayMode: 'compact',
+    draft: null,
+    pendingPath: null,
   };
 }
 
 export class FileExplorerStore {
   private static readonly MAX_PROJECTS = 24;
+  /** Undo depth per project; history is session-only like the backend trash receipts. */
+  private static readonly MAX_UNDO_OPERATIONS = 20;
   private static readonly DIRECTORY_CHAIN_EXPANSION_LIMIT = 64;
   private static readonly MAX_REFRESH_LATENCY_MS = 1_000;
   private static readonly MAX_PENDING_REFRESH_DIRECTORIES = 64;
   private config: WorkspaceFilesVm = FALLBACK_WORKSPACE_FILES;
   private readonly projects = new Map<string, ProjectRuntime>();
   private readonly listeners = new Set<() => void>();
+  private readonly mutationListeners = new Set<(mutation: FileTreeEntryMutation) => void>();
 
   configure(config: WorkspaceFilesVm) {
     this.config = config;
@@ -215,6 +313,155 @@ export class FileExplorerStore {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
+
+  subscribeEntryMutations(listener: (mutation: FileTreeEntryMutation) => void) {
+    this.mutationListeners.add(listener);
+    return () => { this.mutationListeners.delete(listener); };
+  }
+
+  canUndo(projectId: string) {
+    return (this.projects.get(projectId)?.operations.length ?? 0) > 0;
+  }
+
+  /** Show an inline name editor for a new entry inside `parentRelativePath` ('' is the root). */
+  async startDraft(projectId: string, parentRelativePath: string, kind: WorkspaceEntryKind) {
+    const runtime = this.runtime(projectId);
+    if (runtime.snapshot.pendingPath !== null) return;
+    if (parentRelativePath && !runtime.snapshot.expanded.has(parentRelativePath)) {
+      await this.toggleDirectory(projectId, parentRelativePath, true);
+    } else if (parentRelativePath) {
+      await this.loadDirectory(projectId, parentRelativePath);
+    }
+    this.setSnapshot(runtime, { ...runtime.snapshot, draft: { parentRelativePath, kind } });
+  }
+
+  cancelDraft(projectId: string) {
+    const runtime = this.runtime(projectId);
+    if (!runtime.snapshot.draft) return;
+    this.setSnapshot(runtime, { ...runtime.snapshot, draft: null });
+  }
+
+  async createEntry(projectId: string, name: string): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(projectId);
+    const draft = runtime.snapshot.draft;
+    if (!draft || runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
+    return this.runOperation(runtime, draft.parentRelativePath, async () => {
+      try {
+        const entry = await createWorkspaceEntry({
+          projectId,
+          parentRelativePath: draft.parentRelativePath,
+          name,
+          kind: draft.kind,
+        });
+        this.pushOperation(runtime, { kind: 'create', entry });
+        return { status: 'done', entry };
+      } finally {
+        this.setSnapshot(runtime, { ...runtime.snapshot, draft: null });
+      }
+    }, [draft.parentRelativePath]);
+  }
+
+  async renameEntry(projectId: string, entry: WorkspaceDirectoryEntryVm, newName: string): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(projectId);
+    if (newName === entry.name || runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
+    return this.runOperation(runtime, entry.relativePath, async () => {
+      const to = await this.renameWithContent(projectId, entry, newName);
+      this.pushOperation(runtime, { kind: 'rename', from: entry, to });
+      return { status: 'done', entry: to };
+    }, [parentRelativePath(entry.relativePath)]);
+  }
+
+  async deleteEntry(projectId: string, entry: WorkspaceDirectoryEntryVm): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(projectId);
+    if (runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
+    return this.runOperation(runtime, entry.relativePath, async () => {
+      const deletion = await deleteWorkspaceEntry(projectId, entry.relativePath);
+      this.afterRemoved(runtime, deletion.entry);
+      this.pushOperation(runtime, { kind: 'delete', receiptId: deletion.receiptId, entry: deletion.entry });
+      return { status: 'done', entry: null };
+    }, [parentRelativePath(entry.relativePath)]);
+  }
+
+  /** Invert the most recent operation. A failed undo is dropped, like a failed redo target in editors. */
+  async undo(projectId: string): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(projectId);
+    const operation = runtime.operations.at(-1);
+    if (!operation || runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
+    runtime.operations.pop();
+    switch (operation.kind) {
+      case 'create':
+        return this.runOperation(runtime, operation.entry.relativePath, async () => {
+          const deletion = await deleteWorkspaceEntry(projectId, operation.entry.relativePath);
+          this.afterRemoved(runtime, deletion.entry);
+          return { status: 'done', entry: null };
+        }, [parentRelativePath(operation.entry.relativePath)]);
+      case 'rename':
+        return this.runOperation(runtime, operation.to.relativePath, async () => {
+          const entry = await this.renameWithContent(projectId, operation.to, operation.from.name);
+          return { status: 'done', entry };
+        }, [parentRelativePath(operation.to.relativePath)]);
+      case 'delete':
+        return this.runOperation(runtime, operation.entry.relativePath, async () => {
+          const entry = await restoreWorkspaceEntry(projectId, operation.receiptId);
+          return { status: 'done', entry };
+        }, [parentRelativePath(operation.entry.relativePath)]);
+    }
+  }
+
+  private async renameWithContent(projectId: string, entry: WorkspaceDirectoryEntryVm, newName: string) {
+    // Pending autosaves must land on the old path before it disappears.
+    if (!await fileContentStore.flushWithin(projectId, entry.canonicalPath)) {
+      throw { code: 'workspace-file.unsaved-changes', params: { path: entry.canonicalPath } };
+    }
+    const to = await renameWorkspaceEntry(projectId, entry.relativePath, newName);
+    const runtime = this.runtime(projectId);
+    const expanded = new Set([...runtime.snapshot.expanded].map((path) => remapRelativePath(path, entry.relativePath, to.relativePath)));
+    this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
+    await fileContentStore.releaseWithin(projectId, entry.canonicalPath);
+    this.emitMutation({ projectId, kind: 'moved', from: entry, to });
+    return to;
+  }
+
+  private afterRemoved(runtime: ProjectRuntime, entry: WorkspaceDirectoryEntryVm) {
+    const expanded = new Set([...runtime.snapshot.expanded].filter((path) => remapRelativePath(path, entry.relativePath, '') === path));
+    this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
+    void fileContentStore.releaseWithin(runtime.snapshot.projectId, entry.canonicalPath);
+    this.emitMutation({ projectId: runtime.snapshot.projectId, kind: 'removed', entry });
+  }
+
+  private pushOperation(runtime: ProjectRuntime, operation: FileTreeOperation) {
+    runtime.operations.push(operation);
+    if (runtime.operations.length > FileExplorerStore.MAX_UNDO_OPERATIONS) runtime.operations.shift();
+  }
+
+  private async runOperation(
+    runtime: ProjectRuntime,
+    pendingPath: string,
+    operation: () => Promise<FileTreeOperationResult>,
+    refreshDirectories: string[],
+  ): Promise<FileTreeOperationResult> {
+    this.setSnapshot(runtime, { ...runtime.snapshot, pendingPath });
+    try {
+      return await operation();
+    } catch (reason) {
+      return failedOperation(reason, 'workspace-file.write-failed');
+    } finally {
+      this.setSnapshot(runtime, { ...runtime.snapshot, pendingPath: null });
+      await this.refreshDirectories(runtime.snapshot.projectId, refreshDirectories);
+    }
+  }
+
+  /** Refresh mutated parents now instead of waiting for the debounced watcher event. */
+  private refreshDirectories(projectId: string, directories: string[]) {
+    const runtime = this.runtime(projectId);
+    if (directories.some((directory) => !directory)) return this.runRefresh(projectId, true);
+    for (const directory of directories) runtime.pendingRefreshDirectories.add(directory);
+    return this.runRefresh(projectId);
+  }
+
+  private emitMutation(mutation: FileTreeEntryMutation) {
+    for (const listener of this.mutationListeners) listener(mutation);
+  }
 
   snapshot = (projectId: string) => this.runtime(projectId, false).snapshot;
 
@@ -512,6 +759,7 @@ export class FileExplorerStore {
     if (!runtime) {
       runtime = {
         snapshot: idleSnapshot(projectId),
+        operations: [],
         revealedSelectionPath: null,
         directoryRequests: new Map(),
         searchRevision: 0,

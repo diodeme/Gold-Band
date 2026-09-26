@@ -845,11 +845,68 @@ function browserRelativePath(path: string) {
   return path.startsWith(`${browserWorkspaceRoot}/`) ? path.slice(browserWorkspaceRoot.length + 1) : null;
 }
 
+// Empty folders cannot be derived from file paths, so they are tracked
+// explicitly; folders that contain files stay implied by those paths.
+const browserWorkspaceDirectories = new Set<string>();
+const browserWorkspaceTrash = new Map<string, { path: string; files: [string, string][]; directories: string[] }>();
+
+function browserWorkspacePath(relativePath: string) {
+  return relativePath ? `${browserWorkspaceRoot}/${relativePath}` : browserWorkspaceRoot;
+}
+
+function browserWorkspaceEntryExists(path: string) {
+  const prefix = `${path}/`;
+  return browserWorkspaceFiles.has(path)
+    || browserWorkspaceDirectories.has(path)
+    || [...browserWorkspaceFiles.keys(), ...browserWorkspaceDirectories].some((candidate) => candidate.startsWith(prefix));
+}
+
+function browserWorkspaceEntry(path: string): import('../types').WorkspaceDirectoryEntryVm {
+  const parent = path.slice(0, path.lastIndexOf('/'));
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  const entry = browserDirectoryEntries(browserRelativePath(parent) ?? '').find((candidate) => candidate.name === name);
+  if (!entry) throw { code: 'workspace-file.not-found', params: { path } };
+  return entry;
+}
+
+function browserEntryNameError(name: string) {
+  if (!name.trim()) return 'empty';
+  if (name !== name.trim()) return 'surrounding-whitespace';
+  if (name === '.' || name === '..') return 'reserved';
+  return /[/\\]/u.test(name) || name.includes('\u0000') ? 'invalid-character' : null;
+}
+
+function browserTakeEntry(path: string) {
+  const prefix = `${path}/`;
+  const files = [...browserWorkspaceFiles.entries()].filter(([candidate]) => candidate === path || candidate.startsWith(prefix));
+  const directories = [...browserWorkspaceDirectories].filter((candidate) => candidate === path || candidate.startsWith(prefix));
+  for (const [candidate] of files) browserWorkspaceFiles.delete(candidate);
+  for (const candidate of directories) browserWorkspaceDirectories.delete(candidate);
+  return { files, directories };
+}
+
 function browserDirectoryEntries(relativePath: string) {
   const directory = relativePath ? `${browserWorkspaceRoot}/${relativePath}` : browserWorkspaceRoot;
   const prefix = `${directory}/`;
   const seen = new Set<string>();
   const entries: import('../types').WorkspaceDirectoryEntryVm[] = [];
+  for (const path of browserWorkspaceDirectories) {
+    if (!path.startsWith(prefix)) continue;
+    const [name, ...rest] = path.slice(prefix.length).split('/');
+    if (rest.length > 0 || seen.has(name)) continue;
+    const hasChildren = [...browserWorkspaceFiles.keys(), ...browserWorkspaceDirectories].some((candidate) => candidate.startsWith(`${path}/`));
+    if (hasChildren) continue;
+    seen.add(name);
+    entries.push({
+      name,
+      relativePath: browserRelativePath(path) ?? name,
+      canonicalPath: path,
+      kind: 'directory',
+      hasChildren: false,
+      byteLength: null,
+      modifiedAtNs: null,
+    });
+  }
   for (const [path, content] of browserWorkspaceFiles) {
     if (!path.startsWith(prefix)) continue;
     const remainder = path.slice(prefix.length);
@@ -2857,6 +2914,47 @@ export const browserApi: RuntimeApi = {
   },
   openWorkspacePathInFileManager(_projectId, _relativePath = '') {
     return Promise.resolve();
+  },
+  createWorkspaceEntry(input) {
+    const reason = browserEntryNameError(input.name);
+    if (reason) return Promise.reject({ code: 'workspace-file.name-invalid', params: { name: input.name, reason } });
+    const path = `${browserWorkspacePath(input.parentRelativePath)}/${input.name}`;
+    if (browserWorkspaceEntryExists(path)) return Promise.reject({ code: 'workspace-file.already-exists', params: { path } });
+    if (input.kind === 'file') browserWorkspaceFiles.set(path, '');
+    else browserWorkspaceDirectories.add(path);
+    return Promise.resolve(browserWorkspaceEntry(path));
+  },
+  renameWorkspaceEntry(_projectId, relativePath, newName) {
+    const reason = browserEntryNameError(newName);
+    if (reason) return Promise.reject({ code: 'workspace-file.name-invalid', params: { name: newName, reason } });
+    const source = browserWorkspacePath(relativePath);
+    if (!browserWorkspaceEntryExists(source)) return Promise.reject({ code: 'workspace-file.not-found', params: { path: source } });
+    const target = `${source.slice(0, source.lastIndexOf('/'))}/${newName}`;
+    if (target === source) return Promise.resolve(browserWorkspaceEntry(source));
+    if (target.toLocaleLowerCase() !== source.toLocaleLowerCase() && browserWorkspaceEntryExists(target)) {
+      return Promise.reject({ code: 'workspace-file.already-exists', params: { path: target } });
+    }
+    const { files, directories } = browserTakeEntry(source);
+    for (const [path, content] of files) browserWorkspaceFiles.set(`${target}${path.slice(source.length)}`, content);
+    for (const path of directories) browserWorkspaceDirectories.add(`${target}${path.slice(source.length)}`);
+    return Promise.resolve(browserWorkspaceEntry(target));
+  },
+  deleteWorkspaceEntry(_projectId, relativePath) {
+    const path = browserWorkspacePath(relativePath);
+    if (!relativePath || !browserWorkspaceEntryExists(path)) return Promise.reject({ code: 'workspace-file.not-found', params: { path } });
+    const entry = browserWorkspaceEntry(path);
+    const receiptId = `browser-trash-${browserWorkspaceTrash.size + 1}-${Date.now()}`;
+    browserWorkspaceTrash.set(receiptId, { path, ...browserTakeEntry(path) });
+    return Promise.resolve({ receiptId, entry });
+  },
+  restoreWorkspaceEntry(_projectId, receiptId) {
+    const trashed = browserWorkspaceTrash.get(receiptId);
+    if (!trashed) return Promise.reject({ code: 'workspace-file.restore-unavailable', params: { reason: 'receipt-not-found' } });
+    if (browserWorkspaceEntryExists(trashed.path)) return Promise.reject({ code: 'workspace-file.already-exists', params: { path: trashed.path } });
+    for (const [path, content] of trashed.files) browserWorkspaceFiles.set(path, content);
+    for (const path of trashed.directories) browserWorkspaceDirectories.add(path);
+    browserWorkspaceTrash.delete(receiptId);
+    return Promise.resolve(browserWorkspaceEntry(trashed.path));
   },
   listConversationDirectory(_input) { return Promise.resolve([]); },
   openConversationDirectoryPathInFileManager(_input) { return Promise.resolve(); },

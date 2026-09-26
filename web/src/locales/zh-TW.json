@@ -2174,6 +2174,7 @@
     "stopHint": "停止目前 ACP 工作階段",
     "noEvents": "暫無 ACP 事件",
     "launchingClaude": "Agent 調起中",
+    "preparingAgent": "正在準備 Agent",
     "processing": "處理中",
     "thinkingNow": "思考中",
     "toolRunning": "工具調用中",

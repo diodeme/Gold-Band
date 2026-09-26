@@ -2174,6 +2174,7 @@
     "stopHint": "현재 ACP 세션 중지",
     "noEvents": "ACP 이벤트 없음",
     "launchingClaude": "Agent 시작 중",
+    "preparingAgent": "Agent 준비 중",
     "processing": "처리 중",
     "thinkingNow": "사고 중",
     "toolRunning": "도구 실행 중",

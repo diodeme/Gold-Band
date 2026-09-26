@@ -10285,7 +10285,7 @@ function processingLabel(
   if (kind === "processing-workspace")
     return t("conversation.runtime.processingWorkspace");
   if (kind === "launching-next-node") return t("conversation.runtime.launchingNextNode");
-  if (kind === "launching") return t("acp.launchingClaude");
+  if (kind === "launching") return t("acp.preparingAgent");
   if (kind === "thinking") return t("acp.thinkingNow");
   if (kind === "tool") return t("acp.toolRunning");
   if (kind === "compacting") return t("acp.compactionRunning");

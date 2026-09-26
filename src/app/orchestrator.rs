@@ -9215,6 +9215,7 @@ fn execute_dynamic_worker(
             )
         })?;
         invocation.runtime_control_intent = runtime_control_intent;
+        invocation.automatic_prompt_retry = auto_retry_attempts > 0;
         dynamic_event_best_effort(
             ctx,
             "dynamic_worker_invocation_build_end",
@@ -13006,7 +13007,7 @@ fn build_dynamic_worker_invocation(
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: ctx.app.config.log_prompts,
-        log_provider_command: ctx.app.config.log_provider_command,
+        automatic_prompt_retry: false,
         attachments_dir: Some(attachments_dir),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
@@ -15814,6 +15815,7 @@ fn drive_from_node_with_initial_session(
                             runtime_control_intent,
                             model_override.clone(),
                             permission_mode_override.clone(),
+                            auto_retry_attempts > 0,
                         )
                     }),
                 NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(

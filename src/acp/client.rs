@@ -14,6 +14,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, info};
 
+fn stderr_tail(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    text.chars().skip(char_count - max_chars).collect()
+}
+
+fn node_version_hint() -> String {
+    if let Ok(version) = std::env::var("npm_config_node_version") {
+        if !version.trim().is_empty() {
+            return version;
+        }
+    }
+    if let Ok(version) = std::env::var("NODE_VERSION") {
+        if !version.trim().is_empty() {
+            return version;
+        }
+    }
+    crate::process::background_command("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
     item_id: String,
@@ -3104,6 +3134,7 @@ fn run_prompt_inner(
                 );
             }
             runtime.control.mark_stopped();
+            runtime.persist_adapter_stderr_diagnostics();
             // The outer lifecycle guard commits failure and its reason together.
             // A metadata-only failed write here would close its owner revision.
             runtime.shutdown();
@@ -3143,6 +3174,7 @@ fn run_prompt_inner(
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
     runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)?;
     runtime.control.mark_stopped();
+    runtime.persist_adapter_stderr_diagnostics();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
         let _ = session_update();
@@ -5477,6 +5509,60 @@ impl<'a> AcpRuntime<'a> {
         self.request_with_progress(method, params, Some(timeout), None, false)
     }
 
+    fn transport_timeout_error(&self, method: &str, timeout: Duration) -> anyhow::Error {
+        let adapter = self.connection.adapter();
+        let path_head = std::env::var("PATH")
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect::<String>();
+        let mut stderr = self
+            .connection
+            .wait_for_failure_stderr(crate::acp::connection::STDERR_FAILURE_DRAIN_TIMEOUT);
+        let diagnostic_stderr = self
+            .connection
+            .stderr_diagnostic_tail(4_000);
+        if !diagnostic_stderr.is_empty() {
+            if !stderr.is_empty() {
+                stderr.push('\n');
+            }
+            stderr.push_str(&diagnostic_stderr);
+        }
+        let params = serde_json::json!({
+            "method": method,
+            "timeoutSeconds": timeout.as_secs(),
+            "adapter": {
+                "command": adapter.command,
+                "args": adapter.args,
+            },
+            "pathHead": path_head,
+            "nodeVersion": node_version_hint(),
+            "stderrTail": stderr_tail(&stderr, 2_000),
+        });
+        let info = crate::runtime_error::RuntimeErrorInfo::new(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            crate::runtime_error::RecoveryMode::Auto,
+            format!("ACP `{method}` timed out after {} seconds", timeout.as_secs()),
+            params,
+            None,
+        );
+        crate::runtime_error::runtime_error(info)
+    }
+
+    fn persist_adapter_stderr_diagnostics(&self) {
+        let stderr = self.connection.take_stderr_diagnostics();
+        if stderr.trim().is_empty() {
+            return;
+        }
+        append_structured_diagnostic_best_effort(
+            &self.paths.diagnostics,
+            "warning",
+            "acp.adapter-stderr-diagnostic",
+            Some(json!({ "stderrTail": stderr_tail(&stderr, 2_000) })),
+        );
+    }
+
     fn request_with_progress(
         &mut self,
         method: &str,
@@ -5544,10 +5630,7 @@ impl<'a> AcpRuntime<'a> {
                                 "sessionId": self.session_id,
                             }),
                         );
-                        bail!(
-                            "ACP `{method}` timed out after {} seconds",
-                            timeout.as_secs()
-                        );
+                        return Err(self.transport_timeout_error(method, timeout));
                     }
                 },
                 None => STOP_CHECK_INTERVAL,
@@ -9332,7 +9415,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&snapshot, &submission).unwrap()
+            admit_session_turn_for_execution(&snapshot, &submission, false).unwrap()
         else {
             panic!("fixture must own its turn")
         };

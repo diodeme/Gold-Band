@@ -379,7 +379,7 @@ pub struct WorkerInvocation {
     #[serde(default)]
     pub log_prompts: bool,
     #[serde(default)]
-    pub log_provider_command: bool,
+    pub automatic_prompt_retry: bool,
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
@@ -1674,6 +1674,7 @@ impl AcpProvider {
         let lifecycle_owner = match crate::acp::events::admit_session_turn_for_execution(
             &lifecycle_path,
             &submission,
+            req.automatic_prompt_retry,
         )? {
             crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
             crate::acp::events::AcpTurnExecutionClaim::AlreadySettled(header)
@@ -3402,7 +3403,7 @@ mod tests {
             resume_prompt_visibility: PromptVisibility::Visible,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
-            log_provider_command: false,
+            automatic_prompt_retry: false,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
@@ -4450,7 +4451,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "1Z".to_string(),
         };
-        let owner = match crate::acp::events::admit_session_turn_for_execution(&path, &submission)
+        let owner = match crate::acp::events::admit_session_turn_for_execution(&path, &submission, false)
             .unwrap()
         {
             crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
@@ -4931,7 +4932,7 @@ mod tests {
             resume_prompt_visibility: PromptVisibility::Visible,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
-            log_provider_command: false,
+            automatic_prompt_retry: false,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),

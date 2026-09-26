@@ -2174,6 +2174,7 @@
     "stopHint": "現在の ACP セッションを停止します",
     "noEvents": "ACP イベントはありません",
     "launchingClaude": "起動エージェント",
+    "preparingAgent": "Agent を準備中",
     "processing": "処理",
     "thinkingNow": "考え",
     "toolRunning": "ランニングツール",

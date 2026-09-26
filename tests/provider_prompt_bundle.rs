@@ -104,7 +104,7 @@ fn invocation() -> WorkerInvocation {
         resume_prompt_visibility: PromptVisibility::Visible,
         stream_mode: StreamMode::None,
         log_prompts: false,
-        log_provider_command: false,
+        automatic_prompt_retry: false,
         attachments_dir: Some(Utf8PathBuf::from(
             "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../attachments",
         )),

@@ -241,8 +241,11 @@ export function userPromptQuotesFromRaw(raw: unknown): UserPromptQuote[] {
   if (!Array.isArray(quotes)) return [];
   return quotes.flatMap((quote): UserPromptQuote[] => {
     if (!quote || typeof quote !== 'object') return [];
-    const { id, text, source: rawSource } = quote as Record<string, unknown>;
-    const source = quoteSourceFromRaw(rawSource);
+    const { id, text, source: rawSource, sourceMessageKey } = quote as Record<string, unknown>;
+    // Quotes recorded before typed sources only carried the Agent message key.
+    const source = rawSource === undefined
+      ? quoteSourceFromRaw({ kind: 'agentMessage', messageKey: sourceMessageKey })
+      : quoteSourceFromRaw(rawSource);
     if (typeof id !== 'string' || id.length === 0 || typeof text !== 'string' || !source) return [];
     const quoteValue = { id, text, source };
     return text.length > 0 || isWholeFileDiffQuote(quoteValue) ? [quoteValue] : [];

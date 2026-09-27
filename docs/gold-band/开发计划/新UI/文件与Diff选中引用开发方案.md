@@ -12,7 +12,7 @@
 
 ## 数据
 
-- `UserPromptQuote { id, text, source }`，`source` 为 `kind` 标签联合：`agentMessage { messageKey }`、`file { label, startLine, endLine }`、`diff { path, origin, revision, scope }`。替换旧的 `sourceMessageKey`，开发阶段不保留兼容层。
+- `UserPromptQuote { id, text, source }`，`source` 为 `kind` 标签联合：`agentMessage { messageKey }`、`file { label, startLine, endLine }`、`diff { path, origin, revision, scope }`。替换旧的 `sourceMessageKey`；读取时（Rust serde `from` 与前端 timeline 解析）把只有 `sourceMessageKey`、没有 `source` 的旧引用视为 Agent 消息引用，写入统一使用新结构。
 - 预算：非整文件 diff 引用合计 12,000 字符（Unicode 标量）；整文件 diff 合计 64,000 字节；最多 64 条。前后端常量分别位于 `src/provider/quotes.rs` 与 `web/src/lib/composer-context.ts`。
 - 错误码：`conversation.prompt-quote-{count-exceeded,invalid,metadata-too-long,limit-exceeded,diff-limit-exceeded}`，后端只返回 code + params；定时任务编辑新增 `scheduled.quote-not-stored`。
 

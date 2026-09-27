@@ -22,11 +22,38 @@ pub const MAX_USER_PROMPT_QUOTE_REVISION_BYTES: usize = 128;
 const MIN_CODE_FENCE_LEN: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "StoredUserPromptQuote")]
 pub struct UserPromptQuote {
     pub id: String,
     pub text: String,
     pub source: UserPromptQuoteSource,
+}
+
+/// Quotes persisted before typed sources existed only carried the key of the Agent message
+/// they were taken from; they read back as Agent message quotes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredUserPromptQuote {
+    id: String,
+    text: String,
+    #[serde(default)]
+    source: Option<UserPromptQuoteSource>,
+    #[serde(default)]
+    source_message_key: String,
+}
+
+impl From<StoredUserPromptQuote> for UserPromptQuote {
+    fn from(stored: StoredUserPromptQuote) -> Self {
+        Self {
+            id: stored.id,
+            text: stored.text,
+            source: stored
+                .source
+                .unwrap_or(UserPromptQuoteSource::AgentMessage {
+                    message_key: stored.source_message_key,
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +291,38 @@ fn code_fence(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quotes_stored_with_only_a_message_key_read_back_as_agent_message_quotes() {
+        let legacy: UserPromptQuote = serde_json::from_value(json!({
+            "id": "quote-1",
+            "sourceMessageKey": "textDelta-message-1",
+            "text": "Agent 原文",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            legacy.source,
+            UserPromptQuoteSource::AgentMessage {
+                message_key: "textDelta-message-1".to_string()
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            json!({
+                "id": "quote-1",
+                "text": "Agent 原文",
+                "source": { "kind": "agentMessage", "messageKey": "textDelta-message-1" },
+            })
+        );
+        let typed: UserPromptQuote = serde_json::from_value(json!({
+            "id": "quote-2",
+            "text": "x",
+            "source": { "kind": "file", "label": "a.rs", "startLine": 1, "endLine": 2 },
+        }))
+        .unwrap();
+        assert!(matches!(typed.source, UserPromptQuoteSource::File { .. }));
+    }
 
     fn quote(text: &str, source: UserPromptQuoteSource) -> UserPromptQuote {
         UserPromptQuote {

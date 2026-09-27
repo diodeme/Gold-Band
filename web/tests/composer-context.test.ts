@@ -88,10 +88,12 @@ describe('composer quote contract', () => {
         { id: 'four', text: 'x', source: { kind: 'file', label: 'a.ts', startLine: 0, endLine: 1 } },
         { id: '', text: 'invalid', source: { kind: 'agentMessage', messageKey: 'message-2' } },
         { id: 'legacy', sourceMessageKey: 'message-3', text: 'legacy' },
+        { id: 'legacy-without-key', text: 'legacy' },
       ],
     })).toEqual([
       { id: 'one', text: '引用内容', source: { kind: 'agentMessage', messageKey: 'message-1' } },
       { id: 'two', text: '', source: { kind: 'diff', path: 'a.ts', origin: 'commit', revision: 'abc', scope: 'file' } },
+      { id: 'legacy', text: 'legacy', source: { kind: 'agentMessage', messageKey: 'message-3' } },
     ]);
   });
 

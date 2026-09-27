@@ -32,8 +32,8 @@ describe('UserMessageQuotes', () => {
     try {
       await act(async () => root.render(
         <UserMessageQuotes quotes={[
-          { id: 'quote-1', sourceMessageKey: 'textDelta-message-1', text: longText },
-          { id: 'quote-2', sourceMessageKey: 'textDelta-message-2', text: '第二条引用' },
+          { id: 'quote-1', text: longText, source: { kind: 'agentMessage', messageKey: 'textDelta-message-1' } },
+          { id: 'quote-2', text: '第二条引用', source: { kind: 'agentMessage', messageKey: 'textDelta-message-2' } },
         ]} />,
       ));
       const trigger = container.querySelector<HTMLButtonElement>('[data-user-message-quotes-trigger]');
@@ -48,6 +48,29 @@ describe('UserMessageQuotes', () => {
       expect(scroll?.previousElementSibling?.className).toContain('shrink-0');
       expect(scroll?.textContent).toContain(longText);
       expect(scroll?.textContent).toContain('第二条引用');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('names file and diff sources and does not show the text of a whole-file diff', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(
+        <UserMessageQuotes quotes={[
+          { id: 'file', text: 'const a = 1;', source: { kind: 'file', label: 'src/a.ts', startLine: 3, endLine: 5 } },
+          { id: 'diff', text: '', source: { kind: 'diff', path: 'src/b.ts', origin: 'commit', revision: 'abc123', scope: 'file' } },
+        ]} />,
+      ));
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-user-message-quotes-trigger]')!.click());
+      const scroll = document.body.querySelector<HTMLElement>('[data-user-message-quotes-scroll]');
+      const items = Array.from(scroll?.children ?? []);
+      expect(items[0]?.textContent).toContain('src/a.ts 第 3-5 行');
+      expect(items[0]?.textContent).toContain('const a = 1;');
+      expect(items[1]?.textContent).toBe('src/b.ts 完整 diff · 提交 abc123');
     } finally {
       await act(async () => root.unmount());
     }

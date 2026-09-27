@@ -1,4 +1,5 @@
 pub(crate) mod cicd;
+pub mod quotes;
 pub mod workspace_files;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
@@ -44,13 +45,11 @@ pub use workspace_files::{
 
 use crate::acp::events::AttachmentMeta;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserPromptQuote {
-    pub id: String,
-    pub source_message_key: String,
-    pub text: String,
-}
+pub use quotes::{
+    DiffQuoteOrigin, DiffQuoteScope, MAX_USER_PROMPT_DIFF_QUOTE_BYTES, MAX_USER_PROMPT_QUOTE_CHARS,
+    MAX_USER_PROMPT_QUOTES, UserPromptQuote, UserPromptQuoteError, UserPromptQuoteSource,
+    conversation_prompt_text, validate_user_prompt_quotes,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,39 +102,15 @@ impl From<String> for ConversationPromptInput {
     }
 }
 
-pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
-pub const MAX_USER_PROMPT_QUOTES: usize = 64;
-pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
-pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
 pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
-
-pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
-    let display_text = display_text.trim();
-    if quotes.is_empty() {
-        return display_text.to_string();
-    }
-    let quote_blocks = quotes
-        .iter()
-        .map(|quote| {
-            quote
-                .text
-                .lines()
-                .map(|line| format!("> {line}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!("{quote_blocks}\n\n{display_text}")
-}
 
 pub fn conversation_agent_prompt_text(
     input: &ConversationPromptInput,
     language: DesktopLanguage,
 ) -> String {
-    let user_input = conversation_prompt_text(&input.display_text, &input.quotes);
+    let user_input = conversation_prompt_text(&input.display_text, &input.quotes, language);
     let Some(role) = input.role.as_ref() else {
         return user_input;
     };
@@ -2453,7 +2428,7 @@ fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) ->
     let Some(display) = req.prompt_display.as_ref() else {
         return requirement_text.to_string();
     };
-    if display.role.is_none() {
+    if display.role.is_none() && display.quotes.is_empty() {
         return requirement_text.to_string();
     }
     conversation_agent_prompt_text(display, req.runtime_context.language)

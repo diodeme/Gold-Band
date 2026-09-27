@@ -726,6 +726,9 @@
       "local_html": {
         "grant_failed": "無法授權開啟該本機 HTML。"
       },
+      "system_open": {
+        "failed": "系統瀏覽器無法開啟此頁面。"
+      },
       "page": {
         "limit_reached": "開啟的網頁過多，請先關閉部分標籤。"
       },
@@ -949,6 +952,7 @@
       "prompt-empty": "請輸入要發送的內容。",
       "prompt-quote-invalid": "引用資料無效，請刪除後重新引用。",
       "prompt-quote-limit-exceeded": "引用內容總長度不能超過 {{maxChars}} 個字元。",
+      "prompt-quote-diff-limit-exceeded": "完整 diff 引用總大小不能超過 {{maxBytes}} 位元組。",
       "prompt-quote-count-exceeded": "單條訊息最多包含 {{maxQuotes}} 條引用。",
       "prompt-quote-metadata-too-long": "引用標識過長，請刪除後重新引用。",
       "prompt-role-invalid": "角色資料無效，請重新選擇角色後再發送。",
@@ -1775,6 +1779,7 @@
     "previousChange": "上一處變化",
     "nextChange": "下一處變化",
     "diffViewer": "檔案差異查看器",
+    "quoteDiff": "引用完整 diff 到對話",
     "versionViewer": "歷史檔案查看器",
     "diffUnavailable": "該檔案差異無法在目前查看器中展示",
     "assetLoadFailed": "無法載入該工作階段檔案",
@@ -2123,14 +2128,24 @@
     "composerPlaceholder": "繼續工作階段…",
     "quoteAction": "引用",
     "quoteLabel": "引用 {{index}}",
-    "removeQuote": "刪除引用 {{index}}",
+    "quoteDiffLabel": "{{name}} 變更片段",
+    "quoteDiffFileLabel": "{{name}} 完整 diff",
+    "quoteFileSource": "{{path}} 第 {{lines}} 行",
+    "quoteDiffOrigin": {
+      "workingTreeStaged": "已暫存的變更",
+      "workingTreeUnstaged": "未暫存的變更",
+      "commit": "提交 {{revision}}",
+      "pullRequest": "PR {{revision}}",
+      "agentTurn": "Agent 本輪修改"
+    },
+    "removeQuote": "刪除引用 {{name}}",
     "removeAttachment": "刪除附件 {{name}}",
     "quoteDuplicate": "這段內容已經引用過了。",
-    "quoteLimitExceeded": "引用內容總長度不能超過 {{max}} 個字元。",
+    "quoteLimitExceeded": "此引用為 {{size}} 個字元，超出單則訊息 {{max}} 個字元的引用上限，本則訊息還可引用 {{remaining}} 個字元。",
+    "quoteDiffLimitExceeded": "此 diff 為 {{size}}，超出單則訊息 {{max}} 的完整 diff 引用上限，本則訊息還可引用 {{remaining}}。可選取部分內容引用。",
     "quoteCountExceeded": "最多添加 {{max}} 條引用。",
     "userQuoteCount": "{{count}} 條引用",
     "userQuoteTitle": "引用詳情",
-    "userQuoteLabel": "引用 {{index}}",
     "currentModel": "模型",
     "thoughtLevel": "思考強度",
     "unspecifiedThoughtLevel": "不指定",

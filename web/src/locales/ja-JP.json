@@ -726,6 +726,9 @@
       "local_html": {
         "grant_failed": "このローカル HTML ファイルは承認できませんでした。"
       },
+      "system_open": {
+        "failed": "システムブラウザーでこのページを開けませんでした。"
+      },
       "page": {
         "limit_reached": "開いているページが多すぎます。まずいくつかのタブを閉じます。"
       },
@@ -949,6 +952,7 @@
       "prompt-empty": "送信するメッセージを入力します。",
       "prompt-quote-invalid": "引用されたテキストは無効です。それを削除して、メッセージを再度引用します。",
       "prompt-quote-limit-exceeded": "引用符で囲まれたテキストは合計 {{maxChars}} 文字を超えることはできません。",
+      "prompt-quote-diff-limit-exceeded": "完全な diff の引用は合計 {{maxBytes}} バイト以内にしてください。",
       "prompt-quote-count-exceeded": "メッセージには最大 {{maxQuotes}} 個の引用符を含めることができます。",
       "prompt-quote-metadata-too-long": "引用識別子が長すぎます。引用符を削除し、再度選択します。",
       "prompt-role-invalid": "ロールデータが無効です。送信する前にもう一度役割を選択してください。",
@@ -1775,6 +1779,7 @@
     "previousChange": "前回の変更",
     "nextChange": "次の変更",
     "diffViewer": "ファイル差分ビューア",
+    "quoteDiff": "完全な diff を会話に引用",
     "versionViewer": "履歴ファイルビューア",
     "diffUnavailable": "このファイル比較は現在のビューアでは表示できません",
     "assetLoadFailed": "この会話ファイルをロードできません",
@@ -2123,14 +2128,24 @@
     "composerPlaceholder": "会話を続けてください…",
     "quoteAction": "引用",
     "quoteLabel": "引用{{index}}",
-    "removeQuote": "引用符を削除 {{index}}",
+    "quoteDiffLabel": "{{name}} の変更箇所",
+    "quoteDiffFileLabel": "{{name}} の完全な diff",
+    "quoteFileSource": "{{path}} {{lines}} 行目",
+    "quoteDiffOrigin": {
+      "workingTreeStaged": "ステージ済みの変更",
+      "workingTreeUnstaged": "未ステージの変更",
+      "commit": "コミット {{revision}}",
+      "pullRequest": "PR {{revision}}",
+      "agentTurn": "Agent のこのターンの変更"
+    },
+    "removeQuote": "引用 {{name}} を削除",
     "removeAttachment": "添付ファイルを削除 {{name}}",
     "quoteDuplicate": "この文はすでに引用されています。",
-    "quoteLimitExceeded": "引用符で囲まれたテキストは合計 {{max}} 文字を超えることはできません。",
+    "quoteLimitExceeded": "この引用は {{size}} 文字で、1 メッセージあたりの引用上限 {{max}} 文字を超えています。このメッセージではあと {{remaining}} 文字引用できます。",
+    "quoteDiffLimitExceeded": "この diff は {{size}} で、1 メッセージあたりの完全な diff の引用上限 {{max}} を超えています。このメッセージではあと {{remaining}} 引用できます。一部を選択して引用してください。",
     "quoteCountExceeded": "最大 {{max}} 件の引用を追加できます。",
     "userQuoteCount": "{{count}} の見積もり",
     "userQuoteTitle": "引用されたテキスト",
-    "userQuoteLabel": "引用{{index}}",
     "currentModel": "モデル",
     "thoughtLevel": "推論",
     "unspecifiedThoughtLevel": "不特定",

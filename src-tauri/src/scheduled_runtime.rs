@@ -3548,7 +3548,7 @@ fn scheduled_continue_prompt_input(
 ) -> gold_band::provider::ConversationPromptInput {
     gold_band::provider::ConversationPromptInput {
         display_text: input.content,
-        quotes: Vec::new(),
+        quotes: input.quotes,
         role: input.role,
         workspace_files: input.workspace_files,
     }
@@ -3606,6 +3606,7 @@ fn scheduled_create_input(
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
         role: None,
+        quotes: definition.content_snapshot.quotes.clone(),
     })
 }
 
@@ -4044,7 +4045,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_continue_prompt_keeps_workspace_file_references() {
+    fn scheduled_continue_prompt_keeps_workspace_file_references_and_quotes() {
         let input = crate::view_models_conversation::ConversationCreateInputVm {
             project_id: "project-a".to_string(),
             content: "检查状态".to_string(),
@@ -4064,9 +4065,18 @@ mod tests {
                 project_id: "project-b".to_string(),
                 relative_path: "src/lib.rs".to_string(),
             }],
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                text: "frozen".to_string(),
+                source: gold_band::provider::UserPromptQuoteSource::AgentMessage {
+                    message_key: "message-1".to_string(),
+                },
+            }],
         };
 
         let prompt = super::scheduled_continue_prompt_input(input);
+        assert_eq!(prompt.quotes.len(), 1);
+        assert_eq!(prompt.quotes[0].text, "frozen");
 
         assert_eq!(prompt.display_text, "检查状态");
         assert_eq!(prompt.workspace_files.len(), 1);

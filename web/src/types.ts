@@ -2493,6 +2493,7 @@ export interface ScheduledTaskEditVm {
   projectId: string;
   content: string;
   attachmentNames: string[];
+  quotes: UserPromptQuote[];
   runMode: 'direct' | 'workflow' | 'auto' | string;
   workflowTemplateId?: string | null;
   includeOptionalEntry?: boolean | null;
@@ -2516,6 +2517,8 @@ export interface UpdateScheduledTaskInput {
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
+  /** Omitted keeps the stored quotes; a list keeps only the stored quotes with these ids. */
+  quotes?: UserPromptQuote[];
   schedule: ScheduledScheduleInput;
   overlapPolicy: ScheduledOverlapPolicy;
   sessionPolicy: ScheduledSessionPolicy;
@@ -2750,10 +2753,19 @@ export interface ConversationQueuedPromptVm {
   createdAt: string;
 }
 
+export type DiffQuoteOrigin = 'workingTreeStaged' | 'workingTreeUnstaged' | 'commit' | 'pullRequest' | 'agentTurn';
+
+export type UserPromptQuoteSource =
+  | { kind: 'agentMessage'; messageKey: string }
+  /** `label` is a workspace-relative path, run-directory path, or attachment name. */
+  | { kind: 'file'; label: string; startLine: number; endLine: number }
+  | { kind: 'diff'; path: string; origin: DiffQuoteOrigin; revision?: string | null; scope: 'selection' | 'file' };
+
 export interface UserPromptQuote {
   id: string;
-  sourceMessageKey: string;
+  /** Empty in timeline history for whole-file diffs; the Agent received the full text. */
   text: string;
+  source: UserPromptQuoteSource;
 }
 
 export interface UserPromptRole {
@@ -3060,6 +3072,7 @@ export interface ConversationCreateInput {
   selectedBranch?: string | null;
   role?: UserPromptRole | null;
   workspaceFiles?: PromptWorkspaceFileRef[];
+  quotes?: UserPromptQuote[];
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

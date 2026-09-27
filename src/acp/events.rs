@@ -3553,6 +3553,24 @@ pub fn system_notice_event(seq: u64, code: &str, params: Value) -> AcpUiEvent {
     }
 }
 
+/// Whole-file diffs can reach the diff budget per prompt; the timeline keeps only
+/// their source so paged history stays light. The Agent already received the text.
+fn timeline_quotes(quotes: Vec<UserPromptQuote>) -> Vec<UserPromptQuote> {
+    quotes
+        .into_iter()
+        .map(|quote| {
+            if quote.is_whole_file_diff() {
+                UserPromptQuote {
+                    text: String::new(),
+                    ..quote
+                }
+            } else {
+                quote
+            }
+        })
+        .collect()
+}
+
 pub fn user_prompt_event_with_quotes(
     seq: u64,
     session_id: String,
@@ -3577,7 +3595,7 @@ pub fn user_prompt_event_with_quotes(
         raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
     }
     if !quotes.is_empty() {
-        raw["quotes"] = serde_json::to_value(&quotes).unwrap_or_default();
+        raw["quotes"] = serde_json::to_value(timeline_quotes(quotes)).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -5944,14 +5962,34 @@ mod tests {
             Some("prompt-123".to_string()),
             false,
             Vec::new(),
-            vec![UserPromptQuote {
-                id: "quote-1".to_string(),
-                source_message_key: "message-1".to_string(),
-                text: "Agent 原文".to_string(),
-            }],
+            vec![
+                UserPromptQuote {
+                    id: "quote-1".to_string(),
+                    text: "Agent 原文".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                        message_key: "message-1".to_string(),
+                    },
+                },
+                UserPromptQuote {
+                    id: "quote-2".to_string(),
+                    text: "@@ -1 +1 @@\n-a\n+b".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::Diff {
+                        path: "src/lib.rs".to_string(),
+                        origin: crate::provider::DiffQuoteOrigin::AgentTurn,
+                        revision: None,
+                        scope: crate::provider::DiffQuoteScope::File,
+                    },
+                },
+            ],
         );
 
         assert_eq!(event.content.as_deref(), Some("> 用户自己输入的正文"));
+        let raw = event.raw.as_ref().unwrap();
+        assert_eq!(raw.pointer("/quotes/1/text"), Some(&Value::from("")));
+        assert_eq!(
+            raw.pointer("/quotes/1/source/path"),
+            Some(&Value::from("src/lib.rs"))
+        );
         assert_eq!(
             event
                 .raw

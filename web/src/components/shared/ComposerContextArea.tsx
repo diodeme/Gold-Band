@@ -1,4 +1,4 @@
-import { FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, SquareCode, X } from 'lucide-react';
+import { FileDiff, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, SquareCode, TextQuote, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useImageActions } from '@/hooks/useImageActions';
 import { isImageMime } from '@/lib/attachments';
 import type { AttachmentItem } from '@/lib/attachment-service';
-import type { ComposerQuote, ComposerWorkspaceFileRef } from '@/lib/composer-context';
+import { isWholeFileDiffQuote, type ComposerQuote, type ComposerWorkspaceFileRef } from '@/lib/composer-context';
+import { quoteLabel, quoteSourceDetail } from '@/lib/composer-quote-i18n';
 import { formatSize } from '@/lib/attachment-service';
 import { cn } from '@/lib/utils';
 
@@ -40,33 +41,46 @@ export function ComposerContextArea({
   return (
     <div className="mb-1.5 px-1" data-composer-context-area="true">
       <div className="flex max-h-[4.5rem] min-w-0 flex-wrap items-center gap-1.5 overflow-y-auto py-0.5">
-        {quotes.map((quote, index) => (
-          <Tooltip key={quote.id}>
-            <TooltipTrigger asChild>
-              <span
-                className="group flex h-8 min-w-0 max-w-44 items-center gap-1.5 rounded-lg bg-muted/55 px-2 text-xs text-foreground/85 transition-colors hover:bg-muted/75 focus-within:bg-muted/75"
-                data-composer-quote-chip="true"
-              >
-                <MessageSquareQuote className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate">{t('acp.quoteLabel', { index: index + 1 })}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="-mr-1 size-5 shrink-0 rounded-full opacity-60 transition-opacity hover:bg-background/70 hover:opacity-100 focus-visible:opacity-100"
-                  aria-label={t('acp.removeQuote', { index: index + 1 })}
-                  onClick={() => onRemoveQuote?.(quote.id)}
-                  data-prompt-input-interactive="true"
+        {quotes.map((quote, index) => {
+          const label = quoteLabel(t, quote, index);
+          const detail = quoteSourceDetail(t, quote.source);
+          const QuoteIcon = quote.source.kind === 'diff' ? FileDiff : quote.source.kind === 'file' ? TextQuote : MessageSquareQuote;
+          return (
+            <Tooltip key={quote.id}>
+              <TooltipTrigger asChild>
+                <span
+                  className="group flex h-8 min-w-0 max-w-44 items-center gap-1.5 rounded-lg bg-muted/55 px-2 text-xs text-foreground/85 transition-colors hover:bg-muted/75 focus-within:bg-muted/75"
+                  data-composer-quote-chip="true"
                 >
-                  <X className="size-3" />
-                </Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" sideOffset={8} className="pointer-events-auto max-h-72 max-w-[min(36rem,calc(100vw-2rem))] overflow-auto whitespace-pre-wrap px-3 py-2 text-left leading-5">
-              {quote.text}
-            </TooltipContent>
-          </Tooltip>
-        ))}
+                  <QuoteIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{label}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="-mr-1 size-5 shrink-0 rounded-full opacity-60 transition-opacity hover:bg-background/70 hover:opacity-100 focus-visible:opacity-100"
+                    aria-label={t('acp.removeQuote', { name: label })}
+                    onClick={() => onRemoveQuote?.(quote.id)}
+                    data-prompt-input-interactive="true"
+                  >
+                    <X className="size-3" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                sideOffset={8}
+                className={cn(
+                  'pointer-events-auto max-h-72 max-w-[min(36rem,calc(100vw-2rem))] overflow-auto whitespace-pre-wrap px-3 py-2 text-left leading-5',
+                  quote.source.kind !== 'agentMessage' && 'font-mono',
+                )}
+              >
+                {detail ? <span className="mb-1 block break-all font-sans text-muted-foreground">{detail}</span> : null}
+                {isWholeFileDiffQuote(quote) ? formatSize(new TextEncoder().encode(quote.text).length) : quote.text}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
         {attachments.map((attachment) => (
           <ComposerAttachmentItem
             key={attachment.id}

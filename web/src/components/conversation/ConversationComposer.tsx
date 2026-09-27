@@ -48,7 +48,14 @@ import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { cn } from '@/lib/utils';
-import { addComposerWorkspaceFile, hasUserPromptPayload, type ComposerWorkspaceFileRef } from '@/lib/composer-context';
+import {
+  addComposerQuote,
+  addComposerWorkspaceFile,
+  hasUserPromptPayload,
+  type ComposerQuoteDraft,
+  type ComposerWorkspaceFileRef,
+} from '@/lib/composer-context';
+import { composerQuoteFailureMessage } from '@/lib/composer-quote-i18n';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 import {
   createDraftAttachmentWorkspaceResource,
@@ -566,34 +573,56 @@ export function ConversationComposer({
   const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
   const attachmentsRef = useRef(composerDraft.draft.attachments);
   const workspaceFilesRef = useRef(workspaceFiles);
+  const quotes = composerDraft.draft.quotes;
+  const setComposerQuotes = composerDraft.setQuotes;
+  const quotesRef = useRef(quotes);
   useEffect(() => {
     attachmentsRef.current = composerDraft.draft.attachments;
   }, [composerDraft.draft.attachments]);
   useEffect(() => {
     workspaceFilesRef.current = workspaceFiles;
   }, [workspaceFiles]);
+  useEffect(() => {
+    quotesRef.current = quotes;
+  }, [quotes]);
 
-  useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
-    const result = addComposerWorkspaceFile(
-      workspaceFilesRef.current,
-      attachmentsRef.current.length,
-      reference,
-    );
+  const addQuote = useCallback((draft: ComposerQuoteDraft, focus: boolean) => {
+    const result = addComposerQuote(quotesRef.current, { ...draft, id: crypto.randomUUID() });
     if (!result.ok) {
-      if (result.code === 'composer.context.limit-exceeded') {
-        setContextError(
-          t('errors.composer.context-limit-exceeded', { max: result.max }),
-        );
-        return { kind: 'limit-exceeded', max: result.max };
-      }
-      return { kind: 'duplicate' };
+      setContextError(composerQuoteFailureMessage(t, result));
+      return false;
     }
-    workspaceFilesRef.current = result.workspaceFiles;
-    setComposerWorkspaceFiles(result.workspaceFiles);
+    quotesRef.current = result.quotes;
+    setComposerQuotes(result.quotes);
     setContextError(null);
-    if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
-    return { kind: 'added' };
-  }), [setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
+    if (focus) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return true;
+  }, [setComposerQuotes, t]);
+
+  useEffect(() => workspaceFileReferenceBridge.register({
+    addQuote: (draft, options) => addQuote(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
+    addWorkspaceFileRef: (reference, options) => {
+      const result = addComposerWorkspaceFile(
+        workspaceFilesRef.current,
+        attachmentsRef.current.length,
+        reference,
+      );
+      if (!result.ok) {
+        if (result.code === 'composer.context.limit-exceeded') {
+          setContextError(
+            t('errors.composer.context-limit-exceeded', { max: result.max }),
+          );
+          return { kind: 'limit-exceeded', max: result.max };
+        }
+        return { kind: 'duplicate' };
+      }
+      workspaceFilesRef.current = result.workspaceFiles;
+      setComposerWorkspaceFiles(result.workspaceFiles);
+      setContextError(null);
+      if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+      return { kind: 'added' };
+    },
+  }), [addQuote, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;
@@ -938,6 +967,7 @@ export function ConversationComposer({
         projectId: refProjectId,
         relativePath,
       })),
+      quotes,
     };
     setSubmittingAttachments(true);
     try {
@@ -1017,6 +1047,7 @@ export function ConversationComposer({
         projectId: refProjectId,
         relativePath,
       })),
+      quotes,
     };
   };
 
@@ -1139,8 +1170,13 @@ export function ConversationComposer({
         >
           <ComposerContextArea
             attachments={attachments}
+            quotes={quotes}
             workspaceFiles={workspaceFiles}
             error={contextError}
+            onRemoveQuote={(id) => {
+              setComposerQuotes(quotes.filter((quote) => quote.id !== id));
+              setContextError(null);
+            }}
             onRemoveAttachment={removeComposerAttachment}
             onPreviewAttachment={openComposerAttachment}
             onRemoveWorkspaceFile={(id) => {

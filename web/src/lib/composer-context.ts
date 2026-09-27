@@ -1,14 +1,17 @@
+import type { ConversationPromptInput, UserPromptQuote, UserPromptQuoteSource, UserPromptRole } from '@/types';
+import type { CommittedSlashItem } from '@/lib/slash-command';
+import { committedRoleSnapshot, slashSendableText } from '@/lib/slash-command';
+
+/** Mirrors the Rust budgets in `src/provider/quotes.rs`. */
 export const MAX_COMPOSER_QUOTE_CHARS = 12_000;
+export const MAX_COMPOSER_DIFF_QUOTE_BYTES = 64_000;
 export const MAX_COMPOSER_QUOTES = 64;
 export const MAX_COMPOSER_CONTEXT_ITEMS = 10;
-export const MAX_COMPOSER_QUOTE_ID_LENGTH = 128;
-export const MAX_COMPOSER_QUOTE_SOURCE_KEY_LENGTH = 512;
 
-export interface ComposerQuote {
-  id: string;
-  sourceKey: string;
-  text: string;
-}
+/** A quote is frozen when it is taken; the composer only adds or removes it. */
+export type ComposerQuote = UserPromptQuote;
+/** A quote taken from a surface, before the composer assigns its id. */
+export type ComposerQuoteDraft = Omit<ComposerQuote, 'id'>;
 
 export interface ComposerWorkspaceFileRef {
   id: string;
@@ -29,34 +32,76 @@ export interface WorkspaceFileTimelineRef {
   size?: number;
 }
 
-import type { ConversationPromptInput, UserPromptQuote, UserPromptRole } from '@/types';
-import type { CommittedSlashItem } from '@/lib/slash-command';
-import { committedRoleSnapshot, slashSendableText } from '@/lib/slash-command';
-
 export type AddComposerQuoteResult =
   | { ok: true; quotes: ComposerQuote[] }
-  | { ok: false; code: 'composer.quote.limit-exceeded'; maxChars: number }
+  | { ok: false; code: 'composer.quote.limit-exceeded'; chars: number; maxChars: number; remainingChars: number }
+  | { ok: false; code: 'composer.quote.diff-limit-exceeded'; bytes: number; maxBytes: number; remainingBytes: number }
   | { ok: false; code: 'composer.quote.count-exceeded'; maxQuotes: number }
   | { ok: false; code: 'composer.quote.duplicate' };
 
-export function composerQuoteChars(quotes: readonly ComposerQuote[]) {
-  return quotes.reduce((total, quote) => total + quote.text.length, 0);
+export type ComposerQuoteFailure = Extract<AddComposerQuoteResult, { ok: false }>;
+
+const utf8 = new TextEncoder();
+
+export function isWholeFileDiffQuote(quote: Pick<ComposerQuote, 'source'>) {
+  return quote.source.kind === 'diff' && quote.source.scope === 'file';
+}
+
+/** Characters as Rust counts them (Unicode scalar values). */
+function quoteChars(text: string) {
+  let count = 0;
+  for (const _ of text) count += 1;
+  return count;
+}
+
+export function composerQuoteUsage(quotes: readonly ComposerQuote[]) {
+  return quotes.reduce(
+    (usage, quote) => isWholeFileDiffQuote(quote)
+      ? { ...usage, diffBytes: usage.diffBytes + utf8.encode(quote.text).length }
+      : { ...usage, chars: usage.chars + quoteChars(quote.text) },
+    { chars: 0, diffBytes: 0 },
+  );
+}
+
+/** Stable identity of where a quote came from, used to reject duplicate quotes. */
+function quoteSourceIdentity(source: UserPromptQuoteSource) {
+  switch (source.kind) {
+    case 'agentMessage': return JSON.stringify([source.kind, source.messageKey]);
+    case 'file': return JSON.stringify([source.kind, source.label, source.startLine, source.endLine]);
+    case 'diff': return JSON.stringify([source.kind, source.origin, source.revision ?? null, source.path, source.scope]);
+  }
+}
+
+/** Keeps indentation of quoted code while dropping blank lead-in and trailing whitespace. */
+function normalizeQuoteText(text: string) {
+  return text.replace(/^(?:[ \t]*\r?\n)+/u, '').trimEnd();
 }
 
 export function addComposerQuote(
   quotes: readonly ComposerQuote[],
   quote: ComposerQuote,
-  maxChars = MAX_COMPOSER_QUOTE_CHARS,
 ): AddComposerQuoteResult {
-  const text = quote.text.trim();
+  const text = normalizeQuoteText(quote.text);
   if (quotes.length >= MAX_COMPOSER_QUOTES) {
     return { ok: false, code: 'composer.quote.count-exceeded', maxQuotes: MAX_COMPOSER_QUOTES };
   }
-  if (quotes.some((item) => item.sourceKey === quote.sourceKey && item.text === text)) {
+  const identity = quoteSourceIdentity(quote.source);
+  if (quotes.some((item) => item.text === text && quoteSourceIdentity(item.source) === identity)) {
     return { ok: false, code: 'composer.quote.duplicate' };
   }
-  if (composerQuoteChars(quotes) + text.length > maxChars) {
-    return { ok: false, code: 'composer.quote.limit-exceeded', maxChars };
+  const usage = composerQuoteUsage(quotes);
+  if (isWholeFileDiffQuote(quote)) {
+    const bytes = utf8.encode(text).length;
+    const remainingBytes = MAX_COMPOSER_DIFF_QUOTE_BYTES - usage.diffBytes;
+    if (bytes > remainingBytes) {
+      return { ok: false, code: 'composer.quote.diff-limit-exceeded', bytes, maxBytes: MAX_COMPOSER_DIFF_QUOTE_BYTES, remainingBytes };
+    }
+  } else {
+    const chars = quoteChars(text);
+    const remainingChars = MAX_COMPOSER_QUOTE_CHARS - usage.chars;
+    if (chars > remainingChars) {
+      return { ok: false, code: 'composer.quote.limit-exceeded', chars, maxChars: MAX_COMPOSER_QUOTE_CHARS, remainingChars };
+    }
   }
   return { ok: true, quotes: [...quotes, { ...quote, text }] };
 }
@@ -68,14 +113,9 @@ export function createUserPromptSubmission(
   workspaceFiles: readonly ComposerWorkspaceFileRef[] = [],
 ): ConversationPromptInput {
   const displayText = content.trim();
-  const promptQuotes = quotes.map(({ id, sourceKey, text }) => ({
-    id,
-    sourceMessageKey: sourceKey,
-    text,
-  }));
   return {
     displayText,
-    quotes: promptQuotes,
+    quotes: quotes.map(({ id, text, source }) => ({ id, text, source })),
     workspaceFiles: workspaceFiles.map(({ projectId, relativePath }) => ({
       projectId,
       relativePath,
@@ -166,33 +206,46 @@ export function workspaceFilesFromRaw(raw: unknown): WorkspaceFileTimelineRef[] 
   });
 }
 
-export function serializeUserPromptSubmission(input: ConversationPromptInput) {
-  const displayText = input.displayText.trim();
-  if (input.quotes.length === 0) return displayText;
-  const quoteBlocks = input.quotes.map((quote) =>
-    quote.text
-      .split('\n')
-      .map((line) => `> ${line}`)
-      .join('\n'),
-  );
-  return `${quoteBlocks.join('\n\n')}\n\n${displayText}`;
+function quoteSourceFromRaw(raw: unknown): UserPromptQuoteSource | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = raw as Record<string, unknown>;
+  const text = (value: unknown) => typeof value === 'string' && value.length > 0;
+  const line = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value > 0;
+  switch (source.kind) {
+    case 'agentMessage':
+      return text(source.messageKey) ? { kind: 'agentMessage', messageKey: source.messageKey as string } : null;
+    case 'file':
+      return text(source.label) && line(source.startLine) && line(source.endLine)
+        ? { kind: 'file', label: source.label as string, startLine: source.startLine as number, endLine: source.endLine as number }
+        : null;
+    case 'diff':
+      return text(source.path)
+        && typeof source.origin === 'string'
+        && (source.scope === 'selection' || source.scope === 'file')
+        ? {
+          kind: 'diff',
+          path: source.path as string,
+          origin: source.origin as Extract<UserPromptQuoteSource, { kind: 'diff' }>['origin'],
+          revision: text(source.revision) ? source.revision as string : null,
+          scope: source.scope,
+        }
+        : null;
+    default:
+      return null;
+  }
 }
 
 export function userPromptQuotesFromRaw(raw: unknown): UserPromptQuote[] {
   if (!raw || typeof raw !== 'object') return [];
   const quotes = (raw as { quotes?: unknown }).quotes;
   if (!Array.isArray(quotes)) return [];
-  return quotes.flatMap((quote) => {
+  return quotes.flatMap((quote): UserPromptQuote[] => {
     if (!quote || typeof quote !== 'object') return [];
-    const { id, sourceMessageKey, text } = quote as Record<string, unknown>;
-    return typeof id === 'string'
-      && id.length > 0
-      && typeof sourceMessageKey === 'string'
-      && sourceMessageKey.length > 0
-      && typeof text === 'string'
-      && text.length > 0
-      ? [{ id, sourceMessageKey, text }]
-      : [];
+    const { id, text, source: rawSource } = quote as Record<string, unknown>;
+    const source = quoteSourceFromRaw(rawSource);
+    if (typeof id !== 'string' || id.length === 0 || typeof text !== 'string' || !source) return [];
+    const quoteValue = { id, text, source };
+    return text.length > 0 || isWholeFileDiffQuote(quoteValue) ? [quoteValue] : [];
   });
 }
 

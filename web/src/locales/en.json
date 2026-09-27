@@ -755,6 +755,9 @@
       "local_html": {
         "grant_failed": "This local HTML file could not be authorized."
       },
+      "system_open": {
+        "failed": "The system browser could not open this page."
+      },
       "page": {
         "limit_reached": "Too many pages are open. Close some tabs first."
       },
@@ -978,6 +981,7 @@
       "prompt-empty": "Enter a message to send.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
       "prompt-quote-limit-exceeded": "Quoted text cannot exceed {{maxChars}} characters in total.",
+      "prompt-quote-diff-limit-exceeded": "Full diff quotes cannot exceed {{maxBytes}} bytes in total.",
       "prompt-quote-count-exceeded": "A message can contain at most {{maxQuotes}} quotes.",
       "prompt-quote-metadata-too-long": "The quote identifier is too long. Remove the quote and select it again.",
       "prompt-role-invalid": "The role data is invalid. Select the role again before sending.",
@@ -1804,6 +1808,7 @@
     "previousChange": "Previous change",
     "nextChange": "Next change",
     "diffViewer": "File diff viewer",
+    "quoteDiff": "Quote full diff in conversation",
     "versionViewer": "Historical file viewer",
     "diffUnavailable": "This file comparison cannot be shown in the current viewer",
     "assetLoadFailed": "Unable to load this conversation file",
@@ -2152,14 +2157,24 @@
     "composerPlaceholder": "Continue conversation…",
     "quoteAction": "Quote",
     "quoteLabel": "Quote {{index}}",
-    "removeQuote": "Remove quote {{index}}",
+    "quoteDiffLabel": "{{name}} change",
+    "quoteDiffFileLabel": "{{name}} full diff",
+    "quoteFileSource": "{{path}}, lines {{lines}}",
+    "quoteDiffOrigin": {
+      "workingTreeStaged": "Staged changes",
+      "workingTreeUnstaged": "Unstaged changes",
+      "commit": "Commit {{revision}}",
+      "pullRequest": "PR {{revision}}",
+      "agentTurn": "Agent turn changes"
+    },
+    "removeQuote": "Remove quote {{name}}",
     "removeAttachment": "Remove attachment {{name}}",
     "quoteDuplicate": "This text has already been quoted.",
-    "quoteLimitExceeded": "Quoted text cannot exceed {{max}} characters in total.",
+    "quoteLimitExceeded": "This quote is {{size}} characters, over the {{max}}-character quote limit per message. This message can quote {{remaining}} more characters.",
+    "quoteDiffLimitExceeded": "This diff is {{size}}, over the {{max}} full-diff quote limit per message. This message can quote {{remaining}} more. Select part of the diff to quote it instead.",
     "quoteCountExceeded": "You can add up to {{max}} quotes.",
     "userQuoteCount": "{{count}} quote(s)",
     "userQuoteTitle": "Quoted text",
-    "userQuoteLabel": "Quote {{index}}",
     "currentModel": "Model",
     "thoughtLevel": "Reasoning",
     "unspecifiedThoughtLevel": "Unspecified",

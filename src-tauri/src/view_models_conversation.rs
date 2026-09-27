@@ -229,6 +229,8 @@ pub struct CreateScheduledTaskInputVm {
     pub attachment_paths: Option<Vec<String>>,
     #[serde(default)]
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
+    #[serde(default)]
+    pub quotes: Vec<gold_band::provider::UserPromptQuote>,
     pub schedule: ScheduledScheduleInputVm,
     pub overlap_policy: gold_band::scheduler::OverlapPolicy,
     pub session_policy: Option<gold_band::scheduler::SessionPolicy>,
@@ -303,6 +305,7 @@ pub struct ScheduledTaskEditVm {
     pub project_id: String,
     pub content: String,
     pub attachment_names: Vec<String>,
+    pub quotes: Vec<gold_band::provider::UserPromptQuote>,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
     pub include_optional_entry: Option<bool>,
@@ -330,6 +333,9 @@ pub struct UpdateScheduledTaskInputVm {
     pub attachment_paths: Option<Vec<String>>,
     #[serde(default)]
     pub workspace_files: Option<Vec<PromptWorkspaceFileRef>>,
+    /// `None` keeps the stored quotes; editing can only remove quotes.
+    #[serde(default)]
+    pub quotes: Option<Vec<gold_band::provider::UserPromptQuote>>,
     pub schedule: ScheduledScheduleInputVm,
     pub overlap_policy: gold_band::scheduler::OverlapPolicy,
     pub session_policy: gold_band::scheduler::SessionPolicy,
@@ -409,6 +415,7 @@ impl ScheduledTaskEditVm {
             project_id: definition.project_id.clone(),
             content: definition.instruction.clone(),
             attachment_names: definition.attachment_names.clone(),
+            quotes: definition.content_snapshot.quotes.clone(),
             run_mode,
             workflow_template_id,
             include_optional_entry,
@@ -986,6 +993,8 @@ pub struct ConversationCreateInputVm {
     pub role: Option<gold_band::provider::UserPromptRole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
+    #[serde(default)]
+    pub quotes: Vec<gold_band::provider::UserPromptQuote>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -1014,6 +1023,7 @@ pub fn scheduled_content_snapshot(
         input.project_id.clone(),
     );
     snapshot.workspace_files = input.workspace_files.clone();
+    snapshot.quotes = input.quotes.clone();
 
     match mode {
         ScheduledMode::Direct => {
@@ -4856,6 +4866,12 @@ pub fn prepare_conversation_task_vm(
             &input.workspace_files,
         )?;
     }
+    if !input.quotes.is_empty() {
+        write_json(
+            &app.paths.initial_prompt_quotes_file(&task_id),
+            &input.quotes,
+        )?;
+    }
 
     // Copy attachments to authoring dir
     if let Some(ref paths) = input.attachment_paths {
@@ -7081,6 +7097,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
 
         let snapshot = scheduled_content_snapshot(&app, &input).unwrap();
@@ -7197,6 +7214,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
 
         let created = create_conversation_run_vm(&app, &input).unwrap();
@@ -7235,6 +7253,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
 
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();
@@ -7268,6 +7287,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7301,6 +7321,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
 
@@ -7346,6 +7367,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7390,6 +7412,7 @@ mod tests {
             workflow_authoring: None,
             role: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
 
         assert!(create_conversation_task_vm(&app, &input).is_err());

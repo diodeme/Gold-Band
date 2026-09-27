@@ -4909,14 +4909,19 @@ fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationP
     )
     .ok()
     .unwrap_or_default();
-    if role.is_none() && workspace_files.is_empty() {
+    let quotes = read_json::<Vec<crate::provider::UserPromptQuote>>(
+        &app.paths.initial_prompt_quotes_file(task_id),
+    )
+    .ok()
+    .unwrap_or_default();
+    if role.is_none() && workspace_files.is_empty() && quotes.is_empty() {
         return None;
     }
     let requirement =
         std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path()).ok()?;
     Some(ConversationPromptInput {
         display_text: requirement,
-        quotes: Vec::new(),
+        quotes,
         role,
         workspace_files,
     })

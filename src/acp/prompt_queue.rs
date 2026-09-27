@@ -800,8 +800,10 @@ mod tests {
                 display_text: "继续解释".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),
-                    source_message_key: "message-1".to_string(),
                     text: "Agent 原文".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                        message_key: "message-1".to_string(),
+                    },
                 }],
                 role: None,
                 workspace_files: Vec::new(),
@@ -813,9 +815,19 @@ mod tests {
         let claimed = claim_queued_prompt(&dir, &queued.id).unwrap();
         assert_eq!(claimed.content, "继续解释");
         assert!(
-            conversation_prompt_text(&claimed.content, &claimed.quotes).starts_with("> Agent 原文")
+            conversation_prompt_text(
+                &claimed.content,
+                &claimed.quotes,
+                crate::config::DesktopLanguage::En
+            )
+            .starts_with("> Agent 原文")
         );
-        assert_eq!(claimed.quotes[0].source_message_key, "message-1");
+        assert_eq!(
+            claimed.quotes[0].source,
+            crate::provider::UserPromptQuoteSource::AgentMessage {
+                message_key: "message-1".to_string()
+            }
+        );
     }
 
     #[test]
@@ -865,8 +877,10 @@ mod tests {
                 display_text: "继续修改".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),
-                    source_message_key: "message-1".to_string(),
                     text: "Agent 原文".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                        message_key: "message-1".to_string(),
+                    },
                 }],
                 role: Some(role.clone()),
                 workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
@@ -896,8 +910,10 @@ mod tests {
                 display_text: "first".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),
-                    source_message_key: "textDelta-message-1".to_string(),
                     text: "Agent 原文".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                        message_key: "textDelta-message-1".to_string(),
+                    },
                 }],
                 role: None,
                 workspace_files: Vec::new(),
@@ -979,8 +995,10 @@ mod tests {
                 display_text: "restore me".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),
-                    source_message_key: "message-1".to_string(),
                     text: "quoted".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                        message_key: "message-1".to_string(),
+                    },
                 }],
                 role: None,
                 workspace_files: Vec::new(),

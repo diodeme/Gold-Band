@@ -479,7 +479,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
           promptId: 'browser-prompt-052',
           quotes: Array.from({ length: 8 }, (_, index) => ({
             id: `browser-quote-052-${index + 1}`,
-            sourceMessageKey: `textDelta-browser-agent-message-${index + 1}`,
+            source: { kind: 'agentMessage', messageKey: `textDelta-browser-agent-message-${index + 1}` },
             text: index === 0
               ? `请优先检查工作区配置中的权限边界。\n${'这是一段用于验证长引用内部换行与滚动边界的内容。'.repeat(16)}`
               : `第 ${index + 1} 条引用：补充核对配置项、权限范围和对应说明。`,
@@ -642,8 +642,8 @@ const browserQueuedPromptDrafts = [
     id: 'browser-queued-2',
     content: '检查深色主题下的输入区层级。',
     quotes: [
-      { id: 'browser-quote-1', sourceMessageKey: 'browser-message-1', text: '第一段引用' },
-      { id: 'browser-quote-2', sourceMessageKey: 'browser-message-2', text: '第二段引用' },
+      { id: 'browser-quote-1', source: { kind: 'agentMessage' as const, messageKey: 'browser-message-1' }, text: '第一段引用' },
+      { id: 'browser-quote-2', source: { kind: 'agentMessage' as const, messageKey: 'browser-message-2' }, text: '第二段引用' },
     ],
     attachmentPaths: [],
     createdAt: '2026-08-07T08:00:01Z',
@@ -2514,6 +2514,7 @@ export const browserApi: RuntimeApi = {
       scheduledTaskId: id,
       projectId: input.projectId,
       content: input.content,
+      quotes: structuredClone(input.quotes ?? []),
       attachmentNames: [],
       runMode: input.runMode,
       workflowTemplateId: input.workflowTemplateId,
@@ -2556,6 +2557,9 @@ export const browserApi: RuntimeApi = {
         input.includeOptionalEntry,
       ),
       schedule,
+      quotes: input.quotes
+        ? definition.quotes.filter((quote) => input.quotes?.some((kept) => kept.id === quote.id))
+        : definition.quotes,
       expectedUpdatedAt: now,
       directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
     };

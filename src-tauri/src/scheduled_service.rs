@@ -85,6 +85,38 @@ pub type ScheduledServiceResult<T> = Result<T, ScheduledServiceError>;
 pub type CoordinatorRunFuture =
     Pin<Box<dyn Future<Output = ScheduledServiceResult<ManualRunResult>> + Send + 'static>>;
 
+fn validate_prompt_quotes(quotes: &[provider::UserPromptQuote]) -> ScheduledServiceResult<()> {
+    provider::validate_user_prompt_quotes(quotes).map_err(|error| {
+        ScheduledServiceError::invalid(
+            "validate-quotes",
+            serde_json::json!({ "code": error.code(), "params": error.params() }),
+        )
+    })
+}
+
+/// Editing may drop stored quotes but never introduce or rewrite one: quotes are
+/// frozen when the user takes them, and the edit sheet has nothing to quote from.
+fn retained_quotes(
+    stored: &[provider::UserPromptQuote],
+    requested: Option<&[provider::UserPromptQuote]>,
+) -> ScheduledServiceResult<Vec<provider::UserPromptQuote>> {
+    let Some(requested) = requested else {
+        return Ok(stored.to_vec());
+    };
+    let retained = stored
+        .iter()
+        .filter(|quote| requested.iter().any(|kept| kept.id == quote.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if retained.len() != requested.len() {
+        return Err(ScheduledServiceError::invalid(
+            "validate-quotes",
+            serde_json::json!({ "code": "scheduled.quote-not-stored" }),
+        ));
+    }
+    Ok(retained)
+}
+
 fn validate_prompt_workspace_files(
     app: &App,
     references: &[PromptWorkspaceFileRef],
@@ -497,6 +529,7 @@ impl ScheduledTaskService {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            quotes: input.quotes.clone(),
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -522,6 +555,7 @@ impl ScheduledTaskService {
             &input.workspace_files,
             input.attachment_paths.as_deref().map_or(0, <[_]>::len),
         )?;
+        validate_prompt_quotes(&input.quotes)?;
 
         let id = format!("scheduled-{}", Uuid::new_v4());
         let session_policy = input.session_policy.unwrap_or(SessionPolicy::New);
@@ -665,6 +699,10 @@ impl ScheduledTaskService {
             &effective_workspace_files,
             attachment_paths.len(),
         )?;
+        let effective_quotes = retained_quotes(
+            &current.definition.content_snapshot.quotes,
+            input.quotes.as_deref(),
+        )?;
         let validation_input = ConversationCreateInputVm {
             project_id: input.project_id.clone(),
             content: input.content.clone(),
@@ -681,6 +719,7 @@ impl ScheduledTaskService {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            quotes: effective_quotes,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -1599,6 +1638,7 @@ mod tests {
                 overlap_policy: OverlapPolicy::SkipWhenRunning,
                 session_policy: None,
                 workspace_files: Vec::new(),
+                quotes: Vec::new(),
             }
         }
 
@@ -1622,6 +1662,7 @@ mod tests {
                 overlap_policy: definition.overlap_policy,
                 session_policy: SessionPolicy::New,
                 workspace_files: None,
+                quotes: None,
             }
         }
 
@@ -2014,6 +2055,55 @@ mod tests {
                 .scheduled_task_dir(result.definition.id())
                 .join("inputs/report.txt")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn scheduled_quotes_are_frozen_on_create_and_can_only_be_removed_by_edit() {
+        let fixture = Fixture::new();
+        let quote = |id: &str, text: &str| gold_band::provider::UserPromptQuote {
+            id: id.to_string(),
+            text: text.to_string(),
+            source: gold_band::provider::UserPromptQuoteSource::File {
+                label: "src/lib.rs".to_string(),
+                start_line: 3,
+                end_line: 4,
+            },
+        };
+        let mut input = fixture.create_input();
+        input.quotes = vec![quote("a", "first"), quote("b", "second")];
+        let created = fixture.service.create(input).unwrap();
+        assert_eq!(created.definition.content_snapshot.quotes.len(), 2);
+        let fingerprint = created.definition.content_fingerprint.clone();
+
+        let mut rewrite =
+            fixture.update_input(&created.definition, "Generate the scheduled report");
+        rewrite.quotes = Some(vec![quote("a", "rewritten")]);
+        rewrite.quotes.as_mut().unwrap().push(quote("c", "new"));
+        let error = fixture.service.update(rewrite).unwrap_err();
+        assert_eq!(
+            error.params["details"]["code"],
+            "scheduled.quote-not-stored"
+        );
+
+        let mut remove = fixture.update_input(&created.definition, "Generate the scheduled report");
+        remove.quotes = Some(vec![quote("b", "ignored text")]);
+        let updated = fixture.service.update(remove).unwrap();
+        assert_eq!(
+            updated.definition.content_snapshot.quotes,
+            vec![quote("b", "second")]
+        );
+        assert_ne!(updated.definition.content_fingerprint, fingerprint);
+
+        let mut over_budget = fixture.create_input();
+        over_budget.quotes = vec![quote(
+            "big",
+            &"x".repeat(gold_band::provider::MAX_USER_PROMPT_QUOTE_CHARS + 1),
+        )];
+        let error = fixture.service.create(over_budget).unwrap_err();
+        assert_eq!(
+            error.params["details"]["code"],
+            "conversation.prompt-quote-limit-exceeded"
         );
     }
 
@@ -2845,6 +2935,7 @@ mod tests {
             overlap_policy: OverlapPolicy::SkipWhenRunning,
             session_policy: None,
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
         service.create(input_for(first_app, "first")).unwrap();
         service.create(input_for(second_app, "second")).unwrap();

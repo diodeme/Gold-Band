@@ -51,6 +51,7 @@ export function DraftAttachmentWorkspacePanel({ resource }: { resource: DraftAtt
             documentKey={resource.key}
             name={attachment.name}
             value={textState.content}
+            quoteLabel={attachment.name}
           />
         </div>
       ) : (

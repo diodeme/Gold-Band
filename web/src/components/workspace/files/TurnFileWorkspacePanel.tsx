@@ -2,16 +2,18 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactN
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorSelection, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
-import { getChunks, goToNextChunk, goToPreviousChunk } from '@codemirror/merge';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, FileText, LoaderCircle, TriangleAlert } from 'lucide-react';
+import { getChunks, getOriginalDoc, goToNextChunk, goToPreviousChunk } from '@codemirror/merge';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, FileText, LoaderCircle, MessageSquareQuote, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getGitComparison } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { formatWholeFileDiff } from '@/lib/diff-quote';
 import { loadTurnFileComparison } from '@/lib/turn-file-comparison-cache';
-import type { FileComparisonVm, GitFileComparisonVm } from '@/types';
+import type { FileComparisonVm, GitComparisonSourceVm, GitFileComparisonVm } from '@/types';
 import type { GitFileComparisonWorkspaceResource, TurnFileWorkspaceResource } from '../right-workspace-context';
 import { useRightWorkspaceCommands } from '../right-workspace-context';
+import { useComposerQuoteCommand } from '../workspace-file-reference-bridge';
 import { WorkspaceFileEditor } from './WorkspaceFileEditor';
 import { githubComparisonCache } from '../source-control/github-comparison-cache';
 import { diffReviewStore, resolveDiffReviewNavigation, shouldRetainVisibleComparison } from '../source-control/diff-review-store';
@@ -23,11 +25,27 @@ import {
 import { isMarkdownDocumentPath } from './markdown-document';
 import type { MarkdownEditorMode } from './file-content-store';
 import { ReadonlyUnifiedDiff } from './ReadonlyUnifiedDiff';
+import { EditorSelectionQuote, type DiffQuoteSourceBase } from './EditorSelectionQuote';
 
 export { DIFF_VIEW_SCAN_LIMIT, DIFF_VIEW_TIMEOUT_MS } from './ReadonlyUnifiedDiff';
 
 type FileComparisonWorkspaceResource = TurnFileWorkspaceResource | GitFileComparisonWorkspaceResource;
 type WorkspaceComparisonVm = FileComparisonVm | GitFileComparisonVm;
+
+const COMMIT_QUOTE_REVISION_LENGTH = 12;
+
+/** Names the diff a quote came from: an agent turn, or the Git change it belongs to. */
+export function diffQuoteSource(path: string, gitSource: GitComparisonSourceVm | null): DiffQuoteSourceBase {
+  if (!gitSource) return { kind: 'diff', path, origin: 'agentTurn', revision: null };
+  switch (gitSource.kind) {
+    case 'workspace':
+      return { kind: 'diff', path, origin: gitSource.area === 'staged' ? 'workingTreeStaged' : 'workingTreeUnstaged', revision: null };
+    case 'commit':
+      return { kind: 'diff', path, origin: 'commit', revision: gitSource.afterOid.slice(0, COMMIT_QUOTE_REVISION_LENGTH) };
+    case 'github-pr':
+      return { kind: 'diff', path, origin: 'pullRequest', revision: `${gitSource.repository}#${gitSource.prNumber}` };
+  }
+}
 
 export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonWorkspaceResource }) {
   const { t } = useTranslation();
@@ -39,6 +57,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
   const [markdownMode, setMarkdownMode] = useState<MarkdownEditorMode>('live-preview');
   const [diffChunkCount, setDiffChunkCount] = useState(0);
   const [activeChunkIndex, setActiveChunkIndex] = useState(0);
+  const [versionView, setVersionView] = useState<EditorView | null>(null);
+  const quoteToComposer = useComposerQuoteCommand();
   const requestGenerationRef = useRef(0);
   const comparisonRef = useRef<WorkspaceComparisonVm | null>(null);
   useSyncExternalStore(diffReviewStore.subscribe, diffReviewStore.version, diffReviewStore.version);
@@ -179,6 +199,19 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     return base;
   }, [language]);
 
+  const quoteSource = comparison
+    ? diffQuoteSource(comparison.path, gitResource ? reviewItem?.source ?? gitResource.gitSource : null)
+    : null;
+  const quoteWholeDiff = () => {
+    const view = editorRef.current?.view;
+    const chunks = view ? getChunks(view.state)?.chunks : null;
+    if (!view || !chunks?.length || !quoteSource || !quoteToComposer) return;
+    quoteToComposer({
+      text: formatWholeFileDiff(getOriginalDoc(view.state), view.state.doc, chunks),
+      source: { ...quoteSource, scope: 'file' },
+    });
+  };
+
   if (fileLeftChanges) {
     return <PanelMessage icon={<TriangleAlert className="size-4 text-amber-500" />} text={t('sourceControl.fileNotInChanges')} />;
   }
@@ -200,6 +233,24 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
           <span className="min-w-0 flex-1 truncate font-mono text-foreground">{comparison.path}</span>
           <span className="tabular-nums text-emerald-600 dark:text-emerald-400">+{reviewItem?.stats.addedLines ?? comparison.stats.addedLines ?? 0}</span>
           <span className="tabular-nums text-destructive">-{reviewItem?.stats.deletedLines ?? comparison.stats.deletedLines ?? 0}</span>
+          {resource.kind === 'file-diff' && quoteToComposer ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="-mr-1.5 size-7"
+                  disabled={diffChunkCount === 0 || Boolean(comparison.limitationCode)}
+                  onClick={quoteWholeDiff}
+                  aria-label={t('turnFiles.quoteDiff')}
+                  data-quote-whole-diff="true"
+                >
+                  <MessageSquareQuote className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('turnFiles.quoteDiff')}</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
         {resource.kind === 'file-diff' ? (
           <div className="flex h-9 items-center gap-1 border-t border-border/40 px-2">
@@ -248,12 +299,14 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             onPersistState={() => undefined}
             markdownMode={markdownMode}
             onMarkdownModeChange={setMarkdownMode}
+            quoteLabel={comparison.path}
           />
         ) : resource.kind === 'file-diff' ? (
           <ReadonlyUnifiedDiff
             comparison={comparison}
             editorRef={editorRef}
             ariaLabel={t('turnFiles.diffViewer')}
+            quoteSource={quoteSource}
             onChunksChange={(count) => {
               setDiffChunkCount((current) => current === count ? current : count);
               setActiveChunkIndex((current) => Math.min(current, Math.max(0, count - 1)));
@@ -275,17 +328,21 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             }}
           />
         ) : (
-          <CodeMirror
-            value={after}
-            height="100%"
-            width="100%"
-            theme="none"
-            basicSetup={false}
-            editable={false}
-            extensions={extensions}
-            className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
-            aria-label={t('turnFiles.versionViewer')}
-          />
+          <>
+            <CodeMirror
+              value={after}
+              height="100%"
+              width="100%"
+              theme="none"
+              basicSetup={false}
+              editable={false}
+              extensions={extensions}
+              className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
+              onCreateEditor={setVersionView}
+              aria-label={t('turnFiles.versionViewer')}
+            />
+            <EditorSelectionQuote view={versionView} label={comparison.path} />
+          </>
         )}
       </div>
     </section>

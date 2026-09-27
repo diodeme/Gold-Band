@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_COMPOSER_DIFF_QUOTE_BYTES,
   MAX_COMPOSER_QUOTE_CHARS,
   MAX_COMPOSER_QUOTES,
   MAX_COMPOSER_CONTEXT_ITEMS,
@@ -7,7 +8,6 @@ import {
   addComposerWorkspaceFile,
   createUserPromptSubmission,
   hasUserPromptPayload,
-  serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
   workspaceFilesFromRaw,
@@ -15,7 +15,16 @@ import {
   type ComposerWorkspaceFileRef,
 } from '@/lib/composer-context';
 
-const quote = (id: string, text: string, sourceKey = id): ComposerQuote => ({ id, text, sourceKey });
+const quote = (id: string, text: string, messageKey = id): ComposerQuote => ({
+  id,
+  text,
+  source: { kind: 'agentMessage', messageKey },
+});
+const wholeDiff = (id: string, text: string, path = 'src/a.ts'): ComposerQuote => ({
+  id,
+  text,
+  source: { kind: 'diff', path, origin: 'agentTurn', revision: null, scope: 'file' },
+});
 const workspaceFile = (path: string, id = 'ref-1'): ComposerWorkspaceFileRef => ({
   id,
   projectId: 'project-1',
@@ -28,22 +37,24 @@ const workspaceFile = (path: string, id = 'ref-1'): ComposerWorkspaceFileRef => 
 
 describe('composer quote contract', () => {
   it('keeps display text and structured quotes separate from the agent prompt', () => {
-    const first = addComposerQuote([], quote('one', '第一行\n第二行'));
+    const first = addComposerQuote([], quote('one', '\n第一行\n第二行  '));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
-    const second = addComposerQuote(first.quotes, quote('two', '另一段'));
+    const second = addComposerQuote(first.quotes, {
+      id: 'two',
+      text: '  indented()',
+      source: { kind: 'file', label: 'src/a.ts', startLine: 3, endLine: 3 },
+    });
     expect(second.ok).toBe(true);
     if (!second.ok) return;
-    const submission = createUserPromptSubmission('继续解释', second.quotes);
-    expect(submission).toEqual({
+    expect(createUserPromptSubmission('继续解释', second.quotes)).toEqual({
       displayText: '继续解释',
       quotes: [
-        { id: 'one', sourceMessageKey: 'one', text: '第一行\n第二行' },
-        { id: 'two', sourceMessageKey: 'two', text: '另一段' },
+        { id: 'one', text: '第一行\n第二行', source: { kind: 'agentMessage', messageKey: 'one' } },
+        { id: 'two', text: '  indented()', source: { kind: 'file', label: 'src/a.ts', startLine: 3, endLine: 3 } },
       ],
       workspaceFiles: [],
     });
-    expect(serializeUserPromptSubmission(submission)).toBe('> 第一行\n> 第二行\n\n> 另一段\n\n继续解释');
   });
 
   it('keeps a role snapshot on the submission without putting it in display text', () => {
@@ -71,28 +82,52 @@ describe('composer quote contract', () => {
   it('only reads valid explicit quote metadata', () => {
     expect(userPromptQuotesFromRaw({
       quotes: [
-        { id: 'one', sourceMessageKey: 'message-1', text: '引用内容' },
-        { id: '', sourceMessageKey: 'message-2', text: 'invalid' },
+        { id: 'one', text: '引用内容', source: { kind: 'agentMessage', messageKey: 'message-1' } },
+        { id: 'two', text: '', source: { kind: 'diff', path: 'a.ts', origin: 'commit', revision: 'abc', scope: 'file' } },
+        { id: 'three', text: '', source: { kind: 'diff', path: 'a.ts', origin: 'commit', revision: 'abc', scope: 'selection' } },
+        { id: 'four', text: 'x', source: { kind: 'file', label: 'a.ts', startLine: 0, endLine: 1 } },
+        { id: '', text: 'invalid', source: { kind: 'agentMessage', messageKey: 'message-2' } },
+        { id: 'legacy', sourceMessageKey: 'message-3', text: 'legacy' },
       ],
-    })).toEqual([{ id: 'one', sourceMessageKey: 'message-1', text: '引用内容' }]);
+    })).toEqual([
+      { id: 'one', text: '引用内容', source: { kind: 'agentMessage', messageKey: 'message-1' } },
+      { id: 'two', text: '', source: { kind: 'diff', path: 'a.ts', origin: 'commit', revision: 'abc', scope: 'file' } },
+    ]);
   });
 
-  it('rejects the same selection from the same source message', () => {
+  it('rejects the same selection from the same source', () => {
     const existing = [quote('one', '相同内容', 'message-1')];
     expect(addComposerQuote(existing, quote('two', '相同内容', 'message-1'))).toMatchObject({
       ok: false,
       code: 'composer.quote.duplicate',
     });
+    expect(addComposerQuote(existing, quote('two', '相同内容', 'message-2')).ok).toBe(true);
   });
 
-  it('keeps the existing draft unchanged when the total character limit would be exceeded', () => {
-    const existing = [quote('one', 'a'.repeat(MAX_COMPOSER_QUOTE_CHARS))];
-    expect(addComposerQuote(existing, quote('two', 'b'))).toEqual({
+  it('keeps the draft unchanged and reports the remaining characters when a quote is over budget', () => {
+    const existing = [quote('one', 'a'.repeat(MAX_COMPOSER_QUOTE_CHARS - 5))];
+    expect(addComposerQuote(existing, quote('two', 'b'.repeat(8)))).toEqual({
       ok: false,
       code: 'composer.quote.limit-exceeded',
+      chars: 8,
       maxChars: MAX_COMPOSER_QUOTE_CHARS,
+      remainingChars: 5,
     });
     expect(existing).toHaveLength(1);
+  });
+
+  it('charges whole-file diffs to their own per-message byte budget', () => {
+    const big = 'x'.repeat(MAX_COMPOSER_DIFF_QUOTE_BYTES - 10);
+    const first = addComposerQuote([quote('one', 'a'.repeat(MAX_COMPOSER_QUOTE_CHARS))], wholeDiff('diff-1', big));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(addComposerQuote(first.quotes, wholeDiff('diff-2', '文'.repeat(4), 'src/b.ts'))).toEqual({
+      ok: false,
+      code: 'composer.quote.diff-limit-exceeded',
+      bytes: 12,
+      maxBytes: MAX_COMPOSER_DIFF_QUOTE_BYTES,
+      remainingBytes: 10,
+    });
   });
 
   it('keeps the quote list bounded independently of the character budget', () => {

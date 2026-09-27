@@ -113,7 +113,7 @@ function ConversationDirectoryTextPreview({
     });
   }, [htmlDocument, resource.locator.projectId, selected.canonicalPath, t, workspace.openResource, workspace.scopeKey]);
   if (isMarkdownDocumentPath(selected.canonicalPath)) {
-    return <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} />;
+    return <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} quoteLabel={selected.canonicalPath} />;
   }
   return (
     <WorkspaceFileEditor
@@ -130,6 +130,7 @@ function ConversationDirectoryTextPreview({
       initialStateJson={null}
       onPersistState={() => undefined}
       onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined}
+      quoteLabel={selected.canonicalPath}
     />
   );
 }

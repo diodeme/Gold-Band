@@ -61,11 +61,9 @@ use gold_band::config::{
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
-    AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS,
-    MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES,
-    MAX_USER_PROMPT_ROLE_CONTENT_CHARS, MAX_USER_PROMPT_ROLE_ID_BYTES,
-    MAX_USER_PROMPT_ROLE_NAME_BYTES, UserPromptQuote, UserPromptRole,
-    conversation_agent_prompt_text, conversation_prompt_has_payload,
+    AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_ROLE_CONTENT_CHARS,
+    MAX_USER_PROMPT_ROLE_ID_BYTES, MAX_USER_PROMPT_ROLE_NAME_BYTES, UserPromptQuote,
+    UserPromptRole, conversation_agent_prompt_text, conversation_prompt_has_payload,
     select_config_options_from_capabilities, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
@@ -8826,6 +8824,13 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
     CommandErrorVm::new(code, serde_json::json!({}))
 }
 
+pub(crate) fn validate_prompt_quotes(
+    quotes: &[gold_band::provider::UserPromptQuote],
+) -> CommandResult<()> {
+    gold_band::provider::validate_user_prompt_quotes(quotes)
+        .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
+}
+
 fn validate_conversation_prompt_input(
     input: &ConversationPromptInput,
     attachment_paths: Option<&[String]>,
@@ -8848,46 +8853,7 @@ fn validate_conversation_prompt_input(
     {
         return Err(CommandErrorVm::new(code, serde_json::json!({})));
     }
-    if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
-        return Err(CommandErrorVm::new(
-            "conversation.prompt-quote-count-exceeded",
-            serde_json::json!({ "maxQuotes": MAX_USER_PROMPT_QUOTES }),
-        ));
-    }
-    let mut quote_ids = HashSet::with_capacity(input.quotes.len());
-    let mut quote_chars = 0usize;
-    for quote in &input.quotes {
-        if quote.id.trim().is_empty()
-            || quote.source_message_key.trim().is_empty()
-            || quote.text.trim().is_empty()
-            || !quote_ids.insert(quote.id.as_str())
-        {
-            return Err(CommandErrorVm::new(
-                "conversation.prompt-quote-invalid",
-                serde_json::json!({}),
-            ));
-        }
-        if quote.id.len() > MAX_USER_PROMPT_QUOTE_ID_BYTES
-            || quote.source_message_key.len() > MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES
-        {
-            return Err(CommandErrorVm::new(
-                "conversation.prompt-quote-metadata-too-long",
-                serde_json::json!({
-                    "maxIdBytes": MAX_USER_PROMPT_QUOTE_ID_BYTES,
-                    "maxSourceKeyBytes": MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES,
-                }),
-            ));
-        }
-        let remaining = MAX_USER_PROMPT_QUOTE_CHARS.saturating_sub(quote_chars);
-        let chars = quote.text.chars().take(remaining + 1).count();
-        quote_chars += chars;
-        if quote_chars > MAX_USER_PROMPT_QUOTE_CHARS {
-            return Err(CommandErrorVm::new(
-                "conversation.prompt-quote-limit-exceeded",
-                serde_json::json!({ "maxChars": MAX_USER_PROMPT_QUOTE_CHARS }),
-            ));
-        }
-    }
+    validate_prompt_quotes(&input.quotes)?;
     if let Some(role) = input.role.as_ref() {
         if role.profile_id.trim().is_empty()
             || role.name.trim().is_empty()
@@ -11605,13 +11571,16 @@ mod tests {
         .unwrap();
     }
 
-    fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {
+    fn prompt_with_quote(
+        source: gold_band::provider::UserPromptQuoteSource,
+        text: &str,
+    ) -> ConversationPromptInput {
         ConversationPromptInput {
             display_text: "继续".to_string(),
             quotes: vec![gold_band::provider::UserPromptQuote {
                 id: "quote-1".to_string(),
-                source_message_key: source_message_key.to_string(),
                 text: text.to_string(),
+                source,
             }],
             role: None,
             workspace_files: Vec::new(),
@@ -11619,8 +11588,15 @@ mod tests {
     }
 
     #[test]
-    fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
-        let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
+    fn prompt_quote_validation_returns_structured_errors_without_loading_sources() {
+        use gold_band::provider::{
+            DiffQuoteOrigin, DiffQuoteScope, MAX_USER_PROMPT_DIFF_QUOTE_BYTES,
+            UserPromptQuoteSource,
+        };
+        let agent = UserPromptQuoteSource::AgentMessage {
+            message_key: "textDelta-answer-1".to_string(),
+        };
+        let valid = prompt_with_quote(agent.clone(), "Agent 原文");
         assert!(validate_conversation_prompt_input(&valid, None).is_ok());
 
         let mut duplicate = valid.clone();
@@ -11632,54 +11608,34 @@ mod tests {
             "conversation.prompt-quote-invalid"
         );
 
-        let over_limit = prompt_with_quote(
-            "textDelta-answer-1",
-            &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
-        );
-        assert_eq!(
-            validate_conversation_prompt_input(&over_limit, None)
-                .unwrap_err()
-                .code,
-            "conversation.prompt-quote-limit-exceeded"
-        );
-        let mut too_many = valid.clone();
-        too_many.quotes = (0..=MAX_USER_PROMPT_QUOTES)
-            .map(|index| gold_band::provider::UserPromptQuote {
-                id: format!("quote-{index}"),
-                source_message_key: format!("source-{index}"),
-                text: "x".to_string(),
-            })
-            .collect();
-        assert_eq!(
-            validate_conversation_prompt_input(&too_many, None)
-                .unwrap_err()
-                .code,
-            "conversation.prompt-quote-count-exceeded"
-        );
-
-        let too_long_id = ConversationPromptInput {
-            display_text: "继续".to_string(),
-            quotes: vec![gold_band::provider::UserPromptQuote {
-                id: "x".repeat(MAX_USER_PROMPT_QUOTE_ID_BYTES + 1),
-                source_message_key: "arbitrary-source".to_string(),
-                text: "用户提供的任意引用内容".to_string(),
-            }],
-            role: None,
-            workspace_files: Vec::new(),
+        let whole_diff = UserPromptQuoteSource::Diff {
+            path: "src/lib.rs".to_string(),
+            origin: DiffQuoteOrigin::AgentTurn,
+            revision: None,
+            scope: DiffQuoteScope::File,
         };
+        let error = validate_conversation_prompt_input(
+            &prompt_with_quote(
+                whole_diff,
+                &"+".repeat(MAX_USER_PROMPT_DIFF_QUOTE_BYTES + 1),
+            ),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "conversation.prompt-quote-diff-limit-exceeded");
         assert_eq!(
-            validate_conversation_prompt_input(&too_long_id, None)
-                .unwrap_err()
-                .code,
-            "conversation.prompt-quote-metadata-too-long"
+            error.params["maxBytes"],
+            serde_json::json!(MAX_USER_PROMPT_DIFF_QUOTE_BYTES)
         );
 
+        let file = UserPromptQuoteSource::File {
+            label: "outside/any.txt".to_string(),
+            start_line: 1,
+            end_line: 2,
+        };
         assert!(
-            validate_conversation_prompt_input(
-                &prompt_with_quote("code-selection:anywhere", "引用不需要在消息时间线中存在",),
-                None,
-            )
-            .is_ok()
+            validate_conversation_prompt_input(&prompt_with_quote(file, "引用来源无需存在"), None)
+                .is_ok()
         );
     }
 

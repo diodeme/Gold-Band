@@ -3,54 +3,82 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
-import { readAgentMessageSelection, type AgentMessageSelection } from '@/lib/agent-message-selection';
 
-type SelectionPosition = AgentMessageSelection & { top: number; left: number };
+/** A selection the user can quote, with the viewport rect the button anchors to. */
+export interface QuotableSelection<T> {
+  value: T;
+  rect: DOMRect;
+}
 
-export function AgentSelectionQuoteButton({
+type SelectionPosition<T> = QuotableSelection<T> & { top: number; left: number };
+
+const BUTTON_OFFSET_ABOVE = 42;
+const BUTTON_OFFSET_BELOW = 8;
+const BUTTON_EDGE_INSET = 56;
+const SCROLL_HIDE_DELAY_MS = 80;
+
+/**
+ * Floating "quote" pill shown when the user finishes a selection inside `rootRef`.
+ * Each quotable surface supplies its own reader, so DOM text and editor documents share one control.
+ */
+export function SelectionQuoteButton<T>({
   rootRef,
+  readSelection,
   onQuote,
 }: {
   rootRef: RefObject<HTMLElement | null>;
-  onQuote: (selection: AgentMessageSelection) => void;
+  readSelection: (root: HTMLElement) => QuotableSelection<T> | null;
+  onQuote: (value: T) => void;
 }) {
   const { t } = useTranslation();
-  const [position, setPosition] = useState<SelectionPosition | null>(null);
+  const [position, setPosition] = useState<SelectionPosition<T> | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const readSelectionRef = useRef(readSelection);
+  readSelectionRef.current = readSelection;
 
   useEffect(() => {
     const root = rootRef.current;
     if (!root || window.matchMedia?.('(pointer: coarse)').matches) return;
     let mounted = true;
     let scrollTimer: number | null = null;
-    const handleMouseUp = (event: MouseEvent) => {
-      if (buttonRef.current?.contains(event.target as Node)) return;
+    const showForSelection = () => {
       window.setTimeout(() => {
         if (!mounted) return;
-        const selected = readAgentMessageSelection(window.getSelection(), root);
+        const selected = readSelectionRef.current(root);
         if (!selected) return setPosition(null);
-        const above = selected.rect.top - 42;
+        const above = selected.rect.top - BUTTON_OFFSET_ABOVE;
         setPosition({
           ...selected,
-          top: above >= 8 ? above : selected.rect.bottom + 8,
-          left: Math.max(56, Math.min(selected.rect.left + selected.rect.width / 2, window.innerWidth - 56)),
+          top: above >= BUTTON_OFFSET_BELOW ? above : selected.rect.bottom + BUTTON_OFFSET_BELOW,
+          left: Math.max(
+            BUTTON_EDGE_INSET,
+            Math.min(selected.rect.left + selected.rect.width / 2, window.innerWidth - BUTTON_EDGE_INSET),
+          ),
         });
       }, 0);
+    };
+    const handleMouseUp = (event: MouseEvent) => {
+      if (!buttonRef.current?.contains(event.target as Node)) showForSelection();
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift' || event.shiftKey) showForSelection();
     };
     const handleMouseDown = (event: MouseEvent) => {
       if (!buttonRef.current?.contains(event.target as Node)) setPosition(null);
     };
     const handleScroll = () => {
       if (scrollTimer !== null) window.clearTimeout(scrollTimer);
-      scrollTimer = window.setTimeout(() => setPosition(null), 80);
+      scrollTimer = window.setTimeout(() => setPosition(null), SCROLL_HIDE_DELAY_MS);
     };
     root.addEventListener('mouseup', handleMouseUp);
+    root.addEventListener('keyup', handleKeyUp);
     document.addEventListener('mousedown', handleMouseDown);
     root.addEventListener('scroll', handleScroll, true);
     return () => {
       mounted = false;
       if (scrollTimer !== null) window.clearTimeout(scrollTimer);
       root.removeEventListener('mouseup', handleMouseUp);
+      root.removeEventListener('keyup', handleKeyUp);
       document.removeEventListener('mousedown', handleMouseDown);
       root.removeEventListener('scroll', handleScroll, true);
     };
@@ -67,11 +95,11 @@ export function AgentSelectionQuoteButton({
       style={{ top: position.top, left: position.left, transform: 'translateX(-50%)' }}
       onMouseDown={(event) => {
         event.preventDefault();
-        onQuote(position);
+        onQuote(position.value);
         setPosition(null);
         window.getSelection()?.removeAllRanges();
       }}
-      data-agent-selection-quote="true"
+      data-selection-quote="true"
     >
       <MessageSquareQuote className="size-3.5" />
       {t('acp.quoteAction')}

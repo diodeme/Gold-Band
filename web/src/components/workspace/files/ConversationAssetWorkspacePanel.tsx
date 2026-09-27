@@ -61,6 +61,7 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
             documentKey={resource.key}
             name={resource.name}
             value={content.content}
+            quoteLabel={content.title || resource.name}
           />
         )}
       </div>

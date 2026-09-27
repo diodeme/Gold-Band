@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { ComposerWorkspaceFileRef } from '@/lib/composer-context';
+import type { ComposerQuoteDraft, ComposerWorkspaceFileRef } from '@/lib/composer-context';
 
 export type AddWorkspaceFileRefCommand = (
   reference: ComposerWorkspaceFileRef,
@@ -18,6 +18,20 @@ export type AddWorkspaceFileRefResult =
   | { kind: 'duplicate' }
   | { kind: 'limit-exceeded'; max: number }
   | { kind: 'unavailable' };
+
+/** The composer reports a rejected quote (budget, duplicate) in its own error area. */
+export type AddQuoteCommand = (
+  quote: ComposerQuoteDraft,
+  options: { isDocked: boolean },
+) => AddQuoteResult;
+
+export type AddQuoteResult = { kind: 'added' } | { kind: 'rejected' } | { kind: 'unavailable' };
+
+/** The active composer, which receives workspace references and quotes taken outside it. */
+export interface ComposerReferenceTarget {
+  addWorkspaceFileRef: AddWorkspaceFileRefCommand;
+  addQuote: AddQuoteCommand;
+}
 
 export interface WorkspaceFileReferencePresentation {
   isDocked: boolean;
@@ -45,12 +59,13 @@ export function WorkspaceFileReferencePresentationProvider({
 }
 
 interface WorkspaceFileReferenceBridgeValue {
-  register: (command: AddWorkspaceFileRefCommand | null) => () => void;
+  register: (target: ComposerReferenceTarget | null) => () => void;
 }
 
 interface WorkspaceFileReferenceCommandsValue {
   available: boolean;
   addWorkspaceFileRef: AddWorkspaceFileRefCommand;
+  addQuote: AddQuoteCommand;
 }
 
 const BridgeContext = createContext<WorkspaceFileReferenceBridgeValue | null>(null);
@@ -68,23 +83,37 @@ export function useWorkspaceFileReferenceCommands() {
   return useContext(CommandsContext);
 }
 
+/** Sends a quote to the active composer, or `null` while no composer can take one. */
+export function useComposerQuoteCommand() {
+  const commands = useWorkspaceFileReferenceCommands();
+  const { isDocked } = useWorkspaceFileReferencePresentation();
+  return useMemo(
+    () => commands?.available
+      ? (quote: ComposerQuoteDraft) => commands.addQuote(quote, { isDocked })
+      : null,
+    [commands, isDocked],
+  );
+}
+
 export function useWorkspaceFileReferenceBridgeState() {
   const [available, setAvailable] = useState(false);
-  const commandRef = useMemo(() => ({ current: null as AddWorkspaceFileRefCommand | null }), []);
-  const register = useMemo(() => (command: AddWorkspaceFileRefCommand | null) => {
-    commandRef.current = command;
-    setAvailable(command !== null);
+  const targetRef = useMemo(() => ({ current: null as ComposerReferenceTarget | null }), []);
+  const register = useMemo(() => (target: ComposerReferenceTarget | null) => {
+    targetRef.current = target;
+    setAvailable(target !== null);
     return () => {
-      if (commandRef.current !== command) return;
-      commandRef.current = null;
+      if (targetRef.current !== target) return;
+      targetRef.current = null;
       setAvailable(false);
     };
-  }, [commandRef]);
+  }, [targetRef]);
   const commands = useMemo<WorkspaceFileReferenceCommandsValue>(() => ({
     available,
     addWorkspaceFileRef: (reference, options) =>
-      commandRef.current?.(reference, options) ?? { kind: 'unavailable' },
-  }), [available, commandRef]);
+      targetRef.current?.addWorkspaceFileRef(reference, options) ?? { kind: 'unavailable' },
+    addQuote: (quote, options) =>
+      targetRef.current?.addQuote(quote, options) ?? { kind: 'unavailable' },
+  }), [available, targetRef]);
   const bridge = useMemo<WorkspaceFileReferenceBridgeValue>(() => ({ register }), [register]);
   return { bridge, commands };
 }

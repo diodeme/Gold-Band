@@ -164,18 +164,19 @@ import {
   addComposerQuote,
   addComposerWorkspaceFile,
   createComposerPromptSubmission,
-  serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
   hasUserPromptPayload,
   workspaceFilesFromRaw,
+  type ComposerQuoteDraft,
   type ComposerWorkspaceFileRef,
 } from "@/lib/composer-context";
+import { composerQuoteFailureMessage } from "@/lib/composer-quote-i18n";
 import { openWorkspaceFileReference } from "@/lib/workspace-file-reference";
 import type { ConversationPromptInput, ProfileVm } from "@/types";
-import type { AgentMessageSelection } from "@/lib/agent-message-selection";
+import { readAgentMessageQuote } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
-import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
+import { SelectionQuoteButton } from "@/components/conversation/SelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
 import { UserMessageWorkspaceFiles } from "@/components/conversation/UserMessageWorkspaceFiles";
@@ -1422,27 +1423,32 @@ export function ACPChatDialog(
   workspaceFilesRef.current = workspaceFiles;
   const pendingAttachmentsRef = useRef(composerDraft.draft.attachments);
   pendingAttachmentsRef.current = composerDraft.draft.attachments;
-  useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
-    if (!projectId) return { kind: 'unavailable' };
-    const result = addComposerWorkspaceFile(
-      workspaceFilesRef.current,
-      pendingAttachmentsRef.current.length,
-      reference,
-    );
-    if (!result.ok) {
-      if (result.code === 'composer.context.limit-exceeded') {
-        setComposerContextError(
-          t('errors.composer.context-limit-exceeded', { max: result.max }),
-        );
-        return { kind: 'limit-exceeded', max: result.max };
+  const addQuoteFromWorkspaceRef = useRef<(draft: ComposerQuoteDraft, focus: boolean) => boolean>(() => false);
+  useEffect(() => workspaceFileReferenceBridge.register({
+    addQuote: (draft, options) =>
+      addQuoteFromWorkspaceRef.current(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
+    addWorkspaceFileRef: (reference, options) => {
+      if (!projectId) return { kind: 'unavailable' };
+      const result = addComposerWorkspaceFile(
+        workspaceFilesRef.current,
+        pendingAttachmentsRef.current.length,
+        reference,
+      );
+      if (!result.ok) {
+        if (result.code === 'composer.context.limit-exceeded') {
+          setComposerContextError(
+            t('errors.composer.context-limit-exceeded', { max: result.max }),
+          );
+          return { kind: 'limit-exceeded', max: result.max };
+        }
+        return { kind: 'duplicate' };
       }
-      return { kind: 'duplicate' };
-    }
-    workspaceFilesRef.current = result.workspaceFiles;
-    setComposerWorkspaceFiles(result.workspaceFiles);
-    setComposerContextError(null);
-    if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
-    return { kind: 'added' };
+      workspaceFilesRef.current = result.workspaceFiles;
+      setComposerWorkspaceFiles(result.workspaceFiles);
+      setComposerContextError(null);
+      if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+      return { kind: 'added' };
+    },
   }), [projectId, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
@@ -1486,6 +1492,8 @@ export function ACPChatDialog(
   const setPrompt = composerDraft.setContent;
   const quotes = composerDraft.draft.quotes;
   const setQuotes = composerDraft.setQuotes;
+  const quotesRef = useRef(quotes);
+  quotesRef.current = quotes;
   const conversationRootRef = useRef<HTMLDivElement>(null);
   const [composerContextError, setComposerContextError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -5640,7 +5648,7 @@ export function ACPChatDialog(
       setPromptCommandPending(false);
       return false;
     }
-    const effectivePrompt = serializeUserPromptSubmission(submission);
+    const effectivePrompt = submission.displayText;
     const optimisticAttachments = optimisticAttachmentPreviews(
       draftSnapshot?.attachments ?? [],
       attPaths,
@@ -5936,28 +5944,22 @@ export function ACPChatDialog(
     }
   };
 
-  const addSelectedQuote = useCallback((selection: AgentMessageSelection) => {
-    setQuotes((current) => {
-      const result = addComposerQuote(current, {
-        id: crypto.randomUUID(),
-        sourceKey: selection.sourceKey,
-        text: selection.text,
-      });
-      if (!result.ok) {
-        setComposerContextError(
-          result.code === 'composer.quote.limit-exceeded'
-            ? t('acp.quoteLimitExceeded', { max: result.maxChars.toLocaleString() })
-            : result.code === 'composer.quote.count-exceeded'
-              ? t('acp.quoteCountExceeded', { max: result.maxQuotes })
-              : t('acp.quoteDuplicate'),
-        );
-        return current;
-      }
-      setComposerContextError(null);
-      requestAnimationFrame(() => composerTextareaRef.current?.focus());
-      return result.quotes;
-    });
+  const addQuoteToDraft = useCallback((draft: ComposerQuoteDraft, focus: boolean) => {
+    const result = addComposerQuote(quotesRef.current, { ...draft, id: crypto.randomUUID() });
+    if (!result.ok) {
+      setComposerContextError(composerQuoteFailureMessage(t, result));
+      return false;
+    }
+    quotesRef.current = result.quotes;
+    setQuotes(result.quotes);
+    setComposerContextError(null);
+    if (focus) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return true;
   }, [setQuotes, t]);
+  addQuoteFromWorkspaceRef.current = addQuoteToDraft;
+  const addSelectedQuote = useCallback((draft: ComposerQuoteDraft) => {
+    addQuoteToDraft(draft, true);
+  }, [addQuoteToDraft]);
 
   const removeQuote = useCallback((id: string) => {
     setQuotes((current) => current.filter((quote) => quote.id !== id));
@@ -6753,7 +6755,7 @@ export function ACPChatDialog(
           </ConversationViewport>
         )}
       </div>
-      {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
+      {!readOnly && !queueRestorePending ? <SelectionQuoteButton rootRef={conversationRootRef} readSelection={readAgentMessageQuote} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
     </TurnAttachmentCardPreviewLimitContext.Provider>

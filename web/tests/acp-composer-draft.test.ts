@@ -22,7 +22,7 @@ describe('ACP follow-up composer draft store', () => {
   it('restores queued content, attachment paths, and structured quotes as one composer draft', () => {
     const draft = queuedPromptToAcpComposerDraft({
       content: '继续处理',
-      quotes: [{ id: 'quote-1', sourceMessageKey: 'message-1', text: 'Agent 原文' }],
+      quotes: [{ id: 'quote-1', text: 'Agent 原文', source: { kind: 'agentMessage', messageKey: 'message-1' } }],
       attachmentPaths: ['C:/work/evidence.png'],
     }, [{
       path: 'C:/work/evidence.png',
@@ -32,7 +32,7 @@ describe('ACP follow-up composer draft store', () => {
     }]);
 
     expect(draft.content).toBe('继续处理');
-    expect(draft.quotes).toEqual([{ id: 'quote-1', sourceKey: 'message-1', text: 'Agent 原文' }]);
+    expect(draft.quotes).toEqual([{ id: 'quote-1', text: 'Agent 原文', source: { kind: 'agentMessage', messageKey: 'message-1' } }]);
     expect(draft.attachments).toHaveLength(1);
     expect(draft.attachments[0]).toMatchObject({
       name: 'evidence.png',

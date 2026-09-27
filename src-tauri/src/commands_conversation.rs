@@ -972,6 +972,7 @@ async fn create_conversation_run_inner(
         input.attachment_paths.as_deref().map_or(0, <[_]>::len),
     )
     .await?;
+    crate::commands::validate_prompt_quotes(&input.quotes)?;
     validate_direct_capabilities(state.inner(), &input, &mut validation)?;
     if !validation.valid {
         return Err(CommandErrorVm::new(

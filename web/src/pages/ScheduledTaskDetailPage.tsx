@@ -462,8 +462,9 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, ru
               allowContinuous={editing.definition.runMode === 'direct'}
               initialConfig={editConfig(editing.definition)}
               initialContent={editing.definition.content}
+              initialQuotes={editing.definition.quotes}
               showContent
-              onSave={async (config, content) => {
+              onSave={async (config, content, quotes) => {
                 if (readOnly) return;
                 const definition = editing.definition;
                 await updateScheduledTask({
@@ -471,6 +472,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, ru
                   projectId: definition.projectId,
                   expectedUpdatedAt: definition.expectedUpdatedAt,
                   content: content ?? definition.content,
+                  quotes,
                   runMode: definition.runMode,
                   workflowTemplateId: definition.workflowTemplateId,
                   includeOptionalEntry: definition.includeOptionalEntry,

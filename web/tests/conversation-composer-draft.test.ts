@@ -52,18 +52,18 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('initial draft is empty', () => {
-    expect(createInitialConversationComposerDraft()).toEqual({ content: '', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } });
+    expect(createInitialConversationComposerDraft()).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } });
   });
 
   it('setContent stores text without losing attachments', () => {
-    const state: ConversationComposerDraftState = { content: '', attachments: [makeAttachment('a1')], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: '', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setContent', content: 'hello' });
     expect(next.content).toBe('hello');
     expect(next.attachments).toHaveLength(1);
   });
 
   it('setAttachments stores attachments without losing text', () => {
-    const state: ConversationComposerDraftState = { content: 'hello', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: 'hello', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setAttachments', attachments: [makeAttachment('a1'), makeAttachment('a2')] });
     expect(next.content).toBe('hello');
     expect(next.attachments.map((a) => a.id)).toEqual(['a1', 'a2']);
@@ -77,6 +77,7 @@ describe('ConversationComposer draft cross-page retention', () => {
         makeWorkspaceFile('project-a-file', 'project-a', 'src/a.ts'),
         makeWorkspaceFile('project-b-file', 'project-b', 'src/b.ts'),
       ],
+      quotes: [],
       multica: null,
       submission: { kind: 'send' },
     };
@@ -95,6 +96,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       content: 'keep',
       attachments: [],
       workspaceFiles: [makeWorkspaceFile('project-a-file', 'project-a', 'src/a.ts')],
+      quotes: [],
       multica: null,
       submission: { kind: 'send' },
     };
@@ -107,8 +109,19 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(next).toBe(state);
   });
 
+  it('setQuotes keeps frozen quotes with the draft and prefill drops them', () => {
+    const quote = { id: 'q1', text: '@@ -1 +1 @@\n-a\n+b', source: { kind: 'diff' as const, path: 'src/a.ts', origin: 'agentTurn' as const, revision: null, scope: 'selection' as const } };
+    const state = conversationComposerDraftReducer(createInitialConversationComposerDraft(), { type: 'setQuotes', quotes: [quote] });
+
+    expect(state.quotes).toEqual([quote]);
+    expect(conversationComposerDraftReducer(state, { type: 'setQuotes', quotes: state.quotes })).toBe(state);
+    expect(conversationComposerDraftReducer(state, { type: 'setContent', content: 'more' }).quotes).toEqual([quote]);
+    expect(conversationComposerDraftReducer(state, { type: 'prefill', content: 'remote', multica: { remoteTaskId: 'rt', workspaceId: 'ws', title: 'T' } }).quotes).toEqual([]);
+    expect(conversationComposerDraftReducer(state, { type: 'reset' }).quotes).toEqual([]);
+  });
+
   it('setContent with identical value is a no-op (stable reference)', () => {
-    const state: ConversationComposerDraftState = { content: 'same', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: 'same', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setContent', content: 'same' });
     expect(next).toBe(state);
   });
@@ -167,13 +180,13 @@ describe('ConversationComposer draft cross-page retention', () => {
     state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });
     state = conversationComposerDraftReducer(state, { type: 'exitScheduledTask' });
 
-    expect(state).toEqual({ content: '保留正文', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } });
+    expect(state).toEqual({ content: '保留正文', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } });
   });
 
   it('does not revoke image preview URLs during ordinary cross-page retention', () => {
     const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const attachment = makeImageAttachment('img');
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [attachment], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [attachment], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
 
     state = conversationComposerDraftReducer(state, { type: 'setContent', content: 'x after navigation' });
 
@@ -191,15 +204,15 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('reset clears content and attachments (used after successful create)', () => {
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
-    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } });
+    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } });
   });
 
   it('reset clears a scheduled-task submission mode as well', () => {
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], multica: null, submission: { kind: 'scheduled-task', config: null } };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'scheduled-task', config: null } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
-    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } });
+    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } });
   });
 
   it('does not reset the shared draft from either workspace selector path', () => {
@@ -209,7 +222,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('prefill writes requirement text + multica binding and drops prior attachments', () => {
-    const state: ConversationComposerDraftState = { content: '本地草稿', attachments: [makeAttachment('a1')], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: '本地草稿', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
     const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
     const next = conversationComposerDraftReducer(state, { type: 'prefill', content: '远程任务需求正文', multica: binding });
 
@@ -222,7 +235,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   it('editing prefilled content keeps the multica binding (setContent preserves multica)', () => {
     const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
     let state = conversationComposerDraftReducer(
-      { content: '需求', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } },
+      { content: '需求', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } },
       { type: 'prefill', content: '需求', multica: binding },
     );
     // 用户在预填基础上微调正文。
@@ -235,7 +248,7 @@ describe('ConversationComposer draft cross-page retention', () => {
 
   it('clearMultica drops the binding but keeps content and attachments (chip removed → local compose)', () => {
     const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
-    const state: ConversationComposerDraftState = { content: '需求正文', attachments: [makeAttachment('a1')], workspaceFiles: [], multica: binding, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: '需求正文', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], multica: binding, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'clearMultica' });
 
     // 解绑后正文与附件保留，仅 multica 置空 → 发送降级为普通本地会话。
@@ -245,14 +258,14 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('clearMultica is a no-op when no binding is present (stable reference)', () => {
-    const state: ConversationComposerDraftState = { content: 'x', attachments: [], workspaceFiles: [], multica: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: 'x', attachments: [], workspaceFiles: [], quotes: [], multica: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'clearMultica' });
     expect(next).toBe(state);
   });
 
   it('reset clears a leftover multica binding so the next local compose is not mistaken for a remote run', () => {
     const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
-    let state: ConversationComposerDraftState = { content: '需求', attachments: [], workspaceFiles: [], multica: binding, submission: { kind: 'send' } };
+    let state: ConversationComposerDraftState = { content: '需求', attachments: [], workspaceFiles: [], quotes: [], multica: binding, submission: { kind: 'send' } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
 
     expect(state.multica).toBeNull();
@@ -289,6 +302,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       setContent: vi.fn(),
       setAttachments: vi.fn(),
       setWorkspaceFiles: vi.fn(),
+      setQuotes: vi.fn(),
       changeWorkspace,
       prefill: vi.fn(),
       clearMultica: vi.fn(),

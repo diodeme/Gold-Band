@@ -23,11 +23,7 @@ export function queuedPromptToAcpComposerDraft(
   return {
     content: composerTextFromPromptRole(item.role, item.content),
     attachments: attachmentItemsFromPaths(item.attachmentPaths, fileRefs),
-    quotes: item.quotes.map(({ id, sourceMessageKey, text }) => ({
-      id,
-      sourceKey: sourceMessageKey,
-      text,
-    })),
+    quotes: item.quotes.map(({ id, text, source }) => ({ id, text, source })),
     workspaceFiles: (item.workspaceFiles ?? []).map((file) => ({
       id: `${file.projectId}:${file.relativePath}`,
       projectId: file.projectId,

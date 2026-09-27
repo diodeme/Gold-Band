@@ -726,6 +726,9 @@
       "local_html": {
         "grant_failed": "Este arquivo HTML local não pôde ser autorizado."
       },
+      "system_open": {
+        "failed": "O navegador do sistema não conseguiu abrir esta página."
+      },
       "page": {
         "limit_reached": "Há páginas demais abertas. Feche algumas abas primeiro."
       },
@@ -949,6 +952,7 @@
       "prompt-empty": "Digite uma mensagem para enviar.",
       "prompt-quote-invalid": "O texto citado é inválido. Remova-o e cite a mensagem novamente.",
       "prompt-quote-limit-exceeded": "O texto citado não pode exceder {{maxChars}} caracteres no total.",
+      "prompt-quote-diff-limit-exceeded": "As citações de diff completo não podem exceder {{maxBytes}} bytes no total.",
       "prompt-quote-count-exceeded": "Uma mensagem pode conter no máximo {{maxQuotes}} citações.",
       "prompt-quote-metadata-too-long": "O identificador da citação é longo demais. Remova a citação e selecione-a novamente.",
       "prompt-role-invalid": "Os dados do papel são inválidos. Selecione o papel novamente antes de enviar.",
@@ -1775,6 +1779,7 @@
     "previousChange": "Alteração anterior",
     "nextChange": "Próxima alteração",
     "diffViewer": "Visualizador de diff de arquivo",
+    "quoteDiff": "Citar diff completo na conversa",
     "versionViewer": "Visualizador de arquivo histórico",
     "diffUnavailable": "Esta comparação de arquivo não pode ser exibida no visualizador atual",
     "assetLoadFailed": "Não foi possível carregar este arquivo de conversa",
@@ -2123,14 +2128,24 @@
     "composerPlaceholder": "Continuar conversa…",
     "quoteAction": "Citar",
     "quoteLabel": "Citação {{index}}",
-    "removeQuote": "Remover citação {{index}}",
+    "quoteDiffLabel": "Alteração em {{name}}",
+    "quoteDiffFileLabel": "Diff completo de {{name}}",
+    "quoteFileSource": "{{path}}, linhas {{lines}}",
+    "quoteDiffOrigin": {
+      "workingTreeStaged": "Alterações preparadas",
+      "workingTreeUnstaged": "Alterações não preparadas",
+      "commit": "Commit {{revision}}",
+      "pullRequest": "PR {{revision}}",
+      "agentTurn": "Alterações do turno do Agent"
+    },
+    "removeQuote": "Remover citação {{name}}",
     "removeAttachment": "Remover anexo {{name}}",
     "quoteDuplicate": "Este texto já foi citado.",
-    "quoteLimitExceeded": "Texto citado não pode exceder {{max}} caracteres no total.",
+    "quoteLimitExceeded": "Esta citação tem {{size}} caracteres, acima do limite de {{max}} caracteres de citação por mensagem. Esta mensagem ainda pode citar {{remaining}} caracteres.",
+    "quoteDiffLimitExceeded": "Este diff tem {{size}}, acima do limite de {{max}} para citar diffs completos por mensagem. Esta mensagem ainda pode citar {{remaining}}. Selecione parte do diff para citá-la.",
     "quoteCountExceeded": "Você pode adicionar até {{max}} citações.",
     "userQuoteCount": "{{count}} citação(ões)",
     "userQuoteTitle": "Texto citado",
-    "userQuoteLabel": "Citação {{index}}",
     "currentModel": "Modelo",
     "thoughtLevel": "Raciocínio",
     "unspecifiedThoughtLevel": "Não especificado",

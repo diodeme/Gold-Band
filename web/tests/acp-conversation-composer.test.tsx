@@ -377,7 +377,7 @@ describe('AcpConversationComposer', () => {
 
   it('renders quotes and attachments inside the prompt input context area', async () => {
     await renderComposer({
-      quotes: [{ id: 'quote-1', sourceKey: 'answer-1', text: '引用内容' }],
+      quotes: [{ id: 'quote-1', text: '引用内容', source: { kind: 'agentMessage', messageKey: 'answer-1' } }],
       attachments: [{ id: 'image-1', name: 'image.png', size: 12, mime: 'image/png', source: 'dialog', previewUrl: 'blob:image' }],
     });
 

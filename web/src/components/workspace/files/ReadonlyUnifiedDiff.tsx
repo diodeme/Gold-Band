@@ -9,6 +9,7 @@ import {
   workspaceEditorTheme,
   workspaceSyntaxHighlighting,
 } from './editor-extensions';
+import { DiffSelectionQuote, type DiffQuoteSourceBase } from './EditorSelectionQuote';
 
 export const DIFF_VIEW_SCAN_LIMIT = 10_000;
 export const DIFF_VIEW_TIMEOUT_MS = 300;
@@ -21,14 +22,18 @@ export function ReadonlyUnifiedDiff({
   ariaLabel,
   onCreateEditor,
   onChunksChange,
+  quoteSource = null,
 }: {
   comparison: ReadonlyComparisonVm;
   editorRef?: Ref<ReactCodeMirrorRef>;
   ariaLabel: string;
   onCreateEditor?: (view: EditorView) => void;
   onChunksChange?: (count: number) => void;
+  /** Where selection quotes come from; without it the diff offers no quoting. */
+  quoteSource?: DiffQuoteSourceBase | null;
 }) {
   const [language, setLanguage] = useState<Extension | null>(null);
+  const [view, setView] = useState<EditorView | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,23 +68,29 @@ export function ReadonlyUnifiedDiff({
   }, [before, language]);
 
   return (
-    <CodeMirror
-      ref={editorRef}
-      value={after}
-      height="100%"
-      width="100%"
-      theme="none"
-      basicSetup={false}
-      editable={false}
-      extensions={extensions}
-      onCreateEditor={onCreateEditor}
-      onUpdate={(update) => {
-        const changed = update.docChanged || update.transactions.some((transaction) => transaction.reconfigured);
-        if (!onChunksChange || !changed) return;
-        onChunksChange(getChunks(update.state)?.chunks.length ?? 0);
-      }}
-      className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
-      aria-label={ariaLabel}
-    />
+    <>
+      <CodeMirror
+        ref={editorRef}
+        value={after}
+        height="100%"
+        width="100%"
+        theme="none"
+        basicSetup={false}
+        editable={false}
+        extensions={extensions}
+        onCreateEditor={(created) => {
+          setView(created);
+          onCreateEditor?.(created);
+        }}
+        onUpdate={(update) => {
+          const changed = update.docChanged || update.transactions.some((transaction) => transaction.reconfigured);
+          if (!onChunksChange || !changed) return;
+          onChunksChange(getChunks(update.state)?.chunks.length ?? 0);
+        }}
+        className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
+        aria-label={ariaLabel}
+      />
+      <DiffSelectionQuote view={view} source={quoteSource} />
+    </>
   );
 }

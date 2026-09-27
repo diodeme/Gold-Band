@@ -7,6 +7,7 @@ interface ReadonlyMarkdownWorkspaceViewerProps {
   value: string;
   contentRevision?: number;
   onMarkdownLinkClick?: (href: string) => void;
+  quoteLabel?: string | null;
 }
 
 const noop = () => undefined;
@@ -16,6 +17,7 @@ function ReadonlyMarkdownWorkspaceViewerSession({
   value,
   contentRevision = 0,
   onMarkdownLinkClick,
+  quoteLabel,
 }: ReadonlyMarkdownWorkspaceViewerProps) {
   const [requestedMode, setRequestedMode] = useState<MarkdownEditorMode>('live-preview');
   const livePreviewAvailable = fileContentStore.canUseMarkdownLivePreview(value.length);
@@ -39,6 +41,7 @@ function ReadonlyMarkdownWorkspaceViewerSession({
       markdownLivePreviewAvailable={livePreviewAvailable}
       onMarkdownModeChange={setRequestedMode}
       onMarkdownLinkClick={onMarkdownLinkClick}
+      quoteLabel={quoteLabel}
     />
   );
 }

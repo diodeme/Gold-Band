@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, ExternalLink, FilePlus2, FileQuestion, FolderOpen, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,8 @@ import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { composerWorkspaceFileRefFromLocator } from '@/lib/workspace-file-reference';
+import { useWorkspaceFileReferenceCommands, useWorkspaceFileReferencePresentation } from '../workspace-file-reference-bridge';
 import { isHtmlDocumentPath } from '../browser/web-target';
 import { openWebTarget } from '../browser/open-web-target';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
@@ -196,6 +198,9 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
     : (resource.locator.relativePath ?? resource.locator.canonicalPath);
   const svgSource = entry.snapshot?.kind === 'text'
     && resource.locator.canonicalPath.toLowerCase().endsWith('.svg');
+  const referenceCommands = useWorkspaceFileReferenceCommands();
+  const referencePresentation = useWorkspaceFileReferencePresentation();
+  const workspaceReference = referenceCommands?.available ? composerWorkspaceFileRefFromLocator(resource.locator) : null;
 
   return (
     <article className="flex h-full min-h-0 flex-col bg-background" aria-label={resource.title}>
@@ -220,6 +225,23 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
         {entry.saveState.kind === 'saving' ? <span className="flex items-center gap-1 text-ui-micro text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />{t('workspace.filesPanel.saving')}</span> : null}
         {entry.saveState.kind === 'clean' && entry.status === 'ready' && entry.snapshot?.kind === 'text' ? <span className="text-ui-micro text-muted-foreground">{t('workspace.filesPanel.saved')}</span> : null}
         {locationAdjusted ? <span className="text-ui-micro text-amber-600 dark:text-amber-400">{t('workspace.filesPanel.locationAdjusted')}</span> : null}
+        {workspaceReference ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-7"
+                onClick={() => referenceCommands?.addWorkspaceFileRef(workspaceReference, referencePresentation)}
+                aria-label={t('workspace.filesPanel.referenceToConversation')}
+                data-file-reference-to-conversation="true"
+              >
+                <FilePlus2 className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('workspace.filesPanel.referenceToConversation')}</TooltipContent>
+          </Tooltip>
+        ) : null}
       </header>
       {entry.status === 'idle' || entry.status === 'loading' ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{t('workspace.filesPanel.loadingFile')}</div>
@@ -343,6 +365,7 @@ function FileSnapshotContent({
           markdownMode={markdownMode}
           markdownLivePreviewAvailable={markdownLivePreviewAvailable}
           onMarkdownModeChange={(mode) => fileContentStore.setMarkdownMode(resource.key, mode)}
+          quoteLabel={resource.locator.relativePath ?? resource.locator.canonicalPath}
           markdownImages={markdownImages}
           markdownHasTableImages={markdownTableHasImages}
           onMarkdownImagePreviewError={handleMarkdownImagePreviewError}

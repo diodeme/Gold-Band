@@ -1,4 +1,4 @@
-import type { WorkspaceDirectoryEntryVm } from '@/types';
+import type { WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm } from '@/types';
 import { resolveWorkspaceFileLink } from '@/api';
 import { guessMimeFromExtension } from './attachment-service';
 import {
@@ -24,6 +24,22 @@ export function composerWorkspaceFileRefFromEntry(
     byteLength: entry.byteLength ?? null,
     mimeType: guessMimeFromExtension(entry.name),
     canonicalPath: entry.canonicalPath,
+  };
+}
+
+/** A reference to an open workspace file; files outside the workspace cannot be referenced. */
+export function composerWorkspaceFileRefFromLocator(locator: WorkspaceFileLocatorVm): ComposerWorkspaceFileRef | null {
+  if (locator.scope !== 'workspace' || !locator.relativePath) return null;
+  const relativePath = locator.relativePath.replaceAll('\\', '/');
+  const name = relativePath.split('/').at(-1) || relativePath;
+  return {
+    id: `${locator.projectId}:${relativePath}`,
+    projectId: locator.projectId,
+    relativePath,
+    name,
+    byteLength: null,
+    mimeType: guessMimeFromExtension(name),
+    canonicalPath: locator.canonicalPath,
   };
 }
 

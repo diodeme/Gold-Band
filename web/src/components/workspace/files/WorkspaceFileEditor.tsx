@@ -35,6 +35,7 @@ import {
   type MarkdownTableRowViewportAnchor,
 } from './markdown-table-viewport';
 import '@atomic-editor/editor/styles.css';
+import { EditorSelectionQuote } from './EditorSelectionQuote';
 import {
   loadWorkspaceLanguage,
   workspaceEditorTheme,
@@ -68,6 +69,8 @@ interface WorkspaceFileEditorProps {
   onMarkdownImagePreviewError?: (rawSrc: string, failedToken: string) => void;
   onMarkdownLinkClick?: (href: string) => void;
   onOpenInBrowser?: () => void | Promise<void>;
+  /** Names the file in quotes taken from a selection; without it the editor offers no quoting. */
+  quoteLabel?: string | null;
 }
 
 export interface EditorViewportAnchor {
@@ -288,6 +291,7 @@ export function WorkspaceFileEditor({
   onMarkdownImagePreviewError,
   onMarkdownLinkClick,
   onOpenInBrowser,
+  quoteLabel = null,
 }: WorkspaceFileEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -926,6 +930,7 @@ export function WorkspaceFileEditor({
       ) : (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground" aria-label="workspace-markdown-loading">…</div>
       )}
+      <EditorSelectionQuote view={activeEditorView} label={quoteLabel} />
     </div>
   );
 }

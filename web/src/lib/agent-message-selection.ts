@@ -1,3 +1,6 @@
+import type { QuotableSelection } from '@/components/conversation/SelectionQuoteButton';
+import type { ComposerQuoteDraft } from '@/lib/composer-context';
+
 export const AGENT_QUOTABLE_SELECTOR = '[data-agent-quotable-text="true"]';
 
 export interface AgentMessageSelection {
@@ -111,4 +114,12 @@ export function readAgentMessageSelection(
     ? range.getBoundingClientRect()
     : new DOMRect();
   return { sourceKey, text, rect };
+}
+
+/** The window selection inside one completed Agent message, as a composer quote. */
+export function readAgentMessageQuote(root: HTMLElement): QuotableSelection<ComposerQuoteDraft> | null {
+  const selected = readAgentMessageSelection(window.getSelection(), root);
+  return selected
+    ? { value: { text: selected.text, source: { kind: 'agentMessage', messageKey: selected.sourceKey } }, rect: selected.rect }
+    : null;
 }

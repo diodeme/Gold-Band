@@ -754,6 +754,9 @@
       "local_html": {
         "grant_failed": "无法授权打开该本地 HTML。"
       },
+      "system_open": {
+        "failed": "系统浏览器无法打开此页面。"
+      },
       "page": {
         "limit_reached": "打开的网页过多，请先关闭部分标签。"
       },
@@ -978,6 +981,7 @@
       "prompt-empty": "请输入要发送的内容。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
       "prompt-quote-limit-exceeded": "引用内容总长度不能超过 {{maxChars}} 个字符。",
+      "prompt-quote-diff-limit-exceeded": "完整 diff 引用总大小不能超过 {{maxBytes}} 字节。",
       "prompt-quote-count-exceeded": "单条消息最多包含 {{maxQuotes}} 条引用。",
       "prompt-quote-metadata-too-long": "引用标识过长，请删除后重新引用。",
       "prompt-role-invalid": "角色数据无效，请重新选择角色后再发送。",
@@ -1804,6 +1808,7 @@
     "previousChange": "上一处变化",
     "nextChange": "下一处变化",
     "diffViewer": "文件差异查看器",
+    "quoteDiff": "引用完整 diff 到对话",
     "versionViewer": "历史文件查看器",
     "diffUnavailable": "该文件差异无法在当前查看器中展示",
     "assetLoadFailed": "无法加载该会话文件",
@@ -2152,14 +2157,24 @@
     "composerPlaceholder": "继续会话…",
     "quoteAction": "引用",
     "quoteLabel": "引用 {{index}}",
-    "removeQuote": "删除引用 {{index}}",
+    "quoteDiffLabel": "{{name}} 变更片段",
+    "quoteDiffFileLabel": "{{name}} 完整 diff",
+    "quoteFileSource": "{{path}} 第 {{lines}} 行",
+    "quoteDiffOrigin": {
+      "workingTreeStaged": "已暂存的更改",
+      "workingTreeUnstaged": "未暂存的更改",
+      "commit": "提交 {{revision}}",
+      "pullRequest": "PR {{revision}}",
+      "agentTurn": "Agent 本轮修改"
+    },
+    "removeQuote": "删除引用 {{name}}",
     "removeAttachment": "删除附件 {{name}}",
     "quoteDuplicate": "这段内容已经引用过了。",
-    "quoteLimitExceeded": "引用内容总长度不能超过 {{max}} 个字符。",
+    "quoteLimitExceeded": "该引用为 {{size}} 个字符，超出单条消息 {{max}} 个字符的引用上限，本条消息还可引用 {{remaining}} 个字符。",
+    "quoteDiffLimitExceeded": "该 diff 为 {{size}}，超出单条消息 {{max}} 的完整 diff 引用上限，本条消息还可引用 {{remaining}}。可选中部分内容引用。",
     "quoteCountExceeded": "最多添加 {{max}} 条引用。",
     "userQuoteCount": "{{count}} 条引用",
     "userQuoteTitle": "引用详情",
-    "userQuoteLabel": "引用 {{index}}",
     "currentModel": "模型",
     "thoughtLevel": "思考强度",
     "unspecifiedThoughtLevel": "不指定",

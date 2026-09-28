@@ -2134,11 +2134,7 @@ pub async fn stat_attachment_files(
                 let path = Path::new(&p);
                 let name = path.file_name()?.to_str()?.to_string();
                 let size = path.metadata().ok()?.len();
-                let ext = path
-                    .extension()
-                    .and_then(|value| value.to_str())?
-                    .to_ascii_lowercase();
-                let mime = attachment_mime_for_ext(&ext);
+                let mime = gold_band::provider::file_mime_type(path);
                 let preview_url = mime
                     .starts_with("image/")
                     .then(|| {
@@ -2155,7 +2151,7 @@ pub async fn stat_attachment_files(
                             .map(|grant| grant.token)
                     })
                     .flatten();
-                let content_url = (attachment_text_previewable_mime(mime)
+                let content_url = (gold_band::provider::is_text_mime_type(&mime)
                     && size <= crate::view_models_conversation::MAX_ATTACHMENT_PER_FILE)
                     .then(|| {
                         let revision = crate::workspace_files::revision_for_preview(path).ok()?;
@@ -2233,41 +2229,16 @@ pub fn show_conversation_attachment(
             serde_json::json!({ "name": name }),
         ));
     }
-    let ext = Path::new(&name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let is_image = matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-    );
-    let mime = attachment_mime_for_ext(&ext);
-    let content = if is_image {
-        let bytes = fs::read(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?;
-        format!("data:{};base64,{}", mime, base64_encode(&bytes))
-    } else {
-        fs::read_to_string(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?
-    };
+    let preview = read_attachment_preview(path.as_std_path(), Path::new(&name))?;
     Ok(ContentVm {
         title: name.clone(),
         kind: "input-attachment".to_string(),
-        content,
+        content: preview.content,
         metadata: serde_json::json!({
             "name": name,
-            "mimeType": mime,
-            "isImage": is_image,
-            "encoding": if is_image { "data-url" } else { "text" },
+            "mimeType": preview.mime_type,
+            "isImage": preview.encoding == AttachmentPreviewEncoding::DataUrl,
+            "encoding": preview.encoding,
         }),
     })
 }
@@ -2329,43 +2300,22 @@ fn message_attachment_content_from_attempt_dir(
             serde_json::json!({ "name": name, "path": attachment_path }),
         ));
     }
-    let ext = Path::new(&relative_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .or_else(|| Path::new(name).extension().and_then(|e| e.to_str()))
-        .unwrap_or("")
-        .to_lowercase();
-    let is_image = matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-    );
-    let mime = attachment_mime_for_ext(&ext);
-    let content = if is_image {
-        let bytes = fs::read(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?;
-        format!("data:{};base64,{}", mime, base64_encode(&bytes))
+    let named_by = if Path::new(&relative_path).extension().is_some() {
+        Path::new(&relative_path)
     } else {
-        fs::read_to_string(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?
+        Path::new(name)
     };
+    let preview = read_attachment_preview(path.as_std_path(), named_by)?;
     Ok(ContentVm {
         title: name.to_string(),
         kind: "message-attachment".to_string(),
-        content,
+        content: preview.content,
         metadata: serde_json::json!({
             "name": name,
             "path": relative_path,
-            "mimeType": mime,
-            "isImage": is_image,
-            "encoding": if is_image { "data-url" } else { "text" },
+            "mimeType": preview.mime_type,
+            "isImage": preview.encoding == AttachmentPreviewEncoding::DataUrl,
+            "encoding": preview.encoding,
         }),
     })
 }
@@ -2392,39 +2342,50 @@ fn sanitize_message_attachment_relative_path(path: &str) -> CommandResult<String
     Ok(components.join("/"))
 }
 
-fn attachment_mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        "txt" => "text/plain",
-        "md" | "markdown" => "text/markdown",
-        "json" | "jsonl" => "application/json",
-        "csv" => "text/csv",
-        "html" | "htm" => "text/html",
-        "css" => "text/css",
-        "js" | "jsx" => "text/javascript",
-        "ts" | "tsx" => "text/typescript",
-        "rs" => "text/rust",
-        "py" => "text/python",
-        "go" => "text/go",
-        "java" => "text/java",
-        "c" | "h" => "text/c",
-        "cpp" | "hpp" => "text/cpp",
-        "yaml" | "yml" => "text/yaml",
-        "xml" => "text/xml",
-        "toml" => "text/toml",
-        "log" => "text/plain",
-        "sql" => "text/sql",
-        "sh" | "bash" | "zsh" => "text/x-shellscript",
-        _ => "application/octet-stream",
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum AttachmentPreviewEncoding {
+    DataUrl,
+    Text,
+    /// Not previewable; any file type can be attached.
+    Binary,
 }
 
-fn attachment_text_previewable_mime(mime: &str) -> bool {
-    mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml")
+struct AttachmentPreview {
+    mime_type: String,
+    content: String,
+    encoding: AttachmentPreviewEncoding,
+}
+
+/// Reads an attachment for the workspace preview; `named_by` supplies its MIME type.
+fn read_attachment_preview(path: &Path, named_by: &Path) -> CommandResult<AttachmentPreview> {
+    let mime_type = gold_band::provider::file_mime_type(named_by);
+    let bytes = fs::read(path).map_err(|e| {
+        CommandErrorVm::new(
+            "attachment.unreadable",
+            serde_json::json!({ "message": e.to_string() }),
+        )
+    })?;
+    if gold_band::provider::is_inline_image_mime_type(&mime_type) {
+        let content = format!("data:{};base64,{}", mime_type, base64_encode(&bytes));
+        return Ok(AttachmentPreview {
+            mime_type,
+            content,
+            encoding: AttachmentPreviewEncoding::DataUrl,
+        });
+    }
+    Ok(match String::from_utf8(bytes) {
+        Ok(content) if !content.contains('\0') => AttachmentPreview {
+            mime_type,
+            content,
+            encoding: AttachmentPreviewEncoding::Text,
+        },
+        _ => AttachmentPreview {
+            mime_type,
+            content: String::new(),
+            encoding: AttachmentPreviewEncoding::Binary,
+        },
+    })
 }
 
 fn materialize_attachment_files_to_dir(
@@ -2452,18 +2413,6 @@ fn materialize_attachment_files_to_dir(
     for file in files {
         let _declared_mime = file.mime.as_deref().unwrap_or_default();
         let name = sanitize_attachment_file_name(&file.name)?;
-        let ext = Path::new(&name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if !crate::view_models_conversation::allowed_attachment_ext(&ext) {
-            return Err(CommandErrorVm::new(
-                "conversation.attachment-unsupported-type",
-                serde_json::json!({ "name": file.name }),
-            ));
-        }
-
         let bytes = base64_decode(&file.data_base64).map_err(|message| {
             CommandErrorVm::new(
                 "conversation.attachment-unreadable",
@@ -2635,14 +2584,6 @@ fn base64_value(byte: u8) -> Option<u8> {
         b'/' => Some(63),
         _ => None,
     }
-}
-
-#[tauri::command]
-pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
-    Ok(gold_band::provider::supported_attachment_extensions()
-        .into_iter()
-        .map(str::to_string)
-        .collect())
 }
 
 #[cfg(test)]
@@ -3123,7 +3064,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_materialized_attachment_types() {
+    fn materializes_any_attachment_type() {
         let root = Utf8PathBuf::from_path_buf(
             std::env::temp_dir()
                 .join("gold-band-materialize-test")
@@ -3136,9 +3077,10 @@ mod tests {
             data_base64: base64_encode(&[1, 2]),
         }];
 
-        let error = materialize_attachment_files_to_dir(&root, &files).unwrap_err();
+        let result = materialize_attachment_files_to_dir(&root, &files).unwrap();
 
-        assert_eq!(error.code, "conversation.attachment-unsupported-type");
+        assert_eq!(result[0].name, "archive.exe");
+        assert_eq!(std::fs::read(&result[0].path).unwrap(), vec![1, 2]);
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
@@ -3176,6 +3118,19 @@ mod tests {
         assert_eq!(text_content.kind, "message-attachment");
         assert_eq!(text_content.title, "notes.txt");
         assert_eq!(text_content.content, "runtime notes");
+        assert_eq!(text_content.metadata["encoding"], "text");
+
+        std::fs::write(
+            user_inputs.join("tool.exe").as_std_path(),
+            [0x4d_u8, 0x5a, 0, 0xff],
+        )
+        .unwrap();
+        let binary_content =
+            message_attachment_content_from_attempt_dir(&root, "tool.exe", "user-inputs/tool.exe")
+                .unwrap();
+        assert_eq!(binary_content.content, "");
+        assert_eq!(binary_content.metadata["encoding"], "binary");
+        assert_eq!(binary_content.metadata["isImage"], false);
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { FileText, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { showArtifact, showConversationAttachment, showConversationMessageAttachment } from '@/api';
-import { imageMimeTypeFromContent, imageSrcFromContent } from '@/lib/asset-preview';
+import { imageMimeTypeFromContent, imageSrcFromContent, isBinaryContent } from '@/lib/asset-preview';
 import type { ContentVm } from '@/types';
 import type { ConversationAssetWorkspaceResource } from '../right-workspace-context';
 import { ReadonlyTextWorkspaceViewer } from './ReadonlyTextWorkspaceViewer';
@@ -56,6 +56,11 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
               previewUrl: imageSrc,
             }}
           />
+        ) : isBinaryContent(content) ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center gap-2 px-6 text-sm text-muted-foreground">
+            <TriangleAlert className="size-4" />
+            {t('workspace.filesPanel.attachmentPreviewUnavailable')}
+          </div>
         ) : (
           <ReadonlyTextWorkspaceViewer
             documentKey={resource.key}

@@ -12,7 +12,7 @@ import { demoManagementApi } from './management';
 export const DEMO_READ_METHODS = [
   'getAgentRegistry', 'getProfiles', 'getProfile', 'getWorkflowTemplates', 'getWorkflow',
   'getConversationRun', 'getAcpSession', 'getAcpActivityDetail', 'getAcpToolDetail',
-  'getAcpRawFrames', 'getSupportedAttachmentExtensions', 'getSystemFonts',
+  'getAcpRawFrames', 'getSystemFonts',
   'listWorkspaceDirectory', 'searchWorkspaceFiles', 'resolveWorkspaceFileLink',
   'readFileResource', 'resolveMarkdownImage', 'getConversationWorkspaces',
   'getSkillSyncStatus',

@@ -1283,6 +1283,7 @@ fn invoke_agent(
         content_blocks: resolved.iter().map(|item| item.block.clone()).collect(),
         scheduled_trigger: None,
         workspace_files: Vec::new(),
+        language,
     };
     let attempt_dir = operation_dir.join(attempt_name);
     let lifecycle_owner = claim_agent_prompt_lifecycle(

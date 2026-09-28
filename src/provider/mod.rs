@@ -15,9 +15,9 @@ use crate::domain::{
 use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE, RUNTIME_HIDDEN_CONTEXT,
-    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_ROLE_MESSAGE,
-    RUNTIME_WORKFLOW_RESUME, profile_template_context, prompt_by_language,
-    render as render_template,
+    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_FILES,
+    RUNTIME_USER_ROLE_MESSAGE, RUNTIME_WORKFLOW_RESUME, profile_template_context,
+    prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
@@ -164,41 +164,80 @@ fn agent_prompt_text(
     .to_string()
 }
 
-/// Attachment content awaiting projection into an ACP session/prompt content block.
+/// A file the user gave this turn, awaiting projection at the outbound ACP request boundary.
 ///
-/// The live ACP connection capabilities decide whether this becomes visual/embedded
-/// content or the protocol-baseline resource link at the outbound request boundary.
+/// Inline content becomes an ACP `image` / `resource` block when the live connection declares
+/// that capability; every other file reaches the Agent as a host path listed in the prompt text.
 #[derive(Debug, Clone)]
 pub enum AcpContentBlock {
     Image(AcpImageBlock),
     Resource(AcpResourceBlock),
-    ResourceLink(AcpResourceLinkBlock),
+    File(AcpFileRef),
+}
+
+impl AcpContentBlock {
+    pub fn file(&self) -> &AcpFileRef {
+        match self {
+            Self::Image(image) => &image.file,
+            Self::Resource(resource) => &resource.file,
+            Self::File(file) => file,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpImageBlock {
     pub data: String,
     pub mime_type: String,
-    pub link: AcpResourceLinkBlock,
+    pub file: AcpFileRef,
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpResourceBlock {
-    pub resource: AcpTextResourceContents,
-    pub link: AcpResourceLinkBlock,
-}
-
-#[derive(Debug, Clone)]
-pub struct AcpTextResourceContents {
     pub text: String,
+    pub mime_type: String,
+    pub file: AcpFileRef,
 }
 
-#[derive(Debug, Clone)]
-pub struct AcpResourceLinkBlock {
-    pub name: String,
-    pub uri: String,
-    pub mime_type: String,
+/// A file on the host running the Agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpFileRef {
+    /// Absolute host path.
+    pub path: String,
     pub size: u64,
+}
+
+impl AcpFileRef {
+    pub fn uri(&self) -> String {
+        url::Url::from_file_path(&self.path)
+            .map(|url| url.to_string())
+            .unwrap_or_else(|_| format!("file://{}", self.path))
+    }
+}
+
+/// The user turn with the files the Agent must read by path listed before it.
+pub fn prompt_text_with_files(
+    user_prompt: &str,
+    files: &[&AcpFileRef],
+    language: DesktopLanguage,
+) -> String {
+    if files.is_empty() {
+        return user_prompt.to_string();
+    }
+    let files = files
+        .iter()
+        .map(|file| json!({ "path": file.path, "size": file.size }))
+        .collect::<Vec<_>>();
+    let listing = render_template(
+        prompt_by_language(language, RUNTIME_USER_FILES),
+        json!({ "files": files }),
+    )
+    .expect("bundled user files prompt renders");
+    let listing = listing.trim();
+    if user_prompt.trim().is_empty() {
+        return listing.to_string();
+    }
+    format!("{listing}\n\n{user_prompt}")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -734,183 +773,63 @@ pub struct PromptBundle {
     pub workspace_files: Vec<ResolvedWorkspaceFileRef>,
     pub content_blocks: Vec<AcpContentBlock>,
     pub scheduled_trigger: Option<crate::acp::events::ScheduledTriggerPayload>,
+    /// Language of the runtime-rendered prompt text, including the file list added at the ACP boundary.
+    pub language: DesktopLanguage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttachmentContentKind {
-    Image,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AttachmentFormat {
-    extensions: &'static [&'static str],
-    mime_type: &'static str,
-    content_kind: AttachmentContentKind,
-}
+/// Raster formats the Agent can receive as an inline ACP image.
+const INLINE_IMAGE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+];
+const TEXT_ATTACHMENT_FALLBACK_MIME_TYPE: &str = "text/plain";
 
 const INLINE_IMAGE_DECODE_MAX_DIMENSION: u32 = 8_192;
 const INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 128 * 1024 * 1024;
 const INLINE_IMAGE_JPEG_QUALITY: u8 = 92;
 const INLINE_IMAGE_RESIZE_ATTEMPTS: usize = 10;
 
-const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
-    AttachmentFormat {
-        extensions: &["png"],
-        mime_type: "image/png",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["jpg", "jpeg"],
-        mime_type: "image/jpeg",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["webp"],
-        mime_type: "image/webp",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["gif"],
-        mime_type: "image/gif",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["bmp"],
-        mime_type: "image/bmp",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["txt"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["md", "markdown"],
-        mime_type: "text/markdown",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["json", "jsonl"],
-        mime_type: "application/json",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["csv"],
-        mime_type: "text/csv",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["html", "htm"],
-        mime_type: "text/html",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["css"],
-        mime_type: "text/css",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["js", "jsx"],
-        mime_type: "text/javascript",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["ts", "tsx"],
-        mime_type: "text/typescript",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["rs"],
-        mime_type: "text/rust",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["py"],
-        mime_type: "text/python",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["go"],
-        mime_type: "text/go",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["java"],
-        mime_type: "text/java",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["c", "h"],
-        mime_type: "text/c",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["cpp", "hpp"],
-        mime_type: "text/cpp",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["yaml", "yml"],
-        mime_type: "text/yaml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["xml"],
-        mime_type: "text/xml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["toml"],
-        mime_type: "text/toml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["log"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["sql"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["sh", "bash", "zsh"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-];
+/// MIME type by file name; the content itself decides how an attachment reaches the Agent.
+pub fn file_mime_type(path: &std::path::Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // mime_guess maps these to video/mp2t, application/javascript and similar.
+    match extension.as_str() {
+        "ts" | "tsx" => "text/typescript".to_string(),
+        "js" | "jsx" => "text/javascript".to_string(),
+        "md" | "markdown" => "text/markdown".to_string(),
+        "json" | "jsonl" => "application/json".to_string(),
+        _ => mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string(),
+    }
+}
 
-fn attachment_format(extension: &str) -> Option<&'static AttachmentFormat> {
-    ATTACHMENT_FORMATS
-        .iter()
-        .find(|format| format.extensions.contains(&extension))
+pub fn is_inline_image_mime_type(mime_type: &str) -> bool {
+    INLINE_IMAGE_MIME_TYPES.contains(&mime_type)
 }
 
 pub fn attachment_meta_for_path(
     path: &std::path::Path,
     storage_prefix: &str,
-) -> Result<Option<AttachmentMeta>> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let Some(format) = attachment_format(&extension) else {
-        return Ok(None);
-    };
+) -> Result<AttachmentMeta> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("unknown")
         .to_string();
-    Ok(Some(AttachmentMeta {
+    Ok(AttachmentMeta {
         path: format!("{storage_prefix}/{name}"),
-        mime_type: format.mime_type.to_string(),
+        mime_type: file_mime_type(path),
         size: path.metadata()?.len(),
         name,
-    }))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -921,96 +840,85 @@ pub enum PromptVisibility {
 }
 
 /// Resolve file paths into attachment intents without exceeding the configured inline budgets.
-/// Text over the content budget is projected metadata-first as a resource link and is never read.
-/// Images are inspected metadata/header-first. Those outside the byte or dimension budget are
-/// streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
-/// path remains canonical and is used whenever the live Agent only supports links.
+/// Any file type is accepted. Content over its inline budget is referenced by path and never read
+/// in full. Images are inspected metadata/header-first. Those outside the byte or dimension budget
+/// are streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
+/// path remains canonical and is what the Agent receives when it cannot take the image inline.
 pub fn resolve_attachments(
     paths: &[String],
     storage_prefix: &str,
     policy: AttachmentProjectionPolicy,
 ) -> Result<Vec<ResolvedAttachment>> {
-    let mut resolved = Vec::new();
-    for path_str in paths {
-        let std_path = std::path::Path::new(path_str);
-        let extension = std_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if attachment_format(&extension).is_none() {
-            continue;
-        }
-        if let Some(attachment) = resolved_attachment(std_path, storage_prefix, policy)? {
-            resolved.push(attachment);
-        }
-    }
-    Ok(resolved)
+    paths
+        .iter()
+        .map(|path| resolved_attachment(std::path::Path::new(path), storage_prefix, policy))
+        .collect()
 }
 
 fn resolved_attachment(
     path: &std::path::Path,
     storage_prefix: &str,
     policy: AttachmentProjectionPolicy,
-) -> Result<Option<ResolvedAttachment>> {
-    let Some(meta) = attachment_meta_for_path(path, storage_prefix)? else {
-        return Ok(None);
-    };
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let format = attachment_format(&extension)
-        .expect("attachment metadata is only created for a supported format");
-    let uri = format!("file://{}", path.to_string_lossy().replace('\\', "/"));
-    let link = AcpResourceLinkBlock {
-        name: meta.name.clone(),
-        uri,
-        mime_type: meta.mime_type.clone(),
+) -> Result<ResolvedAttachment> {
+    let meta = attachment_meta_for_path(path, storage_prefix)?;
+    let file = AcpFileRef {
+        path: path.to_string_lossy().into_owned(),
         size: meta.size,
     };
-    let block = match format.content_kind {
-        AttachmentContentKind::Image => {
-            project_image_attachment(path, format.mime_type, &link, policy)
-        }
-        AttachmentContentKind::Text if meta.size > policy.inline_content_max_bytes => {
-            AcpContentBlock::ResourceLink(link)
-        }
-        AttachmentContentKind::Text => {
-            let data = std::fs::read(path)?;
-            if data.len() as u64 > policy.inline_content_max_bytes {
-                AcpContentBlock::ResourceLink(link)
-            } else {
-                AcpContentBlock::Resource(AcpResourceBlock {
-                    resource: AcpTextResourceContents {
-                        text: String::from_utf8(data)
-                            .unwrap_or_else(|_| "[binary file]".to_string()),
-                    },
-                    link,
-                })
-            }
-        }
+    let block = if is_inline_image_mime_type(&meta.mime_type) {
+        project_image_attachment(path, &meta.mime_type, file, policy)
+    } else {
+        project_text_attachment(path, &meta.mime_type, file, policy)
     };
-    Ok(Some(ResolvedAttachment { meta, block }))
+    Ok(ResolvedAttachment { meta, block })
 }
 
 fn project_image_attachment(
     path: &std::path::Path,
     original_mime_type: &str,
-    link: &AcpResourceLinkBlock,
+    file: AcpFileRef,
     policy: AttachmentProjectionPolicy,
 ) -> AcpContentBlock {
-    let Some((bytes, mime_type)) =
-        inline_image_derivative(path, original_mime_type, link.size, policy)
+    match inline_image_derivative(path, original_mime_type, file.size, policy) {
+        Some((bytes, mime_type)) => AcpContentBlock::Image(AcpImageBlock {
+            data: base64_encode(&bytes),
+            mime_type,
+            file,
+        }),
+        None => AcpContentBlock::File(file),
+    }
+}
+
+/// UTF-8 text within the content budget becomes embedded text; anything else stays a path.
+fn project_text_attachment(
+    path: &std::path::Path,
+    mime_type: &str,
+    file: AcpFileRef,
+    policy: AttachmentProjectionPolicy,
+) -> AcpContentBlock {
+    if file.size > policy.inline_content_max_bytes {
+        return AcpContentBlock::File(file);
+    }
+    let Some(text) = read_file_with_limit(path, policy.inline_content_max_bytes)
+        .and_then(|data| String::from_utf8(data).ok())
+        .filter(|text| !text.contains('\0'))
     else {
-        return AcpContentBlock::ResourceLink(link.clone());
+        return AcpContentBlock::File(file);
     };
-    AcpContentBlock::Image(AcpImageBlock {
-        data: base64_encode(&bytes),
-        mime_type,
-        link: link.clone(),
+    let mime_type = if is_text_mime_type(mime_type) {
+        mime_type
+    } else {
+        TEXT_ATTACHMENT_FALLBACK_MIME_TYPE
+    };
+    AcpContentBlock::Resource(AcpResourceBlock {
+        text,
+        mime_type: mime_type.to_string(),
+        file,
     })
+}
+
+pub fn is_text_mime_type(mime_type: &str) -> bool {
+    mime_type.starts_with("text/") || matches!(mime_type, "application/json" | "application/xml")
 }
 
 fn inline_image_derivative(
@@ -1121,14 +1029,6 @@ pub fn resolve_user_input_attachments(
     let mut resolved = Vec::with_capacity(paths.len());
     for path in paths {
         let source = std::path::Path::new(path);
-        let extension = source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if attachment_format(&extension).is_none() {
-            continue;
-        }
         let name = source
             .file_name()
             .and_then(|name| name.to_str())
@@ -1146,24 +1046,13 @@ pub fn resolve_user_input_attachments(
                 Ok(())
             })?;
         }
-        if let Some(attachment) = resolved_attachment(
+        resolved.push(resolved_attachment(
             destination.as_std_path(),
             USER_INPUT_ATTACHMENT_PREFIX,
             policy,
-        )? {
-            resolved.push(attachment);
-        }
+        )?);
     }
     Ok(resolved)
-}
-
-/// Returns the set of file extensions supported as attachments.
-/// This is the single source of truth — the frontend queries it via Tauri command.
-pub fn supported_attachment_extensions() -> Vec<&'static str> {
-    ATTACHMENT_FORMATS
-        .iter()
-        .flat_map(|format| format.extensions.iter().copied())
-        .collect()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -2451,6 +2340,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         workspace_files: resolved_workspace_files,
         content_blocks,
         scheduled_trigger: scheduled_trigger_payload(req)?,
+        language: req.runtime_context.language,
     })
 }
 
@@ -3522,16 +3412,14 @@ mod tests {
         assert_eq!(prompt.workspace_files.len(), 1);
         assert!(matches!(
             prompt.content_blocks.last(),
-            Some(AcpContentBlock::ResourceLink(link))
-                if link.name == "WorkspaceFileTree.tsx"
-                    && link.mime_type == "text/typescript"
-                    && link.size == 1
+            Some(AcpContentBlock::File(file))
+                if file.path == prompt.workspace_files[0].canonical_path && file.size == 1
         ));
         assert!(!prompt.user_prompt.contains("WorkspaceFileTree.tsx"));
     }
 
     #[test]
-    fn prompt_bundle_projects_another_workspace_as_an_absolute_resource_link() {
+    fn prompt_bundle_projects_another_workspace_as_an_absolute_path() {
         let other = tempfile::tempdir().unwrap();
         std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(other.path().join("attempt")).unwrap();
@@ -3556,8 +3444,8 @@ mod tests {
         );
         assert!(matches!(
             prompt.content_blocks.last(),
-            Some(AcpContentBlock::ResourceLink(link))
-                if link.uri.starts_with("file:") && link.uri.contains("foreign.ts")
+            Some(AcpContentBlock::File(file))
+                if std::path::Path::new(&file.path).is_absolute() && file.path.ends_with("foreign.ts")
         ));
         assert!(!prompt.user_prompt.contains("foreign.ts"));
     }
@@ -3841,26 +3729,74 @@ mod tests {
     }
 
     #[test]
-    fn every_advertised_attachment_extension_is_resolvable() {
+    fn any_file_type_is_resolved_by_content() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = supported_attachment_extensions()
-            .into_iter()
-            .map(|extension| {
-                let path = dir.path().join(format!("sample.{extension}"));
-                std::fs::write(&path, b"{}\n").unwrap();
-                path.to_string_lossy().to_string()
-            })
-            .collect::<Vec<_>>();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let paths = vec![
+            write("App.vue", b"<template />\n"),
+            write("Dockerfile", b"FROM rust\n"),
+            write("tool.exe", b"MZ\x90\x00\x03\x00"),
+            write("latin1.txt", b"caf\xe9"),
+        ];
 
         let resolved =
             resolve_attachments(&paths, "task-inputs", test_attachment_projection_policy())
                 .unwrap();
 
         assert_eq!(resolved.len(), paths.len());
-        assert!(resolved.iter().all(|attachment| {
-            attachment.meta.path.starts_with("task-inputs/")
-                && attachment.meta.mime_type != "application/octet-stream"
-        }));
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource)
+                if resource.text == "<template />\n" && resource.mime_type == "text/plain"
+        ));
+        assert!(matches!(
+            &resolved[1].block,
+            AcpContentBlock::Resource(resource) if resource.text == "FROM rust\n"
+        ));
+        for (attachment, path) in resolved[2..].iter().zip(&paths[2..]) {
+            assert!(matches!(
+                &attachment.block,
+                AcpContentBlock::File(file)
+                    if file.path == *path && file.size == std::fs::metadata(path).unwrap().len()
+            ));
+        }
+        assert_eq!(resolved[2].meta.path, "task-inputs/tool.exe");
+    }
+
+    #[test]
+    fn listed_files_render_in_every_language_before_the_user_prompt() {
+        let first = AcpFileRef {
+            path: "/host/a.exe".to_string(),
+            size: 7,
+        };
+        let second = AcpFileRef {
+            path: "/host/b.md".to_string(),
+            size: 64_001,
+        };
+        for language in [
+            DesktopLanguage::ZhCn,
+            DesktopLanguage::ZhTw,
+            DesktopLanguage::En,
+            DesktopLanguage::JaJp,
+            DesktopLanguage::KoKr,
+            DesktopLanguage::PtBr,
+            DesktopLanguage::Es,
+        ] {
+            let text = prompt_text_with_files("do it", &[&first, &second], language);
+            let lines = text.lines().collect::<Vec<_>>();
+            assert!(lines[1].starts_with("- `/host/a.exe`") && lines[1].contains('7'));
+            assert!(lines[2].starts_with("- `/host/b.md`") && lines[2].contains("64001"));
+            assert!(text.ends_with("\n\ndo it"), "{language:?}: {text}");
+        }
+        assert_eq!(
+            prompt_text_with_files("do it", &[], DesktopLanguage::En),
+            "do it"
+        );
+        assert!(!prompt_text_with_files("", &[&first], DesktopLanguage::En).ends_with('\n'));
     }
 
     #[test]
@@ -3883,7 +3819,7 @@ mod tests {
         assert!(matches!(
             &resolved[0].block,
             AcpContentBlock::Resource(resource)
-                if resource.resource.text.contains("{\"event\":2}")
+                if resource.text.contains("{\"event\":2}")
         ));
     }
 
@@ -3912,11 +3848,11 @@ mod tests {
 
         assert!(matches!(
             &resolved[0].block,
-            AcpContentBlock::Resource(resource) if resource.resource.text.len() == 64_000
+            AcpContentBlock::Resource(resource) if resource.text.len() == 64_000
         ));
         assert!(matches!(
             &resolved[1].block,
-            AcpContentBlock::ResourceLink(link) if link.size == 64_001
+            AcpContentBlock::File(file) if file.size == 64_001
         ));
     }
 
@@ -3943,12 +3879,12 @@ mod tests {
                 if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
                     && image.data.len()
                         <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
-                    && image.link.mime_type == "image/png"
+                    && image.file.path.ends_with("large.png")
         ));
     }
 
     #[test]
-    fn undecodable_oversized_image_falls_back_to_original_resource_link() {
+    fn undecodable_oversized_image_falls_back_to_the_original_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.png");
         std::fs::write(&path, vec![0_u8; 8 * 1024]).unwrap();
@@ -3964,8 +3900,8 @@ mod tests {
 
         assert!(matches!(
             &resolved[0].block,
-            AcpContentBlock::ResourceLink(link)
-                if link.uri.ends_with("/broken.png") && link.size == 8 * 1024
+            AcpContentBlock::File(file)
+                if file.path.ends_with("broken.png") && file.size == 8 * 1024
         ));
     }
 
@@ -4015,13 +3951,13 @@ mod tests {
         assert!(matches!(
             &prompt.content_blocks[1],
             AcpContentBlock::Image(image)
-                if image.link.uri.contains("/attempt-001/user-inputs/follow-up.png")
+                if image.file.uri().contains("/attempt-001/user-inputs/follow-up.png")
         ));
         assert!(matches!(
             &prompt.content_blocks[2],
             AcpContentBlock::Resource(resource)
-                if resource.resource.text == "runtime notes"
-                    && resource.link.uri.contains("/attempt-001/user-inputs/notes.txt")
+                if resource.text == "runtime notes"
+                    && resource.file.uri().contains("/attempt-001/user-inputs/notes.txt")
         ));
     }
 

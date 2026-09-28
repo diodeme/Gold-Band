@@ -651,7 +651,6 @@ export interface RuntimeApi {
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   statAttachmentFiles(paths: string[]): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
-  getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
   // MCP & SKILL management
   listMcpServers(): Promise<McpServerVm[]>;

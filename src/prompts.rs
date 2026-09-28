@@ -115,6 +115,7 @@ pub const RUNTIME_WORKFLOW_RESUME: LocalizedText = localized_prompt!("runtime/wo
 pub const RUNTIME_USER_ROLE_MESSAGE: LocalizedText =
     localized_prompt!("runtime/user_role_message.md");
 pub const RUNTIME_USER_QUOTE: LocalizedText = localized_prompt!("runtime/user_quote.md");
+pub const RUNTIME_USER_FILES: LocalizedText = localized_prompt!("runtime/user_files.md");
 pub const CICD_GOAL: LocalizedText = localized_prompt_zh_en!("runtime/cicd-goal.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR: LocalizedText =
     localized_prompt!("runtime/ai-dynamic/proposal_repair.md");
@@ -254,6 +255,7 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     ("runtime/workflow_resume.md", RUNTIME_WORKFLOW_RESUME),
     ("runtime/user_role_message.md", RUNTIME_USER_ROLE_MESSAGE),
     ("runtime/user_quote.md", RUNTIME_USER_QUOTE),
+    ("runtime/user_files.md", RUNTIME_USER_FILES),
     ("runtime/cicd-goal.md", CICD_GOAL),
     (
         "runtime/ai-dynamic/proposal_repair.md",

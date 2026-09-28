@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 pub const MAX_PROMPT_WORKSPACE_FILES: usize = 10;
 
@@ -23,7 +22,7 @@ pub struct PromptWorkspaceFileRef {
     pub relative_path: String,
 }
 
-/// A registered workspace the resolver may read. The resource link uses the
+/// A registered workspace the resolver may read. A reference resolves to the
 /// canonical absolute path inside this root; callers do not supply absolute
 /// paths as reference identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,13 +200,12 @@ pub fn resolve_prompt_workspace_files(
     Ok(resolved)
 }
 
+/// Workspace files are always referenced by path; the Agent reads what it needs.
 pub fn resolved_workspace_file_content_block(
     reference: &ResolvedWorkspaceFileRef,
 ) -> super::AcpContentBlock {
-    super::AcpContentBlock::ResourceLink(super::AcpResourceLinkBlock {
-        name: reference.name.clone(),
-        uri: file_uri(&reference.canonical_path),
-        mime_type: reference.mime_type.clone(),
+    super::AcpContentBlock::File(super::AcpFileRef {
+        path: reference.canonical_path.clone(),
         size: reference.size,
     })
 }
@@ -284,7 +282,7 @@ fn normalize_reference(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| relative_path.clone());
-    let mime_type = mime_type_for_path(&canonical);
+    let mime_type = super::file_mime_type(&canonical);
     Ok(ResolvedWorkspaceFileRef {
         project_id: reference.project_id.clone(),
         relative_path,
@@ -358,29 +356,6 @@ fn display_path(path: &Path) -> String {
         return format!(r"\\{network_path}");
     }
     value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
-}
-
-fn file_uri(path: &str) -> String {
-    Url::from_file_path(Path::new(path))
-        .map(|url| url.to_string())
-        .unwrap_or_else(|_| format!("file://{path}"))
-}
-
-fn mime_type_for_path(path: &Path) -> String {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    match extension.as_str() {
-        "ts" | "tsx" => "text/typescript".to_string(),
-        "js" | "jsx" => "text/javascript".to_string(),
-        "md" | "markdown" => "text/markdown".to_string(),
-        "json" | "jsonl" => "application/json".to_string(),
-        _ => mime_guess::from_path(path)
-            .first_or_octet_stream()
-            .to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -548,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn other_registered_workspace_reference_uses_an_absolute_resource_link() {
+    fn other_registered_workspace_reference_uses_its_absolute_path() {
         let conversation = TempDir::new().unwrap();
         let other = TempDir::new().unwrap();
         std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
@@ -576,17 +551,16 @@ mod tests {
         assert!(std::path::Path::new(&resolved[0].canonical_path).is_absolute());
         let block = resolved_workspace_file_content_block(&resolved[0]);
         match block {
-            crate::provider::AcpContentBlock::ResourceLink(link) => {
-                assert!(link.uri.starts_with("file:"));
-                assert!(link.uri.contains("foreign.ts"));
-                assert_eq!(link.name, "foreign.ts");
+            crate::provider::AcpContentBlock::File(file) => {
+                assert_eq!(file.path, resolved[0].canonical_path);
+                assert!(file.path.ends_with("foreign.ts"));
             }
             other => panic!("unexpected content block: {other:?}"),
         }
     }
 
     #[test]
-    fn resolved_reference_projects_to_resource_link_without_reading_content() {
+    fn resolved_reference_projects_to_a_path_without_reading_content() {
         let resolved = ResolvedWorkspaceFileRef {
             project_id: "p".to_string(),
             relative_path: "src/a.ts".to_string(),
@@ -599,10 +573,14 @@ mod tests {
         let block = resolved_workspace_file_content_block(&resolved);
 
         match block {
-            crate::provider::AcpContentBlock::ResourceLink(link) => {
-                assert_eq!(link.uri, "file:///D:/work/src/a.ts");
-                assert_eq!(link.mime_type, "text/typescript");
-                assert_eq!(link.size, 12);
+            crate::provider::AcpContentBlock::File(file) => {
+                assert_eq!(
+                    file,
+                    crate::provider::AcpFileRef {
+                        path: "D:/work/src/a.ts".to_string(),
+                        size: 12,
+                    }
+                );
             }
             other => panic!("unexpected content block: {other:?}"),
         }

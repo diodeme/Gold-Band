@@ -2592,9 +2592,8 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
     assert_eq!(prompt.attachment_metas[0].path, "task-inputs/image.png");
     match prompt.content_blocks.first() {
         Some(AcpContentBlock::Image(block)) => {
-            let expected_uri = format!("file://{}", image_path_string.replace('\\', "/"));
             assert_eq!(block.mime_type, "image/png");
-            assert_eq!(block.link.uri, expected_uri);
+            assert_eq!(block.file.path, image_path_string);
         }
         _ => panic!("expected image content block"),
     }

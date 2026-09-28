@@ -49,6 +49,7 @@
 
 - [x] 交互：`@`（仅开头触发）先列分类，Direct 为文件、角色，Workflow / AUTO 只有文件；回车进入分类，文件按目录层级浏览，Backspace / ← 返回上一级；`@` 后输入内容跨分类检索。选中文件加入工作空间文件引用并清除 `@查询`；文件夹不可引用。
 - [x] 修复：已有正文时在开头输入 `/` 或 `@` 不打开菜单。根因是菜单查询与选中替换都按整段输入计算（`^/...$`、整段覆盖），光标后的正文让匹配失败。改为按光标计算：`matchComposerMenuQueryAt(input, caret)` 只匹配开头到光标，`replaceComposerMenuQuery` 只替换这段并保留其后正文；控制器通过 `textareaRef` 跟踪光标并在替换后恢复。先补 `composer-mention-menu.test.tsx`「menu trigger typed before existing text」与 `slash-command.test.ts` 纯函数用例，修复前 3 条失败，修复后全部通过。
+- [x] `@` 分类行名称前加图标，与会话内引用保持一致（文件 `SquareCode`、角色 `UserRound`），映射放在 `SlashCommandMenu` 的 `MENTION_CATEGORY_ICONS`；角色、命令、文件行不变。`composer-mention-menu.test.tsx`「@ mention menu rows」验收。
 - [x] 实现：`slash-command.ts` 新增 `MentionView` 与纯函数 `buildMentionGroups` / `mentionFilesRequest` / `parentMentionView`，分组支持 `status`（loading / empty / error）原位展示；`useMentionWorkspaceFiles` 复用 `listWorkspaceDirectory` 与 `searchWorkspaceFiles`，搜索 150ms 防抖、最多 20 条，以 generation 丢弃迟到响应；`useSlashCommandController` 增加可选 `mention` 配置承载导航与键盘处理；两个 composer 把原 bridge 内的文件引用逻辑提取为共用 `addWorkspaceFile`，右侧文件树与 `@` 选择走同一路径。菜单为分类与目录行加箭头，文件行显示所在目录；7 种语言新增菜单文案。
 - [x] 验收：`web/tests/composer-mention-menu.test.tsx`（分类、目录浏览与状态、跨分类检索、请求映射、键盘进入/返回/选中、加载中回车不发送、防抖与迟到响应丢弃）。浏览器验证首页 Direct 分类、目录浏览、选中文件变为引用标签、跨分类检索与无结果状态、Workflow 只有文件分类、Backspace 返回；运行页 composer 共用同一控制器，mock 无法进入运行页，未单独浏览器验证。
 - 过度设计：无新后端接口与持久化，导航状态只存在于菜单打开期间；复用现有菜单组件与文件引用链路。

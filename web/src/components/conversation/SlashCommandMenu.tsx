@@ -1,10 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, SquareCode, UserRound, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import {
+  type MentionCategory,
   type SlashCatalogGroup,
   type SlashCatalogItem,
   commandSlashItems,
@@ -36,6 +37,16 @@ const STATUS_LABEL_KEYS = {
   empty: 'acp.mentionEmpty',
   error: 'acp.mentionError',
 } as const;
+
+/** Same icons as the file and role chips elsewhere in the conversation. */
+const MENTION_CATEGORY_ICONS: Record<MentionCategory, LucideIcon> = {
+  files: SquareCode,
+  roles: UserRound,
+};
+
+function itemIcon(item: SlashCatalogItem): LucideIcon | undefined {
+  return item.kind === 'mention-category' ? MENTION_CATEGORY_ICONS[item.id as MentionCategory] : undefined;
+}
 
 function itemLabel(item: SlashCatalogItem) {
   return item.kind === 'command' ? `/${item.name}` : item.name;
@@ -157,6 +168,7 @@ export function SlashCommandMenu({
               ) : null}
               {group.items.map((item, groupIndex) => {
                 const index = start + groupIndex;
+                const Icon = itemIcon(item);
                 return (
                   <CommandItem
                     ref={(element) => {
@@ -174,8 +186,9 @@ export function SlashCommandMenu({
                     onMouseDown={(event) => event.preventDefault()}
                     onSelect={() => onSelect(index)}
                   >
-                    <span className="truncate font-medium text-foreground">
-                      {itemLabel(item)}
+                    <span className="flex min-w-0 items-center gap-2 font-medium text-foreground">
+                      {Icon ? <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" /> : null}
+                      <span className="truncate">{itemLabel(item)}</span>
                     </span>
                     <span className="min-w-0 truncate text-xs text-muted-foreground/90">
                       {item.description}

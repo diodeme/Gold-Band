@@ -1,9 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { ChevronRight } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import {
   type SlashCatalogGroup,
+  type SlashCatalogItem,
   commandSlashItems,
   flattenSlashCatalog,
   getScrollTopForActiveSlashCommand,
@@ -28,6 +31,21 @@ const COMMAND_GROUP_VERTICAL_PADDING_PX = 4;
 const COMMAND_GROUP_HEADING_HEIGHT_PX = 28;
 const COMMAND_MENU_MAX_HEIGHT_PX = 266;
 
+const STATUS_LABEL_KEYS = {
+  loading: 'acp.mentionLoading',
+  empty: 'acp.mentionEmpty',
+  error: 'acp.mentionError',
+} as const;
+
+function itemLabel(item: SlashCatalogItem) {
+  return item.kind === 'command' ? `/${item.name}` : item.name;
+}
+
+/** Categories and directories open another level instead of completing the mention. */
+function opensLevel(item: SlashCatalogItem) {
+  return item.kind === 'mention-category' || item.kind === 'workspace-directory';
+}
+
 function menuGroups(
   groups: readonly SlashCatalogGroup[] | undefined,
   commands: readonly AcpCommandItemVm[] | undefined,
@@ -48,6 +66,7 @@ export function SlashCommandMenu({
   variant = 'popover',
   children,
 }: SlashCommandMenuProps) {
+  const { t } = useTranslation();
   const catalog = useMemo(() => menuGroups(groups, commands), [commands, groups]);
   const items = useMemo(() => flattenSlashCatalog(catalog), [catalog]);
   const menuId = useId();
@@ -55,8 +74,9 @@ export function SlashCommandMenu({
   const commandListRef = useRef<HTMLDivElement>(null);
   const commandItemRefs = useRef<Array<HTMLDivElement | null>>([]);
   const headingCount = catalog.filter((group) => group.heading.trim()).length;
+  const statusCount = catalog.filter((group) => group.status).length;
   const menuHeight = Math.min(
-    Math.max(items.length, 1) * COMMAND_ROW_HEIGHT_PX
+    Math.max(items.length + statusCount, 1) * COMMAND_ROW_HEIGHT_PX
       + headingCount * COMMAND_GROUP_HEADING_HEIGHT_PX
       + COMMAND_GROUP_VERTICAL_PADDING_PX * Math.max(headingCount, 1),
     COMMAND_MENU_MAX_HEIGHT_PX,
@@ -126,6 +146,15 @@ export function SlashCommandMenu({
               data-slash-group={group.id}
               className="p-0.5"
             >
+              {group.status ? (
+                <div
+                  role="status"
+                  data-slash-group-status={group.status}
+                  className="flex h-9 items-center px-3 text-xs text-muted-foreground"
+                >
+                  {t(STATUS_LABEL_KEYS[group.status])}
+                </div>
+              ) : null}
               {group.items.map((item, groupIndex) => {
                 const index = start + groupIndex;
                 return (
@@ -146,12 +175,14 @@ export function SlashCommandMenu({
                     onSelect={() => onSelect(index)}
                   >
                     <span className="truncate font-medium text-foreground">
-                      {item.kind === 'role' ? item.name : `/${item.name}`}
+                      {itemLabel(item)}
                     </span>
                     <span className="min-w-0 truncate text-xs text-muted-foreground/90">
                       {item.description}
                     </span>
-                    {item.inputHint ? (
+                    {opensLevel(item) ? (
+                      <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
+                    ) : item.inputHint ? (
                       <span className="max-w-44 shrink-0 truncate rounded-full border border-border/50 bg-muted/55 px-2 py-0.5 text-ui-micro leading-4 text-muted-foreground">
                         {item.inputHint}
                       </span>

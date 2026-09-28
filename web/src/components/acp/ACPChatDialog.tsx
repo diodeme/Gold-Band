@@ -104,7 +104,7 @@ import {
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
 } from "@/components/workspace/right-workspace-context";
-import { useWorkspaceFileReferenceBridge } from "@/components/workspace/workspace-file-reference-bridge";
+import { type AddWorkspaceFileRefResult, useWorkspaceFileReferenceBridge } from "@/components/workspace/workspace-file-reference-bridge";
 import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
@@ -172,7 +172,7 @@ import {
   type ComposerWorkspaceFileRef,
 } from "@/lib/composer-context";
 import { composerQuoteFailureMessage } from "@/lib/composer-quote-i18n";
-import { openWorkspaceFileReference } from "@/lib/workspace-file-reference";
+import { composerWorkspaceFileRefFromEntry, openWorkspaceFileReference } from "@/lib/workspace-file-reference";
 import type { ConversationPromptInput, ProfileVm } from "@/types";
 import { readAgentMessageQuote } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
@@ -184,6 +184,7 @@ import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisc
 import { buildSlashCatalog, committedRoleSnapshot, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
+import { useMentionMenuLabels } from "@/hooks/useMentionWorkspaceFiles";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel, hasAcpUsagePanelContent } from "@/components/acp/AcpUsagePanel";
 import {
@@ -1431,32 +1432,36 @@ export function ACPChatDialog(
   const pendingAttachmentsRef = useRef(composerDraft.draft.attachments);
   pendingAttachmentsRef.current = composerDraft.draft.attachments;
   const addQuoteFromWorkspaceRef = useRef<(draft: ComposerQuoteDraft, focus: boolean) => boolean>(() => false);
+  const addWorkspaceFile = useCallback((
+    reference: ComposerWorkspaceFileRef,
+    focus: boolean,
+  ): AddWorkspaceFileRefResult => {
+    if (!projectId) return { kind: 'unavailable' };
+    const result = addComposerWorkspaceFile(
+      workspaceFilesRef.current,
+      pendingAttachmentsRef.current.length,
+      reference,
+    );
+    if (!result.ok) {
+      if (result.code === 'composer.context.limit-exceeded') {
+        setComposerContextError(
+          t('errors.composer.context-limit-exceeded', { max: result.max }),
+        );
+        return { kind: 'limit-exceeded', max: result.max };
+      }
+      return { kind: 'duplicate' };
+    }
+    workspaceFilesRef.current = result.workspaceFiles;
+    setComposerWorkspaceFiles(result.workspaceFiles);
+    setComposerContextError(null);
+    if (focus) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return { kind: 'added' };
+  }, [projectId, setComposerWorkspaceFiles, t]);
   useEffect(() => workspaceFileReferenceBridge.register({
     addQuote: (draft, options) =>
       addQuoteFromWorkspaceRef.current(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
-    addWorkspaceFileRef: (reference, options) => {
-      if (!projectId) return { kind: 'unavailable' };
-      const result = addComposerWorkspaceFile(
-        workspaceFilesRef.current,
-        pendingAttachmentsRef.current.length,
-        reference,
-      );
-      if (!result.ok) {
-        if (result.code === 'composer.context.limit-exceeded') {
-          setComposerContextError(
-            t('errors.composer.context-limit-exceeded', { max: result.max }),
-          );
-          return { kind: 'limit-exceeded', max: result.max };
-        }
-        return { kind: 'duplicate' };
-      }
-      workspaceFilesRef.current = result.workspaceFiles;
-      setComposerWorkspaceFiles(result.workspaceFiles);
-      setComposerContextError(null);
-      if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
-      return { kind: 'added' };
-    },
-  }), [projectId, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
+    addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
+  }), [addWorkspaceFile, workspaceFileReferenceBridge]);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
@@ -2471,12 +2476,20 @@ export function ACPChatDialog(
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);
   }, []);
+  const mentionLabels = useMentionMenuLabels();
   const slashCommands = useSlashCommandController({
     input: prompt,
     groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setPrompt,
     onInputFocusRequested: restoreComposerFocus,
+    mention: {
+      projectId,
+      labels: mentionLabels,
+      onSelectWorkspaceFile: (entry) => {
+        if (projectId) addWorkspaceFile(composerWorkspaceFileRefFromEntry(projectId, entry), false);
+      },
+    },
   });
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashItem(

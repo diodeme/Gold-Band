@@ -21,6 +21,7 @@ import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
+import { useMentionMenuLabels } from '@/hooks/useMentionWorkspaceFiles';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import {
@@ -64,8 +65,8 @@ import {
   useOptionalRightWorkspace,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
-import { openWorkspaceFileReference } from '@/lib/workspace-file-reference';
-import { useWorkspaceFileReferenceBridge } from '@/components/workspace/workspace-file-reference-bridge';
+import { composerWorkspaceFileRefFromEntry, openWorkspaceFileReference } from '@/lib/workspace-file-reference';
+import { type AddWorkspaceFileRefResult, useWorkspaceFileReferenceBridge } from '@/components/workspace/workspace-file-reference-bridge';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -599,30 +600,35 @@ export function ConversationComposer({
     return true;
   }, [setComposerQuotes, t]);
 
+  const addWorkspaceFile = useCallback((
+    reference: ComposerWorkspaceFileRef,
+    focus: boolean,
+  ): AddWorkspaceFileRefResult => {
+    const result = addComposerWorkspaceFile(
+      workspaceFilesRef.current,
+      attachmentsRef.current.length,
+      reference,
+    );
+    if (!result.ok) {
+      if (result.code === 'composer.context.limit-exceeded') {
+        setContextError(
+          t('errors.composer.context-limit-exceeded', { max: result.max }),
+        );
+        return { kind: 'limit-exceeded', max: result.max };
+      }
+      return { kind: 'duplicate' };
+    }
+    workspaceFilesRef.current = result.workspaceFiles;
+    setComposerWorkspaceFiles(result.workspaceFiles);
+    setContextError(null);
+    if (focus) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return { kind: 'added' };
+  }, [setComposerWorkspaceFiles, t]);
+
   useEffect(() => workspaceFileReferenceBridge.register({
     addQuote: (draft, options) => addQuote(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
-    addWorkspaceFileRef: (reference, options) => {
-      const result = addComposerWorkspaceFile(
-        workspaceFilesRef.current,
-        attachmentsRef.current.length,
-        reference,
-      );
-      if (!result.ok) {
-        if (result.code === 'composer.context.limit-exceeded') {
-          setContextError(
-            t('errors.composer.context-limit-exceeded', { max: result.max }),
-          );
-          return { kind: 'limit-exceeded', max: result.max };
-        }
-        return { kind: 'duplicate' };
-      }
-      workspaceFilesRef.current = result.workspaceFiles;
-      setComposerWorkspaceFiles(result.workspaceFiles);
-      setContextError(null);
-      if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
-      return { kind: 'added' };
-    },
-  }), [addQuote, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
+    addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
+  }), [addQuote, addWorkspaceFile, workspaceFileReferenceBridge]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;
@@ -758,12 +764,20 @@ export function ConversationComposer({
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);
   }, []);
+  const mentionLabels = useMentionMenuLabels();
   const slashCommands = useSlashCommandController({
     input: content,
     groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setContent,
     onInputFocusRequested: restoreComposerFocus,
+    mention: {
+      projectId,
+      labels: mentionLabels,
+      onSelectWorkspaceFile: (entry) => {
+        if (projectId) addWorkspaceFile(composerWorkspaceFileRefFromEntry(projectId, entry), false);
+      },
+    },
   });
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashItem(

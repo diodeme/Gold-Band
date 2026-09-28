@@ -1,0 +1,214 @@
+/** @vitest-environment jsdom */
+import { act, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useSlashCommandController } from '@/hooks/useSlashCommandController';
+import { MENTION_FILE_SEARCH_DEBOUNCE_MS } from '@/hooks/useMentionWorkspaceFiles';
+import {
+  buildMentionGroups,
+  mentionFilesRequest,
+  parentMentionView,
+  roleSlashItems,
+  type SlashCatalogGroup,
+} from '@/lib/slash-command';
+import type { WorkspaceDirectoryEntryVm } from '@/types';
+
+const entry = (relativePath: string, kind: 'file' | 'directory' = 'file'): WorkspaceDirectoryEntryVm => ({
+  name: relativePath.split('/').at(-1) ?? relativePath,
+  relativePath,
+  canonicalPath: `D:/repo/${relativePath}`,
+  kind,
+  hasChildren: kind === 'directory',
+  byteLength: kind === 'file' ? 10 : null,
+  modifiedAtNs: null,
+});
+
+const api = vi.hoisted(() => ({
+  listWorkspaceDirectory: vi.fn(),
+  searchWorkspaceFiles: vi.fn(),
+}));
+vi.mock('@/api/client', () => ({ getRuntimeApi: () => api }));
+
+const labels = { files: 'Files', roles: 'Roles', workspaceRoot: 'Workspace' };
+const roleItems = roleSlashItems([{ id: 'pf-dev', name: '开发', summary: 'dev', content: 'role body' }]);
+const roleGroup: SlashCatalogGroup[] = [{ id: 'roles', heading: '', items: roleItems }];
+const ready = (entries: WorkspaceDirectoryEntryVm[] = []) => ({ status: 'ready' as const, entries });
+
+describe('@ mention groups', () => {
+  it('lists categories first and only offers roles when the catalog has them', () => {
+    const names = (groups: SlashCatalogGroup[]) => groups.flatMap((group) => group.items.map((item) => item.name));
+    const root = { view: { kind: 'root' as const }, query: '', filesAvailable: true, files: ready(), labels };
+    expect(names(buildMentionGroups({ ...root, roleItems }))).toEqual(['Files', 'Roles']);
+    // Workflow and AUTO pass no roles, so the only category is files.
+    expect(names(buildMentionGroups({ ...root, roleItems: [] }))).toEqual(['Files']);
+  });
+
+  it('browses one directory level and reports loading, empty and error in place', () => {
+    const view = { kind: 'files' as const, path: 'src' };
+    const groups = buildMentionGroups({
+      view, query: '', roleItems, filesAvailable: true, labels,
+      files: ready([entry('src/lib', 'directory'), entry('src/main.ts')]),
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].heading).toBe('src');
+    expect(groups[0].items.map((item) => [item.kind, item.name, item.description])).toEqual([
+      ['workspace-directory', 'lib', ''],
+      ['workspace-file', 'main.ts', 'src'],
+    ]);
+    const status = (files: Parameters<typeof buildMentionGroups>[0]['files']) =>
+      buildMentionGroups({ view, query: '', roleItems, filesAvailable: true, labels, files })[0].status;
+    expect(status({ status: 'loading', entries: [] })).toBe('loading');
+    expect(status(ready())).toBe('empty');
+    expect(status({ status: 'error', entries: [] })).toBe('error');
+  });
+
+  it('searches every category for a typed query', () => {
+    const groups = buildMentionGroups({
+      view: { kind: 'root' }, query: '开', roleItems, filesAvailable: true, labels,
+      files: ready([entry('docs/开发.md')]),
+    });
+    expect(groups.map((group) => [group.heading, group.items.map((item) => item.name)])).toEqual([
+      ['Roles', ['开发']],
+      ['Files', ['开发.md']],
+    ]);
+  });
+
+  it('asks for a directory while browsing, a search for a query, and nothing for roles', () => {
+    expect(mentionFilesRequest({ kind: 'root' }, '')).toBeNull();
+    expect(mentionFilesRequest({ kind: 'files', path: 'src' }, '')).toEqual({ kind: 'directory', path: 'src' });
+    expect(mentionFilesRequest({ kind: 'files', path: 'src' }, ' ma ')).toEqual({ kind: 'search', query: 'ma' });
+    expect(mentionFilesRequest({ kind: 'roles' }, 'x')).toBeNull();
+    expect(parentMentionView({ kind: 'files', path: 'src/lib' })).toEqual({ kind: 'files', path: 'src' });
+    expect(parentMentionView({ kind: 'files', path: 'src' })).toEqual({ kind: 'files', path: '' });
+    expect(parentMentionView({ kind: 'files', path: '' })).toEqual({ kind: 'root' });
+  });
+});
+
+const selected = vi.fn();
+let cleanup = async () => {};
+afterEach(async () => {
+  await cleanup();
+  vi.clearAllMocks();
+  vi.useRealTimers();
+});
+
+function Harness({ roles }: { roles: SlashCatalogGroup[] }) {
+  const [input, setInput] = useState('');
+  const slash = useSlashCommandController({
+    input,
+    groups: roles,
+    onInputChange: setInput,
+    mention: { projectId: 'project-1', labels, onSelectWorkspaceFile: selected },
+  });
+  return (
+    <div>
+      <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={slash.onKeyDown} />
+      <ul data-open={slash.isOpen}>
+        {slash.filteredGroups.map((group) => (
+          <li key={group.id} data-heading={group.heading} data-status={group.status}>
+            {group.items.map((item) => item.name).join(',')}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+async function mount(roles: SlashCatalogGroup[] = roleGroup) {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  cleanup = async () => {
+    await act(async () => root.unmount());
+    host.remove();
+  };
+  await act(async () => root.render(<Harness roles={roles} />));
+  const textarea = host.querySelector('textarea')!;
+  const type = async (value: string) => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(textarea, value);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const press = async (key: string) => {
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    });
+  };
+  const groups = () => [...host.querySelectorAll('li')].map((li) => ({
+    heading: li.dataset.heading,
+    status: li.dataset.status,
+    items: li.textContent,
+  }));
+  return { textarea, type, press, groups };
+}
+
+describe('@ mention navigation', () => {
+  it('opens the files category, enters a directory, adds a file and clears the mention', async () => {
+    api.listWorkspaceDirectory.mockImplementation(async (_projectId: string, path: string) => (
+      path === '' ? [entry('src', 'directory'), entry('README.md')] : [entry('src/main.ts')]
+    ));
+    const { textarea, type, press, groups } = await mount();
+    await type('@');
+    expect(groups()).toEqual([{ heading: '', status: undefined, items: 'Files,Roles' }]);
+
+    await press('Enter');
+    expect(textarea.value).toBe('@');
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledWith('project-1', '');
+    expect(groups()).toEqual([{ heading: 'Workspace', status: undefined, items: 'src,README.md' }]);
+
+    await press('Enter');
+    expect(groups()).toEqual([{ heading: 'src', status: undefined, items: 'main.ts' }]);
+
+    await press('Enter');
+    expect(selected).toHaveBeenCalledWith(entry('src/main.ts'));
+    expect(textarea.value).toBe('');
+  });
+
+  it('goes back one level with Backspace and keeps the @', async () => {
+    api.listWorkspaceDirectory.mockResolvedValue([entry('src', 'directory')]);
+    const { textarea, type, press, groups } = await mount();
+    await type('@');
+    await press('ArrowDown');
+    await press('Enter');
+    expect(groups()[0].items).toBe('开发');
+
+    await press('Backspace');
+    expect(textarea.value).toBe('@');
+    expect(groups()[0].items).toBe('Files,Roles');
+  });
+
+  it('does not submit the bare @ while a directory is loading', async () => {
+    api.listWorkspaceDirectory.mockReturnValue(new Promise(() => {}));
+    const { textarea, type, press, groups } = await mount();
+    await type('@');
+    await press('Enter');
+    expect(groups()).toEqual([{ heading: 'Workspace', status: 'loading', items: '' }]);
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => textarea.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('debounces the search and only publishes the latest response', async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (value: unknown) => void;
+    api.searchWorkspaceFiles
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(async () => ({ requestId: 'b', entries: [entry('src/main.ts')], truncated: false }));
+    const { type, groups } = await mount([]);
+    await type('@m');
+    await act(async () => { vi.advanceTimersByTime(MENTION_FILE_SEARCH_DEBOUNCE_MS); });
+    await type('@ma');
+    await type('@mai');
+    await act(async () => { vi.advanceTimersByTime(MENTION_FILE_SEARCH_DEBOUNCE_MS); });
+    expect(api.searchWorkspaceFiles).toHaveBeenCalledTimes(2);
+    expect(api.searchWorkspaceFiles).toHaveBeenLastCalledWith('project-1', 'mai', expect.any(String), 20);
+    expect(groups()).toEqual([{ heading: 'Files', status: undefined, items: 'main.ts' }]);
+
+    await act(async () => resolveFirst({ requestId: 'a', entries: [entry('stale.ts')], truncated: false }));
+    expect(groups()).toEqual([{ heading: 'Files', status: undefined, items: 'main.ts' }]);
+  });
+});

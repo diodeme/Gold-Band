@@ -44,3 +44,11 @@
 - [x] 验收：`tests/provider_prompt_bundle.rs` 新增三项（每个新 requirement 渲染携带引用与工作空间文件、角色包装、Continue 不重发）；`node_executor` New/Continue 构建断言；`dynamic_leaf_new_session_carries_the_task_quotes`；`a_role_is_accepted_only_for_direct_conversations`。浏览器验证首页 AUTO / 工作流模式输入 `@` 无角色菜单、Direct 正常列出角色；运行页 composer 因 mock 无法进入工作流运行页未做浏览器验证。
 - 过度设计：复用任务附件的加载时机与 `WorkerInvocation` 管道，只新增一个结构与一个字段，合并三个文件为一个，未新增状态或生命周期。
 - 性能：每个新会话多读一个小 JSON（与读取 inputs 目录同量级），workspace roots 仅在确有工作空间文件时加载；Continue 与 finalize 无额外开销。开发阶段不迁移旧的 `initial-prompt-*.json`，此前创建且尚未结束的任务后续节点不再带这些输入。
+
+## `@` 分类菜单：文件与角色（2026-09-28）
+
+- [x] 交互：`@`（仅开头触发）先列分类，Direct 为文件、角色，Workflow / AUTO 只有文件；回车进入分类，文件按目录层级浏览，Backspace / ← 返回上一级；`@` 后输入内容跨分类检索。选中文件加入工作空间文件引用并清除 `@查询`；文件夹不可引用。
+- [x] 实现：`slash-command.ts` 新增 `MentionView` 与纯函数 `buildMentionGroups` / `mentionFilesRequest` / `parentMentionView`，分组支持 `status`（loading / empty / error）原位展示；`useMentionWorkspaceFiles` 复用 `listWorkspaceDirectory` 与 `searchWorkspaceFiles`，搜索 150ms 防抖、最多 20 条，以 generation 丢弃迟到响应；`useSlashCommandController` 增加可选 `mention` 配置承载导航与键盘处理；两个 composer 把原 bridge 内的文件引用逻辑提取为共用 `addWorkspaceFile`，右侧文件树与 `@` 选择走同一路径。菜单为分类与目录行加箭头，文件行显示所在目录；7 种语言新增菜单文案。
+- [x] 验收：`web/tests/composer-mention-menu.test.tsx`（分类、目录浏览与状态、跨分类检索、请求映射、键盘进入/返回/选中、加载中回车不发送、防抖与迟到响应丢弃）。浏览器验证首页 Direct 分类、目录浏览、选中文件变为引用标签、跨分类检索与无结果状态、Workflow 只有文件分类、Backspace 返回；运行页 composer 共用同一控制器，mock 无法进入运行页，未单独浏览器验证。
+- 过度设计：无新后端接口与持久化，导航状态只存在于菜单打开期间；复用现有菜单组件与文件引用链路。
+- 性能：目录只在进入时读一层；搜索防抖、限条数、只保留最新结果；菜单关闭后不发请求；输入时只重算菜单分组，不影响历史消息渲染。

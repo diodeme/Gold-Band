@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { AcpCommandItemVm, WorkspaceDirectoryEntryVm } from '@/types';
 import { useMentionWorkspaceFiles } from '@/hooks/useMentionWorkspaceFiles';
 import {
@@ -18,7 +18,8 @@ import {
   filterSlashCatalog,
   flattenSlashCatalog,
   groupsForComposerMenuTrigger,
-  matchComposerMenuQuery,
+  matchComposerMenuQueryAt,
+  replaceComposerMenuQuery,
   rememberSlashCommandDismissal,
   restoreSlashCommandDismissal,
   composerTokenText,
@@ -31,7 +32,11 @@ interface UseSlashCommandControllerOptions {
   commands?: readonly AcpCommandItemVm[];
   contextKey?: string | null;
   onInputChange: (value: string) => void;
-  onInputFocusRequested?: () => void;
+  /**
+   * The composer textarea. The menu query ends at its caret, and choosing an
+   * item restores focus and the caret after the inserted text.
+   */
+  textareaRef?: RefObject<HTMLTextAreaElement | null>;
   /** Turns `@` into a categorized menu of workspace files and the catalog's roles. */
   mention?: {
     projectId: string | null | undefined;
@@ -55,12 +60,65 @@ export function useSlashCommandController({
   commands,
   contextKey,
   onInputChange,
-  onInputFocusRequested,
+  textareaRef,
   mention,
 }: UseSlashCommandControllerOptions) {
   const catalog = useMemo(() => catalogGroups(groups, commands), [commands, groups]);
   const catalogItems = useMemo(() => flattenSlashCatalog(catalog), [catalog]);
-  const menuQuery = useMemo(() => matchComposerMenuQuery(input), [input]);
+  const readCaret = useCallback((): number | null => {
+    const textarea = textareaRef?.current;
+    if (!textarea) return input.length;
+    // A committed tag hides its prefix, so the textarea shows only part of the input.
+    if (textarea.value !== input) return null;
+    return textarea.selectionStart === textarea.selectionEnd ? textarea.selectionStart : null;
+  }, [input, textareaRef]);
+  const [caret, setCaret] = useState<number | null>(input.length);
+  const pendingCaretRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const textarea = textareaRef?.current;
+    const pending = pendingCaretRef.current;
+    if (textarea && pending !== null && textarea.value === input) {
+      pendingCaretRef.current = null;
+      textarea.setSelectionRange(pending, pending);
+    }
+    setCaret(readCaret());
+  }, [input, readCaret, textareaRef]);
+  useEffect(() => {
+    const textarea = textareaRef?.current;
+    if (!textarea) return undefined;
+    const sync = () => setCaret(readCaret());
+    const onDocumentSelection = () => {
+      if (document.activeElement === textarea) sync();
+    };
+    document.addEventListener('selectionchange', onDocumentSelection);
+    textarea.addEventListener('keyup', sync);
+    textarea.addEventListener('pointerup', sync);
+    return () => {
+      document.removeEventListener('selectionchange', onDocumentSelection);
+      textarea.removeEventListener('keyup', sync);
+      textarea.removeEventListener('pointerup', sync);
+    };
+  }, [readCaret, textareaRef]);
+  const menuQuery = useMemo(() => matchComposerMenuQueryAt(input, caret), [caret, input]);
+
+  /** Commits the next input and puts the caret (and focus) at `nextCaret`. */
+  const applyInput = useCallback((next: string, nextCaret: number) => {
+    const textarea = textareaRef?.current;
+    if (next !== input) {
+      pendingCaretRef.current = nextCaret;
+      onInputChange(next);
+    } else if (textarea) {
+      textarea.setSelectionRange(nextCaret, nextCaret);
+      setCaret(nextCaret);
+    }
+    textarea?.focus();
+  }, [input, onInputChange, textareaRef]);
+
+  /** Replaces the typed menu query, keeping the text after the caret. */
+  const replaceQuery = useCallback((replacement: string) => {
+    const result = replaceComposerMenuQuery(input, caret ?? input.length, replacement);
+    applyInput(result.input, result.caret);
+  }, [applyInput, caret, input]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedIdentity, setSelectedIdentity] = useState<SlashItemIdentity | null>(null);
   const [dismissed, setDismissed] = useState(() => (
@@ -113,9 +171,8 @@ export function useSlashCommandController({
     setMentionView(view);
     setActiveIndex(0);
     // A typed query searched across categories; opening a level starts browsing it.
-    if (input !== '@') onInputChange('@');
-    onInputFocusRequested?.();
-  }, [input, onInputChange, onInputFocusRequested]);
+    replaceQuery('@');
+  }, [replaceQuery]);
 
   const selectByIndex = useCallback((index: number) => {
     const item = filteredItems[index];
@@ -131,16 +188,14 @@ export function useSlashCommandController({
     if (item.kind === 'workspace-file') {
       if (item.workspaceEntry) mention?.onSelectWorkspaceFile(item.workspaceEntry);
       setMentionView(MENTION_ROOT_VIEW);
-      onInputChange('');
-      onInputFocusRequested?.();
+      replaceQuery('');
       return true;
     }
     setSelectedIdentity({ kind: item.kind, id: item.id });
-    onInputChange(composerTokenText(item));
+    replaceQuery(composerTokenText(item));
     setDismissed(true);
-    onInputFocusRequested?.();
     return true;
-  }, [filteredItems, mention, navigateMention, onInputChange, onInputFocusRequested]);
+  }, [filteredItems, mention, navigateMention, replaceQuery]);
 
   const dismiss = useCallback(() => {
     rememberSlashCommandDismissal(contextKey, input);
@@ -159,9 +214,8 @@ export function useSlashCommandController({
       );
       if (unwrappedInput !== null) {
         event.preventDefault();
-        onInputChange(unwrappedInput);
+        applyInput(unwrappedInput, unwrappedInput.length);
         setDismissed(false);
-        onInputFocusRequested?.();
         return true;
       }
     }
@@ -212,8 +266,7 @@ export function useSlashCommandController({
     isOpen,
     mentionView,
     menuQuery,
-    onInputChange,
-    onInputFocusRequested,
+    applyInput,
     selectByIndex,
     selectedIdentity,
   ]);

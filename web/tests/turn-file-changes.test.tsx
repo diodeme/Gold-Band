@@ -185,6 +185,67 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('keeps the recorded-change explanation in a focusable header tooltip', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-slot="card-title"] button[data-slot="tooltip-trigger"]');
+      expect(trigger).not.toBeNull();
+      const explanation = trigger!.getAttribute('aria-label');
+      expect(explanation).toBeTruthy();
+      expect(container.textContent).not.toContain(explanation);
+      expect(trigger!.hasAttribute('title')).toBe(false);
+      await act(async () => trigger!.focus());
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(explanation);
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+      await act(async () => trigger!.blur());
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('groups disconnected edits by file and loads only the selected edit', async () => {
+    const set = changeSet();
+    set.status = 'partial';
+    set.limitationCodes = ['turn-files.non-linear-mutation'];
+    set.summary.fileCount = 1;
+    set.changes = [set.changes[1]!, { ...set.changes[1]!, id: 'modified-2' }];
+    getTurnFileChangeSetMock.mockResolvedValue(set);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(1);
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+      const group = container.querySelector<HTMLButtonElement>('[data-recorded-file-group]');
+      expect(group).not.toBeNull();
+      await act(async () => group!.click());
+      expect(container.querySelectorAll('[data-recorded-edit]')).toHaveLength(2);
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-slot="card-header"]')?.textContent).not.toContain('+5');
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('does not present incomplete net statistics as a complete total', async () => {
+    const partial = changeSet();
+    partial.status = 'partial';
+    partial.limitationCodes = ['turn-files.non-linear-mutation'];
+    partial.changes[1]!.addedLines = null;
+    partial.changes[1]!.deletedLines = null;
+    partial.changes[1]!.limitationCode = 'turn-files.non-linear-mutation';
+    getTurnFileChangeSetMock.mockResolvedValue(partial);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const header = container.querySelector('[data-slot="card-header"]');
+      expect(header?.textContent).not.toContain('+5');
+      expect(header?.textContent).not.toContain('-2');
+      expect(container.querySelectorAll('[role="listitem"]')[1]?.textContent).not.toContain('+0');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not render a nested-agent change set on the parent conversation', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -371,7 +432,7 @@ describe('turn file changes card', () => {
       expect(container.textContent).not.toContain('正在加载文件变化');
       expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
       expect(container.querySelectorAll('[data-slot="hover-card-trigger"]')).toHaveLength(3);
-      expect(container.querySelector('[data-slot="tooltip-trigger"]')).toBeNull();
+      expect(container.querySelector('[role="list"] [data-slot="tooltip-trigger"]')).toBeNull();
       expect(container.querySelector('[title]')).toBeNull();
       expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
     } finally {

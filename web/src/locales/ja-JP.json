@@ -1756,7 +1756,13 @@
     "noAttachments": "添付ファイルなし"
   },
   "turnFiles": {
-    "title": "このターンで {{count}} ファイルが変更されました",
+    "title": "記録された変更 · {{count}} ファイル",
+    "incompleteTitle": "変更記録が不完全です",
+    "recordedOnly": "ツールが記録した変更のみ。最終的な Git diff ではありません。",
+    "editCount": "{{count}} 件の編集",
+    "editNumber": "編集 {{number}}",
+    "evidenceUnavailable": "変更の記録が不完全なため、この比較を表示できません。",
+    "comparisonTooLarge": "この比較はビューアーのサイズ制限を超えています。",
     "attachmentsTitle": "このターンに作成された添付ファイル {{count}} 件",
     "attachmentList": "このターンに作成されたアタッチメント",
     "showMoreAttachments": "{{count}} 件の添付ファイルをさらに表示",
@@ -1775,7 +1781,7 @@
     "previewDeleted": "削除されたファイルの差分をプレビューします {{path}}",
     "previewLoading": "ファイルの差分を読み込んでいます…",
     "previewLoadFailed": "このファイルの差分をロードできません",
-    "previewUnavailable": "この差分は大きすぎるか、ホバー プレビューにはサポートされていません。代わりに、適切なワークスペースで開いてください。",
+    "previewUnavailable": "変更の記録が不完全なため、この比較を表示できません。",
     "diffPreview": "ファイルの差分ホバープレビュー",
     "turnDiff": "このターンの差分",
     "previousChange": "前回の変更",

@@ -134,12 +134,25 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 ### 2026-08-04 会话历史版本与 Diff 资源
 
+#### 2026-09-28 已记录变更与后台计算
+
+- 范围说明仅放在标题文字旁的低强调 Info 图标 Tooltip 中，鼠标悬浮和键盘聚焦均可查看；不再单独占据说明行。复用既有说明翻译与共享 Tooltip，不作为告警状态。
+
+- 变更卡表示成功工具调用通过 ACP 记录的比较，不表示最终 Git 净变化。范围外路径同样显示；路径只作标识，比较正文只从本 attempt 的 CAS 读取，不读取目标路径补齐历史。
+- Write 创建后，即使 Bash/Python 或外部操作改变磁盘内容，只要没有后续 ACP diff，仍保留当时的创建比较，不推测未采集改动，也不以当前磁盘内容否定已有证据。
+- 同文件编辑仅在所有捕获范围的前后版本精确衔接时折叠为首尾比较；恢复原样则不显示。任意断链时保留各次独立比较，不模糊拼接局部片段。同一路径在卡片中只占一项，展开查看各次编辑，复用原有悬浮和右侧 CodeMirror viewer。
+- 删除与清空必须区分：ACP 明确标记 `_meta.kind = delete` 且旧正文存在、新正文为空或缺省时，删除后版本为不存在；普通空正文仍表示文件存在。矛盾或缺失证据不生成有效比较。连续创建再删除首尾均不存在时不展示；创建空文件和清空保留存在性变化。
+- 每个活跃 Prompt Turn 沿用一个有界后台 worker；事件先持久化再非阻塞提交，待处理同工具调用只保留最终 revision。后台存储正文并按文件预计算 similar Diff 行数，使用有界的端点 hash 统计缓存，不保留或复核磁盘见证快照。会话完成状态先发布，随后等待已接收编辑处理完成再发布变更卡；不向聊天流发布预计算更新。
+- 沿用捕获条目、单文件和总字节上限；失败或超限标为 partial，单次 Diff 设置 300ms 算法预算。正文仍按用户打开预览或右侧资源时懒加载，不扫描全仓或历史。
+- 文件计数按唯一逻辑路径统计；多次不可合并编辑显示编辑次数，不显示伪净行数。partial 隐藏轮次增删总计；没有可展示文件时显示记录不完整，不伪装成成功的零变更。
+- 复用现有 mutation journal、CAS、comparison identity 和组件，不新增 schema、依赖或持久队列；本次不新增历史迁移，不重写已有记录。
+
 - 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。
-- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮和未修改区折叠。标题使用“本轮修改 Diff”，表明比较的是本 Prompt Turn 第一次 tool diff 的 oldText 与最后一次 tool diff 的 newText，而不是 live workspace；仅当官方 changed chunk 数量至少为 2 时展示上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
+- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮和未修改区折叠。标题使用“本轮修改 Diff”，比较当前已记录编辑或精确衔接链的首尾端点，而不是 live workspace；不同范围的断链编辑各自拥有独立 comparison identity；仅当官方 changed chunk 数量至少为 2 时展示上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
 - 所有复用统一 viewer 的 Turn、Git worktree、Commit 与 GitHub PR Diff 保留 CodeMirror 官方行级与字符级 Diff：新增/删除行使用 10% 语义背景，`.cm-deletedText` / `.cm-changedText` 字符变化层统一降为 12% 语义背景并移除默认 background image，避免两层叠加后过重。merge viewer 继续使用 CodeMirror 默认 active line 与 chunk range 导航；用户主动框选文本仍使用应用级 selection token。
 - 打开 `file-diff` / `file-version` 属于普通只读浏览，即使捕获或渲染存在限制也不得显示 Tab 黄点；限制仅在 viewer 内说明。变更列表的“修改”文件图标使用主题 `gold-running` 蓝色语义 token，不使用固定琥珀色；新增/删除仍使用各自的成功/破坏性语义色。
 - ACP `oldText/newText` 必须是文件内容，不得包含 unified diff 的 `No newline at end of file` 元数据。若 provider 的后续 tool update 错把该标记混入标准文本字段，捕获层需要移除标记并恢复真实的文件末尾换行状态；已有 change set 通过 schema 迁移从 durable journal 重新生成，不把元数据伪装成普通删除/新增行。
-- 变更卡收起时只展示配置数量的预览行；展开后全部文件进入同一个 ScrollArea，预览行不得固定在滚动区外。标题固定使用“本轮变更 N 个文件”，partial 不在标题后追加告警图标。卡片作为完整的回合结果区块，在消息流中使用 Tailwind `mb-3` 保留底部呼吸空间，避免下一条消息紧贴卡片边界。
+- 变更卡收起时只展示配置数量的预览文件；展开后全部文件进入同一个 ScrollArea，预览行不得固定在滚动区外。标题使用“已记录变更 · N 个文件”，空 partial 显示记录不完整，不在标题后追加告警图标。卡片作为完整的回合结果区块，在消息流中使用 Tailwind `mb-3` 保留底部呼吸空间，避免下一条消息紧贴卡片边界。
 - 变更卡从 change set summary 的加载占位切换到文件清单时，首帧必须直接采用最终收起结构；初始关闭不触发 `CollapsibleContent` 的退出动画，避免完整清单先参与绘制再收起。展开/收起动画只在用户操作折叠入口后启用，异步数据到达本身不改变 disclosure 意图。
 - 变更文件行使用 shadcn/ui Hover Card 提供只读 unified Diff 预览：鼠标稳定悬浮 350ms 后按 `attempt/branch/changeSet/change` 完整 locator 懒加载，离开后保留 150ms 宽限；键盘聚焦同一行时立即打开同一预览，鼠标按下导致的 focus 不得触发键盘预览路径。预览使用紧凑尺寸，默认最大 40rem × 24rem、高度随 viewport 约束为 44vh，标题固定为 36px，正文为唯一滚动区；同一时刻只挂载当前文件的一份 CodeMirror。修改/新增行的原点击仍打开右侧工作区，并在 pointer down 发生时先阻断同一指针交互带来的 focus open request，再在导航事务开始时收起当前 Hover Card；点击后的焦点转移、布局位移、合成 pointer 事件和迟到 open timer 均不得重新打开浮层。点击时记录指针的 `clientX/clientY`；只有用户再次移动鼠标，后续 `pointermove` 的实际客户区坐标与点击坐标不同时，才解除抑制并恢复悬浮预览；不使用 WebView 在布局重排时可能失真的 `movementX/movementY` 判定真实移动。删除行只允许悬浮/聚焦预览，不新增点击导航。
 - 悬浮交互的临时诊断使用 `goldBand.debug.turnFileHover=1` 本地开关启用，以 `[GoldBand][Turn file hover]` 输出可直接复制的单行 JSON；只记录行实例、change ID、开合请求、Radix Content `data-state`、指针坐标和抑制状态，不记录文件路径、Diff 正文或 locator。开关未启用时不建立 MutationObserver，不输出日志。

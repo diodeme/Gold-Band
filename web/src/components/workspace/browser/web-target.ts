@@ -11,12 +11,21 @@ const SEARCH_URLS: Record<BrowserSearchEngine, string> = {
 
 export { isHttpUrlHref, isSystemHandlerHref };
 
-export function isHtmlDocumentPath(path: string) {
+function documentPathOf(path: string) {
   const value = path.trim().replaceAll('\\', '/');
   const withoutHash = value.split('#')[0] ?? value;
   const withoutQuery = withoutHash.split('?')[0] ?? withoutHash;
-  const withoutLine = withoutQuery.replace(/:\d+(?::\d+)?$/u, '');
-  return /\.(?:html|htm)$/iu.test(withoutLine);
+  return withoutQuery.replace(/:\d+(?::\d+)?$/u, '');
+}
+
+/** Local links to these documents open in the built-in browser by default. */
+export function isHtmlDocumentPath(path: string) {
+  return /\.(?:html|htm)$/iu.test(documentPathOf(path));
+}
+
+/** Local files the built-in browser can load when the user explicitly asks for it. */
+export function isBrowserDocumentPath(path: string) {
+  return /\.(?:html|htm|svg)$/iu.test(documentPathOf(path));
 }
 
 export function localHtmlHrefFrom(href: string) {

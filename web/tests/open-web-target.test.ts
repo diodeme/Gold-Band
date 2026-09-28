@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { openWebTarget } from '@/components/workspace/browser/open-web-target';
+import { openLocalDocumentInBrowser, openWebTarget } from '@/components/workspace/browser/open-web-target';
 import { browserSessionStore } from '@/components/workspace/browser/browser-session-store';
-import { classifyWebTarget, isLocalhostUrl, normalizeBrowserAddress, systemBrowserHref } from '@/components/workspace/browser/web-target';
+import { classifyWebTarget, isBrowserDocumentPath, isHtmlDocumentPath, isLocalhostUrl, normalizeBrowserAddress, systemBrowserHref } from '@/components/workspace/browser/web-target';
 import { browserWorkspaceResourceKey } from '@/components/workspace/right-workspace-context';
 
 describe('openWebTarget', () => {
@@ -102,6 +102,30 @@ describe('openWebTarget', () => {
     });
     expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
     expect(browserSessionStore.activePage()?.url).toBe('D:/repo/docs/index.html');
+    browserSessionStore.resetForTests();
+  });
+
+  it('keeps SVG links on the file preview but opens SVG in the browser on request', async () => {
+    expect(classifyWebTarget('art/pelican.svg')).toBe('local-file');
+    expect(isHtmlDocumentPath('art/pelican.svg')).toBe(false);
+    expect(isBrowserDocumentPath('art/pelican.SVG:12')).toBe(true);
+    expect(isBrowserDocumentPath('docs/index.html')).toBe(true);
+    expect(isBrowserDocumentPath('src/main.rs')).toBe(false);
+
+    browserSessionStore.resetForTests();
+    const openResource = vi.fn();
+    const resolveLocalHtml = vi.fn(async () => ({ canonicalPath: 'D:/repo/art/pelican.svg' }));
+    const result = await openLocalDocumentInBrowser('D:/repo/art/pelican.svg', {
+      projectId: 'project-1',
+      scopeKey: 'draft:project-1',
+      openResource,
+      browserTitle: '浏览器',
+      resolveLocalHtml,
+    });
+    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', rawHref: 'D:/repo/art/pelican.svg' });
+    expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
+    expect(browserSessionStore.activePage()?.url).toBe('D:/repo/art/pelican.svg');
+    expect(openResource).toHaveBeenCalledWith(expect.objectContaining({ kind: 'browser', scopeKey: 'draft:project-1' }));
     browserSessionStore.resetForTests();
   });
 

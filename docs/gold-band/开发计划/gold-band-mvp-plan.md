@@ -2635,3 +2635,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 方案：删除 `ResourceLink` 意图，`AcpContentBlock` 改为 `Image / Resource / File`，`File` 只携带 Host 绝对路径与字节数。ACP 出站边界按 live capability 决定内联，其余条目经 `runtime/user_files.md`（7 种语言）渲染为用户 prompt 文本开头的文件列表；`PromptBundle` 增加 `language` 供该渲染使用。工作空间引用始终为路径条目；附件只把 PNG/JPEG/WebP/GIF/BMP 作为图片，其余按内容判定（预算内、UTF-8 且不含 NUL 为文本，否则为路径）。删除附件格式注册表、`supported_attachment_extensions` / `get_supported_attachment_extensions` 与前端扩展名过滤，MIME 统一为 `provider::file_mime_type`；保留数量与大小上限。已发送附件预览按内容返回 `encoding: binary`，草稿预览按 MIME 判断，不可预览时显示“无法预览此文件”。
 - [x] 验收：Rust `acp::client` 4 项（能力内联、路径列表不随能力展开、无能力时按路径列出、列表语言与 system prompt 回退顺序）、`provider` `any_file_type_is_resolved_by_content` 与 `listed_files_render_in_every_language_before_the_user_prompt`、`workspace_files` 2 项、桌面端 `materializes_any_attachment_type` 与消息附件二进制预览；Web `conversation-asset-workspace-panel`、`draft-attachment-workspace-panel` 二进制用例。
 - 性能与过度设计评审：只替换既有意图枚举并新增一个模板与一个字段，无新状态或缓存。文本判定最多读取内联预算加 1 字节，超预算文件只读 metadata；路径列表为 O(文件数) 字符串渲染，文件数上限 10。
+
+## 2026-09-28：SVG 预览改为原生矢量渲染，并可在内置浏览器打开
+
+- [x] 根因：SVG 预览由 Rust `resvg` 栅格化为 PNG，而 `usvg::Options::default()` 的字体库为空，所有 `<text>` 被静默丢弃；栅格化还要逐像素计算并编码 PNG，放大后发虚。当初为防脚本注入而栅格化，但浏览器 `<img>` 图片模式本身不执行脚本、不加载外部资源，属于重复且有损的防护。
+- [x] 方案：预览协议对 SVG 直接返回 `image/svg+xml` 原文，删除 `rasterize_svg` 与 preview grant 的 `svg` 字段；CSP 调整为 `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src data:; sandbox`，保留 `nosniff`，直接导航预览 URL 也无脚本。`resvg` 只保留画布尺寸解析。内置浏览器本地文档扩展名统一为 `BROWSER_DOCUMENT_EXTENSIONS`（html/htm/svg）；前端新增 `isBrowserDocumentPath` 与 `openLocalDocumentInBrowser`，SVG 图片预览工具栏与源码浮层提供“在浏览器中打开”。本地 `.svg` 链接仍默认走文件预览。
+- [x] 验收：Rust `svg_preview_returns_source_under_a_script_free_policy`、`local_svg_opens_as_a_browser_document_served_as_svg`、`plain_local_files_are_not_browser_documents`；Web `open-web-target` 新增 SVG 路由用例，`workspace-html-source` 同步入口断言。Chromium 中以同一 CSP 验证 `<img>` 渲染中文文字与内联 `<style>`，直接打开含 `<script>` 的 SVG 不执行脚本。
+- 性能与过度设计评审：删除后端 CPU 栅格化与 PNG 编解码，渲染交给 WebView GPU；无新增状态、缓存或依赖。

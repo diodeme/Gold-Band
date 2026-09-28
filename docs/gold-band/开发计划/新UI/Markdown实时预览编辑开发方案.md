@@ -228,7 +228,7 @@ Markdown Image src
   -> Rust 解析并 canonicalize
   -> 校验工作区/文档目录/精确授权
   -> 文件签名、字节数、像素数校验
-  -> SVG 由 Rust 栅格化，禁用外部资源
+  -> SVG 原文以 image/svg+xml 返回，只由 <img> 加载，CSP sandbox 禁止脚本
   -> 签发绑定 path + revision 且携带 expiresAtMs 的短期 preview grant
   -> <img src="gold-band-preview://token">
 ```
@@ -329,7 +329,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - Markdown external grant 缺少、过期或绑定其他文件时拒绝解析。
 - UNC、网络 URL、`data:`、`javascript:` 按策略阻止。
 - 伪造图片扩展名、损坏图片、超大字节、超大像素安全降级。
-- SVG 返回栅格化 preview，绝不返回 SVG 源码 DOM。
+- SVG preview 只由 `<img>` 加载（图片模式无脚本、无外部资源），绝不挂载 SVG 源码 DOM。
 
 ### 13.3 组件验收
 
@@ -380,7 +380,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - [x] 标题、列表、强调、链接、代码块、任务项和合法 GFM 表格可直接编辑。
 - [x] Markdown 本地图片只通过安全 preview grant 展示，并在到期前轮换。
 - [x] 工作区外 Markdown 同目录图片自动展示，目录外引用按文档统一确认且只授权精确引用。
-- [x] SVG 安全栅格化；网络图片只保留超链接，UNC 和危险 scheme 不会静默加载。
+- [x] SVG 以图片模式安全预览；网络图片只保留超链接，UNC 和危险 scheme 不会静默加载。
 - [x] 大文档、多图片、过期异步响应和 grant 生命周期符合性能与安全约束。
 - [x] 前端、Rust 接口和组件测试覆盖关键验收。
 - [ ] 真实 UI 的深浅主题、宽窄布局和编辑流程由需求方验证。

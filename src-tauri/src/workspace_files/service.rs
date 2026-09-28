@@ -516,7 +516,6 @@ fn image_snapshot(
         path.to_path_buf(),
         revision.clone(),
         image.mime_type.to_string(),
-        image.svg,
         root.config.preview_token_ttl_seconds,
     )?;
     let source_editable = image.svg

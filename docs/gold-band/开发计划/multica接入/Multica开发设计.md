@@ -2037,6 +2037,18 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.39 改动三十七：default 渠道暂时隐藏需求管理入口（M5-az，2026-09-29）
+
+**设计判断**：需求管理页面、路由与 Multica 生命周期设计保持有效，本次只是渠道导航投影范围调整，不删除能力，也不增加 CSS 隐藏、重复渠道状态或兼容分支。复用后端启动信息中的 canonical `appInfo.channel`，由 App 映射为侧栏可见性，`default` 渠道为隐藏、其他渠道保持现状。
+
+**实现与验收**：`App → Shell → WorkspaceShell → ConversationSidebar` 只传递导航可见性；侧栏不挂载隐藏按钮，且隐藏入口不会因 `/chat/multica-tasks` 页面状态自动展开“更多”。增加侧栏 DOM 接口测试，固定隐藏时没有“需求管理”按钮、定时任务仍可见；执行定向 Vitest、TypeScript 检查、生产构建，并在 default 渠道 `/chat` deep link 验证。
+
+**方案自评审**：过度设计——不新增配置、持久字段、路由守卫、状态机、依赖或兼容层，直接复用现有渠道事实源与导航投影。性能——仅减少一个按钮挂载和一次常量级条件判断，不增加 I/O、订阅、缓存、渲染范围或数据加载，无需 benchmark。
+
+**验证结果**：`conversation-sidebar-more-navigation.test.tsx` 3/3 通过；`npm run web:build` 通过（TypeScript 与 Vite 生产构建）；default 渠道 `/chat` 实际展开“更多”后 DOM 中“需求管理”按钮为 0、“定时任务”按钮为 1，视觉检查确认入口对齐和留白正常。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

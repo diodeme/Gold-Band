@@ -2365,6 +2365,7 @@ export function App() {
       active={primaryModule}
       conversationPage={presentedConversationPage}
       conversationSidebar={conversationSidebar}
+      showMulticaTaskManagement={appInfo.channel !== 'default'}
       activeWorkspaceId={conversationWorkspaceContextId}
       defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
       workspaceRevealRequest={workspaceRevealRequest}

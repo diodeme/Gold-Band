@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-24T05:22:44.367Z"
+    "fetchedAt": "2026-09-25T14:51:32.103Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.72.0",
+      "version": "0.81.2",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.72.0"
+        "@agentclientprotocol/claude-agent-acp@0.81.2"
       ],
       "env": {},
       "primaryAgentDir": ".claude",
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.157.0",
+      "version": "2.158.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.157.0",
+        "@tencent-ai/codebuddy-code@2.158.0",
         "--acp"
       ],
       "env": {},
@@ -141,7 +141,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.24.4",
+      "version": "0.24.5",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -150,7 +150,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.24.4",
+        "@qwen-code/qwen-code@0.24.5",
         "--acp",
         "--experimental-skills"
       ],
@@ -228,7 +228,7 @@
     {
       "id": "pi-acp",
       "label": "Pi",
-      "version": "0.0.33",
+      "version": "0.0.34",
       "description": "ACP adapter for pi coding agent",
       "repository": "https://github.com/svkozak/pi-acp",
       "website": null,
@@ -237,7 +237,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "pi-acp@0.0.33"
+        "pi-acp@0.0.34"
       ],
       "env": {},
       "primaryAgentDir": ".pi/agent",

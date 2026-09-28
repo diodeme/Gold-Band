@@ -10,6 +10,10 @@ const roleGroup: SlashCatalogGroup[] = [{
   id: 'roles',
   heading: '',
   items: roleSlashItems([{ id: 'pf-dev', name: '开发', summary: 'dev', content: 'role body' }]),
+}, {
+  id: 'agent',
+  heading: 'Agent',
+  items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review' }],
 }];
 
 function Harness({ initial }: { initial: string }) {
@@ -88,5 +92,29 @@ describe('PromptInputTextarea leading adornment', () => {
     expect(host.querySelector('[data-tag]')).not.toBeNull();
     expect(host.querySelector('textarea')).toBe(textarea);
     expect(document.activeElement).toBe(textarea);
+  });
+
+  it.each([
+    ['@开', '@开发 '],
+    ['/rev', '/review '],
+  ])('keeps the focused textarea when %s is committed from the menu', async (typed, committedInput) => {
+    const host = await mount('');
+    const textarea = host.querySelector('textarea')!;
+    textarea.focus();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(textarea, typed);
+      textarea.setSelectionRange(typed.length, typed.length);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+
+    expect(host.querySelector('[data-tag]')?.textContent).toBe(committedInput.trimEnd());
+    expect(host.querySelector('textarea')).toBe(textarea);
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value).toBe(' ');
+    expect(textarea.selectionStart).toBe(1);
   });
 });

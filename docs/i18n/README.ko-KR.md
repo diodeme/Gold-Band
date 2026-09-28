@@ -25,6 +25,8 @@
 
 ---
 
+![Gold Band](https://static.dion.blue/2026/09/index.png)
+
 Gold Band는 로컬 프로젝트를 위한 AI Agent 데스크톱 클라이언트입니다. Agent Client Protocol(ACP)을 통해 Claude Code, Codex 등 주요 Agent에 연결합니다. 하나의 인터랙션 설계로 여러 harness를 자유롭게 전환할 수 있습니다. 또한 완전한 워크플로와 AUTO 오케스트레이션을 제공하여 장시간 작업도 안정적이고 관측 가능하게 유지하며, 모델의 한 번의 운에 기대지 않습니다.
 
 > [!TIP]

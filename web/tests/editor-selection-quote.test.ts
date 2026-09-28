@@ -94,6 +94,13 @@ describe('editor selection quote readers', () => {
 
     expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -2,3 +2 @@\n x2\n-x3\n-x4');
   });
+
+  it('keeps a removed block the selection runs across without ending inside it', () => {
+    const view = mount('x1\nx2\nx5', 'x1\nx2\nx3\nx4\nx5');
+    select(lineText(view, 2), 0, lineText(view, 3), 0);
+
+    expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -2,3 +2 @@\n x2\n-x3\n-x4');
+  });
 });
 
 describe('diff quote source', () => {

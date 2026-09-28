@@ -40,15 +40,15 @@ describe('workspace HTML source entry', () => {
     const source = readFileSync(resolve(process.cwd(), 'web/src/components/workspace/files/FileWorkspacePanel.tsx'), 'utf8');
     expect(source).not.toContain("classifyWebTarget(entry.canonicalPath) === 'local-html'");
     expect(source).not.toContain('openWebTarget(entry.canonicalPath');
-    expect(source).toContain('isHtmlDocumentPath');
+    expect(source).toContain('isBrowserDocumentPath');
     expect(source).toContain('onOpenInBrowser');
-    expect(source).toMatch(/fileContentStore\.flush\(resource\.key\)[\s\S]*openWebTarget/);
+    expect(source).toMatch(/fileContentStore\.flush\(resource\.key\)[\s\S]*openLocalDocumentInBrowser/);
   });
 
   it('gives run-directory HTML the same source overlay without binding the tree to workspace commands', () => {
     const source = readFileSync(resolve(process.cwd(), 'web/src/components/workspace/ConversationDirectoryWorkspacePanel.tsx'), 'utf8');
     expect(source).toContain('function ConversationDirectoryTextPreview');
-    expect(source).toContain('onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined}');
+    expect(source).toContain('onOpenInBrowser={browserDocument ? openDocumentInBrowser : undefined}');
     expect(source).not.toContain("classifyWebTarget");
     const panelBody = source.slice(source.indexOf('export function ConversationDirectoryWorkspacePanel'));
     expect(panelBody).not.toContain('useRightWorkspaceCommands()');

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FilePlus2, FileQuestion, FolderOpen, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, FilePlus2, FileQuestion, FolderOpen, Globe, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -10,8 +10,8 @@ import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm, WorkspaceFileLoc
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
 import { composerWorkspaceFileRefFromLocator } from '@/lib/workspace-file-reference';
 import { useWorkspaceFileReferenceCommands, useWorkspaceFileReferencePresentation } from '../workspace-file-reference-bridge';
-import { isHtmlDocumentPath } from '../browser/web-target';
-import { openWebTarget } from '../browser/open-web-target';
+import { isBrowserDocumentPath } from '../browser/web-target';
+import { openLocalDocumentInBrowser } from '../browser/open-web-target';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
 import { useWorkspaceResponsiveState } from '../use-workspace-responsive-state';
 import {
@@ -177,17 +177,17 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
   const workspace = useRightWorkspaceCommands();
   const entry = useFileContentEntry(resource.key);
   const [locationAdjusted, setLocationAdjusted] = useState(false);
-  const htmlDocument = isHtmlDocumentPath(resource.locator.canonicalPath);
-  const openHtmlInBrowser = useCallback(async () => {
-    if (!htmlDocument || !workspace.scopeKey) return;
+  const browserDocument = isBrowserDocumentPath(resource.locator.canonicalPath);
+  const openDocumentInBrowser = useCallback(async () => {
+    if (!browserDocument || !workspace.scopeKey) return;
     if (!await fileContentStore.flush(resource.key)) return;
-    await openWebTarget(resource.locator.canonicalPath, {
+    await openLocalDocumentInBrowser(resource.locator.canonicalPath, {
       projectId: resource.projectId,
       scopeKey: workspace.scopeKey,
       openResource: workspace.openResource,
       browserTitle: t('workspace.browser.title'),
     });
-  }, [htmlDocument, resource.key, resource.locator.canonicalPath, resource.projectId, t, workspace.openResource, workspace.scopeKey]);
+  }, [browserDocument, resource.key, resource.locator.canonicalPath, resource.projectId, t, workspace.openResource, workspace.scopeKey]);
 
   useEffect(() => {
     void fileContentStore.load(resource);
@@ -250,14 +250,14 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       ) : entry.saveState.kind === 'conflict' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <ConflictBanner resource={resource} />
-          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />
+          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={browserDocument ? openDocumentInBrowser : undefined} />
         </div>
       ) : entry.saveState.kind === 'error' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <SaveErrorBanner resource={resource} errorCode={entry.saveState.errorCode} />
-          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />
+          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={browserDocument ? openDocumentInBrowser : undefined} />
         </div>
-      ) : <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />}
+      ) : <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={browserDocument ? openDocumentInBrowser : undefined} />}
     </article>
   );
 }
@@ -376,11 +376,11 @@ function FileSnapshotContent({
       </div>
     );
   }
-  if (snapshot.kind === 'image') return <ImagePreview resource={resource} />;
+  if (snapshot.kind === 'image') return <ImagePreview resource={resource} onOpenInBrowser={onOpenInBrowser} />;
   return <UnsupportedFile resource={resource} />;
 }
 
-function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
+function ImagePreview({ resource, onOpenInBrowser }: { resource: FileWorkspaceResource; onOpenInBrowser?: () => void | Promise<void> }) {
   const { t } = useTranslation();
   const entry = useFileContentEntry(resource.key);
   const snapshot = entry.snapshot?.kind === 'image' ? entry.snapshot : null;
@@ -441,6 +441,14 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
           if (viewport) viewport.scrollTo({ left: 0, top: 0 });
         }} aria-label={t('workspace.filesPanel.resetImage')}><RotateCcw className="size-3.5" /></Button>
         <Button size="icon" variant="ghost" className="size-7" onClick={() => setZoom((value) => Math.min(8, value + 0.15))} aria-label={t('workspace.filesPanel.zoomIn')}><ZoomIn className="size-3.5" /></Button>
+        {onOpenInBrowser ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon" variant="ghost" className="size-7" onClick={() => void onOpenInBrowser()} aria-label={t('workspace.filesPanel.openHtmlInBrowser')} data-image-open-in-browser="true"><Globe className="size-3.5" /></Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('workspace.filesPanel.openHtmlInBrowser')}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <OpenWithSystemAppButton resource={resource} variant="icon" />
       </div>
       <div

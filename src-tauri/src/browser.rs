@@ -300,7 +300,7 @@ pub async fn browser_resolve_local_html(
     )
     .await?;
     let path = PathBuf::from(&locator.canonical_path);
-    if !is_html_path(&path) {
+    if !is_browser_document_path(&path) {
         return Err(navigation_invalid());
     }
     Ok(BrowserLocalHtmlTargetVm {
@@ -1536,7 +1536,7 @@ fn resolved_from_url(
     if !navigation_allowed(&url, current_file_root) {
         if url.scheme() == "file" {
             let path = url.to_file_path().map_err(|_| local_html_grant_failed())?;
-            if is_html_path(&path) {
+            if is_browser_document_path(&path) {
                 return resolved_from_file_path(&path);
             }
         }
@@ -1563,7 +1563,7 @@ fn resolved_from_url(
 
 fn resolved_from_file_path(path: &Path) -> CommandResult<ResolvedBrowserTarget> {
     let canonical = canonicalize_display_path(path).map_err(|_| local_html_grant_failed())?;
-    if !is_html_path(&canonical) {
+    if !is_browser_document_path(&canonical) {
         return Err(navigation_invalid());
     }
     if !canonical.is_file() {
@@ -1761,11 +1761,16 @@ fn is_privileged_url(url: &Url) -> bool {
             .is_some_and(|host| host.eq_ignore_ascii_case("ipc.localhost"))
 }
 
-pub(crate) fn is_html_path(path: &Path) -> bool {
+/// Local files the built-in browser may load as a top-level document.
+const BROWSER_DOCUMENT_EXTENSIONS: [&str; 3] = ["html", "htm", "svg"];
+
+pub(crate) fn is_browser_document_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
+            BROWSER_DOCUMENT_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
         })
 }
 
@@ -1785,7 +1790,7 @@ fn looks_like_local_path(value: &str) -> bool {
             && value.as_bytes()[0].is_ascii_alphabetic()
             && value.as_bytes()[1] == b':'
             && (value.as_bytes()[2] == b'\\' || value.as_bytes()[2] == b'/'))
-        || is_html_path(path)
+        || is_browser_document_path(path)
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
@@ -2480,6 +2485,37 @@ mod tests {
             browser_display_url(&target.navigation_url, target.allowed_file_root.as_deref()),
             target.url
         );
+    }
+
+    #[test]
+    fn local_svg_opens_as_a_browser_document_served_as_svg() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pelican.svg");
+        std::fs::write(&image, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#).unwrap();
+
+        let target = resolve_browser_target(image.to_str().unwrap(), None).unwrap();
+
+        assert!(is_browser_local_file_url(&target.navigation_url));
+        assert_eq!(target.navigation_url.path(), "/pelican.svg");
+        let response = browser_local_file_response(
+            target.allowed_file_root.as_deref().unwrap(),
+            &Method::GET,
+            target.navigation_url.as_str(),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/svg+xml"
+        );
+    }
+
+    #[test]
+    fn plain_local_files_are_not_browser_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = dir.path().join("notes.txt");
+        std::fs::write(&text, "notes").unwrap();
+
+        assert!(resolve_browser_target(text.to_str().unwrap(), None).is_err());
     }
 
     #[test]

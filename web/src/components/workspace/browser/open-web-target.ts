@@ -51,33 +51,43 @@ export async function openWebTarget(
   if (!context.scopeKey) {
     return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
   }
-  let url = kind === 'http'
-    ? normalizeBrowserAddress(href, context.browserPreferences?.searchEngine)
-    : href;
   if (kind === 'local-html') {
-    const rawPath = localHtmlHrefFrom(href) ?? href;
-    if (!context.projectId) {
-      return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
-    }
-    try {
-      const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
-        projectId: context.projectId,
-        rawHref: rawPath,
-      });
-      url = resolved.canonicalPath;
-    } catch (reason) {
-      const value = reason as { code?: unknown; params?: unknown };
-      return {
-        status: 'error',
-        error: {
-          code: typeof value.code === 'string' ? value.code : 'browser.local_html.grant_failed',
-          params: typeof value.params === 'object' && value.params
-            ? value.params as Record<string, unknown>
-            : {},
-        },
-      };
-    }
+    return openLocalDocumentInBrowser(localHtmlHrefFrom(href) ?? href, context);
   }
+  return openBrowserPage(normalizeBrowserAddress(href, context.browserPreferences?.searchEngine), context.scopeKey, context);
+}
+
+/** Opens a local HTML/SVG document in the built-in browser once the backend grants its directory. */
+export async function openLocalDocumentInBrowser(
+  rawPath: string,
+  context: OpenWebTargetContext,
+): Promise<OpenWebTargetResult> {
+  if (!context.scopeKey || !context.projectId) {
+    return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
+  }
+  let url: string;
+  try {
+    const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
+      projectId: context.projectId,
+      rawHref: rawPath,
+    });
+    url = resolved.canonicalPath;
+  } catch (reason) {
+    const value = reason as { code?: unknown; params?: unknown };
+    return {
+      status: 'error',
+      error: {
+        code: typeof value.code === 'string' ? value.code : 'browser.local_html.grant_failed',
+        params: typeof value.params === 'object' && value.params
+          ? value.params as Record<string, unknown>
+          : {},
+      },
+    };
+  }
+  return openBrowserPage(url, context.scopeKey, context);
+}
+
+async function openBrowserPage(url: string, scopeKey: string, context: OpenWebTargetContext): Promise<OpenWebTargetResult> {
   let pageId: string;
   try {
     pageId = browserSessionStore.openUrl(url);
@@ -94,7 +104,7 @@ export async function openWebTarget(
   await context.openResource({
     kind: 'browser',
     key: browserWorkspaceResourceKey(),
-    scopeKey: context.scopeKey,
+    scopeKey,
     title: context.browserTitle,
     description: null,
     attention: false,

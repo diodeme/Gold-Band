@@ -55,9 +55,9 @@ describe('composer context horizontal alignment', () => {
   it('keeps vertical inset inside the textarea for plain and command-tag input', () => {
     expect(composerLayoutSource).toContain("COMPOSER_TEXTAREA_BASE_CLASS_NAME = 'min-h-12 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground'");
     expect(composerLayoutSource).toContain("promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm'");
-    expect(promptInputSource).toContain('className,\n        hasLeadingAdornment && "px-0"');
+    expect(promptInputSource).toContain('className,\n          hasLeadingAdornment && "px-0"');
     expect(promptInputSource).not.toContain('hasLeadingAdornment && "px-0 py-0"');
-    expect(promptInputSource).toContain('cn("relative min-w-0 px-2.5", containerClassName)');
+    expect(promptInputSource).toContain('cn("relative min-w-0", hasLeadingAdornment && "px-2.5", containerClassName)');
     expect(composerLayoutSource).toContain("COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME =\n  'absolute z-10 inline-flex h-6 items-center'");
     expect(composerLayoutSource).toContain("COMPOSER_LEADING_ADORNMENT_CHIP_CLASS_NAME =\n  'h-6 rounded-full border-border/70 bg-background/80 px-2 text-xs font-normal leading-none text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground'");
     expect(promptInputSource).toContain('className={cn(COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME, "left-2.5 top-2")}');

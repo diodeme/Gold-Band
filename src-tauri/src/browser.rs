@@ -13,6 +13,7 @@ use tauri::webview::Color as WebviewColor;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, Window};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use tracing::{info, warn};
 use url::Url;
 
@@ -138,6 +139,12 @@ pub struct BrowserResolveLocalHtmlInput {
 #[serde(rename_all = "camelCase")]
 pub struct BrowserLocalHtmlTargetVm {
     pub canonical_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOpenInSystemBrowserInput {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -299,6 +306,57 @@ pub async fn browser_resolve_local_html(
     Ok(BrowserLocalHtmlTargetVm {
         canonical_path: locator.canonical_path,
     })
+}
+
+/// The main WebView's opener scope only admits `http(s)`, so local pages reach the
+/// system browser through here, where the file is validated before ShellExecute sees it.
+#[tauri::command]
+pub async fn browser_open_in_system_browser(
+    app: AppHandle,
+    input: BrowserOpenInSystemBrowserInput,
+) -> CommandResult<()> {
+    let url = system_browser_url(&input.url)?;
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|error| {
+            warn!(
+                target: "gold_band::browser",
+                operation = "open-in-system-browser",
+                target_url = %browser_log_target(&url),
+                error = %error,
+                "system browser open failed"
+            );
+            CommandErrorVm::new("browser.system_open.failed", serde_json::json!({}))
+        })
+}
+
+/// Only web pages and existing local HTML files may leave the app; anything else
+/// would turn the button into a way to launch arbitrary local programs.
+pub(crate) fn system_browser_url(raw: &str) -> CommandResult<Url> {
+    let url = Url::parse(raw.trim()).map_err(|_| navigation_invalid())?;
+    if url.scheme() == "file" {
+        // A host means a UNC share; resolving it would already reach the network.
+        if url.host_str().is_some_and(|host| !host.is_empty()) {
+            return Err(local_html_grant_failed());
+        }
+        let path = url.to_file_path().map_err(|_| local_html_grant_failed())?;
+        let target = resolved_from_file_path(&path)?;
+        let canonical = target
+            .url
+            .to_file_path()
+            .map_err(|_| local_html_grant_failed())?;
+        if canonical.to_string_lossy().starts_with(r"\\") {
+            return Err(local_html_grant_failed());
+        }
+        return Ok(target.url);
+    }
+    if matches!(url.scheme(), "http" | "https")
+        && !is_browser_local_file_url(&url)
+        && !is_privileged_url(&url)
+    {
+        return Ok(url);
+    }
+    Err(navigation_invalid())
 }
 
 #[tauri::command]
@@ -2551,6 +2609,40 @@ mod tests {
         let missing = dir.path().join("missing.html");
         let raw = Url::from_file_path(canonicalize_display_path(&missing).unwrap()).unwrap();
         assert!(resolve_browser_target(raw.as_str(), None).is_err());
+    }
+
+    #[test]
+    fn system_browser_accepts_web_pages_and_existing_local_html() {
+        let https = system_browser_url("https://example.com/docs").unwrap();
+        assert_eq!(https.as_str(), "https://example.com/docs");
+
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("codex-sandbox-map.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        let raw = Url::from_file_path(canonicalize_display_path(&page).unwrap()).unwrap();
+        assert_eq!(system_browser_url(raw.as_str()).unwrap(), raw);
+    }
+
+    #[test]
+    fn system_browser_rejects_targets_that_are_not_web_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("setup.exe");
+        std::fs::write(&program, "MZ").unwrap();
+        let program = Url::from_file_path(canonicalize_display_path(&program).unwrap()).unwrap();
+        let missing = Url::from_file_path(dir.path().join("missing.html")).unwrap();
+
+        for raw in [
+            program.as_str(),
+            missing.as_str(),
+            "file://attacker-host/share/page.html",
+            "http://gold-band-browser-file.localhost/page.html",
+            "http://ipc.localhost/",
+            "javascript:alert(1)",
+            "mailto:a@b.com",
+            "not a url",
+        ] {
+            assert!(system_browser_url(raw).is_err(), "{raw} must be rejected");
+        }
     }
 
     #[test]

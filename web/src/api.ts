@@ -856,6 +856,10 @@ export function browserResolveLocalHtml(input: Parameters<ReturnType<typeof getR
   return getRuntimeApi().browserResolveLocalHtml(input);
 }
 
+export function browserOpenInSystemBrowser(url: string) {
+  return getRuntimeApi().browserOpenInSystemBrowser(url);
+}
+
 export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
   return getRuntimeApi().readFileResource(projectId, canonicalPath, externalAccessToken, preferSource);
 }
@@ -908,8 +912,8 @@ export function openExternalUrl(url: string) {
   return getRuntimeApi().openExternalUrl(url);
 }
 
-export function openFileWithSystemApp(path: string) {
-  return getRuntimeApi().openFileWithSystemApp(path);
+export function openFileWithSystemApp(input: Parameters<ReturnType<typeof getRuntimeApi>['openFileWithSystemApp']>[0]) {
+  return getRuntimeApi().openFileWithSystemApp(input);
 }
 
 export function copyImageToClipboard(input: import('./api/client').ImageActionInput) {

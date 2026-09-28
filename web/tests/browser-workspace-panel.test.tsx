@@ -80,13 +80,13 @@ import { BrowserWorkspacePanel } from '@/components/workspace/browser/BrowserWor
 import { browserBookmarkStore } from '@/components/workspace/browser/browser-bookmark-store';
 import { browserHistoryStore } from '@/components/workspace/browser/browser-history-store';
 import { browserWebviewHost } from '@/components/workspace/browser/browser-webview-host';
-import { openExternalUrl } from '@/api';
+import { browserOpenInSystemBrowser } from '@/api';
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
   return {
     ...actual,
-    openExternalUrl: vi.fn(async () => undefined),
+    browserOpenInSystemBrowser: vi.fn(async () => undefined),
   };
 });
 
@@ -197,7 +197,28 @@ describe('BrowserWorkspacePanel', () => {
       expect(openExternal?.disabled).toBe(false);
       expect(container.textContent).toContain('用系统浏览器打开');
       await act(async () => openExternal?.click());
-      expect(openExternalUrl).toHaveBeenCalledWith('https://baidu.com');
+      expect(browserOpenInSystemBrowser).toHaveBeenCalledWith('https://baidu.com');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens a local html page in the system browser and shows the rejection code', async () => {
+    const localHtml = 'file:///D:/Projects/learning/codex-sandbox-map.html';
+    vi.mocked(browserOpenInSystemBrowser).mockClear();
+    vi.mocked(browserOpenInSystemBrowser).mockRejectedValueOnce({ code: 'browser.system_open.failed', params: {} });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        browserSessionStore.openUrl(localHtml);
+        root.render(<BrowserWorkspacePanel />);
+      });
+      const openExternal = container.querySelector<HTMLButtonElement>('[data-browser-open-external="true"]');
+      await act(async () => openExternal?.click());
+      expect(browserOpenInSystemBrowser).toHaveBeenCalledWith(localHtml);
+      expect(container.querySelector('[data-browser-notice="browser.system_open.failed"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());
     }

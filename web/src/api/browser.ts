@@ -3149,6 +3149,10 @@ export const browserApi: RuntimeApi = {
   browserResolveLocalHtml() {
     return Promise.reject(browserCommandError('browser.webview.unavailable'));
   },
+  browserOpenInSystemBrowser(url) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return Promise.resolve();
+  },
   browserSetBounds() {
     return Promise.resolve();
   },
@@ -3215,7 +3219,7 @@ export const browserApi: RuntimeApi = {
   subscribeBrowserAddressSuggestionActions() {
     return Promise.resolve(() => {});
   },
-  openFileWithSystemApp(_path) {
+  openFileWithSystemApp(_input) {
     return Promise.resolve();
   },
   async copyImageToClipboard(input) {

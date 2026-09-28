@@ -2615,6 +2615,20 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 验收：`tests/authoring_workflow.rs` 24 项与 `prompts::tests` 10 项通过（提示词契约断言同步改为合并后的 `FOLLOW_UP` 定义）；`cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods` 通过，并发现 `tests/tao_windows_message_reentrancy.rs` 自启子进程需继承控制台，已显式豁免；rules 指向的 4 个前端契约测试 13 项通过；七种语言对应文件行数一致。完整 `cargo test --workspace --all-targets --no-fail-fast` 共 2598 项通过；其余 9 项失败与本次改动无关（断言文案在改动前的提示词中同样不存在、他人未提交改动或本机环境相关），另行处理。
 - 性能与过度设计评审：仅提示词、规则文本与编译期 lint 配置变更，无运行时代码、状态或依赖新增；提示词缩短减少各节点调用的输入 token。
 
+## 2026-09-27：内置浏览器本地 HTML「用系统浏览器打开」无响应
+
+- [x] 根因：按钮在前端直接调用 opener `openUrl`，主 WebView capability 的 `opener:default` 只放行 `http(s)` / `mailto:` / `tel:`，`file://` 被拒；调用处 `void` 吞掉 rejection，界面无任何反馈。
+- [x] 方案：不放开 `file://` scope（等价于让主 WebView 可 ShellExecute 任意本地文件）。新增 `browser_open_in_system_browser`，在 Rust 端复用地址栏本地 HTML 解析：canonical、存在、`.html/.htm`、非 UNC；`http(s)` 排除内部本地文件与特权 host。前端按钮改走该命令，失败经 `browserSessionStore.reportNotice` 在当前页 notice 行按 code 显示。
+- [x] 验收：Rust `system_browser_accepts_web_pages_and_existing_local_html`、`system_browser_rejects_targets_that_are_not_web_pages`；Web `browser-workspace-panel` 新增本地 HTML 用例（修复前因仍调用 `openExternalUrl` 失败），并固定失败 code 显示。
+- 性能与过度设计评审：单次用户点击触发一次 canonicalize 与 opener 调用，无新增状态、缓存或热路径开销；复用既有 notice 通道，不引入 toast 体系。
+
+## 2026-09-28：文件预览「使用系统应用打开」无响应
+
+- [x] 根因：与内置浏览器同类设计缺陷。前端直接调用 opener `openPath(path)`，主 WebView capability 未授予 `opener:allow-open-path`，调用被拒；三处调用都用 `void` 吞掉 rejection。图标按钮只有 `aria-label`，没有 Tooltip。
+- [x] 方案：不放开 `open_path` scope（字符串 glob 无法表达工作区归属与外部授权）。新增 `open_file_with_system_app`，复用读取文件的 canonicalize 与 `authorize_external_if_needed`，通过后调用 opener。前端抽出 `OpenWithSystemAppButton`，统一三处入口：从 `fileContentStore.externalAccessToken` 取外部授权令牌，进行中禁用，失败按错误码就地提示，图标形态带 Tooltip。不按扩展名拦截可执行文件：这是用户在文件面板中对可见文件的主动操作。
+- [x] 验收：Rust `system_open_accepts_workspace_files_and_granted_external_files`、`system_open_rejects_ungranted_missing_and_directory_targets`；Web `open-with-system-app-button` 3 项（修复前组件不存在即失败）覆盖参数、外部授权令牌与失败提示。
+- 性能与过度设计评审：单次点击一次 canonicalize、授权查表与 opener 调用；错误与进行中状态只在按钮组件内，不进入全局 Store。
+
 ## 2026-09-28：文件引用统一为路径列表，附件放开类型限制
 
 - [x] 根因：工作空间引用与超预算/不支持内联的附件都以 ACP `resource_link` 发送，协议只规定 Agent 必须接受该块，不规定如何处理非文本 MIME；OpenCode 会把整份文件 base64 转交模型，引用 `.exe` 等二进制时请求失败，同一引用在不同 Agent 下行为不一致。附件另有扩展名白名单，非白名单文件无法上传，白名单内的非 UTF-8 文本被替换为 `[binary file]` 占位。

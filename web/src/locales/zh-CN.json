@@ -702,7 +702,8 @@
           "not-a-directory": "所选路径不是文件夹。",
           "trash-failed": "无法移到回收站，请重试。",
           "restore-unavailable": "无法撤销：该项目已不在回收站中。",
-          "unsaved-changes": "未保存的修改写入失败，已取消重命名。"
+          "unsaved-changes": "未保存的修改写入失败，已取消重命名。",
+          "system-open-failed": "系统应用无法打开此文件。"
         }
       }
     },

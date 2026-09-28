@@ -838,6 +838,9 @@ export const desktopApi: RuntimeApi = {
   browserResolveLocalHtml(input) {
     return invokeCommand('browser_resolve_local_html', { input });
   },
+  browserOpenInSystemBrowser(url) {
+    return invokeCommand('browser_open_in_system_browser', { input: { url } });
+  },
   browserSetBounds(input) {
     return invokeCommand('browser_set_bounds', { input });
   },
@@ -919,9 +922,8 @@ export const desktopApi: RuntimeApi = {
     });
     return () => unlisten();
   },
-  async openFileWithSystemApp(path) {
-    const { openPath } = await import('@tauri-apps/plugin-opener');
-    await openPath(path);
+  openFileWithSystemApp(input) {
+    return invokeCommand('open_file_with_system_app', { input });
   },
   copyImageToClipboard(input) {
     return invokeCommand('copy_image_to_clipboard', { source: input.source });

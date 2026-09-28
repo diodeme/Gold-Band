@@ -703,7 +703,8 @@
           "not-a-directory": "La ruta seleccionada no es una carpeta.",
           "trash-failed": "No se pudo mover a la papelera. Inténtalo de nuevo.",
           "restore-unavailable": "No se puede deshacer: el elemento ya no está en la papelera.",
-          "unsaved-changes": "No se pudieron guardar los cambios pendientes, así que se canceló el cambio de nombre."
+          "unsaved-changes": "No se pudieron guardar los cambios pendientes, así que se canceló el cambio de nombre.",
+          "system-open-failed": "La aplicación del sistema no pudo abrir este archivo."
         }
       }
     },

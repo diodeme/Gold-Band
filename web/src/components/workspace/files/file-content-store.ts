@@ -300,6 +300,12 @@ export class FileContentStore {
 
   snapshot = (key: string) => this.entries.get(key) ?? EMPTY_ENTRY;
 
+  externalAccessToken(resourceKey: string) {
+    return (this.entries.get(resourceKey)?.snapshot?.externalAccessGrant
+      ?? this.runtimes.get(resourceKey)?.externalAccessGrant
+      ?? this.primedGrants.get(resourceKey)?.grant)?.token ?? null;
+  }
+
   primeExternalGrant(
     resourceKey: string,
     projectId: string,

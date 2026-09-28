@@ -703,7 +703,8 @@
           "not-a-directory": "所選路徑不是資料夾。",
           "trash-failed": "無法移至資源回收筒，請重試。",
           "restore-unavailable": "無法復原：該項目已不在資源回收筒中。",
-          "unsaved-changes": "未儲存的修改寫入失敗，已取消重新命名。"
+          "unsaved-changes": "未儲存的修改寫入失敗，已取消重新命名。",
+          "system-open-failed": "系統應用程式無法開啟此檔案。"
         }
       }
     },

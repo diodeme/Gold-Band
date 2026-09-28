@@ -101,7 +101,7 @@
 - 关闭按钮对齐工作区 Tab：激活项 × 常显但弱化，未激活 hover 出现。
 - 右键使用 shadcn/ui ContextMenu：关闭、关闭其他标签、关闭左侧所有标签、关闭右侧所有标签、关闭所有标签。关闭所有标签后仍显示 `+`，内容区回到门户页，不关闭工作区浏览器 Tab。
 
-工具栏：后退、前进、刷新/停止、地址栏。页内前进后退用 WebView 原生会话历史。电脑/移动切换左侧是书签图标：当前 `http(s)` 页可点，已加入用 `accent-foreground` 实心并带 `accent` 浅底，再点删除。门户页上该书签按钮不可用。地址栏聚焦且尚未改字时，在输入框下方浮层展开最近访问（最多 8 条，标题 + 精简 URL + origin 图标）；开始输入后过滤同一列表，普通词额外提供「搜索网页」。悬停或键盘选中访问项时显示 ×，删除该条访问记录，不关浮层、不跳转。浮层只在地址栏编辑中打开：回车提交当前输入（需方向键才选中建议项），提交后或页 URL 同步后关闭，不再自动弹出。浮层不挤占工具栏、页签或网页；网页子 WebView 的位置和尺寸在展开前后保持不变。内部页签和溢出菜单复用同一 origin 图标，没有图标时用 Globe。地址栏提交时，显式 scheme、域名、IP、localhost 与本地 HTML 作为地址；其他裸词和含空格文本按当前搜索引擎生成查询 URL。空页首次提交必须创建原生页，已有活页才 navigate。提供带 shadcn Tooltip 的「用系统浏览器打开」次要动作；对尚未提交的搜索词也使用当前搜索引擎解析。
+工具栏：后退、前进、刷新/停止、地址栏。页内前进后退用 WebView 原生会话历史。电脑/移动切换左侧是书签图标：当前 `http(s)` 页可点，已加入用 `accent-foreground` 实心并带 `accent` 浅底，再点删除。门户页上该书签按钮不可用。地址栏聚焦且尚未改字时，在输入框下方浮层展开最近访问（最多 8 条，标题 + 精简 URL + origin 图标）；开始输入后过滤同一列表，普通词额外提供「搜索网页」。悬停或键盘选中访问项时显示 ×，删除该条访问记录，不关浮层、不跳转。浮层只在地址栏编辑中打开：回车提交当前输入（需方向键才选中建议项），提交后或页 URL 同步后关闭，不再自动弹出。浮层不挤占工具栏、页签或网页；网页子 WebView 的位置和尺寸在展开前后保持不变。内部页签和溢出菜单复用同一 origin 图标，没有图标时用 Globe。地址栏提交时，显式 scheme、域名、IP、localhost 与本地 HTML 作为地址；其他裸词和含空格文本按当前搜索引擎生成查询 URL。空页首次提交必须创建原生页，已有活页才 navigate。提供带 shadcn Tooltip 的「用系统浏览器打开」次要动作；对尚未提交的搜索词也使用当前搜索引擎解析。该动作统一经 `browser_open_in_system_browser` 由 Rust 校验后交给系统 opener：只放行 `http(s)` 网页和 canonical 后仍存在的本地 `.html/.htm`，拒绝 UNC、特权/内部协议与其他本地文件；主 WebView 的 opener 权限不放开 `file://`。失败时在当前页 notice 行按 code 提示，不静默。
 
 电脑版 / 移动版是当前内部页的浏览意图，不是设置项，也不落盘。默认电脑版，工具栏在「用系统浏览器打开」左侧显示手机图标，表示下一步切到移动版；移动版时显示电脑图标。点击后在**同一活 WebView** 上更换 User-Agent 并 reload 当前文档：电脑版使用引擎默认 UA（切回时恢复创建时记下的引擎 UA），移动版使用固定 Android Chrome UA。reload 不加历史条目，前进后退继续使用该实例的原生会话历史。栏宽仍跟右侧工作区走，不模拟手机外框。纯 CSS 按宽度响应的站点可能看起来变化不大；按 UA 分流的站点（如 Google、百度）会切版。新标签默认电脑版，互不影响。
 
@@ -294,6 +294,7 @@ Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、�
 | `browser.download.unsupported` | 该次下载无法另存为 |
 | `browser.download.cancelled` | 用户取消另存为（若需与失败区分） |
 | `browser.local_html.grant_failed` | 本地 HTML 路径无法授权或不是可读 HTML |
+| `browser.system_open.failed` | 系统 opener 未能用系统浏览器打开已校验的目标 |
 | `browser.page.limit_reached` | 内部页已达 32 个上限 |
 | `browser.bookmark.limit_reached` | 门户书签已达 32 个上限 |
 | `browser.bookmark.invalid` | URL 不是可加入的 `http(s)` 站点，或排序 ids 不匹配 |

@@ -703,7 +703,8 @@
           "not-a-directory": "The selected path is not a folder.",
           "trash-failed": "Could not move the item to the trash. Try again.",
           "restore-unavailable": "Can’t undo: the item is no longer in the trash.",
-          "unsaved-changes": "Unsaved changes could not be saved, so the rename was canceled."
+          "unsaved-changes": "Unsaved changes could not be saved, so the rename was canceled.",
+          "system-open-failed": "The system app could not open this file."
         }
       }
     },

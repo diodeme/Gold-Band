@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react';
 import { ArrowLeft, ArrowRight, Bookmark, ChevronDown, ExternalLink, Monitor, Plus, RefreshCw, Smartphone, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { openExternalUrl } from '@/api';
+import { browserOpenInSystemBrowser } from '@/api';
 import { Button } from '@/components/ui/button';
 import {
   ContextMenu,
@@ -201,7 +201,17 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
             label={t('workspace.browser.openInSystemBrowser')}
             disabled={!externalHref}
             data-browser-open-external="true"
-            onClick={() => externalHref && void openExternalUrl(externalHref)}
+            onClick={() => {
+              if (!externalHref) return;
+              const pageId = active?.pageId;
+              void browserOpenInSystemBrowser(externalHref).catch((reason: { code?: unknown }) => {
+                if (!pageId) return;
+                browserSessionStore.reportNotice(
+                  pageId,
+                  typeof reason?.code === 'string' ? reason.code : 'browser.system_open.failed',
+                );
+              });
+            }}
           >
             <ExternalLink />
           </BrowserToolbarButton>

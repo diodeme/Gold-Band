@@ -703,7 +703,8 @@
           "not-a-directory": "O caminho selecionado não é uma pasta.",
           "trash-failed": "Não foi possível mover para a lixeira. Tente novamente.",
           "restore-unavailable": "Não é possível desfazer: o item não está mais na lixeira.",
-          "unsaved-changes": "Não foi possível salvar as alterações pendentes, então a renomeação foi cancelada."
+          "unsaved-changes": "Não foi possível salvar as alterações pendentes, então a renomeação foi cancelada.",
+          "system-open-failed": "O aplicativo do sistema não conseguiu abrir este arquivo."
         }
       }
     },

@@ -52,6 +52,8 @@
 | HTML（`.html` / `.htm`） | 工作空间与运行目录树默认打开 CodeMirror 源码，内容区右上角浮层按钮再打开内置浏览器；会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。边界见 [内置浏览器](in-app-browser.md) |
 | PDF、Office、音视频、压缩包、字体、数据库及其他二进制 | 显示明确的不支持状态并提供系统应用打开 |
 
+「使用系统应用打开」由 `open_file_with_system_app { projectId, canonicalPath, externalAccessToken }` 在 Rust 端按读取同一套规则授权：工作区内文件直接放行，工作区外文件必须持有匹配的外部访问授权，之后才交给系统 opener；前端不直接调用 opener `openPath`。图标按钮带 Tooltip，失败时在按钮旁按错误码提示，不静默。
+
 文件识别以签名、BOM 和内容探测为权威事实，扩展名只辅助选择图标与语言能力；PDF、压缩包等二进制即使碰巧可按 UTF-8 解码也不得进入文本编辑器。文本编码保证 UTF-8、UTF-8 BOM、带 BOM 的 UTF-16 LE/BE，保存时保留 BOM 与 CRLF/LF 语义；无法可靠解码的内容不做有损猜测，也不自动写回。大文件读取和 revision 计算使用流式处理，不为识别或哈希重复完整载入文件。
 
 CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号、选区、活动行和语法高亮统一引用 Gold Band 语义色 token，应用主题切换后立即继承当前浅色或深色外观，不维护独立 IDE 主题状态。`primary` 在深色主题中属于表面色，不能作为链接或代码前景色；源码与 Markdown 的链接使用主题包 `link`，其他状态/重点语法按用途使用 `gold-running`，代码背景使用 `gold-surface-high + background` 混合色。

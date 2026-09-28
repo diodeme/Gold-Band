@@ -506,6 +506,53 @@ pub fn stop_workspace_file_watch(
     watch_runtime.stop_workspace(&root.project_id, &root.path)
 }
 
+/// The main WebView's opener scope does not grant `open_path`; the file must pass the
+/// same workspace / external-grant authorization as a read before the OS launches it.
+#[tauri::command]
+pub async fn open_file_with_system_app(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: OpenFileWithSystemAppInput,
+) -> CommandResult<()> {
+    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let path = system_open_target(
+        runtime.inner(),
+        &root.project_id,
+        &root.path,
+        Path::new(&input.canonical_path),
+        input.external_access_token.as_deref(),
+    )?;
+    app_handle
+        .opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|error| {
+            paths::error(
+                "workspace-file.system-open-failed",
+                serde_json::json!({ "path": paths::display_path(&path), "reason": error.to_string() }),
+            )
+        })
+}
+
+fn system_open_target(
+    runtime: &WorkspaceFileRuntime,
+    project_id: &str,
+    root: &Path,
+    raw_path: &Path,
+    external_access_token: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let path = canonicalize_file(raw_path, "open")?;
+    authorize_external_if_needed(
+        runtime,
+        project_id,
+        root,
+        &path,
+        external_access_token,
+        "open",
+    )?;
+    Ok(path)
+}
+
 fn authorize_external_if_needed(
     runtime: &WorkspaceFileRuntime,
     project_id: &str,
@@ -565,6 +612,92 @@ mod tests {
             runtime
                 .validate_external_grant(Some(&grant.token), "project-b", &first, "write")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn system_open_accepts_workspace_files_and_granted_external_files() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let inside = root.join("pelican.svg");
+        let external = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("report.pdf");
+        std::fs::write(&inside, "<svg/>").unwrap();
+        std::fs::write(&external, "pdf").unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let grant = runtime
+            .issue_external_grant("project-a".to_string(), external.clone(), 30)
+            .unwrap();
+
+        assert_eq!(
+            system_open_target(&runtime, "project-a", &root, &inside, None).unwrap(),
+            inside
+        );
+        assert_eq!(
+            system_open_target(&runtime, "project-a", &root, &external, Some(&grant.token))
+                .unwrap(),
+            external
+        );
+    }
+
+    #[test]
+    fn system_open_rejects_ungranted_missing_and_directory_targets() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let external = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("setup.exe");
+        std::fs::write(&external, "MZ").unwrap();
+        let other = root.join("other.txt");
+        std::fs::write(&other, "other").unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let other_grant = runtime
+            .issue_external_grant("project-a".to_string(), other, 30)
+            .unwrap();
+
+        let code = |result: CommandResult<PathBuf>| result.unwrap_err().code;
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &external,
+                None
+            )),
+            "workspace-file.external-access-denied"
+        );
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &external,
+                Some(&other_grant.token)
+            )),
+            "workspace-file.external-access-denied"
+        );
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &root.join("missing.svg"),
+                None
+            )),
+            "workspace-file.not-found"
+        );
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &root,
+                None
+            )),
+            "workspace-file.not-a-file"
         );
     }
 

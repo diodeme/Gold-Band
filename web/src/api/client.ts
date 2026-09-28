@@ -140,6 +140,7 @@ import type {
   ResolveMarkdownImageInput,
   MarkdownImagePreviewVm,
   WriteFileResourceInput,
+  OpenFileWithSystemAppInput,
   TurnFileLocatorVm,
   TurnFileChangeSetVm,
   FileComparisonVm,
@@ -622,6 +623,7 @@ export interface RuntimeApi {
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;
   browserResolveLocalHtml(input: BrowserResolveLocalHtmlInput): Promise<BrowserLocalHtmlTargetVm>;
+  browserOpenInSystemBrowser(url: string): Promise<void>;
   browserSetBounds(input: BrowserBoundsCommandInput): Promise<void>;
   browserShowPage(input: BrowserPageIdInput): Promise<void>;
   browserHidePage(input: BrowserPageIdInput): Promise<void>;
@@ -645,7 +647,7 @@ export interface RuntimeApi {
   subscribeBrowserHistoryEvents?(listener: () => void): Promise<() => void>;
   subscribeBrowserPageEvents?(listener: (event: BrowserPageNativeEventVm) => void): Promise<() => void>;
   subscribeBrowserAddressSuggestionActions?(listener: (event: BrowserAddressSuggestionActionVm) => void): Promise<() => void>;
-  openFileWithSystemApp(path: string): Promise<void>;
+  openFileWithSystemApp(input: OpenFileWithSystemAppInput): Promise<void>;
   copyImageToClipboard(input: ImageActionInput): Promise<void>;
   saveImageAs(input: ImageActionInput): Promise<boolean>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;

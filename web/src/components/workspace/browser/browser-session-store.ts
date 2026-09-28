@@ -252,12 +252,22 @@ export class BrowserSessionStore {
     const index = this.state.pages.findIndex((page) => page.pageId === pageId);
     if (index < 0) return;
     this.clearLoadStallTimer(pageId);
-    this.eventRevision += 1;
-    this.noticeRevision = this.eventRevision;
-    this.noticePageId = pageId;
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, loading: false } : page
     ));
+    this.showNotice(pageId, code, pages);
+  }
+
+  /** Surfaces a page-scoped failure that is not a navigation, such as the system browser refusing it. */
+  reportNotice(pageId: string, code: string) {
+    if (!this.page(pageId)) return;
+    this.showNotice(pageId, code, this.state.pages);
+  }
+
+  private showNotice(pageId: string, code: string, pages: BrowserPage[]) {
+    this.eventRevision += 1;
+    this.noticeRevision = this.eventRevision;
+    this.noticePageId = pageId;
     this.state = { ...this.state, pages, noticeCode: code };
     this.emit();
   }

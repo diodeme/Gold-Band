@@ -148,6 +148,14 @@ pub struct ReadFileResourceInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenFileWithSystemAppInput {
+    pub project_id: String,
+    pub canonical_path: String,
+    pub external_access_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolveMarkdownImageInput {
     pub project_id: String,
     pub markdown_canonical_path: String,

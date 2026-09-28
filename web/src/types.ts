@@ -384,6 +384,12 @@ export type MarkdownImagePreviewVm =
       limitationCode: string;
     };
 
+export interface OpenFileWithSystemAppInput {
+  projectId: string;
+  canonicalPath: string;
+  externalAccessToken: string | null;
+}
+
 export interface WriteFileResourceInput {
   projectId: string;
   canonicalPath: string;

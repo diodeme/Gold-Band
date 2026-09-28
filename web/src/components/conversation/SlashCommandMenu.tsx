@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
-import { ChevronRight, SquareCode, UserRound, type LucideIcon } from 'lucide-react';
+import { Brain, ChevronRight, FileText, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
@@ -38,10 +38,9 @@ const STATUS_LABEL_KEYS = {
   error: 'acp.mentionError',
 } as const;
 
-/** Same icons as the file and role chips elsewhere in the conversation. */
 const MENTION_CATEGORY_ICONS: Record<MentionCategory, LucideIcon> = {
-  files: SquareCode,
-  roles: UserRound,
+  files: FileText,
+  roles: Brain,
 };
 
 function itemIcon(item: SlashCatalogItem): LucideIcon | undefined {

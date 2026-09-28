@@ -299,8 +299,8 @@ describe('@ mention menu rows', () => {
       row.querySelector('svg:first-child')?.getAttribute('class')?.match(/lucide-([a-z-]+)/)?.[1] ?? null,
     ]);
     expect(icons).toEqual([
-      ['Files', 'square-code'],
-      ['Roles', 'user-round'],
+      ['Files', 'file-text'],
+      ['Roles', 'brain'],
       ['开发dev', null],
     ]);
   });

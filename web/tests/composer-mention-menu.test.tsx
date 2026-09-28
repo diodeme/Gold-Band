@@ -2,6 +2,7 @@
 import { act, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { MENTION_FILE_SEARCH_DEBOUNCE_MS } from '@/hooks/useMentionWorkspaceFiles';
 import {
@@ -260,5 +261,47 @@ describe('menu trigger typed before existing text', () => {
     const { type, groups } = await mount([commandGroup], 'hello');
     await type('hello /', 7);
     expect(groups()).toEqual([]);
+  });
+});
+
+describe('@ mention menu rows', () => {
+  it('marks each category with its icon and leaves other rows plain', async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    // cmdk observes its list size and scrolls its selection into view; jsdom has neither.
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Element.prototype.scrollIntoView ??= () => {};
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    cleanup = async () => {
+      await act(async () => root.unmount());
+      host.remove();
+      vi.unstubAllGlobals();
+    };
+    const categories = buildMentionGroups({
+      view: { kind: 'root' }, query: '', roleItems, filesAvailable: true, files: ready(), labels,
+    });
+    await act(async () => root.render(
+      <SlashCommandMenu
+        open
+        variant="inline"
+        groups={[...categories, ...roleGroup]}
+        activeIndex={0}
+        onActiveIndexChange={() => {}}
+        onDismiss={() => {}}
+        onSelect={() => {}}
+      >
+        <textarea />
+      </SlashCommandMenu>,
+    ));
+    const icons = [...host.querySelectorAll('[data-slash-item-kind]')].map((row) => [
+      row.textContent,
+      row.querySelector('svg:first-child')?.getAttribute('class')?.match(/lucide-([a-z-]+)/)?.[1] ?? null,
+    ]);
+    expect(icons).toEqual([
+      ['Files', 'square-code'],
+      ['Roles', 'user-round'],
+      ['开发dev', null],
+    ]);
   });
 });

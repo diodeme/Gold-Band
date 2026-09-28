@@ -4410,7 +4410,7 @@ fn restore_initial_task_attachments(
     input_paths.sort();
     let attachment_values = input_paths
         .iter()
-        .filter_map(|path| attachment_meta_for_path(path, "task-inputs").ok().flatten())
+        .filter_map(|path| attachment_meta_for_path(path, "task-inputs").ok())
         .filter_map(|attachment| serde_json::to_value(attachment).ok())
         .collect::<Vec<_>>();
     if attachment_values.is_empty() {

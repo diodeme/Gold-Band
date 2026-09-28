@@ -4276,12 +4276,6 @@ pub(crate) const MAX_ATTACHMENT_COUNT: usize = 10;
 pub(crate) const MAX_ATTACHMENT_PER_FILE: u64 = 25 * 1024 * 1024; // 25 MB
 pub(crate) const MAX_ATTACHMENT_TOTAL: u64 = 100 * 1024 * 1024; // 100 MB
 
-pub(crate) fn allowed_attachment_ext(ext: &str) -> bool {
-    gold_band::provider::supported_attachment_extensions()
-        .into_iter()
-        .any(|supported| supported == ext)
-}
-
 pub(crate) fn validate_attachment_paths(paths: &[String]) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
     if paths.len() > MAX_ATTACHMENT_COUNT {
@@ -4319,10 +4313,6 @@ pub(crate) fn validate_attachment_paths(paths: &[String]) -> Vec<String> {
             continue;
         }
         total_size += meta.len();
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !allowed_attachment_ext(ext.to_lowercase().as_str()) {
-            errors.push("conversation.attachment-unsupported-type".to_string());
-        }
     }
     if total_size > MAX_ATTACHMENT_TOTAL {
         errors.push("conversation.attachment-total-too-large".to_string());

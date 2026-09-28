@@ -38,6 +38,11 @@ export function imageSrcFromContent(content: ContentVm | null | undefined): stri
   return content.content.startsWith('data:image/') ? content.content : null;
 }
 
+/** Attachments of any type can be sent; the backend marks those it cannot show as text. */
+export function isBinaryContent(content: ContentVm | null | undefined): boolean {
+  return metadataRecord(content?.metadata).encoding === 'binary';
+}
+
 export function isImageMessageAttachment(attachment: MessageAttachmentPreview): boolean {
   return isImageMimeType(attachment.type);
 }

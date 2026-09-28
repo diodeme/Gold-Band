@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConversationAssetWorkspaceResource } from '@/components/workspace/right-workspace-context';
-import '@/i18n';
+import i18n from '@/i18n';
 
 const api = vi.hoisted(() => ({
   showArtifact: vi.fn(),
@@ -95,6 +95,29 @@ describe('conversation asset workspace panel', () => {
       const viewer = container.querySelector<HTMLElement>('[data-testid="readonly-text-workspace"]');
       expect(viewer?.dataset.name).toBe('notes.md');
       expect(viewer?.textContent).toBe('# Sent attachment');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('shows a sent binary attachment as not previewable instead of text', async () => {
+    api.showConversationMessageAttachment.mockResolvedValue({
+      title: 'tool.exe',
+      kind: 'message-attachment',
+      content: '',
+      metadata: { mimeType: 'application/octet-stream', isImage: false, encoding: 'binary' },
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ConversationAssetWorkspacePanel resource={{ ...resource, name: 'tool.exe', path: 'user-inputs/tool.exe' }} />);
+      });
+
+      expect(container.querySelector('[data-testid="readonly-text-workspace"]')).toBeNull();
+      expect(container.textContent).toContain(i18n.t('workspace.filesPanel.attachmentPreviewUnavailable'));
     } finally {
       await act(async () => root.unmount());
     }

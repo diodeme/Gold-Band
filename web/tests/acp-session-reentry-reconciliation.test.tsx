@@ -42,7 +42,6 @@ vi.mock('@/api/client', async () => {
         runtime.listener = listener;
         return () => undefined;
       },
-      getSupportedAttachmentExtensions: async () => [],
     }),
   };
 });

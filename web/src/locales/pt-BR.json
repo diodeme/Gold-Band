@@ -643,7 +643,7 @@
       "imageCopied": "Imagem copiada",
       "imageSaved": "Imagem salva",
       "imageActionFailed": "A ação da imagem falhou. Tente novamente.",
-      "draftPreviewUnavailable": "Este anexo pode ser pré-visualizado no workspace após o envio",
+      "attachmentPreviewUnavailable": "Não é possível pré-visualizar este arquivo",
       "unsupportedTitle": "Este arquivo não pode ser visualizado no app",
       "openWithSystem": "Abrir com app do sistema",
       "conflict": "Outro programa alterou este arquivo. Carregue a versão do disco ou sobrescreva com a sua versão.",

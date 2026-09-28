@@ -643,7 +643,7 @@
       "imageCopied": "이미지 복사됨",
       "imageSaved": "이미지 저장됨",
       "imageActionFailed": "이미지 작업에 실패했습니다. 다시 시도하세요.",
-      "draftPreviewUnavailable": "이 첨부 파일은 전송 후 워크스페이스에서 미리볼 수 있습니다",
+      "attachmentPreviewUnavailable": "이 파일은 미리볼 수 없습니다",
       "unsupportedTitle": "이 파일은 앱에서 볼 수 없습니다",
       "openWithSystem": "시스템 앱으로 열기",
       "conflict": "다른 프로그램이 이 파일을 변경했습니다. 디스크 버전을 불러오거나 현재 버전으로 덮어쓰세요.",

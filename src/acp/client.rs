@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::v1::{
     AgentCapabilities, ContentBlock as ProtocolContentBlock, EmbeddedResource,
-    EmbeddedResourceResource, ImageContent, PromptCapabilities, ResourceLink, TextContent,
-    TextResourceContents,
+    EmbeddedResourceResource, ImageContent, PromptCapabilities, TextContent, TextResourceContents,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -399,9 +398,9 @@ use crate::config::{
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
-    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpLiveTimelinePosition,
-    AcpResourceLinkBlock, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
-    gold_band_hidden_block, prepare_acp_mcp_servers,
+    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpLiveTimelinePosition, PromptBundle,
+    PromptVisibility, SkippedAcpMcpServer, gold_band_hidden_block, prepare_acp_mcp_servers,
+    prompt_text_with_files,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
@@ -3445,16 +3444,24 @@ fn session_prompt_params(
     agent_capabilities: &AgentCapabilities,
 ) -> Value {
     let mut prompt_blocks: Vec<ProtocolContentBlock> = Vec::new();
+    let mut path_files = Vec::new();
 
-    // Project attachment intent through the current live ACP connection capabilities.
+    // Inline what the live ACP connection declares it accepts; list the rest by path.
     for block in &prompt.content_blocks {
-        prompt_blocks.push(project_prompt_content_block(
-            block,
-            &agent_capabilities.prompt_capabilities,
-        ));
+        match project_prompt_content_block(block, &agent_capabilities.prompt_capabilities) {
+            Some(projected) => prompt_blocks.push(projected),
+            None => path_files.push(block.file()),
+        }
     }
 
-    let text = session_prompt_text(provider_id, prompt, restored, supports_system_prompt);
+    let user_prompt = prompt_text_with_files(&prompt.user_prompt, &path_files, prompt.language);
+    let text = session_prompt_text(
+        provider_id,
+        prompt,
+        &user_prompt,
+        restored,
+        supports_system_prompt,
+    );
     if !text.is_empty() {
         prompt_blocks.push(ProtocolContentBlock::Text(TextContent::new(text)));
     }
@@ -3469,53 +3476,44 @@ fn parse_agent_capabilities(value: &Value) -> AgentCapabilities {
     serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
+/// The inline ACP block for `block`, or `None` when the Agent must read the file by path.
 fn project_prompt_content_block(
     block: &AcpContentBlock,
     prompt_capabilities: &PromptCapabilities,
-) -> ProtocolContentBlock {
+) -> Option<ProtocolContentBlock> {
     match block {
-        AcpContentBlock::Image(image) if prompt_capabilities.image => ProtocolContentBlock::Image(
-            ImageContent::new(image.data.clone(), image.mime_type.clone())
-                .uri(image.link.uri.clone()),
-        ),
-        AcpContentBlock::Resource(resource) if prompt_capabilities.embedded_context => {
-            ProtocolContentBlock::Resource(EmbeddedResource::new(
-                EmbeddedResourceResource::TextResourceContents(
-                    TextResourceContents::new(
-                        resource.resource.text.clone(),
-                        resource.link.uri.clone(),
-                    )
-                    .mime_type(resource.link.mime_type.clone()),
-                ),
+        AcpContentBlock::Image(image) if prompt_capabilities.image => {
+            Some(ProtocolContentBlock::Image(
+                ImageContent::new(image.data.clone(), image.mime_type.clone())
+                    .uri(image.file.uri()),
             ))
         }
-        AcpContentBlock::Image(image) => resource_link_content_block(&image.link),
-        AcpContentBlock::Resource(resource) => resource_link_content_block(&resource.link),
-        AcpContentBlock::ResourceLink(link) => resource_link_content_block(link),
+        AcpContentBlock::Resource(resource) if prompt_capabilities.embedded_context => {
+            Some(ProtocolContentBlock::Resource(EmbeddedResource::new(
+                EmbeddedResourceResource::TextResourceContents(
+                    TextResourceContents::new(resource.text.clone(), resource.file.uri())
+                        .mime_type(resource.mime_type.clone()),
+                ),
+            )))
+        }
+        AcpContentBlock::Image(_) | AcpContentBlock::Resource(_) | AcpContentBlock::File(_) => None,
     }
-}
-
-fn resource_link_content_block(link: &AcpResourceLinkBlock) -> ProtocolContentBlock {
-    ProtocolContentBlock::ResourceLink(
-        ResourceLink::new(link.name.clone(), link.uri.clone())
-            .mime_type(link.mime_type.clone())
-            .size(i64::try_from(link.size).ok()),
-    )
 }
 
 fn session_prompt_text(
     _provider_id: &str,
     prompt: &PromptBundle,
+    user_prompt: &str,
     restored: bool,
     supports_system_prompt: bool,
 ) -> String {
     if !restored && !supports_system_prompt && !prompt.system_prompt.trim().is_empty() {
         let system_prompt =
             gold_band_hidden_block("Gold Band stable system prompt", &prompt.system_prompt);
-        return format!("{}\n\n{}", system_prompt, prompt.user_prompt);
+        return format!("{}\n\n{}", system_prompt, user_prompt);
     }
 
-    prompt.user_prompt.clone()
+    user_prompt.to_string()
 }
 
 fn is_cancel_stop_reason(result: &Value) -> bool {
@@ -5256,6 +5254,7 @@ impl<'a> AcpRuntime<'a> {
                 session_prompt_text(
                     provider_id,
                     prompt,
+                    &prompt.user_prompt,
                     restored,
                     self.runtime_policy.supports_system_prompt,
                 )
@@ -9239,6 +9238,7 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         }
     }
 
@@ -12538,32 +12538,44 @@ mod tests {
         assert!(resume_params.get("_meta").is_none());
     }
 
-    #[test]
-    fn session_prompt_projects_supported_attachment_content_from_live_capabilities() {
-        let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
-        prompt.content_blocks = vec![
+    fn test_file(path: &str, size: u64) -> crate::provider::AcpFileRef {
+        crate::provider::AcpFileRef {
+            path: path.to_string(),
+            size,
+        }
+    }
+
+    fn inline_test_blocks() -> Vec<crate::provider::AcpContentBlock> {
+        let root = std::env::temp_dir();
+        vec![
             crate::provider::AcpContentBlock::Image(crate::provider::AcpImageBlock {
                 data: "aW1hZ2U=".to_string(),
                 mime_type: "image/png".to_string(),
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "diagram.png".to_string(),
-                    uri: "file:///tmp/diagram.png".to_string(),
-                    mime_type: "image/png".to_string(),
-                    size: 5,
-                },
+                file: test_file(&root.join("diagram.png").to_string_lossy(), 5),
             }),
             crate::provider::AcpContentBlock::Resource(crate::provider::AcpResourceBlock {
-                resource: crate::provider::AcpTextResourceContents {
-                    text: "notes".to_string(),
-                },
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "notes.txt".to_string(),
-                    uri: "file:///tmp/notes.txt".to_string(),
-                    mime_type: "text/plain".to_string(),
-                    size: 5,
-                },
+                text: "notes".to_string(),
+                mime_type: "text/plain".to_string(),
+                file: test_file(&root.join("notes.txt").to_string_lossy(), 5),
             }),
-        ];
+        ]
+    }
+
+    fn prompt_block_types(params: &Value) -> Vec<&str> {
+        params["prompt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn session_prompt_projects_supported_attachment_content_from_live_capabilities() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
+        prompt.content_blocks = inline_test_blocks();
+        let image_uri = prompt.content_blocks[0].file().uri();
+        let notes_uri = prompt.content_blocks[1].file().uri();
         let capabilities = parse_agent_capabilities(&json!({
             "promptCapabilities": {
                 "image": true,
@@ -12580,13 +12592,14 @@ mod tests {
             &capabilities,
         );
 
+        assert!(image_uri.starts_with("file:"));
         assert_eq!(
             params["prompt"][0],
             json!({
                 "type": "image",
                 "data": "aW1hZ2U=",
                 "mimeType": "image/png",
-                "uri": "file:///tmp/diagram.png"
+                "uri": image_uri
             })
         );
         assert_eq!(
@@ -12595,7 +12608,7 @@ mod tests {
                 "type": "resource",
                 "resource": {
                     "text": "notes",
-                    "uri": "file:///tmp/notes.txt",
+                    "uri": notes_uri,
                     "mimeType": "text/plain"
                 }
             })
@@ -12607,16 +12620,12 @@ mod tests {
     }
 
     #[test]
-    fn explicit_resource_link_is_not_reexpanded_when_optional_capabilities_exist() {
+    fn path_files_are_listed_in_the_prompt_text_even_with_optional_capabilities() {
         let mut prompt = non_runtime_control_test_prompt("prompt-large-attachment");
-        prompt.content_blocks = vec![crate::provider::AcpContentBlock::ResourceLink(
-            crate::provider::AcpResourceLinkBlock {
-                name: "large.md".to_string(),
-                uri: "file:///tmp/large.md".to_string(),
-                mime_type: "text/markdown".to_string(),
-                size: 64_001,
-            },
-        )];
+        prompt.content_blocks = vec![
+            crate::provider::AcpContentBlock::File(test_file("D:/work/large.md", 64_001)),
+            crate::provider::AcpContentBlock::File(test_file("D:/work/tool.exe", 2_048)),
+        ];
         let capabilities = parse_agent_capabilities(&json!({
             "promptCapabilities": {
                 "image": true,
@@ -12633,44 +12642,21 @@ mod tests {
             &capabilities,
         );
 
+        assert_eq!(prompt_block_types(&params), vec!["text"]);
         assert_eq!(
-            params["prompt"][0],
-            json!({
-                "type": "resource_link",
-                "name": "large.md",
-                "uri": "file:///tmp/large.md",
-                "mimeType": "text/markdown",
-                "size": 64_001
-            })
+            params["prompt"][0]["text"],
+            "The user provided the following files. Their contents are not included in this message; read them by path when needed:\n\
+             - `D:/work/large.md` (64001 bytes)\n\
+             - `D:/work/tool.exe` (2048 bytes)\n\nclarify"
         );
     }
 
     #[test]
-    fn session_prompt_falls_back_to_resource_links_without_optional_capabilities() {
+    fn session_prompt_lists_inline_content_by_path_without_optional_capabilities() {
         let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
-        prompt.content_blocks = vec![
-            crate::provider::AcpContentBlock::Image(crate::provider::AcpImageBlock {
-                data: "aW1hZ2U=".to_string(),
-                mime_type: "image/png".to_string(),
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "diagram.png".to_string(),
-                    uri: "file:///tmp/diagram.png".to_string(),
-                    mime_type: "image/png".to_string(),
-                    size: 5,
-                },
-            }),
-            crate::provider::AcpContentBlock::Resource(crate::provider::AcpResourceBlock {
-                resource: crate::provider::AcpTextResourceContents {
-                    text: "notes".to_string(),
-                },
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "notes.txt".to_string(),
-                    uri: "file:///tmp/notes.txt".to_string(),
-                    mime_type: "text/plain".to_string(),
-                    size: 5,
-                },
-            }),
-        ];
+        prompt.content_blocks = inline_test_blocks();
+        let image_path = prompt.content_blocks[0].file().path.clone();
+        let notes_path = prompt.content_blocks[1].file().path.clone();
 
         let params = session_prompt_params(
             "claude-acp",
@@ -12681,30 +12667,37 @@ mod tests {
             &agent_client_protocol_schema::v1::AgentCapabilities::default(),
         );
 
-        assert_eq!(
-            params["prompt"][0],
-            json!({
-                "type": "resource_link",
-                "name": "diagram.png",
-                "uri": "file:///tmp/diagram.png",
-                "mimeType": "image/png",
-                "size": 5
-            })
+        assert_eq!(prompt_block_types(&params), vec!["text"]);
+        let text = params["prompt"][0]["text"].as_str().unwrap();
+        assert!(text.contains(&format!("- `{image_path}` (5 bytes)")));
+        assert!(text.contains(&format!("- `{notes_path}` (5 bytes)")));
+        assert!(text.ends_with("\n\nclarify"));
+    }
+
+    #[test]
+    fn listed_files_follow_the_prompt_language_and_precede_the_system_prompt_fallback() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-language");
+        prompt.language = crate::config::DesktopLanguage::ZhCn;
+        prompt.system_prompt = "stable rules".to_string();
+        prompt.content_blocks = vec![crate::provider::AcpContentBlock::File(test_file(
+            "D:/work/a.bin",
+            3,
+        ))];
+
+        let params = session_prompt_params(
+            "codex-acp",
+            "session-123",
+            &prompt,
+            false,
+            false,
+            &agent_client_protocol_schema::v1::AgentCapabilities::default(),
         );
-        assert_eq!(
-            params["prompt"][1],
-            json!({
-                "type": "resource_link",
-                "name": "notes.txt",
-                "uri": "file:///tmp/notes.txt",
-                "mimeType": "text/plain",
-                "size": 5
-            })
-        );
-        assert_eq!(
-            params["prompt"][2],
-            json!({"type": "text", "text": "clarify"})
-        );
+
+        let text = params["prompt"][0]["text"].as_str().unwrap();
+        let system_at = text.find("stable rules").unwrap();
+        let listing_at = text.find("- `D:/work/a.bin`（3 字节）").unwrap();
+        assert!(system_at < listing_at);
+        assert!(text.ends_with("\n\nclarify"));
     }
 
     #[test]
@@ -12745,9 +12738,10 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         };
 
-        let text = session_prompt_text("codex-acp", &prompt, false, false);
+        let text = session_prompt_text("codex-acp", &prompt, &prompt.user_prompt, false, false);
         assert!(text.contains(
             "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
         ));
@@ -12786,9 +12780,10 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         };
 
-        let text = session_prompt_text("codex-acp", &prompt, true, false);
+        let text = session_prompt_text("codex-acp", &prompt, &prompt.user_prompt, true, false);
         assert_eq!(text, "follow up");
         assert!(!text.contains("Gold Band stable system prompt"));
         assert!(!text.contains("node constraints"));
@@ -12815,8 +12810,13 @@ mod tests {
         );
         for restored in [false, true] {
             for supports_system_prompt in [true, false] {
-                let text =
-                    session_prompt_text("any-provider", &prompt, restored, supports_system_prompt);
+                let text = session_prompt_text(
+                    "any-provider",
+                    &prompt,
+                    &prompt.user_prompt,
+                    restored,
+                    supports_system_prompt,
+                );
                 assert_eq!(text.matches("context=value").count(), 1);
                 assert!(text.contains("data-gold-band-hidden"));
                 assert_eq!(
@@ -12848,14 +12848,15 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         };
 
         assert_eq!(
-            session_prompt_text("claude-acp", &prompt, false, true),
+            session_prompt_text("claude-acp", &prompt, &prompt.user_prompt, false, true),
             "do the task"
         );
         assert_eq!(
-            session_prompt_text("claude-acp", &prompt, true, true),
+            session_prompt_text("claude-acp", &prompt, &prompt.user_prompt, true, true),
             "do the task"
         );
     }

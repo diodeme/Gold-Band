@@ -932,10 +932,6 @@ export function materializeConversationAttachments(files: Parameters<ReturnType<
   return getRuntimeApi().materializeConversationAttachments(files);
 }
 
-export function getSupportedAttachmentExtensions() {
-  return getRuntimeApi().getSupportedAttachmentExtensions();
-}
-
 export function openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }

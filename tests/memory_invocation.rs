@@ -243,6 +243,7 @@ fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         resume_prompt: None,
         resume_prompt_id: None,
         prompt_display: None,
+        task_prompt_input: Default::default(),
         resume_prompt_visibility: PromptVisibility::Visible,
         stream_mode: StreamMode::StreamJson,
         log_prompts: false,

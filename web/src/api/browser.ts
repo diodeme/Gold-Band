@@ -3257,15 +3257,6 @@ export const browserApi: RuntimeApi = {
       size: atob(file.dataBase64).length,
     })));
   },
-  getSupportedAttachmentExtensions() {
-    return Promise.resolve([
-      "png", "jpg", "jpeg", "webp", "gif", "bmp",
-      "txt", "md", "json", "jsonl", "csv",
-      "html", "htm", "css", "js", "ts", "tsx", "jsx",
-      "rs", "py", "go", "java", "c", "h", "cpp", "hpp",
-      "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
-    ]);
-  },
   openInFileManager(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();
   },

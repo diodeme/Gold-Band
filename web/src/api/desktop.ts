@@ -964,9 +964,6 @@ export const desktopApi: RuntimeApi = {
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });
   },
-  getSupportedAttachmentExtensions() {
-    return invokeCommand<string[]>('get_supported_attachment_extensions');
-  },
   openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('open_in_file_manager', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },

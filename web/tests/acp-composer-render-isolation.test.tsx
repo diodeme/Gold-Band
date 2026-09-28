@@ -17,7 +17,6 @@ vi.mock('@/api/client', async () => {
     ...actual,
     getRuntimeApi: () => ({
       subscribeAcpSessionUpdates: async () => () => undefined,
-      getSupportedAttachmentExtensions: async () => [],
     }),
   };
 });

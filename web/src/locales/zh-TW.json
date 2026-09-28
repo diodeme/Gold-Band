@@ -643,7 +643,7 @@
       "imageCopied": "圖片已複製",
       "imageSaved": "圖片已儲存",
       "imageActionFailed": "圖片操作失敗，請重試",
-      "draftPreviewUnavailable": "此附件將在發送後提供工作區預覽",
+      "attachmentPreviewUnavailable": "無法預覽此檔案",
       "unsupportedTitle": "無法在應用內查看此檔案",
       "openWithSystem": "使用系統應用開啟",
       "conflict": "檔案已被其他程式修改。請選擇保留磁碟內容或覆蓋磁碟版本。",

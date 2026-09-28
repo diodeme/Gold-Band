@@ -643,7 +643,7 @@
       "imageCopied": "画像をコピーしました",
       "imageSaved": "画像を保存しました",
       "imageActionFailed": "画像アクションが失敗しました。もう一度やり直してください。",
-      "draftPreviewUnavailable": "この添付ファイルは、送信後にワークスペースでプレビューできます。",
+      "attachmentPreviewUnavailable": "このファイルはプレビューできません",
       "unsupportedTitle": "このファイルはアプリでは表示できません",
       "openWithSystem": "システムアプリで開く",
       "conflict": "別のプログラムがこのファイルを変更しました。ディスクのバージョンをロードするか、お使いのバージョンで上書きします。",

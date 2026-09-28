@@ -3,7 +3,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::fs::{File, FileType, Metadata};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use gold_band::storage::atomic_write_file;
@@ -22,6 +22,9 @@ use super::paths::{
     relative_display,
 };
 use super::runtime::WorkspaceFileRuntime;
+
+/// Git metadata: hidden files are searchable, but this is repository state, not workspace content.
+const SEARCH_SKIPPED_ENTRY_NAME: &str = ".git";
 
 pub(crate) fn revision_for_path(path: &Path) -> CommandResult<FileRevisionVm> {
     let metadata =
@@ -195,6 +198,7 @@ pub(crate) fn search_files(
         .git_ignore(true)
         .git_exclude(true)
         .git_global(true)
+        .filter_entry(|entry| entry.file_name() != SEARCH_SKIPPED_ENTRY_NAME)
         .build();
     for result in walker {
         let Ok(entry) = result else { continue };
@@ -219,22 +223,15 @@ pub(crate) fn search_files(
             && prefix_file_name_pattern
                 .score(file_name_haystack, &mut file_name_matcher)
                 .is_some();
-        let metadata = entry.metadata().ok();
         let candidate = RankedSearchEntry {
             exact_file_name,
             prefix_file_name,
             file_name_score,
             relative_path_score,
             path_depth: relative_path_depth(&relative_path),
-            entry: WorkspaceDirectoryEntryVm {
-                name,
-                relative_path,
-                canonical_path: display_path(entry.path()),
-                kind: "file".to_string(),
-                has_children: false,
-                byte_length: metadata.as_ref().map(Metadata::len),
-                modified_at_ns: metadata.as_ref().and_then(modified_at_ns),
-            },
+            name,
+            relative_path,
+            path: entry.into_path(),
         };
         if ranked_entries.len() < limit {
             ranked_entries.push(Reverse(candidate));
@@ -256,9 +253,10 @@ pub(crate) fn search_files(
     ranked_entries.sort_by(|left, right| right.cmp(left));
     Ok(WorkspaceFileSearchVm {
         request_id,
+        // Only the returned entries are stat'ed, not every match.
         entries: ranked_entries
             .into_iter()
-            .map(|entry| entry.entry)
+            .map(RankedSearchEntry::into_entry_vm)
             .collect(),
         truncated,
     })
@@ -271,7 +269,24 @@ struct RankedSearchEntry {
     file_name_score: Option<u32>,
     relative_path_score: u32,
     path_depth: usize,
-    entry: WorkspaceDirectoryEntryVm,
+    name: String,
+    relative_path: String,
+    path: PathBuf,
+}
+
+impl RankedSearchEntry {
+    fn into_entry_vm(self) -> WorkspaceDirectoryEntryVm {
+        let metadata = std::fs::metadata(&self.path).ok();
+        WorkspaceDirectoryEntryVm {
+            name: self.name,
+            relative_path: self.relative_path,
+            canonical_path: display_path(&self.path),
+            kind: "file".to_string(),
+            has_children: false,
+            byte_length: metadata.as_ref().map(Metadata::len),
+            modified_at_ns: metadata.as_ref().and_then(modified_at_ns),
+        }
+    }
 }
 
 impl PartialEq for RankedSearchEntry {
@@ -296,10 +311,8 @@ impl Ord for RankedSearchEntry {
             .then_with(|| self.file_name_score.cmp(&other.file_name_score))
             .then_with(|| self.relative_path_score.cmp(&other.relative_path_score))
             .then_with(|| other.path_depth.cmp(&self.path_depth))
-            .then_with(|| {
-                natord::compare_ignore_case(&other.entry.relative_path, &self.entry.relative_path)
-            })
-            .then_with(|| other.entry.relative_path.cmp(&self.entry.relative_path))
+            .then_with(|| natord::compare_ignore_case(&other.relative_path, &self.relative_path))
+            .then_with(|| other.relative_path.cmp(&self.relative_path))
     }
 }
 
@@ -812,6 +825,26 @@ mod tests {
         assert_eq!(names, ["folder2", "folder10", "file2.txt", "file10.txt"]);
         assert!(entries[0].has_children);
         assert_eq!(entries.len(), 4);
+    }
+
+    #[test]
+    fn search_skips_git_metadata() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git").join("refs")).unwrap();
+        std::fs::write(dir.path().join(".git").join("refs").join("match.rs"), "git").unwrap();
+        std::fs::create_dir(dir.path().join(".github")).unwrap();
+        std::fs::write(dir.path().join(".github").join("match.yml"), "ci").unwrap();
+        std::fs::write(dir.path().join("match.rs"), "visible").unwrap();
+        let workspace = root(dir.path());
+
+        let result = search_files(&workspace, "match", "request-git".to_string(), 10).unwrap();
+        let paths = result
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["match.rs", ".github/match.yml"]);
+        assert!(!result.truncated);
     }
 
     #[test]

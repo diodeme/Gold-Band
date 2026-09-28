@@ -25,6 +25,8 @@
 
 ---
 
+![Gold Band](https://static.dion.blue/2026/09/index.png)
+
 Gold Band 是一款面向本機專案的 AI Agent 桌面客戶端。它透過 Agent Client Protocol（ACP）連接 Claude Code、Codex 等主流 Agent：一套互動設計，多套 harness 隨時切換；同時提供完整的工作流與 AUTO 編排，讓長程任務更穩定、更可觀測，不依賴模型抽獎式分發。
 
 > [!TIP]

@@ -25,6 +25,8 @@
 
 ---
 
+![Gold Band](https://static.dion.blue/2026/09/index.png)
+
 Gold Band es un cliente de escritorio de AI Agents para proyectos locales. Se conecta a los principales Agents, como Claude Code y Codex, mediante Agent Client Protocol (ACP): un único diseño de interacción y varios harnesses entre los que puedes cambiar. También ofrece workflows completos y orquestación AUTO, para que las tareas largas se mantengan estables y observables en lugar de depender de la suerte de una sola ejecución del modelo.
 
 > [!TIP]

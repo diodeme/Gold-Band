@@ -749,10 +749,11 @@ export function ConversationComposer({
   const slashCatalog = useMemo(
     () => buildSlashCatalog(
       t('acp.slashAgentGroup'),
-      profiles,
+      // A role is a Direct conversation input; Workflow and AUTO nodes use their own profiles.
+      isDirect ? profiles : [],
       agentCommands.commands,
     ),
-    [agentCommands.commands, profiles, t],
+    [agentCommands.commands, isDirect, profiles, t],
   );
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);

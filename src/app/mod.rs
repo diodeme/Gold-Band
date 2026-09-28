@@ -212,6 +212,19 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
     paths
 }
 
+/// Loaded alongside [`task_input_attachment_paths`] for every new session that
+/// renders the requirement.
+pub(crate) fn task_prompt_input(app: &App, task_id: &str) -> crate::provider::TaskPromptInput {
+    let path = app.paths.task_prompt_input_file(task_id);
+    if !path.exists() {
+        return Default::default();
+    }
+    read_json(&path).unwrap_or_else(|error| {
+        tracing::warn!(task_id, %error, "failed to read task prompt input");
+        Default::default()
+    })
+}
+
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
 pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
 pub const WB_CICD_WORKFLOW_TEMPLATE_ID: &str = "wb-development-cicd";

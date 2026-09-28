@@ -19,7 +19,7 @@
 ## 实现
 
 - [x] 后端 `src/provider/quotes.rs`：类型、校验、按语言渲染 `runtime/user_quote.md`（7 种语言）；timeline 中整文件 diff 正文置空。
-- [x] 新会话初始输入写入 `authoring/initial-prompt-quotes.json`；定时任务内容快照 `quotes` 参与指纹（不含 ID），编辑只允许按 ID 删除。
+- [x] 新会话的引用、工作空间文件与角色作为任务输入写入 `authoring/task-prompt-input.json`；定时任务内容快照 `quotes` 参与指纹（不含 ID），编辑只允许按 ID 删除。
 - [x] 前端 `diff-quote.ts`：基于 `@codemirror/merge` 行对齐 chunk 生成 git 风格 hunk；选区扩展到触及的整个 chunk，删除块由选区端点所在 `.cm-deletedChunk` 判定。
 - [x] `editor-selection-quote.ts` 读取 DOM Selection（只读视图无焦点）；`EditorSelectionQuote` / `DiffSelectionQuote` 复用通用 `SelectionQuoteButton`，经 `ComposerReferenceTarget.addQuote` 送入当前 composer。
 - [x] composer chip 按来源显示图标与标签，超预算提示给出大小、上限与剩余量；用户消息引用弹层展示来源；定时任务编辑面板展示可删除的引用标签。
@@ -34,3 +34,13 @@
 
 - 过度设计：复用既有 composer 草稿、bridge 与 prompt 模板体系，仅新增来源联合与一个 diff 格式化函数，没有新增持久化实体或状态机。
 - 性能：选区读取只在 mouseup/shift-keyup 触发；diff 格式化 O(行数)，仅在用户点击时运行；整文件 diff 不写入 timeline 正文，避免事件文件膨胀。
+
+## 任务输入随节点下发（2026-09-28）
+
+- [x] 根因：引用、工作空间文件与角色被建模为“首条消息的展示输入”（`prompt_display`），只有入口节点首个 prompt 携带；后继节点、新 round、AI-DYNAMIC 叶子节点看不到，手动重试非入口节点却会拿到，行为不一致。
+- [x] 方案：新增 `TaskPromptInput { quotes, role, workspaceFiles }`，与 requirement、`authoring/inputs` 同属任务输入，替换原先三个 `initial-prompt-*.json`。`build_worker_invocation` 与 `build_dynamic_worker_invocation` 在新会话时与任务附件一起加载到 `WorkerInvocation.task_prompt_input`；`render_prompt_bundle` 在 `RequirementTask` 渲染时用它包装 requirement、解析工作空间文件并写入 prompt 事件元数据，其余模式仍使用本轮用户消息的 `prompt_display`。Continue 会话与 artifact finalize 不重复发送。
+- [x] 角色只在 Direct 生效：新建校验对非 Direct 返回 `role.direct-only`，非 Direct 运行的追问返回 `conversation.prompt-role-direct-only`（7 种语言文案）；首页 composer 在 Workflow / AUTO 下 `@` 不列角色，运行页 `ACPChatDialog` 通过 `roleSelectionEnabled` 仅在 Direct 加载角色。AUTO 与 Workflow 同样处理。
+- [x] 新建会话改为完整校验 prompt 输入（引用、角色长度等），不再静默丢弃不完整角色。
+- [x] 验收：`tests/provider_prompt_bundle.rs` 新增三项（每个新 requirement 渲染携带引用与工作空间文件、角色包装、Continue 不重发）；`node_executor` New/Continue 构建断言；`dynamic_leaf_new_session_carries_the_task_quotes`；`a_role_is_accepted_only_for_direct_conversations`。浏览器验证首页 AUTO / 工作流模式输入 `@` 无角色菜单、Direct 正常列出角色；运行页 composer 因 mock 无法进入工作流运行页未做浏览器验证。
+- 过度设计：复用任务附件的加载时机与 `WorkerInvocation` 管道，只新增一个结构与一个字段，合并三个文件为一个，未新增状态或生命周期。
+- 性能：每个新会话多读一个小 JSON（与读取 inputs 目录同量级），workspace roots 仅在确有工作空间文件时加载；Continue 与 finalize 无额外开销。开发阶段不迁移旧的 `initial-prompt-*.json`，此前创建且尚未结束的任务后续节点不再带这些输入。

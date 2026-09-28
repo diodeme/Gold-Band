@@ -4,8 +4,9 @@ use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::{
     ColdFileRef, ConversationPromptInput, OutputEmissionMode, PromptArtifactRef,
     PromptAttachmentRef, PromptHiddenSection, PromptOutputContract, PromptPredecessorContext,
-    PromptRuntimeContext, PromptVisibility, RuntimeControlIntent, StreamMode, UserPromptQuote,
-    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    PromptRuntimeContext, PromptVisibility, PromptWorkspaceFileRef, PromptWorkspaceRoot,
+    RuntimeControlIntent, StreamMode, TaskPromptInput, UserPromptQuote, UserPromptQuoteSource,
+    UserPromptRenderMode, UserPromptRole, WorkerInvocation, render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -121,6 +122,7 @@ fn invocation() -> WorkerInvocation {
             ),
         }],
         task_input_attachment_paths: Vec::new(),
+        task_prompt_input: TaskPromptInput::default(),
         user_input_attachment_paths: Vec::new(),
         attachment_projection_policy: gold_band::provider::AttachmentProjectionPolicy::from(
             &gold_band::config::RuntimeConfig::default(),
@@ -637,8 +639,10 @@ fn render_runtime_resume_with_message_keeps_internal_prompt_out_of_display_proje
         display_text: "请继续检查".to_string(),
         quotes: vec![UserPromptQuote {
             id: "quote-1".to_string(),
-            source_message_key: "answer-1".to_string(),
             text: "引用内容".to_string(),
+            source: UserPromptQuoteSource::AgentMessage {
+                message_key: "answer-1".to_string(),
+            },
         }],
         role: None,
         workspace_files: Vec::new(),
@@ -949,4 +953,85 @@ fn render_prompt_bundle_ai_dynamic_hidden_section_suppresses_base_predecessor_co
     assert!(!prompt.user_prompt.contains("## 最新前序执行链"));
     assert!(!prompt.user_prompt.contains("当前节点的前序运行节点：无"));
     assert!(!prompt.user_prompt.contains("\n\n\n"));
+}
+
+fn task_prompt_input_with_workspace_file(root: &std::path::Path) -> TaskPromptInput {
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
+    TaskPromptInput {
+        quotes: vec![UserPromptQuote {
+            id: "quote-1".to_string(),
+            text: "fn answer() -> u32 { 42 }".to_string(),
+            source: UserPromptQuoteSource::File {
+                label: "src/answer.rs".to_string(),
+                start_line: 3,
+                end_line: 3,
+            },
+        }],
+        role: None,
+        workspace_files: vec![PromptWorkspaceFileRef {
+            project_id: runtime_context().project_id,
+            relative_path: "src/lib.rs".to_string(),
+        }],
+    }
+}
+
+#[test]
+fn every_new_requirement_render_carries_the_task_quotes_and_workspace_files() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut req = invocation();
+    req.task_prompt_input = task_prompt_input_with_workspace_file(workspace.path());
+    req.workspace_file_roots = vec![PromptWorkspaceRoot {
+        project_id: runtime_context().project_id,
+        root: workspace.path().to_path_buf(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(
+        prompt
+            .user_prompt
+            .contains("引用自文件 `src/answer.rs` 第 3 行")
+    );
+    assert!(prompt.user_prompt.contains("fn answer() -> u32 { 42 }"));
+    assert!(prompt.user_prompt.contains("Need an implementation"));
+    assert_eq!(prompt.quotes, req.task_prompt_input.quotes);
+    assert_eq!(prompt.workspace_files.len(), 1);
+    assert_eq!(prompt.content_blocks.len(), 1);
+    // A successor node shows its assembled prompt; only the first turn has display text.
+    assert_eq!(prompt.display_text, None);
+}
+
+#[test]
+fn a_task_role_wraps_the_requirement() {
+    let mut req = invocation();
+    req.task_prompt_input.role = Some(UserPromptRole {
+        profile_id: "pf-dev".to_string(),
+        name: "开发".to_string(),
+        content: "你是用户指定的开发角色".to_string(),
+    });
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("以下是用户指定的角色定义"));
+    assert!(prompt.user_prompt.contains("你是用户指定的开发角色"));
+    assert!(prompt.user_prompt.contains("Need an implementation"));
+    assert_eq!(prompt.role, req.task_prompt_input.role);
+}
+
+#[test]
+fn a_resumed_session_does_not_resend_the_task_prompt_input() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut req = invocation();
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::WorkflowResume;
+    req.resume_prompt = Some("继续".to_string());
+    req.task_prompt_input = task_prompt_input_with_workspace_file(workspace.path());
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(!prompt.user_prompt.contains("src/answer.rs"));
+    assert!(prompt.quotes.is_empty());
+    assert!(prompt.workspace_files.is_empty());
+    assert!(prompt.content_blocks.is_empty());
 }

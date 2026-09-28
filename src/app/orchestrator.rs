@@ -73,7 +73,7 @@ use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
+    UserPromptRenderMode, WorkerInvocation, conversation_agent_prompt_text,
     conversation_prompt_has_payload, prepare_prompt_bundle, render_new_round_trigger_reason_line,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
@@ -4893,38 +4893,15 @@ fn apply_control_decision(
     }
 }
 
-fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
-    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id))
-        .ok()
-        .filter(|role| {
-            !role.profile_id.trim().is_empty()
-                && !role.name.trim().is_empty()
-                && !role.content.trim().is_empty()
-        });
-    let workspace_files = read_json::<Vec<crate::provider::PromptWorkspaceFileRef>>(
-        &app.paths
-            .task_dir(task_id)
-            .join("authoring")
-            .join("initial-prompt-workspace-files.json"),
-    )
-    .ok()
-    .unwrap_or_default();
-    let quotes = read_json::<Vec<crate::provider::UserPromptQuote>>(
-        &app.paths.initial_prompt_quotes_file(task_id),
-    )
-    .ok()
-    .unwrap_or_default();
-    if role.is_none() && workspace_files.is_empty() && quotes.is_empty() {
+/// The first turn shows the requirement as typed. Task quotes and a role wrap
+/// the requirement in the assembled prompt, so the timeline must not show that.
+fn initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
+    if super::task_prompt_input(app, task_id).is_empty() {
         return None;
     }
-    let requirement =
-        std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path()).ok()?;
-    Some(ConversationPromptInput {
-        display_text: requirement,
-        quotes,
-        role,
-        workspace_files,
-    })
+    std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path())
+        .ok()
+        .map(ConversationPromptInput::from)
 }
 
 pub(crate) fn drive_from_node(
@@ -4971,7 +4948,7 @@ fn drive_from_node_with_runtime_candidate(
         None,
         super::direct_conversation_agent_label(app, task_id)
             .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
-        load_initial_prompt_display(app, task_id),
+        initial_prompt_display(app, task_id),
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
@@ -12933,11 +12910,15 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "input_attachment_paths");
-    let task_input_attachment_paths = if matches!(session_mode, SessionMode::New) {
-        super::task_input_attachment_paths(ctx.app, ctx.task_id)
-    } else {
-        Vec::new()
-    };
+    let (task_input_attachment_paths, task_prompt_input) =
+        if matches!(session_mode, SessionMode::New) {
+            (
+                super::task_input_attachment_paths(ctx.app, ctx.task_id),
+                super::task_prompt_input(ctx.app, ctx.task_id),
+            )
+        } else {
+            (Vec::new(), Default::default())
+        };
     let user_input_attachment_paths = resume_input_attachment_paths;
     dynamic_invocation_build_step_end(
         ctx,
@@ -12966,9 +12947,10 @@ fn build_dynamic_worker_invocation(
         );
         Vec::new()
     });
-    let workspace_file_roots = if prompt_display
-        .as_ref()
-        .is_some_and(|input| !input.workspace_files.is_empty())
+    let workspace_file_roots = if !task_prompt_input.workspace_files.is_empty()
+        || prompt_display
+            .as_ref()
+            .is_some_and(|input| !input.workspace_files.is_empty())
     {
         ctx.app.prompt_workspace_roots()
     } else {
@@ -13016,6 +12998,7 @@ fn build_dynamic_worker_invocation(
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
         task_input_attachment_paths,
+        task_prompt_input,
         user_input_attachment_paths,
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &ctx.app.config,
@@ -20317,6 +20300,62 @@ mod tests {
 
         assert_eq!(invocation.adapter_workspace_dir, repo_root);
         assert_eq!(invocation.workspace_dir, worktree_dir);
+    }
+
+    #[test]
+    fn dynamic_leaf_new_session_carries_the_task_quotes() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let quote = crate::provider::UserPromptQuote {
+            id: "quote-1".to_string(),
+            text: "任务引用的内容".to_string(),
+            source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                message_key: "answer-1".to_string(),
+            },
+        };
+        write_json(
+            &app.paths.task_prompt_input_file(ctx.task_id),
+            &crate::provider::TaskPromptInput {
+                quotes: vec![quote.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let node = test_worktree_node("leaf");
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+        let build = |session_mode, render_mode| {
+            build_dynamic_worker_invocation(
+                &ctx,
+                &graph,
+                &node,
+                &dynamic_attempt_id(&node),
+                None,
+                session_mode,
+                None,
+                Some("继续".to_string()),
+                "test-turn".to_string(),
+                None,
+                PromptVisibility::Visible,
+                render_mode,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        let prompt = render_prompt_bundle(&build(
+            SessionMode::New,
+            UserPromptRenderMode::RequirementTask,
+        ))
+        .unwrap();
+        assert!(prompt.user_prompt.contains("> 任务引用的内容"));
+        assert_eq!(prompt.quotes, vec![quote]);
+
+        let resumed = build(SessionMode::Continue, UserPromptRenderMode::WorkflowResume);
+        assert!(resumed.task_prompt_input.is_empty());
     }
 
     #[test]

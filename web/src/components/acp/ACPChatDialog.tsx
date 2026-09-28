@@ -408,6 +408,8 @@ interface ACPChatDialogProps {
   showSystemPromptAction?: boolean;
   showRawFramesAction?: boolean;
   directSessionHeader?: AcpDirectSessionHeaderProps;
+  /** `@` role selection is a Direct conversation input; Workflow and AUTO nodes use their own profiles. */
+  roleSelectionEnabled?: boolean;
   eventIdPrefix?: string;
   eventPageSize?: number;
   eventWindowPageCount?: number;
@@ -1334,11 +1336,16 @@ export function ACPChatDialog(
     worktreePath,
     showBranchControl = false,
     managedWorktreeBranch,
+    roleSelectionEnabled = false,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
   const [roleProfiles, setRoleProfiles] = useState<ProfileVm[]>([]);
   useEffect(() => {
+    if (!roleSelectionEnabled) {
+      setRoleProfiles([]);
+      return;
+    }
     let cancelled = false;
     void Promise.resolve()
       .then(() => getProfiles())
@@ -1349,7 +1356,7 @@ export function ACPChatDialog(
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [roleSelectionEnabled]);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
   const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);

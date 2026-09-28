@@ -961,18 +961,18 @@ async fn create_conversation_run_inner(
     let mut validation =
         crate::view_models_conversation::validate_conversation_create_vm(&app, &input)
             .map_err(command_error)?;
+    let prompt_input = ConversationPromptInput {
+        display_text: input.content.clone(),
+        quotes: input.quotes.clone(),
+        role: input.role.clone(),
+        workspace_files: input.workspace_files.clone(),
+    };
     validate_prompt_workspace_files(
         &app,
-        &ConversationPromptInput {
-            display_text: input.content.clone(),
-            quotes: Vec::new(),
-            role: input.role.clone(),
-            workspace_files: input.workspace_files.clone(),
-        },
+        &prompt_input,
         input.attachment_paths.as_deref().map_or(0, <[_]>::len),
     )
     .await?;
-    crate::commands::validate_prompt_quotes(&input.quotes)?;
     validate_direct_capabilities(state.inner(), &input, &mut validation)?;
     if !validation.valid {
         return Err(CommandErrorVm::new(
@@ -986,6 +986,10 @@ async fn create_conversation_run_inner(
             }),
         ));
     }
+    crate::commands::validate_conversation_prompt_input(
+        &prompt_input,
+        input.attachment_paths.as_deref(),
+    )?;
     let app = configure_conversation_runtime_callbacks(
         app,
         app_handle.clone(),

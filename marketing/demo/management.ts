@@ -38,7 +38,7 @@ export function demoManagementApi(language: () => DesktopLanguage): Partial<Runt
     async listScheduledTasks(projectId) { return tasks().filter((item) => !projectId || item.projectId === projectId); },
     async getScheduledTask(projectId, id) {
       const item = task(projectId, id);
-      return { scheduledTaskId: id, projectId, content: item.title, attachmentNames: [], runMode: item.mode,
+      return { scheduledTaskId: id, projectId, content: item.title, attachmentNames: [], quotes: [], runMode: item.mode,
         workflowTemplateId: item.mode === 'workflow' ? 'default-lightweight' : null, directConfig: { agentType: 'claude-acp' },
         schedule: item.schedule, overlapPolicy: 'skip_when_running', sessionPolicy: item.mode === 'direct' ? 'continuous' : 'new', expectedUpdatedAt: item.updatedAt };
     },

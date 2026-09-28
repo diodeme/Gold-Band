@@ -4275,6 +4275,7 @@ async fn continue_conversation_runtime_inner(
     );
     if let Some(input) = input.as_ref() {
         validate_conversation_prompt_input(input, attachment_paths.as_deref())?;
+        validate_prompt_role_run_mode(&app, &locator.task_id, input)?;
         validate_prompt_workspace_files(
             &app,
             input,
@@ -6738,6 +6739,7 @@ async fn submit_conversation_prompt_inner(
         outer_attempt_id,
     );
     validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
+    validate_prompt_role_run_mode(&app, &locator.task_id, &input)?;
     validate_prompt_workspace_files(
         &app,
         &input,
@@ -8831,7 +8833,7 @@ pub(crate) fn validate_prompt_quotes(
         .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
 }
 
-fn validate_conversation_prompt_input(
+pub(crate) fn validate_conversation_prompt_input(
     input: &ConversationPromptInput,
     attachment_paths: Option<&[String]>,
 ) -> CommandResult<()> {
@@ -8881,6 +8883,25 @@ fn validate_conversation_prompt_input(
                 serde_json::json!({ "maxChars": MAX_USER_PROMPT_ROLE_CONTENT_CHARS }),
             ));
         }
+    }
+    Ok(())
+}
+
+/// A role is a Direct conversation input; Workflow and AUTO nodes follow their
+/// own profiles.
+fn validate_prompt_role_run_mode(
+    app: &App,
+    task_id: &str,
+    input: &ConversationPromptInput,
+) -> CommandResult<()> {
+    if input.role.is_some()
+        && conversation_run_mode(app, task_id)
+            != Some(gold_band::config::ConversationRunMode::Direct)
+    {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-role-direct-only",
+            serde_json::json!({}),
+        ));
     }
     Ok(())
 }

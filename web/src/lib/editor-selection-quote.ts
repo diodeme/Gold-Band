@@ -10,7 +10,8 @@ export interface EditorLineSelection {
   endLine: number;
 }
 
-const DELETED_BLOCK_SELECTOR = '.cm-deletedChunk';
+/** A unified merge view's removed lines: a block widget placed before the line that follows them. */
+export const DELETED_BLOCK_SELECTOR = '.cm-deletedChunk';
 
 /** The DOM selection when it lies inside the editor content; read-only views never hold focus. */
 function contentSelectionRange(view: EditorView) {
@@ -43,7 +44,6 @@ export function readEditorLineSelection(view: EditorView): QuotableSelection<Edi
 function deletedBlockLine(view: EditorView, node: Node) {
   const element = node instanceof Element ? node : node.parentElement;
   const block = element?.closest(DELETED_BLOCK_SELECTOR);
-  // A removed block is a widget placed at the start of the line that follows it.
   return block ? view.state.doc.lineAt(view.posAtDOM(block)).number : null;
 }
 
@@ -60,10 +60,14 @@ export function readUnifiedDiffSelection(view: EditorView): QuotableSelection<Di
   const to = view.posAtDOM(range.endContainer, range.endOffset);
   const startBlock = deletedBlockLine(view, range.startContainer);
   const endBlock = deletedBlockLine(view, range.endContainer);
+  // A drag across a block selects it without either endpoint falling inside it.
+  const coveredBlocks = Array.from(view.contentDOM.querySelectorAll(DELETED_BLOCK_SELECTOR))
+    .filter((block) => range.intersectsNode(block))
+    .map((block) => view.state.doc.lineAt(view.posAtDOM(block)).number);
   const fragment = formatDiffSelection(getOriginalDoc(view.state), view.state.doc, chunks, {
     fromLine: startBlock ?? view.state.doc.lineAt(from).number,
     toLine: endBlock != null ? endBlock - 1 : endLineOf(view, from, to),
-    deletedBlockLines: [startBlock, endBlock].filter((line): line is number => line != null),
+    deletedBlockLines: coveredBlocks,
   });
   return fragment ? { value: fragment, rect: range.getBoundingClientRect() } : null;
 }

@@ -222,7 +222,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     return <PanelMessage icon={<LoaderCircle className="size-4 animate-spin" />} text={t('turnFiles.loading')} />;
   }
   if (comparison.limitationCode && !comparison.after && !comparison.before) {
-    return <PanelMessage icon={<TriangleAlert className="size-4 text-amber-500" />} text={t(`errors.${comparison.limitationCode}`, { defaultValue: t('turnFiles.diffUnavailable') })} />;
+    return <PanelMessage icon={<TriangleAlert className="size-4 text-amber-500" />} text={t(comparison.limitationCode === 'turn-files.diff-too-large' ? 'turnFiles.comparisonTooLarge' : 'turnFiles.evidenceUnavailable')} />;
   }
 
   return (

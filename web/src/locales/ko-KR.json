@@ -1756,7 +1756,13 @@
     "noAttachments": "첨부 파일 없음"
   },
   "turnFiles": {
-    "title": "이 턴에서 {{count}}개 파일이 변경됨",
+    "title": "기록된 변경 · 파일 {{count}}개",
+    "incompleteTitle": "변경 기록이 불완전합니다",
+    "recordedOnly": "도구가 기록한 변경만 포함하며 최종 Git diff가 아닙니다.",
+    "editCount": "편집 {{count}}회",
+    "editNumber": "편집 {{number}}",
+    "evidenceUnavailable": "변경 기록이 불완전하여 비교를 표시할 수 없습니다.",
+    "comparisonTooLarge": "비교가 뷰어의 크기 제한을 초과했습니다.",
     "attachmentsTitle": "이 턴에서 {{count}}개 첨부 파일이 생성됨",
     "attachmentList": "이 턴에서 생성된 첨부 파일",
     "showMoreAttachments": "첨부 파일 {{count}}개 더 보기",
@@ -1775,7 +1781,7 @@
     "previewDeleted": "삭제된 파일 {{path}}의 diff 미리보기",
     "previewLoading": "파일 diff 불러오는 중…",
     "previewLoadFailed": "이 파일 diff를 불러올 수 없습니다",
-    "previewUnavailable": "이 diff는 너무 크거나 호버 미리보기를 지원하지 않습니다. 오른쪽 워크스페이스에서 여세요.",
+    "previewUnavailable": "변경 기록이 불완전하여 비교를 표시할 수 없습니다.",
     "diffPreview": "파일 diff 호버 미리보기",
     "turnDiff": "이 턴의 diff",
     "previousChange": "이전 변경",

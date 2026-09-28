@@ -2333,9 +2333,8 @@ struct AcpRuntime<'a> {
     session_update_phase: SessionUpdatePhase,
     provider_history_replay: ProviderHistoryReplay,
     current_turn_item_ids: HashSet<String>,
-    active_turn_file_branches: HashSet<String>,
-    active_turn_file_tool_outcomes:
-        HashMap<(String, String), Option<crate::acp::turn_files::TurnFileToolTerminalOutcome>>,
+    turn_file_worker: Option<crate::acp::turn_files::TurnFileWorker>,
+    turn_file_workspace: Utf8PathBuf,
     active_prompt_turn: Option<AcpPromptTurnIdentity>,
     /// Provider session notifications do not carry a prompt id. When an
     /// attached session is reused, content observed before the next prompt
@@ -3140,11 +3139,20 @@ fn run_prompt_inner(
     )?;
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
-    runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)?;
     runtime.control.mark_stopped();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
         let _ = session_update();
+    }
+    // Session completion is independent of derived file comparisons. The worker
+    // drains admitted edits before publishing the final change-set event.
+    if let Err(error) = runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir) {
+        append_structured_diagnostic_best_effort(
+            &runtime.paths.diagnostics,
+            "warn",
+            "turn-files.finalize-failed",
+            Some(json!({ "error": error.to_string(), "turnId": prompt_turn.id })),
+        );
     }
     let run = AcpPromptRun {
         session_id,
@@ -3958,8 +3966,8 @@ impl<'a> AcpRuntime<'a> {
             session_update_phase: SessionUpdatePhase::Live,
             provider_history_replay,
             current_turn_item_ids: HashSet::new(),
-            active_turn_file_branches: HashSet::new(),
-            active_turn_file_tool_outcomes: HashMap::new(),
+            turn_file_worker: None,
+            turn_file_workspace: workspace_dir.clone(),
             active_prompt_turn: None,
             quarantined_provider_item_ids: HashSet::new(),
             pending_retry_prompt_event,
@@ -5348,8 +5356,13 @@ impl<'a> AcpRuntime<'a> {
                 })),
             );
         }
-        self.active_turn_file_branches.clear();
-        self.active_turn_file_tool_outcomes.clear();
+        self.turn_file_worker = Some(crate::acp::turn_files::TurnFileWorker::start(
+            turn_file_store,
+            self.turn_file_workspace.clone(),
+            identity.id.clone(),
+            identity.prompt_event_id.clone(),
+            identity.started_at.clone(),
+        )?);
         self.pending_retry_prompt_event = None;
         self.active_prompt_turn = Some(identity.clone());
         Ok(identity)
@@ -5976,10 +5989,12 @@ impl<'a> AcpRuntime<'a> {
 
         self.seq += 1;
         let event = normalize_session_update(self.seq, session_id, &update);
-        self.capture_turn_file_event(&event)?;
         self.prompt_output.observe(&update, &event);
         let confirmed_usage_before_event = self.usage.context.confirmed_used;
         self.persist_event(&event)?;
+        // Durable evidence precedes background derivation. Diff work never runs
+        // on the ACP ingress/render-publication path.
+        self.capture_turn_file_event(&event)?;
         if event.kind == "contextCompaction" {
             append_diagnostic_best_effort(
                 &self.paths.diagnostics,
@@ -6022,99 +6037,49 @@ impl<'a> AcpRuntime<'a> {
         if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
             return Ok(());
         }
-        let (Some(turn), Some(tool_call_id), Some(raw)) = (
-            self.active_prompt_turn.as_ref(),
+        let (Some(worker), Some(tool_call_id), Some(raw)) = (
+            self.turn_file_worker.as_ref(),
             event.tool_call_id.as_deref(),
             event.raw.as_ref(),
         ) else {
             return Ok(());
         };
         let branch_id = event_branch_id(event);
-        let store = crate::acp::turn_files::TurnFileStore::new(
-            self.paths.attempt_dir.clone(),
-            self.runtime_policy.turn_file_capture,
-        );
-        let captured = store.capture_event_diffs(
-            &turn.id,
-            &turn.prompt_event_id,
-            &branch_id,
-            tool_call_id,
+        worker.submit(
+            branch_id,
+            tool_call_id.to_string(),
             event.seq,
-            &event.timestamp,
+            event.timestamp.clone(),
             raw,
-        )?;
-        let tool_key = (branch_id.clone(), tool_call_id.to_string());
-        if captured > 0 {
-            self.active_turn_file_branches.insert(branch_id.clone());
-            self.active_turn_file_tool_outcomes
-                .entry(tool_key.clone())
-                .or_insert(None);
-        }
-        if let Some(outcome) = crate::acp::turn_files::TurnFileToolTerminalOutcome::from_status(
-            event.status.as_deref(),
-        ) && let Some(current) = self.active_turn_file_tool_outcomes.get_mut(&tool_key)
-            && current.is_none()
-        {
-            *current = Some(outcome);
-        }
+            crate::acp::turn_files::TurnFileToolTerminalOutcome::from_status(
+                event.status.as_deref(),
+            ),
+        );
         Ok(())
     }
 
     fn finalize_turn_file_changes(
         &mut self,
-        turn: &AcpPromptTurnIdentity,
-        workspace_dir: &Utf8Path,
+        _turn: &AcpPromptTurnIdentity,
+        _workspace_dir: &Utf8Path,
     ) -> Result<()> {
-        let store = crate::acp::turn_files::TurnFileStore::new(
-            self.paths.attempt_dir.clone(),
-            self.runtime_policy.turn_file_capture,
-        );
-        let finished_at = current_timestamp();
-        let attachment_delta = store.collect_turn_attachment_delta(&turn.id)?;
-        let mut branches = self
-            .active_turn_file_branches
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        if !branches.iter().any(|branch_id| branch_id == ROOT_BRANCH_ID) {
-            branches.push(ROOT_BRANCH_ID.to_string());
-        }
-        for branch_id in branches {
-            let tool_outcomes = self
-                .active_turn_file_tool_outcomes
-                .iter()
-                .filter_map(|((outcome_branch_id, tool_call_id), outcome)| {
-                    (outcome_branch_id == &branch_id)
-                        .then_some(outcome.map(|outcome| (tool_call_id.clone(), outcome)))
-                        .flatten()
-                })
-                .collect::<HashMap<_, _>>();
-            let Some(change_set) = store.finalize_turn_branch_with_attachments(
-                &turn.id,
-                &turn.prompt_event_id,
-                &branch_id,
-                &turn.started_at,
-                &finished_at,
-                &tool_outcomes,
-                Some(workspace_dir),
-                &attachment_delta,
-                branch_id == ROOT_BRANCH_ID,
-            )?
-            else {
-                continue;
-            };
+        let Some(worker) = self.turn_file_worker.take() else {
+            return Ok(());
+        };
+        for change_set in worker.finish()? {
             self.seq = self.seq.saturating_add(1);
             let event = turn_file_change_set_event(
                 self.seq,
                 self.session_id.clone(),
-                finished_at.clone(),
+                change_set
+                    .finished_at
+                    .clone()
+                    .unwrap_or_else(current_timestamp),
                 &change_set,
             );
             self.persist_event(&event)?;
         }
         self.active_prompt_turn = None;
-        self.active_turn_file_branches.clear();
-        self.active_turn_file_tool_outcomes.clear();
         Ok(())
     }
 

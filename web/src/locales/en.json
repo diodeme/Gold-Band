@@ -1785,7 +1785,13 @@
     "noAttachments": "No attachments"
   },
   "turnFiles": {
-    "title": "{{count}} files changed in this turn",
+    "title": "Recorded changes · {{count}} files",
+    "incompleteTitle": "Recorded changes incomplete",
+    "recordedOnly": "Only tool-recorded changes; not the final Git diff.",
+    "editCount": "{{count}} edits",
+    "editNumber": "Edit {{number}}",
+    "evidenceUnavailable": "This comparison is unavailable because the recorded evidence is incomplete.",
+    "comparisonTooLarge": "This comparison exceeds the viewer's size limit.",
     "attachmentsTitle": "{{count}} attachments created in this turn",
     "attachmentList": "Attachments created in this turn",
     "showMoreAttachments": "Show {{count}} more attachments",
@@ -1804,7 +1810,7 @@
     "previewDeleted": "Preview the diff for deleted file {{path}}",
     "previewLoading": "Loading file diff…",
     "previewLoadFailed": "Unable to load this file diff",
-    "previewUnavailable": "This diff is too large or unsupported for hover preview. Open it in the right workspace instead.",
+    "previewUnavailable": "This comparison is unavailable because the recorded evidence is incomplete.",
     "diffPreview": "File diff hover preview",
     "turnDiff": "This turn's diff",
     "previousChange": "Previous change",

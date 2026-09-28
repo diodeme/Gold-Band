@@ -1756,7 +1756,13 @@
     "noAttachments": "暫無附件"
   },
   "turnFiles": {
-    "title": "本輪變更 {{count}} 個檔案",
+    "title": "已記錄變更 · {{count}} 個檔案",
+    "incompleteTitle": "變更記錄不完整",
+    "recordedOnly": "僅含工具已記錄的修改，不代表最終 Git diff。",
+    "editCount": "{{count}} 次編輯",
+    "editNumber": "第 {{number}} 次編輯",
+    "evidenceUnavailable": "修改證據不完整，無法顯示此比較。",
+    "comparisonTooLarge": "此比較超過檢視器的大小限制。",
     "attachmentsTitle": "本輪生成 {{count}} 個附件",
     "attachmentList": "本輪新增附件",
     "showMoreAttachments": "展開其餘 {{count}} 個附件",
@@ -1775,7 +1781,7 @@
     "previewDeleted": "預覽已刪除檔案 {{path}} 的差異",
     "previewLoading": "正在載入檔案差異…",
     "previewLoadFailed": "無法載入該檔案差異",
-    "previewUnavailable": "該檔案差異過大或不支援懸浮預覽，可點選後在右側工作區查看",
+    "previewUnavailable": "修改證據不完整，無法顯示此比較。",
     "diffPreview": "檔案差異懸浮預覽",
     "turnDiff": "本輪修改 Diff",
     "previousChange": "上一處變化",

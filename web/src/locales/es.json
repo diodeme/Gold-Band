@@ -1756,7 +1756,13 @@
     "noAttachments": "Sin adjuntos"
   },
   "turnFiles": {
-    "title": "{{count}} archivos cambiados en este turno",
+    "title": "Cambios registrados · {{count}} archivos",
+    "incompleteTitle": "Registro de cambios incompleto",
+    "recordedOnly": "Solo cambios registrados por las herramientas; no es el Git diff final.",
+    "editCount": "{{count}} ediciones",
+    "editNumber": "Edición {{number}}",
+    "evidenceUnavailable": "No se puede mostrar esta comparación porque el registro está incompleto.",
+    "comparisonTooLarge": "Esta comparación supera el límite de tamaño del visor.",
     "attachmentsTitle": "{{count}} adjuntos creados en este turno",
     "attachmentList": "Adjuntos creados en este turno",
     "showMoreAttachments": "Mostrar {{count}} adjuntos más",
@@ -1775,7 +1781,7 @@
     "previewDeleted": "Previsualizar el diff del archivo eliminado {{path}}",
     "previewLoading": "Cargando diff del archivo…",
     "previewLoadFailed": "No se pudo cargar el diff de este archivo",
-    "previewUnavailable": "Este diff es demasiado grande o no es compatible con la vista previa flotante. Ábrelo en el área de trabajo derecha.",
+    "previewUnavailable": "No se puede mostrar esta comparación porque el registro está incompleto.",
     "diffPreview": "Vista previa flotante del diff del archivo",
     "turnDiff": "Diff de este turno",
     "previousChange": "Cambio anterior",

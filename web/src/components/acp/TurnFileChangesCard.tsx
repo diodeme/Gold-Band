@@ -2,18 +2,20 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { ChevronDown, FileDiff, FileMinus2, FilePlus2, FileText, Paperclip } from 'lucide-react';
+import { ChevronDown, FileDiff, FileMinus2, FilePlus2, FileText, Info, Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
   fileChangeSetOwnerBranch,
@@ -89,12 +91,22 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const changeSet = loadState.key === requestKey ? loadState.changeSet : initialChangeSet;
   const error = loadState.key === requestKey && loadState.error;
   const summary = changeSet?.summary ?? inlineSummary;
+  const incomplete = (changeSet?.status ?? event.status) === 'partial';
   const changes = changeSet?.changes ?? [];
   const attachments = changeSet?.attachments ?? [];
-  const previewChanges = changes.slice(0, previewLimit);
-  const hiddenCount = Math.max(0, changes.length - previewLimit);
+  const fileGroups = useMemo(() => {
+    const groups = new Map<string, TurnFileChangeVm[]>();
+    for (const change of changeSet?.changes ?? []) {
+      const edits = groups.get(change.logicalPath) ?? [];
+      edits.push(change);
+      groups.set(change.logicalPath, edits);
+    }
+    return [...groups.values()];
+  }, [changeSet]);
+  const previewGroups = fileGroups.slice(0, previewLimit);
+  const hiddenCount = Math.max(0, fileGroups.length - previewLimit);
   const attachmentCount = changeSet ? attachments.length : inlineAttachmentCount;
-  const hasRegularChanges = (summary?.fileCount ?? 0) > 0;
+  const hasRegularChanges = (summary?.fileCount ?? 0) > 0 || incomplete;
   if (!changeSetId || (!hasRegularChanges && attachmentCount === 0) || !belongsToLocator) return null;
 
   const handleOpenChange = (open: boolean) => {
@@ -134,24 +146,34 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
       <CardHeader className="grid-cols-[1fr_auto] items-center gap-3 px-3 py-2.5">
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
           <FileDiff className="size-4 shrink-0 text-foreground" />
-          <span>{t('turnFiles.title', { count: summary.fileCount })}</span>
+          <span>{t(incomplete && summary.fileCount === 0 ? 'turnFiles.incompleteTitle' : 'turnFiles.title', { count: summary.fileCount })}</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" aria-label={t('turnFiles.recordedOnly')} className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <Info className="size-3.5" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[min(20rem,calc(100vw-2rem))]">
+              {t('turnFiles.recordedOnly')}
+            </TooltipContent>
+          </Tooltip>
         </CardTitle>
-        <div className="flex items-center gap-2 text-xs tabular-nums">
+        {!incomplete && <div className="flex items-center gap-2 text-xs tabular-nums">
           <span className="text-emerald-600 dark:text-emerald-400">+{summary.addedLines}</span>
           <span className="text-destructive">-{summary.deletedLines}</span>
-        </div>
+        </div>}
       </CardHeader>
       <CardContent className="border-t border-border/50 px-0 py-0">
         {error ? (
           <div className="px-3 py-2 text-xs text-destructive">{t('turnFiles.loadFailed')}</div>
         ) : changes.length === 0 ? (
-          <div className="px-3 py-2 text-xs text-muted-foreground">{t('turnFiles.loading')}</div>
+          <div className="px-3 py-2 text-xs text-muted-foreground">{t(incomplete ? 'turnFiles.partial' : 'turnFiles.loading')}</div>
         ) : (
           <Collapsible open={expanded} onOpenChange={handleOpenChange}>
             {!expanded ? (
               <div role="list" aria-label={t('turnFiles.fileList')}>
-                {previewChanges.map((change) => (
-                  <TurnFileChangeRow key={change.id} change={change} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
+                {previewGroups.map((edits) => (
+                  <RecordedFileGroup key={edits[0]!.logicalPath} edits={edits} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
                 ))}
               </div>
             ) : null}
@@ -159,10 +181,10 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
               'overflow-hidden',
               hasUserToggled && 'data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down',
             )}>
-              <ScrollArea className={cn(changes.length > 8 ? 'h-64' : 'h-auto')}>
+              <ScrollArea className={cn(fileGroups.length > 8 ? 'h-64' : 'h-auto')}>
                 <div role="list" aria-label={t('turnFiles.fileList')}>
-                  {changes.map((change) => (
-                    <TurnFileChangeRow key={change.id} change={change} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
+                  {fileGroups.map((edits) => (
+                    <RecordedFileGroup key={edits[0]!.logicalPath} edits={edits} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
                   ))}
                 </div>
               </ScrollArea>
@@ -298,13 +320,48 @@ function TurnAttachmentRow({
   );
 }
 
+function RecordedFileGroup({ edits, locator, changeSetId, onOpen }: {
+  edits: TurnFileChangeVm[];
+  locator: TurnFileLocatorVm | null;
+  changeSetId: string;
+  onOpen: (change: TurnFileChangeVm) => void;
+}) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const first = edits[0]!;
+  if (edits.length === 1) return <TurnFileChangeRow change={first} locator={locator} changeSetId={changeSetId} onOpen={onOpen} />;
+  return (
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <CollapsibleTrigger asChild>
+        <button type="button" role="listitem" data-recorded-file-group={first.logicalPath} className="flex min-h-10 w-full items-center gap-2 px-3 text-left hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <FileDiff className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1 truncate font-mono text-xs">{first.logicalPath}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">{t('turnFiles.editCount', { count: edits.length })}</span>
+          <ChevronDown className={cn('size-3.5 shrink-0', expanded && 'rotate-180')} />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ScrollArea className={edits.length > 6 ? 'h-60' : 'h-auto'}>
+          {expanded && edits.map((change, index) => (
+            <div key={change.id} data-recorded-edit={change.id} className="pl-3">
+              <TurnFileChangeRow change={change} label={t('turnFiles.editNumber', { number: index + 1 })} locator={locator} changeSetId={changeSetId} onOpen={onOpen} />
+            </div>
+          ))}
+        </ScrollArea>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function TurnFileChangeRow({
   change,
+  label,
   locator,
   changeSetId,
   onOpen,
 }: {
   change: TurnFileChangeVm;
+  label?: string;
   locator: TurnFileLocatorVm | null;
   changeSetId: string;
   onOpen: (change: TurnFileChangeVm) => void;
@@ -386,9 +443,9 @@ function TurnFileChangeRow({
   const content = (
     <>
       {icon}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{change.logicalPath}</span>
-      <span className="text-xs tabular-nums text-emerald-600 dark:text-emerald-400">+{change.addedLines ?? 0}</span>
-      <span className="text-xs tabular-nums text-destructive">-{change.deletedLines ?? 0}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{label ?? change.logicalPath}</span>
+      {change.addedLines != null && <span className="text-xs tabular-nums text-emerald-600 dark:text-emerald-400">+{change.addedLines}</span>}
+      {change.deletedLines != null && <span className="text-xs tabular-nums text-destructive">-{change.deletedLines}</span>}
     </>
   );
   const className = 'flex h-8 w-full items-center gap-2 border-b border-border/35 px-3 text-left last:border-b-0';

@@ -30,16 +30,13 @@ Gold Band is a desktop AI Agent client for local projects. It connects to mainst
 > [!TIP]
 > Want to see it first? Open the [Live UI Preview](https://gold-band.dion.blue/en/demo#). A desktop browser is recommended. The online preview is limited; the desktop client is the reference experience.
 
-> [!NOTE]
-> Gold Band is still in **Developer Preview**. Core capabilities are stable, while interaction details are iterating quickly.
-
 ## Highlights
 
 - **One client for mainstream Agents**: built-in support for Claude Code, Codex, Cursor, Gemini CLI, CodeBuddy, Goose, Qwen Code, OpenCode, Kimi Code, Amp, and Pi, plus custom integration of any ACP-compatible Agent.
 - **Three run modes**: DIRECT conversations, fixed WORKFLOW, and AUTO orchestration cover everything from quick questions to large requirements.
 - **Engineered workflows**: configure the Agent, model, role, and result evaluation per node; go back to a previous session to repair it, or start a new round to keep implementing the requirement.
 - **AUTO mode for large tasks**: a node splits the goal into subtasks and dispatches them; each subtask runs in its own Git worktree, a merge node combines the results, an accept node validates them, and the next round is dispatched based on the outcome.
-- **What you expect from an Agent client**: SKILL, MCP, and role (Profile) management, scheduled tasks, requirement management (Multica integration), file viewing and editing, source control, a built-in browser, IM remote intervention and notifications, plus wallpapers, avatars, fonts, and themes.
+- **What you expect from an Agent client**: SKILL, MCP, and role (Profile) management, scheduled tasks, file viewing and editing, source control, a built-in browser, IM remote intervention and notifications, plus wallpapers, avatars, fonts, and themes.
 - **Lightweight**: built with Tauri 2 and Rust. The installer is only tens of MB, and memory usage stays around 300 MB with multiple sessions running in parallel.
 
 ## Supported Agents
@@ -76,7 +73,7 @@ Suitable for large or complex tasks whose complete workflow cannot be determined
 - **Attachments and artifacts**: file selection, drag-and-drop, pasted images, workspace file references, previews, and node artifact archival.
 - **Runtime observability**: inspect Agent messages, tool calls, system prompts, raw frames, tokens, duration, and runtime state.
 - **Workspace**: file browsing and live editing, Git source control, and a built-in browser.
-- **Automation and collaboration**: scheduled tasks, Multica requirement management, IM remote intervention and notifications (WeCom for now), and system notifications.
+- **Automation and collaboration**: scheduled tasks, IM remote intervention and notifications (WeCom for now), and system notifications.
 - **Agent and context management**: manage Agents, Profiles, MCP, SKILL, and user-level or project-level context, with Agent environment diagnostics.
 - **Personalization**: themes, wallpapers, fonts, custom user and Agent avatars, and personal usage analytics.
 
@@ -84,7 +81,7 @@ Suitable for large or complex tasks whose complete workflow cannot be determined
 
 1. Download a desktop package from [Releases](https://github.com/diodeme/Gold-Band/releases), or build from source.
 2. Open Gold Band and add a local workspace.
-3. Enable Claude Code, Codex, or another ACP Agent in Agent Management and make sure its environment diagnostics pass.
+3. Enable Claude Code, Codex, or another ACP Agent in Agent Management (for now, Claude Code or Codex must already start locally on your machine) and make sure its environment diagnostics pass.
 4. Return to the conversation home and choose a run mode:
    - `DIRECT`: continuously chat with a selected Agent. Recommended for first-time use.
    - `WORKFLOW`: use a fixed workflow for tasks with clear stages and stronger validation.
@@ -117,7 +114,6 @@ Gold Band started from workflows, and the ACP client capabilities were built on 
 
 Known issues:
 
-- There are still some minor interaction bugs, and they are being fixed continuously.
 - WORKFLOW and AUTO rely on adversarial validation and loops, so they take more time and tokens than asking an Agent directly, but they reduce rework.
 - A built-in terminal and mobile remote control are not available yet.
 
@@ -141,7 +137,6 @@ Gold Band is not yet a good fit for:
 
 - Production environments that require a stable commercial SLA.
 - Workloads that depend on ACP Agents or Provider features not yet fully supported.
-- Users who do not want Developer Preview UI and behavior to change quickly.
 
 ## Local Development
 

@@ -8,12 +8,13 @@ import {
   groupsForComposerMenuTrigger,
   clearSlashCommandDismissal,
   matchComposerMenuQuery,
+  matchComposerMenuQueryAt,
+  replaceComposerMenuQuery,
   matchSlashCommandQuery,
   mergeSlashCommandSources,
   parseCommittedSlashCommand,
   parseCommittedSlashItem,
   rememberSlashCommandDismissal,
-  restoreSlashCommandInputFocus,
   restoreSlashCommandDismissal,
   slashCommandText,
   slashSendableText,
@@ -80,47 +81,6 @@ describe('slash command input contract', () => {
     ], [])).toEqual([
       { name: 'review', description: '' },
     ]);
-  });
-
-  it('restores composer focus after command selection has committed', () => {
-    let scheduled: (() => void) | null = null;
-    let focusCount = 0;
-    let selection: [number, number] | null = null;
-    const input = {
-      disabled: false,
-      value: 'fix this',
-      focus: () => { focusCount += 1; },
-      setSelectionRange: (start: number, end: number) => { selection = [start, end]; },
-    };
-
-    restoreSlashCommandInputFocus(
-      { current: input },
-      (callback) => { scheduled = callback; },
-    );
-
-    expect(focusCount).toBe(0);
-    expect(scheduled).not.toBeNull();
-    scheduled?.();
-    expect(focusCount).toBe(1);
-    expect(selection).toEqual([8, 8]);
-  });
-
-  it('does not restore focus when the composer becomes disabled', () => {
-    let scheduled: (() => void) | null = null;
-    let focusCount = 0;
-    const input = {
-      disabled: false,
-      focus: () => { focusCount += 1; },
-    };
-
-    restoreSlashCommandInputFocus(
-      { current: input },
-      (callback) => { scheduled = callback; },
-    );
-    input.disabled = true;
-    scheduled?.();
-
-    expect(focusCount).toBe(0);
   });
 
   it('unwraps a newly selected command on the first Backspace without deleting its text', () => {
@@ -276,5 +236,21 @@ describe('slash role catalog', () => {
     expect(composerTextFromPromptRole({ name: '开发' }, '')).toBe('@开发 ');
     expect(composerTextFromPromptRole({ name: '开发' }, '爱仕达')).toBe('@开发 爱仕达');
     expect(composerTextFromPromptRole(null, '继续')).toBe('继续');
+  });
+});
+
+describe('menu query before existing text', () => {
+  it('reads the trigger from the start of the input up to the caret', () => {
+    expect(matchComposerMenuQueryAt('@hello', 1)).toEqual({ trigger: '@', query: '' });
+    expect(matchComposerMenuQueryAt('/rehello', 3)).toEqual({ trigger: '/', query: 're' });
+    expect(matchComposerMenuQueryAt('hello @', 7)).toBeNull();
+    expect(matchComposerMenuQueryAt('@hello', null)).toBeNull();
+  });
+
+  it('replaces only the query and keeps one separator before the remaining text', () => {
+    expect(replaceComposerMenuQuery('/rehello', 3, '/review ')).toEqual({ input: '/review hello', caret: 8 });
+    expect(replaceComposerMenuQuery('/re hello', 3, '/review ')).toEqual({ input: '/review hello', caret: 7 });
+    expect(replaceComposerMenuQuery('@srchello', 4, '')).toEqual({ input: 'hello', caret: 0 });
+    expect(replaceComposerMenuQuery('/re', 3, '/review ')).toEqual({ input: '/review ', caret: 8 });
   });
 });

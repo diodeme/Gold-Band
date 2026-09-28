@@ -35,7 +35,6 @@ import {
   buildSlashCatalog,
   committedRoleSnapshot,
   parseCommittedSlashItem,
-  restoreSlashCommandInputFocus,
   slashSendableText,
 } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
@@ -761,16 +760,13 @@ export function ConversationComposer({
     ),
     [agentCommands.commands, isDirect, profiles, t],
   );
-  const restoreComposerFocus = useCallback(() => {
-    restoreSlashCommandInputFocus(composerTextareaRef);
-  }, []);
   const mentionLabels = useMentionMenuLabels();
   const slashCommands = useSlashCommandController({
     input: content,
     groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setContent,
-    onInputFocusRequested: restoreComposerFocus,
+    textareaRef: composerTextareaRef,
     mention: {
       projectId,
       labels: mentionLabels,

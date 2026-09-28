@@ -7,19 +7,6 @@ const SLASH_COMMAND_SEPARATOR_RE = /^[\s\p{P}]/u;
 const MAX_VISIBLE_SLASH_COMMANDS = 512;
 const dismissedSlashQueries = new Map<string, string>();
 
-export interface SlashCommandFocusTarget {
-  disabled?: boolean;
-  value?: string;
-  focus: () => void;
-  setSelectionRange?: (start: number, end: number) => void;
-}
-
-export interface SlashCommandFocusRef {
-  readonly current: SlashCommandFocusTarget | null;
-}
-
-export type SlashCommandFocusScheduler = (callback: () => void) => unknown;
-
 export interface CommittedSlashCommand {
   command: AcpCommandItemVm;
   prefix: string;
@@ -332,11 +319,37 @@ export function composerTextFromPromptRole(
 export type ComposerMenuTrigger = '/' | '@';
 
 export function matchComposerMenuQuery(input: string): { trigger: ComposerMenuTrigger; query: string } | null {
-  const mention = input.match(MENTION_QUERY_RE);
+  return matchComposerMenuQueryAt(input, input.length);
+}
+
+/**
+ * The menu query is the `/` or `@` token typed at the start of the input, up to
+ * the caret. Text after the caret is existing content that the chosen item is
+ * inserted in front of.
+ */
+export function matchComposerMenuQueryAt(
+  input: string,
+  caret: number | null,
+): { trigger: ComposerMenuTrigger; query: string } | null {
+  if (caret === null) return null;
+  const head = input.slice(0, caret);
+  const mention = head.match(MENTION_QUERY_RE);
   if (mention) return { trigger: '@', query: mention[1] };
-  const slash = input.match(SLASH_QUERY_RE);
+  const slash = head.match(SLASH_QUERY_RE);
   if (slash) return { trigger: '/', query: slash[1] };
   return null;
+}
+
+/** Replaces the menu query before `caret` and returns the new input with its caret. */
+export function replaceComposerMenuQuery(
+  input: string,
+  caret: number,
+  replacement: string,
+): { input: string; caret: number } {
+  const rest = input.slice(caret);
+  // A completed token needs one separator before the text that follows it.
+  const text = replacement.endsWith(' ') && /^\s/u.test(rest) ? replacement.trimEnd() : replacement;
+  return { input: `${text}${rest}`, caret: text.length };
 }
 
 export function matchSlashCommandQuery(input: string): string | null {
@@ -394,21 +407,6 @@ function normalizeSlashCommand(candidate: unknown): AcpCommandItemVm | null {
 
 export function slashCommandText(commandName: string): string {
   return `/${commandName.trim().replace(/^[@/]+/, '')} `;
-}
-
-export function restoreSlashCommandInputFocus(
-  inputRef: SlashCommandFocusRef,
-  schedule: SlashCommandFocusScheduler = requestAnimationFrame,
-): void {
-  schedule(() => {
-    const input = inputRef.current;
-    if (!input || input.disabled) return;
-    input.focus();
-    if (typeof input.value === 'string' && input.setSelectionRange) {
-      const caret = input.value.length;
-      input.setSelectionRange(caret, caret);
-    }
-  });
 }
 
 export function unwrapSelectedSlashCommand(

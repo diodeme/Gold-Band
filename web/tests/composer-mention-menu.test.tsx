@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, useState } from 'react';
+import { act, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -92,17 +92,25 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function Harness({ roles }: { roles: SlashCatalogGroup[] }) {
-  const [input, setInput] = useState('');
+const commandGroup: SlashCatalogGroup = {
+  id: 'agent',
+  heading: 'Agent',
+  items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review' }],
+};
+
+function Harness({ roles, initial = '' }: { roles: SlashCatalogGroup[]; initial?: string }) {
+  const [input, setInput] = useState(initial);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const slash = useSlashCommandController({
     input,
     groups: roles,
     onInputChange: setInput,
+    textareaRef,
     mention: { projectId: 'project-1', labels, onSelectWorkspaceFile: selected },
   });
   return (
     <div>
-      <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={slash.onKeyDown} />
+      <textarea ref={textareaRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={slash.onKeyDown} />
       <ul data-open={slash.isOpen}>
         {slash.filteredGroups.map((group) => (
           <li key={group.id} data-heading={group.heading} data-status={group.status}>
@@ -114,7 +122,7 @@ function Harness({ roles }: { roles: SlashCatalogGroup[] }) {
   );
 }
 
-async function mount(roles: SlashCatalogGroup[] = roleGroup) {
+async function mount(roles: SlashCatalogGroup[] = roleGroup, initial = '') {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   const host = document.createElement('div');
   document.body.append(host);
@@ -123,12 +131,14 @@ async function mount(roles: SlashCatalogGroup[] = roleGroup) {
     await act(async () => root.unmount());
     host.remove();
   };
-  await act(async () => root.render(<Harness roles={roles} />));
+  await act(async () => root.render(<Harness roles={roles} initial={initial} />));
   const textarea = host.querySelector('textarea')!;
-  const type = async (value: string) => {
+  /** Sets the value as typing would, leaving the caret at `caret` (default: the end). */
+  const type = async (value: string, caret = value.length) => {
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
       setter.call(textarea, value);
+      textarea.setSelectionRange(caret, caret);
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
     });
   };
@@ -210,5 +220,45 @@ describe('@ mention navigation', () => {
 
     await act(async () => resolveFirst({ requestId: 'a', entries: [entry('stale.ts')], truncated: false }));
     expect(groups()).toEqual([{ heading: 'Files', status: undefined, items: 'main.ts' }]);
+  });
+});
+
+describe('menu trigger typed before existing text', () => {
+  it('opens / at the start of existing text and keeps that text after the command', async () => {
+    const { textarea, type, press, groups } = await mount([commandGroup], 'please check');
+    await type('/please check', 1);
+    expect(groups()).toEqual([{ heading: 'Agent', status: undefined, items: 'review' }]);
+
+    await press('Enter');
+    expect(textarea.value).toBe('/review please check');
+  });
+
+  it('opens @ at the start of existing text, adds a file and keeps the text', async () => {
+    api.listWorkspaceDirectory.mockResolvedValue([entry('README.md')]);
+    const { textarea, type, press, groups } = await mount(roleGroup, 'explain this');
+    await type('@explain this', 1);
+    expect(groups()[0].items).toBe('Files,Roles');
+
+    await press('Enter');
+    expect(textarea.value).toBe('@explain this');
+    expect(textarea.selectionStart).toBe(1);
+    expect(groups()[0].items).toBe('README.md');
+
+    await press('Enter');
+    expect(selected).toHaveBeenCalledWith(entry('README.md'));
+    expect(textarea.value).toBe('explain this');
+  });
+
+  it('puts a chosen role in front of the existing text', async () => {
+    const { textarea, type, press } = await mount(roleGroup, 'fix the bug');
+    await type('@开fix the bug', 2);
+    await press('Enter');
+    expect(textarea.value).toBe('@开发 fix the bug');
+  });
+
+  it('does not open for a trigger typed after other text', async () => {
+    const { type, groups } = await mount([commandGroup], 'hello');
+    await type('hello /', 7);
+    expect(groups()).toEqual([]);
   });
 });

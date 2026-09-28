@@ -181,7 +181,7 @@ import { ConversationPromptQueue } from "@/components/conversation/ConversationP
 import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
 import { UserMessageWorkspaceFiles } from "@/components/conversation/UserMessageWorkspaceFiles";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
-import { buildSlashCatalog, committedRoleSnapshot, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
+import { buildSlashCatalog, committedRoleSnapshot, parseCommittedSlashItem, slashSendableText } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { useMentionMenuLabels } from "@/hooks/useMentionWorkspaceFiles";
@@ -2473,16 +2473,13 @@ export function ACPChatDialog(
     ),
     [agentCommands.commands, roleProfiles, t],
   );
-  const restoreComposerFocus = useCallback(() => {
-    restoreSlashCommandInputFocus(composerTextareaRef);
-  }, []);
   const mentionLabels = useMentionMenuLabels();
   const slashCommands = useSlashCommandController({
     input: prompt,
     groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setPrompt,
-    onInputFocusRequested: restoreComposerFocus,
+    textareaRef: composerTextareaRef,
     mention: {
       projectId,
       labels: mentionLabels,

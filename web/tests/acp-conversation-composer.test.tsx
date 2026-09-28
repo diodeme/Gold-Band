@@ -189,7 +189,7 @@ describe('AcpConversationComposer', () => {
       committedSlashCommand: { prefix: '/review', description: 'Review' },
     });
 
-    const wrapper = host.querySelector('[data-slot="prompt-input-textarea-with-adornment"]');
+    const wrapper = host.querySelector('[data-slot="prompt-input-textarea-field"][data-leading-adornment="true"]');
     const textarea = wrapper?.querySelector('textarea');
     const adornment = wrapper?.querySelector(':scope > span');
     expect(wrapper?.className).toContain('px-2.5');

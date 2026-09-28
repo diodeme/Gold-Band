@@ -30,16 +30,13 @@ Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Ag
 > [!TIP]
 > 想先看看长什么样？打开 [在线 UI 预览](https://gold-band.dion.blue/zh/demo#)，推荐使用桌面端浏览器。在线预览能力受限，最终效果以客户端为准。
 
-> [!NOTE]
-> Gold Band 仍处于 **Developer Preview**。核心能力已稳定可用，交互细节仍在快速迭代。
-
 ## 亮点
 
 - **一个客户端接入主流 Agent**：内置 Claude Code、Codex、Cursor、Gemini CLI、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi，也可以自定义接入任何支持 ACP 的 Agent。
 - **三种运行模式**：DIRECT 直接会话、WORKFLOW 固定工作流、AUTO 动态编排，覆盖从日常问答到大型需求的各类任务。
 - **工程化管理的工作流**：每个节点可单独配置 Agent、模型、角色和结果判定方式；支持回到过去的会话进行修复，也支持发起新的 round 继续实现需求。
 - **面向大型任务的 AUTO 模式**：由节点拆分子任务并分发，每个子任务在独立 Git worktree 上执行，完成后由 merge 节点合并、accept 节点验收，再根据结果进入下一轮分发。
-- **主流 Agent 客户端能力基本齐全**：SKILL、MCP、角色（Profile）管理，定时任务，需求管理（对接 Multica），文件查看与编辑，源码管理，内置浏览器，IM 远程干预与通知，壁纸、头像、字体、主题等个性化设置。
+- **主流 Agent 客户端能力基本齐全**：SKILL、MCP、角色（Profile）管理，定时任务，文件查看与编辑，源码管理，内置浏览器，IM 远程干预与通知，壁纸、头像、字体、主题等个性化设置。
 - **轻量**：基于 Tauri 2 + Rust，安装包仅几十 MB，多会话并行时内存占用约 300 MB。
 
 ## 支持的 Agent
@@ -76,7 +73,7 @@ Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Ag
 - **附件与产物**：文件选择、拖拽、图片粘贴、工作空间文件引用、附件预览和节点产物归档。
 - **运行观测**：查看 Agent 消息、工具调用、系统提示、原始帧、Token、耗时和运行状态。
 - **工作空间**：文件浏览与实时编辑、Git 源码管理、内置浏览器。
-- **自动化与协作**：定时任务、Multica 需求管理、IM 远程干预与通知（目前支持企业微信）、系统通知。
+- **自动化与协作**：定时任务、IM 远程干预与通知（目前支持企业微信）、系统通知。
 - **Agent 与上下文管理**：统一维护 Agent、Profile、MCP、SKILL 及用户级、项目级上下文，并提供 Agent 环境诊断。
 - **个性化**：主题、壁纸、字体、用户与 Agent 自定义头像，以及个人数据分析。
 
@@ -84,7 +81,7 @@ Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Ag
 
 1. 从 [Releases](https://github.com/diodeme/Gold-Band/releases) 下载桌面安装包，或从源码构建。
 2. 打开 Gold Band，添加一个本地工作空间。
-3. 在 Agent 管理中启用 Claude Code、Codex 或其他 ACP Agent，并确认环境诊断通过。
+3. 在 Agent 管理中启用 Claude Code、Codex（暂时需要本机已能正常启动 Claude Code / Codex）或其他 ACP Agent，并确认环境诊断通过。
 4. 回到会话首页，选择运行模式：
    - `DIRECT`：直接与指定 Agent 持续对话，推荐首次使用。
    - `WORKFLOW`：使用固定工作流，适合流程明确、需要强验证的任务。
@@ -117,7 +114,6 @@ Gold Band 从工作流出发，ACP 客户端能力是在此基础上补齐的。
 
 已知问题：
 
-- 交互设计上仍有一些小 Bug，正在持续修复。
 - 工作流和 AUTO 模式基于对抗式验证和 loop 思想，耗时与 Token 消耗会高于直接让 Agent 干活，但能减少返工。
 - 内置终端和移动端远程控制尚未提供。
 
@@ -141,7 +137,6 @@ Gold Band 从工作流出发，ACP 客户端能力是在此基础上补齐的。
 
 - 要求稳定商用 SLA 的生产环境。
 - 依赖尚未完整支持的 ACP Agent 或 Provider 特性。
-- 不愿接受 Developer Preview 阶段 UI 和行为快速变化的用户。
 
 ## 本地开发
 

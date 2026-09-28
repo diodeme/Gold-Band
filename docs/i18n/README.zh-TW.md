@@ -30,16 +30,13 @@ Gold Band 是一款面向本機專案的 AI Agent 桌面客戶端。它透過 Ag
 > [!TIP]
 > 想先看看長什麼樣子？打開 [線上 UI 預覽](https://gold-band.dion.blue/zh/demo#)，建議使用桌面瀏覽器。線上預覽能力受限，最終效果以客戶端為準。
 
-> [!NOTE]
-> Gold Band 仍處於 **Developer Preview**。核心能力已穩定可用，互動細節仍在快速迭代。
-
 ## 亮點
 
 - **一個客戶端接入主流 Agent**：內建 Claude Code、Codex、Cursor、Gemini CLI、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi，也可以自訂接入任何支援 ACP 的 Agent。
 - **三種執行模式**：DIRECT 直接對話、WORKFLOW 固定工作流、AUTO 動態編排，涵蓋從日常問答到大型需求的各類任務。
 - **工程化管理的工作流**：每個節點可單獨設定 Agent、模型、角色與結果判定方式；支援回到過去的對話進行修復，也支援發起新的 round 繼續實作需求。
 - **面向大型任務的 AUTO 模式**：由節點拆分子任務並分派，每個子任務在獨立的 Git worktree 上執行，完成後由 merge 節點合併、accept 節點驗收，再依結果進入下一輪分派。
-- **主流 Agent 客戶端能力大致齊全**：SKILL、MCP、角色（Profile）管理，排程任務，需求管理（對接 Multica），檔案檢視與編輯，原始碼管理，內建瀏覽器，IM 遠端介入與通知，以及桌布、頭像、字型、主題等個人化設定。
+- **主流 Agent 客戶端能力大致齊全**：SKILL、MCP、角色（Profile）管理，排程任務，檔案檢視與編輯，原始碼管理，內建瀏覽器，IM 遠端介入與通知，以及桌布、頭像、字型、主題等個人化設定。
 - **輕量**：基於 Tauri 2 + Rust，安裝包僅數十 MB，多對話並行時記憶體占用約 300 MB。
 
 ## 支援的 Agent
@@ -76,7 +73,7 @@ Gold Band 是一款面向本機專案的 AI Agent 桌面客戶端。它透過 Ag
 - **附件與產物**：檔案選擇、拖放、圖片貼上、工作區檔案引用、附件預覽和節點產物歸檔。
 - **執行觀測**：檢視 Agent 訊息、工具呼叫、系統提示、原始幀、Token、耗時和執行狀態。
 - **工作區**：檔案瀏覽與即時編輯、Git 原始碼管理、內建瀏覽器。
-- **自動化與協作**：排程任務、Multica 需求管理、IM 遠端介入與通知（目前支援企業微信）、系統通知。
+- **自動化與協作**：排程任務、IM 遠端介入與通知（目前支援企業微信）、系統通知。
 - **Agent 與上下文管理**：統一維護 Agent、Profile、MCP、SKILL 及使用者層級、專案層級上下文，並提供 Agent 環境診斷。
 - **個人化**：主題、桌布、字型、使用者與 Agent 自訂頭像，以及個人資料分析。
 
@@ -84,7 +81,7 @@ Gold Band 是一款面向本機專案的 AI Agent 桌面客戶端。它透過 Ag
 
 1. 從 [Releases](https://github.com/diodeme/Gold-Band/releases) 下載桌面安裝包，或從原始碼建置。
 2. 打開 Gold Band，新增一個本機工作區。
-3. 在 Agent 管理中啟用 Claude Code、Codex 或其他 ACP Agent，並確認環境診斷通過。
+3. 在 Agent 管理中啟用 Claude Code、Codex（暫時需要本機已能正常啟動 Claude Code / Codex）或其他 ACP Agent，並確認環境診斷通過。
 4. 回到對話首頁，選擇執行模式：
    - `DIRECT`：直接與指定 Agent 持續對話，建議首次使用。
    - `WORKFLOW`：使用固定工作流，適合流程明確、需要強驗證的任務。
@@ -117,7 +114,6 @@ Gold Band 從工作流出發，ACP 客戶端能力是在此基礎上補齊的。
 
 已知問題：
 
-- 互動設計上仍有一些小 Bug，正在持續修復。
 - 工作流與 AUTO 模式基於對抗式驗證與 loop 思想，耗時與 Token 消耗會高於直接讓 Agent 做事，但能減少返工。
 - 內建終端機與行動端遠端控制尚未提供。
 
@@ -141,7 +137,6 @@ Gold Band 從工作流出發，ACP 客戶端能力是在此基礎上補齊的。
 
 - 要求穩定商用 SLA 的正式環境。
 - 依賴尚未完整支援的 ACP Agent 或 Provider 特性。
-- 不願接受 Developer Preview 階段 UI 與行為快速變化的使用者。
 
 ## 本機開發
 

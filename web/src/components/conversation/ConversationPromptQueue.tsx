@@ -21,7 +21,7 @@ import {
   GripVertical,
   ListPlus,
   MessageSquareQuote,
-  SquareCode,
+  FileText,
   UserRound,
   Paperclip,
   Pencil,
@@ -306,7 +306,7 @@ function QueueItem({
                 className="inline-flex items-center gap-1"
                 data-queue-item-workspace-file-count="true"
               >
-                <SquareCode className="size-3" />
+                <FileText className="size-3" />
                 {item.workspaceFileCount}
               </span>
             ) : null}

@@ -6,6 +6,7 @@ import { EditorView } from '@codemirror/view';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { diffQuoteSource } from '@/components/workspace/files/TurnFileWorkspacePanel';
+import { unifiedDiffSelection } from '@/lib/diff-chunk-selection';
 import { readEditorLineSelection, readUnifiedDiffSelection } from '@/lib/editor-selection-quote';
 
 const views: EditorView[] = [];
@@ -29,7 +30,7 @@ function mount(doc: string, original?: string) {
       extensions: [
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
-        ...(original === undefined ? [] : [unifiedMergeView({ original, mergeControls: false })]),
+        ...(original === undefined ? [] : [unifiedMergeView({ original, mergeControls: false }), unifiedDiffSelection]),
       ],
     }),
   });
@@ -41,6 +42,12 @@ function lineText(view: EditorView, line: number) {
   const element = Array.from(view.contentDOM.querySelectorAll('.cm-line'))
     .find((node) => !node.closest('.cm-deletedChunk') && view.state.doc.lineAt(view.posAtDOM(node)).number === line);
   return element!.firstChild ?? element!;
+}
+
+/** An editor selection in a diff view, shown by a DOM selection over its content as the editor would. */
+function selectDiff(view: EditorView, anchor: number, head: number, userEvent?: string) {
+  view.dispatch({ selection: { anchor, head }, userEvent });
+  select(view.contentDOM, 0, view.contentDOM, view.contentDOM.childNodes.length);
 }
 
 function select(startNode: Node, startOffset: number, endNode: Node, endOffset: number) {
@@ -71,35 +78,30 @@ describe('editor selection quote readers', () => {
 
   it('quotes a removed block selected on its own as a removal-only hunk', () => {
     const view = mount('x1\nx2\nx5', 'x1\nx2\nx3\nx4\nx5');
-    const deleted = view.dom.querySelector('.cm-deletedChunk');
-    expect(deleted).not.toBeNull();
-    const deletedText = deleted!.querySelector('.cm-deletedLine')!;
-    select(deletedText, 0, deletedText, deletedText.childNodes.length);
+    selectDiff(view, 5, 6);
 
     expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -3,2 +2,0 @@\n-x3\n-x4');
   });
 
-  it('quotes the whole change when only the removed half of a modified chunk is selected', () => {
+  it('quotes the whole change when a pointer selection touches part of a modified chunk', () => {
     const view = mount('{\n  "a": 1,\n  "b": 2\n}', '{\n  "a": 1\n}');
-    const deletedText = view.dom.querySelector('.cm-deletedChunk .cm-deletedLine')!;
-    select(deletedText, 0, deletedText, deletedText.childNodes.length);
+    selectDiff(view, 4, 6, 'select.pointer');
 
     expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -2 +2,2 @@\n-  "a": 1\n+  "a": 1,\n+  "b": 2');
   });
 
-  it('keeps a removed block when a selection starts on a line above it and ends inside it', () => {
+  it('keeps a removed block the selection runs across', () => {
     const view = mount('x1\nx2\nx5', 'x1\nx2\nx3\nx4\nx5');
-    const deletedText = view.dom.querySelector('.cm-deletedChunk .cm-deletedLine')!;
-    select(lineText(view, 2), 0, deletedText, deletedText.childNodes.length);
+    selectDiff(view, 3, 6);
 
     expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -2,3 +2 @@\n x2\n-x3\n-x4');
   });
 
-  it('keeps a removed block the selection runs across without ending inside it', () => {
+  it('leaves out a removed block below a selection that ends at a line end', () => {
     const view = mount('x1\nx2\nx5', 'x1\nx2\nx3\nx4\nx5');
-    select(lineText(view, 2), 0, lineText(view, 3), 0);
+    selectDiff(view, 3, 5);
 
-    expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -2,3 +2 @@\n x2\n-x3\n-x4');
+    expect(readUnifiedDiffSelection(view)?.value.text).toBe('@@ -2 +2 @@\n x2');
   });
 });
 

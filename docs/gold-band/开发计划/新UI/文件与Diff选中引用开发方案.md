@@ -20,8 +20,9 @@
 
 - [x] 后端 `src/provider/quotes.rs`：类型、校验、按语言渲染 `runtime/user_quote.md`（7 种语言）；timeline 中整文件 diff 正文置空。
 - [x] 新会话的引用、工作空间文件与角色作为任务输入写入 `authoring/task-prompt-input.json`；定时任务内容快照 `quotes` 参与指纹（不含 ID），编辑只允许按 ID 删除。
-- [x] 前端 `diff-quote.ts`：基于 `@codemirror/merge` 行对齐 chunk 生成 git 风格 hunk；选区扩展到触及的整个 chunk，删除块由选区端点所在或选区覆盖的 `.cm-deletedChunk` 判定。
+- [x] 前端 `diff-quote.ts`：基于 `@codemirror/merge` 行对齐 chunk 生成 git 风格 hunk；选区扩展到触及的整个 chunk，选区读取以编辑器状态选区为准，删除块由选区触及的 chunk 判定。
 - [x] 修复：从新增/上下文行向上拖入删除块时选区被钳在块边界、红色无选中效果，起止点重合时选区消失。根因：删除块是无文档位置的 block widget，从文档行开始的拖动由 CodeMirror 鼠标选区接管，坐标只能换算到 widget 边界并回写 DOM 选区；另外选区覆盖整块但端点不在块内时，引用读取漏掉该块。修复：`ReadonlyUnifiedDiff` 通过官方 `EditorView.mouseSelectionStyle` 在指针位于删除块时把选区头放到块的另一侧，整块选中（单击拖动生效，双击/三击沿用默认）；`readUnifiedDiffSelection` 计入选区相交的所有删除块。先补 `readonly-unified-diff.test.tsx` 与 `editor-selection-quote.test.ts`「runs across」用例，修复前 3 条失败，修复后通过；浏览器验证上下两个方向拖动、从删除块起拖、双击选词与引用正文。
+- [x] 修复：从删除块内发起选中不稳定，拖到一半选区消失或跳到别处。根因：删除块 widget 默认忽略事件，按下后由浏览器原生选区接管；CodeMirror 读选区时跳过锚点在被忽略 widget 内的原生选区，状态选区保持旧值，只读未聚焦视图在滚动重绘时（`selectionNotFocus`）把旧状态选区写回 DOM，原生选区被覆盖。修复：选区统一由编辑器接管，删除块 `pointer-events: none`，`diff-chunk-selection.ts` 以 `elementAtHeight` 识别指针下的删除块；未变更行自由选中，选区触及变更时吸附整个 chunk（删除块起点到新增行末尾），按下删除块、拖入删除块、双击/三击删除块都整块选中；`transactionFilter` 对其他指针选区（如双击新增行单词）同样吸附；复制含变更的选区时写入与引用相同的 diff 片段（只读视图无焦点，copy 事件落在 scroller，监听挂在编辑器根节点）；`readUnifiedDiffSelection` 改为从状态选区计算，DOM 选区只提供按钮位置。先改 `readonly-unified-diff.test.tsx`、`editor-selection-quote.test.ts`，修复前失败、修复后通过；浏览器验证从删除块按下拖到边缘自动滚动后选区保持、跨出 chunk 后选区头自由、上下文拖入吸附、双击、复制输出。
 - [x] `editor-selection-quote.ts` 读取 DOM Selection（只读视图无焦点）；`EditorSelectionQuote` / `DiffSelectionQuote` 复用通用 `SelectionQuoteButton`，经 `ComposerReferenceTarget.addQuote` 送入当前 composer。
 - [x] composer chip 按来源显示图标与标签，超预算提示给出大小、上限与剩余量；用户消息引用弹层展示来源；定时任务编辑面板展示可删除的引用标签。
 

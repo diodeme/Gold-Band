@@ -102,6 +102,27 @@ impl From<String> for ConversationPromptInput {
     }
 }
 
+/// Structured input that belongs to the task alongside its requirement and
+/// `authoring/inputs`. Like those, it reaches every new session that renders
+/// the requirement, not just the first visible turn. The role exists only for
+/// Direct tasks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPromptInput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
+}
+
+impl TaskPromptInput {
+    pub fn is_empty(&self) -> bool {
+        self.quotes.is_empty() && self.role.is_none() && self.workspace_files.is_empty()
+    }
+}
+
 pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
@@ -110,8 +131,22 @@ pub fn conversation_agent_prompt_text(
     input: &ConversationPromptInput,
     language: DesktopLanguage,
 ) -> String {
-    let user_input = conversation_prompt_text(&input.display_text, &input.quotes, language);
-    let Some(role) = input.role.as_ref() else {
+    agent_prompt_text(
+        &input.display_text,
+        &input.quotes,
+        input.role.as_ref(),
+        language,
+    )
+}
+
+fn agent_prompt_text(
+    display_text: &str,
+    quotes: &[UserPromptQuote],
+    role: Option<&UserPromptRole>,
+    language: DesktopLanguage,
+) -> String {
+    let user_input = conversation_prompt_text(display_text, quotes, language);
+    let Some(role) = role else {
         return user_input;
     };
     if role.content.trim().is_empty() {
@@ -362,6 +397,10 @@ pub struct WorkerInvocation {
     /// and are referenced from the first user message as task-inputs/*.
     #[serde(default)]
     pub task_input_attachment_paths: Vec<String>,
+    /// Task quotes, role and workspace files, loaded with the task inputs for
+    /// every new session and applied when the requirement is rendered.
+    #[serde(default, skip_serializing_if = "TaskPromptInput::is_empty")]
+    pub task_prompt_input: TaskPromptInput,
     /// Attachments explicitly added by a later user turn belong to this
     /// attempt and are materialized under user-inputs/* before prompting.
     #[serde(default)]
@@ -371,7 +410,7 @@ pub struct WorkerInvocation {
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
-    /// Registered workspace roots used to resolve `prompt_display.workspace_files`.
+    /// Registered workspace roots used to resolve the turn's workspace files.
     /// Empty means the conversation project root in `adapter_workspace_dir`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_file_roots: Vec<PromptWorkspaceRoot>,
@@ -1854,6 +1893,7 @@ impl AcpProvider {
             finalize_req.continue_ref = Some(continue_ref);
             finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
             finalize_req.task_input_attachment_paths.clear();
+            finalize_req.task_prompt_input = TaskPromptInput::default();
             finalize_req.user_input_attachment_paths.clear();
             let control_turn_kind = if preserve_control_prompt
                 && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
@@ -2306,7 +2346,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
-    let requirement_for_agent = requirement_text_for_agent(req, &requirement_text);
+    let turn_context = turn_prompt_context(req, &requirement_text);
+    let requirement_for_agent = requirement_text_for_agent(req, &turn_context, &requirement_text);
 
     let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
@@ -2346,11 +2387,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         attachment_metas.push(resolved.meta);
         content_blocks.push(resolved.block);
     }
-    let prompt_workspace_files = req
-        .prompt_display
-        .as_ref()
-        .map(|input| input.workspace_files.clone())
-        .unwrap_or_default();
+    let prompt_workspace_files = turn_context.workspace_files;
     let resolved_workspace_files = if prompt_workspace_files.is_empty() {
         Vec::new()
     } else {
@@ -2364,7 +2401,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         };
         resolve_prompt_workspace_files(
             &roots,
-            &prompt_workspace_files,
+            prompt_workspace_files,
             req.task_input_attachment_paths.len() + req.user_input_attachment_paths.len(),
         )
         .map_err(|error| {
@@ -2397,15 +2434,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         system_prompt,
         user_prompt,
         display_text,
-        quotes: req
-            .prompt_display
-            .as_ref()
-            .map(|input| input.quotes.clone())
-            .unwrap_or_default(),
-        role: req
-            .prompt_display
-            .as_ref()
-            .and_then(|input| input.role.clone()),
+        quotes: turn_context.quotes.to_vec(),
+        role: turn_context.role.cloned(),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
@@ -2424,14 +2454,59 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     })
 }
 
-fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) -> String {
-    let Some(display) = req.prompt_display.as_ref() else {
-        return requirement_text.to_string();
-    };
-    if display.role.is_none() && display.quotes.is_empty() {
+/// Quotes, role and workspace files the agent receives with this turn: the
+/// task's own input when the requirement is rendered, otherwise those of the
+/// user message being sent.
+struct TurnPromptContext<'a> {
+    text: &'a str,
+    quotes: &'a [UserPromptQuote],
+    role: Option<&'a UserPromptRole>,
+    workspace_files: &'a [PromptWorkspaceFileRef],
+}
+
+fn turn_prompt_context<'a>(
+    req: &'a WorkerInvocation,
+    requirement_text: &'a str,
+) -> TurnPromptContext<'a> {
+    if req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask {
+        let input = &req.task_prompt_input;
+        return TurnPromptContext {
+            text: requirement_text,
+            quotes: &input.quotes,
+            role: input.role.as_ref(),
+            workspace_files: &input.workspace_files,
+        };
+    }
+    match req.prompt_display.as_ref() {
+        Some(input) => TurnPromptContext {
+            text: &input.display_text,
+            quotes: &input.quotes,
+            role: input.role.as_ref(),
+            workspace_files: &input.workspace_files,
+        },
+        None => TurnPromptContext {
+            text: requirement_text,
+            quotes: &[],
+            role: None,
+            workspace_files: &[],
+        },
+    }
+}
+
+fn requirement_text_for_agent(
+    req: &WorkerInvocation,
+    context: &TurnPromptContext<'_>,
+    requirement_text: &str,
+) -> String {
+    if context.role.is_none() && context.quotes.is_empty() {
         return requirement_text.to_string();
     }
-    conversation_agent_prompt_text(display, req.runtime_context.language)
+    agent_prompt_text(
+        context.text,
+        context.quotes,
+        context.role,
+        req.runtime_context.language,
+    )
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
@@ -3382,6 +3457,7 @@ mod tests {
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
+            task_prompt_input: TaskPromptInput::default(),
             user_input_attachment_paths: Vec::new(),
             attachment_projection_policy: AttachmentProjectionPolicy::from(
                 &crate::config::RuntimeConfig::default(),
@@ -3436,20 +3512,14 @@ mod tests {
         let mut req = test_worker_invocation(attempt_dir);
         req.adapter_workspace_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         req.workspace_dir = req.adapter_workspace_dir.clone();
-        req.prompt_display = Some(ConversationPromptInput {
-            display_text: String::new(),
-            quotes: Vec::new(),
-            role: None,
-            workspace_files: vec![PromptWorkspaceFileRef {
-                project_id: "project-001".to_string(),
-                relative_path: "WorkspaceFileTree.tsx".to_string(),
-            }],
-        });
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "project-001".to_string(),
+            relative_path: "WorkspaceFileTree.tsx".to_string(),
+        }];
 
         let prompt = render_prompt_bundle(&req).unwrap();
 
         assert_eq!(prompt.workspace_files.len(), 1);
-        assert_eq!(prompt.display_text.as_deref(), Some(""));
         assert!(matches!(
             prompt.content_blocks.last(),
             Some(AcpContentBlock::ResourceLink(link))
@@ -3471,15 +3541,10 @@ mod tests {
             project_id: "other-project".to_string(),
             root: other.path().to_path_buf(),
         }];
-        req.prompt_display = Some(ConversationPromptInput {
-            display_text: String::new(),
-            quotes: Vec::new(),
-            role: None,
-            workspace_files: vec![PromptWorkspaceFileRef {
-                project_id: "other-project".to_string(),
-                relative_path: "foreign.ts".to_string(),
-            }],
-        });
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "other-project".to_string(),
+            relative_path: "foreign.ts".to_string(),
+        }];
 
         let prompt = render_prompt_bundle(&req).unwrap();
 
@@ -4911,6 +4976,7 @@ mod tests {
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
+            task_prompt_input: TaskPromptInput::default(),
             user_input_attachment_paths: Vec::new(),
             attachment_projection_policy: AttachmentProjectionPolicy::from(
                 &crate::config::RuntimeConfig::default(),

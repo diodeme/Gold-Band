@@ -686,6 +686,7 @@ export function ConversationRunPage({
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             onSubmitManualCheck={handleSubmitManualCheck}
             showSystemPromptAction={!isDirect}
+            roleSelectionEnabled={isDirect}
             directSessionHeader={isDirect ? {
               title: taskTitle,
               onTitleChange,

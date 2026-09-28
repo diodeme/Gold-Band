@@ -561,10 +561,19 @@ pub(crate) fn build_worker_invocation(
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =
         build_new_round_trigger_context(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let (task_input_attachment_paths, user_input_attachment_paths) = match session_mode {
-        SessionMode::New => (super::task_input_attachment_paths(app, task_id), Vec::new()),
-        SessionMode::Continue => (Vec::new(), resume_input_attachment_paths),
-    };
+    let (task_input_attachment_paths, task_prompt_input, user_input_attachment_paths) =
+        match session_mode {
+            SessionMode::New => (
+                super::task_input_attachment_paths(app, task_id),
+                super::task_prompt_input(app, task_id),
+                Vec::new(),
+            ),
+            SessionMode::Continue => (
+                Vec::new(),
+                Default::default(),
+                resume_input_attachment_paths,
+            ),
+        };
 
     let mcp_resolution_started_at = Instant::now();
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
@@ -596,9 +605,10 @@ pub(crate) fn build_worker_invocation(
     );
 
     let workspace_dir = super::orchestrator::run_workspace_dir(app, task_id, run_id)?;
-    let workspace_file_roots = if prompt_display
-        .as_ref()
-        .is_some_and(|input| !input.workspace_files.is_empty())
+    let workspace_file_roots = if !task_prompt_input.workspace_files.is_empty()
+        || prompt_display
+            .as_ref()
+            .is_some_and(|input| !input.workspace_files.is_empty())
     {
         app.prompt_workspace_roots()
     } else {
@@ -653,6 +663,7 @@ pub(crate) fn build_worker_invocation(
         cold_artifacts,
         cold_attachments,
         task_input_attachment_paths,
+        task_prompt_input,
         user_input_attachment_paths,
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &app.config,
@@ -1615,6 +1626,25 @@ mod tests {
         assert_eq!(locators, vec!["round-002/dev"]);
     }
 
+    fn write_task_prompt_input(app: &App, task_id: &str) -> crate::provider::TaskPromptInput {
+        let input = crate::provider::TaskPromptInput {
+            quotes: vec![crate::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                text: "引用内容".to_string(),
+                source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                    message_key: "answer-1".to_string(),
+                },
+            }],
+            role: None,
+            workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
+                project_id: app.paths.project_id.clone(),
+                relative_path: "src/lib.rs".to_string(),
+            }],
+        };
+        crate::storage::write_json(&app.paths.task_prompt_input_file(task_id), &input).unwrap();
+        input
+    }
+
     #[test]
     fn continue_worker_invocation_uses_only_resume_attachments() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1630,6 +1660,7 @@ mod tests {
         let resume_input = temp.path().join("resume.txt");
         std::fs::write(&resume_input, "resume").unwrap();
         let resume_input = resume_input.to_string_lossy().to_string();
+        write_task_prompt_input(&app, task_id);
 
         let invocation = build_worker_invocation(
             &app,
@@ -1660,6 +1691,8 @@ mod tests {
                 .any(|path| path.ends_with("original.txt"))
         );
         assert!(invocation.task_input_attachment_paths.is_empty());
+        assert!(invocation.task_prompt_input.is_empty());
+        assert!(invocation.workspace_file_roots.is_empty());
     }
 
     #[test]
@@ -1674,6 +1707,7 @@ mod tests {
         std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
         let original_input = task_input_dir.join("original.txt");
         std::fs::write(original_input.as_std_path(), "original").unwrap();
+        let task_prompt_input = write_task_prompt_input(&app, task_id);
 
         let invocation = build_worker_invocation(
             &app,
@@ -1701,6 +1735,9 @@ mod tests {
             vec![original_input.to_string()]
         );
         assert!(invocation.user_input_attachment_paths.is_empty());
+        // Quotes and workspace files travel with the task inputs to every new session.
+        assert_eq!(invocation.task_prompt_input, task_prompt_input);
+        assert!(!invocation.workspace_file_roots.is_empty());
         assert_eq!(
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled

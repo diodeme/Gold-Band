@@ -4416,6 +4416,14 @@ pub fn validate_conversation_create_vm(
         ));
     }
 
+    if input.role.is_some() && input.run_mode != ConversationRunMode::Direct.as_str() {
+        missing.push(missing_item(
+            "role.direct-only",
+            "A role can only be specified in Direct mode",
+            "/chat",
+        ));
+    }
+
     if input.run_mode == ConversationRunMode::Direct.as_str() {
         let config = input.direct_config.as_ref();
         let agent_type = config
@@ -4849,27 +4857,15 @@ pub fn prepare_conversation_task_vm(
         config.active_template_name = None;
         write_json(&app.paths.task_auto_config_file(&task_id), &config)?;
     }
-    if let Some(role) = input.role.as_ref() {
-        if !role.profile_id.trim().is_empty()
-            && !role.name.trim().is_empty()
-            && !role.content.trim().is_empty()
-        {
-            write_json(&app.paths.initial_prompt_role_file(&task_id), role)?;
-        }
-    }
-    if !input.workspace_files.is_empty() {
+    let task_prompt_input = gold_band::provider::TaskPromptInput {
+        quotes: input.quotes.clone(),
+        role: input.role.clone(),
+        workspace_files: input.workspace_files.clone(),
+    };
+    if !task_prompt_input.is_empty() {
         write_json(
-            &app.paths
-                .task_dir(&task_id)
-                .join("authoring")
-                .join("initial-prompt-workspace-files.json"),
-            &input.workspace_files,
-        )?;
-    }
-    if !input.quotes.is_empty() {
-        write_json(
-            &app.paths.initial_prompt_quotes_file(&task_id),
-            &input.quotes,
+            &app.paths.task_prompt_input_file(&task_id),
+            &task_prompt_input,
         )?;
     }
 
@@ -7259,6 +7255,45 @@ mod tests {
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();
 
         assert_eq!(error.to_string(), "run.git-repository-required");
+    }
+
+    #[test]
+    fn a_role_is_accepted_only_for_direct_conversations() {
+        let app = App::new(temp_repo_root());
+        let input_for = |run_mode: ConversationRunMode| ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "改一下这个函数".to_string(),
+            run_mode: run_mode.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: None,
+            attachment_paths: None,
+            work_location: ConversationWorkLocationVm::Main,
+            selected_branch: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+            role: Some(gold_band::provider::UserPromptRole {
+                profile_id: "pf-dev".to_string(),
+                name: "开发".to_string(),
+                content: "你是开发角色".to_string(),
+            }),
+            workspace_files: Vec::new(),
+            quotes: Vec::new(),
+        };
+        let codes = |run_mode| {
+            validate_conversation_create_vm(&app, &input_for(run_mode))
+                .unwrap()
+                .missing_items
+                .into_iter()
+                .map(|item| item.code)
+                .collect::<Vec<_>>()
+        };
+
+        assert!(codes(ConversationRunMode::Workflow).contains(&"role.direct-only".to_string()));
+        assert!(codes(ConversationRunMode::Auto).contains(&"role.direct-only".to_string()));
+        assert!(!codes(ConversationRunMode::Direct).contains(&"role.direct-only".to_string()));
     }
 
     #[test]

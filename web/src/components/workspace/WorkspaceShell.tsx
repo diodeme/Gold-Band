@@ -65,6 +65,7 @@ interface WorkspaceShellProps {
   browserPreferences: import('@/types').BrowserPreferences;
   vm: ConversationSidebarVm;
   active: ConversationPage;
+  showMulticaTaskManagement?: boolean;
   sidebarCollapsed: boolean;
   onSelect: (page: ConversationPage) => void;
   onToggleSidebar: () => void;
@@ -302,6 +303,7 @@ function WorkspaceShellLayout({
   browserPreferences,
   vm,
   active,
+  showMulticaTaskManagement = true,
   sidebarCollapsed,
   onSelect,
   onToggleSidebar,
@@ -759,6 +761,7 @@ function WorkspaceShellLayout({
             <ConversationSidebar
               vm={vm}
               active={active}
+              showMulticaTaskManagement={showMulticaTaskManagement}
               defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
               workspaceRevealRequest={workspaceRevealRequest}
               onSelect={onSelect}

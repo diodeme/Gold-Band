@@ -135,4 +135,33 @@ describe('ConversationSidebar more navigation', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('hides requirement management from the default-channel navigation projection', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={sidebarVm}
+            active={{ kind: 'multica-tasks' }}
+            showMulticaTaskManagement={false}
+            onSelect={() => {}}
+          />,
+        );
+      });
+
+      const moreButton = findButton(container, '更多');
+      expect(moreButton?.getAttribute('aria-expanded')).toBe('false');
+      await act(async () => moreButton?.click());
+
+      expect(findButton(container, '需求管理')).toBeUndefined();
+      expect(findButton(container, '定时任务')).toBeDefined();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

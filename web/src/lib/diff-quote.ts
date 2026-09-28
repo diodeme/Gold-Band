@@ -117,10 +117,10 @@ export function formatWholeFileDiff(
   }).join('\n');
 }
 
-/** Selected B lines; a removed block the selection starts or ends inside sits before `deletedBlockLines`' lines. */
+/** Selected B lines; the removed blocks the selection covers sit before `deletedBlockLines`' lines. */
 export interface DiffQuoteSelection {
   fromLine: number;
-  /** `toLine < fromLine` when the selection lies wholly inside a removed block. */
+  /** `toLine < fromLine` when the selection covers only a removed block. */
   toLine: number;
   deletedBlockLines?: readonly number[];
 }
@@ -128,7 +128,7 @@ export interface DiffQuoteSelection {
 /**
  * A diff fragment for the selected B lines. A change the selection touches is widened to its
  * whole chunk, so removed lines travel with the lines that replaced them. Removed blocks have no
- * B lines of their own, so the reader names the ones a selection endpoint falls inside.
+ * B lines of their own, so the caller names the ones the selection covers.
  */
 export function formatDiffSelection(
   a: Text,

@@ -174,13 +174,15 @@ Gold Band 契约保持不变：
 
 ## 3. 最小能力分级
 
-### Claude ACP 临时执行约束
+### Claude ACP 会话选项策略
 
-为缓解 [#114](https://github.com/diodeme/Gold-Band/issues/114) 的后台续做与客户端 prompt 归属冲突，Gold Band 对 canonical provider ID `claude-acp` 统一施加执行策略，不按用户显示名或命令路径推断类型：
+Claude 私有会话选项经 `_meta.claudeCode.options` 下发。是否下发只看 adapter 在 `initialize` 协商的 `agentCapabilities._meta.claudeCode` 对象，不按 provider ID、显示名或启动命令推断；`claude-acp` 与用户自建的 `my-claude` 等实例共用同一 claude-agent-acp 时一致生效，未声明该扩展的 adapter 不注入任何字段。
 
-- 启动适配器时在用户环境之后注入 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`。
-- `session/new/load/resume/fork` 请求在 `_meta.claudeCode.options.disallowedTools` 追加 `Monitor`，幂等保留其他工具限制；同时在 options env 和内联 settings env 中强制同一禁用变量，防止 Claude 读取项目 settings 后覆盖进程环境。
-- 策略只合并本次启动和请求参数，不改写已保存实例、默认模板或用户文件；已有与新建 Claude 实例都适用。其他 provider 不注入 Claude 私有字段。
+为缓解 [#114](https://github.com/diodeme/Gold-Band/issues/114) 的后台续做与客户端 prompt 归属冲突，`session/new/load/resume/fork` 请求：
+
+- 在 `_meta.claudeCode.options.disallowedTools` 追加 `Monitor`，幂等保留其他工具限制；在 options env 和内联 settings env 中强制 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`。adapter 以 `{...process.env, ...options.env}` 构造 SDK 环境，进程启动环境不再单独注入，防止 Claude 读取项目 settings 后覆盖。
+- 未指定 `thinking` 时注入 `{"type": "adaptive", "display": "summarized"}`。新模型默认 `display=omitted`，只流出无文本的签名 thinking 块，timeline 在长时间思考期间无任何可见进度；显式 summarized 后 adapter 会转成 `agent_thought_chunk`。调用方已给出 `thinking` 时原样保留。
+- 策略只合并本次请求参数，不改写已保存实例、默认模板或用户文件。
 - 不新增 UI 提示或可编辑设置。已运行的会话及后台任务不追溯中断；新进程及新建/恢复的 SDK 会话应用策略。
 - 该策略不是沙箱，不阻止 shell 命令手动脱离进程，也不修复 SDK 不完整流误报成功的根因。必须以隔离会话验证后台工具不可用及前台执行可用。
 

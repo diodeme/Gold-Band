@@ -57,16 +57,22 @@ test('policy rejects malformed maps and non-registry distributions', () => {
   assert.throws(() => buildAgentCatalog(registry, 'fixed', { versionPins: { 'claude-acp': '0.72.0' } }), /registry package/);
 });
 
-test('checked-in policy overrides the snapshot and future online versions', async () => {
+test('checked-in policy applies to the snapshot and future online versions', async () => {
   const policy = JSON.parse(await readFile(new URL('../configs/agent-catalog-policy.json', import.meta.url), 'utf8'));
   const registry = JSON.parse(await readFile(new URL('../resources/acp-registry.snapshot.json', import.meta.url), 'utf8'));
   for (const version of ['0.73.0', '0.75.1']) {
     const claude = registry.agents.find((entry) => entry.id === 'claude-acp');
     claude.version = version;
     claude.distribution.npx.package = `@agentclientprotocol/claude-agent-acp@${version}`;
-    const result = buildAgentCatalog(registry, 'fixed', policy).agents.find((entry) => entry.id === 'claude-acp');
-    assert.equal(result.version, '0.72.0');
-    assert.equal(result.args[1], '@agentclientprotocol/claude-agent-acp@0.72.0');
+    const catalog = buildAgentCatalog(registry, 'fixed', policy);
+    for (const agent of registry.agents.filter((entry) => BUILTIN_AGENT_IDS.includes(entry.id))) {
+      const result = catalog.agents.find((entry) => entry.id === agent.id);
+      const expected = policy.versionPins?.[agent.id] ?? agent.version;
+      assert.equal(result.version, expected, agent.id);
+      if (agent.distribution?.npx && result.command === 'npx') {
+        assert.ok(result.args[1].endsWith(`@${expected}`), `${agent.id}: ${result.args[1]}`);
+      }
+    }
   }
 });
 

@@ -1,4 +1,4 @@
-import { FileDiff, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, SquareCode, TextQuote, X } from 'lucide-react';
+import { FileDiff, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, TextQuote, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -102,7 +102,7 @@ export function ComposerContextArea({
                   onClick={() => onOpenWorkspaceFile?.(file)}
                   aria-label={t('workspace.filesPanel.openWorkspaceFile', { name: file.name })}
                 >
-                  <SquareCode className="size-3.5 shrink-0 text-muted-foreground" />
+                  <FileText className="size-3.5 shrink-0 text-muted-foreground" />
                   <span className="truncate">{file.name}</span>
                 </button>
                 <Button

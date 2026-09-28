@@ -1,4 +1,4 @@
-import { SquareCode } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -28,7 +28,7 @@ export function UserMessageWorkspaceFiles({
           onClick={() => onOpen(file)}
           aria-label={file.name ?? file.relativePath}
         >
-          <SquareCode className="size-3.5 shrink-0" />
+          <FileText className="size-3.5 shrink-0" />
           <span className="truncate">{file.name ?? file.relativePath.split('/').at(-1)}</span>
           <span className="sr-only">{t('workspace.filesPanel.openWorkspaceFile')}</span>
         </Button>

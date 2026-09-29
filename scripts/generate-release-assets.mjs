@@ -63,10 +63,37 @@ for (const locale of LOCALES) {
   }
 }
 
-await copyFile(path.join(outputDir, 'latest.en.json'), path.join(outputDir, 'latest.json'));
+await copyFile(path.join(outputDir, 'latest.zh-CN.json'), path.join(outputDir, 'latest.json'));
 await writeFile(
   path.join(outputDir, 'release-body.md'),
-  `# 简体中文\n\n${notesByLocale.get('zh-CN')}\n\n---\n\n# English\n\n${notesByLocale.get('en')}\n`,
+  [
+    `# Gold Band v${version}`,
+    '[中文](#user-content-zh) · [English](#user-content-en)',
+    '<a id="zh"></a>',
+    '## 中文',
+    demoteHeadings(notesByLocale.get('zh-CN')),
+    '---',
+    '<a id="en"></a>',
+    '## English',
+    demoteHeadings(notesByLocale.get('en')),
+  ].join('\n\n') + '\n',
 );
 
 console.log(`Wrote localized updater manifests and release body for ${version}.`);
+
+// Release notes use `##` sections; the release body nests them under a `## <language>` section.
+function demoteHeadings(markdown) {
+  let fence = null;
+  return markdown
+    .split('\n')
+    .map((line) => {
+      const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        if (!fence) fence = fenceMatch[1];
+        else if (fenceMatch[1].startsWith(fence)) fence = null;
+        return line;
+      }
+      return !fence && /^#{1,5}\s/.test(line) ? `#${line}` : line;
+    })
+    .join('\n');
+}

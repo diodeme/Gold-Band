@@ -2723,6 +2723,9 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 复用现有 manifest 生成器和两条 Release workflow，从 `release-notes/<version>/` 生成七语言 default manifests、英文兼容 `latest.json` 与中英 Draft Release body；不新增 Release Notes PR Check，当前版本目录或生成失败仅在发布 job 内失败。
 - [x] default updater 以持久化桌面语言选择 locale manifest，locale 资产不存在时最多回退一次英文 `latest.json`；`wb` 与自定义 URL 始终只请求原单 manifest。
 - [x] 接口回归覆盖七语言内容投影、双语正文、版本目录缺失、default URL 映射与回退、`wb`/自定义 URL 隔离。实现不新增依赖、状态机、缓存、队列或客户端全量加载；成功路径仍为一次 manifest 请求，只有 locale 文件缺失时增加一次有界回退。
+- [x] 设置页更新地址始终展示渠道配置的 `latest.json`；locale manifest 解析只存在于更新请求端点构造，不进入 `UpdaterSettingsVm`，切换语言不改变展示地址。接口回归固定七种语言下 `builtInUrl` / `effectiveUrl` 均为配置地址。
+- [x] 2026-09-30 回退 manifest 语言调整：`latest.json` 改为复制 `latest.zh-CN.json`（替代上文的英文兼容 manifest），旧客户端与 locale 资产缺失时的回退均展示简体中文说明；脚本接口回归同步固定 `latest.json` 与 `latest.zh-CN.json` 一致。
+- [x] 2026-09-30 Draft Release 正文对齐历史手写格式：`# Gold Band vX.Y.Z` + 中英文锚点 + `## 中文` / `## English`，release notes 标题在代码块外降一级；manifest `notes` 保持原文层级。接口回归逐字固定正文，并覆盖代码块内 `#` 不被降级。
 
 ## 2026-09-25 源码管理后台刷新稳定性与历史审阅诊断
 

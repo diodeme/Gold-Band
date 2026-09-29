@@ -149,7 +149,7 @@ export function SourceControlHistoryView({
         const items = reviewItems(resource.workspacePath, session.commitReview.files);
         const item = items[fileIndex];
         if (!item) return;
-        const reviewSessionId = `${resource.projectId}:${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`;
+        const reviewSessionId = `${resource.projectId}:${resource.workspacePath ?? ''}:${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`;
         diffReviewStore.save({ id: reviewSessionId, projectId: resource.projectId, revision: session.commitReview.revision, items });
         void workspace.openResource({
           kind: 'file-diff',
@@ -286,6 +286,8 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
         </div>
         <div className="mt-1 flex gap-3 text-ui-micro tabular-nums text-muted-foreground">
           <span>{t('sourceControl.changedFileCount', { count: review.totals.fileCount })}</span>
+          {session.reviewStatisticsLoading && <span role="status">{t('sourceControl.reviewStatisticsLoading')}</span>}
+          {session.reviewStatisticsError && <Button variant="ghost" size="sm" onClick={() => void sourceControlStore.retryReviewStatistics(resource.projectId, resource.workspacePath)}>{t('sourceControl.reviewStatisticsRetry')}</Button>}
         </div>
       </header>
       <ScrollArea

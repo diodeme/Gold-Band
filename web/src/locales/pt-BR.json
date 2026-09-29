@@ -1794,6 +1794,8 @@
     "assetViewer": "Visualizador de arquivo de conversa"
   },
   "sourceControl": {
+    "reviewStatisticsLoading": "Calculando linhas…",
+    "reviewStatisticsRetry": "Tentar contagem novamente",
     "title": "Controle de versão",
     "description": "Inspecionar e gerenciar estado Git deste workspace",
     "loading": "Lendo status Git…",

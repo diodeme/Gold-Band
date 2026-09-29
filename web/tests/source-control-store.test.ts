@@ -12,6 +12,248 @@ import type {
 } from '@/types';
 
 describe('source control session store', () => {
+  it('publishes review before statistics and rejects statistics from a previous selection', async () => {
+    const api = fakeApi();
+    const first = deferred<GitCommitReviewVm>();
+    const second = deferred<GitCommitReviewVm>();
+    const getCommitReviewStatistics = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const store = new SourceControlStore({ ...api, getCommitReviewStatistics });
+    await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', 'history');
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1', 'commit-2'], { additive: false, range: false });
+    await vi.waitFor(() => expect(getCommitReviewStatistics).toHaveBeenCalledTimes(1));
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({ historyDetailLoading: false, reviewStatisticsLoading: true, commitReview: { selectedOids: ['commit-1'] } });
+    store.selectCommit('project-1', 'D:/repo', 'commit-2', ['commit-1', 'commit-2'], { additive: false, range: false });
+    await vi.waitFor(() => expect(getCommitReviewStatistics).toHaveBeenCalledTimes(2));
+    first.resolve(commitReview(['commit-1']));
+    await Promise.resolve();
+    expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-2']);
+    second.reject(new Error('statistics failed'));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').reviewStatisticsError).toBeTruthy());
+    expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-2']);
+    getCommitReviewStatistics.mockResolvedValueOnce(commitReview(['commit-2']));
+    await store.retryReviewStatistics('project-1', 'D:/repo');
+    expect(api.getCommitReview).toHaveBeenCalledTimes(2);
+    expect(store.session('project-1', 'D:/repo').reviewStatisticsError).toBeNull();
+  });
+
+  it('does not route Git metadata lock events through workspace refresh', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const store = new SourceControlStore({ ...events.api, startMonitor: undefined });
+      await store.ensureLoaded('project-1', 'D:/repo');
+      events.emitWorkspace('D:/repo/.git/index.lock');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+      events.emitWorkspace('D:/repo/src/index.lock');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(['repository', 'github'] as const)('keeps %s catalog mounted during repository revalidation and failure', async (tab) => {
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    await store.setActiveTab('project-1', 'D:/repo', tab);
+    const visible = store.session('project-1', 'D:/repo').catalog;
+    const next = deferred<GitSourceControlSnapshotVm>();
+    api.getCatalog.mockReturnValueOnce(next.promise);
+    await store.refresh('project-1', 'D:/repo');
+    expect(api.getCatalog).toHaveBeenCalledTimes(2);
+    expect(store.session('project-1', 'D:/repo').catalog).toBe(visible);
+    next.reject(new Error('offline'));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').catalogLoading).toBe(false));
+    expect(store.session('project-1', 'D:/repo').catalog).toBe(visible);
+    expect(store.session('project-1', 'D:/repo').catalogError?.code).toBe('git.status-failed');
+  });
+
+  it('does not reload catalog for workspace events with unchanged Git state', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const store = new SourceControlStore({ ...events.api, startMonitor: undefined });
+      await store.ensureLoaded('project-1', 'D:/repo');
+      await store.setActiveTab('project-1', 'D:/repo', 'repository');
+      const catalog = store.session('project-1', 'D:/repo').catalog;
+      events.emitWorkspace('D:/repo/ignored-runtime.log');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(events.api.getCatalog).toHaveBeenCalledTimes(1);
+      expect(store.session('project-1', 'D:/repo').catalog).toBe(catalog);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('merges late statistics without overwriting already loaded remotes', async () => {
+    const api = fakeApi();
+    const statistics = deferred<GitSourceControlSnapshotVm['status']>();
+    const store = new SourceControlStore({ ...api,
+      getStatistics: vi.fn(() => statistics.promise),
+      getRemotes: vi.fn(async () => [{ name: 'origin', fetchUrls: [], pushUrls: [] }]),
+    });
+    await store.ensureLoaded('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').remotesLoading).toBe(false));
+    const repositorySnapshotStatus = repositorySnapshot('D:/repo').status;
+    statistics.resolve(repositorySnapshotStatus);
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').snapshot?.status).toBe(repositorySnapshotStatus));
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository.remotes[0]?.name).toBe('origin');
+  });
+
+  it('does not starve an in-flight catalog when unchanged workspace events arrive', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const catalog = deferred<GitSourceControlSnapshotVm>();
+      events.api.getCatalog.mockReturnValueOnce(catalog.promise);
+      const store = new SourceControlStore({ ...events.api, startMonitor: undefined });
+      await store.ensureLoaded('project-1', 'D:/repo');
+      const loading = store.setActiveTab('project-1', 'D:/repo', 'github');
+      for (let index = 0; index < 3; index += 1) {
+        events.emitWorkspace('D:/repo/ignored.log');
+        await vi.advanceTimersByTimeAsync(200);
+      }
+      const result = repositorySnapshot('D:/repo');
+      catalog.resolve(result);
+      await loading;
+      expect(store.session('project-1', 'D:/repo').catalog).toBe(result);
+      expect(events.api.getCatalog).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('rejects a catalog overtaken by a real workspace revision change and refetches once', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const stale = deferred<GitSourceControlSnapshotVm>();
+      const next = repositorySnapshot('D:/repo', 'revision-2');
+      events.api.getCatalog.mockReturnValueOnce(stale.promise).mockResolvedValueOnce(next);
+      const store = new SourceControlStore({ ...events.api, startMonitor: undefined });
+      await store.ensureLoaded('project-1', 'D:/repo');
+      const loading = store.setActiveTab('project-1', 'D:/repo', 'repository');
+      events.api.getSnapshot.mockResolvedValueOnce(next);
+      events.emitWorkspace('D:/repo/tracked.txt');
+      await vi.advanceTimersByTimeAsync(200);
+      stale.resolve(repositorySnapshot('D:/repo'));
+      await loading;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events.api.getCatalog).toHaveBeenCalledTimes(2);
+      expect(store.session('project-1', 'D:/repo').catalog).toBe(next);
+    } finally { vi.useRealTimers(); }
+  });
+  it('uses one monitored bootstrap for the initial overview', async () => {
+    const api = fakeApi();
+    const overview = repositorySnapshot('D:/repo');
+    const getBootstrap = vi.fn(async () => ({
+      capability: capability('ready'),
+      overview: { repository: overview.repository, status: overview.status },
+    }));
+    const startMonitor = vi.fn().mockResolvedValue(undefined);
+    const store = new SourceControlStore({ ...api, getBootstrap, startMonitor });
+
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    expect(getBootstrap).toHaveBeenCalledTimes(1);
+    expect(api.getCapability).not.toHaveBeenCalled();
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    expect(startMonitor).not.toHaveBeenCalled();
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'ready',
+      capability: { status: 'ready' },
+      snapshot: { repository: { remotes: [] } },
+    });
+  });
+
+  it('publishes the bootstrap overview before requesting remotes', async () => {
+    const api = fakeApi();
+    const bootstrap = deferred<import('@/types').GitSourceControlBootstrapVm>();
+    const remotes = deferred<import('@/types').GitRemoteVm[]>();
+    const overview = repositorySnapshot('D:/repo');
+    const getBootstrap = vi.fn(() => bootstrap.promise);
+    const getRemotes = vi.fn(() => remotes.promise);
+    const store = new SourceControlStore({ ...api, getBootstrap, getRemotes });
+
+    const loading = store.ensureLoaded('project-1', 'D:/repo');
+    expect(getRemotes).not.toHaveBeenCalled();
+    bootstrap.resolve({
+      capability: capability('ready'),
+      overview: { repository: overview.repository, status: overview.status },
+    });
+    await loading;
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'ready',
+      remotesLoading: true,
+      snapshot: { repository: { remotes: [] } },
+    });
+    expect(getRemotes).toHaveBeenCalledTimes(1);
+
+    remotes.resolve([{ name: 'origin', fetchUrls: ['https://example.com/repo.git'], pushUrls: [] }]);
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').remotesLoading).toBe(false));
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository.remotes[0]?.name).toBe('origin');
+  });
+
+  it('keeps the file overview ready when remote loading fails', async () => {
+    const api = fakeApi();
+    const overview = repositorySnapshot('D:/repo');
+    overview.status.untracked.push({
+      path: 'new.txt',
+      oldPath: null,
+      kind: 'untracked',
+      indexStatus: null,
+      worktreeStatus: '?',
+      binary: false,
+      submodule: false,
+      addedLines: null,
+      deletedLines: null,
+    });
+    const store = new SourceControlStore({
+      ...api,
+      getBootstrap: vi.fn(async () => ({
+        capability: capability('ready'),
+        overview: { repository: overview.repository, status: overview.status },
+      })),
+      getRemotes: vi.fn().mockRejectedValue(new Error('remote unavailable')),
+    });
+
+    await store.ensureLoaded('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').remotesLoading).toBe(false));
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'ready',
+      remotesError: { code: 'git.status-failed' },
+      snapshot: { status: { untracked: [{ path: 'new.txt' }] } },
+    });
+  });
+
+  it('does not let stale remotes overwrite a refreshed session', async () => {
+    const api = fakeApi();
+    const initial = repositorySnapshot('D:/repo', 'revision-1');
+    const staleRemotes = deferred<import('@/types').GitRemoteVm[]>();
+    const getRemotes = vi.fn()
+      .mockReturnValueOnce(staleRemotes.promise)
+      .mockResolvedValueOnce([{ name: 'new-origin', fetchUrls: [], pushUrls: [] }]);
+    const store = new SourceControlStore({
+      ...api,
+      getBootstrap: vi.fn(async () => ({
+        capability: capability('ready'),
+        overview: { repository: initial.repository, status: initial.status },
+      })),
+      getRemotes,
+    });
+
+    await store.ensureLoaded('project-1', 'D:/repo');
+    api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-2'));
+    await store.refresh('project-1', 'D:/repo');
+    staleRemotes.resolve([{ name: 'old-origin', fetchUrls: [], pushUrls: [] }]);
+
+    await vi.waitFor(() => expect(getRemotes).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').remotesLoading).toBe(false));
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository).toMatchObject({
+      revision: 'revision-2',
+      remotes: [{ name: 'new-origin' }],
+    });
+  });
+
   it('loads the catalog only on demand, coalesces requests and isolates failure', async () => {
     const api = fakeApi();
     const catalog = deferred<GitSourceControlSnapshotVm>();

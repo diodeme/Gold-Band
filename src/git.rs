@@ -207,7 +207,7 @@ pub struct GitCapability {
 }
 
 impl GitCapability {
-    fn new(status: GitCapabilityStatus, installed_version: Option<String>) -> Self {
+    pub(crate) fn new(status: GitCapabilityStatus, installed_version: Option<String>) -> Self {
         Self {
             status,
             installed_version,
@@ -256,8 +256,8 @@ impl GitPreflightError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InstalledGitVersion {
-    display: String,
+pub(crate) struct InstalledGitVersion {
+    pub(crate) display: String,
     semantic: Version,
 }
 
@@ -383,7 +383,7 @@ fn parse_version_component(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
     })?
 }
 
-fn supported_git_version() -> std::result::Result<InstalledGitVersion, GitCapability> {
+pub(crate) fn supported_git_version() -> std::result::Result<InstalledGitVersion, GitCapability> {
     match probe_git_version() {
         GitVersionProbe::NotInstalled => {
             Err(GitCapability::new(GitCapabilityStatus::NotInstalled, None))

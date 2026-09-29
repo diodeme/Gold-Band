@@ -101,6 +101,10 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
     void sourceControlStore.initializeRepository(resource.projectId, resource.workspacePath);
   }, [resource.projectId, resource.workspacePath]);
 
+  const retryRemotes = useCallback(() => {
+    void sourceControlStore.retryRemotes(resource.projectId, resource.workspacePath);
+  }, [resource.projectId, resource.workspacePath]);
+
   const openDiff = useCallback((change: GitFileChangeVm, area: 'staged' | 'unstaged') => {
     if (!workspace.scopeKey || !snapshot) return;
     const changes = area === 'staged'
@@ -190,7 +194,15 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         <div className="flex min-w-0 items-center gap-2">
           <GitBranch className="size-4 shrink-0 text-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
-          <SourceControlSyncActions snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onOperation={startOperation} />
+          <SourceControlSyncActions
+            snapshot={snapshot}
+            busyActionKind={busyActionKind}
+            locked={writeLocked}
+            remotesLoading={session.remotesLoading}
+            remotesError={session.remotesError !== null}
+            onRetryRemotes={retryRemotes}
+            onOperation={startOperation}
+          />
         </div>
         {locked ? <div className="mt-1 text-ui-caption text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
         {activeOperation ? <SourceControlOperationStatus operation={activeOperation} onCancel={cancelOperation} onDismiss={dismissOperation} /> : null}
@@ -207,6 +219,13 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
           <TabsTrigger value="repository" className="text-xs">{t('sourceControl.repository')}</TabsTrigger>
           <TabsTrigger value="github" className="text-xs">GitHub</TabsTrigger>
         </TabsList>
+
+        {session.catalog && (activeTab === 'repository' || activeTab === 'github') && session.catalogError ? (
+          <div role="alert" className="flex shrink-0 items-center justify-between gap-2 px-3 py-1 text-xs">
+            <SourceControlError error={session.catalogError} />
+            <Button size="sm" variant="ghost" onClick={() => changeTab(activeTab)}>{t('sourceControl.checkAgain')}</Button>
+          </div>
+        ) : null}
 
         <TabsContent value="changes" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
           <SourceControlChangesToolbar snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onMutation={mutate} onOperation={startOperation} />
@@ -291,7 +310,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         </TabsContent>
 
         <TabsContent value="repository" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          {session.catalog ? <SourceControlRepositoryView snapshot={{ ...session.catalog, ...snapshot }} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('repository')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
+          {session.catalog ? <SourceControlRepositoryView snapshot={{ ...session.catalog, ...snapshot }} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked || session.catalogLoading || Boolean(session.catalogError) || Boolean(session.refreshing)} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('repository')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
         </TabsContent>
 
         <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">

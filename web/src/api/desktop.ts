@@ -54,11 +54,17 @@ export const desktopApi: RuntimeApi = {
   initializeGitRepository(projectId) {
     return invokeCommand('initialize_git_repository', { projectId });
   },
+  getSourceControlBootstrap(projectId, workspacePath, loadId) {
+    return invokeCommand('bootstrap_source_control', { projectId, workspacePath, loadId });
+  },
   getSourceControlOverview(projectId, workspacePath, loadId) {
     return invokeCommand('get_source_control_overview', { projectId, workspacePath, loadId });
   },
   getSourceControlStatistics(projectId, workspacePath, loadId) {
     return invokeCommand('get_source_control_statistics', { projectId, workspacePath, loadId });
+  },
+  getSourceControlRemotes(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_remotes', { projectId, workspacePath, loadId });
   },
   getSourceControlSnapshot(projectId, workspacePath, loadId) {
     return invokeCommand('get_source_control_snapshot', { projectId, workspacePath, loadId });
@@ -77,6 +83,9 @@ export const desktopApi: RuntimeApi = {
   },
   getGitCommitReview(projectId, workspacePath, query) {
     return invokeCommand('get_git_commit_review', { projectId, workspacePath, query });
+  },
+  getGitCommitReviewStatistics(projectId, workspacePath, review) {
+    return invokeCommand('get_git_commit_review_statistics', { projectId, workspacePath, review });
   },
   getGitCommitReachability(projectId, workspacePath, query) {
     return invokeCommand('get_git_commit_reachability', { projectId, workspacePath, query });

@@ -386,14 +386,17 @@ export interface RuntimeApi {
   writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
   getGitCapability(projectId?: string | null, loadId?: string): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
+  getSourceControlBootstrap(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitSourceControlBootstrapVm>;
   getSourceControlOverview(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitSourceControlOverviewVm>;
   getSourceControlStatistics(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitWorkspaceStatusVm>;
+  getSourceControlRemotes(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitRemoteVm[]>;
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null, loadId?: string): Promise<GitSourceControlSnapshotVm>;
   getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null): Promise<GitBranchPickerSnapshotVm>;
   changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: GitBranchChangeRequestVm): Promise<GitBranchPickerSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
   getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
   getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: GitCommitReviewQueryVm): Promise<GitCommitReviewVm>;
+  getGitCommitReviewStatistics(projectId: string, workspacePath: string | null | undefined, review: GitCommitReviewVm): Promise<GitCommitReviewVm>;
   getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: GitCommitReachabilityQueryVm): Promise<GitCommitReachabilityVm>;
   executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
   getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;

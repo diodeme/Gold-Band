@@ -247,6 +247,10 @@ export function initializeGitRepository(projectId?: string | null) {
   return getRuntimeApi().initializeGitRepository(projectId);
 }
 
+export function getSourceControlBootstrap(projectId: string, workspacePath?: string | null, loadId?: string) {
+  return getRuntimeApi().getSourceControlBootstrap(projectId, workspacePath, loadId);
+}
+
 export function getSourceControlSnapshot(projectId: string, workspacePath?: string | null, loadId?: string) {
   return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath, loadId);
 }
@@ -269,6 +273,10 @@ export function getGitCommitDetail(projectId: string, workspacePath: string | nu
 
 export function getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReview']>[2]) {
   return getRuntimeApi().getGitCommitReview(projectId, workspacePath, query);
+}
+
+export function getGitCommitReviewStatistics(projectId: string, workspacePath: string | null | undefined, review: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReviewStatistics']>[2]) {
+  return getRuntimeApi().getGitCommitReviewStatistics(projectId, workspacePath, review);
 }
 
 export function getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReachability']>[2]) {
@@ -1053,4 +1061,8 @@ export function getSourceControlOverview(projectId: string, workspacePath?: stri
 }
 export function getSourceControlStatistics(projectId: string, workspacePath?: string | null, loadId?: string) {
   return getRuntimeApi().getSourceControlStatistics(projectId, workspacePath, loadId);
+}
+
+export function getSourceControlRemotes(projectId: string, workspacePath?: string | null, loadId?: string) {
+  return getRuntimeApi().getSourceControlRemotes(projectId, workspacePath, loadId);
 }

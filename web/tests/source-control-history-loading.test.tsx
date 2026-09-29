@@ -76,6 +76,7 @@ vi.mock('@/components/workspace/source-control/source-control-store', async () =
       cancelOperation: vi.fn(),
       dismissOperationResult: vi.fn(),
       initializeRepository: vi.fn(),
+      retryRemotes: vi.fn(),
     },
     useSourceControlSession: () => React.useSyncExternalStore(
       (listener) => {
@@ -112,6 +113,30 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it.each(['repository', 'github'])('preserves %s DOM during catalog refresh and failure', async (activeTab) => {
+    sessionRuntime.session = { ...sourceControlSession(), activeTab, catalog: sourceControlSession().snapshot };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+      }} /></RightWorkspaceProvider>));
+      const content = container.querySelector(`[data-tested-${activeTab}-view]`);
+      expect(content).not.toBeNull();
+      for (const patch of [
+        { catalogLoading: true, catalogError: null },
+        { catalogLoading: false, catalogError: { code: 'git.status-failed', params: {} } },
+      ]) {
+        await act(async () => {
+          sessionRuntime.session = { ...sessionRuntime.session, ...patch };
+          for (const listener of sessionRuntime.listeners) listener();
+        });
+        expect(container.querySelector(`[data-tested-${activeTab}-view]`)).toBe(content);
+      }
+      expect(container.textContent).toContain('sourceControl.checkAgain');
+    } finally { await act(async () => root.unmount()); }
+  });
   it('shows catalog loading and local failure without pretending the catalog is empty', async () => {
     sessionRuntime.session = { ...sourceControlSession(), activeTab: 'repository', catalog: null, catalogLoading: true };
     const container = document.createElement('div');
@@ -303,6 +328,55 @@ describe('source control history cache presentation', () => {
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.push"]')?.disabled).toBe(true);
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.pull"]')).toBeNull();
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.fetch"]')?.disabled).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps changes visible while remotes load and exposes an in-place retry on failure', async () => {
+    sessionRuntime.session = {
+      ...sessionRuntime.session,
+      remotesLoading: true,
+      remotesError: null,
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+          kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
+          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        }} /></RightWorkspaceProvider>);
+      });
+
+      expect(container.querySelector('[data-source-control-changes-toolbar="true"]')).not.toBeNull();
+      const loading = container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.loading"]');
+      expect(loading?.disabled).toBe(true);
+      expect(loading?.querySelector('.animate-spin')).not.toBeNull();
+
+      await act(async () => {
+        sessionRuntime.session = {
+          ...sessionRuntime.session,
+          remotesLoading: false,
+          remotesError: { code: 'git.status-failed', params: {} },
+        };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      const retry = container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.loadFailed"]');
+      expect(retry?.disabled).toBe(false);
+      await act(async () => retry?.click());
+      expect(sourceControlStore.retryRemotes).toHaveBeenCalledWith('project-1', 'D:/repo');
+
+      await act(async () => {
+        sessionRuntime.session = {
+          ...sessionRuntime.session,
+          remotesLoading: false,
+          remotesError: null,
+        };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.querySelector('button[aria-label="sourceControl.fetch"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());
     }
@@ -565,6 +639,8 @@ function sourceControlSession() {
     historyPage: 0,
     pendingAction: null,
     refreshing: null,
+    remotesLoading: false,
+    remotesError: null,
     selectedCommitOids: new Set<string>(),
     selectionAnchorOid: null,
     snapshot: {

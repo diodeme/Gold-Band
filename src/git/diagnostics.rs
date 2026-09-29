@@ -119,8 +119,16 @@ pub(crate) fn command_output(
     args: &[&str],
     prepare: impl FnOnce() -> anyhow::Result<Command>,
 ) -> anyhow::Result<Output> {
+    command_output_with(args, prepare, |mut command| Ok(command.output()?))
+}
+
+pub(crate) fn command_output_with(
+    args: &[&str],
+    prepare: impl FnOnce() -> anyhow::Result<Command>,
+    execute: impl FnOnce(Command) -> anyhow::Result<Output>,
+) -> anyhow::Result<Output> {
     let Some(trace) = GitReadTrace::current() else {
-        return Ok(prepare()?.output()?);
+        return execute(prepare()?);
     };
     let command_number = trace.commands.fetch_add(1, Ordering::Relaxed) + 1;
     let command = command_kind(args);
@@ -130,7 +138,7 @@ pub(crate) fn command_output(
     let prepared = prepare();
     let prepare_ms = started.elapsed().as_secs_f64() * 1000.0;
     let execution = Instant::now();
-    let result = prepared.and_then(|mut command| command.output().map_err(Into::into));
+    let result = prepared.and_then(execute);
     tracing::debug!(target: "gold_band::git::load", load_id = %trace.load_id,
         operation = trace.operation, event = "command_end", command_number, command,
         prepare_ms, execution_ms = execution.elapsed().as_secs_f64() * 1000.0,
@@ -145,15 +153,25 @@ fn command_kind(args: &[&str]) -> &'static str {
     match args.first().copied() {
         Some("--version") => "version",
         Some("rev-parse") if args.contains(&"--git-path") => "metadata-path",
+        Some("rev-parse") if args.contains(&"--verify") => "resolve-revision",
         Some("rev-parse") => "repository-identity",
         Some("status") => "status",
         Some("diff") if args.contains(&"--cached") => "staged-diff",
-        Some("diff") => "unstaged-diff",
+        Some("diff") if args.contains(&"--numstat") => "diff-statistics",
+        Some("diff") if args.contains(&"--unified=0") => "patch-diff",
+        Some("diff") => "diff",
         Some("for-each-ref") => "refs",
         Some("worktree") => "worktrees",
         Some("stash") => "stashes",
         Some("remote") => "remotes",
         Some("log") => "history",
+        Some("show") if args.contains(&"--no-patch") => "commit-metadata",
+        Some("show") => "object-content",
+        Some("diff-tree") => "commit-changes",
+        Some("merge-base") => "ancestry",
+        Some("cat-file") => "object-probe",
+        Some("patch-id") => "patch-identity",
+        Some("hash-object") => "hash-object",
         _ => "other",
     }
 }

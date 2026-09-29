@@ -991,7 +991,7 @@ export interface GitCommitReviewFileVm {
   path: string;
   oldPath?: string | null;
   kind: GitFileChangeKindVm;
-  binary: boolean;
+  binary: boolean | null;
   beforeOid?: string | null;
   beforePath?: string | null;
   afterOid: string;
@@ -1027,6 +1027,11 @@ export interface GitCommitReachabilityVm {
 export interface GitSourceControlOverviewVm {
   repository: GitRepositorySnapshotVm;
   status: GitWorkspaceStatusVm;
+}
+
+export interface GitSourceControlBootstrapVm {
+  capability: GitCapabilityVm;
+  overview?: GitSourceControlOverviewVm | null;
 }
 
 export interface GitSourceControlSnapshotVm {

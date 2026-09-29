@@ -290,6 +290,15 @@ fn collect_event(
         pending.clear();
         return true;
     };
+    if event.need_rescan() {
+        pending.clear();
+        return true;
+    }
+    if matches!(event.kind, EventKind::Access(kind)
+        if kind != notify::event::AccessKind::Close(notify::event::AccessMode::Write))
+    {
+        return false;
+    }
     let kind = event_kind(&event.kind).to_string();
     for path in event.paths {
         if let Some(target) = target_file
@@ -321,6 +330,15 @@ mod tests {
     use super::*;
     use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
     use tempfile::tempdir;
+
+    #[test]
+    fn read_access_does_not_publish_workspace_changes() {
+        let event = Event::new(EventKind::Access(notify::event::AccessKind::Read))
+            .add_path(PathBuf::from("workspace/file.txt"));
+        let mut pending = HashMap::new();
+        assert!(!collect_event(Ok(event), None, &mut pending));
+        assert!(pending.is_empty());
+    }
 
     #[test]
     fn maps_notify_events_to_the_public_change_kinds() {

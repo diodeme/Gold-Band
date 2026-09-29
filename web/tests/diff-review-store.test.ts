@@ -6,7 +6,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock('@/api', () => api);
 
-import { diffReviewStore, shouldRetainVisibleComparison, workspaceReviewItems } from '@/components/workspace/source-control/diff-review-store';
+import { diffReviewStore, gitDiffReviewItemId, shouldRetainVisibleComparison, workspaceReviewItems } from '@/components/workspace/source-control/diff-review-store';
 import type { GitFileComparisonVm } from '@/types';
 
 function comparison(content: string): GitFileComparisonVm {
@@ -39,6 +39,26 @@ beforeEach(() => {
 });
 
 describe('workspace diff review cache', () => {
+  it('merges late commit statistics only into the matching workspace without refetching content', async () => {
+    const file = { path: 'src/accept.md', beforePath: 'src/accept.md', beforeOid: 'before', afterOid: 'after', kind: 'modified' as const, binary: false, addedLines: 12, deletedLines: 3 };
+    const item = { id: gitDiffReviewItemId(file.afterOid, file.beforeOid, file.beforePath, file.path), path: file.path,
+      source: { ...file, kind: 'commit' as const, workspacePath: 'D:/repo' }, stats: { addedLines: null as number | null, deletedLines: null as number | null } };
+    diffReviewStore.save({ id: 'review', projectId: 'project-1', revision: 'revision', items: [item] });
+    api.getGitComparison.mockResolvedValue(comparison('immutable'));
+    const pending = diffReviewStore.comparison('project-1', item);
+    diffReviewStore.publishCommitStatistics('project-1', 'D:/other', [file]);
+    expect(item.stats.addedLines).toBeNull();
+    const notify = vi.fn();
+    const unsubscribe = diffReviewStore.subscribe(notify);
+    diffReviewStore.publishCommitStatistics('project-1', 'D:/repo', [file]);
+    expect(item.stats).toEqual({ addedLines: 12, deletedLines: 3 });
+    expect(diffReviewStore.comparison('project-1', item)).toBe(pending);
+    expect((await pending).stats).toEqual(item.stats);
+    expect(api.getGitComparison).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
   it('keeps the visible diff mounted while the same file is refreshed', () => {
     expect(shouldRetainVisibleComparison('src/accept.md', 'src/accept.md')).toBe(true);
     expect(shouldRetainVisibleComparison('src/accept.md', 'src/other.md')).toBe(false);

@@ -1138,12 +1138,23 @@ export const browserApi: RuntimeApi = {
   initializeGitRepository() {
     return Promise.resolve({ status: 'head-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
+  async getSourceControlBootstrap(projectId, workspacePath) {
+    const capability = await browserApi.getGitCapability(projectId);
+    if (capability.status !== 'ready' && capability.status !== 'head-required') {
+      return { capability, overview: null };
+    }
+    const overview = await browserApi.getSourceControlOverview(projectId, workspacePath);
+    return { capability, overview };
+  },
   async getSourceControlOverview(projectId, workspacePath) {
     const { repository, status } = await browserApi.getSourceControlSnapshot(projectId, workspacePath);
     return { repository, status };
   },
   async getSourceControlStatistics(projectId, workspacePath) {
     return (await browserApi.getSourceControlSnapshot(projectId, workspacePath)).status;
+  },
+  async getSourceControlRemotes(projectId, workspacePath) {
+    return (await browserApi.getSourceControlSnapshot(projectId, workspacePath)).repository.remotes;
   },
   getSourceControlSnapshot(projectId, workspacePath) {
     const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
@@ -1271,9 +1282,9 @@ export const browserApi: RuntimeApi = {
       ...entry,
       oldPath: null,
       kind: 'modified' as const,
-      binary: false,
-      addedLines: 24,
-      deletedLines: 6,
+      binary: null,
+      addedLines: null,
+      deletedLines: null,
     }])).values());
     return Promise.resolve({
       selectedOids: [...query.selectedOids],
@@ -1284,6 +1295,9 @@ export const browserApi: RuntimeApi = {
         fileCount: files.length,
       },
     });
+  },
+  getGitCommitReviewStatistics(_projectId, _workspacePath, review) {
+    return Promise.resolve({ ...review, files: review.files.map(file => ({ ...file, binary: false, addedLines: 4, deletedLines: 2 })) });
   },
   getGitCommitReachability(_projectId, _workspacePath, query) {
     const commit = browserGitCommits.find((candidate) => candidate.oid === query.oid) ?? browserGitCommits[0];

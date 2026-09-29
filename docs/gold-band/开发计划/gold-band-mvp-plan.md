@@ -40,46 +40,11 @@
 - 性能评审：启动从解析七份语言包收敛为一份；当前生产主应用 chunk 为 3,605,364 B raw / 1,063,195 B gzip，相对改动前记录减少 938,403 B raw / 274,563 B gzip。切换语言至多新增一次分包读取，不刷新业务数据；ES module 缓存会保留切换过的语言，最大仍受七份内置语言约束。
 - 过度设计评审：复用现有 i18next、Vite 和后端 canonical 偏好，不新增依赖、持久字段、缓存层、队列或状态机；已有偏好保存队列和原生 module cache 足以覆盖并发与复用。
 
-## 2026-09-25 源码管理 monitored bootstrap 二次优化
+## 2026-09-24 去掉 claude-acp 与 codex-acp 的固定版本
 
-- [x] 根因证据：runtime(2).log 首次发布仍需 17.0842 秒；capability 5.949 秒/4 次 Git、monitor 4.546 秒/3 次 Git、overview 11.106 秒/7 次 Git。三个阶段重复版本/identity，overview 仍等待三次 remote，monitor 交接又触发 10.668 秒/7 次 Git 的整份 overview，随后才开始 7.683 秒/6 次 Git 的 statistics。根因仍是首屏加载边界设计缺陷，不归因于 React 渲染或 Git 算法本身。
-- [x] 最小失败测试：前端初次加载预期调用一次 monitored bootstrap，旧实现实际为 0；修复后固定不再单独调用 capability、monitor 或 overview。后端进程预算测试固定主工作区 watcher 注册前 3 次、status 发布后总计 4 次 Git；linked worktree 因作用域 identity 校验固定为 5 次。
-- [x] 数据与接口：新增 `GitSourceControlBootstrap { capability, overview }`。后端按“版本 → identity → watcher/operation marker 批量定位 → 注册两类 watcher → status”顺序执行，status 失败对称回滚 watcher。监听先于读取，删除旧的整份 overview 交接补读；缺 Git/非仓库只返回 capability，unborn repository 返回 `head-required` 和可见文件状态。
-- [x] 渐进数据：overview 不再读取 remote。首屏 ready 后 remote 与 statistics 独立启动；remote 使用独立 single-flight/loading/error，catalog 可补齐同一 remote 投影，失败不清空文件状态，刷新与淘汰后拒绝迟到结果。同步入口在 remote 加载期间禁用并显示进度，失败后使用既有“无法读取当前仓库”文案重试。
-- 验收目标：弱机器首次 6～8 秒、理想 5～6 秒、同应用会话再次打开 3～5 秒。主工作区首屏为 4 次 Git，linked worktree 为 5 次；remote、statistics、catalog 不计入首批文件可见时间。秒数必须由原机器的新 DEBUG runtime.log 确认，不把测试机或命令预算当作实测结果。
-- [x] 本地验收：Rust 源码管理领域 52 项、前端 Store/交互 58 项、TypeScript、Vite 生产构建和 Windows desktop cargo check 通过；desktop check 仅保留项目既有 unused/dead-code warning。浏览器受控延迟 remote 时，文件列表保持可见，Push/Fetch 立即禁用且 Fetch 原位显示 spinner，返回后恢复；760px 窄窗口和长 remote 名无横向溢出，console 无业务 warning/error。浏览器会话、测试 Chrome、1421 服务和临时截图已清理。原弱机器的实际 6～8 秒目标仍等待新 runtime.log 验证。
-- 性能与过度设计评审：文件枚举复杂度保持 O(变更/未跟踪文件)，没有新增全量扫描、N+1、持久缓存、队列、并发池、锁或依赖。复用现有 Git CLI、background command helper、watcher、24 项会话 LRU 和 request revision；新增状态只描述 post-publication remote 生命周期，不复制 repository canonical identity。
-
-## 2026-09-25 源码管理后台刷新稳定性与历史审阅诊断
-
-- [x] 回溯：原设计要求已加载数据后台校准时保留组件；渐进 catalog 实现却在所有 overview 刷新后置空，并复用 worktree 请求代次，使普通文件事件卸载仓库/GitHub、使慢 catalog 反复过期。属于加载领域/生命周期边界实现缺陷；notify 纯访问事件被视为修改、statistics 用旧 repository 覆盖新 remotes 是另外两个已测试复现的逻辑错误。实际 Windows 连续事件的产生源仍待日志确认。
-- [x] 修复前失败证据：Store 仓库/GitHub 2 项断言得到 catalog=null；Git 状态不变时 catalog 调用 2 次而非 1 次；统计返回后 origin 丢失。两类 watcher 的 read access 测试分别在 invalidates=true 和 pending 非空处失败。修复后原测试转绿。
-- [x] 修复：保留已显示 catalog，独立请求/已发布代次管理重验证，实际 workspace revision 变化才失效目录；同一工作区普通文件事件不重读 remote。局部失败保留 DOM 并允许重试，仓库目录写入口等待校准，后端 revision 校验不变。统计只合并 status；notify 保留写关闭/rename/remove/rescan/错误补读语义并过滤纯访问。
-- [x] DEBUG 诊断：history、commit-detail、commit-review、commit-reachability、comparison 请求总耗时和分段；Git prepare/execution 与命令数涵盖 review 工作线程、hash-object/patch-id 等 stdin 命令；metadata_batch 记录事件数和失效决定。无路径、OID、参数、正文日志。
-- [x] 验收：前端 Store/DOM 66 项通过，包括 unchanged 工作区事件不饿死在途 catalog、真实 revision 变化拒绝旧响应并合并补读；Rust Git 领域 90 项与新增 review worker/stdin 计数测试通过；metadata watcher 4 项、workspace watcher 8 项通过；TypeScript、Vite 生产构建通过。浏览器受控延迟/失败验证分支列表 DOM 保持，GitHub PR 行与未提交搜索草稿在刷新前后保持同一 DOM；760px 窄窗口无整页横向溢出。浏览器使用 browserApi fixture，不能替代原机器 EXE 的性能验收。
-- 性能/过度设计评审：复用 Git CLI、notify、Store、24 会话 LRU、后端 canonical identity/revision 和 tracing；只增加目录投影的请求新鲜度代次，不复制业务实体或引入缓存层/队列/依赖。普通文件刷新仍需一次 Git 状态校准，状态未变时不再触发目录扫描；目录规模随 refs/worktrees/stashes 增长，保持按需读取。历史页 300/1000 上限、提交选择 32 上限和原有 4 个审阅 worker 不变；新增诊断按实际命令/阶段记录 DEBUG，不宣称未经测量的提速。通用经验已被 data-loading/frontend-performance/state-lifecycle 现有规则覆盖，不重复新增规则。
-- [x] 最终补充：Windows desktop cargo check 通过，仅保留项目既有 unused/dead-code warning；git diff --check 通过。浏览器单提交审阅可正常显示，测试会话及本次 1421 Vite 进程已关闭。本轮未提交 Git。
-
-## 2026-09-25 Git 元数据刷新循环定向日志
-
-- [x] 现场证据：本机 DEBUG 日志 20:27:40～20:28:00 内 overview/history/remotes/statistics 各 22 次，每轮 19 次 Git；statistics 结束后反复出现 2 个 metadata 事件。已确认持续失效，但既有批次总数无法证明具体文件类别、事件类型或触发命令，因此本次仅补诊断，不先改变监听语义。
-- [x] 实现：监听实例随机 monitor_id + 批次号；metadata_batch 保留事件数/刷新决定/耗时并补充 overflowed；metadata_event_group 按 EventKind 和固定类别计数与接收时间偏移；metadata_batch_details 记录 rescan/errors/omitted_paths。rename 的源/目标分别分类，main/linked worktree 按已注册 watch root 归属。无路径、分支名或错误正文输出。
-- [x] 性能与过度设计评审：复用 notify/tracing，不加依赖、Git 命令、文件扫描、缓存或队列；INFO 不做事件分类，DEBUG 每批最多 64 组、沿用最多 1 秒批次延迟，工作量随该批事件路径数线性增长且监听根数量有界。诊断 ID 不参与任何业务身份或刷新决策。
-- 验收范围：metadata monitor 定向测试覆盖类别白名单与路径边界、linked worktree、rename 双路径、访问事件、rescan/错误、聚合和容量限制；既有读取事件过滤与真实变更失效测试保持通过。未修改 UI，不需要启动前端；新日志需运行更新后的 EXE 才会出现。
-- [x] 最终验收：cargo test -p gold-band-desktop git_state_monitor -- --nocapture，7 项全部通过；保留 2 项既有 dead-code warning。改动文件 git diff --check 通过。本次只增加诊断，尚未确认或修复现场循环触发源，未提交 Git。
-
-## 2026-09-27 元数据事务过滤与提交审阅渐进读取
-
-- 根因：元数据监听把临时锁文件的创建/删除当成已发布变更，普通工作区监听又能绕过元数据过滤；审阅接口把选中提交解析、文件列表和行数统计绑定，进程启动成本随选择数增长。前者是失效边界实现错误，后者是接口加载边界设计缺陷。
-- 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
-- commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
-- commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
-- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
-- 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
-
-- 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
-- 浏览器使用受控 browserApi fixture 验证：统计未返回时文件可点击；补齐 +77/-11 后编辑器 DOM 不变、正文查询仍为 1 次；统计失败后文件保留且局部重试可用。此验证不替代弱机器 EXE 性能验收，也尚未证明现场静置 30 秒无循环；现场请观察 metadata_batch.invalidated 与 commit-review / commit-review-statistics 的独立 DEBUG 计数和耗时。
-- 本轮复用现有 Git CLI/notify/Store/有界缓存，未新增依赖或并发池。通用约束已由 data-loading、frontend-performance、state-lifecycle 和 bug-fix-verification 规则覆盖，不新增规则。本轮未提交 Git。
+- 现有构建期策略已规定删除 `versionPins` 对应项即跟随 Registry。清空 `claude-acp` `0.72.0` 与 `codex-acp` `1.12.0`，覆盖机制保留。
+- 入库策略测试固定空 pin，并要求这两项的 Catalog 版本和 npx 包参数等于 snapshot。离线重建后 `claude-acp` 为 `0.81.1`，`codex-acp` 为 `1.13.1`。
+- 过度设计与性能评审：不删除策略文件或生成逻辑，不新增状态、依赖或运行时请求。空 pin 时在线生成不再校验 npm 版本；Catalog 仍是十一项静态文件。
 
 ## 2026-09-24 Win10 独立窗口边框
 
@@ -2743,8 +2708,50 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 
 - [x] 最终验证：Rust Git 领域 86 项通过，linked worktree 扩展断言单独通过；前端 6 文件/64 项通过；TypeScript、Vite 生产构建、Windows desktop cargo check 通过（保留既有 warning）。浏览器真实组件配合受控 browserApi，验证监听/统计挂起仍显示文件、目录首次请求只发生在仓库页签、目录 loading→真实分支、监听就绪后补读、统计补齐；不把 mock 页面结果当作 EXE 耗时证据。测试会话和本次 Vite 服务已清理。
 
+## 2026-09-25 源码管理 monitored bootstrap 二次优化
+
+- [x] 根因证据：runtime(2).log 首次发布仍需 17.0842 秒；capability 5.949 秒/4 次 Git、monitor 4.546 秒/3 次 Git、overview 11.106 秒/7 次 Git。三个阶段重复版本/identity，overview 仍等待三次 remote，monitor 交接又触发 10.668 秒/7 次 Git 的整份 overview，随后才开始 7.683 秒/6 次 Git 的 statistics。根因仍是首屏加载边界设计缺陷，不归因于 React 渲染或 Git 算法本身。
+- [x] 最小失败测试：前端初次加载预期调用一次 monitored bootstrap，旧实现实际为 0；修复后固定不再单独调用 capability、monitor 或 overview。后端进程预算测试固定主工作区 watcher 注册前 3 次、status 发布后总计 4 次 Git；linked worktree 因作用域 identity 校验固定为 5 次。
+- [x] 数据与接口：新增 `GitSourceControlBootstrap { capability, overview }`。后端按“版本 → identity → watcher/operation marker 批量定位 → 注册两类 watcher → status”顺序执行，status 失败对称回滚 watcher。监听先于读取，删除旧的整份 overview 交接补读；缺 Git/非仓库只返回 capability，unborn repository 返回 `head-required` 和可见文件状态。
+- [x] 渐进数据：overview 不再读取 remote。首屏 ready 后 remote 与 statistics 独立启动；remote 使用独立 single-flight/loading/error，catalog 可补齐同一 remote 投影，失败不清空文件状态，刷新与淘汰后拒绝迟到结果。同步入口在 remote 加载期间禁用并显示进度，失败后使用既有“无法读取当前仓库”文案重试。
+- 验收目标：弱机器首次 6～8 秒、理想 5～6 秒、同应用会话再次打开 3～5 秒。主工作区首屏为 4 次 Git，linked worktree 为 5 次；remote、statistics、catalog 不计入首批文件可见时间。秒数必须由原机器的新 DEBUG runtime.log 确认，不把测试机或命令预算当作实测结果。
+- [x] 本地验收：Rust 源码管理领域 52 项、前端 Store/交互 58 项、TypeScript、Vite 生产构建和 Windows desktop cargo check 通过；desktop check 仅保留项目既有 unused/dead-code warning。浏览器受控延迟 remote 时，文件列表保持可见，Push/Fetch 立即禁用且 Fetch 原位显示 spinner，返回后恢复；760px 窄窗口和长 remote 名无横向溢出，console 无业务 warning/error。浏览器会话、测试 Chrome、1421 服务和临时截图已清理。原弱机器的实际 6～8 秒目标仍等待新 runtime.log 验证。
+- 性能与过度设计评审：文件枚举复杂度保持 O(变更/未跟踪文件)，没有新增全量扫描、N+1、持久缓存、队列、并发池、锁或依赖。复用现有 Git CLI、background command helper、watcher、24 项会话 LRU 和 request revision；新增状态只描述 post-publication remote 生命周期，不复制 repository canonical identity。
+
 ## 2026-09-25 default 多语言更新日志发布链路
 
 - [x] 复用现有 manifest 生成器和两条 Release workflow，从 `release-notes/<version>/` 生成七语言 default manifests、英文兼容 `latest.json` 与中英 Draft Release body；不新增 Release Notes PR Check，当前版本目录或生成失败仅在发布 job 内失败。
 - [x] default updater 以持久化桌面语言选择 locale manifest，locale 资产不存在时最多回退一次英文 `latest.json`；`wb` 与自定义 URL 始终只请求原单 manifest。
 - [x] 接口回归覆盖七语言内容投影、双语正文、版本目录缺失、default URL 映射与回退、`wb`/自定义 URL 隔离。实现不新增依赖、状态机、缓存、队列或客户端全量加载；成功路径仍为一次 manifest 请求，只有 locale 文件缺失时增加一次有界回退。
+
+## 2026-09-25 源码管理后台刷新稳定性与历史审阅诊断
+
+- [x] 回溯：原设计要求已加载数据后台校准时保留组件；渐进 catalog 实现却在所有 overview 刷新后置空，并复用 worktree 请求代次，使普通文件事件卸载仓库/GitHub、使慢 catalog 反复过期。属于加载领域/生命周期边界实现缺陷；notify 纯访问事件被视为修改、statistics 用旧 repository 覆盖新 remotes 是另外两个已测试复现的逻辑错误。实际 Windows 连续事件的产生源仍待日志确认。
+- [x] 修复前失败证据：Store 仓库/GitHub 2 项断言得到 catalog=null；Git 状态不变时 catalog 调用 2 次而非 1 次；统计返回后 origin 丢失。两类 watcher 的 read access 测试分别在 invalidates=true 和 pending 非空处失败。修复后原测试转绿。
+- [x] 修复：保留已显示 catalog，独立请求/已发布代次管理重验证，实际 workspace revision 变化才失效目录；同一工作区普通文件事件不重读 remote。局部失败保留 DOM 并允许重试，仓库目录写入口等待校准，后端 revision 校验不变。统计只合并 status；notify 保留写关闭/rename/remove/rescan/错误补读语义并过滤纯访问。
+- [x] DEBUG 诊断：history、commit-detail、commit-review、commit-reachability、comparison 请求总耗时和分段；Git prepare/execution 与命令数涵盖 review 工作线程、hash-object/patch-id 等 stdin 命令；metadata_batch 记录事件数和失效决定。无路径、OID、参数、正文日志。
+- [x] 验收：前端 Store/DOM 66 项通过，包括 unchanged 工作区事件不饿死在途 catalog、真实 revision 变化拒绝旧响应并合并补读；Rust Git 领域 90 项与新增 review worker/stdin 计数测试通过；metadata watcher 4 项、workspace watcher 8 项通过；TypeScript、Vite 生产构建通过。浏览器受控延迟/失败验证分支列表 DOM 保持，GitHub PR 行与未提交搜索草稿在刷新前后保持同一 DOM；760px 窄窗口无整页横向溢出。浏览器使用 browserApi fixture，不能替代原机器 EXE 的性能验收。
+- 性能/过度设计评审：复用 Git CLI、notify、Store、24 会话 LRU、后端 canonical identity/revision 和 tracing；只增加目录投影的请求新鲜度代次，不复制业务实体或引入缓存层/队列/依赖。普通文件刷新仍需一次 Git 状态校准，状态未变时不再触发目录扫描；目录规模随 refs/worktrees/stashes 增长，保持按需读取。历史页 300/1000 上限、提交选择 32 上限和原有 4 个审阅 worker 不变；新增诊断按实际命令/阶段记录 DEBUG，不宣称未经测量的提速。通用经验已被 data-loading/frontend-performance/state-lifecycle 现有规则覆盖，不重复新增规则。
+- [x] 最终补充：Windows desktop cargo check 通过，仅保留项目既有 unused/dead-code warning；git diff --check 通过。浏览器单提交审阅可正常显示，测试会话及本次 1421 Vite 进程已关闭。本轮未提交 Git。
+
+## 2026-09-25 Git 元数据刷新循环定向日志
+
+- [x] 现场证据：本机 DEBUG 日志 20:27:40～20:28:00 内 overview/history/remotes/statistics 各 22 次，每轮 19 次 Git；statistics 结束后反复出现 2 个 metadata 事件。已确认持续失效，但既有批次总数无法证明具体文件类别、事件类型或触发命令，因此本次仅补诊断，不先改变监听语义。
+- [x] 实现：监听实例随机 monitor_id + 批次号；metadata_batch 保留事件数/刷新决定/耗时并补充 overflowed；metadata_event_group 按 EventKind 和固定类别计数与接收时间偏移；metadata_batch_details 记录 rescan/errors/omitted_paths。rename 的源/目标分别分类，main/linked worktree 按已注册 watch root 归属。无路径、分支名或错误正文输出。
+- [x] 性能与过度设计评审：复用 notify/tracing，不加依赖、Git 命令、文件扫描、缓存或队列；INFO 不做事件分类，DEBUG 每批最多 64 组、沿用最多 1 秒批次延迟，工作量随该批事件路径数线性增长且监听根数量有界。诊断 ID 不参与任何业务身份或刷新决策。
+- 验收范围：metadata monitor 定向测试覆盖类别白名单与路径边界、linked worktree、rename 双路径、访问事件、rescan/错误、聚合和容量限制；既有读取事件过滤与真实变更失效测试保持通过。未修改 UI，不需要启动前端；新日志需运行更新后的 EXE 才会出现。
+- [x] 最终验收：cargo test -p gold-band-desktop git_state_monitor -- --nocapture，7 项全部通过；保留 2 项既有 dead-code warning。改动文件 git diff --check 通过。本次只增加诊断，尚未确认或修复现场循环触发源，未提交 Git。
+
+
+## 2026-09-27 元数据事务过滤与提交审阅渐进读取
+
+- 根因：元数据监听把临时锁文件的创建/删除当成已发布变更，普通工作区监听又能绕过元数据过滤；审阅接口把选中提交解析、文件列表和行数统计绑定，进程启动成本随选择数增长。前者是失效边界实现错误，后者是接口加载边界设计缺陷。
+- 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
+- commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
+- commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
+- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
+- 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
+
+- 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
+- 浏览器使用受控 browserApi fixture 验证：统计未返回时文件可点击；补齐 +77/-11 后编辑器 DOM 不变、正文查询仍为 1 次；统计失败后文件保留且局部重试可用。此验证不替代弱机器 EXE 性能验收，也尚未证明现场静置 30 秒无循环；现场请观察 metadata_batch.invalidated 与 commit-review / commit-review-statistics 的独立 DEBUG 计数和耗时。
+- 本轮复用现有 Git CLI/notify/Store/有界缓存，未新增依赖或并发池。通用约束已由 data-loading、frontend-performance、state-lifecycle 和 bug-fix-verification 规则覆盖，不新增规则。本轮未提交 Git。

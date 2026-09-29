@@ -135,6 +135,7 @@ import type {
   WorkspaceEntryDeletionVm,
   CreateWorkspaceEntryInput,
   WorkspaceFileChangedEventVm,
+  WorkspaceRootRef,
   WorkspaceFileSearchVm,
   WorkspaceFileSnapshotVm,
   ResolveMarkdownImageInput,
@@ -301,6 +302,7 @@ export interface BrowserNavigateInput extends BrowserPageIdInput {
 
 export interface BrowserResolveLocalHtmlInput {
   projectId: string;
+  workspacePath: string | null;
   rawHref: string;
 }
 
@@ -606,25 +608,25 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarBootstrapVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
-  listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
-  openWorkspacePathInFileManager(projectId: string, relativePath?: string): Promise<void>;
+  listWorkspaceDirectory(root: WorkspaceRootRef, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
+  openWorkspacePathInFileManager(root: WorkspaceRootRef, relativePath?: string): Promise<void>;
   createWorkspaceEntry(input: CreateWorkspaceEntryInput): Promise<WorkspaceDirectoryEntryVm>;
-  renameWorkspaceEntry(projectId: string, relativePath: string, newName: string): Promise<WorkspaceDirectoryEntryVm>;
-  deleteWorkspaceEntry(projectId: string, relativePath: string): Promise<WorkspaceEntryDeletionVm>;
-  restoreWorkspaceEntry(projectId: string, receiptId: string): Promise<WorkspaceDirectoryEntryVm>;
+  renameWorkspaceEntry(root: WorkspaceRootRef, relativePath: string, newName: string): Promise<WorkspaceDirectoryEntryVm>;
+  deleteWorkspaceEntry(root: WorkspaceRootRef, relativePath: string): Promise<WorkspaceEntryDeletionVm>;
+  restoreWorkspaceEntry(root: WorkspaceRootRef, receiptId: string): Promise<WorkspaceDirectoryEntryVm>;
   listConversationDirectory(input: ConversationDirectoryInput): Promise<WorkspaceDirectoryEntryVm[]>;
   openConversationDirectoryPathInFileManager(input: ConversationDirectoryInput): Promise<void>;
   readConversationDirectoryFile(input: ConversationDirectoryInput): Promise<WorkspaceFileSnapshotVm>;
-  searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
-  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
-  readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
+  searchWorkspaceFiles(root: WorkspaceRootRef, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
+  resolveWorkspaceFileLink(root: WorkspaceRootRef, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
+  readFileResource(root: WorkspaceRootRef, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
   resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
   writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;
   releaseWorkspaceFilePreview(token: string): Promise<void>;
   renewExternalFileAccess(token: string): Promise<ExternalFileAccessGrantVm>;
   releaseExternalFileAccess(token: string): Promise<void>;
-  startWorkspaceFileWatch(projectId: string): Promise<void>;
-  stopWorkspaceFileWatch(projectId: string): Promise<void>;
+  startWorkspaceFileWatch(root: WorkspaceRootRef): Promise<void>;
+  stopWorkspaceFileWatch(root: WorkspaceRootRef): Promise<void>;
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
   subscribeMulticaTaskUpdates?(listener: () => void): Promise<() => void>;
   subscribeMulticaSettingsUpdates?(listener: () => void): Promise<() => void>;

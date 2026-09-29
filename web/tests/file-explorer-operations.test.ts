@@ -30,7 +30,7 @@ import {
 import { FALLBACK_WORKSPACE_FILES } from '@/components/workspace/workspace-layout';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 
-const PROJECT = 'project-1';
+const PROJECT = { projectId: 'project-1', workspacePath: null };
 
 const entry = (relativePath: string, kind: 'file' | 'directory'): WorkspaceDirectoryEntryVm => ({
   name: relativePath.slice(relativePath.lastIndexOf('/') + 1),
@@ -122,7 +122,7 @@ describe('file tree operations and undo', () => {
 
     expect(result).toEqual({ status: 'done', entry: created });
     expect(api.createWorkspaceEntry).toHaveBeenCalledWith({
-      projectId: PROJECT,
+      ...PROJECT,
       parentRelativePath: 'src',
       name: 'new.ts',
       kind: 'file',
@@ -133,7 +133,7 @@ describe('file tree operations and undo', () => {
 
     expect(await store.undo(PROJECT)).toEqual({ status: 'done', entry: null });
     expect(api.deleteWorkspaceEntry).toHaveBeenCalledWith(PROJECT, 'src/new.ts');
-    expect(mutations).toEqual([{ projectId: PROJECT, kind: 'removed', entry: created }]);
+    expect(mutations).toEqual([{ root: PROJECT, kind: 'removed', entry: created }]);
     expect(store.canUndo(PROJECT)).toBe(false);
   });
 
@@ -178,7 +178,7 @@ describe('file tree operations and undo', () => {
     await store.deleteEntry(PROJECT, src);
 
     expect(store.snapshot(PROJECT).expanded.size).toBe(0);
-    expect(mutations).toEqual([{ projectId: PROJECT, kind: 'removed', entry: entry('src', 'directory') }]);
+    expect(mutations).toEqual([{ root: PROJECT, kind: 'removed', entry: entry('src', 'directory') }]);
     await store.undo(PROJECT);
     expect(api.restoreWorkspaceEntry).toHaveBeenCalledWith(PROJECT, 'receipt-7');
   });

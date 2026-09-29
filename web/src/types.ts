@@ -258,6 +258,15 @@ export interface FileRevisionVm {
   contentHash: string;
 }
 
+/**
+ * File root of a work location: the registered project root
+ * (`workspacePath: null`) or a linked Git worktree of that project.
+ */
+export interface WorkspaceRootRef {
+  projectId: string;
+  workspacePath: string | null;
+}
+
 export interface WorkspaceFileLocatorVm {
   projectId: string;
   canonicalPath: string;
@@ -297,6 +306,7 @@ export type WorkspaceEntryKind = 'file' | 'directory';
 
 export interface CreateWorkspaceEntryInput {
   projectId: string;
+  workspacePath: string | null;
   parentRelativePath: string;
   name: string;
   kind: WorkspaceEntryKind;
@@ -358,6 +368,7 @@ export type WorkspaceFileSnapshotVm =
 
 export interface ResolveMarkdownImageInput {
   projectId: string;
+  workspacePath: string | null;
   markdownCanonicalPath: string;
   markdownExternalAccessToken: string | null;
   rawSrc: string;
@@ -386,12 +397,14 @@ export type MarkdownImagePreviewVm =
 
 export interface OpenFileWithSystemAppInput {
   projectId: string;
+  workspacePath: string | null;
   canonicalPath: string;
   externalAccessToken: string | null;
 }
 
 export interface WriteFileResourceInput {
   projectId: string;
+  workspacePath: string | null;
   canonicalPath: string;
   externalAccessToken: string | null;
   content: string;
@@ -405,7 +418,7 @@ export interface WriteFileResourceInput {
 export interface WorkspaceFileChangedEventVm {
   projectId: string;
   /** Watched root; `null` for single-file external watches. */
-  workspacePath?: string | null;
+  workspacePath: string | null;
   canonicalPath: string;
   kind: 'created' | 'modified' | 'removed' | 'renamed' | 'invalidated';
   revision: FileRevisionVm | null;
@@ -1797,8 +1810,7 @@ export interface AcpSessionVm {
   adapterId?: string | null;
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
-  worktreePath?: string | null;
-  worktreeBranch?: string | null;
+  workLocation: SessionWorkLocationVm;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -2843,8 +2855,7 @@ export interface ConversationSessionLeafVm {
   finishedAt?: string | null;
   sessionId?: string | null;
   sessionEstablished?: boolean;
-  worktreePath?: string | null;
-  worktreeBranch?: string | null;
+  workLocation: SessionWorkLocationVm;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -3099,6 +3110,15 @@ export interface ConversationCreateInput {
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';
+
+/**
+ * Where a session works. `unavailable` (released or unresolvable worktree)
+ * is distinct from `main`: consumers must not fall back to the project root.
+ */
+export type SessionWorkLocationVm =
+  | { kind: 'main' }
+  | { kind: 'worktree'; path: string; branch?: string | null }
+  | { kind: 'unavailable'; reason: 'released' | 'unresolved'; path?: string | null };
 
 export interface ConversationValidationResultVm {
   valid: boolean;

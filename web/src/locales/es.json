@@ -704,11 +704,18 @@
           "trash-failed": "No se pudo mover a la papelera. Inténtalo de nuevo.",
           "restore-unavailable": "No se puede deshacer: el elemento ya no está en la papelera.",
           "unsaved-changes": "No se pudieron guardar los cambios pendientes, así que se canceló el cambio de nombre.",
-          "system-open-failed": "La aplicación del sistema no pudo abrir este archivo."
+          "system-open-failed": "La aplicación del sistema no pudo abrir este archivo.",
+          "workspace-unavailable": "El worktree de la sesión no está disponible. Puede que se haya recuperado o eliminado.",
+          "workspace-outside-project": "Esta carpeta no es un worktree de Git del proyecto actual."
         }
       }
     },
-    "discardWorkflowChanges": "Este flujo de trabajo tiene cambios sin guardar. ¿Descartarlos y cerrar la pestaña?"
+    "discardWorkflowChanges": "Este flujo de trabajo tiene cambios sin guardar. ¿Descartarlos y cerrar la pestaña?",
+    "rootUnavailable": {
+      "released": "El worktree de la sesión se recuperó",
+      "unresolved": "El worktree de la sesión no está disponible",
+      "browseMain": "Ver workspace principal"
+    }
   },
   "executionPlan": {
     "configureAuto": "Configuración AUTO",
@@ -1115,7 +1122,7 @@
     "unknown": "Desconocido"
   },
   "nodeType": {
-    "worker": "Nodo de agente",
+    "worker": "Nodo de modelo",
     "ai-dynamic": "Nodo dinámico de AI",
     "dynamic-worker": "Nodo de trabajo dinámico",
     "dynamic-workflow-invocation": "Nodo de flujo de trabajo dinámico",
@@ -1694,7 +1701,7 @@
     "validationSuccessExpressionRequired": "{{node}} requiere una expresión de éxito cuando la validación de salida está activada.",
     "validationResultModeExclusive": "{{node}} no puede activar a la vez la validación de salida de AI y el check manual.",
     "validationDynamicLimitPositive": "{{field}} de {{node}} debe ser mayor que 0.",
-    "validationAllowedWorkflowRequired": "El flujo de trabajo permitido de {{node}} es obligatorio.",
+    "validationAllowedWorkflowRequired": "El allowed workflow de {{node}} no puede estar vacío.",
     "validationAllowedWorkflowDuplicated": "{{node}} seleccionó el flujo de trabajo {{workflow}} más de una vez.",
     "validationAllowedWorkflowMissing": "El flujo de trabajo {{workflow}} seleccionado por {{node}} no existe.",
     "validationAllowedWorkflowIdNotUnique": "El ID de flujo de trabajo {{workflow}} seleccionado por {{node}} está duplicado por otro flujo de trabajo. Actualice primero el ID de definición del flujo de trabajo.",
@@ -1869,7 +1876,7 @@
         "description": "No se pudo identificar Git de forma fiable. Repara o reinstala Git e inténtalo de nuevo."
       },
       "head-required": {
-        "title": "El repositorio no tiene un commit inicial",
+        "title": "Este repositorio Git todavía no tiene el commit inicial",
         "description": "Selecciona archivos en Cambios, prepáralos y crea el commit inicial."
       },
       "worktree-required": {
@@ -1897,7 +1904,7 @@
     "unstage": "Quitar de preparados",
     "stageAll": "Preparar todo",
     "unstageAll": "Quitar todo de preparados",
-    "clean": "El árbol de trabajo está limpio",
+    "clean": "El espacio de trabajo no tiene cambios",
     "commitSubject": "Asunto del commit",
     "commitBody": "Cuerpo del commit (opcional)",
     "stagedCount": "{{count}} archivos preparados",
@@ -1924,7 +1931,7 @@
     "noContainingRefs": "Ninguna ref actual contiene este commit",
     "targetPath": "Relativo a la rama actual",
     "firstMerge": "Primer merge en la línea principal",
-    "parents": "Padres",
+    "parents": "Commits padre",
     "rootCommit": "Commit Root (sin commit padre)",
     "previousFile": "Archivo anterior",
     "nextFile": "Archivo siguiente",
@@ -1956,7 +1963,7 @@
     "merge": "Merge",
     "rebase": "Rebase",
     "prune": "Eliminar registros de ramas borradas en el remoto",
-    "pruneDescription": "No se eliminan ramas locales ni archivos del árbol de trabajo.",
+    "pruneDescription": "No se eliminan ramas locales ni archivos del espacio de trabajo.",
     "checkoutAfterCreate": "Cambiar a la nueva rama tras crearla",
     "includeUntracked": "Incluir archivos sin seguimiento",
     "restoreIndex": "Restaurar estado preparado",
@@ -2237,8 +2244,8 @@
       "showMore": "Mostrar más",
       "showFirst": "Mostrar solo los primeros {{count}}",
       "edit": "Editar",
-      "editDraftOccupied": "Termina primero el borrador actual del compositor",
-      "restoreDraftConflict": "El compositor cambió antes de que se pudiera restaurar este mensaje en cola.",
+      "editDraftOccupied": "Termina primero el borrador actual del campo de entrada",
+      "restoreDraftConflict": "El campo de entrada cambió y no se puede restaurar este mensaje pendiente.",
       "reorder": "Reordenar mensaje en cola",
       "use": "Usar",
       "delete": "Eliminar",

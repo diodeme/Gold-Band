@@ -4,16 +4,19 @@ use std::path::{Component, Path, PathBuf};
 use percent_encoding::percent_decode_str;
 use url::Url;
 
-use crate::commands::{CommandErrorVm, CommandResult};
+use crate::commands::{CommandErrorVm, CommandResult, spawn_blocking_command};
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::state::DesktopState;
 
 use super::models::{FileTargetLocationVm, WorkspaceFileLocatorVm};
+use super::runtime::WorkspaceFileRuntime;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedWorkspaceRoot {
     pub project_id: String,
     pub path: PathBuf,
+    /// `None` is the registered project root; linked worktrees use their canonical path.
+    pub workspace_scope_path: Option<String>,
     pub config: gold_band::config::WorkspaceFilesConfig,
 }
 
@@ -21,40 +24,143 @@ pub(crate) fn error(code: &str, params: serde_json::Value) -> CommandErrorVm {
     CommandErrorVm::new(code, params)
 }
 
-pub(crate) fn resolve_workspace_root(
+/// Resolve the file root for a project and an optional work location.
+///
+/// `workspace_path` is the session's linked Git worktree; `None` is the
+/// registered project root. A worktree root is accepted only when it is the
+/// top level of a worktree sharing the project's Git common directory. The
+/// Git check runs once per root; later calls re-verify that the directory and
+/// its `.git` pointer are unchanged, so a reclaimed or replaced worktree is
+/// never served from a stale validation.
+pub(crate) async fn resolve_workspace_root(
+    state: &DesktopState,
+    runtime: &WorkspaceFileRuntime,
+    project_id: &str,
+    workspace_path: Option<&str>,
+) -> CommandResult<ResolvedWorkspaceRoot> {
+    let project = resolve_project_root(state, project_id)?;
+    resolve_work_location_root(project, runtime, workspace_path).await
+}
+
+async fn resolve_work_location_root(
+    project: ResolvedWorkspaceRoot,
+    runtime: &WorkspaceFileRuntime,
+    workspace_path: Option<&str>,
+) -> CommandResult<ResolvedWorkspaceRoot> {
+    let Some(requested) = workspace_path.filter(|path| !path.trim().is_empty()) else {
+        return Ok(project);
+    };
+    let requested = PathBuf::from(requested);
+    let Ok(canonical) = std::fs::canonicalize(&requested) else {
+        runtime.forget_workspace_root(&project.project_id, &requested)?;
+        return Err(workspace_unavailable(&requested));
+    };
+    if same_path(&canonical, &project.path) {
+        return Ok(project);
+    }
+    let Ok(git_pointer) = git_pointer_fingerprint(&canonical) else {
+        runtime.forget_workspace_root(&project.project_id, &canonical)?;
+        return Err(workspace_unavailable(&canonical));
+    };
+    if !runtime.workspace_root_validated(&project.project_id, &canonical, &git_pointer)? {
+        let project_root = project.path.clone();
+        let candidate = canonical.clone();
+        spawn_blocking_command(move || validate_linked_worktree(&project_root, &candidate)).await?;
+        runtime.remember_workspace_root(&project.project_id, &canonical, git_pointer)?;
+    }
+    Ok(ResolvedWorkspaceRoot {
+        workspace_scope_path: Some(display_path(&canonical)),
+        path: canonical,
+        ..project
+    })
+}
+
+/// Watch identity for a root without Git validation: stopping a watch must
+/// still succeed after its worktree has been reclaimed.
+pub(crate) fn workspace_watch_root(
+    state: &DesktopState,
+    project_id: &str,
+    workspace_path: Option<&str>,
+) -> CommandResult<(String, PathBuf)> {
+    let project = resolve_project_root(state, project_id);
+    match workspace_path.filter(|path| !path.trim().is_empty()) {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            let project_id =
+                project.map_or_else(|_| project_id.to_string(), |root| root.project_id);
+            Ok((project_id, path))
+        }
+        None => project.map(|root| (root.project_id, root.path)),
+    }
+}
+
+fn resolve_project_root(
     state: &DesktopState,
     project_id: &str,
 ) -> CommandResult<ResolvedWorkspaceRoot> {
-    let context = state.context().map_err(|_| {
+    let not_found = || {
         error(
             "workspace-file.project-not-found",
             serde_json::json!({ "projectId": project_id }),
         )
-    })?;
-    let persisted = context.app().load_state().map_err(|_| {
-        error(
-            "workspace-file.project-not-found",
-            serde_json::json!({ "projectId": project_id }),
-        )
-    })?;
-    let (workspace_path, resolved_project_id) = workspace_entry_for_project(&persisted, project_id)
-        .ok_or_else(|| {
-            error(
-                "workspace-file.project-not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    let canonical = std::fs::canonicalize(&workspace_path).map_err(|_| {
-        error(
-            "workspace-file.project-not-found",
-            serde_json::json!({ "projectId": project_id }),
-        )
-    })?;
+    };
+    let context = state.context().map_err(|_| not_found())?;
+    let persisted = context.app().load_state().map_err(|_| not_found())?;
+    let (workspace_path, resolved_project_id) =
+        workspace_entry_for_project(&persisted, project_id).ok_or_else(not_found)?;
+    let canonical = std::fs::canonicalize(&workspace_path).map_err(|_| not_found())?;
     Ok(ResolvedWorkspaceRoot {
         project_id: resolved_project_id,
         path: canonical,
+        workspace_scope_path: None,
         config: context.config.workspace_files,
     })
+}
+
+fn workspace_unavailable(path: &Path) -> CommandErrorVm {
+    error(
+        "workspace-file.workspace-unavailable",
+        serde_json::json!({ "workspacePath": display_path(path) }),
+    )
+}
+
+/// Content of a linked worktree's `.git` file (its gitdir pointer); an empty
+/// fingerprint stands for a `.git` directory. A missing `.git` means the
+/// directory is no longer a Git worktree.
+pub(crate) fn git_pointer_fingerprint(root: &Path) -> std::io::Result<Vec<u8>> {
+    let git = root.join(".git");
+    if std::fs::symlink_metadata(&git)?.is_dir() {
+        return Ok(Vec::new());
+    }
+    std::fs::read(git)
+}
+
+fn validate_linked_worktree(project_root: &Path, candidate: &Path) -> CommandResult<()> {
+    let outside_project = || {
+        error(
+            "workspace-file.workspace-outside-project",
+            serde_json::json!({ "workspacePath": display_path(candidate) }),
+        )
+    };
+    let (Some(project_root), Some(candidate_utf8)) = (
+        camino::Utf8Path::from_path(project_root),
+        camino::Utf8Path::from_path(candidate),
+    ) else {
+        return Err(workspace_unavailable(candidate));
+    };
+    let identity = gold_band::git::GitSourceControlService::default()
+        .resolve_scoped_workspace(project_root, Some(candidate_utf8))
+        .map_err(
+            |error| match error.downcast_ref::<gold_band::git::GitServiceError>() {
+                Some(error) if error.code == "git.workspace-outside-project" => outside_project(),
+                _ => workspace_unavailable(candidate),
+            },
+        )?;
+    if !same_path(identity.workspace_path.as_std_path(), candidate) {
+        return Err(outside_project());
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_workspace_relative_path(
@@ -445,7 +551,7 @@ fn percent_decode(value: &str) -> CommandResult<String> {
         })
 }
 
-fn comparable_path(path: &Path) -> String {
+pub(crate) fn comparable_path(path: &Path) -> String {
     let normalized = slash_path(path).trim_end_matches('/').to_string();
     if cfg!(windows) {
         normalized.to_ascii_lowercase()
@@ -484,8 +590,202 @@ mod tests {
         ResolvedWorkspaceRoot {
             project_id: "project-1".to_string(),
             path: std::fs::canonicalize(path).unwrap(),
+            workspace_scope_path: None,
             config: gold_band::config::WorkspaceFilesConfig::default(),
         }
+    }
+
+    fn git(cwd: &Path, args: &[&str]) {
+        let cwd = camino::Utf8Path::from_path(cwd).unwrap();
+        let output = gold_band::git::GitCommandRunner::default()
+            .run(cwd, args)
+            .unwrap();
+        assert!(output.success, "git {args:?} failed: {}", output.stderr);
+    }
+
+    /// A committed repository plus one linked worktree beside it.
+    fn repository_with_worktree(dir: &Path) -> (PathBuf, PathBuf) {
+        let repo = dir.join("repo");
+        let worktree = dir.join("worktree");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init"]);
+        std::fs::write(repo.join("README.md"), "main\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Gold Band Test",
+                "-c",
+                "user.email=test@gold-band.local",
+                "commit",
+                "--no-verify",
+                "-m",
+                "initial",
+            ],
+        );
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "session",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        (
+            std::fs::canonicalize(repo).unwrap(),
+            std::fs::canonicalize(worktree).unwrap(),
+        )
+    }
+
+    fn resolve(
+        project: &ResolvedWorkspaceRoot,
+        runtime: &WorkspaceFileRuntime,
+        workspace_path: Option<&Path>,
+    ) -> CommandResult<ResolvedWorkspaceRoot> {
+        let workspace_path = workspace_path.map(display_path);
+        tauri::async_runtime::block_on(resolve_work_location_root(
+            project.clone(),
+            runtime,
+            workspace_path.as_deref(),
+        ))
+    }
+
+    #[test]
+    fn work_location_root_resolves_main_and_linked_worktree_separately() {
+        let dir = tempdir().unwrap();
+        let (repo, worktree) = repository_with_worktree(dir.path());
+        let project = root(&repo);
+        let runtime = WorkspaceFileRuntime::default();
+
+        let resolved_main = resolve(&project, &runtime, None).unwrap();
+        assert!(same_path(&resolved_main.path, &repo));
+        assert_eq!(resolved_main.workspace_scope_path, None);
+        let resolved_explicit_main = resolve(&project, &runtime, Some(&repo)).unwrap();
+        assert!(same_path(&resolved_explicit_main.path, &repo));
+        assert_eq!(resolved_explicit_main.workspace_scope_path, None);
+        let resolved = resolve(&project, &runtime, Some(&worktree)).unwrap();
+        assert!(same_path(&resolved.path, &worktree));
+        assert_eq!(resolved.workspace_scope_path, Some(display_path(&worktree)));
+        assert_eq!(resolved.project_id, "project-1");
+        assert!(
+            runtime
+                .workspace_root_validated(
+                    "project-1",
+                    &worktree,
+                    &git_pointer_fingerprint(&worktree).unwrap()
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn work_location_root_rejects_subdirectories_and_other_repositories() {
+        let dir = tempdir().unwrap();
+        let (repo, worktree) = repository_with_worktree(dir.path());
+        let other_dir = tempdir().unwrap();
+        let (other_repo, _) = repository_with_worktree(other_dir.path());
+        std::fs::create_dir(worktree.join("nested")).unwrap();
+        let project = root(&repo);
+        let runtime = WorkspaceFileRuntime::default();
+
+        // A directory without its own `.git` is not a worktree root.
+        assert_eq!(
+            resolve(&project, &runtime, Some(&worktree.join("nested")))
+                .unwrap_err()
+                .code,
+            "workspace-file.workspace-unavailable"
+        );
+        assert_eq!(
+            resolve(&project, &runtime, Some(&other_repo))
+                .unwrap_err()
+                .code,
+            "workspace-file.workspace-outside-project"
+        );
+        assert!(
+            !runtime
+                .workspace_root_validated(
+                    "project-1",
+                    &other_repo,
+                    &git_pointer_fingerprint(&other_repo).unwrap()
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn reclaimed_worktree_is_unavailable_and_forgotten() {
+        let dir = tempdir().unwrap();
+        let (repo, worktree) = repository_with_worktree(dir.path());
+        let project = root(&repo);
+        let runtime = WorkspaceFileRuntime::default();
+        resolve(&project, &runtime, Some(&worktree)).unwrap();
+        let pointer = git_pointer_fingerprint(&worktree).unwrap();
+
+        git(
+            &repo,
+            &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+        );
+
+        let error = resolve(&project, &runtime, Some(&worktree)).unwrap_err();
+        assert_eq!(error.code, "workspace-file.workspace-unavailable");
+        assert_eq!(error.params["workspacePath"], display_path(&worktree));
+        assert!(
+            !runtime
+                .workspace_root_validated("project-1", &worktree, &pointer)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn replaced_directory_at_a_validated_path_is_revalidated() {
+        let dir = tempdir().unwrap();
+        let (repo, worktree) = repository_with_worktree(dir.path());
+        let project = root(&repo);
+        let runtime = WorkspaceFileRuntime::default();
+        resolve(&project, &runtime, Some(&worktree)).unwrap();
+
+        // Same path, but no longer a Git worktree: the cached validation must
+        // not be reused.
+        std::fs::remove_file(worktree.join(".git")).unwrap();
+        assert_eq!(
+            resolve(&project, &runtime, Some(&worktree))
+                .unwrap_err()
+                .code,
+            "workspace-file.workspace-unavailable"
+        );
+    }
+
+    #[test]
+    fn validated_root_cache_is_bounded_and_keyed_by_project() {
+        let runtime = WorkspaceFileRuntime::default();
+        for index in 0..40 {
+            runtime
+                .remember_workspace_root("project-1", Path::new(&format!("D:/wt/{index}")), vec![1])
+                .unwrap();
+        }
+        assert!(
+            !runtime
+                .workspace_root_validated("project-1", Path::new("D:/wt/0"), &[1])
+                .unwrap()
+        );
+        assert!(
+            runtime
+                .workspace_root_validated("project-1", Path::new("D:/wt/39"), &[1])
+                .unwrap()
+        );
+        assert!(
+            !runtime
+                .workspace_root_validated("project-2", Path::new("D:/wt/39"), &[1])
+                .unwrap()
+        );
+        assert!(
+            !runtime
+                .workspace_root_validated("project-1", Path::new("D:/wt/39"), &[2])
+                .unwrap()
+        );
     }
 
     #[test]

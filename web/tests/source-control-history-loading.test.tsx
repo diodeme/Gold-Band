@@ -113,13 +113,30 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it('shows a reclaimed session worktree as unavailable without loading the project root', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1',
+        root: { kind: 'unavailable', reason: 'released', workspacePath: 'D:/repo/.wt/a' }, browseMain: false,
+      }} /></RightWorkspaceProvider>));
+      const state = container.querySelector('[data-workspace-root-unavailable="released"]');
+      expect(state?.textContent).toContain('workspace.rootUnavailable.released');
+      expect(state?.textContent).toContain('D:/repo/.wt/a');
+      expect(state?.querySelector('button')?.textContent).toBe('workspace.rootUnavailable.browseMain');
+      expect(sourceControlStore.ensureLoaded).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); }
+  });
+
   it('requires confirmation before discarding a file and disables it during writes', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       const openMenu = async () => {
         await act(async () => container.querySelector('[data-source-control-diff-file-row]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 })));
@@ -157,7 +174,7 @@ describe('source control history cache presentation', () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       const content = container.querySelector(`[data-tested-${activeTab}-view]`);
       expect(content).not.toBeNull();
@@ -181,7 +198,7 @@ describe('source control history cache presentation', () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       expect(container.textContent).toContain('sourceControl.loading');
       expect(container.querySelector('[data-tested-repository-view]')).toBeNull();
@@ -207,7 +224,7 @@ describe('source control history cache presentation', () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
 
       const rows = container.querySelectorAll('[data-source-control-diff-file-row="true"]');
@@ -243,7 +260,7 @@ describe('source control history cache presentation', () => {
         },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
 
       const emptyState = container.querySelector('[data-source-control-changes-empty="true"]');
@@ -268,7 +285,7 @@ describe('source control history cache presentation', () => {
         capability: { status: 'repository-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       expect(container.textContent).toContain('sourceControl.repositoryRequired');
       const initialize = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'sourceControl.initializeRepository');
@@ -304,7 +321,7 @@ describe('source control history cache presentation', () => {
         },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
 
       expect(container.textContent).toContain('sourceControl.capability.version-unsupported.title');
@@ -324,7 +341,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -359,7 +376,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.push"]')?.disabled).toBe(true);
@@ -383,7 +400,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -437,7 +454,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
       const sync = container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.pull"]');
@@ -465,7 +482,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -495,7 +512,7 @@ describe('source control history cache presentation', () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       const complete = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'sourceControl.conflictWorkflow.completeMerge');
       await act(async () => complete?.click());
@@ -514,7 +531,7 @@ describe('source control history cache presentation', () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       const repository = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent === 'sourceControl.repository');
       await act(async () => repository?.click());
@@ -541,7 +558,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -570,7 +587,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -595,7 +612,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
       expect(githubRuntime.getCapability).not.toHaveBeenCalled();
@@ -619,7 +636,8 @@ describe('source control history cache presentation', () => {
               title: 'Source control',
               attention: false,
               projectId: 'project-1',
-              workspacePath: 'D:/repo',
+              root: { kind: 'available', workspacePath: 'D:/repo' },
+              browseMain: false,
             }} />
           </RightWorkspaceProvider>,
         );

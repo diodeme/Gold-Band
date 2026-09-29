@@ -7,6 +7,7 @@ import type {
   ConversationSessionTargetVm,
   ConversationSessionTreeVm,
   InterventionNavigateEventVm,
+  SessionWorkLocationVm,
 } from '@/types';
 import { findConversationTask } from '@/lib/conversation-task-state';
 import {
@@ -72,16 +73,21 @@ export function conversationPageTargetsTask(
     || sameConversationTaskEntity(page, task);
 }
 
-export function conversationSourceControlWorkspacePath(
+/**
+ * Work location of the session the page presents. It is the single source for
+ * every workspace tab root (files, source control, links, mentions); `null`
+ * means no conversation is presented and tabs use the project root.
+ */
+export function conversationWorkLocation(
   page: ConversationPage,
   run: ConversationRunVm | null | undefined,
-): string | null {
+): SessionWorkLocationVm | null {
   if (!run || !conversationPageMatchesRun(page, run)) return null;
   const selectedLeaf = findConversationLeafByKey(run.sessionTree, run.sessionTree.selectedSessionKey)
     ?? findConversationLeafForPage(run.sessionTree, page);
-  if (selectedLeaf) return selectedLeaf.worktreePath ?? null;
-  if (run.selectedSession) return run.selectedSession.worktreePath ?? null;
-  return run.worktree?.path ?? null;
+  if (selectedLeaf) return selectedLeaf.workLocation;
+  if (run.selectedSession) return run.selectedSession.workLocation;
+  return run.worktree ? { kind: 'worktree', path: run.worktree.path, branch: run.worktree.branch } : { kind: 'main' };
 }
 
 export function conversationPageForRun(run: ConversationRunVm): Extract<ConversationPage, { kind: 'conversation-run' }> {

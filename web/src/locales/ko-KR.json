@@ -704,11 +704,18 @@
           "trash-failed": "휴지통으로 이동할 수 없습니다. 다시 시도하세요.",
           "restore-unavailable": "실행 취소할 수 없습니다: 항목이 더 이상 휴지통에 없습니다.",
           "unsaved-changes": "저장하지 않은 변경 사항을 저장할 수 없어 이름 바꾸기를 취소했습니다.",
-          "system-open-failed": "시스템 앱에서 이 파일을 열 수 없습니다."
+          "system-open-failed": "시스템 앱에서 이 파일을 열 수 없습니다.",
+          "workspace-unavailable": "세션의 작업 트리를 사용할 수 없습니다. 회수되었거나 삭제되었을 수 있습니다.",
+          "workspace-outside-project": "이 폴더는 현재 프로젝트의 Git 작업 트리가 아닙니다."
         }
       }
     },
-    "discardWorkflowChanges": "이 워크플로에 저장하지 않은 변경이 있습니다. 변경을 버리고 닫을까요?"
+    "discardWorkflowChanges": "이 워크플로에 저장하지 않은 변경이 있습니다. 변경을 버리고 닫을까요?",
+    "rootUnavailable": {
+      "released": "세션의 작업 트리가 회수되었습니다",
+      "unresolved": "세션의 작업 트리를 사용할 수 없습니다",
+      "browseMain": "메인 작업 영역 찾아보기"
+    }
   },
   "executionPlan": {
     "configureAuto": "AUTO 구성",
@@ -1869,7 +1876,7 @@
         "description": "설치된 Git을 안정적으로 확인할 수 없습니다. Git을 고치거나 다시 설치한 뒤 다시 시도하세요."
       },
       "head-required": {
-        "title": "저장소에 초기 커밋이 없습니다",
+        "title": "이 Git 저장소에는 아직 첫 커밋이 없습니다",
         "description": "변경에서 파일을 선택하고 스테이징한 뒤 초기 커밋을 만드세요."
       },
       "worktree-required": {
@@ -1897,7 +1904,7 @@
     "unstage": "스테이징 취소",
     "stageAll": "모두 스테이징",
     "unstageAll": "모두 스테이징 취소",
-    "clean": "작업 트리가 깨끗합니다",
+    "clean": "작업 공간에 변경이 없습니다",
     "commitSubject": "커밋 제목",
     "commitBody": "커밋 본문(선택)",
     "stagedCount": "스테이징된 파일 {{count}}개",
@@ -1924,7 +1931,7 @@
     "noContainingRefs": "이 커밋을 포함하는 참조가 없습니다",
     "targetPath": "현재 브랜치 기준",
     "firstMerge": "메인라인에 처음 Merge된 커밋",
-    "parents": "부모",
+    "parents": "부모 커밋",
     "rootCommit": "Root 커밋(부모 없음)",
     "previousFile": "이전 파일",
     "nextFile": "다음 파일",
@@ -1956,7 +1963,7 @@
     "merge": "Merge",
     "rebase": "Rebase",
     "prune": "원격에서 삭제된 브랜치 기록 제거",
-    "pruneDescription": "로컬 브랜치와 작업 트리 파일은 삭제되지 않습니다.",
+    "pruneDescription": "로컬 브랜치나 작업 공간 파일은 삭제되지 않습니다.",
     "checkoutAfterCreate": "생성 후 새 브랜치로 전환",
     "includeUntracked": "추적되지 않은 파일 포함",
     "restoreIndex": "스테이징 상태 복원",
@@ -2827,7 +2834,7 @@
         "dialog": {
           "title": "워크스페이스 추가",
           "remoteWorkspace": "원격 워크스페이스",
-          "provider": "제공자",
+          "provider": "Provider",
           "add": "추가",
           "needWorkspace": "원격 워크스페이스를 선택해 주세요",
           "noServerWorkspaces": "서버에 아직 바인딩할 워크스페이스가 없습니다. 먼저 multica Web에서 워크스페이스를 만드세요.",
@@ -2899,7 +2906,7 @@
       "configureAuto": "AUTO 편집",
       "configureWorkflow": "워크플로 편집",
       "includeInterview": "요구사항 인터뷰",
-      "includeGrill": "요구사항 그릴"
+      "includeGrill": "요구사항 추궁"
     },
     "runtime": {
       "justNow": "방금",

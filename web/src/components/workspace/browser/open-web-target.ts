@@ -1,6 +1,6 @@
 import { browserResolveLocalHtml, openExternalUrl } from '@/api';
 import type { RightWorkspaceCommands } from '../right-workspace-context';
-import type { BrowserPreferences } from '@/types';
+import type { BrowserPreferences, WorkspaceRootRef } from '@/types';
 import { browserWorkspaceResourceKey } from '../right-workspace-context';
 import { browserSessionStore } from './browser-session-store';
 import {
@@ -11,7 +11,8 @@ import {
 } from './web-target';
 
 export interface OpenWebTargetContext {
-  projectId: string | null;
+  /** File root local documents resolve against; `null` when none is available. */
+  root: WorkspaceRootRef | null;
   scopeKey: string | null;
   openResource: RightWorkspaceCommands['openResource'];
   browserTitle: string;
@@ -62,13 +63,16 @@ export async function openLocalDocumentInBrowser(
   rawPath: string,
   context: OpenWebTargetContext,
 ): Promise<OpenWebTargetResult> {
-  if (!context.scopeKey || !context.projectId) {
+  if (!context.scopeKey) {
     return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
+  }
+  if (!context.root) {
+    return { status: 'error', error: { code: 'workspace-file.workspace-unavailable', params: {} } };
   }
   let url: string;
   try {
     const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
-      projectId: context.projectId,
+      ...context.root,
       rawHref: rawPath,
     });
     url = resolved.canonicalPath;

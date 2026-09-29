@@ -1,6 +1,6 @@
 import { getGitComparison } from '@/api';
 import type { GitCommitReviewFileVm, GitComparisonSourceVm, GitFileChangeVm, GitFileComparisonVm } from '@/types';
-import { normalizeSourceControlWorkspacePath } from './source-control-identity';
+import { normalizeWorkspacePath } from '@/lib/workspace-root';
 
 export interface GitDiffReviewItem {
   id: string;
@@ -93,7 +93,7 @@ class DiffReviewStore {
       if (session.projectId !== projectId) continue;
       for (const item of session.items) {
         if (item.source.kind !== 'commit'
-          || normalizeSourceControlWorkspacePath(item.source.workspacePath) !== normalizeSourceControlWorkspacePath(workspacePath)) continue;
+          || normalizeWorkspacePath(item.source.workspacePath) !== normalizeWorkspacePath(workspacePath)) continue;
         const value = stats.get(item.id);
         if (value) { item.stats = value; changed = true; }
       }
@@ -152,7 +152,7 @@ class DiffReviewStore {
   }
 
   private workspaceKey(projectId: string, workspacePath: string | null | undefined) {
-    return `${projectId}\0${normalizeSourceControlWorkspacePath(workspacePath) ?? ''}`;
+    return `${projectId}\0${normalizeWorkspacePath(workspacePath) ?? ''}`;
   }
 
   private pathKey(projectId: string, source: Extract<GitComparisonSourceVm, { kind: 'workspace' }>) {
@@ -190,8 +190,8 @@ class DiffReviewStore {
     let changed = false;
     for (const session of this.sessions.values()) {
       if (!session.workspace || session.projectId !== input.projectId) continue;
-      if (normalizeSourceControlWorkspacePath(session.workspace.workspacePath)
-        !== normalizeSourceControlWorkspacePath(input.workspacePath ?? null)) continue;
+      if (normalizeWorkspacePath(session.workspace.workspacePath)
+        !== normalizeWorkspacePath(input.workspacePath ?? null)) continue;
       const changes = session.workspace.area === 'staged'
         ? input.staged
         : [...input.unstaged, ...input.untracked];

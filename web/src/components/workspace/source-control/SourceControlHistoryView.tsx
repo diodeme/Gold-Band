@@ -31,11 +31,13 @@ export const HISTORY_SPLIT_MIN_WIDTH = 520;
 
 export function SourceControlHistoryView({
   resource,
+  workspacePath,
   session,
   snapshot,
   busy,
 }: {
   resource: SourceControlWorkspaceResource;
+  workspacePath: string | null;
   session: SourceControlSessionSnapshot;
   snapshot: GitSourceControlOverviewVm;
   busy: boolean;
@@ -58,34 +60,34 @@ export function SourceControlHistoryView({
 
   useEffect(() => {
     const viewport = commitScrollRef.current;
-    if (viewport) viewport.scrollTop = sourceControlStore.historyScrollPositions(resource.projectId, resource.workspacePath).commitList;
-  }, [resource.projectId, resource.workspacePath, session.historyPage]);
+    if (viewport) viewport.scrollTop = sourceControlStore.historyScrollPositions(resource.projectId, workspacePath).commitList;
+  }, [resource.projectId, workspacePath, session.historyPage]);
 
   useEffect(() => {
     if (session.selectedCommitOids.size > 0 && !responsiveState.split) setCompactView('detail');
   }, [responsiveState.split, session.selectedCommitOids]);
 
   const selectCommit = useCallback((commit: GitCommitVm, event: React.MouseEvent) => {
-    sourceControlStore.selectCommit(resource.projectId, resource.workspacePath, commit.oid, visibleOids, {
+    sourceControlStore.selectCommit(resource.projectId, workspacePath, commit.oid, visibleOids, {
       additive: event.ctrlKey || event.metaKey,
       range: event.shiftKey,
     });
-  }, [resource.projectId, resource.workspacePath, visibleOids]);
+  }, [resource.projectId, workspacePath, visibleOids]);
 
   const openReachability = useCallback((oid: string) => {
     setReachabilityOpen(true);
-    void sourceControlStore.loadCommitReachability(resource.projectId, resource.workspacePath, oid);
-  }, [resource.projectId, resource.workspacePath]);
+    void sourceControlStore.loadCommitReachability(resource.projectId, workspacePath, oid);
+  }, [resource.projectId, workspacePath]);
 
   const selectCommitForContextMenu = useCallback((oid: string) => {
-    sourceControlStore.selectCommitForContextMenu(resource.projectId, resource.workspacePath, oid);
-  }, [resource.projectId, resource.workspacePath]);
+    sourceControlStore.selectCommitForContextMenu(resource.projectId, workspacePath, oid);
+  }, [resource.projectId, workspacePath]);
 
   const showOlder = () => {
     if (hasOlderLoadedPage) {
-      sourceControlStore.setHistoryPage(resource.projectId, resource.workspacePath, session.historyPage + 1);
+      sourceControlStore.setHistoryPage(resource.projectId, workspacePath, session.historyPage + 1);
     } else if (session.history?.nextCursor) {
-      void sourceControlStore.loadMoreHistory(resource.projectId, resource.workspacePath, true);
+      void sourceControlStore.loadMoreHistory(resource.projectId, workspacePath, true);
     }
   };
 
@@ -102,7 +104,7 @@ export function SourceControlHistoryView({
       {session.selectedCommitOids.size > 1 ? (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/45 px-2 text-ui-caption text-muted-foreground">
           <span className="min-w-0 flex-1 truncate">{t('sourceControl.selectedCommitCount', { count: session.selectedCommitOids.size })}</span>
-          <Button type="button" size="xs" variant="ghost" onClick={() => sourceControlStore.clearCommitSelection(resource.projectId, resource.workspacePath)}>
+          <Button type="button" size="xs" variant="ghost" onClick={() => sourceControlStore.clearCommitSelection(resource.projectId, workspacePath)}>
             <X className="size-3" />{t('common.clear')}
           </Button>
         </div>
@@ -110,7 +112,7 @@ export function SourceControlHistoryView({
       <ScrollArea
         className="min-h-0 flex-1"
         viewportRef={commitScrollRef}
-        onViewportScroll={(event) => sourceControlStore.setHistoryScrollPosition(resource.projectId, resource.workspacePath, 'commit-list', event.currentTarget.scrollTop)}
+        onViewportScroll={(event) => sourceControlStore.setHistoryScrollPosition(resource.projectId, workspacePath, 'commit-list', event.currentTarget.scrollTop)}
       >
         <div className="py-1" role="listbox" aria-multiselectable="true">
           {pageCommits.map((commit) => (
@@ -128,7 +130,7 @@ export function SourceControlHistoryView({
         </div>
       </ScrollArea>
       <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-border/50 px-2">
-        <Button type="button" size="xs" variant="ghost" disabled={session.historyPage === 0 || busy} onClick={() => sourceControlStore.setHistoryPage(resource.projectId, resource.workspacePath, session.historyPage - 1)}>
+        <Button type="button" size="xs" variant="ghost" disabled={session.historyPage === 0 || busy} onClick={() => sourceControlStore.setHistoryPage(resource.projectId, workspacePath, session.historyPage - 1)}>
           <ChevronLeft className="size-3" />{t('sourceControl.newerCommits')}
         </Button>
         <span className="text-ui-micro tabular-nums text-muted-foreground">{t('sourceControl.historyCurrentPage', { page: session.historyPage + 1 })}</span>
@@ -142,14 +144,15 @@ export function SourceControlHistoryView({
 
   const detail = (
     <CommitReviewPanel
+      workspacePath={workspacePath}
       resource={resource}
       session={session}
       onOpenFile={(file, fileIndex) => {
         if (!workspace.scopeKey || !session.commitReview) return;
-        const items = reviewItems(resource.workspacePath, session.commitReview.files);
+        const items = reviewItems(workspacePath, session.commitReview.files);
         const item = items[fileIndex];
         if (!item) return;
-        const reviewSessionId = `${resource.projectId}:${resource.workspacePath ?? ''}:${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`;
+        const reviewSessionId = `${resource.projectId}:${workspacePath ?? ''}:${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`;
         diffReviewStore.save({ id: reviewSessionId, projectId: resource.projectId, revision: session.commitReview.revision, items });
         void workspace.openResource({
           kind: 'file-diff',
@@ -187,7 +190,7 @@ export function SourceControlHistoryView({
       </div>
       <Dialog open={reachabilityOpen} onOpenChange={(open) => {
         setReachabilityOpen(open);
-        if (!open) sourceControlStore.closeCommitReachability(resource.projectId, resource.workspacePath);
+        if (!open) sourceControlStore.closeCommitReachability(resource.projectId, workspacePath);
       }}>
         <DialogContent>
           <DialogHeader>
@@ -255,8 +258,9 @@ const CommitRow = memo(function CommitRow({ commit, selected, focused, runtimeLa
   );
 });
 
-function CommitReviewPanel({ resource, session, onOpenFile }: {
+function CommitReviewPanel({ resource, workspacePath, session, onOpenFile }: {
   resource: SourceControlWorkspaceResource;
+  workspacePath: string | null;
   session: SourceControlSessionSnapshot;
   onOpenFile: (file: GitCommitReviewFileVm, fileIndex: number) => void;
 }) {
@@ -269,10 +273,10 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
   useEffect(() => {
     const viewport = reviewScrollRef.current;
     if (!viewport) return;
-    const scrollTop = sourceControlStore.historyScrollPositions(resource.projectId, resource.workspacePath, reviewKey).reviewList;
+    const scrollTop = sourceControlStore.historyScrollPositions(resource.projectId, workspacePath, reviewKey).reviewList;
     const frame = restoreReviewScrollPosition(viewport, scrollTop, (apply) => window.requestAnimationFrame(apply));
     return () => window.cancelAnimationFrame(frame);
-  }, [resource.projectId, resource.workspacePath, reviewKey, workspace.activeTabKey]);
+  }, [resource.projectId, workspacePath, reviewKey, workspace.activeTabKey]);
   if (session.historyDetailLoading) return <CenteredState icon={<LoaderCircle className="size-4 animate-spin" />} text={t('sourceControl.commitReviewLoading')} />;
   const review = session.commitReview;
   if (!review) return <CenteredState text={t('sourceControl.selectCommitHint')} />;
@@ -287,13 +291,13 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
         <div className="mt-1 flex gap-3 text-ui-micro tabular-nums text-muted-foreground">
           <span>{t('sourceControl.changedFileCount', { count: review.totals.fileCount })}</span>
           {session.reviewStatisticsLoading && <span role="status">{t('sourceControl.reviewStatisticsLoading')}</span>}
-          {session.reviewStatisticsError && <Button variant="ghost" size="sm" onClick={() => void sourceControlStore.retryReviewStatistics(resource.projectId, resource.workspacePath)}>{t('sourceControl.reviewStatisticsRetry')}</Button>}
+          {session.reviewStatisticsError && <Button variant="ghost" size="sm" onClick={() => void sourceControlStore.retryReviewStatistics(resource.projectId, workspacePath)}>{t('sourceControl.reviewStatisticsRetry')}</Button>}
         </div>
       </header>
       <ScrollArea
         className="min-h-0 flex-1"
         viewportRef={reviewScrollRef}
-        onViewportScroll={(event) => sourceControlStore.setHistoryScrollPosition(resource.projectId, resource.workspacePath, 'review-list', event.currentTarget.scrollTop, reviewKey)}
+        onViewportScroll={(event) => sourceControlStore.setHistoryScrollPosition(resource.projectId, workspacePath, 'review-list', event.currentTarget.scrollTop, reviewKey)}
       >
         <div className="py-1">
           {review.files.map((file, fileIndex) => (

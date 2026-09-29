@@ -1242,17 +1242,17 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 ## 22. Workspace 变更事件身份收敛（2026-09-29）
 
 - 根因：主工作区同时以语义身份 `workspacePath = null` 和物理项目根路径存在。workspace watcher 正确发出 `null`，但以显式项目根打开的 SourceControlStore 会话严格比较原始路径，导致事件进入 `out_of_scope_sessions` 且不触发 refresh；属于 canonical identity 契约未贯通，而不是 notify 或 Git status 失效。
-- 后端 Git bootstrap 与独立 monitor resolver 统一产出 canonical scope：未传路径和显式项目根均为 `null`，linked worktree 才是 canonical path。Git bootstrap 与独立 monitor resolver 使用跨平台文件系统 identity 判断显式路径是否为项目根，Windows 的分隔符、大小写和长路径形式差异不得产生 linked worktree scope。物理 repository identity 继续用于 Git 执行和路径边界，不再兼任主工作区的语义 scope。
+- 后端 Git bootstrap 与文件 workspace resolver 统一产出 canonical scope：未传路径和显式项目根均为 `null`，linked worktree 才是 canonical path。Git bootstrap 与独立 monitor resolver 使用跨平台文件系统 identity 判断显式路径是否为项目根，Windows 的分隔符、大小写和长路径形式差异不得产生 linked worktree scope。物理 repository identity 继续用于 Git 执行和路径边界，不再兼任主工作区的语义 scope。
 - 前端 bootstrap 后将原始请求路径、canonical scope 和 repository 物理路径注册为同一 Store 会话别名；monitor、刷新、历史、审阅与写操作统一使用 canonical scope。事件仍按 scope 精确匹配，不采用路径包含关系，因此嵌套 worktree 不会刷新主工作区。
 - workspace watcher 保存 canonical scope；同一物理 root 只有 scope 相同才增加引用计数，scope 冲突记录 `workspace_watch_scope_conflict` 并返回结构化失败，文件面板与源码管理先后启动的结果一致。
-- 回归与验收：修复前最小 Store 测试稳定得到“期望第二次 snapshot，实际仅一次”；修复后该测试及 SourceControlStore 全部 56 项通过。真实 Git 测试固定显式项目根为 `null`、linked worktree 为路径，并保持主工作区 bootstrap 4 次、linked worktree 5 次 Git 命令预算；独立 monitor resolver 与 watcher scope 顺序测试通过，生产 TypeScript 检查通过。
+- 回归与验收：修复前最小 Store 测试稳定得到“期望第二次 snapshot，实际仅一次”；修复后该测试及 SourceControlStore 全部 56 项通过。真实 Git 测试固定显式项目根为 `null`、linked worktree 为路径，并保持主工作区 bootstrap 4 次、linked worktree 5 次 Git 命令预算；workspace resolver 与 watcher scope 顺序测试通过，生产 TypeScript 检查通过。
 - 过度设计与性能评审：复用既有 resolver、bootstrap DTO、Store alias、watcher 引用计数和结构化错误；不新增依赖、缓存、状态机、队列、文件扫描或 Git 调用。新增工作仅发生在 bootstrap/watcher 注册时，为常数次内存路径归一化与比较；事件路由和刷新复杂度不变。
 
 ## 23. Windows watcher 路径表示统一（2026-09-29）
 
 - 现场证据：workspace watcher 已发出普通文件事件，前端 `routed_sessions = 0` 且全部进入 `out_of_scope_sessions`；`data.csv` 可由 Git status 与 numstat 正常读取，排除文件类型、大小和 Git parser。
 - 根因：Git repository identity 由 `std::fs::canonicalize` 产生，在 Windows 上可带 `\\?\` 或 `\\?\UNC\` 前缀；workspace watcher 发事件前会去掉此前缀。前端 path identity 只处理分隔符、drive 大小写和末尾斜杠，导致同一物理路径在边界判断中被误判为越界。这是跨层 canonical identity 实现不完整，不是 watcher、Git status 或刷新时序失效。
-- 修复：共享 `normalizeWorkspacePath` 统一普通/verbatim drive 与 UNC 路径，再由源码管理和 Diff Store 共同消费；watcher scope 复用同一去前缀语义。事件仍需同时满足精确 scope 与 workspace 边界，未放宽 linked worktree 隔离。
+- 修复：共享 `normalizeWorkspacePath` 统一普通/verbatim drive 与 UNC 路径，再由源码管理、文件 Store 和 Diff Store 共同消费；watcher scope 复用同一去前缀语义。事件仍需同时满足精确 scope 与 workspace 边界，未放宽 linked worktree 隔离。
 - 诊断：`out_of_scope_sessions` 细分为 `scope_mismatch_sessions`、`nested_worktree_filtered_sessions` 与 `path_outside_workspace_sessions`，watcher start/reuse 记录 `scope_kind = main | linked`；保持 DEBUG、内容无关与 250ms 有界聚合。
 - 回归：最小 Store 接口测试使用带 verbatim 前缀的 repository path 与普通 watcher path，修复前稳定观察到 snapshot 调用 0 次，修复后触发主工作区 refresh。watcher scope 测试固定带前缀与普通路径可复用同一 linked worktree watch。
 - 验证：SourceControlStore 58 项、共享文件 Store 与右侧工作区相关测试合计 123 项、Git 诊断 5 项、workspace watcher 9 项通过；前端生产 TypeScript 检查、Rust 格式检查和相关 diff check 通过。桌面真实 watcher 仍由重新编译后的客户端现场修改普通文件完成最终确认。

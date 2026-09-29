@@ -704,11 +704,18 @@
           "trash-failed": "Não foi possível mover para a lixeira. Tente novamente.",
           "restore-unavailable": "Não é possível desfazer: o item não está mais na lixeira.",
           "unsaved-changes": "Não foi possível salvar as alterações pendentes, então a renomeação foi cancelada.",
-          "system-open-failed": "O aplicativo do sistema não conseguiu abrir este arquivo."
+          "system-open-failed": "O aplicativo do sistema não conseguiu abrir este arquivo.",
+          "workspace-unavailable": "O worktree da sessão não está disponível. Ele pode ter sido recolhido ou excluído.",
+          "workspace-outside-project": "Esta pasta não é um worktree Git do projeto atual."
         }
       }
     },
-    "discardWorkflowChanges": "Este fluxo de trabalho tem alterações não salvas. Descartá-las e fechar a aba?"
+    "discardWorkflowChanges": "Este fluxo de trabalho tem alterações não salvas. Descartá-las e fechar a aba?",
+    "rootUnavailable": {
+      "released": "O worktree da sessão foi recolhido",
+      "unresolved": "O worktree da sessão não está disponível",
+      "browseMain": "Ver espaço de trabalho principal"
+    }
   },
   "executionPlan": {
     "configureAuto": "Configuração AUTO",
@@ -1115,7 +1122,7 @@
     "unknown": "Desconhecido"
   },
   "nodeType": {
-    "worker": "Nó Agent",
+    "worker": "Nó de modelo",
     "ai-dynamic": "Nó AI dinâmico",
     "dynamic-worker": "Nó de trabalho dinâmico",
     "dynamic-workflow-invocation": "Nó de fluxo de trabalho dinâmico",
@@ -1869,7 +1876,7 @@
         "description": "O Git instalado não pôde ser identificado de forma confiável. Repare ou reinstale o Git e tente novamente."
       },
       "head-required": {
-        "title": "O repositório não tem commit inicial",
+        "title": "Este repositório Git ainda não tem o commit inicial",
         "description": "Selecione arquivos em Alterações, faça stage e crie o commit inicial."
       },
       "worktree-required": {
@@ -1924,7 +1931,7 @@
     "noContainingRefs": "Nenhuma ref atual contém este commit",
     "targetPath": "Relativo ao branch atual",
     "firstMerge": "Primeiro merge na linha principal",
-    "parents": "Pais",
+    "parents": "Commits pai",
     "rootCommit": "Commit Root (sem commit pai)",
     "previousFile": "Arquivo anterior",
     "nextFile": "Próximo arquivo",
@@ -2237,8 +2244,8 @@
       "showMore": "Mostrar mais",
       "showFirst": "Mostrar somente os primeiros {{count}}",
       "edit": "Editar",
-      "editDraftOccupied": "Termine o rascunho atual do compositor primeiro",
-      "restoreDraftConflict": "O compositor mudou antes que esta mensagem na fila pudesse ser restaurada.",
+      "editDraftOccupied": "Termine primeiro o rascunho atual do campo de entrada",
+      "restoreDraftConflict": "O campo de entrada mudou e esta mensagem pendente não pode ser restaurada.",
       "reorder": "Reordenar mensagem na fila",
       "use": "Usar",
       "delete": "Excluir",

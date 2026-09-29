@@ -65,6 +65,7 @@ import {
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
 import { composerWorkspaceFileRefFromEntry, openWorkspaceFileReference } from '@/lib/workspace-file-reference';
+import { workspaceRootRef } from '@/lib/workspace-root';
 import { type AddWorkspaceFileRefResult, useWorkspaceFileReferenceBridge } from '@/components/workspace/workspace-file-reference-bridge';
 
 interface ConversationComposerProps {
@@ -632,7 +633,8 @@ export function ConversationComposer({
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;
-    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource)
+    // A new conversation has no session worktree yet; its references live in the project root.
+    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource, workspaceRootRef(file.projectId, null))
       .then(() => setContextError(null))
       .catch(error => setContextError(displayAppError(t, error)));
   }, [rightWorkspace, t]);
@@ -762,6 +764,7 @@ export function ConversationComposer({
     [agentCommands.commands, isDirect, profiles, t],
   );
   const mentionLabels = useMentionMenuLabels();
+  const mentionRoot = useMemo(() => (projectId ? workspaceRootRef(projectId, null) : null), [projectId]);
   const slashCommands = useSlashCommandController({
     input: content,
     groups: slashCatalog,
@@ -769,7 +772,8 @@ export function ConversationComposer({
     onInputChange: setContent,
     textareaRef: composerTextareaRef,
     mention: {
-      projectId,
+      // A new conversation's prompt resolves references against the project root.
+      root: mentionRoot,
       labels: mentionLabels,
       onSelectWorkspaceFile: (entry) => {
         if (projectId) addWorkspaceFile(composerWorkspaceFileRefFromEntry(projectId, entry), false);

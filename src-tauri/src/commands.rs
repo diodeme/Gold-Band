@@ -185,8 +185,17 @@ where
         })?
 }
 
+/// Which session a prompt's workspace-file references resolve for. A new
+/// run resolves against the project root it forks from; an existing attempt
+/// resolves against the directory its session works in.
+pub(crate) enum PromptWorkspaceTarget<'a> {
+    ProjectRoot,
+    Attempt(&'a AttemptLocator),
+}
+
 pub(crate) async fn validate_prompt_workspace_files(
     app: &gold_band::app::App,
+    target: PromptWorkspaceTarget<'_>,
     input: &ConversationPromptInput,
     attachment_count: usize,
 ) -> CommandResult<()> {
@@ -195,8 +204,23 @@ pub(crate) async fn validate_prompt_workspace_files(
     }
     let app = app.clone_for_background();
     let references = input.workspace_files.clone();
+    let attempt = match target {
+        PromptWorkspaceTarget::ProjectRoot => None,
+        PromptWorkspaceTarget::Attempt(locator) => Some(locator.clone()),
+    };
     spawn_blocking_command(move || {
-        let roots = app.prompt_workspace_roots();
+        let session_root = match attempt {
+            None => app.paths.repo_root.clone(),
+            Some(locator) => app
+                .attempt_session_workspace_dir(
+                    &locator.task_id,
+                    &locator.run_id,
+                    &locator.round_id,
+                    locator.dynamic_workspace_locator(),
+                )
+                .map_err(command_error)?,
+        };
+        let roots = app.prompt_workspace_roots(&session_root);
         gold_band::provider::resolve_prompt_workspace_files(&roots, &references, attachment_count)
             .map(|_| ())
             .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
@@ -206,6 +230,7 @@ pub(crate) async fn validate_prompt_workspace_files(
 
 fn attach_admitted_workspace_files(
     app: &gold_band::app::App,
+    session_workspace_dir: &camino::Utf8Path,
     bundle: &mut gold_band::provider::PromptBundle,
     workspace_files: &[gold_band::provider::PromptWorkspaceFileRef],
     attachment_count: usize,
@@ -213,7 +238,7 @@ fn attach_admitted_workspace_files(
     if workspace_files.is_empty() {
         return Ok(());
     }
-    let roots = app.prompt_workspace_roots();
+    let roots = app.prompt_workspace_roots(session_workspace_dir);
     let resolved = gold_band::provider::resolve_prompt_workspace_files(
         &roots,
         workspace_files,
@@ -231,7 +256,7 @@ fn attach_admitted_workspace_files(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AttemptLocator {
+pub(crate) struct AttemptLocator {
     task_id: String,
     run_id: String,
     round_id: String,
@@ -265,6 +290,16 @@ impl AttemptLocator {
 
     fn outer_node_id(&self) -> Option<&str> {
         self.outer_node_id.as_deref()
+    }
+
+    /// `(outer node, outer attempt, dynamic node)` when this attempt is an
+    /// AI-DYNAMIC internal session.
+    fn dynamic_workspace_locator(&self) -> Option<(&str, &str, &str)> {
+        Some((
+            self.outer_node_id.as_deref()?,
+            self.outer_attempt_id.as_deref()?,
+            self.node_id.as_str(),
+        ))
     }
 
     fn outer_attempt_id(&self) -> Option<&str> {
@@ -4654,6 +4689,7 @@ async fn continue_conversation_runtime_inner(
         validate_prompt_role_run_mode(&app, &locator.task_id, input)?;
         validate_prompt_workspace_files(
             &app,
+            PromptWorkspaceTarget::Attempt(&locator),
             input,
             attachment_paths.as_deref().map_or(0, <[_]>::len),
         )
@@ -6509,6 +6545,7 @@ pub async fn resolve_turn_attachment_file(
         &project_id,
         path,
     )
+    .await
 }
 
 fn turn_file_command_error(error: anyhow::Error) -> CommandErrorVm {
@@ -7118,6 +7155,7 @@ async fn submit_conversation_prompt_inner(
     validate_prompt_role_run_mode(&app, &locator.task_id, &input)?;
     validate_prompt_workspace_files(
         &app,
+        PromptWorkspaceTarget::Attempt(&locator),
         &input,
         attachment_paths.as_deref().map_or(0, <[_]>::len),
     )
@@ -7606,6 +7644,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             }
             attach_admitted_workspace_files(
                 &app,
+                &session_workspace_dir,
                 &mut prompt_bundle,
                 &workspace_files,
                 attachment_paths.as_ref().map_or(0, Vec::len),
@@ -7775,6 +7814,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         }
         attach_admitted_workspace_files(
             &app,
+            &session_workspace_dir,
             &mut prompt_bundle,
             &workspace_files,
             attachment_paths.as_ref().map_or(0, Vec::len),

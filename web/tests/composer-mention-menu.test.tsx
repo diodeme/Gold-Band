@@ -107,7 +107,7 @@ function Harness({ roles, initial = '' }: { roles: SlashCatalogGroup[]; initial?
     groups: roles,
     onInputChange: setInput,
     textareaRef,
-    mention: { projectId: 'project-1', labels, onSelectWorkspaceFile: selected },
+    mention: { root: { projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' }, labels, onSelectWorkspaceFile: selected },
   });
   return (
     <div>
@@ -167,7 +167,7 @@ describe('@ mention navigation', () => {
 
     await press('Enter');
     expect(textarea.value).toBe('@');
-    expect(api.listWorkspaceDirectory).toHaveBeenCalledWith('project-1', '');
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' }, '');
     expect(groups()).toEqual([{ heading: 'Workspace', status: undefined, items: 'src,README.md' }]);
 
     await press('Enter');
@@ -216,7 +216,7 @@ describe('@ mention navigation', () => {
     await type('@mai');
     await act(async () => { vi.advanceTimersByTime(MENTION_FILE_SEARCH_DEBOUNCE_MS); });
     expect(api.searchWorkspaceFiles).toHaveBeenCalledTimes(2);
-    expect(api.searchWorkspaceFiles).toHaveBeenLastCalledWith('project-1', 'mai', expect.any(String), 20);
+    expect(api.searchWorkspaceFiles).toHaveBeenLastCalledWith({ projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' }, 'mai', expect.any(String), 20);
     expect(groups()).toEqual([{ heading: 'Files', status: undefined, items: 'main.ts' }]);
 
     await act(async () => resolveFirst({ requestId: 'a', entries: [entry('stale.ts')], truncated: false }));

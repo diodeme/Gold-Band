@@ -421,8 +421,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
   };
   const selectedLeaf = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
   if (selectedLeaf) {
-    selectedLeaf.worktreePath = worktreePath;
-    selectedLeaf.worktreeBranch = worktreeBranch;
+    selectedLeaf.workLocation = { kind: 'worktree', path: worktreePath, branch: worktreeBranch };
   }
   run.selectedSession = {
     ...mockErrorBlockedConversationSession,
@@ -430,8 +429,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
     roundId: 'round-001',
     nodeId: 'dev',
     attemptId: 'attempt-001',
-    worktreePath,
-    worktreeBranch,
+    workLocation: { kind: 'worktree', path: worktreePath, branch: worktreeBranch },
     providerCwd: worktreePath,
     cwd: worktreePath,
     status: 'completed',
@@ -3008,7 +3006,7 @@ export const browserApi: RuntimeApi = {
       }));
     return Promise.resolve({ requestId, entries: matches, truncated: matches.length >= limit });
   },
-  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
+  resolveWorkspaceFileLink({ projectId }, rawHref, baseCanonicalPath = null) {
     let href = decodeURIComponent(rawHref.replace(/^file:\/\//u, ''));
     let line: number | null = null;
     let column: number | null = null;
@@ -3043,7 +3041,7 @@ export const browserApi: RuntimeApi = {
       externalAccessGrant,
     });
   },
-  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
+  readFileResource({ projectId }, canonicalPath, externalAccessToken = null, preferSource = false) {
     const content = browserWorkspaceFiles.get(canonicalPath);
     if (content == null) return Promise.reject({ code: 'workspace-file.not-found', params: { path: canonicalPath } });
     const relativePath = browserRelativePath(canonicalPath);
@@ -3129,7 +3127,7 @@ export const browserApi: RuntimeApi = {
     browserFileRevisions.set(input.canonicalPath, (browserFileRevisions.get(input.canonicalPath) ?? 0) + 1);
     const revision = browserFileRevision(input.canonicalPath, input.content);
     for (const listener of browserWorkspaceFileListeners) {
-      listener({ projectId: input.projectId, canonicalPath: input.canonicalPath, kind: 'modified', revision, operationId: input.operationId });
+      listener({ projectId: input.projectId, workspacePath: input.workspacePath, canonicalPath: input.canonicalPath, kind: 'modified', revision, operationId: input.operationId });
     }
     return Promise.resolve(revision);
   },

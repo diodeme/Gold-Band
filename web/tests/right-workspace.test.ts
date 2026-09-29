@@ -17,7 +17,8 @@ import {
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
   hiddenPromptSectionWorkspaceResourceKey,
-  projectSourceControlWorkspaceState,
+  projectWorkspaceTabRoots,
+  fileWorkspaceResourceKey,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
   sourceControlWorkspaceResourceKey,
@@ -27,6 +28,7 @@ import {
   type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
+import { MAIN_WORKSPACE_TAB_ROOT } from '@/lib/workspace-root';
 
 const locator = (branchId: string): AgentTranscriptLocator => ({
   projectId: 'project-1',
@@ -56,23 +58,60 @@ describe('right workspace resource model', () => {
       key: sourceControlWorkspaceResourceKey('project-1'),
       scopeKey: 'conversation:project-1:task-1:run-1',
       projectId: 'project-1',
-      workspacePath: null,
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: false,
       title: 'Source control',
       attention: false,
     };
     const main = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
 
     expect(sourceControlWorkspaceResourceKey('project-1')).toBe('source-control:project-1');
-    expect(projectSourceControlWorkspaceState(main, null)).toBe(main);
+    expect(projectWorkspaceTabRoots(main, MAIN_WORKSPACE_TAB_ROOT)).toBe(main);
 
-    const worktree = projectSourceControlWorkspaceState(main, 'D:/repo/worktrees/worker-a');
+    const worktreeRoot = { kind: 'available', workspacePath: 'D:/repo/worktrees/worker-a' } as const;
+    const worktree = projectWorkspaceTabRoots(main, worktreeRoot);
     expect(worktree.tabs).toHaveLength(1);
     expect(worktree.activeTabKey).toBe(resource.key);
-    expect(worktree.tabs[0]).toMatchObject({
-      key: resource.key,
-      workspacePath: 'D:/repo/worktrees/worker-a',
+    expect(worktree.tabs[0]).toMatchObject({ key: resource.key, root: worktreeRoot });
+    expect(projectWorkspaceTabRoots(worktree, { kind: 'available', workspacePath: 'd:\\REPO\\worktrees\\worker-a\\' })).toBe(worktree);
+  });
+
+  it('never shows project-root files for a reclaimed worktree unless the user chooses to', () => {
+    const worktreePath = 'D:/repo/worktrees/worker-a';
+    const selectedFile = {
+      kind: 'file' as const,
+      key: fileWorkspaceResourceKey('project-1', `${worktreePath}/a.ts`),
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      projectId: 'project-1',
+      workspacePath: worktreePath,
+      title: 'a.ts',
+      attention: false,
+      locator: { projectId: 'project-1', canonicalPath: `${worktreePath}/a.ts`, relativePath: 'a.ts', scope: 'workspace' as const },
+      target: null,
+      targetRevision: 0,
+    };
+    const state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: selectedFile });
+    const worktree = { kind: 'available', workspacePath: worktreePath } as const;
+    const released = { kind: 'unavailable', reason: 'released', workspacePath: worktreePath } as const;
+    expect(state.tabs[0]).toMatchObject({ kind: 'file-browser', root: worktree, browseMain: false });
+
+    // Reclaimed: the tab reports the unavailable root and keeps the file for a return.
+    const unavailable = projectWorkspaceTabRoots(state, released);
+    expect(unavailable.tabs[0]).toMatchObject({ root: released, selectedFile: { key: selectedFile.key } });
+
+    // Browsing main is explicit and drops the worktree file, which does not exist in main.
+    const browsing = rightWorkspaceReducer(state, {
+      type: 'open',
+      resource: { ...(unavailable.tabs[0] as Extract<RightWorkspaceResource, { kind: 'file-browser' }>), browseMain: true },
     });
-    expect(projectSourceControlWorkspaceState(worktree, 'd:\\REPO\\worktrees\\worker-a\\')).toBe(worktree);
+    expect(projectWorkspaceTabRoots(browsing, released).tabs[0]).toMatchObject({
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: true,
+      selectedFile: null,
+    });
+
+    // Once the session works in a worktree again, the explicit choice no longer applies.
+    expect(projectWorkspaceTabRoots(browsing, worktree).tabs[0]).toMatchObject({ root: worktree, browseMain: false });
   });
 
   it('uses stable locator-only keys for conversation and ACP resources', () => {

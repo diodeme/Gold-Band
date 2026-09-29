@@ -30,18 +30,25 @@ import { markdownImageSources } from './markdown-image-preview';
 import { isMarkdownDocumentPath } from './markdown-document';
 import { markdownHasTableImages } from './markdown-live-preview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
+import { WorkspaceRootUnavailable } from '../WorkspaceRootUnavailable';
+import { workspaceRootKey, workspaceRootRef } from '@/lib/workspace-root';
 
 interface FileWorkspacePanelProps {
   resource: Extract<RightWorkspaceResource, { kind: 'file' | 'file-browser' }>;
   layout: FileWorkspaceLayoutVm;
 }
 
-function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], entry: WorkspaceDirectoryEntryVm): FileWorkspaceResource {
+function fileResourceFromEntry(
+  resource: FileWorkspacePanelProps['resource'],
+  workspacePath: string | null,
+  entry: WorkspaceDirectoryEntryVm,
+): FileWorkspaceResource {
   return {
     kind: 'file',
     key: fileWorkspaceResourceKey(resource.projectId, entry.canonicalPath),
     scopeKey: resource.scopeKey,
     projectId: resource.projectId,
+    workspacePath,
     title: entry.name,
     description: entry.relativePath,
     attention: false,
@@ -82,34 +89,46 @@ export function selectedFileAfterEntryMutation(
 
 export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps) {
   const workspace = useRightWorkspace();
+  if (resource.kind === 'file-browser' && resource.root.kind === 'unavailable') {
+    return (
+      <WorkspaceRootUnavailable
+        root={resource.root}
+        onBrowseMain={() => void workspace.openResource({ ...resource, browseMain: true })}
+      />
+    );
+  }
+  const workspacePath = resource.kind === 'file-browser' ? resource.root.workspacePath : resource.workspacePath;
+  // Each file root has its own watch, tree and scroll state.
+  return <FileWorkspaceRootPanel key={workspaceRootKey(resource.projectId, workspacePath)} resource={resource} workspacePath={workspacePath} layout={layout} />;
+}
+
+function FileWorkspaceRootPanel({ resource, workspacePath, layout }: FileWorkspacePanelProps & { workspacePath: string | null }) {
+  const workspace = useRightWorkspace();
   const selected = resource.kind === 'file' ? resource : (resource.selectedFile ?? null);
   const activationFileKey = useRef(selected?.key ?? null);
+  const root = useMemo(() => workspaceRootRef(resource.projectId, workspacePath), [resource.projectId, workspacePath]);
 
   useEffect(() => {
     let active = true;
-    const unsubscribe = fileContentStore.subscribeChanges((event) => {
-      if (event.projectId === resource.projectId) {
-        fileExplorerStore.applyFileChange(event);
-      }
-    });
+    const unsubscribe = fileContentStore.subscribeChanges((event) => fileExplorerStore.applyFileChange(event));
     void (async () => {
-      await fileContentStore.startProjectWatch(resource.projectId);
+      await fileContentStore.startRootWatch(root);
       if (!active) return;
       await Promise.all([
-        fileExplorerStore.reconcile(resource.projectId),
+        fileExplorerStore.reconcile(root),
         activationFileKey.current ? fileContentStore.reconcile(activationFileKey.current) : Promise.resolve(),
       ]);
     })().catch(() => undefined);
     return () => {
       active = false;
       unsubscribe();
-      void fileContentStore.stopProjectWatch(resource.projectId).catch(() => undefined);
+      void fileContentStore.stopRootWatch(root).catch(() => undefined);
     };
-  }, [resource.projectId]);
+  }, [root]);
 
   const openFile = useCallback((entry: WorkspaceDirectoryEntryVm) => {
-    workspace.openResource(fileResourceFromEntry(resource, entry));
-  }, [resource, workspace.openResource]);
+    workspace.openResource(fileResourceFromEntry(resource, root.workspacePath, entry));
+  }, [resource, root.workspacePath, workspace.openResource]);
 
   // A file that follows a rename is still the same file; only a new selection reveals the content view.
   const followedFileKey = useRef<string | null>(null);
@@ -121,16 +140,20 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
     setRevealFileKey(key);
   }, [selected?.key]);
 
-  const latestRef = useRef({ resource, selected, openResource: workspace.openResource, closeTab: workspace.closeTab });
-  latestRef.current = { resource, selected, openResource: workspace.openResource, closeTab: workspace.closeTab };
+  const latestRef = useRef({ resource, root, selected, openResource: workspace.openResource, closeTab: workspace.closeTab });
+  latestRef.current = { resource, root, selected, openResource: workspace.openResource, closeTab: workspace.closeTab };
   useEffect(() => fileExplorerStore.subscribeEntryMutations((mutation) => {
-    const { resource: current, selected: file, openResource, closeTab } = latestRef.current;
-    if (mutation.projectId !== current.projectId || !file) return;
+    const { resource: current, root: currentRoot, selected: file, openResource, closeTab } = latestRef.current;
+    if (
+      workspaceRootKey(mutation.root.projectId, mutation.root.workspacePath)
+        !== workspaceRootKey(currentRoot.projectId, currentRoot.workspacePath)
+      || !file
+    ) return;
     const next = selectedFileAfterEntryMutation(file.locator, mutation);
     if (next === undefined) return;
     if (next) {
       if (current.kind === 'file') void closeTab(current.key);
-      const followed = fileResourceFromEntry(current, next);
+      const followed = fileResourceFromEntry(current, currentRoot.workspacePath, next);
       followedFileKey.current = followed.key;
       void openResource(followed);
     } else if (current.kind === 'file-browser') {
@@ -143,12 +166,12 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
   const content = selected ? <FileContent key={selected.key} resource={selected} /> : <FileEmptyState />;
   const tree = (
     <WorkspaceFileTree
-      projectId={resource.projectId}
+      root={root}
       selectedPath={selected?.locator.canonicalPath ?? null}
       onOpenFile={openFile}
     />
   );
-  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} revealFileKey={revealFileKey} content={content} tree={tree} treeWidth={fileExplorerStore.snapshot(resource.projectId).treeWidth} onTreeWidthChange={(width) => fileExplorerStore.setTreeWidth(resource.projectId, width)} />;
+  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} revealFileKey={revealFileKey} content={content} tree={tree} treeWidth={fileExplorerStore.snapshot(root).treeWidth} onTreeWidthChange={(width) => fileExplorerStore.setTreeWidth(root, width)} />;
 }
 
 export function FileWorkspaceSplitLayout({ layout, hasFile, revealFileKey, content, tree, treeWidth, onTreeWidthChange }: { layout: FileWorkspaceLayoutVm; hasFile: boolean; revealFileKey: string | null; content: React.ReactNode; tree: React.ReactNode; treeWidth: number | null; onTreeWidthChange: (width: number) => void }) {
@@ -182,12 +205,12 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
     if (!browserDocument || !workspace.scopeKey) return;
     if (!await fileContentStore.flush(resource.key)) return;
     await openLocalDocumentInBrowser(resource.locator.canonicalPath, {
-      projectId: resource.projectId,
+      root: workspaceRootRef(resource.projectId, resource.workspacePath),
       scopeKey: workspace.scopeKey,
       openResource: workspace.openResource,
       browserTitle: t('workspace.browser.title'),
     });
-  }, [browserDocument, resource.key, resource.locator.canonicalPath, resource.projectId, t, workspace.openResource, workspace.scopeKey]);
+  }, [browserDocument, resource.key, resource.locator.canonicalPath, resource.projectId, resource.workspacePath, t, workspace.openResource, workspace.scopeKey]);
 
   useEffect(() => {
     void fileContentStore.load(resource);
@@ -521,7 +544,7 @@ function SaveErrorBanner({ resource, errorCode }: { resource: FileWorkspaceResou
   const { t } = useTranslation();
   const reauthorize = async () => {
     if (resource.locator.scope !== 'external') return;
-    const resolved = await resolveWorkspaceFileLink(resource.projectId, resource.locator.canonicalPath);
+    const resolved = await resolveWorkspaceFileLink(workspaceRootRef(resource.projectId, resource.workspacePath), resource.locator.canonicalPath);
     if (resolved.externalAccessGrant) {
       await fileContentStore.reauthorize(resource.key, resolved.externalAccessGrant);
     }
@@ -540,7 +563,7 @@ function FileError({ resource, errorCode }: { resource: FileWorkspaceResource; e
   const { t } = useTranslation();
   const missing = errorCode === 'workspace-file.not-found';
   const reauthorize = async () => {
-    const resolved = await resolveWorkspaceFileLink(resource.projectId, resource.locator.canonicalPath);
+    const resolved = await resolveWorkspaceFileLink(workspaceRootRef(resource.projectId, resource.workspacePath), resource.locator.canonicalPath);
     fileContentStore.primeExternalGrant(
       resource.key,
       resource.projectId,

@@ -29,6 +29,7 @@ export function OpenWithSystemAppButton({
     try {
       await openFileWithSystemApp({
         projectId: resource.projectId,
+        workspacePath: resource.workspacePath,
         canonicalPath: resource.locator.canonicalPath,
         externalAccessToken: fileContentStore.externalAccessToken(resource.key),
       });

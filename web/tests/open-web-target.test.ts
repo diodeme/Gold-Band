@@ -4,6 +4,8 @@ import { browserSessionStore } from '@/components/workspace/browser/browser-sess
 import { classifyWebTarget, isBrowserDocumentPath, isHtmlDocumentPath, isLocalhostUrl, normalizeBrowserAddress, systemBrowserHref } from '@/components/workspace/browser/web-target';
 import { browserWorkspaceResourceKey } from '@/components/workspace/right-workspace-context';
 
+const MAIN_ROOT = { projectId: 'project-1', workspacePath: null };
+
 describe('openWebTarget', () => {
   it('classifies http, local html, mailto and ordinary files', () => {
     expect(classifyWebTarget('https://example.com')).toBe('http');
@@ -33,11 +35,11 @@ describe('openWebTarget', () => {
       openWebLinksInBrowser: false,
     };
     const local = await openWebTarget('http://localhost:1420', {
-      projectId: 'project-1', scopeKey: 'draft:project-1', openResource,
+      root: MAIN_ROOT, scopeKey: 'draft:project-1', openResource,
       browserTitle: '浏览器', openSystemUrl, browserPreferences,
     });
     const publicWeb = await openWebTarget('https://example.com', {
-      projectId: 'project-1', scopeKey: 'draft:project-1', openResource,
+      root: MAIN_ROOT, scopeKey: 'draft:project-1', openResource,
       browserTitle: '浏览器', openSystemUrl, browserPreferences,
     });
     expect(local).toMatchObject({ status: 'opened', kind: 'browser' });
@@ -49,13 +51,13 @@ describe('openWebTarget', () => {
     browserSessionStore.resetForTests();
     const openResource = vi.fn();
     const first = await openWebTarget('https://example.com/docs', {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource,
       browserTitle: '浏览器',
     });
     const second = await openWebTarget('https://example.com/docs', {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource,
       browserTitle: '浏览器',
@@ -74,7 +76,7 @@ describe('openWebTarget', () => {
   it('sends mailto to the system opener', async () => {
     const openSystemUrl = vi.fn(async () => undefined);
     const result = await openWebTarget('mailto:a@b.com', {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource: vi.fn(),
       browserTitle: '浏览器',
@@ -90,7 +92,7 @@ describe('openWebTarget', () => {
       canonicalPath: 'D:/repo/docs/index.html',
     }));
     const result = await openWebTarget('docs/index.html', {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource: vi.fn(),
       browserTitle: '浏览器',
@@ -98,6 +100,7 @@ describe('openWebTarget', () => {
     });
     expect(resolveLocalHtml).toHaveBeenCalledWith({
       projectId: 'project-1',
+      workspacePath: null,
       rawHref: 'docs/index.html',
     });
     expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
@@ -116,16 +119,30 @@ describe('openWebTarget', () => {
     const openResource = vi.fn();
     const resolveLocalHtml = vi.fn(async () => ({ canonicalPath: 'D:/repo/art/pelican.svg' }));
     const result = await openLocalDocumentInBrowser('D:/repo/art/pelican.svg', {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource,
       browserTitle: '浏览器',
       resolveLocalHtml,
     });
-    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', rawHref: 'D:/repo/art/pelican.svg' });
+    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: null, rawHref: 'D:/repo/art/pelican.svg' });
     expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
     expect(browserSessionStore.activePage()?.url).toBe('D:/repo/art/pelican.svg');
     expect(openResource).toHaveBeenCalledWith(expect.objectContaining({ kind: 'browser', scopeKey: 'draft:project-1' }));
+    browserSessionStore.resetForTests();
+  });
+
+  it('resolves local html in the session worktree and refuses it while unavailable', async () => {
+    browserSessionStore.resetForTests();
+    const resolveLocalHtml = vi.fn(async () => ({ canonicalPath: 'D:/repo/.wt/a/docs/index.html' }));
+    const context = { scopeKey: 'draft:project-1', openResource: vi.fn(), browserTitle: '浏览器', resolveLocalHtml };
+    await openWebTarget('docs/index.html', { ...context, root: { projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' } });
+    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: 'D:/repo/.wt/a', rawHref: 'docs/index.html' });
+
+    resolveLocalHtml.mockClear();
+    const unavailable = await openWebTarget('docs/index.html', { ...context, root: null });
+    expect(unavailable).toEqual({ status: 'error', error: { code: 'workspace-file.workspace-unavailable', params: {} } });
+    expect(resolveLocalHtml).not.toHaveBeenCalled();
     browserSessionStore.resetForTests();
   });
 
@@ -135,7 +152,7 @@ describe('openWebTarget', () => {
       throw { code: 'workspace-file.path-outside-workspace', params: { path: '../secret.html' } };
     });
     const result = await openWebTarget('../secret.html', {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource: vi.fn(),
       browserTitle: '浏览器',
@@ -155,7 +172,7 @@ describe('openWebTarget', () => {
       canonicalPath: 'D:/repo/docs/index.html',
     }));
     const context = {
-      projectId: 'project-1',
+      root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
       openResource: vi.fn(),
       browserTitle: '浏览器',

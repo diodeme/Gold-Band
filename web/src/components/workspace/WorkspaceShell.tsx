@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GroupImperativeHandle, Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
-import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
+import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle, SessionWorkLocationVm } from '../../types';
 import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
 import { ProjectMemorySheet } from '../conversation/ProjectMemorySheet';
 import { saveConversationPreference } from '../../api';
@@ -91,7 +91,7 @@ interface WorkspaceShellProps {
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
-  sourceControlWorkspacePath?: string | null;
+  workLocation?: SessionWorkLocationVm | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
@@ -283,7 +283,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
       <RightWorkspaceProvider
         initialWidth={initialRightWidth}
         scope={rightWorkspaceScope}
-        sourceControlWorkspacePath={props.sourceControlWorkspacePath}
+        workLocation={props.workLocation}
         store={props.conversationWorkspaceStore}
       >
         <WorkspaceFileLinkProvider browserPreferences={props.browserPreferences}>
@@ -326,7 +326,6 @@ function WorkspaceShellLayout({
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
-  sourceControlWorkspacePath,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -684,7 +683,7 @@ function WorkspaceShellLayout({
     if (!saved) throw new Error('workspace-file.pending-save-failed');
     await onRemoveWorkspace(projectId);
     await fileContentStore.releaseProject(projectId);
-    fileExplorerStore.clear(projectId);
+    fileExplorerStore.clearProject(projectId);
   }, [onRemoveWorkspace]);
   const deleteTask = useCallback((projectId: string, taskId: string, taskUuid?: string | null) => {
     void fileContentStore.flushAll(projectId).then((saved) => {
@@ -838,7 +837,6 @@ function WorkspaceShellLayout({
         >
           {showRightDock ? (
             <RightWorkspaceDock
-              sourceControlWorkspacePath={sourceControlWorkspacePath}
               acpChatEventPageSize={appConfig.acpChatEventPageSize}
               acpChatEventWindowPageCount={appConfig.acpChatEventWindowPageCount}
             />
@@ -867,7 +865,6 @@ function WorkspaceShellLayout({
           {rightWorkspaceCompact ? (
             <div className="flex min-h-0 flex-1 flex-col" data-right-workspace-presentation="sheet">
               <RightWorkspaceDock
-                sourceControlWorkspacePath={sourceControlWorkspacePath}
                 acpChatEventPageSize={appConfig.acpChatEventPageSize}
                 acpChatEventWindowPageCount={appConfig.acpChatEventWindowPageCount}
               />

@@ -610,7 +610,7 @@ pub(crate) fn build_worker_invocation(
             .as_ref()
             .is_some_and(|input| !input.workspace_files.is_empty())
     {
-        app.prompt_workspace_roots()
+        app.prompt_workspace_roots(&workspace_dir)
     } else {
         Vec::new()
     };

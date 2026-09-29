@@ -75,7 +75,7 @@ describe('workspace HTML source entry', () => {
       ));
       await act(async () => container.querySelector('button')?.click());
       expect(openWebTarget).toHaveBeenCalledWith('docs/index.html', expect.objectContaining({
-        projectId: 'project-1',
+        root: { projectId: 'project-1', workspacePath: null },
         scopeKey: scope.key,
       }));
     } finally {

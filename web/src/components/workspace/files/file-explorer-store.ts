@@ -13,7 +13,9 @@ import type {
   WorkspaceFileChangedEventVm,
   WorkspaceFileSearchVm,
   WorkspaceFilesVm,
+  WorkspaceRootRef,
 } from '@/types';
+import { workspaceRootKey } from '@/lib/workspace-root';
 import { FALLBACK_WORKSPACE_FILES } from '../workspace-layout';
 import { fileContentStore } from './file-content-store';
 
@@ -33,8 +35,8 @@ export type FileTreeOperation =
 
 /** Path identity changes other domains (open file selection) must follow. */
 export type FileTreeEntryMutation =
-  | { projectId: string; kind: 'removed'; entry: WorkspaceDirectoryEntryVm }
-  | { projectId: string; kind: 'moved'; from: WorkspaceDirectoryEntryVm; to: WorkspaceDirectoryEntryVm };
+  | { root: WorkspaceRootRef; kind: 'removed'; entry: WorkspaceDirectoryEntryVm }
+  | { root: WorkspaceRootRef; kind: 'moved'; from: WorkspaceDirectoryEntryVm; to: WorkspaceDirectoryEntryVm };
 
 export type FileTreeOperationResult =
   | { status: 'done'; entry: WorkspaceDirectoryEntryVm | null }
@@ -55,7 +57,7 @@ export interface FileTreeViewNode extends FileTreeNode {
 }
 
 export interface FileExplorerSnapshot {
-  projectId: string;
+  root: WorkspaceRootRef;
   status: 'idle' | 'loading' | 'ready' | 'error';
   roots: FileTreeNode[];
   expanded: ReadonlySet<string>;
@@ -71,7 +73,7 @@ export interface FileExplorerSnapshot {
   pendingPath: string | null;
 }
 
-interface ProjectRuntime {
+interface RootRuntime {
   snapshot: FileExplorerSnapshot;
   operations: FileTreeOperation[];
   revealedSelectionPath: string | null;
@@ -84,6 +86,8 @@ interface ProjectRuntime {
   refreshDirty: boolean;
   refreshAll: boolean;
   pendingRefreshDirectories: Set<string>;
+  rootListing: Promise<void> | null;
+  rootListingStale: boolean;
 }
 
 function commandErrorCode(reason: unknown, fallback: string) {
@@ -256,28 +260,36 @@ function containsCanonicalPath(nodes: FileTreeNode[], canonicalPath: string): bo
   return false;
 }
 
+/** Whether the directory that would list this path is loaded; paths under unloaded directories are not visible. */
+function parentDirectoryLoaded(snapshot: FileExplorerSnapshot, canonicalPath: string) {
+  // An empty root has no entry to anchor the path against, so relist the root.
+  if (!snapshot.roots.length) return true;
+  const parent = relativeParentFor(snapshot, canonicalPath);
+  if (parent === null) return false;
+  return parent === '' || findNode(snapshot.roots, parent)?.children != null;
+}
+
 export function fileChangeAffectsTree(
   snapshot: FileExplorerSnapshot,
   event: WorkspaceFileChangedEventVm,
 ): boolean {
-  // File saves belong to the content domain. Atomic replacement can surface as
-  // create/remove/rename events even though the visible path identity is stable.
-  if (event.kind === 'modified' || event.operationId) return false;
+  // Mutations issued by this app refresh their own parents.
+  if (event.operationId) return false;
+  // A listing in flight may predate this change.
+  if (snapshot.status !== 'ready') return snapshot.status === 'loading';
+  // Watcher kinds depend on the platform and on batching (a checked-out file
+  // can arrive as `modified`), so the loaded tree decides what changed shape;
+  // the kind only tells whether the path still exists. A known path that still
+  // exists is a content change, including an atomic replacement.
   const knownPath = containsCanonicalPath(snapshot.roots, event.canonicalPath);
-  if (event.kind === 'created') return !knownPath;
-  if (event.kind === 'removed') return knownPath;
-  if (event.kind === 'renamed') {
-    // A path with a revision exists after the rename. Existing+present is an
-    // atomic replacement; missing+present is a new tree node. Without a
-    // revision the path no longer exists, so only a known node changed shape.
-    return event.revision ? !knownPath : knownPath;
-  }
-  return true;
+  const exists = event.kind !== 'removed' && !(event.kind === 'renamed' && !event.revision);
+  if (!exists) return knownPath;
+  return !knownPath && parentDirectoryLoaded(snapshot, event.canonicalPath);
 }
 
-function idleSnapshot(projectId: string): FileExplorerSnapshot {
+function idleSnapshot(root: WorkspaceRootRef): FileExplorerSnapshot {
   return {
-    projectId,
+    root,
     status: 'idle',
     roots: [],
     expanded: new Set(),
@@ -294,14 +306,14 @@ function idleSnapshot(projectId: string): FileExplorerSnapshot {
 }
 
 export class FileExplorerStore {
-  private static readonly MAX_PROJECTS = 24;
-  /** Undo depth per project; history is session-only like the backend trash receipts. */
+  private static readonly MAX_ROOTS = 24;
+  /** Undo depth per root; history is session-only like the backend trash receipts. */
   private static readonly MAX_UNDO_OPERATIONS = 20;
   private static readonly DIRECTORY_CHAIN_EXPANSION_LIMIT = 64;
   private static readonly MAX_REFRESH_LATENCY_MS = 1_000;
   private static readonly MAX_PENDING_REFRESH_DIRECTORIES = 64;
   private config: WorkspaceFilesVm = FALLBACK_WORKSPACE_FILES;
-  private readonly projects = new Map<string, ProjectRuntime>();
+  private readonly roots = new Map<string, RootRuntime>();
   private readonly listeners = new Set<() => void>();
   private readonly mutationListeners = new Set<(mutation: FileTreeEntryMutation) => void>();
 
@@ -319,36 +331,36 @@ export class FileExplorerStore {
     return () => { this.mutationListeners.delete(listener); };
   }
 
-  canUndo(projectId: string) {
-    return (this.projects.get(projectId)?.operations.length ?? 0) > 0;
+  canUndo(root: WorkspaceRootRef) {
+    return (this.roots.get(rootKeyOf(root))?.operations.length ?? 0) > 0;
   }
 
   /** Show an inline name editor for a new entry inside `parentRelativePath` ('' is the root). */
-  async startDraft(projectId: string, parentRelativePath: string, kind: WorkspaceEntryKind) {
-    const runtime = this.runtime(projectId);
+  async startDraft(root: WorkspaceRootRef, parentRelativePath: string, kind: WorkspaceEntryKind) {
+    const runtime = this.runtime(root);
     if (runtime.snapshot.pendingPath !== null) return;
     if (parentRelativePath && !runtime.snapshot.expanded.has(parentRelativePath)) {
-      await this.toggleDirectory(projectId, parentRelativePath, true);
+      await this.toggleDirectory(root, parentRelativePath, true);
     } else if (parentRelativePath) {
-      await this.loadDirectory(projectId, parentRelativePath);
+      await this.loadDirectory(root, parentRelativePath);
     }
     this.setSnapshot(runtime, { ...runtime.snapshot, draft: { parentRelativePath, kind } });
   }
 
-  cancelDraft(projectId: string) {
-    const runtime = this.runtime(projectId);
+  cancelDraft(root: WorkspaceRootRef) {
+    const runtime = this.runtime(root);
     if (!runtime.snapshot.draft) return;
     this.setSnapshot(runtime, { ...runtime.snapshot, draft: null });
   }
 
-  async createEntry(projectId: string, name: string): Promise<FileTreeOperationResult> {
-    const runtime = this.runtime(projectId);
+  async createEntry(root: WorkspaceRootRef, name: string): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(root);
     const draft = runtime.snapshot.draft;
     if (!draft || runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
     return this.runOperation(runtime, draft.parentRelativePath, async () => {
       try {
         const entry = await createWorkspaceEntry({
-          projectId,
+          ...root,
           parentRelativePath: draft.parentRelativePath,
           name,
           kind: draft.kind,
@@ -361,21 +373,21 @@ export class FileExplorerStore {
     }, [draft.parentRelativePath]);
   }
 
-  async renameEntry(projectId: string, entry: WorkspaceDirectoryEntryVm, newName: string): Promise<FileTreeOperationResult> {
-    const runtime = this.runtime(projectId);
+  async renameEntry(root: WorkspaceRootRef, entry: WorkspaceDirectoryEntryVm, newName: string): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(root);
     if (newName === entry.name || runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
     return this.runOperation(runtime, entry.relativePath, async () => {
-      const to = await this.renameWithContent(projectId, entry, newName);
+      const to = await this.renameWithContent(root, entry, newName);
       this.pushOperation(runtime, { kind: 'rename', from: entry, to });
       return { status: 'done', entry: to };
     }, [parentRelativePath(entry.relativePath)]);
   }
 
-  async deleteEntry(projectId: string, entry: WorkspaceDirectoryEntryVm): Promise<FileTreeOperationResult> {
-    const runtime = this.runtime(projectId);
+  async deleteEntry(root: WorkspaceRootRef, entry: WorkspaceDirectoryEntryVm): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(root);
     if (runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
     return this.runOperation(runtime, entry.relativePath, async () => {
-      const deletion = await deleteWorkspaceEntry(projectId, entry.relativePath);
+      const deletion = await deleteWorkspaceEntry(root, entry.relativePath);
       this.afterRemoved(runtime, deletion.entry);
       this.pushOperation(runtime, { kind: 'delete', receiptId: deletion.receiptId, entry: deletion.entry });
       return { status: 'done', entry: null };
@@ -383,59 +395,59 @@ export class FileExplorerStore {
   }
 
   /** Invert the most recent operation. A failed undo is dropped, like a failed redo target in editors. */
-  async undo(projectId: string): Promise<FileTreeOperationResult> {
-    const runtime = this.runtime(projectId);
+  async undo(root: WorkspaceRootRef): Promise<FileTreeOperationResult> {
+    const runtime = this.runtime(root);
     const operation = runtime.operations.at(-1);
     if (!operation || runtime.snapshot.pendingPath !== null) return { status: 'skipped' };
     runtime.operations.pop();
     switch (operation.kind) {
       case 'create':
         return this.runOperation(runtime, operation.entry.relativePath, async () => {
-          const deletion = await deleteWorkspaceEntry(projectId, operation.entry.relativePath);
+          const deletion = await deleteWorkspaceEntry(root, operation.entry.relativePath);
           this.afterRemoved(runtime, deletion.entry);
           return { status: 'done', entry: null };
         }, [parentRelativePath(operation.entry.relativePath)]);
       case 'rename':
         return this.runOperation(runtime, operation.to.relativePath, async () => {
-          const entry = await this.renameWithContent(projectId, operation.to, operation.from.name);
+          const entry = await this.renameWithContent(root, operation.to, operation.from.name);
           return { status: 'done', entry };
         }, [parentRelativePath(operation.to.relativePath)]);
       case 'delete':
         return this.runOperation(runtime, operation.entry.relativePath, async () => {
-          const entry = await restoreWorkspaceEntry(projectId, operation.receiptId);
+          const entry = await restoreWorkspaceEntry(root, operation.receiptId);
           return { status: 'done', entry };
         }, [parentRelativePath(operation.entry.relativePath)]);
     }
   }
 
-  private async renameWithContent(projectId: string, entry: WorkspaceDirectoryEntryVm, newName: string) {
+  private async renameWithContent(root: WorkspaceRootRef, entry: WorkspaceDirectoryEntryVm, newName: string) {
     // Pending autosaves must land on the old path before it disappears.
-    if (!await fileContentStore.flushWithin(projectId, entry.canonicalPath)) {
+    if (!await fileContentStore.flushWithin(root.projectId, entry.canonicalPath)) {
       throw { code: 'workspace-file.unsaved-changes', params: { path: entry.canonicalPath } };
     }
-    const to = await renameWorkspaceEntry(projectId, entry.relativePath, newName);
-    const runtime = this.runtime(projectId);
+    const to = await renameWorkspaceEntry(root, entry.relativePath, newName);
+    const runtime = this.runtime(root);
     const expanded = new Set([...runtime.snapshot.expanded].map((path) => remapRelativePath(path, entry.relativePath, to.relativePath)));
     this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
-    await fileContentStore.releaseWithin(projectId, entry.canonicalPath);
-    this.emitMutation({ projectId, kind: 'moved', from: entry, to });
+    await fileContentStore.releaseWithin(root.projectId, entry.canonicalPath);
+    this.emitMutation({ root, kind: 'moved', from: entry, to });
     return to;
   }
 
-  private afterRemoved(runtime: ProjectRuntime, entry: WorkspaceDirectoryEntryVm) {
+  private afterRemoved(runtime: RootRuntime, entry: WorkspaceDirectoryEntryVm) {
     const expanded = new Set([...runtime.snapshot.expanded].filter((path) => remapRelativePath(path, entry.relativePath, '') === path));
     this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
-    void fileContentStore.releaseWithin(runtime.snapshot.projectId, entry.canonicalPath);
-    this.emitMutation({ projectId: runtime.snapshot.projectId, kind: 'removed', entry });
+    void fileContentStore.releaseWithin(runtime.snapshot.root.projectId, entry.canonicalPath);
+    this.emitMutation({ root: runtime.snapshot.root, kind: 'removed', entry });
   }
 
-  private pushOperation(runtime: ProjectRuntime, operation: FileTreeOperation) {
+  private pushOperation(runtime: RootRuntime, operation: FileTreeOperation) {
     runtime.operations.push(operation);
     if (runtime.operations.length > FileExplorerStore.MAX_UNDO_OPERATIONS) runtime.operations.shift();
   }
 
   private async runOperation(
-    runtime: ProjectRuntime,
+    runtime: RootRuntime,
     pendingPath: string,
     operation: () => Promise<FileTreeOperationResult>,
     refreshDirectories: string[],
@@ -447,61 +459,82 @@ export class FileExplorerStore {
       return failedOperation(reason, 'workspace-file.write-failed');
     } finally {
       this.setSnapshot(runtime, { ...runtime.snapshot, pendingPath: null });
-      await this.refreshDirectories(runtime.snapshot.projectId, refreshDirectories);
+      await this.refreshDirectories(runtime.snapshot.root, refreshDirectories);
     }
   }
 
   /** Refresh mutated parents now instead of waiting for the debounced watcher event. */
-  private refreshDirectories(projectId: string, directories: string[]) {
-    const runtime = this.runtime(projectId);
-    if (directories.some((directory) => !directory)) return this.runRefresh(projectId, true);
+  private refreshDirectories(root: WorkspaceRootRef, directories: string[]) {
+    const runtime = this.runtime(root);
+    if (directories.some((directory) => !directory)) return this.runRefresh(root, true);
     for (const directory of directories) runtime.pendingRefreshDirectories.add(directory);
-    return this.runRefresh(projectId);
+    return this.runRefresh(root);
   }
 
   private emitMutation(mutation: FileTreeEntryMutation) {
     for (const listener of this.mutationListeners) listener(mutation);
   }
 
-  snapshot = (projectId: string) => this.runtime(projectId, false).snapshot;
+  snapshot = (root: WorkspaceRootRef) => this.runtime(root, false).snapshot;
 
-  setTreeScrollTop(projectId: string, treeScrollTop: number) {
-    const runtime = this.runtime(projectId);
+  setTreeScrollTop(root: WorkspaceRootRef, treeScrollTop: number) {
+    const runtime = this.runtime(root);
     const next = Math.max(0, Math.round(treeScrollTop));
     if (runtime.snapshot.treeScrollTop === next) return;
     runtime.snapshot = { ...runtime.snapshot, treeScrollTop: next };
   }
 
-  setTreeWidth(projectId: string, treeWidth: number) {
-    const runtime = this.runtime(projectId);
+  setTreeWidth(root: WorkspaceRootRef, treeWidth: number) {
+    const runtime = this.runtime(root);
     const next = Math.max(1, Math.round(treeWidth));
     if (runtime.snapshot.treeWidth === next) return;
     runtime.snapshot = { ...runtime.snapshot, treeWidth: next };
   }
 
-  setDisplayMode(projectId: string, displayMode: FileTreeDisplayMode) {
-    const runtime = this.runtime(projectId);
+  setDisplayMode(root: WorkspaceRootRef, displayMode: FileTreeDisplayMode) {
+    const runtime = this.runtime(root);
     if (runtime.snapshot.displayMode === displayMode) return;
     this.setSnapshot(runtime, { ...runtime.snapshot, displayMode });
   }
 
-  takeSelectionReveal(projectId: string, canonicalPath: string | null) {
-    const runtime = this.runtime(projectId);
+  takeSelectionReveal(root: WorkspaceRootRef, canonicalPath: string | null) {
+    const runtime = this.runtime(root);
     const next = canonicalPath ? normalizePath(canonicalPath) : null;
     if (runtime.revealedSelectionPath === next) return false;
     runtime.revealedSelectionPath = next;
     return next !== null;
   }
 
-  async loadRoot(projectId: string, force = false) {
-    const runtime = this.runtime(projectId);
-    if (!force && (runtime.snapshot.status === 'loading' || runtime.snapshot.status === 'ready')) return;
+  /**
+   * One root listing per root at a time. A forced request made while it is in
+   * flight may observe newer state than the listing, so the listing repeats
+   * before the tree becomes ready instead of starting a competing request.
+   */
+  loadRoot(root: WorkspaceRootRef, force = false): Promise<void> {
+    const runtime = this.runtime(root);
+    if (runtime.rootListing) {
+      runtime.rootListingStale ||= force;
+      return runtime.rootListing;
+    }
+    if (!force && runtime.snapshot.status === 'ready') return Promise.resolve();
+    const listing = this.listRoot(root, runtime).finally(() => {
+      runtime.rootListing = null;
+    });
+    runtime.rootListing = listing;
+    return listing;
+  }
+
+  private async listRoot(root: WorkspaceRootRef, runtime: RootRuntime) {
     this.setSnapshot(runtime, { ...runtime.snapshot, status: 'loading', errorCode: null });
     try {
-      const entries = await listWorkspaceDirectory(projectId, '');
+      let entries: WorkspaceDirectoryEntryVm[];
+      do {
+        runtime.rootListingStale = false;
+        entries = await listWorkspaceDirectory(root, '');
+      } while (runtime.rootListingStale);
       this.setSnapshot(runtime, { ...runtime.snapshot, status: 'ready', roots: nodesFor(entries), errorCode: null });
       const expanded = [...runtime.snapshot.expanded].sort((left, right) => pathDepth(left) - pathDepth(right));
-      for (const id of expanded) await this.loadDirectory(projectId, id);
+      for (const id of expanded) await this.loadDirectory(root, id);
     } catch (reason) {
       this.setSnapshot(runtime, {
         ...runtime.snapshot,
@@ -511,26 +544,26 @@ export class FileExplorerStore {
     }
   }
 
-  reconcile(projectId: string) {
-    const runtime = this.runtime(projectId);
-    if (runtime.snapshot.status !== 'ready') return this.loadRoot(projectId);
-    return this.runRefresh(projectId, true);
+  reconcile(root: WorkspaceRootRef) {
+    const runtime = this.runtime(root);
+    if (runtime.snapshot.status !== 'ready') return this.loadRoot(root, true);
+    return this.runRefresh(root, true);
   }
 
-  private async refreshRoot(projectId: string) {
-    const runtime = this.runtime(projectId);
+  private async refreshRoot(root: WorkspaceRootRef) {
+    const runtime = this.runtime(root);
     if (runtime.snapshot.status !== 'ready') {
-      await this.loadRoot(projectId, true);
+      await this.loadRoot(root, true);
       return;
     }
     try {
-      const entries = await listWorkspaceDirectory(projectId, '');
+      const entries = await listWorkspaceDirectory(root, '');
       const roots = mergeDirectoryNodes(runtime.snapshot.roots, entries);
       if (roots !== runtime.snapshot.roots || runtime.snapshot.errorCode !== null) {
         this.setSnapshot(runtime, { ...runtime.snapshot, roots, errorCode: null });
       }
       const expanded = [...runtime.snapshot.expanded].sort((left, right) => pathDepth(left) - pathDepth(right));
-      for (const id of expanded) await this.loadDirectory(projectId, id, true);
+      for (const id of expanded) await this.loadDirectory(root, id, true);
     } catch (reason) {
       this.setSnapshot(runtime, {
         ...runtime.snapshot,
@@ -539,8 +572,8 @@ export class FileExplorerStore {
     }
   }
 
-  async toggleDirectory(projectId: string, relativePath: string, open: boolean) {
-    const runtime = this.runtime(projectId);
+  async toggleDirectory(root: WorkspaceRootRef, relativePath: string, open: boolean) {
+    const runtime = this.runtime(root);
     const expanded = new Set(runtime.snapshot.expanded);
     if (!open) {
       expanded.delete(relativePath);
@@ -551,7 +584,7 @@ export class FileExplorerStore {
     this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
     let current = relativePath;
     for (let depth = 0; depth < FileExplorerStore.DIRECTORY_CHAIN_EXPANSION_LIMIT; depth += 1) {
-      await this.loadDirectory(projectId, current);
+      await this.loadDirectory(root, current);
       const target = findNode(runtime.snapshot.roots, current);
       const onlyChild = target?.children?.length === 1 ? target.children[0] : null;
       if (!onlyChild || onlyChild.kind !== 'directory') return;
@@ -562,8 +595,8 @@ export class FileExplorerStore {
     }
   }
 
-  async loadDirectory(projectId: string, relativePath: string, force = false) {
-    const runtime = this.runtime(projectId);
+  async loadDirectory(root: WorkspaceRootRef, relativePath: string, force = false) {
+    const runtime = this.runtime(root);
     const target = findNode(runtime.snapshot.roots, relativePath);
     if (!target || target.kind !== 'directory') return;
     if (!force && (target.loading || target.children !== null)) return;
@@ -576,7 +609,7 @@ export class FileExplorerStore {
       });
     }
     try {
-      const entries = await listWorkspaceDirectory(projectId, relativePath);
+      const entries = await listWorkspaceDirectory(root, relativePath);
       if (runtime.directoryRequests.get(relativePath) !== request) return;
       const current = findNode(runtime.snapshot.roots, relativePath);
       if (!current || current.kind !== 'directory') return;
@@ -596,8 +629,8 @@ export class FileExplorerStore {
     }
   }
 
-  setSearchQuery(projectId: string, query: string) {
-    const runtime = this.runtime(projectId);
+  setSearchQuery(root: WorkspaceRootRef, query: string) {
+    const runtime = this.runtime(root);
     if (runtime.searchTimer) clearTimeout(runtime.searchTimer);
     const trimmed = query.trim();
     runtime.searchRevision += 1;
@@ -612,8 +645,8 @@ export class FileExplorerStore {
     runtime.searchTimer = setTimeout(() => void this.runSearch(runtime, trimmed, revision), this.config.searchDebounceMs);
   }
 
-  async revealFile(projectId: string, relativePath: string) {
-    const runtime = this.runtime(projectId);
+  async revealFile(root: WorkspaceRootRef, relativePath: string) {
+    const runtime = this.runtime(root);
     if (runtime.searchTimer) {
       clearTimeout(runtime.searchTimer);
       runtime.searchTimer = null;
@@ -632,20 +665,23 @@ export class FileExplorerStore {
       const expanded = new Set(runtime.snapshot.expanded);
       expanded.add(current);
       this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
-      await this.loadDirectory(projectId, current);
+      await this.loadDirectory(root, current);
     }
   }
 
-  clear(projectId: string) {
-    const runtime = this.projects.get(projectId);
-    if (runtime?.searchTimer) clearTimeout(runtime.searchTimer);
-    if (runtime?.refreshTimer) clearTimeout(runtime.refreshTimer);
-    this.projects.delete(projectId);
+  /** Drop every root of a removed project. */
+  clearProject(projectId: string) {
+    for (const [key, runtime] of this.roots) {
+      if (runtime.snapshot.root.projectId !== projectId) continue;
+      if (runtime.searchTimer) clearTimeout(runtime.searchTimer);
+      if (runtime.refreshTimer) clearTimeout(runtime.refreshTimer);
+      this.roots.delete(key);
+    }
     this.emit();
   }
 
-  invalidate(projectId: string, canonicalPath?: string) {
-    const runtime = this.runtime(projectId);
+  invalidate(root: WorkspaceRootRef, canonicalPath?: string) {
+    const runtime = this.runtime(root);
     const parent = canonicalPath ? relativeParentFor(runtime.snapshot, canonicalPath) : null;
     if (!parent) {
       runtime.refreshAll = true;
@@ -662,11 +698,11 @@ export class FileExplorerStore {
       runtime.refreshDirty = true;
       return;
     }
-    this.armRefresh(projectId);
+    this.armRefresh(root);
   }
 
-  private armRefresh(projectId: string) {
-    const runtime = this.runtime(projectId);
+  private armRefresh(root: WorkspaceRootRef) {
+    const runtime = this.runtime(root);
     if (runtime.refreshTimer) clearTimeout(runtime.refreshTimer);
     const elapsed = Date.now() - (runtime.refreshStartedAt ?? Date.now());
     const delay = Math.min(
@@ -676,26 +712,28 @@ export class FileExplorerStore {
     runtime.refreshTimer = setTimeout(() => {
       runtime.refreshTimer = null;
       runtime.refreshStartedAt = null;
-      void this.runRefresh(projectId);
+      void this.runRefresh(root);
     }, delay);
   }
 
+  /** Route a watch event to the explorer of the exact root it was emitted for. */
   applyFileChange(event: WorkspaceFileChangedEventVm) {
-    if (!fileChangeAffectsTree(this.runtime(event.projectId, false).snapshot, event)) return;
-    this.invalidate(event.projectId, event.canonicalPath);
+    const runtime = this.roots.get(workspaceRootKey(event.projectId, event.workspacePath));
+    if (!runtime || !fileChangeAffectsTree(runtime.snapshot, event)) return;
+    this.invalidate(runtime.snapshot.root, event.canonicalPath);
   }
 
-  private refreshActiveSearch(runtime: ProjectRuntime) {
+  private refreshActiveSearch(runtime: RootRuntime) {
     const query = runtime.snapshot.searchQuery.trim();
     if (!query) return Promise.resolve();
     runtime.searchRevision += 1;
     return this.runSearch(runtime, query, runtime.searchRevision, true);
   }
 
-  private async runSearch(runtime: ProjectRuntime, query: string, revision: number, background = false) {
-    const requestId = `${runtime.snapshot.projectId}:${revision}`;
+  private async runSearch(runtime: RootRuntime, query: string, revision: number, background = false) {
+    const requestId = `${rootKeyOf(runtime.snapshot.root)}:${revision}`;
     try {
-      const result = await searchWorkspaceFiles(runtime.snapshot.projectId, query, requestId, this.config.searchResultLimit);
+      const result = await searchWorkspaceFiles(runtime.snapshot.root, query, requestId, this.config.searchResultLimit);
       if (runtime.searchRevision !== revision || result.requestId !== requestId) return;
       this.setSnapshot(runtime, { ...runtime.snapshot, searchStatus: 'ready', searchResult: result });
     } catch (reason) {
@@ -709,17 +747,17 @@ export class FileExplorerStore {
     }
   }
 
-  private async refreshDirectory(projectId: string, relativePath: string) {
-    const runtime = this.runtime(projectId);
-    await this.loadDirectory(projectId, relativePath, true);
+  private async refreshDirectory(root: WorkspaceRootRef, relativePath: string) {
+    const runtime = this.runtime(root);
+    await this.loadDirectory(root, relativePath, true);
     const descendants = [...runtime.snapshot.expanded]
       .filter((path) => path.startsWith(`${relativePath}/`))
       .sort((left, right) => pathDepth(left) - pathDepth(right));
-    for (const path of descendants) await this.loadDirectory(projectId, path, true);
+    for (const path of descendants) await this.loadDirectory(root, path, true);
   }
 
-  private async runRefresh(projectId: string, forceAll = false) {
-    const runtime = this.runtime(projectId);
+  private async runRefresh(root: WorkspaceRootRef, forceAll = false) {
+    const runtime = this.runtime(root);
     if (runtime.refreshPromise) {
       runtime.refreshDirty = true;
       runtime.refreshAll ||= forceAll;
@@ -736,9 +774,9 @@ export class FileExplorerStore {
     runtime.pendingRefreshDirectories.clear();
     const request = Promise.all([
       refreshAll
-        ? this.refreshRoot(projectId)
+        ? this.refreshRoot(root)
         : directories.reduce(
-            (previous, directory) => previous.then(() => this.refreshDirectory(projectId, directory)),
+            (previous, directory) => previous.then(() => this.refreshDirectory(root, directory)),
             Promise.resolve(),
           ),
       this.refreshActiveSearch(runtime),
@@ -747,18 +785,19 @@ export class FileExplorerStore {
       if (runtime.refreshDirty || runtime.refreshAll || runtime.pendingRefreshDirectories.size > 0) {
         runtime.refreshDirty = false;
         runtime.refreshStartedAt ??= Date.now();
-        this.armRefresh(projectId);
+        this.armRefresh(root);
       }
     });
     runtime.refreshPromise = request;
     return request;
   }
 
-  private runtime(projectId: string, touch = true) {
-    let runtime = this.projects.get(projectId);
+  private runtime(root: WorkspaceRootRef, touch = true) {
+    const key = rootKeyOf(root);
+    let runtime = this.roots.get(key);
     if (!runtime) {
       runtime = {
-        snapshot: idleSnapshot(projectId),
+        snapshot: idleSnapshot(root),
         operations: [],
         revealedSelectionPath: null,
         directoryRequests: new Map(),
@@ -770,24 +809,26 @@ export class FileExplorerStore {
         refreshDirty: false,
         refreshAll: false,
         pendingRefreshDirectories: new Set(),
+        rootListing: null,
+        rootListingStale: false,
       };
-      this.projects.set(projectId, runtime);
-      while (this.projects.size > FileExplorerStore.MAX_PROJECTS) {
-        const oldest = this.projects.keys().next().value as string | undefined;
-        if (!oldest || oldest === projectId) break;
-        const evicted = this.projects.get(oldest);
+      this.roots.set(key, runtime);
+      while (this.roots.size > FileExplorerStore.MAX_ROOTS) {
+        const oldest = this.roots.keys().next().value as string | undefined;
+        if (!oldest || oldest === key) break;
+        const evicted = this.roots.get(oldest);
         if (evicted?.searchTimer) clearTimeout(evicted.searchTimer);
         if (evicted?.refreshTimer) clearTimeout(evicted.refreshTimer);
-        this.projects.delete(oldest);
+        this.roots.delete(oldest);
       }
     } else if (touch) {
-      this.projects.delete(projectId);
-      this.projects.set(projectId, runtime);
+      this.roots.delete(key);
+      this.roots.set(key, runtime);
     }
     return runtime;
   }
 
-  private setSnapshot(runtime: ProjectRuntime, snapshot: FileExplorerSnapshot) {
+  private setSnapshot(runtime: RootRuntime, snapshot: FileExplorerSnapshot) {
     runtime.snapshot = snapshot;
     this.emit();
   }
@@ -795,6 +836,10 @@ export class FileExplorerStore {
   private emit() {
     for (const listener of this.listeners) listener();
   }
+}
+
+function rootKeyOf(root: WorkspaceRootRef) {
+  return workspaceRootKey(root.projectId, root.workspacePath);
 }
 
 function pathDepth(path: string) {
@@ -817,8 +862,7 @@ function relativeParentFor(snapshot: FileExplorerSnapshot, canonicalPath: string
   const root = normalizedEntry.slice(0, rootLength).replace(/\/$/u, '');
   if (normalizedCanonical !== root && !normalizedCanonical.startsWith(`${root}/`)) return null;
   const relative = normalizedCanonical.slice(root.length).replace(/^\//u, '');
-  const parent = relative.split('/').slice(0, -1).join('/');
-  return parent || null;
+  return relative.split('/').slice(0, -1).join('/');
 }
 
 function normalizePath(path: string) {
@@ -828,10 +872,10 @@ function normalizePath(path: string) {
 
 export const fileExplorerStore = new FileExplorerStore();
 
-export function useFileExplorerSnapshot(projectId: string) {
+export function useFileExplorerSnapshot(root: WorkspaceRootRef) {
   return useSyncExternalStore(
     fileExplorerStore.subscribe,
-    () => fileExplorerStore.snapshot(projectId),
-    () => fileExplorerStore.snapshot(projectId),
+    () => fileExplorerStore.snapshot(root),
+    () => fileExplorerStore.snapshot(root),
   );
 }

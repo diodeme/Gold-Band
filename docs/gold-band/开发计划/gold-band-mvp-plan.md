@@ -2765,3 +2765,20 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 修复：打开判定统一由 hook 持有——hover 走 `showTooltipIfOverflowing`，focus 走 `showTooltipOnKeyboardFocus`（仅触发器 `:focus-visible` 时）；Radix `onOpenChange` 只接受关闭。四个消费方改用键盘 focus 入口；工作空间/分支选择器按输入方式处理焦点归还的既有文档约束保持不变。
 - 验收记录：`acp-config-overflow-tooltip` 新增“非键盘焦点归还不打开”用例，修复前断言 Tooltip 为 null 失败，修复后转绿；ACP 配置、工作空间、分支选择器与 Tooltip 契约 8 个文件 72 项通过，改动文件无新增 TypeScript 错误。真实浏览器验证未执行。
 - 性能与过度设计评审：不新增状态、依赖或监听，仅在 focus 事件多一次 `matches()`。
+
+## 2026-09-29 右侧工作区跟随会话工作树与收回场景
+
+- [x] 根因：文件浏览只知道 `projectId`，后端 `resolve_workspace_root` 固定取项目根；只有源码管理感知 worktree。会话 VM 的 `worktreePath/worktreeBranch` 用 `null` 同时表示“主工作区”和“worktree 已收回 / 无法解析”，前端无法区分，只能回落项目根。
+- [x] 数据：会话 VM 改为三态 `SessionWorkLocationVm`（`main` / `worktree { path, branch }` / `unavailable { released | unresolved, path? }`），删除旧字段。文件根身份为 `projectId + workspacePath`；右侧文件与源码管理 Tab 的 `root` 是会话工作位置的读取投影，`browseMain` 只记录用户在不可用时浏览主工作区的显式选择。
+- [x] 接口：13 个文件命令与 watch 输入增加可选 `workspacePath`；非项目根必须是共享 Git common dir 的 linked worktree 顶层，新增结构化错误 `workspace-file.workspace-unavailable / workspace-outside-project`。watch 事件携带工作位置身份（项目根为 `None`），被监听根消失时发 `invalidated`。停止文件 / Git 监听不做 Git 校验；Git monitor 身份收敛为 project + 规范化路径。prompt 文件引用按会话 canonical 工作目录（`attempt_session_workspace_dir`）解析，`@` 菜单列同一根。
+- [x] 实现：前端 `FileExplorerStore` 与 `FileContentStore` 的树、watch 引用计数与正文代际按根隔离，事件按身份精确路由；源码管理只处理同工作位置的 workspace 事件。文件 / 源码管理 Tab 在根不可用时展示“会话工作树已收回 / 不可用”、原路径和“浏览主工作区”（七种语言）。
+- [x] 验收：Rust `work_location_root_*`、`reclaimed_worktree_is_unavailable_and_forgotten`、`replaced_directory_at_a_validated_path_is_revalidated`、`validated_root_cache_is_bounded_and_keyed_by_project`、`session_work_location_distinguishes_main_worktree_and_unavailable`、`monitor_identity_*` 与 worktree prompt 根断言；桌面端全量 826 项通过。Web 覆盖根隔离与事件路由（explorer / content / source-control store）、`projectWorkspaceTabRoots` 收回与浏览主工作区、`conversationWorkLocation`、链接 / 引用 / 本地 HTML / `@` 菜单取根和不可用状态渲染；全量 2638 项通过（`acp-runtime-continue-submit` 7 项为既有 quote fixture 失败，与本次无关）。本地页面已验证 worktree 可用、已收回和浏览主工作区三种状态。
+- 性能与过度设计评审：linked worktree 校验两次 `git rev-parse`（实测每次约 28ms）只在首次访问该根时执行，之后命中 32 项有界 LRU，仅复核目录存在与 `.git` 指针文件内容（一次小文件读取）；主工作区路径零额外 I/O。前端只把既有 store 的键从 project 换成 root，数量受原有 24 项 LRU 约束，不新增轮询、队列或全局订阅；事件路由由前缀匹配改为身份比较，嵌套 worktree 不再被双重刷新。
+
+## 2026-09-30 新工作树 checkout 期间文件树只显示部分目录
+
+- [x] 根因一：文件树只按 watcher `kind` 判断结构变化，`modified` 一律视为内容。Windows 上新文件先报 create 再报 modify，后端按批次保留最后一种，checkout（约 5 秒）写入的新目录与文件到达前端时多为 `modified`，全部被忽略，树停在首次列表。`kind` 随平台与批次合并变化，不是可靠事实；已加载的树才是权威。
+- [x] 根因二：面板挂载时树先发起根列表，watcher 启动后的对账在列表进行中调用非强制 `loadRoot` 被直接吞掉；列表进行中的结构失效又会另起并发列表，较早的结果可能覆盖较新的结果。
+- [x] 修复：`fileChangeAffectsTree` 以树为准——仍存在且未知、父目录已加载的路径是新增节点；已知路径是内容；已不存在的已知路径才是删除；父目录未加载的事件跳过，不再把折叠目录内的批量写入（构建产物、checkout）累积到 64 项上限后退化为整根重读。根目录列表改为单飞，进行中的强制请求标记过期，返回后重读一次再进入 `ready`。后端批次合并保持不变，不再有消费端依赖 create/modify 的区分。
+- [x] 验收：`FileExplorerStore` 新增 6 项接口测试（未知路径 `modified` 刷新父目录、只刷新受影响的已加载目录、已知路径外部写入不发目录请求、未加载目录事件不发请求、列表进行中对账重读、列表进行中的变化不被旧列表覆盖），修复前 5 项失败、修复后全部通过；Web 全量除既有 `acp-runtime-continue-submit` 与 `acp-model-thought-selects` 外通过。
+- 性能与过度设计评审：每个事件多一次已加载树内的路径查找（原有已知路径判定同量级）；跳过未加载目录后大批量写入的目录请求更少。根列表单飞只增加一个 promise 与一个过期标记，不新增队列或轮询。

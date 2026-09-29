@@ -9,12 +9,15 @@ use uuid::Uuid;
 use crate::commands::{CommandErrorVm, CommandResult};
 
 use super::models::{ExternalFileAccessGrantVm, FileRevisionVm, WorkspaceFilePreviewGrantVm};
-use super::paths::{display_path, error};
+use super::paths::{comparable_path, display_path, error};
 use super::trash_bin::TrashedEntry;
 
 /// Undo history is session-scoped on the frontend; this bound only keeps the
 /// receipts that back it from growing without limit.
 const MAX_TRASH_RECEIPTS: usize = 64;
+/// Worktree roots whose Git membership was verified. A session touches a
+/// handful of roots, so a small LRU avoids re-running Git on every file call.
+const MAX_VALIDATED_WORKSPACE_ROOTS: usize = 32;
 
 #[derive(Clone, Default)]
 pub struct WorkspaceFileRuntime {
@@ -27,6 +30,16 @@ struct WorkspaceFileRuntimeInner {
     preview_grants: HashMap<String, PreviewGrant>,
     recent_writes: HashMap<PathBuf, RecentWrite>,
     trash_receipts: VecDeque<TrashReceipt>,
+    validated_roots: VecDeque<ValidatedWorkspaceRoot>,
+}
+
+struct ValidatedWorkspaceRoot {
+    key: String,
+    git_pointer: Vec<u8>,
+}
+
+fn workspace_root_key(project_id: &str, root: &Path) -> String {
+    format!("{project_id}\0{}", comparable_path(root))
 }
 
 #[derive(Clone)]
@@ -297,6 +310,57 @@ impl WorkspaceFileRuntime {
             return Ok((png.into_inner(), "image/png".to_string()));
         }
         Ok((bytes, grant.mime_type))
+    }
+
+    /// Whether `root` was validated for `project_id` with the same `.git`
+    /// pointer. A changed pointer drops the entry so the caller re-validates.
+    pub(crate) fn workspace_root_validated(
+        &self,
+        project_id: &str,
+        root: &Path,
+        git_pointer: &[u8],
+    ) -> CommandResult<bool> {
+        let key = workspace_root_key(project_id, root);
+        let mut inner = self.lock()?;
+        let Some(index) = inner
+            .validated_roots
+            .iter()
+            .position(|entry| entry.key == key)
+        else {
+            return Ok(false);
+        };
+        let Some(entry) = inner.validated_roots.remove(index) else {
+            return Ok(false);
+        };
+        if entry.git_pointer != git_pointer {
+            return Ok(false);
+        }
+        inner.validated_roots.push_back(entry);
+        Ok(true)
+    }
+
+    pub(crate) fn remember_workspace_root(
+        &self,
+        project_id: &str,
+        root: &Path,
+        git_pointer: Vec<u8>,
+    ) -> CommandResult<()> {
+        let key = workspace_root_key(project_id, root);
+        let mut inner = self.lock()?;
+        inner.validated_roots.retain(|entry| entry.key != key);
+        inner
+            .validated_roots
+            .push_back(ValidatedWorkspaceRoot { key, git_pointer });
+        while inner.validated_roots.len() > MAX_VALIDATED_WORKSPACE_ROOTS {
+            inner.validated_roots.pop_front();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn forget_workspace_root(&self, project_id: &str, root: &Path) -> CommandResult<()> {
+        let key = workspace_root_key(project_id, root);
+        self.lock()?.validated_roots.retain(|entry| entry.key != key);
+        Ok(())
     }
 
     fn lock(&self) -> CommandResult<std::sync::MutexGuard<'_, WorkspaceFileRuntimeInner>> {

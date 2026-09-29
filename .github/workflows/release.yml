@@ -184,7 +184,7 @@ jobs:
           done < macos-app-bundles.txt
 
   updater-json:
-    name: Generate updater manifest
+    name: Generate localized updater manifests
     runs-on: ubuntu-22.04
     needs: build
 
@@ -192,10 +192,16 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
 
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
       - name: Checkout release tooling
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+          path: release-tools
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -207,13 +213,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release download "${RELEASE_TAG}" --dir release-assets --clobber
 
-      - name: Generate latest.json
-        run: node scripts/generate-updater-json.mjs release-assets latest.json
+      - name: Generate localized updater manifests and release body
+        shell: bash
+        run: node release-tools/scripts/generate-release-assets.mjs release-assets release-output --version "${RELEASE_TAG#v}"
 
       - name: Generate release checksums
-        run: node scripts/generate-release-checksums.mjs release-assets
+        run: node release-tools/scripts/generate-release-checksums.mjs release-assets
 
-      - name: Upload updater manifest, macOS installer, and release checksums
+      - name: Upload updater manifests, macOS installer, and release checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${RELEASE_TAG}" latest.json scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber
+        run: gh release upload "${RELEASE_TAG}" release-output/latest*.json release-tools/scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber
+
+      - name: Update bilingual draft release body
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${RELEASE_TAG}" --notes-file release-output/release-body.md

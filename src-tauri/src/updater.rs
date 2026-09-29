@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use gold_band::config::RuntimeConfig;
+use gold_band::config::{DesktopLanguage, RuntimeConfig};
 use gold_band::storage::atomic_write_file;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -79,7 +79,11 @@ pub fn initial_update_status(checked_at: Option<String>) -> UpdateStatusVm {
 
 pub fn updater_settings(config: &RuntimeConfig) -> UpdaterSettingsVm {
     let channel_config = current_channel_config();
-    let built_in_url = channel_config.updater_endpoint.to_string();
+    let built_in_url = localized_default_updater_endpoint(
+        channel_config.channel,
+        channel_config.updater_endpoint,
+        config.desktop_language,
+    );
     let override_url = config.desktop_updater_url_override.clone();
     let effective_url = override_url.clone().unwrap_or_else(|| built_in_url.clone());
     UpdaterSettingsVm {
@@ -272,15 +276,79 @@ fn build_updater<R: Runtime>(app: &AppHandle<R>) -> Result<tauri_plugin_updater:
     let state = app.state::<DesktopState>();
     let context = state.context().context("updater.context-unavailable")?;
     let config = context.config;
-    let settings = updater_settings(&config);
-    validate_updater_url(&settings.effective_url)?;
-    let endpoint = Url::parse(&settings.effective_url).context("updater.invalid-url")?;
+    let channel_config = current_channel_config();
+    let endpoints = updater_endpoint_strings(
+        channel_config.channel,
+        channel_config.updater_endpoint,
+        config.desktop_updater_url_override.as_deref(),
+        config.desktop_language,
+    )
+    .into_iter()
+    .map(|endpoint| {
+        validate_updater_url(&endpoint)?;
+        Url::parse(&endpoint).context("updater.invalid-url")
+    })
+    .collect::<Result<Vec<_>>>()?;
     app.updater_builder()
         .pubkey(current_channel_config().updater_public_key)
-        .endpoints(vec![endpoint])
+        .endpoints(endpoints)
         .context("updater.invalid-url")?
         .build()
         .context("updater.check-failed")
+}
+
+fn updater_endpoint_strings(
+    channel: &str,
+    built_in_endpoint: &str,
+    override_url: Option<&str>,
+    language: DesktopLanguage,
+) -> Vec<String> {
+    if let Some(override_url) = override_url {
+        return vec![override_url.to_string()];
+    }
+
+    let localized = localized_default_updater_endpoint(channel, built_in_endpoint, language);
+    if localized == built_in_endpoint {
+        vec![localized]
+    } else {
+        vec![localized, built_in_endpoint.to_string()]
+    }
+}
+
+fn localized_default_updater_endpoint(
+    channel: &str,
+    endpoint: &str,
+    language: DesktopLanguage,
+) -> String {
+    if channel != "default" {
+        return endpoint.to_string();
+    }
+    let Ok(mut url) = Url::parse(endpoint) else {
+        return endpoint.to_string();
+    };
+    if url.path_segments().and_then(Iterator::last) != Some("latest.json") {
+        return endpoint.to_string();
+    }
+    let filename = format!("latest.{}.json", release_notes_locale(language));
+    {
+        let Ok(mut segments) = url.path_segments_mut() else {
+            return endpoint.to_string();
+        };
+        segments.pop().push(&filename);
+    }
+    url.into()
+}
+
+fn release_notes_locale(language: DesktopLanguage) -> &'static str {
+    match language {
+        DesktopLanguage::ZhCn => "zh-CN",
+        DesktopLanguage::ZhTw => "zh-TW",
+        DesktopLanguage::En => "en",
+        DesktopLanguage::JaJp => "ja-JP",
+        DesktopLanguage::KoKr => "ko-KR",
+        DesktopLanguage::PtBr => "pt-BR",
+        DesktopLanguage::Es => "es",
+    }
 }
 
 fn updater_error_code(error: &anyhow::Error) -> String {
@@ -404,9 +472,11 @@ pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        pending_update_is_ready, poll_update_once, validate_updater_url, write_pending_update,
+        localized_default_updater_endpoint, pending_update_is_ready, poll_update_once,
+        updater_endpoint_strings, validate_updater_url, write_pending_update,
     };
     use crate::state::{DesktopContext, DesktopState};
+    use gold_band::config::DesktopLanguage;
     use gold_band::config::RuntimeConfig;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -477,6 +547,60 @@ mod tests {
     #[test]
     fn rejects_invalid_updater_url() {
         assert!(validate_updater_url("not a url").is_err());
+    }
+
+    #[test]
+    fn default_updater_endpoint_follows_the_saved_desktop_language() {
+        let endpoint = "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json";
+        for (language, locale) in [
+            (DesktopLanguage::ZhCn, "zh-CN"),
+            (DesktopLanguage::ZhTw, "zh-TW"),
+            (DesktopLanguage::En, "en"),
+            (DesktopLanguage::JaJp, "ja-JP"),
+            (DesktopLanguage::KoKr, "ko-KR"),
+            (DesktopLanguage::PtBr, "pt-BR"),
+            (DesktopLanguage::Es, "es"),
+        ] {
+            assert_eq!(
+                localized_default_updater_endpoint("default", endpoint, language),
+                format!(
+                    "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.{locale}.json"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn wb_and_custom_updater_urls_remain_single_manifest_endpoints() {
+        let wb_endpoint = "http://maling.weoa.com/api/file/download/latest.json";
+        assert_eq!(
+            updater_endpoint_strings("wb", wb_endpoint, None, DesktopLanguage::ZhCn),
+            vec![wb_endpoint.to_string()]
+        );
+
+        let custom_endpoint = "https://updates.example.com/latest.json";
+        assert_eq!(
+            updater_endpoint_strings(
+                "default",
+                "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json",
+                Some(custom_endpoint),
+                DesktopLanguage::JaJp,
+            ),
+            vec![custom_endpoint.to_string()]
+        );
+    }
+
+    #[test]
+    fn default_updater_uses_legacy_manifest_only_as_locale_fallback() {
+        let endpoint = "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json";
+        assert_eq!(
+            updater_endpoint_strings("default", endpoint, None, DesktopLanguage::Es),
+            vec![
+                "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.es.json"
+                    .to_string(),
+                endpoint.to_string(),
+            ]
+        );
     }
 
     #[test]

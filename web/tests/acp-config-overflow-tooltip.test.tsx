@@ -27,6 +27,7 @@ describe('ACP config overflow tooltip', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     document.body.replaceChildren();
   });
 
@@ -80,6 +81,23 @@ describe('ACP config overflow tooltip', () => {
     const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
     expect(tooltip?.textContent).toBe('Agent full access');
     expect(tooltip?.className).toContain('pointer-events-none');
+  });
+
+  it('does not show the truncated value when focus returns after a pointer selection', async () => {
+    const { button, value } = await renderPermissionMenu();
+    Object.defineProperties(value, {
+      clientWidth: { configurable: true, value: 96 },
+      scrollWidth: { configurable: true, value: 220 },
+    });
+    // jsdom treats every focus as focus-visible; Chromium does not after pointer interaction.
+    const matches = Element.prototype.matches;
+    vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+      return selector === ':focus-visible' ? false : matches.call(this, selector);
+    });
+
+    await act(async () => button.focus());
+
+    expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
   });
 
   it('does not show a tooltip when the selected value fits', async () => {

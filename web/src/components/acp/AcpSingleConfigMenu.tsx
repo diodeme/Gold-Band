@@ -90,6 +90,7 @@ export function AcpSingleConfigMenu({
     valueRef,
     tooltipOpen,
     showTooltipIfOverflowing,
+    showTooltipOnKeyboardFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useAcpComposerConfigOverflowTooltip();
@@ -105,7 +106,7 @@ export function AcpSingleConfigMenu({
             onPointerEnter={showTooltipIfOverflowing}
             onPointerLeave={hideTooltip}
             onPointerDown={hideTooltip}
-            onFocus={showTooltipIfOverflowing}
+            onFocus={showTooltipOnKeyboardFocus}
             onBlur={hideTooltip}
           >
             <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>

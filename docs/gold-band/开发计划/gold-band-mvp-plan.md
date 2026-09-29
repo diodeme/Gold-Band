@@ -2758,3 +2758,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
 - 浏览器使用受控 browserApi fixture 验证：统计未返回时文件可点击；补齐 +77/-11 后编辑器 DOM 不变、正文查询仍为 1 次；统计失败后文件保留且局部重试可用。此验证不替代弱机器 EXE 性能验收，也尚未证明现场静置 30 秒无循环；现场请观察 metadata_batch.invalidated 与 commit-review / commit-review-statistics 的独立 DEBUG 计数和耗时。
 - 本轮复用现有 Git CLI/notify/Store/有界缓存，未新增依赖或并发池。通用约束已由 data-loading、frontend-performance、state-lifecycle 和 bug-fix-verification 规则覆盖，不新增规则。本轮未提交 Git。
+
+## 2026-09-29 截断全文 Tooltip 在菜单关闭后常驻
+
+- 根因：共享 `useOverflowTooltip` 允许任意 focus 打开提示层，Radix Tooltip 同样对任意 trigger focus 发起 open；DropdownMenu 经鼠标选择后由 Radix 归还触发器焦点，新选中值（如 Bypass permissions）溢出即打开 Tooltip，而指针不在触发器上、焦点也不离开，提示层无法关闭。属于共享设计缺陷，工作空间与分支选择器此前各自在组件内绕过，ACP 模型/权限选择器暴露问题。
+- 修复：打开判定统一由 hook 持有——hover 走 `showTooltipIfOverflowing`，focus 走 `showTooltipOnKeyboardFocus`（仅触发器 `:focus-visible` 时）；Radix `onOpenChange` 只接受关闭。四个消费方改用键盘 focus 入口；工作空间/分支选择器按输入方式处理焦点归还的既有文档约束保持不变。
+- 验收记录：`acp-config-overflow-tooltip` 新增“非键盘焦点归还不打开”用例，修复前断言 Tooltip 为 null 失败，修复后转绿；ACP 配置、工作空间、分支选择器与 Tooltip 契约 8 个文件 72 项通过，改动文件无新增 TypeScript 错误。真实浏览器验证未执行。
+- 性能与过度设计评审：不新增状态、依赖或监听，仅在 focus 事件多一次 `matches()`。

@@ -1583,14 +1583,11 @@ mod tests {
     }
 
     fn recovery_test_home_app(directory: &tempfile::TempDir) -> App {
-        let test_home = directory.path().join("home");
-        std::fs::create_dir_all(&test_home).unwrap();
         let path_config = StoragePathConfig {
             app_key: "gold-band-multica-recovery-test",
             config_dir_name: ".gold-band-multica-recovery-test",
             home_env_var: "GOLD_BAND_MULTICA_RECOVERY_TEST_HOME",
         };
-        unsafe { std::env::set_var(path_config.home_env_var, &test_home) };
         App::with_config_and_path_config(
             Utf8PathBuf::from_path_buf(directory.path().join("home-repo")).unwrap(),
             RuntimeConfig::default(),

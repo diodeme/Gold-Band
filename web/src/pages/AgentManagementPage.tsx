@@ -7,6 +7,7 @@ import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { displayAppError } from '../i18n';
 import { agentDiagnosticBannerReason, agentDiagnosticHelpReason } from '@/lib/agent-diagnostic';
 import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentDiagnosticVm, ManagedAgentInput, ManagedAgentVm } from '../types';
+import { AgentCacheRepair } from '@/components/AgentCacheRepair';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -432,6 +433,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 key={agent.agentType}
                 agent={agent}
                 diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
+                onRegistryChange={onRegistryChange}
                 onEdit={() => openEdit(agent)}
                 onDelete={() => openDeleteDialog(agent)}
                 onDoctor={() => void runDoctor(agent.agentType)}
@@ -673,9 +675,10 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   );
 }
 
-function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: ManagedAgentVm; diagnosing: boolean; onEdit: () => void; onDelete: () => void; onDoctor: () => void }) {
+function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor, onRegistryChange }: { onRegistryChange: (vm: AgentRegistryVm) => void; agent: ManagedAgentVm; diagnosing: boolean; onEdit: () => void; onDelete: () => void; onDoctor: () => void }) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
+  const [repairOpen, setRepairOpen] = useState(false);
   const diagnostic = agent.diagnostic;
   return (
     <AppCard className="h-full min-w-0 gap-3 px-4 py-4 sm:px-4">
@@ -692,8 +695,9 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
             <div className="min-h-10 overflow-hidden font-mono text-ui-caption leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">{agent.command} {agent.args.join(' ')}</div>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 flex-wrap justify-end items-center gap-1.5">
           <DiagnosticBadge diagnostic={diagnostic} />
+          {(agent.cacheRepairAvailable || repairOpen) && <AgentCacheRepair agentType={agent.agentType} disabled={readOnly || diagnosing || repairOpen} onRegistryChange={onRegistryChange} onBusyChange={setRepairOpen} />}
           {diagnostic?.status === 'unhealthy' ? <RegistryHelp diagnostic={diagnostic} /> : null}
         </div>
       </div>
@@ -703,12 +707,12 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         ))}
       </div>
       <div className="mt-auto flex flex-wrap justify-end gap-2 pt-1">
-        <Button size="sm" variant="outline" disabled={readOnly || diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
+        <Button size="sm" variant="outline" disabled={readOnly || diagnosing || repairOpen} aria-busy={diagnosing} onClick={onDoctor}>
           {diagnosing ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}
           {diagnosing ? t('agentManagement.diagnosing') : t('agentManagement.diagnose')}
         </Button>
-        <Button size="sm" variant="outline" disabled={diagnosing} onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
-        <Button size="sm" variant="outline" disabled={readOnly || diagnosing} onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
+        <Button size="sm" variant="outline" disabled={diagnosing || repairOpen} onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
+        <Button size="sm" variant="outline" disabled={readOnly || diagnosing || repairOpen} onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
       </div>
     </AppCard>
   );

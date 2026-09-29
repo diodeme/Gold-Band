@@ -1637,6 +1637,8 @@ export const browserApi: RuntimeApi = {
       unknownScheduledTaskCount: 0,
     });
   },
+  previewAgentCacheRepair(_agentType: string): Promise<{ token: string; paths: string[] }> { return Promise.reject({ code: 'npx-cache.unavailable', params: {} }); },
+  repairAgentCache(_agentType: string, _token: string): Promise<{ path: string; errorCode: string | null }[]> { return Promise.reject({ code: 'npx-cache.unavailable', params: {} }); },
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
   },

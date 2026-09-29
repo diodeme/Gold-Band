@@ -208,7 +208,7 @@ fn normalize_args(args: &[String]) -> Vec<String> {
 }
 
 #[cfg(windows)]
-fn platform_adapter_command(command: &str) -> String {
+pub(crate) fn platform_adapter_command(command: &str) -> String {
     if command.eq_ignore_ascii_case("npx") {
         "npx.cmd".to_string()
     } else {
@@ -217,11 +217,13 @@ fn platform_adapter_command(command: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn platform_adapter_command(command: &str) -> String {
+pub(crate) fn platform_adapter_command(command: &str) -> String {
     command.to_string()
 }
 
-fn resolved_adapter_env(config_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(crate) fn resolved_adapter_env(
+    config_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     let mut env = config_env.clone();
     let configured_path = configured_path(&env);
     if let Some(path) = resolved_child_path(configured_path.map(OsStr::new)) {
@@ -252,7 +254,7 @@ fn remove_configured_path_keys(env: &mut BTreeMap<String, String>) {
     }
 }
 
-fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
+pub(crate) fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
     if !command_requires_path_lookup(command) {
         return command.to_string();
     }

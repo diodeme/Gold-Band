@@ -740,6 +740,10 @@
     }
   },
   "errors": {
+    "npx-cache.busy": "Já há um reparo de cache em andamento. Tente novamente mais tarde.",
+    "npx-cache.unavailable": "Não foi possível verificar um cache npx reparável. Execute o diagnóstico.",
+    "npx-cache.changed": "O diagnóstico, a configuração ou o cache mudou. Feche o diálogo e tente novamente.",
+    "npx-cache.cleanup-failed": "Falha ao limpar o cache. Os arquivos podem estar em uso ou sem permissão de acesso.",
     "browser": {
       "webview": {
         "create_failed": "A página do navegador interno não pôde ser criada. Tente novamente.",
@@ -1128,6 +1132,19 @@
     }
   },
   "agentManagement": {
+    "cacheRepair": {
+      "action": "Reparar cache",
+      "title": "Reparar cache do npx?",
+      "description": "Os caches de instalação do npx envolvidos neste erro serão apagados. Outros aplicativos que os utilizam podem ser afetados. A próxima inicialização pode exigir internet para baixar dependências. Arquivos do projeto, pacotes globais e configurações da conta não serão excluídos. Agents que usam esses caches podem ser interrompidos. Recomendamos parar as tarefas relacionadas primeiro.",
+      "confirm": "Limpar e verificar",
+      "loading": "Verificando diretórios…",
+      "repairing": "Limpando caches…",
+      "diagnosing": "Verificando Agent…",
+      "targets": "Ver diretórios ({{count}})",
+      "cleared": "Limpo",
+      "complete": "Cache limpo. Verificação do Agent concluída com sucesso.",
+      "stillFailed": "Cache limpo, mas a verificação do Agent falhou. Consulte o diagnóstico."
+    },
     "deleteUsageLoading": "Contando referências de vinculação…",
     "deleteUsageTemplates": "Templates de Workflow afetados",
     "deleteUsageTasks": "Tarefas afetadas",

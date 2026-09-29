@@ -463,6 +463,7 @@ export interface AcpActivityImagesPage {
 }
 
 export interface ManagedAgentVm {
+  cacheRepairAvailable?: boolean;
   agentType: string;
   displayName: string;
   command: string;

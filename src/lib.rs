@@ -19,6 +19,7 @@ pub mod im;
 pub mod inspect;
 pub mod mcp;
 pub mod memory;
+pub mod npx_cache;
 pub mod observability;
 pub mod personal_analytics;
 pub mod process;

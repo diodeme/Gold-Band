@@ -740,6 +740,10 @@
     }
   },
   "errors": {
+    "npx-cache.busy": "Ya hay una reparación de caché en curso. Inténtalo más tarde.",
+    "npx-cache.unavailable": "No se pudo verificar una caché npx reparable. Ejecuta el diagnóstico.",
+    "npx-cache.changed": "El diagnóstico, la configuración o la caché han cambiado. Cierra el diálogo y reintenta.",
+    "npx-cache.cleanup-failed": "No se pudo borrar la caché. Puede haber archivos en uso o sin permiso de acceso.",
     "browser": {
       "webview": {
         "create_failed": "No se pudo crear la página del navegador integrado. Vuelva a intentarlo.",
@@ -1128,6 +1132,19 @@
     }
   },
   "agentManagement": {
+    "cacheRepair": {
+      "action": "Reparar caché",
+      "title": "¿Reparar la caché de npx?",
+      "description": "Se borrarán las cachés de instalación de npx implicadas en este error. Otras aplicaciones que las utilicen podrían verse afectadas. El próximo inicio podría requerir conexión a Internet para descargar dependencias. No se eliminarán archivos del proyecto, paquetes globales ni ajustes de cuenta. Los Agents que utilizan estas cachés podrían interrumpirse. Se recomienda detener primero las tareas relacionadas.",
+      "confirm": "Borrar y comprobar",
+      "loading": "Comprobando directorios…",
+      "repairing": "Borrando cachés…",
+      "diagnosing": "Comprobando Agent…",
+      "targets": "Ver directorios ({{count}})",
+      "cleared": "Borrada",
+      "complete": "Caché borrada. Comprobación de Agent correcta.",
+      "stillFailed": "Caché borrada, pero Agent sigue fallando. Consulta el diagnóstico."
+    },
     "deleteUsageLoading": "Contando referencias de vinculación…",
     "deleteUsageTemplates": "Plantillas de flujo de trabajo afectadas",
     "deleteUsageTasks": "Tareas afectadas",

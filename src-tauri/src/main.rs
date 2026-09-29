@@ -23,6 +23,7 @@ mod memory;
 mod metrics;
 mod multica;
 mod notifications;
+mod npx_cache;
 mod personal_analytics;
 mod scheduled_runtime;
 mod scheduled_service;
@@ -449,6 +450,8 @@ fn run() -> anyhow::Result<()> {
             update_agent,
             delete_agent,
             doctor_agent,
+            npx_cache::preview_agent_cache_repair,
+            npx_cache::repair_agent_cache,
             get_task_list,
             get_profiles,
             get_profile,

@@ -103,3 +103,61 @@ describe('UI locale loading contract', () => {
     expect(i18n.t('onlyInEnglish', { ns: 'fallback-test' })).toBe('onlyInEnglish');
   });
 });
+
+const reservedTerms = [
+  { name: 'CI/CD', matches: (text: string) => text.includes('CI/CD') },
+  { name: 'GitHub', matches: (text: string) => text.includes('GitHub') },
+  { name: 'Agent', matches: (text: string) => /\bAgents?\b/i.test(text) },
+  { name: 'worktree', matches: (text: string) => /\bworktrees?\b/i.test(text) },
+  { name: 'Workflow', matches: (text: string) => /\bWorkflows?\b/i.test(text) },
+  { name: 'MCP', matches: (text: string) => /\bMCP\b/.test(text) },
+  { name: 'ACP', matches: (text: string) => /\bACP\b/.test(text) },
+  { name: 'Git', matches: (text: string) => /\bGit\b/i.test(text) },
+];
+
+function leafText(value: unknown, prefix = ''): Array<[string, string]> {
+  if (typeof value === 'string') return [[prefix, value]];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`locale leaf ${prefix || '<root>'} is not a string`);
+  }
+  return Object.entries(value).flatMap(([key, child]) =>
+    leafText(child, prefix ? `${prefix}.${key}` : key));
+}
+
+function placeholdersOf(text: string): string[] {
+  return (text.match(/\{\{[^}]+\}\}/g) ?? []).sort();
+}
+
+describe('UI locale catalog contract', () => {
+  const source = new Map(leafText(zhCN));
+  const localized = Object.entries(localeCatalogs)
+    .filter(([locale]) => locale !== 'zh-CN')
+    .map(([locale, catalog]) => [locale, new Map(leafText(catalog))] as const);
+
+  it('keeps placeholders identical to zh-CN for every key', () => {
+    const mismatches: string[] = [];
+    for (const [key, sourceText] of source) {
+      const expected = placeholdersOf(sourceText).join('|');
+      for (const [locale, catalog] of localized) {
+        const actual = placeholdersOf(catalog.get(key) ?? '').join('|');
+        if (actual !== expected) mismatches.push(`${locale} ${key}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it('keeps reserved English terms when zh-CN keeps them', () => {
+    const violations: string[] = [];
+    for (const [key, sourceText] of source) {
+      const required = reservedTerms.filter((term) => term.matches(sourceText));
+      if (required.length === 0) continue;
+      for (const [locale, catalog] of localized) {
+        const text = catalog.get(key) ?? '';
+        for (const term of required) {
+          if (!term.matches(text)) violations.push(`${locale} ${key} missing ${term.name}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+});

@@ -221,7 +221,7 @@
       "sessionPolicy": "セッションポリシー",
       "directMode": "Directモード",
       "cancel": "キャンセル",
-      "done": "終わり",
+      "done": "完了",
       "validation": {
         "invalidDate": "有効な日付を選択してください",
         "invalidTime": "有効な時間を選択してください",
@@ -291,9 +291,9 @@
     "refresh": "リフレッシュ",
     "retry": "リトライ",
     "clear": "クリア",
-    "close": "近い",
+    "close": "閉じる",
     "cancel": "キャンセル",
-    "done": "終わり",
+    "done": "完了",
     "confirm": "確認する",
     "delete": "消去",
     "operationFailed": "操作が失敗しました",
@@ -1722,7 +1722,7 @@
       "accept": "承諾",
       "cleanup": "掃除",
       "aiDynamic": "AIダイナミックノード",
-      "end": "終わり",
+      "end": "終了",
       "newRound": "新しいラウンド"
     },
     "edgeLabels": {
@@ -2670,7 +2670,7 @@
       "announcement": {
         "title": "新しいバージョン {{version}} が利用可能になりました",
         "description": "[設定] → [詳細設定] → [アップデート] に移動して確認し、インストールします。",
-        "dismiss": "近い",
+        "dismiss": "閉じる",
         "view": "更新を見る",
         "dialogTitle": "新しいバージョン {{version}} が利用可能になりました",
         "dialogDescription": "新しいクライアント バージョンが検出されました。 「設定」→「詳細設定」→「アップデート」に移動して、ダウンロードしてインストールします。",
@@ -2815,9 +2815,9 @@
         "addWorkspace": "ワークスペースの追加",
         "noWorkspacesBound": "バインドされたワークスペースはありません",
         "status": {
-          "queued": "藤堂",
+          "queued": "待機中",
           "running": "ランニング",
-          "completed": "終わり",
+          "completed": "完了",
           "failed": "失敗した"
         },
         "dialog": {

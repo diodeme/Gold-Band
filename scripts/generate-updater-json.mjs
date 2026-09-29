@@ -9,9 +9,11 @@ const outputPath = outputArg ?? 'latest.json';
 // ── local mode (--base-url + --version) ──
 const baseUrlFlagIdx = rest.indexOf('--base-url');
 const versionFlagIdx = rest.indexOf('--version');
+const notesFileFlagIdx = rest.indexOf('--notes-file');
 const criticalFlag = rest.includes('--critical');
 const baseUrl = baseUrlFlagIdx >= 0 ? rest[baseUrlFlagIdx + 1] : process.env.RELEASE_BASE_URL;
 const version = versionFlagIdx >= 0 ? rest[versionFlagIdx + 1] : process.env.RELEASE_VERSION;
+const notesFile = notesFileFlagIdx >= 0 ? rest[notesFileFlagIdx + 1] : undefined;
 
 if (baseUrl) {
   // local mode: use custom base URL, skip GitHub deps
@@ -61,7 +63,7 @@ async function generateLocal(baseUrl, version, assetDir, outputPath) {
     process.exit(1);
   }
 
-  const changelog = await extractChangelog(version);
+  const changelog = await releaseNotes(version);
   const notes = changelog || `Gold Band ${version}`;
 
   const latest = {
@@ -128,7 +130,7 @@ async function generateGitHub(assetDir, outputPath) {
     process.exit(1);
   }
 
-  const changelog = await extractChangelog(version);
+  const changelog = await releaseNotes(version);
   const notes = changelog || `Gold Band ${tag}`;
 
   const latest = {
@@ -188,6 +190,15 @@ async function extractChangelog(version) {
   const end = nextMatch ? nextMatch.index : content.length;
 
   return content.slice(start, end).trim();
+}
+
+async function releaseNotes(version) {
+  if (!notesFile) return extractChangelog(version);
+  const content = (await readFile(path.resolve(notesFile), 'utf8')).trim();
+  if (!content) {
+    throw new Error(`Release notes file is empty: ${notesFile}`);
+  }
+  return content;
 }
 
 function extractSemver(file) {

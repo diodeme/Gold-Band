@@ -2733,3 +2733,9 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 性能与过度设计评审：不加依赖或持久缓存；目录与统计各一个 in-flight，缓存复用既有 24 会话上限。文件状态仍 O(变更文件)，目录 O(refs + worktrees + stashes) 按需加载；remote get-url 语义和独立 IPC 作用域校验保留。
 
 - [x] 最终验证：Rust Git 领域 86 项通过，linked worktree 扩展断言单独通过；前端 6 文件/64 项通过；TypeScript、Vite 生产构建、Windows desktop cargo check 通过（保留既有 warning）。浏览器真实组件配合受控 browserApi，验证监听/统计挂起仍显示文件、目录首次请求只发生在仓库页签、目录 loading→真实分支、监听就绪后补读、统计补齐；不把 mock 页面结果当作 EXE 耗时证据。测试会话和本次 Vite 服务已清理。
+
+## 2026-09-25 default 多语言更新日志发布链路
+
+- [x] 复用现有 manifest 生成器和两条 Release workflow，从 `release-notes/<version>/` 生成七语言 default manifests、英文兼容 `latest.json` 与中英 Draft Release body；不新增 Release Notes PR Check，当前版本目录或生成失败仅在发布 job 内失败。
+- [x] default updater 以持久化桌面语言选择 locale manifest，locale 资产不存在时最多回退一次英文 `latest.json`；`wb` 与自定义 URL 始终只请求原单 manifest。
+- [x] 接口回归覆盖七语言内容投影、双语正文、版本目录缺失、default URL 映射与回退、`wb`/自定义 URL 隔离。实现不新增依赖、状态机、缓存、队列或客户端全量加载；成功路径仍为一次 manifest 请求，只有 locale 文件缺失时增加一次有界回退。

@@ -29,6 +29,7 @@
     "version:sync": "node scripts/sync-version.mjs",
     "release:tag": "node scripts/release-tag.mjs",
     "test:release-config": "node --test scripts/release-please-config.test.mjs",
+    "test:release-notes": "node --test scripts/generate-release-assets.test.mjs",
     "themes:build": "node theme-sdk/build.mjs",
     "web:dev": "npm run themes:build && vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",
     "web:test": "vitest run --config web/vitest.config.ts",

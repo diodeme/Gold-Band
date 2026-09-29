@@ -223,6 +223,131 @@ impl GitLoadReport {
     }
 }
 
+const MAX_FRONTEND_WATCH_COUNT: u64 = 1_000_000;
+const MAX_FRONTEND_WATCH_ELAPSED_MS: f64 = 3_600_000.0;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(
+    tag = "event",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum GitWatchReport {
+    Subscriptions {
+        success: bool,
+    },
+    SessionReuse {
+        project_id: String,
+        monitor_started: bool,
+    },
+    WorkspaceEvents {
+        project_id: String,
+        received_events: u64,
+        project_sessions: u64,
+        routed_sessions: u64,
+        metadata_filtered_sessions: u64,
+        out_of_scope_sessions: u64,
+        scope_mismatch_sessions: u64,
+        nested_worktree_filtered_sessions: u64,
+        path_outside_workspace_sessions: u64,
+    },
+    RefreshStart {
+        project_id: String,
+        pending_paths: u64,
+        invalidate_all: bool,
+    },
+    RefreshEnd {
+        project_id: String,
+        outcome: GitWatchRefreshOutcome,
+        elapsed_ms: f64,
+    },
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitWatchRefreshOutcome {
+    Ready,
+    Error,
+    Superseded,
+}
+
+impl GitWatchReport {
+    pub fn record(&self) {
+        match self {
+            Self::Subscriptions { success } => {
+                tracing::debug!(target: "gold_band::git::load",
+                    event = "frontend_watch_subscriptions", success);
+            }
+            Self::SessionReuse {
+                project_id,
+                monitor_started,
+            } if valid_diagnostic_project_id(project_id) => {
+                tracing::debug!(target: "gold_band::git::load",
+                    event = "frontend_watch_session_reuse", %project_id, monitor_started);
+            }
+            Self::WorkspaceEvents {
+                project_id,
+                received_events,
+                project_sessions,
+                routed_sessions,
+                metadata_filtered_sessions,
+                out_of_scope_sessions,
+                scope_mismatch_sessions,
+                nested_worktree_filtered_sessions,
+                path_outside_workspace_sessions,
+            } if valid_diagnostic_project_id(project_id)
+                && [
+                    received_events,
+                    project_sessions,
+                    routed_sessions,
+                    metadata_filtered_sessions,
+                    out_of_scope_sessions,
+                    scope_mismatch_sessions,
+                    nested_worktree_filtered_sessions,
+                    path_outside_workspace_sessions,
+                ]
+                .into_iter()
+                .all(|value| *value <= MAX_FRONTEND_WATCH_COUNT) =>
+            {
+                tracing::debug!(target: "gold_band::git::load",
+                    event = "frontend_workspace_events", %project_id, received_events,
+                    project_sessions, routed_sessions, metadata_filtered_sessions,
+                    out_of_scope_sessions, scope_mismatch_sessions,
+                    nested_worktree_filtered_sessions, path_outside_workspace_sessions);
+            }
+            Self::RefreshStart {
+                project_id,
+                pending_paths,
+                invalidate_all,
+            } if valid_diagnostic_project_id(project_id)
+                && *pending_paths <= MAX_FRONTEND_WATCH_COUNT =>
+            {
+                tracing::debug!(target: "gold_band::git::load",
+                    event = "frontend_worktree_refresh_start", %project_id,
+                    pending_paths, invalidate_all);
+            }
+            Self::RefreshEnd {
+                project_id,
+                outcome,
+                elapsed_ms,
+            } if valid_diagnostic_project_id(project_id)
+                && elapsed_ms.is_finite()
+                && (0.0..=MAX_FRONTEND_WATCH_ELAPSED_MS).contains(elapsed_ms) =>
+            {
+                tracing::debug!(target: "gold_band::git::load",
+                    event = "frontend_worktree_refresh_end", %project_id,
+                    outcome = ?outcome, elapsed_ms);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn valid_diagnostic_project_id(project_id: &str) -> bool {
+    !project_id.is_empty() && project_id.len() <= 256 && !project_id.chars().any(char::is_control)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +469,60 @@ mod tests {
             0
         );
         assert!(GitReadTrace::current().is_none());
+    }
+
+    #[test]
+    fn watch_reports_accept_camel_case_and_reject_paths_and_unbounded_values() {
+        let report = serde_json::from_value::<GitWatchReport>(serde_json::json!({
+            "event": "workspace-events",
+            "projectId": "project-1",
+            "receivedEvents": 2,
+            "projectSessions": 3,
+            "routedSessions": 1,
+            "metadataFilteredSessions": 1,
+            "outOfScopeSessions": 1,
+            "scopeMismatchSessions": 1,
+            "nestedWorktreeFilteredSessions": 0,
+            "pathOutsideWorkspaceSessions": 0
+        }))
+        .unwrap();
+        assert!(matches!(
+            report,
+            GitWatchReport::WorkspaceEvents {
+                received_events: 2,
+                project_sessions: 3,
+                routed_sessions: 1,
+                metadata_filtered_sessions: 1,
+                out_of_scope_sessions: 1,
+                scope_mismatch_sessions: 1,
+                nested_worktree_filtered_sessions: 0,
+                path_outside_workspace_sessions: 0,
+                ..
+            }
+        ));
+        assert!(
+            serde_json::from_value::<GitWatchReport>(serde_json::json!({
+                "event": "workspace-events",
+                "projectId": "project-1",
+                "receivedEvents": 1,
+                "projectSessions": 1,
+                "routedSessions": 1,
+                "metadataFilteredSessions": 0,
+                "outOfScopeSessions": 0,
+                "scopeMismatchSessions": 0,
+                "nestedWorktreeFilteredSessions": 0,
+                "pathOutsideWorkspaceSessions": 0,
+                "canonicalPath": "PRIVATE_PATH"
+            }))
+            .is_err()
+        );
+        let report = serde_json::from_value::<GitWatchReport>(serde_json::json!({
+            "event": "refresh-start",
+            "projectId": "project-1",
+            "pendingPaths": MAX_FRONTEND_WATCH_COUNT + 1,
+            "invalidateAll": false
+        }))
+        .unwrap();
+        report.record();
     }
 }

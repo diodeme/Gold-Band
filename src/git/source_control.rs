@@ -892,14 +892,23 @@ pub struct GitSourceControlOverview {
 pub struct GitSourceControlBootstrap {
     pub capability: super::GitCapability,
     pub overview: Option<GitSourceControlOverview>,
+    pub workspace_scope_path: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub struct GitSourceControlBootstrapPreparation {
     pub capability: super::GitCapability,
     pub identity: Option<GitRepositoryIdentity>,
+    pub workspace_scope_path: Option<Utf8PathBuf>,
     pub watch_targets: Vec<GitMetadataWatchTarget>,
     operation_paths: Vec<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitScopedWorkspaceIdentity {
+    pub repository: GitRepositoryIdentity,
+    /// `None` is the registered project root; only linked worktrees carry a path.
+    pub scope_path: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1286,6 +1295,7 @@ impl GitSourceControlService {
                 return Ok(GitSourceControlBootstrapPreparation {
                     capability,
                     identity: None,
+                    workspace_scope_path: None,
                     watch_targets: Vec::new(),
                     operation_paths: Vec::new(),
                 });
@@ -1299,16 +1309,17 @@ impl GitSourceControlService {
                     installed_version,
                 ),
                 identity: None,
+                workspace_scope_path: None,
                 watch_targets: Vec::new(),
                 operation_paths: Vec::new(),
             });
         };
         let requested = requested_workspace.unwrap_or(project_root);
-        let identity = if same_workspace_argument(requested, project_root)
-            || same_workspace_argument(requested, &project.repo_root)
-            || same_workspace_argument(requested, &project.workspace_path)
+        let (identity, workspace_scope_path) = if same_workspace_argument(requested, project_root)?
+            || same_workspace_argument(requested, &project.repo_root)?
+            || same_workspace_argument(requested, &project.workspace_path)?
         {
-            project
+            (project, None)
         } else {
             let workspace = self.probe_repository_identity(requested)?.ok_or_else(|| {
                 GitServiceError::new(
@@ -1325,7 +1336,8 @@ impl GitSourceControlService {
                 )
                 .into());
             }
-            workspace
+            let scope_path = workspace.workspace_path.clone();
+            (workspace, Some(scope_path))
         };
         let marker_names = METADATA_WATCH_MARKERS
             .iter()
@@ -1350,6 +1362,7 @@ impl GitSourceControlService {
         Ok(GitSourceControlBootstrapPreparation {
             capability,
             identity: Some(identity),
+            workspace_scope_path,
             watch_targets,
             operation_paths,
         })
@@ -1364,6 +1377,7 @@ impl GitSourceControlService {
             return Ok(GitSourceControlBootstrap {
                 capability: preparation.capability,
                 overview: None,
+                workspace_scope_path: preparation.workspace_scope_path,
             });
         };
         let status = self.status_without_stats_with_operation_paths(
@@ -1378,6 +1392,7 @@ impl GitSourceControlService {
         Ok(GitSourceControlBootstrap {
             capability: preparation.capability,
             overview: Some(overview),
+            workspace_scope_path: preparation.workspace_scope_path,
         })
     }
 
@@ -1422,14 +1437,27 @@ impl GitSourceControlService {
         project_root: &Utf8Path,
         requested_workspace: Option<&Utf8Path>,
     ) -> Result<GitRepositoryIdentity> {
+        Ok(self
+            .resolve_scoped_workspace_identity(project_root, requested_workspace)?
+            .repository)
+    }
+
+    pub fn resolve_scoped_workspace_identity(
+        &self,
+        project_root: &Utf8Path,
+        requested_workspace: Option<&Utf8Path>,
+    ) -> Result<GitScopedWorkspaceIdentity> {
         super::require_supported_git_version_for_service()?;
         let project = self.repository_identity(project_root)?;
         let requested = requested_workspace.unwrap_or(project_root);
-        if same_workspace_argument(requested, project_root)
-            || same_workspace_argument(requested, &project.repo_root)
-            || same_workspace_argument(requested, &project.workspace_path)
+        if same_workspace_argument(requested, project_root)?
+            || same_workspace_argument(requested, &project.repo_root)?
+            || same_workspace_argument(requested, &project.workspace_path)?
         {
-            return Ok(project);
+            return Ok(GitScopedWorkspaceIdentity {
+                repository: project,
+                scope_path: None,
+            });
         }
         let workspace = self.repository_identity(requested)?;
         let project_common_dir = canonical_utf8_path(&project.common_dir)?;
@@ -1443,7 +1471,11 @@ impl GitSourceControlService {
             )
             .into());
         }
-        Ok(workspace)
+        let scope_path = workspace.workspace_path.clone();
+        Ok(GitScopedWorkspaceIdentity {
+            repository: workspace,
+            scope_path: Some(scope_path),
+        })
     }
 
     pub fn repository_identity(&self, cwd: &Utf8Path) -> Result<GitRepositoryIdentity> {
@@ -4964,8 +4996,11 @@ fn history_revision(branch: &GitBranchStatus) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn same_workspace_argument(requested: &Utf8Path, known: &Utf8Path) -> bool {
-    requested.as_str().eq_ignore_ascii_case(known.as_str())
+fn same_workspace_argument(requested: &Utf8Path, known: &Utf8Path) -> Result<bool> {
+    if requested.as_str() == known.as_str() {
+        return Ok(true);
+    }
+    Ok(git_filesystem_path_identity(requested)? == git_filesystem_path_identity(known)?)
 }
 
 fn parse_history(bytes: &[u8], refs: &HashMap<String, Vec<GitRefLabel>>) -> Result<Vec<GitCommit>> {
@@ -5161,6 +5196,17 @@ fn nul_fields(bytes: &[u8]) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::git::GitCommandRunner;
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_argument_identity_accepts_equivalent_windows_path_forms() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical =
+            Utf8PathBuf::from_path_buf(std::fs::canonicalize(directory.path()).unwrap()).unwrap();
+        let alternate_separators = Utf8PathBuf::from(canonical.as_str().replace('\\', "/"));
+
+        assert!(same_workspace_argument(&canonical, &alternate_separators).unwrap());
+    }
 
     fn initialized_repository() -> (tempfile::TempDir, Utf8PathBuf) {
         let temp = tempfile::tempdir().unwrap();
@@ -5556,8 +5602,12 @@ mod tests {
         let service = GitSourceControlService::default();
         let request = super::super::diagnostics::GitReadRequest::new(None, "test");
         let trace = request.trace();
+        #[cfg(windows)]
+        let requested_root = Utf8PathBuf::from(root.as_str().replace('\\', "/"));
+        #[cfg(not(windows))]
+        let requested_root = root.clone();
         let preparation = trace
-            .scope(|| service.prepare_bootstrap(&root, None))
+            .scope(|| service.prepare_bootstrap(&root, Some(&requested_root)))
             .unwrap();
         assert_eq!(
             trace.command_count(),
@@ -5565,6 +5615,7 @@ mod tests {
             "version, identity and marker paths"
         );
         assert!(preparation.identity.is_some());
+        assert_eq!(preparation.workspace_scope_path, None);
         assert!(!preparation.watch_targets.is_empty());
         let bootstrap = trace
             .scope(|| service.complete_bootstrap("project-test", preparation))
@@ -5577,6 +5628,15 @@ mod tests {
         assert_eq!(
             bootstrap.capability.status,
             super::super::GitCapabilityStatus::Ready
+        );
+        assert_eq!(bootstrap.workspace_scope_path, None);
+        assert_eq!(
+            service
+                .resolve_scoped_workspace_identity(&root, Some(&requested_root))
+                .unwrap()
+                .scope_path,
+            None,
+            "the standalone monitor resolver must use the same main-workspace identity"
         );
         let overview = bootstrap.overview.unwrap();
         assert!(
@@ -5656,6 +5716,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(trace.command_count(), 5);
+        assert_eq!(
+            bootstrap.workspace_scope_path,
+            Some(canonical_utf8_path(&worktree).unwrap())
+        );
         let repository = bootstrap.overview.unwrap().repository;
         assert_eq!(
             repository.workspace_path,
@@ -7296,21 +7360,31 @@ mod tests {
                 .success
         );
         let service = GitSourceControlService::default();
+        let main = service
+            .resolve_scoped_workspace_identity(&root, Some(&root))
+            .unwrap();
+        assert_eq!(main.scope_path, None);
         let resolved = service
-            .resolve_scoped_workspace(&root, Some(&worktree))
+            .resolve_scoped_workspace_identity(&root, Some(&worktree))
             .unwrap();
         assert_eq!(
-            resolved.workspace_path,
+            resolved.scope_path,
+            Some(canonical_utf8_path(&worktree).unwrap())
+        );
+        assert_eq!(
+            resolved.repository.workspace_path,
             canonical_utf8_path(&worktree).unwrap()
         );
         let targets = service.metadata_watch_targets(&worktree).unwrap();
         assert!(
             targets
                 .iter()
-                .any(|target| target.path == resolved.common_dir
-                    || target.path == resolved.common_dir.join("refs"))
+                .any(|target| target.path == resolved.repository.common_dir
+                    || target.path == resolved.repository.common_dir.join("refs"))
         );
-        let overview = service.overview_with_identity("test", &resolved).unwrap();
+        let overview = service
+            .overview_with_identity("test", &resolved.repository)
+            .unwrap();
         assert_eq!(
             overview.repository.current_branch.as_deref(),
             Some("scoped/test")

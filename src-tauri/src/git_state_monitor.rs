@@ -6,6 +6,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use std::path::Path;
+
 use camino::Utf8Path;
 use gold_band::git::GitMetadataWatchTarget;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -48,7 +50,7 @@ impl GitStateMonitorRuntime {
         targets: Vec<GitMetadataWatchTarget>,
         debounce_ms: u64,
     ) -> CommandResult<()> {
-        let key = monitor_key(&project_id, repository_common_dir, workspace_path);
+        let key = monitor_key(&project_id, workspace_path.as_std_path());
         let mut monitors = self.lock()?;
         if let Some(handle) = monitors.get_mut(&key) {
             handle.refs = handle.refs.saturating_add(1);
@@ -72,13 +74,10 @@ impl GitStateMonitorRuntime {
         Ok(())
     }
 
-    pub(crate) fn stop(
-        &self,
-        project_id: &str,
-        repository_common_dir: &Utf8Path,
-        workspace_path: &Utf8Path,
-    ) -> CommandResult<()> {
-        let key = monitor_key(project_id, repository_common_dir, workspace_path);
+    /// Stop by workspace identity alone: a worktree belongs to exactly one
+    /// repository, and a reclaimed worktree can no longer be resolved by Git.
+    pub(crate) fn stop(&self, project_id: &str, workspace_path: &Path) -> CommandResult<()> {
+        let key = monitor_key(project_id, workspace_path);
         let mut monitors = self.lock()?;
         let remove = monitors.get_mut(&key).is_some_and(|handle| {
             handle.refs = handle.refs.saturating_sub(1);
@@ -336,18 +335,20 @@ fn monitor_error(payload: &GitStateChangedEventVm) -> CommandErrorVm {
     )
 }
 
-fn monitor_key(
-    project_id: &str,
-    repository_common_dir: &Utf8Path,
-    workspace_path: &Utf8Path,
-) -> String {
-    let common = normalize_path(repository_common_dir);
-    let workspace = normalize_path(workspace_path);
-    format!("{project_id}\0{common}\0{workspace}")
+fn monitor_key(project_id: &str, workspace_path: &Path) -> String {
+    format!(
+        "{project_id}\0{}",
+        normalize_path_text(&workspace_path.to_string_lossy())
+    )
 }
 
 fn normalize_path(path: &Utf8Path) -> String {
-    let path = path.as_str().replace('\\', "/");
+    normalize_path_text(path.as_str())
+}
+
+fn normalize_path_text(path: &str) -> String {
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let path = path.replace('\\', "/");
     #[cfg(target_os = "windows")]
     let path = path.to_lowercase();
     path.trim_end_matches('/').to_string()
@@ -503,15 +504,23 @@ mod tests {
     }
 
     #[test]
-    fn monitor_identity_is_repository_and_worktree_scoped() {
-        let common = Utf8Path::new("D:/repo/.git");
+    fn monitor_identity_is_project_and_worktree_scoped() {
         assert_ne!(
-            monitor_key("project-1", common, Utf8Path::new("D:/repo")),
-            monitor_key("project-1", common, Utf8Path::new("D:/worktree")),
+            monitor_key("project-1", Path::new("D:/repo")),
+            monitor_key("project-1", Path::new("D:/worktree")),
         );
         assert_ne!(
-            monitor_key("project-1", common, Utf8Path::new("D:/repo")),
-            monitor_key("project-2", common, Utf8Path::new("D:/repo")),
+            monitor_key("project-1", Path::new("D:/repo")),
+            monitor_key("project-2", Path::new("D:/repo")),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn monitor_identity_ignores_verbatim_prefix_separators_and_case() {
+        assert_eq!(
+            monitor_key("project-1", Path::new(r"\\?\D:\Repo\Worktree")),
+            monitor_key("project-1", Path::new("d:/repo/worktree/")),
         );
     }
 

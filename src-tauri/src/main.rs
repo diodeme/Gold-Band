@@ -504,6 +504,7 @@ fn run() -> anyhow::Result<()> {
             start_run,
             get_git_capability,
             commands::record_source_control_load,
+            commands::record_source_control_watch,
             commands::bootstrap_source_control,
             initialize_git_repository,
             get_source_control_snapshot,

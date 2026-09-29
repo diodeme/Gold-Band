@@ -46,6 +46,7 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 
 export const desktopApi: RuntimeApi = {
   reportSourceControlLoad: (report) => invokeCommand("record_source_control_load", { report }),
+  reportSourceControlWatch: (report) => invokeCommand("record_source_control_watch", { report }),
   readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
   writeProjectMemory: (projectId, command) => invokeCommand('write_project_memory', { projectId, command }),
   getGitCapability(projectId, loadId) {

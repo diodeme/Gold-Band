@@ -404,6 +404,8 @@ export interface WriteFileResourceInput {
 
 export interface WorkspaceFileChangedEventVm {
   projectId: string;
+  /** Watched root; `null` for single-file external watches. */
+  workspacePath?: string | null;
   canonicalPath: string;
   kind: 'created' | 'modified' | 'removed' | 'renamed' | 'invalidated';
   revision: FileRevisionVm | null;
@@ -1033,6 +1035,8 @@ export interface GitSourceControlOverviewVm {
 export interface GitSourceControlBootstrapVm {
   capability: GitCapabilityVm;
   overview?: GitSourceControlOverviewVm | null;
+  /** `null` identifies the registered project root; paths identify linked worktrees. */
+  workspaceScopePath: string | null;
 }
 
 export interface GitSourceControlSnapshotVm {

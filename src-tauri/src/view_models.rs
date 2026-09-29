@@ -188,6 +188,7 @@ pub struct AgentRegistryVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentVm {
+    pub cache_repair_available: bool,
     pub agent_type: String,
     pub display_name: String,
     pub command: String,
@@ -1464,6 +1465,15 @@ pub(crate) fn managed_agent_vm(
     diagnostic: Option<&AgentDiagnosticState>,
 ) -> ManagedAgentVm {
     ManagedAgentVm {
+        cache_repair_available: gold_band::npx_cache::is_npx(&config.adapter)
+            && diagnostic.is_some_and(|d| {
+                !d.available
+                    && d.error
+                        .as_ref()
+                        .and_then(|e| e.params.get("reason"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|r| !gold_band::npx_cache::missing_manifests(r).is_empty())
+            }),
         agent_type: agent_id.as_str().to_string(),
         display_name: config.adapter.display_name.clone(),
         command: config.adapter.command.clone(),

@@ -740,6 +740,10 @@
     }
   },
   "errors": {
+    "npx-cache.busy": "A cache repair is already in progress. Try again later.",
+    "npx-cache.unavailable": "No repairable npx cache directory could be verified. Run diagnostics again.",
+    "npx-cache.changed": "Diagnostics, configuration or cache changed. Close this dialog and try again.",
+    "npx-cache.cleanup-failed": "Cache cleanup failed. Files may be in use or access may be denied.",
     "browser": {
       "webview": {
         "create_failed": "The in-app browser page could not be created. Try again.",
@@ -1128,6 +1132,19 @@
     }
   },
   "agentManagement": {
+    "cacheRepair": {
+      "action": "Repair cache",
+      "title": "Repair npx cache?",
+      "description": "This will clear the npx installation caches involved in this error. Other applications using these caches may be affected. The next launch may require an internet connection to download dependencies again. Project files, globally installed packages and account settings will not be deleted. Agents using these caches may be interrupted. We recommend stopping related tasks first.",
+      "confirm": "Clear and check again",
+      "loading": "Checking cache directories…",
+      "repairing": "Clearing caches…",
+      "diagnosing": "Checking Agent again…",
+      "targets": "View target directories ({{count}})",
+      "cleared": "Cleared",
+      "complete": "Cache cleared. Agent check passed.",
+      "stillFailed": "Cache cleared, but the Agent check still failed. See the diagnostic reason."
+    },
     "deleteUsageLoading": "Counting binding references…",
     "deleteUsageTemplates": "Affected workflow templates",
     "deleteUsageTasks": "Affected tasks",

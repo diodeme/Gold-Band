@@ -1066,3 +1066,6 @@ export function getSourceControlStatistics(projectId: string, workspacePath?: st
 export function getSourceControlRemotes(projectId: string, workspacePath?: string | null, loadId?: string) {
   return getRuntimeApi().getSourceControlRemotes(projectId, workspacePath, loadId);
 }
+
+export function previewAgentCacheRepair(agentType: string) { return getRuntimeApi().previewAgentCacheRepair(agentType); }
+export function repairAgentCache(agentType: string, token: string) { return getRuntimeApi().repairAgentCache(agentType, token); }

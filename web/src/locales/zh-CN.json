@@ -740,6 +740,10 @@
     }
   },
   "errors": {
+    "npx-cache.busy": "已有缓存修复正在进行，请稍后重试。",
+    "npx-cache.unavailable": "无法确认可修复的 npx 缓存目录，请重新运行环境诊断。",
+    "npx-cache.changed": "诊断、配置或缓存已变化，请关闭弹窗后重试。",
+    "npx-cache.cleanup-failed": "缓存清理失败，文件可能正在使用或没有访问权限。",
     "browser": {
       "webview": {
         "create_failed": "无法创建内置浏览器页面，请重试。",
@@ -1128,6 +1132,19 @@
     }
   },
   "agentManagement": {
+    "cacheRepair": {
+      "action": "修复缓存",
+      "title": "修复 npx 缓存？",
+      "description": "将清理本次错误涉及的 npx 安装缓存，其他使用此缓存的应用可能也会受到影响。下次启动可能需要联网重新下载依赖。此操作不会删除项目文件、全局安装包或账号配置。 正在使用这些缓存的 Agent 可能中断，建议先停止相关任务。",
+      "confirm": "清理并重新检测",
+      "loading": "正在检查缓存目录…",
+      "repairing": "正在清理缓存…",
+      "diagnosing": "正在重新检测 Agent…",
+      "targets": "查看目标目录（{{count}}）",
+      "cleared": "已清理",
+      "complete": "缓存已清理，Agent 检测通过。",
+      "stillFailed": "缓存已清理，但 Agent 检测仍未通过。请查看诊断原因。"
+    },
     "deleteUsageLoading": "正在统计绑定引用…",
     "deleteUsageTemplates": "受影响的工作流模板",
     "deleteUsageTasks": "受影响的 Task",

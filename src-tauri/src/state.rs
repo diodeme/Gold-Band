@@ -271,7 +271,7 @@ struct AgentDiagnosticRuns {
     available: Condvar,
 }
 
-struct AgentDiagnosticGuard<'a> {
+pub(crate) struct AgentDiagnosticGuard<'a> {
     runs: &'a AgentDiagnosticRuns,
     agent_id: ManagedAgentId,
 }
@@ -1009,7 +1009,7 @@ impl DesktopState {
         Ok(())
     }
 
-    fn agent_diagnostic_guard(
+    pub(crate) fn agent_diagnostic_guard(
         &self,
         agent_id: &ManagedAgentId,
     ) -> Result<AgentDiagnosticGuard<'_>> {

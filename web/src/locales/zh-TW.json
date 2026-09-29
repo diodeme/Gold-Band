@@ -740,6 +740,10 @@
     }
   },
   "errors": {
+    "npx-cache.busy": "已有快取修復正在進行，請稍後重試。",
+    "npx-cache.unavailable": "無法確認可修復的 npx 快取目錄，請重新執行環境診斷。",
+    "npx-cache.changed": "診斷、設定或快取已變更，請關閉對話框後重試。",
+    "npx-cache.cleanup-failed": "快取清理失敗，檔案可能正在使用或沒有存取權限。",
     "browser": {
       "webview": {
         "create_failed": "無法建立內建瀏覽器頁面，請重試。",
@@ -1128,6 +1132,19 @@
     }
   },
   "agentManagement": {
+    "cacheRepair": {
+      "action": "修復快取",
+      "title": "修復 npx 快取？",
+      "description": "將清理本次錯誤涉及的 npx 安裝快取，其他使用此快取的應用程式可能也會受到影響。下次啟動可能需要連網重新下載相依套件。此操作不會刪除專案檔案、全域安裝套件或帳號設定。 正在使用這些快取的 Agent 可能中斷，建議先停止相關任務。",
+      "confirm": "清理並重新檢測",
+      "loading": "正在檢查快取目錄…",
+      "repairing": "正在清理快取…",
+      "diagnosing": "正在重新檢測 Agent…",
+      "targets": "檢視目標目錄（{{count}}）",
+      "cleared": "已清理",
+      "complete": "快取已清理，Agent 檢測通過。",
+      "stillFailed": "快取已清理，但 Agent 檢測仍未通過。請查看診斷原因。"
+    },
     "deleteUsageLoading": "正在統計綁定引用…",
     "deleteUsageTemplates": "受影響的工作流範本",
     "deleteUsageTasks": "受影響的 Task",

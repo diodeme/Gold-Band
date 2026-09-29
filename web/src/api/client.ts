@@ -436,6 +436,8 @@ export interface RuntimeApi {
   updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   deleteAgent(agentType: string): Promise<AgentRegistryVm>;
   getAgentBindingUsage(agentType: string): Promise<import('../types').AgentBindingUsageVm>;
+  previewAgentCacheRepair(agentType: string): Promise<{ token: string; paths: string[] }>;
+  repairAgentCache(agentType: string, token: string): Promise<{ path: string; errorCode: string | null }[]>;
   doctorAgent(agentType: string): Promise<AgentRegistryVm>;
   getTaskList(): Promise<TaskListVm>;
   getProfiles(): Promise<ProfileListVm>;

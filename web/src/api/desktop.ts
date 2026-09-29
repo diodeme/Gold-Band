@@ -285,6 +285,8 @@ export const desktopApi: RuntimeApi = {
   getAgentBindingUsage(agentType: string) {
     return invokeCommand('get_agent_binding_usage', { agentType });
   },
+  previewAgentCacheRepair(agentType: string) { return invokeCommand('preview_agent_cache_repair', { agentType }); },
+  repairAgentCache(agentType: string, token: string) { return invokeCommand('repair_agent_cache', { agentType, token }); },
   doctorAgent(agentType: string) {
     return invokeCommand('doctor_agent', { agentType });
   },

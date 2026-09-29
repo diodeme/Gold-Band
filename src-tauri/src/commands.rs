@@ -9111,6 +9111,9 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<gold_band::npx_cache::CacheError>() {
+        return CommandErrorVm::new(error.code, serde_json::json!({}));
+    }
     if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
         return CommandErrorVm::new(error.code, error.params());
     }

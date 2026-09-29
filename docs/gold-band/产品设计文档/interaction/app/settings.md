@@ -286,4 +286,4 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 ## 13. 多语言更新日志
 
-- `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。default 发布生成七个 `latest.<locale>.json`，并保留与英文 manifest 相同的 `latest.json` 供旧客户端回退；客户端按已保存界面语言选择 locale manifest。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成，图片继续引用 `static.dion.blue`。`wb`、自定义更新 URL 和 `npm run build:wb` 均保持单一 `latest.json`，不接入 locale 选择。
+- `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。default 发布生成七个 `latest.<locale>.json`，并保留与简体中文 manifest 相同的 `latest.json` 供旧客户端与缺失 locale 资产时回退；客户端按已保存界面语言选择 locale manifest；该选择只发生在后台更新请求中，设置页「更新地址」始终展示配置的 `latest.json`，不随语言变化。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成并覆盖 release-please 默认正文，格式为 `# Gold Band vX.Y.Z` 标题、中英文锚点跳转、`## 中文` / `## English` 两段，原文标题（代码块外）各降一级；图片继续引用 `static.dion.blue`。`wb`、自定义更新 URL 和 `npm run build:wb` 均保持单一 `latest.json`，不接入 locale 选择。

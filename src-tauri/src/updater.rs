@@ -79,11 +79,7 @@ pub fn initial_update_status(checked_at: Option<String>) -> UpdateStatusVm {
 
 pub fn updater_settings(config: &RuntimeConfig) -> UpdaterSettingsVm {
     let channel_config = current_channel_config();
-    let built_in_url = localized_default_updater_endpoint(
-        channel_config.channel,
-        channel_config.updater_endpoint,
-        config.desktop_language,
-    );
+    let built_in_url = channel_config.updater_endpoint.to_string();
     let override_url = config.desktop_updater_url_override.clone();
     let effective_url = override_url.clone().unwrap_or_else(|| built_in_url.clone());
     UpdaterSettingsVm {
@@ -473,7 +469,7 @@ pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
 mod tests {
     use super::{
         localized_default_updater_endpoint, pending_update_is_ready, poll_update_once,
-        updater_endpoint_strings, validate_updater_url, write_pending_update,
+        updater_endpoint_strings, updater_settings, validate_updater_url, write_pending_update,
     };
     use crate::state::{DesktopContext, DesktopState};
     use gold_band::config::DesktopLanguage;
@@ -588,6 +584,28 @@ mod tests {
             ),
             vec![custom_endpoint.to_string()]
         );
+    }
+
+    #[test]
+    fn updater_settings_show_the_configured_manifest_for_every_language() {
+        let configured = crate::channel::current_channel_config().updater_endpoint;
+        for language in [
+            DesktopLanguage::ZhCn,
+            DesktopLanguage::ZhTw,
+            DesktopLanguage::En,
+            DesktopLanguage::JaJp,
+            DesktopLanguage::KoKr,
+            DesktopLanguage::PtBr,
+            DesktopLanguage::Es,
+        ] {
+            let config = RuntimeConfig {
+                desktop_language: language,
+                ..RuntimeConfig::default()
+            };
+            let settings = updater_settings(&config);
+            assert_eq!(settings.built_in_url, configured);
+            assert_eq!(settings.effective_url, configured);
+        }
     }
 
     #[test]

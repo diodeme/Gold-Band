@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const scriptPath = path.join(repoRoot, 'scripts', 'generate-release-assets.mjs');
 const locales = ['zh-CN', 'zh-TW', 'en', 'ja-JP', 'ko-KR', 'pt-BR', 'es'];
+const notesFor = (locale) => `## Features\n\n### 1. ${locale}\n\n\`\`\`sh\n# ${locale} comment\n\`\`\``;
 
 test('generates localized default manifests and a bilingual release body', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gold-band-release-assets-'));
@@ -21,7 +22,7 @@ test('generates localized default manifests and a bilingual release body', async
   await writeFile(path.join(assets, 'Gold-Band_1.2.3_x64-setup.exe'), 'installer');
   await writeFile(path.join(assets, 'Gold-Band_1.2.3_x64-setup.exe.sig'), 'signature');
   for (const locale of locales) {
-    await writeFile(path.join(versionDir, `${locale}.md`), `## ${locale}\n\nNotes for ${locale}.\n`);
+    await writeFile(path.join(versionDir, `${locale}.md`), `${notesFor(locale)}\n`);
   }
 
   const result = spawnSync(
@@ -42,18 +43,28 @@ test('generates localized default manifests and a bilingual release body', async
   for (const locale of locales) {
     const manifest = JSON.parse(await readFile(path.join(output, `latest.${locale}.json`), 'utf8'));
     assert.equal(manifest.version, '1.2.3');
-    assert.equal(manifest.notes, `## ${locale}\n\nNotes for ${locale}.`);
+    assert.equal(manifest.notes, notesFor(locale));
     assert.equal(manifest.platforms['windows-x86_64'].signature, 'signature');
   }
   assert.deepEqual(
     JSON.parse(await readFile(path.join(output, 'latest.json'), 'utf8')),
-    JSON.parse(await readFile(path.join(output, 'latest.en.json'), 'utf8')),
+    JSON.parse(await readFile(path.join(output, 'latest.zh-CN.json'), 'utf8')),
   );
   const releaseBody = await readFile(path.join(output, 'release-body.md'), 'utf8');
-  assert.match(releaseBody, /^# 简体中文/m);
-  assert.match(releaseBody, /Notes for zh-CN\./);
-  assert.match(releaseBody, /^# English/m);
-  assert.match(releaseBody, /Notes for en\./);
+  assert.equal(
+    releaseBody,
+    [
+      '# Gold Band v1.2.3',
+      '[中文](#user-content-zh) · [English](#user-content-en)',
+      '<a id="zh"></a>',
+      '## 中文',
+      '### Features\n\n#### 1. zh-CN\n\n```sh\n# zh-CN comment\n```',
+      '---',
+      '<a id="en"></a>',
+      '## English',
+      '### Features\n\n#### 1. en\n\n```sh\n# en comment\n```',
+    ].join('\n\n') + '\n',
+  );
 });
 
 test('fails when the current release notes directory is missing', async () => {

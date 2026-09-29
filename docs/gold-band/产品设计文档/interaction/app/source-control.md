@@ -19,7 +19,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 用户在 Fetch、Push 或 Push Tag 对话框中主动选择的 remote 是仓库级持久偏好，以规范化 Git common directory 为身份保存，因此同仓库的 linked worktree 共享选择。重新打开对话框时按“仍然有效的用户偏好 → 当前 upstream remote → remote 列表第一项”解析默认值；已删除的 remote 不得继续成为可提交值。偏好使用集中、带版本号且有 64 个仓库上限的 schema，不把 localStorage key 散落在组件中。
 
-每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。首次加载先完成事件订阅，再并行启动 monitor 与轻量 overview；monitor 注册跨越首次读取时，合并一次 repository scope 补读，覆盖监听交接窗口；`workspacePath = null` 是主工作区的合法作用域，必须原样交给后端解析，不能被当作路径缺失而跳过 monitor。加载或 Git 写操作期间到达的失效保留为一个 dirty follow-up，不能因当前状态不是 ready/pending 而丢弃。两类事件经过去抖后只刷新匹配会话，quiet window 同时受 1 秒最大延迟约束；普通 workspace 事件只刷新 worktree/status snapshot，不读取 history，Git metadata/ref 事件才刷新 repository snapshot/history。monitor 身份包含 `projectId + common directory + workspace path`，LRU 淘汰会对称释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。notify 错误或有界事件通道溢出必须升级为一次 repository scope 失效并记录诊断，不能静默忽略。
+每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。首次加载使用单一 monitored bootstrap：先订阅事件，一次探测 Git 版本与仓库 identity，一次批量定位监听和操作标记路径，完成 workspace/metadata watcher 注册后才读取 status 并发布首屏。监听已覆盖读取窗口，因此不得再安排整份 overview 交接补读；注册或 status 失败时对称回滚本次 watcher。`workspacePath = null` 是主工作区的合法作用域，必须原样交给后端解析，不能被当作路径缺失而跳过 monitor。加载或 Git 写操作期间到达的失效保留为一个 dirty follow-up，不能因当前状态不是 ready/pending 而丢弃。两类事件经过去抖后只刷新匹配会话，quiet window 同时受 1 秒最大延迟约束；普通 workspace 事件只刷新 worktree/status snapshot，不读取 history，Git metadata/ref 事件才刷新 repository snapshot/history。monitor 身份包含 `projectId + common directory + workspace path`，LRU 淘汰会对称释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。notify 错误或有界事件通道溢出必须升级为一次 repository scope 失效并记录诊断，不能静默忽略。
 
 同一 workspace 任意时刻只允许一个 Git 写操作。pending action 由源码管理会话统一保存为结构化 `kind + path`，不得由各按钮维护旁路 loading：单文件 Stage/Unstage 时被点击行的操作按钮持续显示旋转状态，其他文件行的按钮不渲染，Commit 和其他仓库写操作保持禁用；后台只读刷新使用独立 `refreshing` 状态，不禁用 commit 草稿或文件操作。Commit、Fetch、Pull、Push 在各自主操作按钮显示旋转状态，直至权威结果收敛或结构化失败返回。
 
@@ -27,19 +27,30 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 ## 渐进加载（2026-09-24）
 
-更改首屏调用 overview，只返回仓库身份、分支/同步信息、remote 和文件状态；不读取 refs、Worktree、Stash 或 numstat。目录数据在进入仓库或 GitHub 页签后调用 snapshot，使用独立的 catalog/loading/error 状态；未加载不能显示为空目录。GitHub 能力只由 GitHub 页签触发。文件增删统计在 overview 发布后通过 statistics 补齐，按会话请求 revision 和状态 revision 校验后合并，同时更新 Diff 审阅 summary；统计失败不清空已显示的文件。
+### 后台重验证与诊断（2026-09-25）
 
-工作区 revision 由分支和文件状态派生，供 index、commit、stash/merge/rebase 使用；catalogRevision 额外包含 refs，供分支、标签和 Worktree 写操作校验。同步操作继续使用 syncRevision。目录、统计请求各自 single-flight，仍受已有 24 个会话容量约束；刷新、写入和淘汰后拒绝迟到结果。无需持久缓存或新依赖。
+监听循环定向诊断补充：`metadata_monitor_start` 生成仅用于日志关联的随机 `monitor_id`；`metadata_batch` 增加同实例递增的 `batch_number` 和 `overflowed`。DEBUG 下每批按 notify EventKind 与固定元数据类别聚合为 `metadata_event_group`，记录 `path_occurrences`、批次内首次/末次接收偏移 `first_ms/last_ms`；重命名双路径分别计入所属类别，因此路径出现次数不等于事件数。`metadata_batch_details` 记录 rescan/error 数与因分组上限省略的路径次数。每批最多 64 个分组、下一批立即释放；INFO 不执行分类或构造分组。类别通过已注册 watch root 做纯词法归属，支持 linked worktree 和 refs 递归监听，不新增文件系统查询；只输出 index/index.lock、HEAD、refs、操作标记等白名单类别，未知文件统一 other，不输出完整路径、分支名称或错误正文。本次仅增强证据，不更改失效决定、事件过滤、去抖或审阅查询。
 
-Git 原生 rev-parse 批量返回 identity、8 个监听路径和 5 个操作标记路径，每组分别只启动一次 Git；保持 linked worktree common-dir 校验与原有后台隐藏窗口 helper。路径输出数量不符时拒绝解析，不能用错位路径继续读取。
+- catalog 首次读取与后台重验证使用不同的展示语义：已有目录数据时保留仓库/GitHub 组件、选择、搜索草稿与滚动位置；请求失败只显示局部错误和重试入口。目录重验证、失败或 overview 刷新期间禁用依赖目录 revision 的仓库写入口，后端 expected revision 校验仍是最终保障。
+- catalog 使用独立的请求代次与已发布代次，仅管理异步投影新鲜度，不新增 canonical repository identity。metadata、显式刷新、写操作或实际 workspace revision 变化使其失效；Git 状态未变的普通文件事件不得失效目录或饿死正在读取的目录请求。仍为每会话至多一个 in-flight，迟到结果丢弃后至多补读一次，非当前领域保持按需加载。
+- 同一工作区普通文件刷新不重复读取 remote；行数统计只合并 status，不能把请求开始时捕获的旧 repository 覆盖到新 remote 投影上。
+- 两类 notify watcher 忽略读取/打开等纯访问事件；写关闭、创建、修改、重命名、删除继续失效。rescan、错误与通道溢出保持保守补读。metadata watcher 每批 DEBUG 记录事件数、是否失效与批次耗时，不记录路径；不能仅凭过滤访问事件就断言某台 Windows 机器上的循环事件来源。
+- 历史每页前端 300 条、服务端最多 1000 条；聚合审阅最多 32 个提交。新增 DEBUG 请求 `history`、`commit-detail`、`commit-review`、`commit-reachability`、`comparison`，以 UUID `load_id` 关联请求总时长、resolve-app、resolve-workspace、blocking-work 和 Git 调用。history 分 revision/log/parse，review 分 revision/resolve-selection/metadata/changes/aggregate/statistics，comparison 分 read-versions/build；现有工作线程与 stdin 命令也计入同一请求。日志不包含 OID、文件路径、正文或命令参数。
+- 本轮不改变历史、聚合或 Diff 算法，也不增加并发、依赖或缓存层。验收以重复事件请求数、DOM identity 和迟到响应规则为准；实际慢阶段与弱机器秒数由新 DEBUG runtime.log 判断。
 
-单 remote、已有 HEAD、主工作区基线：用户 runtime(1).log 首次加载 47.0258 秒/34 次 Git，capability 6、monitor 11、snapshot 17。当前命令预算为 capability 4 + overview 7；monitor 3 与 overview 并行，不挡首屏。统计、必要的监听交接补读及按需目录请求不计入首屏预算，但仍记录日志。remote 继续使用 Git get-url 保留 URL rewrite 语义；版本和作用域校验仍在各 IPC 内执行。实际秒数须在原机器重新测量，不能按进程减少比例宣称实测加速。
+更改首屏由 monitored bootstrap 返回 capability、仓库身份、分支/同步信息和文件状态；不读取 remote、refs、Worktree、Stash 或 numstat。remote 在首屏发布后独立加载，加载期间同步入口显示进度并禁用，失败只影响同步入口且可重试，不清空文件状态。目录数据在进入仓库或 GitHub 页签后调用 snapshot，使用独立的 catalog/loading/error 状态；未加载不能显示为空目录。catalog 返回的 remote 可直接补齐同一会话。GitHub 能力只由 GitHub 页签触发。文件增删统计在 overview 发布后通过 statistics 补齐，按会话请求 revision 和状态 revision 校验后合并，同时更新 Diff 审阅 summary；统计失败不清空已显示的文件。
 
-性能与过度设计评审：文件状态仍为 O(变更/未跟踪文件)，目录为 O(refs + worktrees + stashes)，目录只按需加载；保留完整未跟踪文件以保证列表正确性。没有新增第三方库、持久缓存、队列或无界并发；复用现有 CLI、Store、request revision、watcher 和 UI 组件。
+工作区 revision 由分支和文件状态派生，供 index、commit、stash/merge/rebase 使用；catalogRevision 额外包含 refs，供分支、标签和 Worktree 写操作校验。同步操作继续使用 syncRevision。目录、remote、统计请求各自 single-flight，仍受已有 24 个会话容量约束；刷新、写入和淘汰后拒绝迟到结果。无需持久缓存或新依赖。
+
+Git 原生 rev-parse 一次返回 repository identity，并把 8 个监听路径和 5 个操作标记路径合并为另一次批量查询；保持 linked worktree common-dir 校验与原有后台隐藏窗口 helper。linked worktree 需要一次额外 identity 查询来验证作用域。路径输出数量不符时拒绝解析，不能用错位路径继续读取。
+
+单 remote、已有 HEAD、主工作区基线：用户 runtime(1).log 首次加载 47.0258 秒/34 次 Git；第一轮优化后的 runtime(2).log 首次发布 17.0842 秒，其中 capability 5.949 秒/4 次 Git、monitor 4.546 秒/3 次 Git、overview 11.106 秒/7 次 Git，仍有重复版本/identity、首屏 remote 和监听交接补读。当前 monitored bootstrap 的主工作区首屏预算固定为 4 次 Git：版本、identity、批量 marker、status；linked worktree 为 5 次。remote、statistics 和按需 catalog 均在发布后执行，不再做监听交接 overview 补读。目标为弱机器首次 6～8 秒、理想 5～6 秒、同应用会话再次打开 3～5 秒；这些是验收目标，实际秒数仍须在原机器通过新日志确认。remote 继续使用 Git get-url 保留 URL rewrite 语义。
+
+性能与过度设计评审：文件状态仍为 O(变更/未跟踪文件)，目录为 O(refs + worktrees + stashes)，目录只按需加载；保留完整未跟踪文件以保证列表正确性。remote 只增加一个有界 single-flight，不能阻塞首屏；不复制 repository canonical state。没有新增第三方库、持久缓存、队列或无界并发；复用现有 CLI、Store、request revision、watcher 和 UI 组件。
 
 ## 加载诊断（2026-09-24）
 
-源码管理加载诊断统一使用 `DEBUG`，复用设置中的“记录详细日志”和现有异步轮转 `runtime.log`，日志 target 为 `gold_band::git::load`。默认 Info 不输出这些记录。前端为一次实际加载生成临时 UUID `load_id`，贯穿 capability、monitor、overview 及随后 statistics IPC；它只关联诊断，不作为 workspace、repository 或业务 revision。日志不记录路径、remote URL、文件内容、stdout/stderr 或任意命令参数。
+源码管理加载诊断统一使用 `DEBUG`，复用设置中的“记录详细日志”和现有异步轮转 `runtime.log`，日志 target 为 `gold_band::git::load`。默认 Info 不输出这些记录。前端为一次实际加载生成临时 UUID `load_id`，贯穿 bootstrap 及随后 remote、statistics IPC；旧兼容路径仍记录 capability、monitor 和 overview。它只关联诊断，不作为 workspace、repository 或业务 revision。日志不记录路径、remote URL、文件内容、stdout/stderr 或任意命令参数。
 
 - `frontend_load_end`：从 Store 开始加载到数据发布的 `elapsed_ms`，以及 capability、订阅、monitor、snapshot 阶段耗时；不代表浏览器 paint。包含 `initial` 和 `Ready/Unavailable/Error/Superseded` 结果。会话缓存直接命中不产生一次新加载记录。
 - `request_start/request_end`：单个 IPC 的总耗时、结果和 `git_commands` 调用尝试次数（包含准备失败，不能当作成功创建的进程数）。请求取消或异常展开以 `aborted` 收尾。
@@ -146,3 +157,17 @@ GitHub 已完成 CLI capability、网页登录、repository/default branch/remot
 GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。填充剩余高度的 TabsContent 使用 column flex，使正文编辑器与列表沿交叉轴撑满，不得保留默认 row flex。line Tabs 标签跟随内容宽度。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。PR/Issue 详情标题栏的远端跳转按钮固定通过统一 `openWebTarget` 进入应用内置浏览器，并显示“在内置浏览器中打开”Tooltip；不得直接调用系统浏览器 opener。
 
 旧 Git Graph、Checkbox 多选和两两关系分析已完整删除，包括第三方依赖、前后端模型、命令与测试；不再把不可恢复的“历史分支来源”包装成分析结果。新的 `GitCommitReview` 与 `GitCommitReachability` typed service 分离管理聚合文件终态和当前归属。源码管理 snapshot/history、内部 Tab、分页、选择、审阅和 commit 草稿位于 repository/workspace-scoped 有界会话 Store，Review 结果和 Diff 审阅序列使用独立有界缓存，源码管理会话清理或 LRU 淘汰时同步清理所属 Review 缓存；Stage/Unstage 使用 status-scoped mutation result 局部收敛，refs 变更 mutation 并行刷新 snapshot/history，并通过各领域独立 request revision 阻止 stale response。
+
+
+## 2026-09-27 元数据事务过滤与提交审阅渐进读取
+
+- 根因：元数据监听把临时锁文件的创建/删除当成已发布变更，普通工作区监听又能绕过元数据过滤；审阅接口把选中提交解析、文件列表和行数统计绑定，进程启动成本随选择数增长。前者是失效边界实现错误，后者是接口加载边界设计缺陷。
+- 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
+- commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
+- commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
+- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
+- 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
+
+- 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
+- 浏览器使用受控 browserApi fixture 验证：统计未返回时文件可点击；补齐 +77/-11 后编辑器 DOM 不变、正文查询仍为 1 次；统计失败后文件保留且局部重试可用。此验证不替代弱机器 EXE 性能验收，也尚未证明现场静置 30 秒无循环；现场请观察 metadata_batch.invalidated 与 commit-review / commit-review-statistics 的独立 DEBUG 计数和耗时。
+- 本轮复用现有 Git CLI/notify/Store/有界缓存，未新增依赖或并发池。通用约束已由 data-loading、frontend-performance、state-lifecycle 和 bug-fix-verification 规则覆盖，不新增规则。本轮未提交 Git。

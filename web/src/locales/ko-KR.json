@@ -1794,6 +1794,8 @@
     "assetViewer": "대화 파일 뷰어"
   },
   "sourceControl": {
+    "reviewStatisticsLoading": "줄 수 계산 중…",
+    "reviewStatisticsRetry": "줄 수 계산 다시 시도",
     "title": "소스 관리",
     "description": "이 워크스페이스의 Git 상태를 확인하고 관리합니다",
     "loading": "Git 상태 읽는 중…",

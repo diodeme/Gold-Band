@@ -7,9 +7,12 @@ import {
   getGitCapability,
   getGitCommitReachability,
   getGitCommitReview,
+  getGitCommitReviewStatistics,
   getGitHistory,
+  getSourceControlBootstrap,
   getSourceControlSnapshot,
   getSourceControlOverview,
+  getSourceControlRemotes,
   getSourceControlStatistics,
   initializeGitRepository,
   startGitOperation,
@@ -61,6 +64,8 @@ export interface SourceControlSessionSnapshot {
   catalog: GitSourceControlSnapshotVm | null;
   catalogLoading: boolean;
   catalogError: GitOperationErrorVm | null;
+  remotesLoading: boolean;
+  remotesError: GitOperationErrorVm | null;
   history: GitHistoryPageVm | null;
   historyLoading: boolean;
   activeTab: SourceControlTab;
@@ -72,6 +77,8 @@ export interface SourceControlSessionSnapshot {
   commitReview: GitCommitReviewVm | null;
   commitReachability: GitCommitReachabilityVm | null;
   historyDetailLoading: boolean;
+  reviewStatisticsLoading?: boolean;
+  reviewStatisticsError?: GitOperationErrorVm | null;
   reachabilityLoading: boolean;
   error: GitOperationErrorVm | null;
   pendingAction: SourceControlPendingAction | null;
@@ -84,12 +91,15 @@ export interface SourceControlSessionSnapshot {
 interface SourceControlApi {
   reportLoad?: typeof reportSourceControlLoad;
   getCapability: typeof getGitCapability;
+  getBootstrap?: typeof getSourceControlBootstrap;
   initializeRepository: typeof initializeGitRepository;
   getSnapshot: typeof getSourceControlOverview;
   getCatalog: typeof getSourceControlSnapshot;
   getStatistics?: typeof getSourceControlStatistics;
+  getRemotes?: typeof getSourceControlRemotes;
   getHistory: typeof getGitHistory;
   getCommitReview: typeof getGitCommitReview;
+  getCommitReviewStatistics?: typeof getGitCommitReviewStatistics;
   getCommitReachability: typeof getGitCommitReachability;
   executeMutation: typeof executeGitMutation;
   startOperation: typeof startGitOperation;
@@ -112,7 +122,10 @@ interface SessionRuntime {
   reachabilityRequestRevision: number;
   loadPromise: Promise<void> | null;
   catalogPromise: Promise<void> | null;
+  catalogRequestRevision: number;
+  catalogLoadedRevision: number;
   statisticsPromise: Promise<void> | null;
+  remotesPromise: Promise<void> | null;
   monitorStarted: boolean;
   monitorStartPromise: Promise<void> | null;
   invalidationTimer: ReturnType<typeof setTimeout> | null;
@@ -127,6 +140,8 @@ interface SessionRuntime {
 }
 
 interface CommitReviewCacheSlot {
+  statistics?: Promise<GitCommitReviewVm>;
+  statisticsReady?: boolean;
   value?: GitCommitReviewVm;
   request?: Promise<GitCommitReviewVm>;
 }
@@ -134,12 +149,15 @@ interface CommitReviewCacheSlot {
 const DEFAULT_API: SourceControlApi = {
   reportLoad: reportSourceControlLoad,
   getCapability: getGitCapability,
+  getBootstrap: getSourceControlBootstrap,
   initializeRepository: initializeGitRepository,
   getSnapshot: getSourceControlOverview,
   getCatalog: getSourceControlSnapshot,
   getStatistics: getSourceControlStatistics,
+  getRemotes: getSourceControlRemotes,
   getHistory: getGitHistory,
   getCommitReview: getGitCommitReview,
+  getCommitReviewStatistics: getGitCommitReviewStatistics,
   getCommitReachability: getGitCommitReachability,
   executeMutation: executeGitMutation,
   startOperation: startGitOperation,
@@ -187,6 +205,10 @@ export class SourceControlStore {
     return this.load(projectId, workspacePath, true, true, 'manual');
   }
 
+  retryRemotes(projectId: string, workspacePath?: string | null) {
+    return this.loadRemotes(this.runtime(projectId, workspacePath));
+  }
+
   async initializeRepository(projectId: string, workspacePath?: string | null) {
     const runtime = this.runtime(projectId, workspacePath);
     if (runtime.snapshot.pendingAction || runtime.snapshot.capability?.status !== 'repository-required') return;
@@ -229,19 +251,31 @@ export class SourceControlStore {
 
   private ensureCatalog(runtime: SessionRuntime): Promise<void> {
     if (runtime.catalogPromise) return runtime.catalogPromise;
-    if (runtime.snapshot.catalog || !runtime.snapshot.snapshot) return Promise.resolve();
-    const revision = runtime.repositoryRequestRevision;
+    if (!runtime.snapshot.snapshot || runtime.snapshot.refreshing
+      || (runtime.snapshot.catalog && runtime.catalogLoadedRevision === runtime.catalogRequestRevision)) return Promise.resolve();
+    const revision = runtime.catalogRequestRevision;
     this.update(runtime, { ...runtime.snapshot, catalogLoading: true, catalogError: null });
     const request = this.api.getCatalog(runtime.snapshot.projectId, runtime.snapshot.requestedWorkspacePath)
       .then((catalog) => {
-        if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
-        this.update(runtime, { ...runtime.snapshot, catalog, catalogLoading: false });
+        if (runtime.catalogRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
+        runtime.catalogLoadedRevision = revision;
+        const snapshot = runtime.snapshot.snapshot;
+        this.update(runtime, {
+          ...runtime.snapshot,
+          snapshot: snapshot
+            ? { ...snapshot, repository: { ...snapshot.repository, remotes: catalog.repository.remotes } }
+            : snapshot,
+          catalog,
+          catalogLoading: false,
+          remotesLoading: false,
+          remotesError: null,
+        });
       }).catch((reason) => {
-        if (runtime.repositoryRequestRevision !== revision) return;
+        if (runtime.catalogRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
         this.update(runtime, { ...runtime.snapshot, catalogLoading: false, catalogError: structuredErrorFrom(reason, 'git.status-failed') });
       }).finally(() => {
         runtime.catalogPromise = null;
-        if (runtime.repositoryRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) this.loadVisibleDetails(runtime);
+        if (runtime.catalogRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) this.loadVisibleDetails(runtime);
       });
     runtime.catalogPromise = request;
     return request;
@@ -259,7 +293,7 @@ export class SourceControlStore {
       .then((status) => {
         if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
         if (status.snapshotRevision !== snapshot.repository.revision) return;
-        this.update(runtime, { ...runtime.snapshot, snapshot: { ...snapshot, status } });
+        this.update(runtime, { ...runtime.snapshot, snapshot: { ...runtime.snapshot.snapshot!, status } });
         diffReviewStore.publishWorkspaceRefresh({
           projectId: runtime.snapshot.projectId,
           workspacePath: runtime.snapshot.requestedWorkspacePath,
@@ -273,6 +307,48 @@ export class SourceControlStore {
         if (runtime.repositoryRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) this.loadStatistics(runtime);
       });
     runtime.statisticsPromise = request;
+  }
+
+  private loadRemotes(runtime: SessionRuntime, loadId?: string): Promise<void> {
+    if (!this.api.getRemotes || !runtime.snapshot.snapshot) return Promise.resolve();
+    if (runtime.remotesPromise) return runtime.remotesPromise;
+    const revision = runtime.repositoryRequestRevision;
+    if (!runtime.snapshot.remotesLoading || runtime.snapshot.remotesError) {
+      this.update(runtime, { ...runtime.snapshot, remotesLoading: true, remotesError: null });
+    }
+    const request = this.api.getRemotes(
+      runtime.snapshot.projectId,
+      runtime.snapshot.requestedWorkspacePath,
+      loadId,
+    ).then((remotes) => {
+      if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
+      const snapshot = runtime.snapshot.snapshot;
+      const catalog = runtime.snapshot.catalog;
+      if (!snapshot) return;
+      this.update(runtime, {
+        ...runtime.snapshot,
+        snapshot: { ...snapshot, repository: { ...snapshot.repository, remotes } },
+        catalog: catalog
+          ? { ...catalog, repository: { ...catalog.repository, remotes } }
+          : catalog,
+        remotesLoading: false,
+        remotesError: null,
+      });
+    }).catch((reason) => {
+      if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
+      this.update(runtime, {
+        ...runtime.snapshot,
+        remotesLoading: false,
+        remotesError: structuredErrorFrom(reason, 'git.status-failed'),
+      });
+    }).finally(() => {
+      if (runtime.remotesPromise === request) runtime.remotesPromise = null;
+      if (runtime.repositoryRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) {
+        void this.loadRemotes(runtime);
+      }
+    });
+    runtime.remotesPromise = request;
+    return request;
   }
 
   setHistoryPage(projectId: string, workspacePath: string | null | undefined, historyPage: number) {
@@ -420,6 +496,7 @@ export class SourceControlStore {
     if (!snapshot || runtime.snapshot.pendingAction) return;
     if (!(input.kind === 'commit' || input.kind.startsWith('stage') || input.kind.startsWith('unstage')) && !runtime.snapshot.catalog) return;
     const requestRevision = ++runtime.repositoryRequestRevision;
+    runtime.catalogRequestRevision += 1;
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
     this.update(runtime, {
@@ -448,7 +525,6 @@ export class SourceControlStore {
             status: result.status,
           },
           pendingAction: null,
-          catalog: null,
           error: null,
         });
         this.applyWorkspaceProjection(runtime, result.status);
@@ -469,7 +545,6 @@ export class SourceControlStore {
         status: 'ready',
         canonicalWorkspacePath: nextSnapshot.repository.workspacePath,
         snapshot: nextSnapshot,
-        catalog: null,
         history,
         pendingAction: null,
         error: null,
@@ -559,7 +634,24 @@ export class SourceControlStore {
       slot.value = commitReview;
       slot.request = undefined;
       if (runtime.detailRequestRevision !== requestRevision) return;
-      this.update(runtime, { ...runtime.snapshot, commitReview, historyDetailLoading: false });
+      this.update(runtime, { ...runtime.snapshot, commitReview, historyDetailLoading: false, reviewStatisticsLoading: false, reviewStatisticsError: null });
+      if (this.api.getCommitReviewStatistics && !slot.statisticsReady) {
+        this.update(runtime, { ...runtime.snapshot, reviewStatisticsLoading: true });
+        const statistics = slot.statistics ?? this.api.getCommitReviewStatistics(projectId, workspacePath, commitReview);
+        slot.statistics = statistics;
+        try {
+          const completed = await statistics;
+          slot.value = completed;
+          slot.statisticsReady = true;
+          diffReviewStore.publishCommitStatistics(projectId, workspacePath, completed.files);
+          if (runtime.detailRequestRevision !== requestRevision) return;
+          this.update(runtime, { ...runtime.snapshot, commitReview: completed, reviewStatisticsLoading: false });
+        } catch (reason) {
+          if (runtime.detailRequestRevision !== requestRevision) return;
+          this.update(runtime, { ...runtime.snapshot, reviewStatisticsLoading: false,
+            reviewStatisticsError: structuredErrorFrom(reason, 'git.commit-review-query-failed') });
+        } finally { slot.statistics = undefined; }
+      }
     } catch (reason) {
       slot.request = undefined;
       if (!slot.value) this.commitReviews.delete(cacheKey);
@@ -570,6 +662,11 @@ export class SourceControlStore {
         error: structuredErrorFrom(reason, 'git.commit-review-query-failed'),
       });
     }
+  }
+
+  retryReviewStatistics(projectId: string, workspacePath?: string | null) {
+    const runtime = this.runtime(projectId, workspacePath);
+    return this.loadCommitReview(projectId, workspacePath, [...runtime.snapshot.selectedCommitOids]);
   }
 
   async loadCommitReachability(projectId: string, workspacePath: string | null | undefined, oid: string) {
@@ -728,6 +825,7 @@ export class SourceControlStore {
     const diagnostic = createSourceControlLoadDiagnostic(!runtime.snapshot.snapshot, this.api.reportLoad);
     let outcome: "ready" | "unavailable" | "error" | "superseded" = "superseded";
     const requestRevision = ++runtime.repositoryRequestRevision;
+    runtime.catalogRequestRevision += 1;
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
     const operationError = refreshKind === 'background'
@@ -740,13 +838,22 @@ export class SourceControlStore {
       error: operationError,
     });
     const request = (async () => {
+      const bootstrap = !runtime.snapshot.snapshot && this.api.getBootstrap
+        ? await (async () => {
+            await diagnostic.measure("subscriptionsMs", () => this.ensureSubscriptions());
+            return diagnostic.measure(
+              "snapshotMs",
+              () => this.api.getBootstrap!(projectId, workspacePath, diagnostic.loadId),
+            );
+          })()
+        : null;
       const currentCapability = runtime.snapshot.capability;
-      const shouldProbe = !currentCapability
+      const shouldProbe = !bootstrap && (!currentCapability
         || (refreshKind === 'manual' && !runtime.snapshot.snapshot)
-        || (currentCapability.status !== 'ready' && currentCapability.status !== 'head-required');
-      const capability = shouldProbe
+        || (currentCapability.status !== 'ready' && currentCapability.status !== 'head-required'));
+      const capability = bootstrap?.capability ?? (shouldProbe
         ? await diagnostic.measure("capabilityMs", () => this.api.getCapability(projectId, diagnostic.loadId))
-        : currentCapability;
+        : currentCapability!);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       if (capability.status !== 'ready' && capability.status !== 'head-required') {
         outcome = 'unavailable';
@@ -754,11 +861,14 @@ export class SourceControlStore {
           ...runtime.snapshot,
           status: 'unavailable',
           capability,
+          remotesLoading: false,
+          remotesError: null,
           refreshing: null,
           error: null,
         });
         return;
       }
+      if (bootstrap?.overview) runtime.monitorStarted = true;
       if (!runtime.monitorStarted) {
         await diagnostic.measure("subscriptionsMs", () => this.ensureSubscriptions());
         const monitor = diagnostic.measure("monitorMs", () => this.startMonitor(runtime, workspacePath, diagnostic.loadId));
@@ -777,20 +887,35 @@ export class SourceControlStore {
       }
       const includeHistory = this.historyIsCurrent(runtime);
       const [snapshot, history] = await Promise.all([
-        diagnostic.measure("snapshotMs", () => this.api.getSnapshot(projectId, workspacePath, diagnostic.loadId)),
+        bootstrap?.overview
+          ? Promise.resolve(bootstrap.overview)
+          : diagnostic.measure("snapshotMs", () => this.api.getSnapshot(projectId, workspacePath, diagnostic.loadId)),
         includeHistory
           ? this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE })
           : Promise.resolve(runtime.snapshot.history),
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
-      this.registerCanonicalAlias(runtime, snapshot.repository.workspacePath);
+      const currentRepository = runtime.snapshot.snapshot?.repository;
+      const remotes = currentRepository?.commonDir === snapshot.repository.commonDir
+        ? currentRepository.remotes
+        : snapshot.repository.remotes;
+      const publishedSnapshot = {
+        ...snapshot,
+        repository: { ...snapshot.repository, remotes },
+      };
+      this.registerCanonicalAlias(runtime, publishedSnapshot.repository.workspacePath);
       this.update(runtime, {
         ...(resetNavigation ? resetHistoryState(runtime.snapshot) : runtime.snapshot),
         status: 'ready',
         capability,
-        canonicalWorkspacePath: snapshot.repository.workspacePath,
-        snapshot,
-        catalog: null,
+        canonicalWorkspacePath: publishedSnapshot.repository.workspacePath,
+        snapshot: publishedSnapshot,
+        catalog: currentRepository
+          && sameWorkspacePath(currentRepository.commonDir, publishedSnapshot.repository.commonDir)
+          && sameWorkspacePath(currentRepository.workspacePath, publishedSnapshot.repository.workspacePath)
+          ? runtime.snapshot.catalog : null,
+        remotesLoading: Boolean(this.api.getRemotes),
+        remotesError: null,
         history: includeHistory ? history : runtime.snapshot.history,
         historyLoading: includeHistory ? false : runtime.snapshot.historyLoading,
         refreshing: null,
@@ -798,8 +923,9 @@ export class SourceControlStore {
       });
       outcome = 'ready';
       diagnostic.finish(outcome);
-      this.applyWorkspaceProjection(runtime, snapshot.status);
+      this.applyWorkspaceProjection(runtime, publishedSnapshot.status);
       this.loadVisibleDetails(runtime);
+      void this.loadRemotes(runtime, diagnostic.loadId);
       this.loadStatistics(runtime, diagnostic.loadId);
       if (!resetNavigation && includeHistory && runtime.snapshot.activeTab === 'history') {
         const selectedOids = [...runtime.snapshot.selectedCommitOids];
@@ -893,6 +1019,11 @@ export class SourceControlStore {
         && pathIsWithinWorkspace(event.canonicalPath, workspacePath)
       ) {
         const relativePath = workspaceRelativePath(workspacePath, event.canonicalPath);
+        // Metadata has its own watcher. Routing it through the worktree watcher
+        // bypasses transaction filtering and turns read-side locks into refreshes.
+        if (relativePath === '.git') { this.scheduleInvalidation(runtime, 'repository'); continue; }
+        if (relativePath?.startsWith('.git/')
+          || (repository && pathIsWithinWorkspace(event.canonicalPath, repository.commonDir))) continue;
         if (relativePath) runtime.pendingDiffPaths.add(relativePath);
         else runtime.pendingDiffAll = true;
         this.scheduleInvalidation(runtime, 'worktree');
@@ -953,17 +1084,35 @@ export class SourceControlStore {
     this.update(runtime, { ...runtime.snapshot, refreshing: 'background' });
     const request = this.api.getSnapshot(projectId, workspacePath).then((snapshot) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
-      this.registerCanonicalAlias(runtime, snapshot.repository.workspacePath);
+      const currentRepository = runtime.snapshot.snapshot?.repository;
+      const repositoryChanged = !currentRepository
+        || !sameWorkspacePath(currentRepository.commonDir, snapshot.repository.commonDir)
+        || !sameWorkspacePath(currentRepository.workspacePath, snapshot.repository.workspacePath);
+      // File notifications include ignored files and generated logs. Only a
+      // changed Git revision invalidates catalog writes; retain visible data.
+      const statusChanged = repositoryChanged || currentRepository?.revision !== snapshot.repository.revision;
+      if (statusChanged) runtime.catalogRequestRevision += 1;
+      const publishedSnapshot = {
+        ...snapshot,
+        repository: {
+          ...snapshot.repository,
+          remotes: currentRepository?.commonDir === snapshot.repository.commonDir
+            ? currentRepository.remotes
+            : snapshot.repository.remotes,
+        },
+      };
+      this.registerCanonicalAlias(runtime, publishedSnapshot.repository.workspacePath);
       this.update(runtime, {
         ...runtime.snapshot,
-        canonicalWorkspacePath: snapshot.repository.workspacePath,
-        snapshot,
-        catalog: null,
+        canonicalWorkspacePath: publishedSnapshot.repository.workspacePath,
+        snapshot: publishedSnapshot,
+        catalog: repositoryChanged ? null : runtime.snapshot.catalog,
         refreshing: null,
         error: null,
       });
-      this.applyWorkspaceProjection(runtime, snapshot.status);
+      this.applyWorkspaceProjection(runtime, publishedSnapshot.status);
       this.loadVisibleDetails(runtime);
+      if (repositoryChanged) void this.loadRemotes(runtime);
       this.loadStatistics(runtime);
     }).catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
@@ -1006,6 +1155,7 @@ export class SourceControlStore {
 
   private disposeRuntime(runtime: SessionRuntime) {
     runtime.repositoryRequestRevision += 1;
+    runtime.catalogRequestRevision += 1;
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
     if (runtime.invalidationTimer) clearTimeout(runtime.invalidationTimer);
@@ -1061,7 +1211,10 @@ export class SourceControlStore {
         reachabilityRequestRevision: 0,
         loadPromise: null,
         catalogPromise: null,
+        catalogRequestRevision: 0,
+        catalogLoadedRevision: -1,
         statisticsPromise: null,
+        remotesPromise: null,
         monitorStarted: false,
         monitorStartPromise: null,
         invalidationTimer: null,
@@ -1157,6 +1310,8 @@ function idleSnapshot(projectId: string, workspacePath: string | null | undefine
     catalog: null,
     catalogLoading: false,
     catalogError: null,
+    remotesLoading: false,
+    remotesError: null,
     history: null,
     historyLoading: false,
     activeTab: 'changes',

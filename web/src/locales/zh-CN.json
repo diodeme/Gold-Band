@@ -1823,6 +1823,8 @@
     "assetViewer": "会话文件查看器"
   },
   "sourceControl": {
+    "reviewStatisticsLoading": "正在统计行数…",
+    "reviewStatisticsRetry": "重试行数统计",
     "title": "源码管理",
     "description": "查看并管理当前工作空间的 Git 状态",
     "loading": "正在读取 Git 状态…",

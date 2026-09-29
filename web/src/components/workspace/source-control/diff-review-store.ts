@@ -1,5 +1,5 @@
 import { getGitComparison } from '@/api';
-import type { GitComparisonSourceVm, GitFileChangeVm, GitFileComparisonVm } from '@/types';
+import type { GitCommitReviewFileVm, GitComparisonSourceVm, GitFileChangeVm, GitFileComparisonVm } from '@/types';
 import { normalizeSourceControlWorkspacePath } from './source-control-identity';
 
 export interface GitDiffReviewItem {
@@ -83,6 +83,22 @@ class DiffReviewStore {
         this.bumpUnstagedPath(input.projectId, input.workspacePath, path) || changed
       ), false);
     if (synced || invalidated) this.emit();
+  }
+
+  publishCommitStatistics(projectId: string, workspacePath: string | null | undefined, files: GitCommitReviewFileVm[]) {
+    const stats = new Map(files.map(file => [gitDiffReviewItemId(file.afterOid, file.beforeOid, file.beforePath, file.path),
+      { addedLines: file.addedLines ?? null, deletedLines: file.deletedLines ?? null }]));
+    let changed = false;
+    for (const session of this.sessions.values()) {
+      if (session.projectId !== projectId) continue;
+      for (const item of session.items) {
+        if (item.source.kind !== 'commit'
+          || normalizeSourceControlWorkspacePath(item.source.workspacePath) !== normalizeSourceControlWorkspacePath(workspacePath)) continue;
+        const value = stats.get(item.id);
+        if (value) { item.stats = value; changed = true; }
+      }
+    }
+    if (changed) this.emit();
   }
 
   clearForTests() {

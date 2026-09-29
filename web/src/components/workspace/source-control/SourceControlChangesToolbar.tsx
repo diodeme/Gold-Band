@@ -6,6 +6,7 @@ import {
   CloudDownload,
   Ellipsis,
   LoaderCircle,
+  TriangleAlert,
   Undo2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -40,10 +41,13 @@ import { rememberPreferredGitRemote, resolvePreferredGitRemote } from './source-
 
 type ChangesActionKind = 'fetch' | 'pull' | 'push' | 'stash-create';
 
-export function SourceControlSyncActions({ snapshot, busyActionKind, locked, onOperation }: {
+export function SourceControlSyncActions({ snapshot, busyActionKind, locked, remotesLoading, remotesError, onRetryRemotes, onOperation }: {
   snapshot: GitSourceControlOverviewVm;
   busyActionKind: string | null;
   locked: boolean;
+  remotesLoading: boolean;
+  remotesError: boolean;
+  onRetryRemotes: () => void;
   onOperation: (input: GitOperationRequestVm) => void;
 }) {
   const { t } = useTranslation();
@@ -88,25 +92,34 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, onO
     : Boolean(defaultRemote && snapshot.repository.currentBranch)
       && (!snapshot.repository.upstream || ahead > 0);
   const syncLabel = t(`sourceControl.${syncAction}`);
+  const remoteStateLabel = remotesError
+    ? t('sourceControl.loadFailed')
+    : remotesLoading
+      ? t('sourceControl.loading')
+      : null;
   return (
     <>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button type="button" size="xs" variant="ghost" className="gap-1 px-1 text-muted-foreground" disabled={busy || locked || !canSync} aria-label={syncLabel} onClick={() => openAction(syncAction)}>
+          <Button type="button" size="xs" variant="ghost" className="gap-1 px-1 text-muted-foreground" disabled={busy || locked || remotesLoading || remotesError || !canSync} aria-label={syncLabel} onClick={() => openAction(syncAction)}>
             {busyActionKind === syncAction ? <LoaderCircle className="size-3 animate-spin" /> : null}
             {behind > 0 ? <span className="tabular-nums" aria-hidden="true">↓{behind}</span> : null}
             {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑</span>}
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{syncLabel}</TooltipContent>
+        <TooltipContent>{remoteStateLabel ?? syncLabel}</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button type="button" size="icon-xs" variant="ghost" disabled={readOnly || busy || !defaultRemote} aria-label={t('sourceControl.fetch')} onClick={() => openAction('fetch')}>
-            {busyActionKind === 'fetch' ? <LoaderCircle className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
+          <Button type="button" size="icon-xs" variant="ghost" disabled={readOnly || busy || remotesLoading || (!remotesError && !defaultRemote)} aria-label={remoteStateLabel ?? t('sourceControl.fetch')} onClick={() => remotesError ? onRetryRemotes() : openAction('fetch')}>
+            {remotesLoading || busyActionKind === 'fetch'
+              ? <LoaderCircle className="size-3.5 animate-spin" />
+              : remotesError
+                ? <TriangleAlert className="size-3.5 text-destructive" />
+                : <CloudDownload className="size-3.5" />}
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{t('sourceControl.fetch')}</TooltipContent>
+        <TooltipContent>{remoteStateLabel ?? t('sourceControl.fetch')}</TooltipContent>
       </Tooltip>
       <ChangesActionDialog action={action} message="" flag={flag} remote={remote} pullStrategy={pullStrategy} remotes={remoteNames} onMessage={() => undefined} onFlag={setFlag} onRemote={selectRemote} onPullStrategy={setPullStrategy} onClose={() => setAction(null)} onSubmit={submit} valid={valid} />
     </>

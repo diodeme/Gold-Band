@@ -1823,6 +1823,8 @@
     "assetViewer": "Conversation file viewer"
   },
   "sourceControl": {
+    "reviewStatisticsLoading": "Loading line counts…",
+    "reviewStatisticsRetry": "Retry line counts",
     "title": "Source Control",
     "description": "Inspect and manage Git state for this workspace",
     "loading": "Reading Git status…",

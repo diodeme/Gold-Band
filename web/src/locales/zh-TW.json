@@ -1794,6 +1794,8 @@
     "assetViewer": "工作階段檔案查看器"
   },
   "sourceControl": {
+    "reviewStatisticsLoading": "正在統計行數…",
+    "reviewStatisticsRetry": "重試行數統計",
     "title": "源碼管理",
     "description": "查看並管理目前工作區的 Git 狀態",
     "loading": "正在讀取 Git 狀態…",

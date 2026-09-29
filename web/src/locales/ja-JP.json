@@ -1794,6 +1794,8 @@
     "assetViewer": "会話ファイルビューア"
   },
   "sourceControl": {
+    "reviewStatisticsLoading": "行数を集計中…",
+    "reviewStatisticsRetry": "行数の集計を再試行",
     "title": "ソース管理",
     "description": "このワークスペースの Git 状態を検査および管理します",
     "loading": "Git ステータスを読み取り中…",

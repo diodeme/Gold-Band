@@ -92,6 +92,7 @@ export function GitBranchSelector({
     valueRef: branchValueRef,
     tooltipOpen: branchTooltipOpen,
     showTooltipIfOverflowing: showBranchTooltipIfOverflowing,
+    showTooltipOnKeyboardFocus: showBranchTooltipOnKeyboardFocus,
     hideTooltip: hideBranchTooltip,
     handleTooltipOpenChange: handleBranchTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>({ always: responsiveContext });
@@ -265,7 +266,7 @@ export function GitBranchSelector({
                 onClickCapture={() => {
                   compactPointerClickPendingRef.current = false;
                 }}
-                onFocus={showBranchTooltipIfOverflowing}
+                onFocus={showBranchTooltipOnKeyboardFocus}
                 onBlur={() => {
                   compactPointerClickPendingRef.current = false;
                   hideBranchTooltip();

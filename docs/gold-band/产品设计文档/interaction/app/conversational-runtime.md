@@ -294,7 +294,7 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - joined surface 的边框默认粗细为 1px，并由 composer 布局层 `ACP_SESSION_COMPOSER_BORDER_WIDTH_PX` 单一变量管理；主 surface、角标、CSS connector 圆形边框、连接桥、裁剪视口和填充遮盖深度必须共同派生，后续调整不得分别维护数值。
 - 会话详情附着 tab 保持自身的左侧连接与右侧凹圆弧契约；快速对话的 workspace / 工作位置信息使用独立的内收低栏，不复用本段外壳。内部 usage/worktree 信息行只提供内容和交互，不得再次声明 `composer` 主题角色或拥有独立背景、完整圆角、边框和 elevation。会话详情左下连接口必须保持直角连续，不能由内部投影重新覆盖成圆角。
 - 附件入口与模型、思考强度、权限配置归入同一底部 command bar，并固定排在配置项左侧。快速对话与会话详情均不渲染“Enter 发送，Shift+Enter 换行”说明行；键盘发送行为保持不变，但不再为提示文案预留垂直空间。附件 action 的可见提示和无障碍名称统一使用 `acp.attachHint` 中英文资源。
-- 模型、模型与思考强度组合值、权限等 composer 配置选择器统一保留单行截断布局；只有选中值的实际 `scrollWidth` 超过可见 `clientWidth` 时，hover 或键盘 focus 才通过项目 shadcn/Radix Tooltip 展示完整值。Tooltip 复用当前选中展示值，不使用浏览器原生 `title`，打开菜单时不保留提示层；检测只发生在当前控件的 hover/focus 事件中，不增加全局尺寸监听或 composer 状态订阅。共享 Tooltip 默认不接收指针，Radix Popper 定位壳同样不接收指针，避免截断全文提示层在触发器边沿抢命中并反复开关；trigger 锚在整颗选择按钮上，不锚在内部截断文字。引用条和角色标签等需要滚动的 Tooltip 才在内容上显式恢复指针。
+- 模型、模型与思考强度组合值、权限等 composer 配置选择器统一保留单行截断布局；只有选中值的实际 `scrollWidth` 超过可见 `clientWidth` 时，hover 或键盘 focus 才通过项目 shadcn/Radix Tooltip 展示完整值。Tooltip 复用当前选中展示值，不使用浏览器原生 `title`，打开菜单时不保留提示层；键盘 focus 以触发器 `:focus-visible` 为准，菜单经鼠标选择或关闭后由 Radix 归还的焦点不得打开提示层。打开判定统一由共享 `useOverflowTooltip` 持有，Radix Tooltip 的 open 请求只接受关闭，避免其对任意 focus 自动打开；检测只发生在当前控件的 hover/focus 事件中，不增加全局尺寸监听或 composer 状态订阅。共享 Tooltip 默认不接收指针，Radix Popper 定位壳同样不接收指针，避免截断全文提示层在触发器边沿抢命中并反复开关；trigger 锚在整颗选择按钮上，不锚在内部截断文字。引用条和角色标签等需要滚动的 Tooltip 才在内容上显式恢复指针。
 
 ## Composer 状态
 

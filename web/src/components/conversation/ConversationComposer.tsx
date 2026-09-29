@@ -145,6 +145,7 @@ export function ConversationWorkspaceControl({
     valueRef,
     tooltipOpen,
     showTooltipIfOverflowing,
+    showTooltipOnKeyboardFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>({ always: variant === 'info' });
@@ -164,7 +165,7 @@ export function ConversationWorkspaceControl({
     onKeyDown: () => {
       selectionUsedPointerRef.current = false;
     },
-    onFocus: showTooltipIfOverflowing,
+    onFocus: showTooltipOnKeyboardFocus,
     onBlur: hideTooltip,
   };
   const value = (

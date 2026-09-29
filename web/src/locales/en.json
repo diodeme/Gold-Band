@@ -2253,6 +2253,7 @@
     "stopHint": "Stop the current ACP session",
     "noEvents": "No ACP events",
     "launchingClaude": "Launching agent",
+    "preparingAgent": "Preparing agent",
     "processing": "Processing",
     "thinkingNow": "Thinking",
     "toolRunning": "Running tool",

@@ -462,7 +462,7 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-20T00:00:00Z".to_string(),
         };
-        let AcpTurnAdmission::Started(started) = begin_session_turn(&snapshot, &business).unwrap()
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&snapshot, &business, false).unwrap()
         else {
             panic!("business turn must be admitted");
         };
@@ -518,7 +518,7 @@ mod tests {
             ..business
         };
         assert!(matches!(
-            begin_session_turn(&snapshot, &finalize).unwrap(),
+            begin_session_turn(&snapshot, &finalize, false).unwrap(),
             AcpTurnAdmission::Started(_)
         ));
     }

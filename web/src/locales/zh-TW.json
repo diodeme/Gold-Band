@@ -838,6 +838,7 @@
       "commit-review-worker-failed": "提交變更彙總任務異常終止。",
       "commit-reachability-query-failed": "無法讀取該提交的目前歸屬。",
       "diff-review-session-expired": "該 Diff 審閱工作階段已過期，請從提交歷史重新開啟。",
+      "discard-failed": "無法放棄檔案變更。",
       "operation-failed": "Git 操作失敗。"
     },
     "github": {
@@ -1841,6 +1842,9 @@
     "assetViewer": "工作階段檔案查看器"
   },
   "sourceControl": {
+    "discardChange": "放棄變更",
+    "discardDescription": "將此檔案還原至 HEAD，放棄已暫存與未暫存的變更。新增檔案將被刪除。此操作無法復原。",
+    "discarding": "正在放棄變更…",
     "reviewStatisticsLoading": "正在統計行數…",
     "reviewStatisticsRetry": "重試行數統計",
     "title": "源碼管理",

@@ -35,6 +35,7 @@ import type {
   GitOperationVm,
   GitStateChangedEventVm,
   GitSourceControlSnapshotVm,
+  GitSourceControlOverviewVm,
   WorkspaceFileChangedEventVm,
 } from '@/types';
 import { diffReviewStore } from './diff-review-store';
@@ -514,7 +515,7 @@ export class SourceControlStore {
     const workspaceScopePath = runtime.snapshot.requestedWorkspacePath;
     const snapshot = runtime.snapshot.snapshot;
     if (!snapshot || runtime.snapshot.pendingAction) return;
-    if (!(input.kind === 'commit' || input.kind.startsWith('stage') || input.kind.startsWith('unstage')) && !runtime.snapshot.catalog) return;
+    if (!isWorkspaceMutation(input) && !runtime.snapshot.catalog) return;
     const requestRevision = ++runtime.repositoryRequestRevision;
     runtime.catalogRequestRevision += 1;
     runtime.historyRequestRevision += 1;
@@ -529,7 +530,7 @@ export class SourceControlStore {
     try {
       const result = await this.api.executeMutation(projectId, workspaceScopePath, {
         ...input,
-        expectedRevision: input.kind === 'commit' || input.kind.startsWith('stage') || input.kind.startsWith('unstage')
+        expectedRevision: isWorkspaceMutation(input)
           ? snapshot.repository.revision
           : runtime.snapshot.catalog?.catalogRevision,
       });
@@ -855,7 +856,7 @@ export class SourceControlStore {
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
     const operationError = refreshKind === 'background'
-      ? preservedBackgroundError(runtime)
+      ? runtime.snapshot.error
       : null;
     this.update(runtime, {
       ...runtime.snapshot,
@@ -942,6 +943,7 @@ export class SourceControlStore {
         : snapshot.repository.remotes;
       const publishedSnapshot = {
         ...snapshot,
+        status: retainVisibleWorkspaceStatistics(runtime.snapshot.snapshot, snapshot),
         repository: { ...snapshot.repository, remotes },
       };
       this.registerCanonicalAlias(runtime, publishedSnapshot.repository.workspacePath);
@@ -960,7 +962,7 @@ export class SourceControlStore {
         history: includeHistory ? history : runtime.snapshot.history,
         historyLoading: includeHistory ? false : runtime.snapshot.historyLoading,
         refreshing: null,
-        error: operationError,
+        error: runtime.snapshot.error,
       });
       outcome = 'ready';
       diagnostic.finish(outcome);
@@ -1219,6 +1221,7 @@ export class SourceControlStore {
       if (statusChanged) runtime.catalogRequestRevision += 1;
       const publishedSnapshot = {
         ...snapshot,
+        status: retainVisibleWorkspaceStatistics(runtime.snapshot.snapshot, snapshot),
         repository: {
           ...snapshot.repository,
           remotes: currentRepository?.commonDir === snapshot.repository.commonDir
@@ -1233,7 +1236,6 @@ export class SourceControlStore {
         snapshot: publishedSnapshot,
         catalog: repositoryChanged ? null : runtime.snapshot.catalog,
         refreshing: null,
-        error: null,
       });
       this.applyWorkspaceProjection(runtime, publishedSnapshot.status);
       this.loadVisibleDetails(runtime);
@@ -1320,9 +1322,6 @@ export class SourceControlStore {
       true,
       'background',
     );
-    if (operationError && runtime.snapshot.activeOperation?.operationId === operation.operationId) {
-      this.update(runtime, { ...runtime.snapshot, error: operationError });
-    }
     runtime.finishingOperationId = null;
   }
 
@@ -1509,8 +1508,37 @@ function workspaceRelativePath(workspacePath: string, canonicalPath: string) {
   return candidate.slice(prefix.length);
 }
 
+// Overview reads intentionally omit numstat. Keep the last visible statistics
+// while revalidating surviving rows; loadStatistics still replaces them, even
+// when the porcelain revision is unchanged (it is not a content fingerprint).
+function retainVisibleWorkspaceStatistics(
+  previous: GitSourceControlOverviewVm | null,
+  incoming: GitSourceControlOverviewVm,
+): GitSourceControlOverviewVm['status'] {
+  if (!previous
+    || !sameWorkspacePath(previous.repository.commonDir, incoming.repository.commonDir)
+    || !sameWorkspacePath(previous.repository.workspacePath, incoming.repository.workspacePath)
+    || previous.repository.headOid !== incoming.repository.headOid) return incoming.status;
+  const merge = (area: 'staged' | 'unstaged' | 'untracked' | 'conflicts') => {
+    const prior = new Map(previous.status[area].map((change) => [change.path, change]));
+    return incoming.status[area].map((change) => {
+      const old = prior.get(change.path);
+      if (!old || change.addedLines != null || change.deletedLines != null || change.binary
+        || old.oldPath !== change.oldPath || old.kind !== change.kind
+        || old.indexStatus !== change.indexStatus || old.worktreeStatus !== change.worktreeStatus
+        || old.submodule !== change.submodule) return change;
+      return { ...change, addedLines: old.addedLines, deletedLines: old.deletedLines };
+    });
+  };
+  return { ...incoming.status, staged: merge('staged'), unstaged: merge('unstaged'), untracked: merge('untracked'), conflicts: merge('conflicts') };
+}
+
+function isWorkspaceMutation(input: GitMutationRequestVm) {
+  return input.kind === 'commit' || input.kind === 'discard-path' || input.kind.startsWith('stage') || input.kind.startsWith('unstage');
+}
+
 function pendingActionFromMutation(input: GitMutationRequestVm): SourceControlPendingAction {
-  const path = input.kind === 'worktree-remove'
+  const path = input.kind === 'worktree-remove' || input.kind === 'discard-path'
     ? input.path
     : (input.kind === 'stage-paths' || input.kind === 'unstage-paths') && input.paths.length === 1
       ? input.paths[0]
@@ -1531,17 +1559,6 @@ function operationUsesSyncRevision(kind: GitOperationRequestVm['kind']) {
 
 function isRevisionChangedError(code: string) {
   return REVISION_CHANGED_CODES.has(code);
-}
-
-function preservedBackgroundError(runtime: SessionRuntime) {
-  const error = runtime.snapshot.error;
-  if (error && isRevisionChangedError(error.code)) return error;
-  if (
-    runtime.snapshot.activeOperation?.error
-    && error
-    && sameStructuredError(error, runtime.snapshot.activeOperation.error)
-  ) return error;
-  return null;
 }
 
 function structuredErrorFrom(reason: unknown, fallback: string): GitOperationErrorVm {

@@ -113,6 +113,43 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it('requires confirmation before discarding a file and disables it during writes', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+      }} /></RightWorkspaceProvider>));
+      const openMenu = async () => {
+        await act(async () => container.querySelector('[data-source-control-diff-file-row]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 })));
+      };
+      await openMenu();
+      const item = () => document.querySelector<HTMLElement>('[role="menuitem"]')!;
+      expect(item().textContent).toBe('sourceControl.discardChange');
+      await act(async () => item().click());
+      expect(sourceControlStore.mutate).not.toHaveBeenCalled();
+      expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('src/app.ts');
+      await act(async () => document.querySelector<HTMLElement>('[data-slot="alert-dialog-cancel"]')!.click());
+      expect(sourceControlStore.mutate).not.toHaveBeenCalled();
+      await openMenu();
+      await act(async () => item().click());
+      await act(async () => document.querySelector<HTMLElement>('[data-slot="alert-dialog-action"]')!.click());
+      expect(sourceControlStore.mutate).toHaveBeenCalledExactlyOnceWith('project-1', 'D:/repo', { kind: 'discard-path', path: 'src/app.ts' });
+      await act(async () => {
+        sessionRuntime.session = { ...sessionRuntime.session, pendingAction: { kind: 'discard-path', path: 'src/app.ts' } };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.querySelector('[aria-label="sourceControl.discarding"]')).not.toBeNull();
+      const spinner = container.querySelector('[aria-label="sourceControl.discarding"]')!;
+      const pendingRow = spinner.closest('[data-source-control-diff-file-row]');
+      expect(pendingRow).not.toBeNull();
+      expect(pendingRow?.querySelector('[data-source-control-diff-summary]')?.textContent).toBe('+1-0');
+      expect(spinner.closest('[data-source-control-row-progress]')?.className).toContain('shrink-0');
+      await openMenu();
+      expect(item().getAttribute('aria-disabled')).toBe('true');
+    } finally { await act(async () => root.unmount()); }
+  });
   it.each(['repository', 'github'])('preserves %s DOM during catalog refresh and failure', async (activeTab) => {
     sessionRuntime.session = { ...sourceControlSession(), activeTab, catalog: sourceControlSession().snapshot };
     const container = document.createElement('div');

@@ -105,6 +105,14 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 工作区没有冲突、已暂存、未暂存或未跟踪文件时，“工作区没有变更”占满更改工具栏与 Commit composer 之间的剩余内容区并水平、垂直居中，使用弱化前景色表达非阻塞空状态；不得复用带主标题强调的错误/能力提示样式，也不得仅在滚动内容顶部居中。
 
+### 单文件放弃更改
+
+更改 Tab 的已暂存、未暂存和未跟踪文件支持右键菜单“放弃更改”（Discard Change，七种语言）。菜单复用 shadcn ContextMenu；执行前通过 AlertDialog 展示完整文件路径与不可撤销提示，默认聚焦取消。确认后将选中文件的 index 和 worktree 还原至 HEAD；新增文件删除，重命名同时还原原路径。子模块和进行中的冲突流程不开放此操作，不递归删除目录。
+
+单文件还原沿用 workspace 写锁、expectedRevision 校验和最新 status 回写，只刷新对应工作区，不读取 history/catalog。执行中显示目标文件 spinner，并禁用冲突写入口；取消确认不调用写接口。切换 workspace 后不得继续使用旧文件确认状态。
+
+Git 错误保留到用户启动下一次操作、主动刷新或关闭结果。后台仓库/文件刷新只更新当前数据，不清空现有操作错误，也不缓存并回填旧错误；新操作清除旧结果后，迟到刷新不得恢复旧原因。最新操作失败时显示本次结构化原因。
+
 ## 4. Git 操作约束
 
 - 系统 Git CLI 是唯一读写后端；可执行文件通过桌面 PATH 适配层解析，与 ACP/`gh` 共用查找规则。
@@ -178,3 +186,11 @@ GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs
 - 源码管理会话与 workspace watcher 的路径归属判断必须复用共享的 filesystem path identity。Windows drive、verbatim drive、UNC 与 verbatim UNC 在比较前统一分隔符、长路径前缀与大小写；Unix 路径保持大小写语义。主工作区仍以 `workspacePath = null` 路由，linked worktree 仍按 canonical scope 精确隔离。
 - Git repository DTO 可以携带 `std::fs::canonicalize` 产生的 Windows verbatim 路径，workspace watcher 对客事件使用去除 verbatim 前缀的普通路径；两者表示同一文件时必须触发同一源码管理会话的去抖刷新，不能落入越界过滤。
 - DEBUG 路由摘要将越界会话拆为 scope 不一致、嵌套 worktree 过滤和文件路径不在工作区三类计数；watcher start/reuse 同时记录匿名 `scope_kind`。诊断不记录路径、文件名或内容，也不参与刷新控制流。
+
+### 更改列表统计的后台刷新（2026-09-30）
+
+单文件放弃更改、Stage/Unstage 完成后，后续 watcher 校验不得将已有增删行数清空再补回。轻量 overview 与 numstat 渐进合并：同一 repository/workspace、同一 HEAD、同一分组内路径及变更语义不变的行，在统计重算期间保留上次可见值；新统计返回后完整替换，包括零值、二进制及无统计结果。换工作区、HEAD、路径、旧路径、变更类型或分组时不继承。保留值仅为刷新期间的显示投影，不能用于判断内容未变或跳过统计请求；porcelain revision 不包含文件内容摘要。
+
+### 文件行操作状态布局
+
+Discard 执行中的 spinner 必须使用更改行 trailing 操作区域参与 flex 布局，与增删统计分别占位；菜单仅负责触发、确认和忙碌语义，不通过绝对定位叠加加载图标。长路径截断不能挤压统计或操作区域。Windows 上文件被其他程序以禁止删除共享的方式打开时，Git 可能无法替换文件并返回 unable to unlink old；界面保留实际错误原因，用户释放文件占用后可重试。

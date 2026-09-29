@@ -838,6 +838,7 @@
       "commit-review-worker-failed": "The commit review worker stopped unexpectedly.",
       "commit-reachability-query-failed": "Unable to read the commit's current reachability.",
       "diff-review-session-expired": "This diff review session expired. Reopen it from commit history.",
+      "discard-failed": "Could not discard the file changes.",
       "operation-failed": "The Git operation failed."
     },
     "github": {
@@ -1841,6 +1842,9 @@
     "assetViewer": "Conversation file viewer"
   },
   "sourceControl": {
+    "discardChange": "Discard Change",
+    "discardDescription": "Restore this file to HEAD, discarding staged and unstaged changes. New files will be deleted. This cannot be undone.",
+    "discarding": "Discarding changes…",
     "reviewStatisticsLoading": "Loading line counts…",
     "reviewStatisticsRetry": "Retry line counts",
     "title": "Source Control",

@@ -1075,6 +1075,7 @@ export type GitBranchChangeRequestVm = (
 ) & { expectedRevision: string };
 
 export type GitMutationVm =
+  | { kind: 'discard-path'; path: string }
   | { kind: 'stage-paths'; paths: string[] }
   | { kind: 'stage-all' }
   | { kind: 'unstage-paths'; paths: string[] }

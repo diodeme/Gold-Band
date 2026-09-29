@@ -838,6 +838,7 @@
       "commit-review-worker-failed": "コミット レビュー ワーカーが予期せず停止しました。",
       "commit-reachability-query-failed": "コミットの現在の到達可能性を読み取ることができません。",
       "diff-review-session-expired": "この差分レビュー セッションは期限切れになりました。コミット履歴から再度開きます。",
+      "discard-failed": "ファイルの変更を破棄できませんでした。",
       "operation-failed": "Git 操作が失敗しました。"
     },
     "github": {
@@ -1841,6 +1842,9 @@
     "assetViewer": "会話ファイルビューア"
   },
   "sourceControl": {
+    "discardChange": "変更を破棄",
+    "discardDescription": "このファイルを HEAD に戻し、ステージ済みと未ステージの変更を破棄します。新規ファイルは削除されます。この操作は元に戻せません。",
+    "discarding": "変更を破棄しています…",
     "reviewStatisticsLoading": "行数を集計中…",
     "reviewStatisticsRetry": "行数の集計を再試行",
     "title": "ソース管理",

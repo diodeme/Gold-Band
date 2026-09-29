@@ -838,6 +838,7 @@
       "commit-review-worker-failed": "Commit 검토 Worker가 예기치 않게 중단되었습니다.",
       "commit-reachability-query-failed": "Commit의 현재 도달 가능성을 읽을 수 없습니다.",
       "diff-review-session-expired": "이 diff 검토 세션이 만료되었습니다. Commit 히스토리에서 다시 열어 주세요.",
+      "discard-failed": "파일 변경 사항을 취소할 수 없습니다.",
       "operation-failed": "Git 작업에 실패했습니다."
     },
     "github": {
@@ -1841,6 +1842,9 @@
     "assetViewer": "대화 파일 뷰어"
   },
   "sourceControl": {
+    "discardChange": "변경 사항 취소",
+    "discardDescription": "이 파일을 HEAD로 복원하고 스테이징된 변경과 스테이징되지 않은 변경을 취소합니다. 새 파일은 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+    "discarding": "변경 사항 취소 중…",
     "reviewStatisticsLoading": "줄 수 계산 중…",
     "reviewStatisticsRetry": "줄 수 계산 다시 시도",
     "title": "소스 관리",

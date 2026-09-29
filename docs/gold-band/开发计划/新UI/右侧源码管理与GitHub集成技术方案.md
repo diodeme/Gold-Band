@@ -1223,6 +1223,15 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 
 本功能首版不需要新增内置 prompt。若后续增加 AI 生成 commit message、PR title/body 或 Issue 摘要，必须在 `src/prompts/zh-CN/...` 与 `src/prompts/en/...` 下保持一致目录并同步维护，禁止在实现代码中硬编码长 prompt。
 
+## 20. 单文件 Discard 与操作错误生命周期（2026-09-29）
+
+- 新增 typed mutation discard-path { path }，复用 workspace 写锁和版本校验；使用 Git literal pathspec 还原 index/worktree，处理 tracked、新增、删除、重命名和 unborn index。只接受当前 status 的精确文件，拒绝目录、子模块、越界路径及冲突流程，不执行递归清理。
+- 前端更改行复用 ContextMenu + AlertDialog，七语言文案同步；取消不写入，确认后文件级 pending，同一 workspace 写操作互斥，返回 workspace status 后局部收敛。
+- 根因：load 捕获旧 operationError 后在异步完成时回填，覆盖新操作或关闭结果产生的清空状态。删除迟到错误回填；背景读保留完成时的当前错误，不新增 error identity 或平行状态模型。
+- 回归：先确认 start/dismiss 与 terminal refresh 交叠的两项测试失败（old failure 重新出现），修复后转绿；新增 DOM 确认/取消/pending/禁用测试、workspace mutation 请求与局部回写测试、真实 Git 文件还原/新增删除/重命名/特殊路径/版本拦截测试。
+- 验证：受影响前端测试 82 项通过，真实 Git typed mutation 测试 5 项通过，前端类型检查与生产构建通过。浏览器使用实际面板和隔离数据验证右键菜单、确认和取消、长路径及 440px/1200px 布局。
+- 过度设计与性能评审：复用现有 Git CLI、协调锁、revision、会话状态和 copy-in 组件；新增常数次单文件 Git 调用，路径匹配 O(n) 沿用当前 status，n 为工作区变更条目数。不增加 catalog/history 全量读取、文件正文读取、依赖、缓存或队列。
+
 ## 21. Workspace 变更检测诊断（2026-09-29）
 
 - 当前现场现象是普通工作区文件修改后没有触发源码管理 overview；Git status 与 metadata watcher 正常。现有日志只能证明没有发起 overview，无法区分原生 notify、Tauri event、Store 路由过滤或 refresh 调度在哪一层中断，因此本轮先补全链路证据，不改变刷新语义。
@@ -1248,3 +1257,20 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 - 回归：最小 Store 接口测试使用带 verbatim 前缀的 repository path 与普通 watcher path，修复前稳定观察到 snapshot 调用 0 次，修复后触发主工作区 refresh。watcher scope 测试固定带前缀与普通路径可复用同一 linked worktree watch。
 - 验证：SourceControlStore 58 项、共享文件 Store 与右侧工作区相关测试合计 123 项、Git 诊断 5 项、workspace watcher 9 项通过；前端生产 TypeScript 检查、Rust 格式检查和相关 diff check 通过。桌面真实 watcher 仍由重新编译后的客户端现场修改普通文件完成最终确认。
 - 过度设计与性能评审：复用共享路径工具、现有 watcher 和诊断 DTO，不新增依赖、缓存、状态机、扫描或 Git 调用。每次事件仅增加常数次字符串前缀处理与计数，刷新次数和数据量不变。
+
+## 21. 更改列表 numstat 刷新连续性（2026-09-30）
+
+- 根因：workspace mutation 返回完整 status，随后 workspace/repository watcher 的轻量 overview 整体覆盖 status，将 addedLines/deletedLines 置空，统计请求完成后再次显示。原有渐进加载设计正确，缺少已有数据重验证时的合并契约。
+- 修复：两条 overview 发布路径共用同作用域、同 HEAD、同分组的行级统计投影合并；保持现有 request revision 防止旧统计回写，最新统计响应直接替换保留值。保留 watcher 和统计重算，不根据相同 porcelain revision 跳过可能发生的内容修改。
+- 验收：先观察 discard 后 worktree/repository watcher 两项测试在旧实现上因统计置空失败，再确认修复转绿；边界测试覆盖 HEAD/workspace/path/oldPath/kind/group/binary，DOM 测试固定统计节点不卸载且新数值直接更新。
+- 刷新范围：放弃更改接口仍返回当前 workspace status；watcher 按既有工作区/元数据范围校验。更改 Tab 未加载历史和 catalog 时不引入其读取。此次不改变 watcher 事件归属或后端 API。
+- 过度设计与性能评审：复用现有状态、revision 和 Git CLI，不新增依赖、缓存、队列或跨层身份；以 Map 在 O(n) 时间、O(n) 临时内存合并当前变更列表，n 为当前 status 行数，没有新增 I/O、逐文件请求或正文读取。
+
+验证结果：98 项相关前端测试通过，生产类型检查与 Vite 构建通过。浏览器在实际源码管理面板配合隔离数据完成“确认放弃 → watcher 轻量响应 → 暂停统计 → 新统计返回”，剩余统计节点保持同一 DOM，+2/-1 直接更新为 +12/-1；440px 与 1200px 无横向溢出。未对真实用户文件执行放弃操作。
+
+## 22. Discard 行加载图标重叠与 Windows 文件占用诊断（2026-09-30）
+
+- 根因：DiscardMenu 在文件行外使用 absolute right/top 放置 spinner，未参与统计与操作区的宽度分配。改为复用 SourceControlDiffFileRow 的 trailing 插槽，以不可收缩的 24px 操作区承载 spinner，菜单不再负责进度图标定位。
+- 回归：DOM 测试先确认旧实现的 spinner 不在文件行内而失败；修复后验证 spinner 和 +1/-0 同时存在于行内，21 项相关前端测试通过。浏览器 440px 长路径场景中统计右边界 404px、操作区左边界 410px，间隔 6px，无横向溢出。
+- Windows 诊断：临时仓库 data.csv 持有 FileShare.ReadWrite（无 Delete）句柄时，git restore --source=HEAD --staged --worktree 返回 unable to unlink old data.csv: Invalid argument，退出码 255；释放句柄后同一命令返回 0。该实验证明占用可产生截图中的错误，不能据此指定用户现场的占用进程；不通过覆盖写入或强杀进程绕过占用。
+- 设计与性能评审：复用现有行和 pending action，无新增依赖、状态、I/O 或列表计算；仅调整 spinner 所属布局位置。

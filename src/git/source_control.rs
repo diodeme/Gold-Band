@@ -983,6 +983,9 @@ pub enum GitTagStyle {
     rename_all_fields = "camelCase"
 )]
 pub enum GitMutation {
+    DiscardPath {
+        path: String,
+    },
     StagePaths {
         paths: Vec<String>,
     },
@@ -2833,6 +2836,7 @@ impl GitSourceControlService {
         if matches!(
             &request.mutation,
             GitMutation::StagePaths { .. }
+                | GitMutation::DiscardPath { .. }
                 | GitMutation::StageAll
                 | GitMutation::UnstagePaths { .. }
                 | GitMutation::UnstageAll
@@ -2856,6 +2860,9 @@ impl GitSourceControlService {
                         }
                     }
                     match &request.mutation {
+                        GitMutation::DiscardPath { path } => {
+                            self.discard_path(cwd, path, &current_status)?;
+                        }
                         GitMutation::StagePaths { paths } => self.stage_paths(cwd, paths)?,
                         GitMutation::StageAll => {
                             self.runner
@@ -2921,6 +2928,7 @@ impl GitSourceControlService {
         }
         match &request.mutation {
             GitMutation::StagePaths { .. }
+            | GitMutation::DiscardPath { .. }
             | GitMutation::StageAll
             | GitMutation::UnstagePaths { .. }
             | GitMutation::UnstageAll => {
@@ -3296,6 +3304,96 @@ impl GitSourceControlService {
         super::diagnostics::stage("comparison-build", || {
             comparison_from_versions(path, before, after)
         })
+    }
+
+    fn discard_path(&self, cwd: &Utf8Path, path: &str, status: &GitWorkspaceStatus) -> Result<()> {
+        validate_repo_relative_path(path)?;
+        ensure!(
+            status.conflicts.is_empty() && status.operation_in_progress.is_none(),
+            GitServiceError::new("git.operation-in-progress", serde_json::json!({}))
+        );
+        let change = status
+            .staged
+            .iter()
+            .chain(&status.unstaged)
+            .chain(&status.untracked)
+            .find(|change| change.path == path)
+            .ok_or_else(|| {
+                GitServiceError::new("git.invalid-pathspec", serde_json::json!({ "path": path }))
+            })?;
+        ensure!(
+            !change.submodule,
+            GitServiceError::new("git.file-not-regular", serde_json::json!({ "path": path }))
+        );
+        let mut paths = vec![path.to_owned()];
+        if change.kind == GitFileChangeKind::Renamed
+            && let Some(old_path) = &change.old_path
+        {
+            paths.push(old_path.clone());
+        }
+        // Only exact status entries may be discarded. Never recurse into directories
+        // (including submodules), or follow a parent symlink out of the worktree.
+        let root = std::fs::canonicalize(cwd)?;
+        for relative in &paths {
+            validate_repo_relative_path(relative)?;
+            let target = cwd.join(relative);
+            let mut parent = target.parent().unwrap();
+            while !parent.exists() {
+                parent = parent.parent().ok_or_else(|| {
+                    GitServiceError::new(
+                        "git.invalid-pathspec",
+                        serde_json::json!({ "path": relative }),
+                    )
+                })?;
+            }
+            ensure!(
+                std::fs::canonicalize(parent)?.starts_with(&root),
+                GitServiceError::new(
+                    "git.invalid-pathspec",
+                    serde_json::json!({ "path": relative })
+                )
+            );
+            match std::fs::symlink_metadata(&target) {
+                Ok(metadata) => ensure!(
+                    !metadata.is_dir(),
+                    GitServiceError::new(
+                        "git.file-not-regular",
+                        serde_json::json!({ "path": relative })
+                    )
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if change.kind == GitFileChangeKind::Untracked {
+            self.runner.require(
+                cwd,
+                &["--literal-pathspecs", "clean", "-f", "--", path],
+                "git.discard-failed",
+            )?;
+        } else if self.has_head(cwd)? {
+            self.runner.require_with_input(
+                cwd,
+                &[
+                    "--literal-pathspecs",
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ],
+                &pathspec_input(&paths)?,
+                "git.discard-failed",
+            )?;
+        } else {
+            self.runner.require(
+                cwd,
+                &["--literal-pathspecs", "rm", "-f", "--", path],
+                "git.discard-failed",
+            )?;
+        }
+        Ok(())
     }
 
     fn stage_paths(&self, cwd: &Utf8Path, paths: &[String]) -> Result<()> {
@@ -6780,6 +6878,126 @@ mod tests {
                 .workspace_lock(&identity.workspace_path)
                 .locked
         );
+    }
+
+    #[test]
+    fn typed_discard_restores_only_selected_file_including_index_and_rename() {
+        let (_temp, root) = initialized_repository();
+        GitSourceControlService::default()
+            .runner
+            .require(
+                &root,
+                &["config", "core.autocrlf", "false"],
+                "git.operation-failed",
+            )
+            .unwrap();
+        commit_file(&root, "tracked.txt", "base\n", "base");
+        let service = GitSourceControlService::default();
+        std::fs::write(root.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+        service.stage_paths(&root, &["tracked.txt".into()]).unwrap();
+        std::fs::write(root.join("tracked.txt"), "working\n").unwrap();
+        let discard = |path: &str| {
+            service
+                .execute_mutation(
+                    &root,
+                    &GitMutationRequest {
+                        expected_revision: None,
+                        mutation: GitMutation::DiscardPath { path: path.into() },
+                    },
+                )
+                .unwrap()
+        };
+        assert!(matches!(
+            discard("tracked.txt"),
+            GitMutationResult::Workspace { .. }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        service
+            .runner
+            .require(
+                &root,
+                &["mv", "tracked.txt", "renamed.txt"],
+                "git.operation-failed",
+            )
+            .unwrap();
+        discard("renamed.txt");
+        assert!(!root.join("renamed.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        std::fs::remove_file(root.join("tracked.txt")).unwrap();
+        discard("tracked.txt");
+        assert!(root.join("tracked.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("keep.txt")).unwrap(),
+            "keep\n"
+        );
+        assert!(service.status(&root).unwrap().staged.is_empty());
+    }
+
+    #[test]
+    fn typed_discard_new_files_and_unborn_index_are_exact_and_revision_guarded() {
+        for head in [false, true] {
+            for staged in [false, true] {
+                let (_temp, root) = initialized_repository();
+                if head {
+                    commit_file(&root, "base.txt", "base\n", "base");
+                }
+                let service = GitSourceControlService::default();
+                let path = "[file] 中文.txt";
+                std::fs::write(root.join(path), "new\n").unwrap();
+                std::fs::write(root.join("f 中文.txt"), "keep\n").unwrap();
+                if staged {
+                    service.stage_paths(&root, &[path.into()]).unwrap();
+                }
+                let mutation = GitMutation::DiscardPath { path: path.into() };
+                assert!(
+                    service
+                        .execute_mutation(
+                            &root,
+                            &GitMutationRequest {
+                                expected_revision: Some("stale".into()),
+                                mutation: mutation.clone(),
+                            }
+                        )
+                        .is_err()
+                );
+                assert!(root.join(path).exists());
+                service
+                    .execute_mutation(
+                        &root,
+                        &GitMutationRequest {
+                            expected_revision: None,
+                            mutation,
+                        },
+                    )
+                    .unwrap();
+                assert!(!root.join(path).exists());
+                assert!(root.join("f 中文.txt").exists());
+                assert!(service.status(&root).unwrap().staged.is_empty());
+                for invalid in [".", "../outside", ":(glob)*", "f*"] {
+                    assert!(
+                        service
+                            .execute_mutation(
+                                &root,
+                                &GitMutationRequest {
+                                    expected_revision: None,
+                                    mutation: GitMutation::DiscardPath {
+                                        path: invalid.into()
+                                    },
+                                }
+                            )
+                            .is_err()
+                    );
+                }
+                assert!(root.join("f 中文.txt").exists());
+            }
+        }
     }
 
     #[test]

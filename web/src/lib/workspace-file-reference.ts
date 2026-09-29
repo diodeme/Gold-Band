@@ -1,4 +1,5 @@
-import type { WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm } from '@/types';
+import type { WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm, WorkspaceRootRef } from '@/types';
+import { MAIN_WORKSPACE_TAB_ROOT, workspaceRootRef } from './workspace-root';
 import { resolveWorkspaceFileLink } from '@/api';
 import { guessMimeFromExtension } from './attachment-service';
 import {
@@ -58,13 +59,35 @@ interface OpenableWorkspaceFileReference {
   name?: string;
 }
 
+/**
+ * Open a referenced file in the files tab. `root` is the current file root
+ * (`null` while the session's worktree is unavailable, in which case the tab
+ * opens on its unavailable state instead of silently reading the project root).
+ */
 export async function openWorkspaceFileReference(
   reference: OpenableWorkspaceFileReference,
   scopeKey: string,
   openResource: (resource: FileBrowserWorkspaceResource) => unknown,
+  currentRoot: WorkspaceRootRef | null,
 ) {
+  const fileBrowser = {
+    kind: 'file-browser' as const,
+    key: fileBrowserWorkspaceResourceKey(reference.projectId),
+    scopeKey,
+    attention: false,
+    projectId: reference.projectId,
+    // The provider projects the tab root onto the current session.
+    root: MAIN_WORKSPACE_TAB_ROOT,
+    browseMain: false,
+  };
+  const fallbackName = reference.name ?? reference.relativePath.split('/').at(-1) ?? reference.relativePath;
+  if (!currentRoot) {
+    await openResource({ ...fileBrowser, title: fallbackName, description: reference.relativePath, selectedFile: null });
+    return;
+  }
+  const root = currentRoot.projectId === reference.projectId ? currentRoot : workspaceRootRef(reference.projectId, null);
   const resolved = await resolveWorkspaceFileLink(
-    reference.projectId,
+    root,
     reference.canonicalPath ?? reference.relativePath,
   );
   const relativePath = resolved.locator.relativePath ?? reference.relativePath;
@@ -80,13 +103,9 @@ export async function openWorkspaceFileReference(
   }
 
   await openResource({
-    kind: 'file-browser',
-    key: fileBrowserWorkspaceResourceKey(reference.projectId),
-    scopeKey,
+    ...fileBrowser,
     title: name,
     description: relativePath,
-    attention: false,
-    projectId: reference.projectId,
     selectedFile: {
       kind: 'file',
       key,
@@ -95,6 +114,7 @@ export async function openWorkspaceFileReference(
       description: relativePath,
       attention: false,
       projectId: reference.projectId,
+      workspacePath: root.workspacePath,
       locator: resolved.locator,
       target: null,
       targetRevision: Date.now(),

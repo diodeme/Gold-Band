@@ -774,6 +774,7 @@ mod tests {
         ResolvedWorkspaceRoot {
             project_id: "project-1".to_string(),
             path: std::fs::canonicalize(path).unwrap(),
+            workspace_scope_path: None,
             config: gold_band::config::WorkspaceFilesConfig::default(),
         }
     }
@@ -940,6 +941,7 @@ mod tests {
             &path,
             &WriteFileResourceInput {
                 project_id: "project-1".to_string(),
+                workspace_path: None,
                 canonical_path: display_path(&path),
                 external_access_token: None,
                 content: "local version".to_string(),
@@ -1088,6 +1090,7 @@ mod tests {
             &path,
             &WriteFileResourceInput {
                 project_id: "project-1".to_string(),
+                workspace_path: None,
                 canonical_path: display_path(&path),
                 external_access_token: None,
                 content: "a\nb changed\n".to_string(),

@@ -132,6 +132,8 @@ pub struct BrowserNavigateInput {
 #[serde(rename_all = "camelCase")]
 pub struct BrowserResolveLocalHtmlInput {
     pub project_id: String,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     pub raw_href: String,
 }
 
@@ -291,11 +293,14 @@ pub async fn browser_create_page(
 #[tauri::command]
 pub async fn browser_resolve_local_html(
     state: State<'_, DesktopState>,
+    file_runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
     input: BrowserResolveLocalHtmlInput,
 ) -> CommandResult<BrowserLocalHtmlTargetVm> {
     let locator = crate::workspace_files::resolve_file_link_locator(
         state.inner(),
+        file_runtime.inner(),
         &input.project_id,
+        input.workspace_path.as_deref(),
         &input.raw_href,
     )
     .await?;

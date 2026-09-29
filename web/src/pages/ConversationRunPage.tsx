@@ -22,7 +22,8 @@ import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
 import { submitManualCheck } from '@/api';
-import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import { conversationSessionKeyFromParts, findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import { UNRESOLVED_WORK_LOCATION, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
@@ -634,6 +635,7 @@ export function ConversationRunPage({
                   manualCheckPending: session.manualCheckPending,
                   sessionId: session.sessionId,
                   sessionEstablished: session.sessionEstablished,
+                  workLocation: activeSessionWorkLocation(run.sessionTree, session),
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -679,9 +681,9 @@ export function ConversationRunPage({
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             wallpaperSurface
-            worktreePath={selectedLeaf.worktreePath}
+            worktreePath={worktreePathOfLocation(selectedLeaf.workLocation)}
             showBranchControl={!readOnly}
-            managedWorktreeBranch={selectedLeaf.worktreeBranch}
+            managedWorktreeBranch={worktreeBranchOfLocation(selectedLeaf.workLocation)}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             onSubmitManualCheck={handleSubmitManualCheck}
@@ -750,7 +752,7 @@ function leafKey(leaf: ConversationSessionLeafVm): string {
 
 function findSelectedLeaf(run: ConversationRunVm): ConversationSessionLeafVm | null {
   return findSelectedLeafFromTree(run.sessionTree)
-    ?? activeSessionToLeaf(run.activeSessions[0]);
+    ?? activeSessionToLeaf(run.sessionTree, run.activeSessions[0]);
 }
 
 function findSelectedLeafFromTree(tree: ConversationRunVm['sessionTree']): ConversationSessionLeafVm | null {
@@ -813,7 +815,16 @@ function leafSortKey(leaf: ConversationSessionLeafVm): string {
   ].join('\u0000');
 }
 
+function activeSessionWorkLocation(
+  tree: ConversationRunVm['sessionTree'],
+  session: ConversationRunVm['activeSessions'][number],
+) {
+  return findConversationLeafByKey(tree, conversationSessionKeyFromParts(session))?.workLocation
+    ?? UNRESOLVED_WORK_LOCATION;
+}
+
 function activeSessionToLeaf(
+  tree: ConversationRunVm['sessionTree'],
   session: ConversationRunVm['activeSessions'][number] | undefined,
 ): ConversationSessionLeafVm | null {
   if (!session) return null;
@@ -833,6 +844,7 @@ function activeSessionToLeaf(
     startedAt: session.startedAt,
     finishedAt: null,
     sessionId: session.sessionId,
+    workLocation: activeSessionWorkLocation(tree, session),
     artifactCount: 0,
     attachmentCount: 0,
   };

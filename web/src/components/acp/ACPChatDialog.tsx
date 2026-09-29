@@ -311,6 +311,7 @@ import {
 } from "@/lib/acp-return-to-latest-visual-probe";
 import i18n, { displayAppError, displayStatus } from "@/i18n";
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { UNRESOLVED_WORK_LOCATION, workspaceRootRef, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -2474,6 +2475,14 @@ export function ACPChatDialog(
     [agentCommands.commands, roleProfiles, t],
   );
   const mentionLabels = useMentionMenuLabels();
+  // Prompt file references resolve against the session's work location.
+  const mentionWorkLocation = effective?.workLocation;
+  const mentionRoot = useMemo(
+    () => (projectId && mentionWorkLocation?.kind !== 'unavailable'
+      ? workspaceRootRef(projectId, worktreePathOfLocation(mentionWorkLocation))
+      : null),
+    [mentionWorkLocation, projectId],
+  );
   const slashCommands = useSlashCommandController({
     input: prompt,
     groups: slashCatalog,
@@ -2481,7 +2490,7 @@ export function ACPChatDialog(
     onInputChange: setPrompt,
     textareaRef: composerTextareaRef,
     mention: {
-      projectId,
+      root: mentionRoot,
       labels: mentionLabels,
       onSelectWorkspaceFile: (entry) => {
         if (projectId) addWorkspaceFile(composerWorkspaceFileRefFromEntry(projectId, entry), false);
@@ -5990,7 +5999,7 @@ export function ACPChatDialog(
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;
-    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource)
+    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource, rightWorkspace.currentFileRoot())
       .then(() => setComposerContextError(null))
       .catch(error => setComposerContextError(displayAppError(t, error)));
   }, [rightWorkspace, t]);
@@ -6649,7 +6658,7 @@ export function ACPChatDialog(
                   worktreePath={worktreePath}
                   branchProjectId={showBranchInfo ? projectId : null}
                   branchWorkspaceName={showBranchInfo ? workspaceName : null}
-                  managedWorktreeBranch={effective?.worktreeBranch ?? managedWorktreeBranch}
+                  managedWorktreeBranch={worktreeBranchOfLocation(effective?.workLocation) ?? managedWorktreeBranch}
                   className={cn(
                     ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
                     "relative w-max max-w-[calc(100%-0.625rem)] flex-nowrap gap-x-2 rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']",
@@ -8887,7 +8896,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [branchLocator, event.endedSeq, event.id, event.optimistic, event.seq, workspace]);
   const openUserWorkspaceFile = useCallback((file: (typeof userWorkspaceFiles)[number]) => {
     if (!workspace?.scopeKey) return;
-    void openWorkspaceFileReference(file, workspace.scopeKey, workspace.openResource)
+    void openWorkspaceFileReference(file, workspace.scopeKey, workspace.openResource, workspace.currentFileRoot())
       .then(() => setWorkspaceFileOpenError(null))
       .catch(error => setWorkspaceFileOpenError(displayAppError(t, error)));
   }, [t, workspace]);
@@ -11237,6 +11246,7 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
     branchId: 'root',
     parentBranchId: null,
     readOnly: false,
+    workLocation: UNRESOLVED_WORK_LOCATION,
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
     provider: "acp",
     status,

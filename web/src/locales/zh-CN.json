@@ -704,11 +704,18 @@
           "trash-failed": "无法移到回收站，请重试。",
           "restore-unavailable": "无法撤销：该项目已不在回收站中。",
           "unsaved-changes": "未保存的修改写入失败，已取消重命名。",
-          "system-open-failed": "系统应用无法打开此文件。"
+          "system-open-failed": "系统应用无法打开此文件。",
+          "workspace-unavailable": "会话工作树不可用，可能已被收回或删除。",
+          "workspace-outside-project": "该目录不属于当前项目的 Git 工作树。"
         }
       }
     },
-    "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？"
+    "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
+    "rootUnavailable": {
+      "released": "会话工作树已收回",
+      "unresolved": "会话工作树不可用",
+      "browseMain": "浏览主工作区"
+    }
   },
   "executionPlan": {
     "configureAuto": "AUTO 配置",

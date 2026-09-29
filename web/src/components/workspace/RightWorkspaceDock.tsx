@@ -6,15 +6,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, browserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { MAIN_WORKSPACE_TAB_ROOT, conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, browserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock({
-  sourceControlWorkspacePath = null,
   acpChatEventPageSize,
   acpChatEventWindowPageCount,
 }: {
-  sourceControlWorkspacePath?: string | null;
   acpChatEventPageSize?: number;
   acpChatEventWindowPageCount?: number;
 }) {
@@ -56,12 +54,12 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
     <section
       className="flex h-full min-h-0 min-w-0 flex-col bg-background"
       aria-label={t('workspace.rightWorkspace')}
-      data-right-workspace-active-source-control-path={active?.kind === 'source-control' ? active.workspacePath ?? 'main' : undefined}
+      data-right-workspace-active-source-control-path={active?.kind === 'source-control' ? active.root.workspacePath ?? 'main' : undefined}
       data-right-workspace-dock="true"
       data-theme-role="panel"
     >
       {tabs.length > 0 ? <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
-        <WorkspaceEntryOptions presentation="menu" sourceControlWorkspacePath={sourceControlWorkspacePath} />
+        <WorkspaceEntryOptions presentation="menu" />
         <div
           ref={tabStripRef}
           className="gold-themed-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
@@ -124,7 +122,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
         {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
         {!active ? (
           <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">
-            <WorkspaceEntryOptions presentation="empty" sourceControlWorkspacePath={sourceControlWorkspacePath} />
+            <WorkspaceEntryOptions presentation="empty" />
           </div>
         ) : null}
       </div>
@@ -140,9 +138,8 @@ type WorkspaceEntryOption = {
   open: () => void;
 };
 
-function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
+function WorkspaceEntryOptions({ presentation }: {
   presentation: 'empty' | 'menu';
-  sourceControlWorkspacePath: string | null;
 }) {
   const { t } = useTranslation();
   const { conversationDirectoryEntry, openResource, projectId, scopeKey } = useRightWorkspace();
@@ -159,6 +156,9 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
           key: fileBrowserWorkspaceResourceKey(projectId),
           scopeKey,
           projectId,
+          // The provider projects both roots onto the current session.
+          root: MAIN_WORKSPACE_TAB_ROOT,
+          browseMain: false,
           title: t('workspace.files'),
           description: t('workspace.browseWorkspaceFiles'),
           attention: false,
@@ -175,7 +175,8 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
           key: sourceControlWorkspaceResourceKey(projectId),
           scopeKey,
           projectId,
-          workspacePath: sourceControlWorkspacePath,
+          root: MAIN_WORKSPACE_TAB_ROOT,
+          browseMain: false,
           title: t('sourceControl.title'),
           description: t('sourceControl.description'),
           attention: false,
@@ -212,7 +213,7 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
       });
     }
     return entries;
-  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, sourceControlWorkspacePath, t]);
+  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, t]);
 
   if (presentation === 'menu') {
     return (

@@ -789,23 +789,23 @@ export const desktopApi: RuntimeApi = {
   saveLastConversationWorkspace(projectId) {
     return invokeCommand('save_last_conversation_workspace', { projectId });
   },
-  listWorkspaceDirectory(projectId, relativePath) {
-    return invokeCommand('list_workspace_directory', { input: { projectId, relativePath } });
+  listWorkspaceDirectory(root, relativePath) {
+    return invokeCommand('list_workspace_directory', { input: { ...root, relativePath } });
   },
-  openWorkspacePathInFileManager(projectId, relativePath = '') {
-    return invokeCommand('open_workspace_path_in_file_manager', { input: { projectId, relativePath } });
+  openWorkspacePathInFileManager(root, relativePath = '') {
+    return invokeCommand('open_workspace_path_in_file_manager', { input: { ...root, relativePath } });
   },
   createWorkspaceEntry(input) {
     return invokeCommand('create_workspace_entry', { input });
   },
-  renameWorkspaceEntry(projectId, relativePath, newName) {
-    return invokeCommand('rename_workspace_entry', { input: { projectId, relativePath, newName } });
+  renameWorkspaceEntry(root, relativePath, newName) {
+    return invokeCommand('rename_workspace_entry', { input: { ...root, relativePath, newName } });
   },
-  deleteWorkspaceEntry(projectId, relativePath) {
-    return invokeCommand('delete_workspace_entry', { input: { projectId, relativePath } });
+  deleteWorkspaceEntry(root, relativePath) {
+    return invokeCommand('delete_workspace_entry', { input: { ...root, relativePath } });
   },
-  restoreWorkspaceEntry(projectId, receiptId) {
-    return invokeCommand('restore_workspace_entry', { input: { projectId, receiptId } });
+  restoreWorkspaceEntry(root, receiptId) {
+    return invokeCommand('restore_workspace_entry', { input: { ...root, receiptId } });
   },
   listConversationDirectory(input) {
     return invokeCommand('list_conversation_directory', { input });
@@ -814,14 +814,14 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('open_conversation_directory_path_in_file_manager', { input });
   },
   readConversationDirectoryFile(input) { return invokeCommand('read_conversation_directory_file', { input }); },
-  searchWorkspaceFiles(projectId, query, requestId, limit) {
-    return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
+  searchWorkspaceFiles(root, query, requestId, limit) {
+    return invokeCommand('search_workspace_files', { input: { ...root, query, requestId, limit } });
   },
-  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
-    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref, baseCanonicalPath } });
+  resolveWorkspaceFileLink(root, rawHref, baseCanonicalPath = null) {
+    return invokeCommand('resolve_workspace_file_link', { input: { ...root, rawHref, baseCanonicalPath } });
   },
-  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
-    return invokeCommand('read_file_resource', { input: { projectId, canonicalPath, externalAccessToken, preferSource } });
+  readFileResource(root, canonicalPath, externalAccessToken = null, preferSource = false) {
+    return invokeCommand('read_file_resource', { input: { ...root, canonicalPath, externalAccessToken, preferSource } });
   },
   resolveMarkdownImage(input) {
     return invokeCommand('resolve_markdown_image', { input });
@@ -838,11 +838,11 @@ export const desktopApi: RuntimeApi = {
   releaseExternalFileAccess(token) {
     return invokeCommand('release_external_file_access', { input: { token } });
   },
-  startWorkspaceFileWatch(projectId) {
-    return invokeCommand('start_workspace_file_watch', { input: { projectId } });
+  startWorkspaceFileWatch(root) {
+    return invokeCommand('start_workspace_file_watch', { input: root });
   },
-  stopWorkspaceFileWatch(projectId) {
-    return invokeCommand('stop_workspace_file_watch', { input: { projectId } });
+  stopWorkspaceFileWatch(root) {
+    return invokeCommand('stop_workspace_file_watch', { input: root });
   },
   workspaceFilePreviewUrl(token, staticFrame = false) {
     return convertFileSrc(staticFrame ? `${token}/static` : token, 'gold-band-preview');

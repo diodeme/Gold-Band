@@ -727,7 +727,7 @@ function RegistryHelp({ diagnostic }: { diagnostic?: ManagedAgentDiagnosticVm | 
     event.stopPropagation();
     if (!workspace?.scopeKey) return;
     void openWebTarget(ACP_REGISTRY_URL, {
-      projectId: workspace.projectId,
+      root: null,
       scopeKey: workspace.scopeKey,
       openResource: workspace.openResource,
       browserTitle: t('workspace.browser.title'),

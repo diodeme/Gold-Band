@@ -1,6 +1,6 @@
 import { getRuntimeApi } from './api/client';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, ResolvedColorScheme } from './types';
+import type { CreateWorkspaceEntryInput, ResolvedColorScheme, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -824,28 +824,28 @@ export function saveLastConversationWorkspace(projectId: string) {
   return getRuntimeApi().saveLastConversationWorkspace(projectId);
 }
 
-export function listWorkspaceDirectory(projectId: string, relativePath = '') {
-  return getRuntimeApi().listWorkspaceDirectory(projectId, relativePath);
+export function listWorkspaceDirectory(root: WorkspaceRootRef, relativePath = '') {
+  return getRuntimeApi().listWorkspaceDirectory(root, relativePath);
 }
 
-export function openWorkspacePathInFileManager(projectId: string, relativePath = '') {
-  return getRuntimeApi().openWorkspacePathInFileManager(projectId, relativePath);
+export function openWorkspacePathInFileManager(root: WorkspaceRootRef, relativePath = '') {
+  return getRuntimeApi().openWorkspacePathInFileManager(root, relativePath);
 }
 
 export function createWorkspaceEntry(input: CreateWorkspaceEntryInput) {
   return getRuntimeApi().createWorkspaceEntry(input);
 }
 
-export function renameWorkspaceEntry(projectId: string, relativePath: string, newName: string) {
-  return getRuntimeApi().renameWorkspaceEntry(projectId, relativePath, newName);
+export function renameWorkspaceEntry(root: WorkspaceRootRef, relativePath: string, newName: string) {
+  return getRuntimeApi().renameWorkspaceEntry(root, relativePath, newName);
 }
 
-export function deleteWorkspaceEntry(projectId: string, relativePath: string) {
-  return getRuntimeApi().deleteWorkspaceEntry(projectId, relativePath);
+export function deleteWorkspaceEntry(root: WorkspaceRootRef, relativePath: string) {
+  return getRuntimeApi().deleteWorkspaceEntry(root, relativePath);
 }
 
-export function restoreWorkspaceEntry(projectId: string, receiptId: string) {
-  return getRuntimeApi().restoreWorkspaceEntry(projectId, receiptId);
+export function restoreWorkspaceEntry(root: WorkspaceRootRef, receiptId: string) {
+  return getRuntimeApi().restoreWorkspaceEntry(root, receiptId);
 }
 
 export function listConversationDirectory(input: import('./api/client').ConversationDirectoryInput) {
@@ -860,12 +860,12 @@ export function readConversationDirectoryFile(input: import('./api/client').Conv
   return getRuntimeApi().readConversationDirectoryFile(input);
 }
 
-export function searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number) {
-  return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
+export function searchWorkspaceFiles(root: WorkspaceRootRef, query: string, requestId: string, limit: number) {
+  return getRuntimeApi().searchWorkspaceFiles(root, query, requestId, limit);
 }
 
-export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null) {
-  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
+export function resolveWorkspaceFileLink(root: WorkspaceRootRef, rawHref: string, baseCanonicalPath?: string | null) {
+  return getRuntimeApi().resolveWorkspaceFileLink(root, rawHref, baseCanonicalPath);
 }
 
 export function browserResolveLocalHtml(input: Parameters<ReturnType<typeof getRuntimeApi>['browserResolveLocalHtml']>[0]) {
@@ -876,8 +876,8 @@ export function browserOpenInSystemBrowser(url: string) {
   return getRuntimeApi().browserOpenInSystemBrowser(url);
 }
 
-export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
-  return getRuntimeApi().readFileResource(projectId, canonicalPath, externalAccessToken, preferSource);
+export function readFileResource(root: WorkspaceRootRef, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
+  return getRuntimeApi().readFileResource(root, canonicalPath, externalAccessToken, preferSource);
 }
 
 export function resolveMarkdownImage(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveMarkdownImage']>[0]) {
@@ -900,12 +900,12 @@ export function releaseExternalFileAccess(token: string) {
   return getRuntimeApi().releaseExternalFileAccess(token);
 }
 
-export function startWorkspaceFileWatch(projectId: string) {
-  return getRuntimeApi().startWorkspaceFileWatch(projectId);
+export function startWorkspaceFileWatch(root: WorkspaceRootRef) {
+  return getRuntimeApi().startWorkspaceFileWatch(root);
 }
 
-export function stopWorkspaceFileWatch(projectId: string) {
-  return getRuntimeApi().stopWorkspaceFileWatch(projectId);
+export function stopWorkspaceFileWatch(root: WorkspaceRootRef) {
+  return getRuntimeApi().stopWorkspaceFileWatch(root);
 }
 
 export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeWorkspaceFileChanges']>>[0]) {

@@ -7,9 +7,16 @@ import {
 } from './workspace-file-reference-bridge';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 import {
-  normalizeSourceControlWorkspacePath,
-  sameSourceControlWorkspacePath,
-} from './source-control/source-control-identity';
+  MAIN_WORKSPACE_TAB_ROOT,
+  effectiveWorkspaceTabRoot,
+  normalizeWorkspacePath,
+  sameWorkspacePath,
+  sameWorkspaceTabRoot,
+  workspaceRootRef,
+  workspaceTabRootForLocation,
+  type WorkspaceTabRoot,
+} from '@/lib/workspace-root';
+import type { SessionWorkLocationVm, WorkspaceRootRef } from '@/types';
 
 export interface AgentTranscriptLocator {
   projectId: string;
@@ -58,9 +65,19 @@ interface RightWorkspaceResourceBase {
   attention: boolean;
 }
 
-export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
-  kind: 'file-browser';
+/**
+ * Tabs whose content lives under the session's work location. `root` is a
+ * projection of the current session; `browseMain` records the user's choice
+ * to view the project root while the session's worktree is unavailable.
+ */
+interface WorkspaceRootedResource {
   projectId: string;
+  root: WorkspaceTabRoot;
+  browseMain: boolean;
+}
+
+export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & WorkspaceRootedResource & {
+  kind: 'file-browser';
   selectedFile?: FileWorkspaceResource | null;
 };
 
@@ -80,6 +97,8 @@ export type AgentTranscriptResource = RightWorkspaceResourceBase & {
 export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'file';
   projectId: string;
+  /** Root the file was resolved in; `null` is the project root. */
+  workspacePath: string | null;
   locator: import('@/types').WorkspaceFileLocatorVm;
   target: import('@/types').FileTargetLocationVm | null;
   targetRevision: number;
@@ -108,10 +127,8 @@ export type TurnAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
   attachmentId: string;
 };
 
-export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
+export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & WorkspaceRootedResource & {
   kind: 'source-control';
-  projectId: string;
-  workspacePath?: string | null;
 };
 
 export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
@@ -234,6 +251,11 @@ export interface RightWorkspaceCommands {
   openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
   closeTab: (key: string) => void | Promise<void>;
   getResource: (key: string) => RightWorkspaceResource | null;
+  /**
+   * Root new file operations (links, mentions, references) resolve against:
+   * the file tab's root, else the session's. `null` while it is unavailable.
+   */
+  currentFileRoot: () => WorkspaceRootRef | null;
   aliasOpenDraftAttachment: (attachmentId: string, previewAliasKey: string) => boolean;
   activatePreviewAlias: (previewAliasKey: string) => boolean;
 }
@@ -471,6 +493,9 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
           key: fileBrowserWorkspaceResourceKey(action.resource.projectId),
           scopeKey: action.resource.scopeKey,
           projectId: action.resource.projectId,
+          root: existingFileBrowser?.root
+            ?? { kind: 'available' as const, workspacePath: action.resource.workspacePath },
+          browseMain: existingFileBrowser?.browseMain ?? false,
           title: existingFileBrowser?.title ?? action.resource.title,
           description: existingFileBrowser?.description ?? action.resource.description,
           attention: action.resource.attention,
@@ -552,13 +577,14 @@ export function RightWorkspaceProvider({
   initialWidth,
   scope = DEFAULT_SCOPE,
   store,
-  sourceControlWorkspacePath = null,
+  workLocation = null,
   children,
 }: {
   initialWidth?: number;
   scope?: ConversationWorkspaceScope | null;
   store?: ConversationWorkspaceStore;
-  sourceControlWorkspacePath?: string | null;
+  /** Work location of the presented session; `null` uses the project root. */
+  workLocation?: SessionWorkLocationVm | null;
   children: ReactNode;
 }) {
   const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridgeState();
@@ -567,9 +593,10 @@ export function RightWorkspaceProvider({
   const effectiveStore = store ?? internalStoreRef.current;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
-  const sourceControlWorkspacePathRef = useRef(sourceControlWorkspacePath);
-  sourceControlWorkspacePathRef.current = sourceControlWorkspacePath;
-  const sourceControlWorkspaceIdentity = normalizeSourceControlWorkspacePath(sourceControlWorkspacePath);
+  const sessionRoot = workspaceTabRootForLocation(workLocation);
+  const sessionRootRef = useRef(sessionRoot);
+  sessionRootRef.current = sessionRoot;
+  const sessionRootIdentity = `${sessionRoot.kind}:${sessionRoot.kind === 'unavailable' ? sessionRoot.reason : ''}:${normalizeWorkspacePath(sessionRoot.workspacePath) ?? ''}`;
   const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
@@ -577,14 +604,14 @@ export function RightWorkspaceProvider({
   const previousScopeRef = useRef<ConversationWorkspaceScope | null>(scope);
   const [rendererRevision, renderRenderer] = useReducer((currentRevision) => currentRevision + 1, 0);
   const peekProjectedState = useCallback((targetScope: ConversationWorkspaceScope) => (
-    projectSourceControlWorkspaceState(
+    projectWorkspaceTabRoots(
       effectiveStore.peek(targetScope),
-      sourceControlWorkspacePathRef.current,
+      sessionRootRef.current,
     )
   ), [effectiveStore]);
   const sessionState = useMemo(
     () => scope ? peekProjectedState(scope) : createInitialRightWorkspaceState(),
-    [peekProjectedState, revision, scope, sourceControlWorkspaceIdentity],
+    [peekProjectedState, revision, scope, sessionRootIdentity],
   );
   const shellState = useMemo(
     () => effectiveStore.peekShellState(scope, initialWidth),
@@ -638,6 +665,15 @@ export function RightWorkspaceProvider({
     const currentScope = scopeRef.current;
     if (!currentScope) return null;
     return peekProjectedState(currentScope).tabs.find((tab) => tab.key === key) ?? null;
+  }, [peekProjectedState]);
+  const currentFileRoot = useCallback((): WorkspaceRootRef | null => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return null;
+    const fileBrowser = peekProjectedState(currentScope).tabs.find(
+      (tab): tab is FileBrowserWorkspaceResource => tab.kind === 'file-browser' && tab.projectId === currentScope.projectId,
+    );
+    const root = fileBrowser?.root ?? sessionRootRef.current;
+    return root.kind === 'available' ? workspaceRootRef(currentScope.projectId, root.workspacePath) : null;
   }, [peekProjectedState]);
   const openWorkspace = useCallback(() => {
     const currentScope = scopeRef.current;
@@ -739,9 +775,10 @@ export function RightWorkspaceProvider({
     openResource,
     closeTab,
     getResource,
+    currentFileRoot,
     aliasOpenDraftAttachment,
     activatePreviewAlias,
-  }), [activatePreviewAlias, aliasOpenDraftAttachment, closeTab, getResource, openResource, scope?.key, scope?.projectId]);
+  }), [activatePreviewAlias, aliasOpenDraftAttachment, closeTab, currentFileRoot, getResource, openResource, scope?.key, scope?.projectId]);
   return (
     <WorkspaceFileReferenceBridgeProvider
       bridge={workspaceFileReferenceBridge.bridge}
@@ -804,20 +841,34 @@ export function sourceControlWorkspaceResourceKey(projectId: string) {
   return `source-control:${projectId}`;
 }
 
-export function projectSourceControlWorkspaceState(
+/**
+ * Point file and source-control tabs at the session's work location. A file
+ * selected under a different root is a different file and is deselected; one
+ * whose root became unavailable stays selected so returning restores it.
+ */
+export function projectWorkspaceTabRoots(
   state: RightWorkspaceSessionState,
-  workspacePath: string | null | undefined,
+  sessionRoot: WorkspaceTabRoot,
 ): RightWorkspaceSessionState {
   let changed = false;
   const tabs = state.tabs.map((tab) => {
-    if (tab.kind !== 'source-control' || sameSourceControlWorkspacePath(tab.workspacePath, workspacePath)) {
-      return tab;
-    }
+    if (tab.kind !== 'source-control' && tab.kind !== 'file-browser') return tab;
+    const browseMain = sessionRoot.kind === 'unavailable' && tab.browseMain;
+    const root = effectiveWorkspaceTabRoot(sessionRoot, browseMain);
+    if (tab.browseMain === browseMain && sameWorkspaceTabRoot(tab.root, root)) return tab;
     changed = true;
-    return { ...tab, workspacePath: workspacePath ?? null };
+    if (tab.kind === 'source-control') return { ...tab, root, browseMain };
+    const selectedFile = tab.selectedFile
+      && root.kind === 'available'
+      && !sameWorkspacePath(tab.selectedFile.workspacePath, root.workspacePath)
+      ? null
+      : tab.selectedFile;
+    return { ...tab, root, browseMain, selectedFile };
   });
   return changed ? { ...state, tabs } : state;
 }
+
+export { MAIN_WORKSPACE_TAB_ROOT };
 
 export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
   return `scheduled-task-config:${scopeKey}`;

@@ -123,6 +123,7 @@ mod tests {
         ResolvedWorkspaceRoot {
             project_id: "project-1".to_string(),
             path: std::fs::canonicalize(path).unwrap(),
+            workspace_scope_path: None,
             config: gold_band::config::WorkspaceFilesConfig::default(),
         }
     }

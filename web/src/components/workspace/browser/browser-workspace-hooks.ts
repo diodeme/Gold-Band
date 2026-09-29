@@ -7,7 +7,7 @@ export function useOpenWebTarget() {
   const { t } = useTranslation();
   const workspace = useRightWorkspaceCommands();
   return (href: string) => openWebTarget(href, {
-    projectId: workspace.projectId,
+    root: workspace.currentFileRoot(),
     scopeKey: workspace.scopeKey,
     openResource: workspace.openResource,
     browserTitle: t('workspace.browser.title'),

@@ -27,7 +27,7 @@ import {
   useWorkspaceFileReferenceCommands,
   useWorkspaceFileReferencePresentation,
 } from '../workspace-file-reference-bridge';
-import type { WorkspaceDirectoryEntryVm } from '@/types';
+import type { WorkspaceDirectoryEntryVm, WorkspaceRootRef } from '@/types';
 import {
   FILE_TREE_DRAFT_ID,
   fileExplorerStore,
@@ -42,7 +42,7 @@ import { fileContentStore } from './file-content-store';
 import { WorkspaceDirectoryContextMenu, type WorkspaceEntryMenuActions } from './WorkspaceDirectoryContextMenu';
 
 interface WorkspaceFileTreeProps {
-  projectId: string;
+  root: WorkspaceRootRef;
   selectedPath: string | null;
   onOpenFile: (entry: WorkspaceDirectoryEntryVm) => void;
 }
@@ -289,13 +289,13 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
   );
 }
 
-export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: WorkspaceFileTreeProps) {
+export function WorkspaceFileTree({ root, selectedPath, onOpenFile }: WorkspaceFileTreeProps) {
   const { t } = useTranslation();
   const workspaceFileReferenceCommands = useWorkspaceFileReferenceCommands();
   const workspaceFileReferencePresentation = useWorkspaceFileReferencePresentation();
   const canReferenceToConversation = workspaceFileReferenceCommands?.available === true;
   const readOnly = useReadOnlyExperience();
-  const snapshot = useFileExplorerSnapshot(projectId);
+  const snapshot = useFileExplorerSnapshot(root);
   const displayModeToggle = fileTreeDisplayModeToggle(snapshot.displayMode);
   const treeNodes = useMemo(
     () => fileTreeView(fileTreeWithDraft(snapshot.roots, snapshot.draft), snapshot.displayMode),
@@ -318,9 +318,9 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    void fileExplorerStore.loadRoot(projectId);
+    void fileExplorerStore.loadRoot(root);
     restoringScrollRef.current = true;
-    const savedScrollTop = fileExplorerStore.snapshot(projectId).treeScrollTop;
+    const savedScrollTop = fileExplorerStore.snapshot(root).treeScrollTop;
     let settleFrame: number | null = null;
     const frame = requestAnimationFrame(() => {
       treeRef.current?.scrollToOffset(savedScrollTop);
@@ -332,7 +332,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
       if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
       if (contextMenuFrameRef.current !== null) cancelAnimationFrame(contextMenuFrameRef.current);
     };
-  }, [projectId, snapshot.displayMode]);
+  }, [root, snapshot.displayMode]);
 
   useEffect(() => {
     const tree = treeRef.current;
@@ -349,14 +349,14 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
 
   useEffect(() => {
     if (!selectedPath) {
-      fileExplorerStore.takeSelectionReveal(projectId, null);
+      fileExplorerStore.takeSelectionReveal(root, null);
       pendingRevealPathRef.current = null;
       return;
     }
-    if (fileExplorerStore.takeSelectionReveal(projectId, selectedPath)) {
+    if (fileExplorerStore.takeSelectionReveal(root, selectedPath)) {
       pendingRevealPathRef.current = selectedPath;
     }
-  }, [projectId, selectedPath]);
+  }, [root, selectedPath]);
 
   useEffect(() => {
     const reveal = consumePendingTreeReveal(pendingRevealPathRef.current, treeNodes);
@@ -385,10 +385,10 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     showActionFailure({ messageKey: 'workspace.filesPanel.pathCopyFailed' });
   }, [showActionFailure]);
   const onOpenInFileManager = useCallback((relativePath: string) => {
-    void openWorkspacePathInFileManager(projectId, relativePath).catch(() => {
+    void openWorkspacePathInFileManager(root, relativePath).catch(() => {
       showActionFailure({ messageKey: 'workspace.filesPanel.fileManagerOpenFailed' });
     });
-  }, [projectId, showActionFailure]);
+  }, [root, showActionFailure]);
   const focusTree = useCallback(() => asideRef.current?.focus({ preventScroll: true }), []);
   const treeNodesRef = useRef(treeNodes);
   treeNodesRef.current = treeNodes;
@@ -401,9 +401,9 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
       if (node) pendingEditRef.current = { kind: 'rename', nodeId: node.id };
     },
     onDelete: (entry) => {
-      setDeleteTarget({ entry, unsaved: fileContentStore.hasUnsavedWithin(projectId, entry.canonicalPath) });
+      setDeleteTarget({ entry, unsaved: fileContentStore.hasUnsavedWithin(root.projectId, entry.canonicalPath) });
     },
-  }), [projectId, readOnly]);
+  }), [root, readOnly]);
   /** Radix restores focus to the trigger on close, which would blur a freshly mounted name editor. */
   const onMenuCloseAutoFocus = useCallback((event: Event) => {
     const edit = pendingEditRef.current;
@@ -411,47 +411,47 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     pendingEditRef.current = null;
     event.preventDefault();
     if (edit.kind === 'rename') setRenamingId(edit.nodeId);
-    else void fileExplorerStore.startDraft(projectId, edit.parentRelativePath, edit.entryKind);
-  }, [projectId]);
+    else void fileExplorerStore.startDraft(root, edit.parentRelativePath, edit.entryKind);
+  }, [root]);
   const onSubmitName = useCallback((entry: FileTreeViewNode, name: string) => {
     void (async () => {
       if (entry.id === FILE_TREE_DRAFT_ID) {
-        const result = await fileExplorerStore.createEntry(projectId, name);
+        const result = await fileExplorerStore.createEntry(root, name);
         reportOperation(result);
         if (result.status === 'done' && result.entry?.kind === 'file') onOpenFile(result.entry);
       } else {
-        const result = await fileExplorerStore.renameEntry(projectId, entry, name);
+        const result = await fileExplorerStore.renameEntry(root, entry, name);
         setRenamingId(null);
         reportOperation(result);
       }
       focusTree();
     })();
-  }, [focusTree, onOpenFile, projectId, reportOperation]);
+  }, [focusTree, onOpenFile, root, reportOperation]);
   const onCancelName = useCallback((entry: FileTreeViewNode) => {
-    if (entry.id === FILE_TREE_DRAFT_ID) fileExplorerStore.cancelDraft(projectId);
+    if (entry.id === FILE_TREE_DRAFT_ID) fileExplorerStore.cancelDraft(root);
     else setRenamingId(null);
     focusTree();
-  }, [focusTree, projectId]);
+  }, [focusTree, root]);
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    const result = await fileExplorerStore.deleteEntry(projectId, deleteTarget.entry);
+    const result = await fileExplorerStore.deleteEntry(root, deleteTarget.entry);
     setDeleting(false);
     setDeleteTarget(null);
     reportOperation(result);
-  }, [deleteTarget, projectId, reportOperation]);
+  }, [deleteTarget, root, reportOperation]);
   const onTreeKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
     if (readOnly || !isTreeUndoShortcut(event.nativeEvent)) return;
     event.preventDefault();
-    void fileExplorerStore.undo(projectId).then(reportOperation);
-  }, [projectId, readOnly, reportOperation]);
+    void fileExplorerStore.undo(root).then(reportOperation);
+  }, [root, readOnly, reportOperation]);
   const onReferenceToConversation = useCallback((entry: WorkspaceDirectoryEntryVm) => {
     if (!workspaceFileReferenceCommands?.available) return { kind: 'unavailable' } as const;
     return workspaceFileReferenceCommands.addWorkspaceFileRef(
-      composerWorkspaceFileRefFromEntry(projectId, entry),
+      composerWorkspaceFileRefFromEntry(root.projectId, entry),
       workspaceFileReferencePresentation,
     );
-  }, [projectId, workspaceFileReferenceCommands, workspaceFileReferencePresentation]);
+  }, [root, workspaceFileReferenceCommands, workspaceFileReferencePresentation]);
   const onContextMenuOpenChange = useCallback((open: boolean) => {
     contextMenuOpenRef.current = open;
     suppressContextMenuActivationRef.current = true;
@@ -501,7 +501,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           <Input
             variant="toolbar"
             value={snapshot.searchQuery}
-            onChange={(event) => fileExplorerStore.setSearchQuery(projectId, event.target.value)}
+            onChange={(event) => fileExplorerStore.setSearchQuery(root, event.target.value)}
             placeholder={t('workspace.filesPanel.filterPlaceholder')}
             className="h-8 pl-8 pr-8 text-xs"
           />
@@ -511,7 +511,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               variant="ghost"
               size="icon-xs"
               className="absolute right-1 top-1/2 -translate-y-1/2"
-              onClick={() => fileExplorerStore.setSearchQuery(projectId, '')}
+              onClick={() => fileExplorerStore.setSearchQuery(root, '')}
               aria-label={t('workspace.filesPanel.clearSearch')}
             >
               <X className="size-3" />
@@ -525,7 +525,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               variant="ghost"
               size="icon-sm"
               className="size-8 text-muted-foreground"
-              onClick={() => fileExplorerStore.setDisplayMode(projectId, displayModeToggle.targetMode)}
+              onClick={() => fileExplorerStore.setDisplayMode(root, displayModeToggle.targetMode)}
               aria-label={t(displayModeToggle.labelKey)}
             >
               {displayModeToggle.currentIcon === 'tree' ? <ListTree className="size-4" /> : <ListCollapse className="size-4" />}
@@ -547,7 +547,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
         ) : snapshot.status === 'error' || snapshot.searchStatus === 'error' ? (
           <div className="space-y-2 px-2 py-3 text-xs text-muted-foreground">
             <p>{t(`workspace.filesPanel.errors.${snapshot.errorCode}`, snapshot.errorCode ?? '')}</p>
-            <Button size="sm" variant="outline" onClick={() => void fileExplorerStore.loadRoot(projectId, true)}>{t('workspace.filesPanel.retry')}</Button>
+            <Button size="sm" variant="outline" onClick={() => void fileExplorerStore.loadRoot(root, true)}>{t('workspace.filesPanel.retry')}</Button>
           </div>
         ) : searching ? (
           <div className="gold-themed-scrollbar h-full overflow-auto py-1">
@@ -560,7 +560,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
                       type="button"
                       className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       onClick={() => {
-                        void fileExplorerStore.revealFile(projectId, entry.relativePath).then(() => onOpenFile(entry));
+                        void fileExplorerStore.revealFile(root, entry.relativePath).then(() => onOpenFile(entry));
                       }}
                     >
                       <Icon className="mt-0.5 size-3.5 shrink-0" />
@@ -610,13 +610,13 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               onToggle={(id) => {
                 if (syncingExpandedRef.current) return;
                 const entry = findTreeNodeById(treeNodes, id);
-                if (entry) void fileExplorerStore.toggleDirectory(projectId, entry.relativePath, !snapshot.expanded.has(entry.relativePath));
+                if (entry) void fileExplorerStore.toggleDirectory(root, entry.relativePath, !snapshot.expanded.has(entry.relativePath));
               }}
               className="gold-themed-scrollbar !overflow-x-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
               rowClassName="w-full px-0.5"
               onScroll={({ scrollOffset, scrollUpdateWasRequested }) => {
                 if (!restoringScrollRef.current && !scrollUpdateWasRequested) {
-                  fileExplorerStore.setTreeScrollTop(projectId, scrollOffset);
+                  fileExplorerStore.setTreeScrollTop(root, scrollOffset);
                 }
               }}
               onActivate={(node) => {

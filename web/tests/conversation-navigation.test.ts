@@ -6,7 +6,7 @@ import {
   conversationPageForIntervention,
   conversationPageMatchesRun,
   conversationPageTargetsTask,
-  conversationSourceControlWorkspacePath,
+  conversationWorkLocation,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
@@ -330,13 +330,14 @@ describe('conversation navigation presentation transaction', () => {
     expect(findConversationLeafForPage(tree, page)).toBe(dynamicLeaf);
   });
 
-  it('binds source control to the selected dynamic worktree instead of its source branch workspace', () => {
+  it('projects the selected session work location instead of its source branch workspace', () => {
+    const worker = { kind: 'worktree', path: 'D:/repo/.gold-band/worktrees/worker', branch: 'gb-worker' } as const;
     const mainLeaf = {
       roundId: 'round-001',
       nodeId: 'ai-dynamic',
       attemptId: 'attempt-001',
       pathLabel: 'ai-dynamic/attempt-001',
-      worktreePath: null,
+      workLocation: { kind: 'main' },
     };
     const dynamicLeaf = {
       roundId: 'round-001',
@@ -345,7 +346,7 @@ describe('conversation navigation presentation transaction', () => {
       outerNodeId: 'ai-dynamic',
       outerAttemptId: 'attempt-001',
       pathLabel: 'worker/attempt-001',
-      worktreePath: 'D:/repo/.gold-band/worktrees/worker',
+      workLocation: worker,
     };
     const run = {
       ...oldRun,
@@ -361,19 +362,17 @@ describe('conversation navigation presentation transaction', () => {
     } as ConversationRunVm;
     const dynamicPage = conversationPageForSession(run, dynamicLeaf);
 
-    expect(conversationSourceControlWorkspacePath(dynamicPage, run))
-      .toBe('D:/repo/.gold-band/worktrees/worker');
-    expect(conversationSourceControlWorkspacePath({
+    expect(conversationWorkLocation(dynamicPage, run)).toEqual(worker);
+    expect(conversationWorkLocation({
       kind: 'conversation-run',
       projectId: run.projectId,
       taskId: run.taskId,
       taskUuid: run.taskUuid,
       runId: run.runId,
-    }, run)).toBe('D:/repo/.gold-band/worktrees/worker');
+    }, run)).toEqual(worker);
 
     const staleMainPage = conversationPageForSession(run, mainLeaf);
-    expect(conversationSourceControlWorkspacePath(staleMainPage, run))
-      .toBe('D:/repo/.gold-band/worktrees/worker');
+    expect(conversationWorkLocation(staleMainPage, run)).toEqual(worker);
 
     const mainSelectedRun = {
       ...run,
@@ -382,7 +381,7 @@ describe('conversation navigation presentation transaction', () => {
         selectedSessionKey: 'round-001/ai-dynamic/attempt-001',
       },
     } as ConversationRunVm;
-    expect(conversationSourceControlWorkspacePath(staleMainPage, mainSelectedRun)).toBeNull();
+    expect(conversationWorkLocation(staleMainPage, mainSelectedRun)).toEqual({ kind: 'main' });
 
     const selectionMissingRun = {
       ...run,
@@ -391,9 +390,22 @@ describe('conversation navigation presentation transaction', () => {
         selectedSessionKey: 'round-001/missing/attempt-001',
       },
     } as ConversationRunVm;
-    expect(conversationSourceControlWorkspacePath(dynamicPage, selectionMissingRun))
-      .toBe('D:/repo/.gold-band/worktrees/worker');
-    expect(conversationSourceControlWorkspacePath({ kind: 'conversation-home' }, run)).toBeNull();
+    expect(conversationWorkLocation(dynamicPage, selectionMissingRun)).toEqual(worker);
+
+    // A reclaimed worktree stays unavailable instead of collapsing to the project root.
+    const released = { kind: 'unavailable', reason: 'released', path: worker.path } as const;
+    const releasedRun = {
+      ...run,
+      sessionTree: {
+        ...run.sessionTree,
+        rounds: [{
+          roundId: 'round-001',
+          nodes: [{ attempts: [mainLeaf], outerNodes: [{ attempts: [{ ...dynamicLeaf, workLocation: released }] }] }],
+        }],
+      },
+    } as ConversationRunVm;
+    expect(conversationWorkLocation(dynamicPage, releasedRun)).toEqual(released);
+    expect(conversationWorkLocation({ kind: 'conversation-home' }, run)).toBeNull();
   });
 });
 

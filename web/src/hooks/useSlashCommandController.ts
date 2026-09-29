@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
-import type { AcpCommandItemVm, WorkspaceDirectoryEntryVm } from '@/types';
+import type { AcpCommandItemVm, WorkspaceDirectoryEntryVm, WorkspaceRootRef } from '@/types';
 import { useMentionWorkspaceFiles } from '@/hooks/useMentionWorkspaceFiles';
 import {
   type MentionMenuLabels,
@@ -39,7 +39,7 @@ interface UseSlashCommandControllerOptions {
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
   /** Turns `@` into a categorized menu of workspace files and the catalog's roles. */
   mention?: {
-    projectId: string | null | undefined;
+    root: WorkspaceRootRef | null;
     labels: MentionMenuLabels;
     onSelectWorkspaceFile: (entry: WorkspaceDirectoryEntryVm) => void;
   };
@@ -128,7 +128,7 @@ export function useSlashCommandController({
   const [mentionView, setMentionView] = useState<MentionView>(MENTION_ROOT_VIEW);
   const mentionQuery = mention && menuQuery?.trigger === '@' && !dismissed ? menuQuery.query : null;
   const mentionFiles = useMentionWorkspaceFiles(
-    mention?.projectId,
+    mention?.root,
     mentionQuery === null ? null : mentionFilesRequest(mentionView, mentionQuery),
   );
 
@@ -146,7 +146,7 @@ export function useSlashCommandController({
   }, [contextKey, input, menuQuery]);
 
   const mentionLabels = mention?.labels;
-  const filesAvailable = Boolean(mention?.projectId);
+  const filesAvailable = Boolean(mention?.root);
   const filteredGroups = useMemo(() => {
     if (!menuQuery) return [];
     const triggerGroups = groupsForComposerMenuTrigger(catalog, menuQuery.trigger);

@@ -3268,7 +3268,12 @@ impl App {
     /// Roots that can back a workspace file reference. The current project uses
     /// this app's repo root. Other registered conversation workspaces come from
     /// global state. Missing or unreadable state still leaves the current root.
-    pub fn prompt_workspace_roots(&self) -> Vec<crate::provider::PromptWorkspaceRoot> {
+    /// Workspace-file roots for a prompt. The current project resolves
+    /// against `session_root`, the directory the receiving session works in.
+    pub fn prompt_workspace_roots(
+        &self,
+        session_root: &Utf8Path,
+    ) -> Vec<crate::provider::PromptWorkspaceRoot> {
         let registered = self
             .load_state()
             .map(|state| {
@@ -3286,9 +3291,19 @@ impl App {
             .unwrap_or_default();
         crate::provider::prompt_workspace_roots(
             &self.paths.project_id,
-            self.paths.repo_root.as_std_path(),
+            session_root.as_std_path(),
             &registered,
         )
+    }
+
+    pub fn attempt_session_workspace_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        dynamic: Option<(&str, &str, &str)>,
+    ) -> Result<Utf8PathBuf> {
+        self::orchestrator::attempt_session_workspace_dir(self, task_id, run_id, round_id, dynamic)
     }
 
     /// 落盘 `state.json`（底层单次原子写入，临时文件替换）。

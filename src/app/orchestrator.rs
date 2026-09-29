@@ -1531,6 +1531,36 @@ fn prepare_run_worktree_background(
     Ok(true)
 }
 
+/// Directory an attempt's session works in, read from canonical run and
+/// dynamic workspace catalog state without Git validation. Relative prompt
+/// workspace-file references resolve here, so a worktree session never reads
+/// the project root's copy of a file.
+pub(crate) fn attempt_session_workspace_dir(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    dynamic: Option<(&str, &str, &str)>,
+) -> Result<Utf8PathBuf> {
+    let Some((outer_node_id, outer_attempt_id, dynamic_node_id)) = dynamic else {
+        return Ok(app
+            .run_status(task_id, run_id)?
+            .worktree
+            .map_or_else(|| app.paths.repo_root.clone(), |worktree| worktree.path));
+    };
+    let graph = load_dynamic_graph(
+        &app.paths
+            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+        &app.paths.repo_root,
+    )?;
+    let node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == dynamic_node_id)
+        .ok_or_else(|| anyhow!("dynamic node `{dynamic_node_id}` is missing"))?;
+    Ok(dynamic_workspace(&graph, &node.workspace_id)?.path.clone())
+}
+
 pub(crate) fn run_workspace_dir(app: &App, task_id: &str, run_id: &str) -> Result<Utf8PathBuf> {
     let run = app.run_status(task_id, run_id)?;
     let Some(worktree) = run.worktree else {
@@ -12952,7 +12982,7 @@ fn build_dynamic_worker_invocation(
             .as_ref()
             .is_some_and(|input| !input.workspace_files.is_empty())
     {
-        ctx.app.prompt_workspace_roots()
+        ctx.app.prompt_workspace_roots(&workspace_dir)
     } else {
         Vec::new()
     };
@@ -17777,6 +17807,19 @@ mod tests {
             prepared_follow_up.session_workspace_dir,
             durable_worktree.path
         );
+        // Prompt workspace-file references resolve inside the session's
+        // worktree, never against the project root's copy.
+        assert_eq!(
+            app.attempt_session_workspace_dir(&task_id, &run.id, &round.id, None)
+                .unwrap(),
+            durable_worktree.path
+        );
+        let prompt_root = app
+            .prompt_workspace_roots(&durable_worktree.path)
+            .into_iter()
+            .find(|root| root.project_id == app.paths.project_id)
+            .unwrap();
+        assert_eq!(prompt_root.root, durable_worktree.path.as_std_path());
 
         let mut tampered = durable.clone();
         tampered.worktree.as_mut().unwrap().path = repo_root;

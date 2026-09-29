@@ -969,6 +969,7 @@ async fn create_conversation_run_inner(
     };
     validate_prompt_workspace_files(
         &app,
+        crate::commands::PromptWorkspaceTarget::ProjectRoot,
         &prompt_input,
         input.attachment_paths.as_deref().map_or(0, <[_]>::len),
     )

@@ -202,8 +202,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       current: false,
       manualCheckPending: false,
       sessionEstablished: true,
-      worktreePath: 'D:/repo/.gold-band/worktrees/child',
-      worktreeBranch: 'gb-dynamic-child',
+      workLocation: { kind: 'worktree', path: 'D:/repo/.gold-band/worktrees/child', branch: 'gb-dynamic-child' },
       artifactCount: 0,
       attachmentCount: 0,
     };

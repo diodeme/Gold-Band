@@ -766,10 +766,7 @@ pub struct AcpSessionVm {
     pub adapter_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter_icon_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_branch: Option<String>,
+    pub work_location: SessionWorkLocationVm,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -3792,8 +3789,8 @@ pub fn dynamic_acp_session_vm(
         outer_node_id,
         outer_attempt_id,
     );
-    let session_worktree =
-        session_worktree_projection(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
+    let work_location =
+        session_work_location(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
@@ -3826,10 +3823,7 @@ pub fn dynamic_acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path: session_worktree
-            .as_ref()
-            .map(|workspace| workspace.path.clone()),
-        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
+        work_location,
         cwd,
         provider_cwd,
         status,
@@ -4203,7 +4197,7 @@ pub fn acp_session_vm(
         .map(str::to_string)
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
     let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
-    let session_worktree = session_worktree_projection(run_worktree.as_ref(), None, None);
+    let work_location = session_work_location(run_worktree.as_ref(), None, None);
 
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
@@ -4228,10 +4222,7 @@ pub fn acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path: session_worktree
-            .as_ref()
-            .map(|workspace| workspace.path.clone()),
-        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
+        work_location,
         cwd,
         provider_cwd,
         status,
@@ -6911,65 +6902,109 @@ fn run_worktree_state_optional(
     Ok(read_json::<RunState>(&path)?.worktree)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionWorktreeProjection {
-    pub path: String,
-    pub branch: Option<String>,
+/// Where a session works. `Main` and an unavailable worktree are distinct
+/// facts: consumers must never fall back to the project root when the
+/// session's worktree was released or cannot be resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SessionWorkLocationVm {
+    Main,
+    #[serde(rename_all = "camelCase")]
+    Worktree {
+        path: String,
+        branch: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Unavailable {
+        reason: SessionWorkLocationUnavailableReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
 }
 
-pub(crate) fn session_worktree_projection(
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionWorkLocationUnavailableReason {
+    Released,
+    Unresolved,
+}
+
+impl SessionWorkLocationVm {
+    fn unresolved() -> Self {
+        Self::Unavailable {
+            reason: SessionWorkLocationUnavailableReason::Unresolved,
+            path: None,
+        }
+    }
+
+    fn run_worktree(worktree: &gold_band::runtime::RunWorktreeState) -> Self {
+        Self::Worktree {
+            path: worktree.path.to_string(),
+            branch: Some(worktree.branch.clone()),
+        }
+    }
+}
+
+pub(crate) fn session_work_location(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     dynamic_graph: Option<&DynamicGraphState>,
     dynamic_node_id: Option<&str>,
-) -> Option<SessionWorktreeProjection> {
+) -> SessionWorkLocationVm {
     let (graph, dynamic_node_id) = match (dynamic_graph, dynamic_node_id) {
         (None, None) => {
-            return run_worktree.map(|worktree| SessionWorktreeProjection {
-                path: worktree.path.to_string(),
-                branch: Some(worktree.branch.clone()),
-            });
+            return run_worktree.map_or(
+                SessionWorkLocationVm::Main,
+                SessionWorkLocationVm::run_worktree,
+            );
         }
         (Some(graph), Some(dynamic_node_id)) => (graph, dynamic_node_id),
-        _ => return None,
+        _ => return SessionWorkLocationVm::unresolved(),
     };
-    let node = graph.nodes.iter().find(|node| node.id == dynamic_node_id)?;
-    workspace_worktree_projection_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
+    let Some(node) = graph.nodes.iter().find(|node| node.id == dynamic_node_id) else {
+        return SessionWorkLocationVm::unresolved();
+    };
+    workspace_work_location_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
 }
 
-fn workspace_worktree_projection_by_id(
+fn workspace_work_location_by_id(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspaces: &[gold_band::dynamic::WorkspaceState],
     workspace_id: &str,
-) -> Option<SessionWorktreeProjection> {
-    let workspace = workspaces
+) -> SessionWorkLocationVm {
+    workspaces
         .iter()
-        .find(|workspace| workspace.id == workspace_id)?;
-    workspace_worktree_projection(run_worktree, workspace)
+        .find(|workspace| workspace.id == workspace_id)
+        .map_or_else(SessionWorkLocationVm::unresolved, |workspace| {
+            workspace_work_location(run_worktree, workspace)
+        })
 }
 
-fn workspace_worktree_projection(
+fn workspace_work_location(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspace: &gold_band::dynamic::WorkspaceState,
-) -> Option<SessionWorktreeProjection> {
+) -> SessionWorkLocationVm {
     match workspace.kind {
         WorkspaceKind::Worktree
-            if workspace.status != gold_band::dynamic::WorkspaceStatus::Released =>
+            if workspace.status == gold_band::dynamic::WorkspaceStatus::Released =>
         {
-            Some(SessionWorktreeProjection {
-                path: workspace.path.to_string(),
-                branch: workspace.branch.clone(),
-            })
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Released,
+                path: Some(workspace.path.to_string()),
+            }
         }
-        WorkspaceKind::Worktree => None,
+        WorkspaceKind::Worktree => SessionWorkLocationVm::Worktree {
+            path: workspace.path.to_string(),
+            branch: workspace.branch.clone(),
+        },
         WorkspaceKind::Main => run_worktree
             .filter(|worktree| {
                 gold_band::storage::normalize_workspace_path(&worktree.path)
                     == gold_band::storage::normalize_workspace_path(&workspace.path)
             })
-            .map(|worktree| SessionWorktreeProjection {
-                path: worktree.path.to_string(),
-                branch: Some(worktree.branch.clone()),
-            }),
+            .map_or(
+                SessionWorkLocationVm::Main,
+                SessionWorkLocationVm::run_worktree,
+            ),
     }
 }
 
@@ -10602,7 +10637,7 @@ mod tests {
     }
 
     #[test]
-    fn session_worktree_projection_uses_the_current_physical_workspace() {
+    fn session_work_location_distinguishes_main_worktree_and_unavailable() {
         let outer_path = Utf8PathBuf::from("C:/GoldBand/worktrees/outer");
         let child_path = Utf8PathBuf::from("D:/repo/.gold-band/worktrees/child");
         let run_worktree = gold_band::runtime::RunWorktreeState {
@@ -10633,7 +10668,7 @@ mod tests {
         };
 
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-child",
@@ -10641,23 +10676,23 @@ mod tests {
                     child_path.clone()
                 ),
             ),
-            Some(SessionWorktreeProjection {
+            SessionWorkLocationVm::Worktree {
                 path: child_path.to_string(),
                 branch: Some("gb-dynamic-child".to_string()),
-            }),
+            },
         );
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 Some(&run_worktree),
                 &workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
             ),
-            Some(SessionWorktreeProjection {
+            SessionWorkLocationVm::Worktree {
                 path: outer_path.to_string(),
                 branch: Some("gb-conversation-outer".to_string()),
-            }),
+            },
         );
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-main",
@@ -10665,10 +10700,10 @@ mod tests {
                     Utf8PathBuf::from("D:/repo")
                 ),
             ),
-            None,
+            SessionWorkLocationVm::Main,
         );
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 None,
                 &workspace(
                     "workspace-main",
@@ -10676,10 +10711,10 @@ mod tests {
                     Utf8PathBuf::from("D:/repo")
                 ),
             ),
-            None,
+            SessionWorkLocationVm::Main,
         );
         assert_eq!(
-            workspace_worktree_projection_by_id(
+            workspace_work_location_by_id(
                 Some(&run_worktree),
                 &[
                     workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
@@ -10691,10 +10726,10 @@ mod tests {
                 ],
                 "workspace-child",
             ),
-            Some(SessionWorktreeProjection {
+            SessionWorkLocationVm::Worktree {
                 path: child_path.to_string(),
                 branch: Some("gb-dynamic-child".to_string()),
-            }),
+            },
         );
         let mut released_child = workspace(
             "workspace-child",
@@ -10703,12 +10738,41 @@ mod tests {
         );
         released_child.status = gold_band::dynamic::WorkspaceStatus::Released;
         assert_eq!(
-            workspace_worktree_projection(Some(&run_worktree), &released_child),
-            None,
+            workspace_work_location(Some(&run_worktree), &released_child),
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Released,
+                path: Some(child_path.to_string()),
+            },
         );
         assert_eq!(
-            session_worktree_projection(Some(&run_worktree), None, Some("missing-dynamic-node")),
-            None,
+            session_work_location(Some(&run_worktree), None, Some("missing-dynamic-node")),
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Unresolved,
+                path: None,
+            },
+        );
+        assert_eq!(
+            workspace_work_location_by_id(Some(&run_worktree), &[], "missing-workspace"),
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Unresolved,
+                path: None,
+            },
+        );
+        assert_eq!(session_work_location(None, None, None), SessionWorkLocationVm::Main);
+        assert_eq!(
+            session_work_location(Some(&run_worktree), None, None),
+            SessionWorkLocationVm::Worktree {
+                path: outer_path.to_string(),
+                branch: Some("gb-conversation-outer".to_string()),
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Released,
+                path: Some("D:/wt".to_string()),
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "unavailable", "reason": "released", "path": "D:/wt" }),
         );
     }
 

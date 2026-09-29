@@ -106,7 +106,8 @@ function ConversationDirectoryTextPreview({
   const openDocumentInBrowser = useCallback(async () => {
     if (!browserDocument || !workspace.scopeKey) return;
     await openLocalDocumentInBrowser(selected.canonicalPath, {
-      projectId: resource.locator.projectId,
+      // Run directories are authorized per project, independent of work location.
+      root: { projectId: resource.locator.projectId, workspacePath: null },
       scopeKey: workspace.scopeKey,
       openResource: workspace.openResource,
       browserTitle: t('workspace.browser.title'),

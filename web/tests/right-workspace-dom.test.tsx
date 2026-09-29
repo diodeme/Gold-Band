@@ -149,7 +149,7 @@ function WorkspaceProbe() {
   const runDirectory = workspace.tabs.find((tab) => tab.kind === 'conversation-directory');
   const sourceControl = workspace.tabs.find((tab) => tab.kind === 'source-control');
   const sourceControlPaths = workspace.tabs.flatMap((tab) => (
-    tab.kind === 'source-control' ? [tab.workspacePath ?? ''] : []
+    tab.kind === 'source-control' ? [tab.root.workspacePath ?? ''] : []
   ));
   return (
     <output
@@ -159,7 +159,7 @@ function WorkspaceProbe() {
       data-workspace-open={workspace.requestedOpen}
       data-workspace-open-revision={workspace.openRevision}
       data-workspace-run-directory-attempt={runDirectory?.kind === 'conversation-directory' ? runDirectory.locator.attemptId : ''}
-      data-workspace-source-control-path={sourceControl?.kind === 'source-control' ? sourceControl.workspacePath ?? '' : ''}
+      data-workspace-source-control-path={sourceControl?.kind === 'source-control' ? sourceControl.root.workspacePath ?? '' : ''}
       data-workspace-source-control-paths={sourceControlPaths.join(',')}
     >
       {workspace.tabs.map((tab) => tab.kind === 'agent-transcript' ? tab.locator.branchId : tab.key).join(',')}
@@ -443,9 +443,9 @@ describe('right workspace DOM lifecycle', () => {
     try {
       await act(async () => {
         root.render(
-          <RightWorkspaceProvider scope={scope} sourceControlWorkspacePath={firstPath}>
+          <RightWorkspaceProvider scope={scope} workLocation={{ kind: 'worktree', path: firstPath, branch: null }}>
             <OpenEmptyWorkspace />
-            <RightWorkspaceDock sourceControlWorkspacePath={firstPath} />
+            <RightWorkspaceDock />
             <WorkspaceProbe />
           </RightWorkspaceProvider>,
         );
@@ -461,9 +461,9 @@ describe('right workspace DOM lifecycle', () => {
 
       await act(async () => {
         root.render(
-          <RightWorkspaceProvider scope={scope} sourceControlWorkspacePath={secondPath}>
+          <RightWorkspaceProvider scope={scope} workLocation={{ kind: 'worktree', path: secondPath, branch: null }}>
             <OpenEmptyWorkspace />
-            <RightWorkspaceDock sourceControlWorkspacePath={secondPath} />
+            <RightWorkspaceDock />
             <WorkspaceProbe />
           </RightWorkspaceProvider>,
         );

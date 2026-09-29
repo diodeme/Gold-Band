@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { getGitCapability, initializeGitRepository, openExternalUrl } from '@/api';
 import { Button } from '@/components/ui/button';
-import { sourceControlWorkspaceResourceKey, useOptionalRightWorkspaceCommands } from '@/components/workspace/right-workspace-context';
+import { MAIN_WORKSPACE_TAB_ROOT, sourceControlWorkspaceResourceKey, useOptionalRightWorkspaceCommands } from '@/components/workspace/right-workspace-context';
 import {
   Dialog,
   DialogContent,
@@ -86,6 +86,8 @@ export function GitRequirementDialog({
       key: sourceControlWorkspaceResourceKey(projectId),
       scopeKey: workspaceCommands.scopeKey,
       projectId,
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: false,
       title: t('sourceControl.title'),
       description: t('sourceControl.description'),
       attention: false,

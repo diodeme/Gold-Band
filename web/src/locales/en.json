@@ -704,11 +704,18 @@
           "trash-failed": "Could not move the item to the trash. Try again.",
           "restore-unavailable": "Can’t undo: the item is no longer in the trash.",
           "unsaved-changes": "Unsaved changes could not be saved, so the rename was canceled.",
-          "system-open-failed": "The system app could not open this file."
+          "system-open-failed": "The system app could not open this file.",
+          "workspace-unavailable": "The session's worktree is unavailable. It may have been reclaimed or deleted.",
+          "workspace-outside-project": "This folder is not a Git worktree of the current project."
         }
       }
     },
-    "discardWorkflowChanges": "This workflow has unsaved changes. Discard them and close the tab?"
+    "discardWorkflowChanges": "This workflow has unsaved changes. Discard them and close the tab?",
+    "rootUnavailable": {
+      "released": "The session's worktree was reclaimed",
+      "unresolved": "The session's worktree is unavailable",
+      "browseMain": "Browse main workspace"
+    }
   },
   "executionPlan": {
     "configureAuto": "AUTO configuration",
@@ -1115,7 +1122,7 @@
     "unknown": "Unknown"
   },
   "nodeType": {
-    "worker": "Agent Node",
+    "worker": "Model Node",
     "ai-dynamic": "AI Dynamic Node",
     "dynamic-worker": "Dynamic Worker Node",
     "dynamic-workflow-invocation": "Dynamic Workflow Node",
@@ -1869,7 +1876,7 @@
         "description": "The installed Git could not be identified reliably. Repair or reinstall Git and try again."
       },
       "head-required": {
-        "title": "The repository has no initial commit",
+        "title": "This Git repository has no initial commit",
         "description": "Select files in Changes, stage them, and create the initial commit."
       },
       "worktree-required": {
@@ -1897,7 +1904,7 @@
     "unstage": "Unstage",
     "stageAll": "Stage all",
     "unstageAll": "Unstage all",
-    "clean": "Working tree is clean",
+    "clean": "No changes in the workspace",
     "commitSubject": "Commit subject",
     "commitBody": "Commit body (optional)",
     "stagedCount": "{{count}} staged files",
@@ -1924,7 +1931,7 @@
     "noContainingRefs": "No ref currently contains this commit",
     "targetPath": "Relative to current branch",
     "firstMerge": "First Merge commit into the mainline",
-    "parents": "Parents",
+    "parents": "Parent commits",
     "rootCommit": "Root commit (no parents)",
     "previousFile": "Previous file",
     "nextFile": "Next file",
@@ -1956,7 +1963,7 @@
     "merge": "Merge",
     "rebase": "Rebase",
     "prune": "Remove records for branches deleted on the remote",
-    "pruneDescription": "Local branches and working-tree files are not deleted.",
+    "pruneDescription": "Local branches and workspace files are not deleted.",
     "checkoutAfterCreate": "Switch to the new branch after creation",
     "includeUntracked": "Include untracked files",
     "restoreIndex": "Restore staged state",

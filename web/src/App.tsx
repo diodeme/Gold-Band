@@ -192,7 +192,7 @@ import {
   conversationPageForIntervention,
   conversationPageMatchesRun,
   conversationPageTargetsTask,
-  conversationSourceControlWorkspacePath,
+  conversationWorkLocation as presentedSessionWorkLocation,
   conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
@@ -2381,7 +2381,7 @@ export function App() {
           ? conversationRun?.taskUuid
           : null
       }
-      sourceControlWorkspacePath={conversationSourceControlWorkspacePath(
+      workLocation={presentedSessionWorkLocation(
         presentedConversationPage,
         conversationRun,
       )}

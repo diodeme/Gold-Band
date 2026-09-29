@@ -64,6 +64,8 @@ export function TurnAttachmentWorkspacePanel({
             description: resource.description,
             attention: resource.attention,
             projectId: resource.locator.projectId,
+            // Attachments are authorized by the backend independent of work location.
+            workspacePath: null,
             locator: resolved.locator,
             target: resolved.target,
             targetRevision: 0,

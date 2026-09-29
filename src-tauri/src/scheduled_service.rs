@@ -122,7 +122,7 @@ fn validate_prompt_workspace_files(
     references: &[PromptWorkspaceFileRef],
     attachment_count: usize,
 ) -> ScheduledServiceResult<()> {
-    let roots = app.prompt_workspace_roots();
+    let roots = app.prompt_workspace_roots(&app.paths.repo_root);
     provider::resolve_prompt_workspace_files(&roots, references, attachment_count)
         .map(|_| ())
         .map_err(|error| {

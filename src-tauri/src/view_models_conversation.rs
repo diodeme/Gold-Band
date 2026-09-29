@@ -12,7 +12,7 @@ use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError,
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
     dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
-    session_worktree_projection, workflow_graph_vm,
+    SessionWorkLocationVm, session_work_location, workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
@@ -742,8 +742,7 @@ pub struct ConversationSessionLeafVm {
     pub finished_at: Option<String>,
     pub session_id: Option<String>,
     pub session_established: bool,
-    pub worktree_path: Option<String>,
-    pub worktree_branch: Option<String>,
+    pub work_location: SessionWorkLocationVm,
     pub artifact_count: usize,
     pub attachment_count: usize,
 }
@@ -3868,7 +3867,7 @@ pub fn conversation_run_vm(
                                     Some(&node.node_id),
                                     Some(&latest_attempt.attempt_id),
                                 )?;
-                                let session_worktree = session_worktree_projection(
+                                let work_location = session_work_location(
                                     run_worktree,
                                     Some(&dynamic_graph),
                                     Some(&dyn_node.id),
@@ -3891,11 +3890,7 @@ pub fn conversation_run_vm(
                                     finished_at: dyn_node.finished_at.clone(),
                                     session_id: session_presence.session_id.clone(),
                                     session_established: session_presence.established,
-                                    worktree_path: session_worktree
-                                        .as_ref()
-                                        .map(|workspace| workspace.path.clone()),
-                                    worktree_branch: session_worktree
-                                        .and_then(|workspace| workspace.branch),
+                                    work_location,
                                     artifact_count: artifacts.len(),
                                     attachment_count: attachments.len(),
                                 });
@@ -4030,7 +4025,7 @@ pub fn conversation_run_vm(
                         None,
                         None,
                     )?;
-                    let session_worktree = session_worktree_projection(run_worktree, None, None);
+                    let work_location = session_work_location(run_worktree, None, None);
                     leafs.push(ConversationSessionLeafVm {
                         round_id: round.id.clone(),
                         node_id: node.node_id.clone(),
@@ -4048,10 +4043,7 @@ pub fn conversation_run_vm(
                         finished_at: attempt.finished_at.clone(),
                         session_id: session_presence.session_id.clone(),
                         session_established: session_presence.established,
-                        worktree_path: session_worktree
-                            .as_ref()
-                            .map(|workspace| workspace.path.clone()),
-                        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
+                        work_location,
                         artifact_count: artifacts.len(),
                         attachment_count: attachments.len(),
                     });
@@ -5082,6 +5074,7 @@ fn conversation_run_worktree_vm(
 
 #[cfg(test)]
 mod tests {
+    use crate::view_models::SessionWorkLocationVm;
     use std::{
         collections::HashMap,
         fs,
@@ -6914,8 +6907,11 @@ mod tests {
 
         assert!(vm.selected_session.is_none());
         assert_eq!(
-            leaf.worktree_path.as_deref(),
-            Some(app.paths.repo_root.as_str())
+            leaf.work_location,
+            SessionWorkLocationVm::Worktree {
+                path: app.paths.repo_root.to_string(),
+                branch: Some("gb-conversation-test".to_string()),
+            }
         );
     }
 

@@ -108,7 +108,7 @@
     },
     "trigger": {
       "manual": "手動",
-      "scheduled": "計劃"
+      "scheduled": "排程"
     },
     "management": {
       "title": "排程任務",
@@ -126,7 +126,7 @@
       "empty": "沒有符合條件的排程任務",
       "columns": {
         "task": "任務",
-        "schedule": "計劃",
+        "schedule": "排程",
         "next": "下次執行",
         "recent": "最近執行",
         "enabled": "啟用"
@@ -145,7 +145,7 @@
       "disableAria": "停用排程任務",
       "enableAria": "啟用排程任務",
       "deleteTitle": "刪除排程任務？",
-      "deleteDescription": "刪除後不會再按計劃執行，已經觸發的工作階段不受影響。",
+      "deleteDescription": "刪除後不會再按排程執行，已經觸發的工作階段不受影響。",
       "cancel": "取消",
       "confirmDelete": "刪除"
     },
@@ -165,7 +165,7 @@
       "retries": "重試次數",
       "next": "下次執行",
       "workspace": "工作區",
-      "schedule": "計劃",
+      "schedule": "排程",
       "timezone": "時區",
       "status": "狀態",
       "noHistory": "沒有執行記錄",
@@ -227,7 +227,7 @@
         "invalidTime": "請選擇有效時間",
         "invalidTimezone": "請選擇有效時區",
         "nonexistentLocalTime": "所選本機時間因夏令時切換而不存在",
-        "invalidCron": "請輸入有效的六字段 Cron 表達式",
+        "invalidCron": "請輸入有效的六欄位 Cron 表達式",
         "emptyWeekdays": "請至少選擇一個星期",
         "invalidEvery": "間隔必須是正整數"
       },
@@ -240,9 +240,9 @@
     "composer": {
       "create": "建立排程任務",
       "created": "排程任務已建立，<tasks>查看排程任務</tasks>",
-      "unconfigured": "尚未設定執行計劃",
-      "repeat": "重複計劃",
-      "at": "單次計劃",
+      "unconfigured": "尚未設定執行排程",
+      "repeat": "重複排程",
+      "at": "單次排程",
       "creating": "排程任務建立",
       "exit": "退出排程任務建立",
       "configure": "設定排程任務",
@@ -266,7 +266,7 @@
       },
       "failed": {
         "title": "排程任務執行失敗",
-        "body": "錯誤代碼：{{code}}"
+        "body": "錯誤碼：{{code}}"
       },
       "attentionRequired": {
         "title": "排程任務需要處理",
@@ -333,7 +333,7 @@
     "fullRequirement": "完整需求",
     "fullRequirementDescription": "查看完整任務需求內容。",
     "copy": "複製",
-    "copyCode": "複製代碼",
+    "copyCode": "複製程式碼",
     "copied": "已複製",
     "downloadImage": "下載圖片",
     "imageNotAvailable": "圖片無法顯示",
@@ -353,10 +353,10 @@
     "discardChangesAndExit": "放棄修改並結束",
     "discardChangesAndClose": "放棄修改並關閉",
     "remove": "移除",
-    "help": "幫助",
+    "help": "說明",
     "personalAnalytics": "個人資料分析",
-    "userFeedback": "使用者反饋",
-    "feedbackTitle": "問題反饋",
+    "userFeedback": "使用者回饋",
+    "feedbackTitle": "問題回饋",
     "feedbackSubtitle": "描述你遇到的問題，我們會盡快跟進",
     "feedbackDescription": "問題描述",
     "feedbackDescriptionPlaceholder": "請描述你遇到的問題...",
@@ -365,17 +365,17 @@
     "feedbackScreenshots": "截圖（可選，最多 4 張，單張 ≤5MB）",
     "feedbackScreenshotHint": "拖曳或 Ctrl+V 貼上 / 點選選擇檔案",
     "feedbackIncludeLogs": "同時上傳執行記錄檔（最近 512KB）",
-    "feedbackPrivacyNotice": "上傳內容含執行記錄檔與工作階段快照，可能含本機路徑、代碼等資訊，請確認後提交。",
+    "feedbackPrivacyNotice": "上傳內容含執行記錄檔與工作階段快照，可能含本機路徑、程式碼等資訊，請確認後提交。",
     "feedbackArchiveHint": "工作階段歸檔約 {{size}}（{{count}} 個檔案，壓縮後上傳）",
     "feedbackArchiveTooLarge": "工作階段歸檔約 {{size}}，超過 {{max}} 上限，請取消關聯工作階段後提交",
-    "feedbackSubmit": "提交反饋",
+    "feedbackSubmit": "提交回饋",
     "feedbackCancel": "取消",
     "feedbackSubmitting": "正在上傳...",
-    "feedbackSubmitted": "反饋已提交，感謝",
+    "feedbackSubmitted": "回饋已提交，感謝",
     "feedbackErrorNetwork": "網路上傳失敗，請重試",
     "feedbackErrorServer": "服務暫不可用，請稍後重試",
     "feedbackErrorValidation": "內容驗證未通過，請檢查後重試",
-    "feedbackErrorUnconfigured": "反饋功能暫不可用",
+    "feedbackErrorUnconfigured": "回饋功能暫不可用",
     "feedbackErrorSession": "關聯工作階段不存在或已被移除，請重新選擇",
     "feedbackErrorAttachment": "截圖無法讀取或格式不受支援，請使用 PNG、JPEG 或 WebP",
     "feedbackErrorTooLarge": "上傳內容超過大小限制，請減少截圖或取消關聯工作階段"
@@ -404,7 +404,7 @@
       "today": "今天",
       "last7": "近 7 天",
       "last30": "近 30 天",
-      "custom": "自定義",
+      "custom": "自訂",
       "start": "開始日期",
       "end": "結束日期",
       "invalid": "請選擇有效的起止日期。"
@@ -547,14 +547,14 @@
     }
   },
   "navigation": {
-    "taskList": "任務列表",
+    "taskList": "任務清單",
     "workflow": "工作流",
-    "workflowList": "工作流列表"
+    "workflowList": "工作流清單"
   },
   "workspaceSelect": {
     "product": "{{appName}} Desktop",
     "emptyRecent": "沒有最近工作區",
-    "removeRecent": "從最近列表移除",
+    "removeRecent": "從最近清單移除",
     "keepOneRecent": "至少保留一個最近工作區",
     "currentWorkspaceLocked": "目前工作區正在使用"
   },
@@ -627,7 +627,7 @@
       "saving": "儲存中",
       "saved": "已儲存",
       "locationAdjusted": "目標位置已調整到檔案範圍內",
-      "viewSource": "查看源碼",
+      "viewSource": "查看原始碼",
       "viewPreview": "查看預覽",
       "pauseAnimation": "暫停動畫",
       "playAnimation": "播放動畫",
@@ -650,10 +650,10 @@
       "reloadDisk": "載入磁碟版本",
       "overwrite": "覆蓋磁碟版本",
       "reauthorize": "重新授權",
-      "copyMarkdownSource": "複製 Markdown 源碼",
-      "markdownSourceCopied": "Markdown 源碼已複製",
-      "viewMarkdownSource": "切換到源碼模式",
-      "viewMarkdownLivePreview": "切換到實時預覽編輯",
+      "copyMarkdownSource": "複製 Markdown 原始碼",
+      "markdownSourceCopied": "Markdown 原始碼已複製",
+      "viewMarkdownSource": "切換到原始碼模式",
+      "viewMarkdownLivePreview": "切換到即時預覽編輯",
       "openHtmlInBrowser": "在瀏覽器中開啟",
       "externalMarkdownImages": "此文件引用了 {{count}} 張資料夾外的本機圖片",
       "loadExternalMarkdownImages": "載入這些圖片",
@@ -704,11 +704,18 @@
           "trash-failed": "無法移至資源回收筒，請重試。",
           "restore-unavailable": "無法復原：該項目已不在資源回收筒中。",
           "unsaved-changes": "未儲存的修改寫入失敗，已取消重新命名。",
-          "system-open-failed": "系統應用程式無法開啟此檔案。"
+          "system-open-failed": "系統應用程式無法開啟此檔案。",
+          "workspace-unavailable": "工作階段的工作樹無法使用，可能已被收回或刪除。",
+          "workspace-outside-project": "該目錄不屬於目前專案的 Git 工作樹。"
         }
       }
     },
-    "discardWorkflowChanges": "工作流還有未儲存的修改。確定要放棄這些修改並關閉嗎？"
+    "discardWorkflowChanges": "工作流還有未儲存的修改。確定要放棄這些修改並關閉嗎？",
+    "rootUnavailable": {
+      "released": "工作階段的工作樹已收回",
+      "unresolved": "工作階段的工作樹無法使用",
+      "browseMain": "瀏覽主工作區"
+    }
   },
   "executionPlan": {
     "configureAuto": "AUTO 設定",
@@ -742,7 +749,7 @@
   "errors": {
     "npx-cache.busy": "已有快取修復正在進行，請稍後重試。",
     "npx-cache.unavailable": "無法確認可修復的 npx 快取目錄，請重新執行環境診斷。",
-    "npx-cache.changed": "診斷、設定或快取已變更，請關閉對話框後重試。",
+    "npx-cache.changed": "診斷、設定或快取已變更，請關閉對話方塊後重試。",
     "npx-cache.cleanup-failed": "快取清理失敗，檔案可能正在使用或沒有存取權限。",
     "browser": {
       "webview": {
@@ -795,10 +802,10 @@
       "branch-not-found": "所選分支已不存在。",
       "tag-not-found": "所選標籤已不存在。",
       "runtime-branch-push-forbidden": "執行時內部分支不能直接推送。",
-      "non-fast-forward": "遠端包含本機尚未獲取的提交，推送已拒絕。",
-      "authentication-failed": "遠端儲存庫身份驗證失敗，請檢查憑據或重新登入。",
-      "permission-denied": "目前憑據沒有存取遠端儲存庫的權限。",
-      "remote-repository-not-found": "遠端儲存庫不存在，或目前憑據無權查看。",
+      "non-fast-forward": "遠端包含本機尚未取得的提交，推送已拒絕。",
+      "authentication-failed": "遠端儲存庫身份驗證失敗，請檢查認證或重新登入。",
+      "permission-denied": "目前認證沒有存取遠端儲存庫的權限。",
+      "remote-repository-not-found": "遠端儲存庫不存在，或目前認證無權查看。",
       "remote-host-unreachable": "無法解析遠端儲存庫主機，請檢查遠端網址和網路。",
       "remote-unreachable": "無法連線遠端儲存庫，請檢查網路、代理或遠端服務狀態。",
       "remote-rejected": "遠端儲存庫拒絕了這次推送，請根據下方原因處理。",
@@ -818,7 +825,7 @@
       "rebase-continue-failed": "繼續 Rebase 失敗，請根據下方 Git 原因處理。",
       "rebase-skip-failed": "略過目前 Commit 失敗，請根據下方 Git 原因處理。",
       "rebase-abort-failed": "放棄 Rebase 失敗，請根據下方 Git 原因處理。",
-      "worktree-not-found": "所選 Worktree 已不存在，請等待列表同步後重試。",
+      "worktree-not-found": "所選 Worktree 已不存在，請等待清單同步後重試。",
       "worktree-current-remove-forbidden": "不能刪除目前正在使用的 Worktree。",
       "worktree-remove-dirty": "Worktree 含有未提交或未追蹤的變更，未執行刪除。請先處理這些變更。",
       "worktree-remove-failed": "刪除 Worktree 失敗，請根據下方 Git 原因處理。",
@@ -850,13 +857,13 @@
       "repository-not-found": "GitHub 儲存庫不存在或目前帳號無權存取。",
       "invalid-json": "GitHub CLI 返回了無法識別的資料。",
       "output-too-large": "GitHub 返回的資料過大，無法在應用程式內處理。",
-      "pr-list-failed": "Pull Request 列表載入失敗。",
+      "pr-list-failed": "Pull Request 清單載入失敗。",
       "pr-detail-failed": "Pull Request 詳情載入失敗。",
       "pr-number-invalid": "Pull Request 編號無效。",
       "pr-revision-invalid": "Pull Request 檔案版本識別碼無效。",
       "pr-file-content-failed": "Pull Request 檔案內容載入失敗。",
       "pr-file-content-unavailable": "Pull Request 的兩個版本中都找不到該檔案。",
-      "issue-list-failed": "Issue 列表載入失敗。",
+      "issue-list-failed": "Issue 清單載入失敗。",
       "issue-detail-failed": "Issue 詳情載入失敗。",
       "capability-failed": "GitHub CLI 狀態檢測失敗。",
       "login-start-failed": "無法啟動 GitHub 網頁登入。",
@@ -891,7 +898,7 @@
       "turn-execution-failed": "本次訊息處理失敗，請重試。",
       "session-request-failed": "工作階段準備失敗，請重試。",
       "missing-provider": "目前節點缺少 provider 設定。",
-      "session-config-value-unavailable": "所選工作階段設定已不可用，請從最新列表中重新選擇。",
+      "session-config-value-unavailable": "所選工作階段設定已不可用，請從最新清單中重新選擇。",
       "active-prompt-blocks-config-save": "目前有工作階段正在執行，請先停止工作階段再儲存設定。",
       "invalid-conversation-branch-id": "該 Agent 工作階段連結無效或已失效。",
       "session-query-failed": "工作階段內容載入失敗，請重試。",
@@ -1036,7 +1043,7 @@
       "ai-dynamic-invalid-workflow": "AI-DYNAMIC 節點關聯的工作流 {{workflowName}} 無效：{{reason}}。",
       "model-blank": "節點 {{nodeId}} 的模型不能為空。",
       "dynamic-fixed-model-blank": "AI-DYNAMIC 節點 {{nodeId}} 的固定模型不能為空。",
-      "dynamic-agents-empty": "AI-DYNAMIC 節點 {{nodeId}} 的可選 agent 列表不能為空。",
+      "dynamic-agents-empty": "AI-DYNAMIC 節點 {{nodeId}} 的可選 agent 清單不能為空。",
       "dynamic-agent-duplicate": "AI-DYNAMIC 節點 {{nodeId}} 的 agent {{provider}} 重複。",
       "dynamic-agent-model-blank": "AI-DYNAMIC 節點 {{nodeId}} 的 agent {{provider}} 模型不能為空。",
       "agent-model-blank": "Agent {{provider}} 的模型不能為空。",
@@ -1050,13 +1057,13 @@
       "path-inaccessible": "無法存取工作區：{{workspacePath}}。請檢查磁碟連線、網路位置或目錄權限後重試。",
       "not-found": "找不到對應的工作區。",
       "recent-minimum-required": "至少保留一個最近工作區。",
-      "recent-current-locked": "目前工作區正在使用，不能從最近列表移除。"
+      "recent-current-locked": "目前工作區正在使用，不能從最近清單移除。"
     },
     "updater": {
       "invalid-url": "更新網址無效。",
       "check-failed": "檢查更新失敗：{{message}}",
       "install-failed": "安裝更新失敗：{{message}}",
-      "context-unavailable": "無法獲取更新上下文，請先選擇工作區。",
+      "context-unavailable": "無法取得更新上下文，請先選擇工作區。",
       "no-update": "目前沒有可安裝更新。"
     },
     "multica": {
@@ -1159,10 +1166,10 @@
     "addAgent": "新增 Agent",
     "searchAgents": "搜尋 Agent…",
     "noMatchingAgents": "沒有匹配的 Agent",
-    "customAgent": "自定義 Agent",
+    "customAgent": "自訂 Agent",
     "customAgentIdPlaceholder": "例如 my-agent",
     "pending": "待支援",
-    "configured": "已添加",
+    "configured": "已新增",
     "empty": "目前還沒有已設定的 agent",
     "createTitle": "新增 Agent",
     "createDescription": "建立一個可用於節點執行的 agent 設定。",
@@ -1173,16 +1180,16 @@
     "agentIdDescription": "用於唯一識別和引用該 Agent，建立後不可修改。",
     "agentTypeRequired": "請填寫 Agent ID。",
     "displayName": "顯示名稱",
-    "icon": "圖標",
+    "icon": "圖示",
     "iconDescription": "預設使用 Gold Band Logo，也可以選擇本機圖片。",
-    "catalogIconDescription": "預設使用 {{agent}} 圖標，也可以選擇本機圖片。",
+    "catalogIconDescription": "預設使用 {{agent}} 圖示，也可以選擇本機圖片。",
     "selectLocalIcon": "選擇圖片",
-    "useDefaultIcon": "還原預設圖標",
+    "useDefaultIcon": "還原預設圖示",
     "iconErrors": {
       "agent-icon.unsupported-image-type": "僅支援 PNG、JPEG、WebP 或 SVG 圖片。",
       "agent-icon.image-too-large": "圖片不能超過 1 MB。",
       "agent-icon.invalid-image-data": "無法讀取這張圖片，請重新選擇。",
-      "fallback": "無法匯入圖標，請重新選擇。"
+      "fallback": "無法匯入圖示，請重新選擇。"
     },
     "command": "命令",
     "args": "參數",
@@ -1190,18 +1197,18 @@
     "env": "環境變數",
     "envDescription": "每行一個 KEY=VALUE。",
     "primaryAgentDir": "主 Agent 目錄",
-    "primaryAgentDirDescription": "可選。預設由全局和專案共用，也可以拆分為兩個作用域。",
+    "primaryAgentDirDescription": "可選。預設由全域和專案共用，也可以拆分為兩個作用域。",
     "primaryAgentDirPlaceholder": ".claude",
-    "splitPrimaryAgentDirs": "拆分全局/專案主目錄",
-    "globalPrimaryAgentDir": "全局主目錄",
+    "splitPrimaryAgentDirs": "拆分全域/專案主目錄",
+    "globalPrimaryAgentDir": "全域主目錄",
     "globalPrimaryAgentDirPlaceholder": ".pi/agent",
     "projectPrimaryAgentDir": "專案主目錄",
     "projectPrimaryAgentDirPlaceholder": ".pi",
     "compatibleAgentDirs": "相容 Agent 目錄",
-    "compatibleAgentDirsDescription": "全局和專案額外讀取的目錄，每行一個；Gold Band 不會向這些目錄同步 Skill。",
+    "compatibleAgentDirsDescription": "全域和專案額外讀取的目錄，每行一個；Gold Band 不會向這些目錄同步 Skill。",
     "compatibleAgentDirsPlaceholder": ".agents",
     "externalSessionSyncSupport": "支援跨端工作階段合併",
-    "externalSessionSyncSupportDescription": "宣告該 Agent 能共享併合併其他用戶端中的同一 Session。",
+    "externalSessionSyncSupportDescription": "宣告該 Agent 能共享並合併其他用戶端中的同一 Session。",
     "externalSessionSync": "同步外部工作階段",
     "externalSessionSyncBeta": "Beta",
     "externalSessionSyncHelpLabel": "瞭解外部工作階段同步",
@@ -1219,7 +1226,7 @@
     "diagnosticFailedFallback": "請檢查 agent 命令、網路和認證狀態。",
     "diagnosticHelpLabel": "查看診斷原因",
     "diagnosticReasonLabel": "原因",
-    "registryHelpLabel": "設定幫助",
+    "registryHelpLabel": "設定說明",
     "registryHelp": "請參考 <registry>ACP Registry</registry> 中該 Agent 的設定，確認命令、參數、環境變數、網路和認證狀態。",
     "edit": "修改",
     "delete": "刪除",
@@ -1236,7 +1243,7 @@
   "contextManagement": {
     "title": "上下文管理",
     "profileManagement": "角色管理",
-    "profileHint": "角色以 Markdown 檔案儲存，工作流節點通過全局唯一 ID 引用。",
+    "profileHint": "角色以 Markdown 檔案儲存，工作流節點透過全域唯一 ID 引用。",
     "addProfile": "新增角色",
     "createProfile": "新增角色",
     "editProfile": "修改角色",
@@ -1259,9 +1266,9 @@
     "builtInBadge": "內建",
     "builtInSectionTitle": "內建角色",
     "builtInSectionDescription": "固定角色，支援開啟草稿並另存成新的自訂角色。",
-    "customSectionTitle": "自定義角色",
-    "customSectionDescription": "你建立的使用者級自定義角色會在這裡分頁展示。",
-    "customProfilesPageRange": "自定義角色 {{start}}-{{end}} / {{total}}",
+    "customSectionTitle": "自訂角色",
+    "customSectionDescription": "你建立的使用者級自訂角色會在這裡分頁展示。",
+    "customProfilesPageRange": "自訂角色 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "內建角色不可直接儲存，請另存成新角色。",
     "emptyContent": "沒有正文內容",
     "profileRequired": "名稱和摘要不能為空。",
@@ -1286,8 +1293,8 @@
       "skills": "SKILL 管理"
     },
     "mcp": {
-      "addServer": "添加 MCP 伺服器",
-      "customSectionTitle": "自定義 MCP",
+      "addServer": "新增 MCP 伺服器",
+      "customSectionTitle": "自訂 MCP",
       "builtInSectionTitle": "內建 MCP",
       "editServer": "設定 MCP 伺服器",
       "deleteServer": "刪除 MCP 伺服器",
@@ -1296,7 +1303,7 @@
       "localTab": "本機 (Stdio)",
       "remoteTab": "遠端 (HTTP)",
       "sseTab": "遠端 (SSE)",
-      "saveServer": "添加伺服器",
+      "saveServer": "新增伺服器",
       "saveConfigure": "設定伺服器",
       "connecting": "正在連線伺服器…",
       "diagnoseServer": "MCP 服務診斷",
@@ -1308,8 +1315,8 @@
       "goldBandMemoryName": "Gold Band 共享記憶",
       "toggleServer": "啟用或關閉 {{name}}",
       "emptyServers": "沒有 MCP 伺服器",
-      "helpInfo": "幫助資訊",
-      "toolsList": "工具列表",
+      "helpInfo": "說明資訊",
+      "toolsList": "工具清單",
       "agentSupports": "{{agent}} 支援 {{transport}} MCP 傳輸",
       "agentNotSupports": "{{agent}} 不支援 {{transport}} MCP 傳輸",
       "agentUnavailable": "{{agent}} 目前不可用：{{reason}}",
@@ -1318,7 +1325,7 @@
       "moreAgents": "還有 {{count}} 個 Agent",
       "agentCompatibility": "Agent 相容性",
       "compatLoading": "正在載入 Agent 資訊…",
-      "loadingTools": "正在獲取工具列表…",
+      "loadingTools": "正在取得工具清單…",
       "emptyTools": "該伺服器未提供任何工具",
       "toolCount": "共 {{count}} 個工具",
       "parameterSchema": "參數 Schema"
@@ -1348,7 +1355,7 @@
       "syncableAgents": "同步設定",
       "nameConflictTitle": "名稱衝突",
       "nameConflictDescription": "同名 SKILL 已存在於 {{location}}。建立後 .gold-band 版本將優先顯示。",
-      "globalTab": "全局 SKILL",
+      "globalTab": "全域 SKILL",
       "projectTab": "專案 SKILL",
       "selectProject": "選擇專案...",
       "searchPlaceholder": "搜尋 SKILL...",
@@ -1384,8 +1391,8 @@
   },
   "taskList": {
     "title": "任務編排",
-    "taskList": "任務列表",
-    "workspacePath": "工作區 › 任務列表",
+    "taskList": "任務清單",
+    "workspacePath": "工作區 › 任務清單",
     "allTasks": "全部任務",
     "runningTasks": "執行中",
     "completedTasks": "已完成",
@@ -1521,7 +1528,7 @@
   },
   "workflowEditor": {
     "title": "工作流編輯器",
-    "subtitle": "通過畫布建立節點和邊，併為每個節點綁定 Agent。",
+    "subtitle": "透過畫布建立節點和邊，並為每個節點綁定 Agent。",
     "canvas": "畫布",
     "undo": "復原",
     "redo": "取消復原",
@@ -1532,8 +1539,8 @@
     "addWorkerNode": "Agent 節點",
     "addAiDynamicNode": "AI 動態節點",
     "deleteNode": "刪除節點",
-    "addEndTarget": "添加結束節點",
-    "addNewRoundTarget": "添加新 Round 節點",
+    "addEndTarget": "新增結束節點",
+    "addNewRoundTarget": "加入新 Round 節點",
     "endTarget": "結束節點",
     "newRoundTarget": "New Round 節點",
     "quickAddSuccessor": "快速新增後繼",
@@ -1546,7 +1553,7 @@
     "profileCatalogLoadFailed": "角色目錄載入失敗",
     "profileCatalogRetry": "重新載入",
     "selectHint": "選擇畫布中的節點或邊進行設定。",
-    "terminalSelectionHint": "終點節點無需設定，可通過畫布上方的刪除操作移除。",
+    "terminalSelectionHint": "終點節點無需設定，可透過畫布上方的刪除操作移除。",
     "currentSelection": "目前選擇",
     "currentSelectionHelp": "節點和邊的設定優先顯示在這裡。",
     "workflowSettings": "工作流設定",
@@ -1603,11 +1610,11 @@
     "allowedWorkflowsHelp": "限制 AI-DYNAMIC 內部可呼叫的工作流範本。留空表示不允許呼叫任何子工作流。",
     "selectAllowedWorkflows": "選擇可呼叫工作流",
     "searchWorkflows": "搜尋工作流",
-    "allowedProfiles": "可用角色列表",
+    "allowedProfiles": "可用角色清單",
     "allowedProfilesHelp": "限制 AI-DYNAMIC 內部節點可選的角色。留空表示提供所有角色；選中後僅允許使用這些角色。",
     "selectAllowedProfiles": "選擇可用角色",
     "searchProfiles": "搜尋角色",
-    "globalGoal": "全局 goal",
+    "globalGoal": "全域 goal",
     "globalGoalHelp": "為 AI-DYNAMIC 內部所有節點追加統一目標。執行時會把每個節點的 goal 組裝成「全域 goal + 分割線 + 原始 goal」。",
     "globalGoalPlaceholder": "輸入會附加到每個內部節點上的統一目標",
     "noWorkflowTemplates": "沒有可選工作流。",
@@ -1659,7 +1666,7 @@
     "saveErrorLegacySchema": "{{node}} 的 JSON 輸出約束仍是舊 JSON Schema，請改為簡化輸出結構。",
     "saveErrorMissingPath": "{{node}} 的成功表達式路徑未在 JSON 輸出約束中宣告。",
     "validationDialogTitle": "工作流無法儲存",
-    "validationDialogDescription": "請先處理以下問題。關閉彈窗後，對應字段會以紅色標出。",
+    "validationDialogDescription": "請先處理以下問題。關閉對話方塊後，對應欄位會以紅色標出。",
     "validationDialogClose": "查看並修正",
     "unnamedNode": "未命名節點",
     "entryBadge": "入口",
@@ -1667,7 +1674,7 @@
     "validationEntryRequired": "入口節點不能為空。",
     "validationEntryMissingTarget": "入口節點 {{node}} 不存在。",
     "validationEntryCandidateMissing": "工作流必須存在且只能存在一個沒有入邊的入口節點。",
-    "validationEntryCandidateMultiple": "工作流存在多個入口節點：{{entries}}。請通過連線收斂為唯一入口。",
+    "validationEntryCandidateMultiple": "工作流存在多個入口節點：{{entries}}。請透過連線收斂為唯一入口。",
     "validationNodesRequired": "工作流至少需要一個節點。",
     "validationEndNodeRequired": "工作流必須包含結束節點。",
     "validationMaxAttemptsPositive": "Attempt 最大次數必須大於 0。",
@@ -1699,10 +1706,10 @@
     "validationAllowedWorkflowMissing": "{{node}} 選擇的工作流 {{workflow}} 不存在。",
     "validationAllowedWorkflowIdNotUnique": "{{node}} 選擇的工作流 ID {{workflow}} 與其他工作流重複，請先修改工作流定義中的 ID。",
     "validationAllowedWorkflowNestedDynamic": "{{node}} 不允許呼叫包含 AI-DYNAMIC 的工作流 {{workflow}}。",
-    "validationAllowedProfileRequired": "{{node}} 的可用角色列表存在空角色。",
+    "validationAllowedProfileRequired": "{{node}} 的可用角色清單存在空角色。",
     "validationAllowedProfileDuplicated": "{{node}} 的可用角色 {{profile}} 重複。",
     "validationAllowedProfileMissing": "{{node}} 的可用角色 {{profile}} 不存在。",
-    "validationGlobalGoalBlank": "{{node}} 的全局 goal 不能為空白。",
+    "validationGlobalGoalBlank": "{{node}} 的全域 goal 不能為空白。",
     "validationEdgeSourceRequired": "第 {{index}} 條邊缺少來源節點。",
     "validationEdgeSourceMissing": "邊的來源節點 {{node}} 不存在。",
     "validationEdgeTargetRequired": "第 {{index}} 條邊缺少目標節點。",
@@ -1730,7 +1737,7 @@
       "success": "成功",
       "failure": "失敗"
     },
-    "successPath": "成功字段路徑",
+    "successPath": "成功欄位路徑",
     "successEquals": "期望值",
     "edgeOutcome": "邊類型",
     "edgeTarget": "目標",
@@ -1822,7 +1829,7 @@
     "loadFailed": "無法載入本輪檔案變化",
     "partial": "部分檔案變化無法完整捕獲",
     "showMore": "再顯示 {{count}} 個檔案",
-    "collapse": "收起檔案列表",
+    "collapse": "收起檔案清單",
     "openDiff": "查看 {{path}} 的差異",
     "openVersion": "查看 {{path}} 的本輪版本",
     "deletedFile": "已刪除 {{path}}",
@@ -1847,12 +1854,12 @@
     "discarding": "正在放棄變更…",
     "reviewStatisticsLoading": "正在統計行數…",
     "reviewStatisticsRetry": "重試行數統計",
-    "title": "源碼管理",
+    "title": "原始碼管理",
     "description": "查看並管理目前工作區的 Git 狀態",
     "loading": "正在讀取 Git 狀態…",
     "loadFailed": "無法讀取目前儲存庫",
     "gitNotInstalled": "尚未安裝 Git",
-    "gitNotInstalledDescription": "安裝系統 Git 後即可使用源碼管理；安裝完成後請重新檢測。",
+    "gitNotInstalledDescription": "安裝系統 Git 後即可使用原始碼管理；安裝完成後請重新檢測。",
     "openGitDownload": "開啟 Git 下載頁面",
     "checkAgain": "重新檢測",
     "repositoryRequired": "目前資料夾不是 Git 儲存庫",
@@ -1862,7 +1869,7 @@
     "capability": {
       "version-unsupported": {
         "title": "Git 版本過低",
-        "description": "目前版本為 {{installedVersion}}，源碼管理需要 Git {{minimumVersion}} 或更高版本。"
+        "description": "目前版本為 {{installedVersion}}，原始碼管理需要 Git {{minimumVersion}} 或更高版本。"
       },
       "version-unavailable": {
         "title": "無法識別 Git 版本",
@@ -1892,7 +1899,7 @@
     "conflicts": "衝突",
     "staged": "已暫存",
     "unstaged": "未暫存",
-    "untracked": "未跟蹤",
+    "untracked": "未追蹤",
     "stage": "暫存",
     "unstage": "取消暫存",
     "stageAll": "全部暫存",
@@ -1910,7 +1917,7 @@
     "selectedCommitCount": "已選擇 {{count}} 個提交",
     "runtimeCheckpoint": "執行檢查點",
     "commits": "提交",
-    "commitList": "提交列表",
+    "commitList": "提交清單",
     "commitReview": "提交變更",
     "commitReviewLoading": "正在聚合所選提交的檔案變化…",
     "commitReviewCount": "{{count}} 個提交的最終變化",
@@ -1932,7 +1939,7 @@
     "targetPaths": {
       "tip": "目前分支頂端",
       "direct": "位於第一父主線",
-      "merged": "通過 Merge 進入主線",
+      "merged": "透過 Merge 進入主線",
       "not-contained": "尚未進入目前分支"
     },
     "branches": "分支",
@@ -1958,7 +1965,7 @@
     "prune": "移除遠端已刪除的分支記錄",
     "pruneDescription": "不會刪除本機分支或工作區檔案。",
     "checkoutAfterCreate": "建立後切換到新分支",
-    "includeUntracked": "包含未跟蹤檔案",
+    "includeUntracked": "包含未追蹤檔案",
     "restoreIndex": "還原暫存狀態",
     "repositoryActions": "建立儲存庫資源",
     "changeActions": "更多變更操作",
@@ -1971,11 +1978,11 @@
     "createStash": "儲存到 Stash",
     "dismissOperationResult": "關閉操作結果",
     "switchBranch": "切換分支",
-    "rename": "重命名",
+    "rename": "重新命名",
     "pushTag": "推送標籤",
     "apply": "套用",
     "operationKinds": {
-      "fetch": "正在獲取遠端更新…",
+      "fetch": "正在取得遠端更新…",
       "pull": "正在拉取並整合更新…",
       "push": "正在推送分支…",
       "push-tag": "正在推送標籤…",
@@ -2033,7 +2040,7 @@
     "actions": {
       "fetch": {
         "title": "Fetch",
-        "description": "獲取遠端引用，不修改目前工作區。"
+        "description": "取得遠端引用，不修改目前工作區。"
       },
       "pull": {
         "title": "Pull",
@@ -2048,8 +2055,8 @@
         "description": "從指定起點建立本機分支。"
       },
       "branch-rename": {
-        "title": "重命名分支",
-        "description": "將 {{target}} 重命名為新名稱。"
+        "title": "重新命名分支",
+        "description": "將 {{target}} 重新命名為新名稱。"
       },
       "branch-delete": {
         "title": "刪除分支",
@@ -2132,8 +2139,8 @@
     "noSessionId": "無 session id",
     "copySessionId": "複製 session ID",
     "sessionIdCopied": "已複製",
-    "copyMarkdownSource": "複製 Markdown 源碼",
-    "markdownSourceCopied": "Markdown 源碼已複製",
+    "copyMarkdownSource": "複製 Markdown 原始碼",
+    "markdownSourceCopied": "Markdown 原始碼已複製",
     "eventsCount": "{{count}} 條事件",
     "errorsCount": "{{count}} 個錯誤",
     "systemPrompt": "系統提示",
@@ -2180,7 +2187,7 @@
     "rawKindToolCall": "工具呼叫",
     "rawKindToolUpdate": "工具更新",
     "rawKindUsage": "用量更新",
-    "rawKindCommands": "命令列表",
+    "rawKindCommands": "命令清單",
     "rawKindResult": "請求結果",
     "rawKindError": "錯誤",
     "rawKindParseError": "解析失敗",
@@ -2204,7 +2211,7 @@
     "quoteDuplicate": "這段內容已經引用過了。",
     "quoteLimitExceeded": "此引用為 {{size}} 個字元，超出單則訊息 {{max}} 個字元的引用上限，本則訊息還可引用 {{remaining}} 個字元。",
     "quoteDiffLimitExceeded": "此 diff 為 {{size}}，超出單則訊息 {{max}} 的完整 diff 引用上限，本則訊息還可引用 {{remaining}}。可選取部分內容引用。",
-    "quoteCountExceeded": "最多添加 {{max}} 條引用。",
+    "quoteCountExceeded": "最多新增 {{max}} 條引用。",
     "userQuoteCount": "{{count}} 條引用",
     "userQuoteTitle": "引用詳情",
     "currentModel": "模型",
@@ -2224,11 +2231,11 @@
     "slashAgentGroup": "Agent",
     "mentionFiles": "檔案",
     "mentionRoles": "角色",
-    "mentionWorkspaceRoot": "工作空間",
+    "mentionWorkspaceRoot": "工作區",
     "mentionLoading": "正在載入…",
     "mentionEmpty": "沒有符合的檔案",
     "mentionError": "無法讀取檔案",
-    "attachHint": "添加附件",
+    "attachHint": "新增附件",
     "send": "傳送",
     "sendMessage": "傳送訊息",
     "promptQueue": {
@@ -2252,7 +2259,7 @@
     "hiddenPromptUnavailable": "無法讀取這段隱藏提示",
     "userMessageShowMore": "查看更多",
     "userMessageCollapse": "收起",
-    "todo": "任務列表",
+    "todo": "任務清單",
     "manualCheckPending": "等待人工判定",
     "manualCheckDescription": "可繼續對話追問，確認無誤後選擇「成功」或「失敗」決定節點結果。",
     "manualCheckSuccess": "成功",
@@ -2364,7 +2371,7 @@
     "current": "目前",
     "zoomIn": "放大",
     "zoomOut": "縮小",
-    "fitView": "適應視圖",
+    "fitView": "適應檢視",
     "viewNodeDetail": "查看節點詳情",
     "viewSession": "查看工作階段",
     "viewLog": "查看記錄檔",
@@ -2377,7 +2384,7 @@
     "appearance": "外觀",
     "language": "語言",
     "typography": "字型",
-    "advanced": "高級",
+    "advanced": "進階",
     "light": "淺色",
     "dark": "深色",
     "system": "跟隨系統",
@@ -2389,9 +2396,9 @@
     "schemeLight": "淺色",
     "schemeDark": "深色",
     "visualQuality": "視覺效果",
-    "visualQualityDescription": "完整效果保留主題材質，性能優先會降低模糊與陰影開銷。",
+    "visualQualityDescription": "完整效果保留主題材質，效能優先會降低模糊與陰影開銷。",
     "visualQualityFull": "完整效果",
-    "visualQualityPerformance": "性能優先",
+    "visualQualityPerformance": "效能優先",
     "lightThemes": "淺色",
     "darkThemes": "深色",
     "currentTheme": "目前主題",
@@ -2414,7 +2421,7 @@
     "uiTypography": "介面 UI",
     "uiTypographyDescription": "側欄、設定、聊天正文和普通 Markdown。",
     "editorTypography": "編輯器",
-    "editorTypographyDescription": "檔案查看與編輯、執行產物及所有差異視圖。",
+    "editorTypographyDescription": "檔案查看與編輯、執行產物及所有差異檢視。",
     "uiFontSize": "UI 字型大小",
     "uiFontSizeDescription": "調整應用程式介面使用的基準字型大小。",
     "editorFontSize": "編輯器字型大小",
@@ -2432,8 +2439,8 @@
     "clientVersion": "用戶端版本：{{version}}",
     "tabs": {
       "general": "一般",
-      "appearance": "個性化",
-      "advanced": "高級"
+      "appearance": "個人化",
+      "advanced": "進階"
     },
     "browser": {
       "title": "瀏覽器",
@@ -2442,7 +2449,7 @@
       "openLocalLinks": "在內建瀏覽器中開啟 localhost",
       "openLocalLinksDescription": "對話和文件裡的本機服務網址會在內建瀏覽器開啟。關閉後改用系統瀏覽器。",
       "openWebLinks": "在內建瀏覽器中開啟網站",
-      "openWebLinksDescription": "對話和檔案裡的普通網站會在內建瀏覽器開啟。關閉後改用系統瀏覽器。"
+      "openWebLinksDescription": "對話和文件裡的普通網站會在內建瀏覽器開啟。關閉後改用系統瀏覽器。"
     },
     "im": {
       "title": "IM 遠端干預與通知",
@@ -2497,7 +2504,7 @@
       "guidance": {
         "notConfigured": {
           "title": "接入企業微信",
-          "description": "掃碼授權後，通過一對一私聊綁定接收帳號。"
+          "description": "掃碼授權後，透過一對一私聊綁定接收帳號。"
         },
         "waitingBinding": {
           "title": "綁定接收帳號",
@@ -2525,7 +2532,7 @@
         },
         "reauthorize": {
           "title": "需要重新授權",
-          "description": "目前憑據不可用，請重新掃碼授權。"
+          "description": "目前認證不可用，請重新掃碼授權。"
         },
         "conflict": {
           "title": "機器人已在其他用戶端連線",
@@ -2549,12 +2556,12 @@
       "errors": {
         "IM_CONFIG_INVALID": "請填寫有效的公開身分。",
         "CONFIG_INVALID": "請填寫有效的公開身分。",
-        "IM_CREDENTIAL_REQUIRED": "啟用前需要設定憑據。",
-        "IM_CREDENTIAL_INVALID": "憑據格式無效。",
-        "IM_CREDENTIAL_UNAVAILABLE": "無法存取系統憑據儲存。",
-        "CREDENTIAL_UNAVAILABLE": "無法存取系統憑據儲存。",
-        "IM_AUTHENTICATION_REQUIRED": "平台拒絕了目前憑據。",
-        "AUTHENTICATION_REQUIRED": "平台拒絕了目前憑據。",
+        "IM_CREDENTIAL_REQUIRED": "啟用前需要設定認證。",
+        "IM_CREDENTIAL_INVALID": "認證格式無效。",
+        "IM_CREDENTIAL_UNAVAILABLE": "無法存取系統認證儲存。",
+        "CREDENTIAL_UNAVAILABLE": "無法存取系統認證儲存。",
+        "IM_AUTHENTICATION_REQUIRED": "平台拒絕了目前認證。",
+        "AUTHENTICATION_REQUIRED": "平台拒絕了目前認證。",
         "IM_RATE_LIMITED": "平台請求過於頻繁，請稍後重試。",
         "RATE_LIMITED": "平台請求過於頻繁，請稍後重試。",
         "IM_NETWORK_UNAVAILABLE": "無法連線 IM 平台。",
@@ -2647,8 +2654,8 @@
       "description": "開啟後，runtime.log 會記錄 DEBUG 等級的記錄檔；關閉後僅記錄一般資訊等級的記錄檔。"
     },
     "metrics": {
-      "title": "指標上報",
-      "enable": "開啟指標上報",
+      "title": "指標回報",
+      "enable": "開啟指標回報",
       "enableDescription": "開啟後，用戶端會按應用程式與任務生命週期事件，把心跳和節點執行指標回報到設定的伺服器。",
       "baseUrl": "回報服務網址",
       "heartbeatEndpoint": "心跳介面網址",
@@ -2673,11 +2680,11 @@
       "lastCheckedAt": "上次檢查：{{time}}",
       "announcement": {
         "title": "發現新版本 {{version}}",
-        "description": "可前往 設定 → 高級 → 更新 查看並安裝。",
+        "description": "可前往 設定 → 進階 → 更新 查看並安裝。",
         "dismiss": "關閉",
         "view": "查看更新",
         "dialogTitle": "發現新版本 {{version}}",
-        "dialogDescription": "檢測到新的用戶端版本。請前往 設定 → 高級 → 更新 完成下載和安裝。",
+        "dialogDescription": "檢測到新的用戶端版本。請前往 設定 → 進階 → 更新 完成下載和安裝。",
         "goToSettings": "前往設定更新"
       },
       "channel": {
@@ -2763,7 +2770,7 @@
       "conversation.attachment-unreadable": "附件檔案不可讀"
     },
     "sidebar": {
-      "quickActions": "快捷操作",
+      "quickActions": "快速操作",
       "newChat": "快速對話",
       "search": "搜尋",
       "agentManagement": "Agent",
@@ -2773,17 +2780,17 @@
       "multicaTaskManagement": "需求管理",
       "pinned": "置頂",
       "noPinned": "置頂工作階段會顯示在這裡",
-      "noWorkspaces": "尚未添加工作區",
+      "noWorkspaces": "尚未新增工作區",
       "workspaces": "工作區",
       "dragToReorder": "拖曳排序",
       "unpin": "取消置頂",
       "pinToTop": "置頂",
-      "rename": "重命名",
+      "rename": "重新命名",
       "delete": "刪除",
       "deleteConfirmTitle": "刪除工作階段？",
       "deleteConfirmDescription": "工作階段「{{title}}」將從 ~/.gold-band 對應 task 目錄移除，此操作不可復原。若系統支援，將優先移入資源回收筒。是否繼續？",
       "deleteConfirmAction": "確認刪除",
-      "addWorkspace": "添加工作區",
+      "addWorkspace": "新增工作區",
       "removeWorkspace": "移除工作區",
       "removeWorkspaceNamed": "移除工作區 {{name}}",
       "removeWorkspaceTitle": "移除 {{name}}？",
@@ -2816,7 +2823,7 @@
         "connectionSettings": "連線網址設定",
         "cancelTask": "取消任務",
         "executeTask": "執行",
-        "addWorkspace": "添加工作區",
+        "addWorkspace": "新增工作區",
         "noWorkspacesBound": "尚未綁定工作區",
         "status": {
           "queued": "待辦",
@@ -2825,10 +2832,10 @@
           "failed": "失敗"
         },
         "dialog": {
-          "title": "添加工作區",
+          "title": "新增工作區",
           "remoteWorkspace": "遠端工作區",
           "provider": "Provider",
-          "add": "添加",
+          "add": "新增",
           "needWorkspace": "請選擇遠端工作區",
           "noServerWorkspaces": "服務端沒有可綁定的工作區，請先在 multica Web 建立工作區。",
           "allWorkspacesBound": "所有遠端工作區均已綁定。"
@@ -2836,7 +2843,7 @@
       }
     },
     "composer": {
-      "multicaNeedLocalWorkspace": "請先添加本機工作區，再執行需求",
+      "multicaNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
       "multicaBindingTag": "Multica · {{title}}",
       "removeMulticaBinding": "解除任務綁定"
     },
@@ -2888,18 +2895,18 @@
       "unspecifiedModel": "不指定",
       "unspecifiedPermissionMode": "不指定",
       "selectWorkflowTemplate": "選擇工作流範本",
-      "noAgent": "請先在 Agent 管理中添加 Agent",
+      "noAgent": "請先在 Agent 管理中新增 Agent",
       "noWorkflowTemplate": "沒有有效工作流範本",
       "dynamicAgent": "動態 Agent",
       "attachments": "附件",
-      "addAttachments": "添加附件",
+      "addAttachments": "新增附件",
       "guideTitle": "設定執行模式",
       "guideDescription": "首次使用需要先設定執行模式，包括 Agent 和工作流設定。",
       "configureNow": "去設定",
       "configureAuto": "修改 AUTO",
       "configureWorkflow": "修改工作流",
       "includeInterview": "需求採訪",
-      "includeGrill": "需求拷問"
+      "includeGrill": "需求追問"
     },
     "runtime": {
       "justNow": "剛剛",
@@ -2961,7 +2968,7 @@
       "useOtherWorkflow": "使用其他工作流",
       "useMainWorkspace": "使用主工作區",
       "initialize": "初始化儲存庫",
-      "openSourceControl": "開啟源碼管理",
+      "openSourceControl": "開啟原始碼管理",
       "checking": "檢測中…",
       "recheck": "重新檢測"
     },
@@ -2987,9 +2994,9 @@
     "agent": "Agent",
     "model": "模型",
     "permissionMode": "權限模式",
-    "globalGoal": "全局目標",
+    "globalGoal": "全域目標",
     "globalGoalPlaceholder": "輸入統一目標，會追加到每個內部節點",
-    "noAgentConfigured": "請先在 Agent 管理中添加並診斷 Agent",
+    "noAgentConfigured": "請先在 Agent 管理中新增並診斷 Agent",
     "autoTemplate": "AUTO 範本",
     "noAutoTemplate": "不使用範本",
     "newAutoTemplate": "新增範本",

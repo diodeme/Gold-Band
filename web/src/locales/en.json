@@ -887,6 +887,7 @@
       "session-request-failed": "The session could not be prepared. Try again.",
       "missing-provider": "The current node is missing provider configuration.",
       "session-config-value-unavailable": "The selected session configuration is no longer available. Choose another value from the latest list.",
+      "active-prompt-blocks-config-save": "A session is currently running. Stop it before saving the configuration.",
       "invalid-conversation-branch-id": "This Agent conversation link is invalid or no longer available.",
       "session-query-failed": "The conversation could not be loaded. Try again.",
       "activity-detail-query-failed": "Activity details could not be loaded. Try again.",

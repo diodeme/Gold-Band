@@ -710,6 +710,35 @@
     },
     "discardWorkflowChanges": "工作流還有未儲存的修改。確定要放棄這些修改並關閉嗎？"
   },
+  "executionPlan": {
+    "configureAuto": "AUTO 設定",
+    "currentRun": "目前 Run",
+    "nextRun": "下一次 Run",
+    "saveTarget": "儲存目標",
+    "save": "儲存",
+    "saving": "儲存中",
+    "working": "正在更新執行計畫",
+    "diverged": "目前 Run 與下一次 Run 已不同。請先分割編輯器，再修改任一側。",
+    "split": "分割檢視",
+    "unsplit": "停止分割",
+    "unsplitTitle": "保留一份草稿",
+    "unsplitDescription": "選擇要保留在編輯器中的草稿。確認儲存目標前不會儲存。",
+    "keepCurrent": "保留目前 Run",
+    "keepNext": "保留下一次 Run",
+    "cancel": "取消",
+    "reload": "重新載入",
+    "viewIssues": "查看原因",
+    "revert": "還原",
+    "recover": "復原",
+    "committed": "已儲存",
+    "notCommitted": "未儲存",
+    "saveFailed": "執行計畫未儲存。",
+    "targets": {
+      "current": "僅目前 Run",
+      "next": "僅下一次 Run",
+      "current-and-next": "目前 Run 與下一次 Run"
+    }
+  },
   "errors": {
     "browser": {
       "webview": {
@@ -858,6 +887,7 @@
       "session-request-failed": "工作階段準備失敗，請重試。",
       "missing-provider": "目前節點缺少 provider 設定。",
       "session-config-value-unavailable": "所選工作階段設定已不可用，請從最新列表中重新選擇。",
+      "active-prompt-blocks-config-save": "目前有工作階段正在執行，請先停止工作階段再儲存設定。",
       "invalid-conversation-branch-id": "該 Agent 工作階段連結無效或已失效。",
       "session-query-failed": "工作階段內容載入失敗，請重試。",
       "activity-detail-query-failed": "活動詳情載入失敗，請重試。",

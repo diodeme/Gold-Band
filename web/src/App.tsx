@@ -95,7 +95,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
-import i18n, { displayAppError, i18nLanguage } from './i18n';
+import i18n, { displayAppError, loadI18nLanguage } from './i18n';
 import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
 import {
   conversationAcpRunRefreshStatus,
@@ -1111,12 +1111,6 @@ export function App() {
   }, [conversationPage, conversationRun]);
 
   useEffect(() => {
-    const tag = i18nLanguage(preferences.language);
-    void i18n.changeLanguage(tag);
-    document.documentElement.lang = tag;
-  }, [preferences.language]);
-
-  useEffect(() => {
     if (primaryModule !== 'settings' && conversationPage.kind !== 'settings') {
       setForceSettingsTab(null);
     }
@@ -1137,8 +1131,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    getAppBootstrap()
-      .then((bootstrap) => {
+    let active = true;
+    void getAppBootstrap()
+      .then(async (bootstrap) => {
+        const tag = await loadI18nLanguage(bootstrap.preferences.language);
+        if (!active) return;
+        document.documentElement.lang = tag;
         configureAcpResourceCacheSessionCount(
           bootstrap.appConfig.acpChatResourceCacheSessionCount,
         );
@@ -1146,12 +1144,17 @@ export function App() {
         // 静默预取设置页运行时区块，让首次进入「通用」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();
         void prefetchImSettings();
-        if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {
+        if (shouldAutoOpenWorkspacePicker(bootstrap, initialRoute.uiMode)) {
           setWorkspacePickerOpen(true);
         }
       })
-      .catch((err) => setError(displayAppError(t, err)));
-  }, [t, uiMode]);
+      .catch((err) => {
+        if (active) setError(displayAppError(i18n.t.bind(i18n), err));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const appSessionReady = bootstrap != null;
   const conversationShellReady = appSessionReady && uiMode === 'conversation';
@@ -2012,8 +2015,11 @@ export function App() {
     const save = preferenceSaveQueueRef.current
       .catch(() => undefined)
       .then(() => saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging, browser))
-      .then((saved) => {
+      .then(async (saved) => {
         if (generation !== preferenceSaveGenerationRef.current) return;
+        const tag = await loadI18nLanguage(saved.language);
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        document.documentElement.lang = tag;
         setBootstrap((current) => current ? { ...current, preferences: saved } : current);
       })
       .catch((err) => {

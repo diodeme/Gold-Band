@@ -710,6 +710,35 @@
     },
     "discardWorkflowChanges": "Este flujo de trabajo tiene cambios sin guardar. ¿Descartarlos y cerrar la pestaña?"
   },
+  "executionPlan": {
+    "configureAuto": "Configuración AUTO",
+    "currentRun": "Run actual",
+    "nextRun": "Próximo Run",
+    "saveTarget": "Destino de guardado",
+    "save": "Guardar",
+    "saving": "Guardando",
+    "working": "Actualizando el plan de ejecución",
+    "diverged": "El Run actual y el próximo Run son diferentes. Divida el editor antes de cambiar cualquiera de los lados.",
+    "split": "Vista dividida",
+    "unsplit": "Dejar de dividir",
+    "unsplitTitle": "Conservar un borrador",
+    "unsplitDescription": "Elija qué borrador permanece en el editor. No se guardará hasta que confirme el destino.",
+    "keepCurrent": "Conservar el Run actual",
+    "keepNext": "Conservar el próximo Run",
+    "cancel": "Cancelar",
+    "reload": "Volver a cargar",
+    "viewIssues": "Ver motivos",
+    "revert": "Revertir",
+    "recover": "Recuperar",
+    "committed": "Guardado",
+    "notCommitted": "No guardado",
+    "saveFailed": "El plan de ejecución no se guardó.",
+    "targets": {
+      "current": "Solo el Run actual",
+      "next": "Solo el próximo Run",
+      "current-and-next": "Run actual y próximo Run"
+    }
+  },
   "errors": {
     "browser": {
       "webview": {
@@ -858,6 +887,7 @@
       "session-request-failed": "No se pudo preparar la sesión. Vuelva a intentarlo.",
       "missing-provider": "Al nodo actual le falta la configuración del provider.",
       "session-config-value-unavailable": "La configuración de sesión seleccionada ya no está disponible. Elija otro valor de la lista más reciente.",
+      "active-prompt-blocks-config-save": "Hay una sesión en ejecución. Deténgala antes de guardar la configuración.",
       "invalid-conversation-branch-id": "Este enlace de conversación del Agent no es válido o ya no está disponible.",
       "session-query-failed": "No se pudo cargar la conversación. Vuelva a intentarlo.",
       "activity-detail-query-failed": "No se pudieron cargar los detalles de la actividad. Vuelva a intentarlo.",

@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn metrics_log_routes_through_runtime_tracing_without_direct_io() {
-        let source = include_str!("mod.rs");
+        let source = include_str!("mod.rs").replace("\r\n", "\n");
         let function = source
             .split_once("pub(crate) fn metrics_log")
             .expect("metrics_log function")

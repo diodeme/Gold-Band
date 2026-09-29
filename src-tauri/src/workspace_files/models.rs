@@ -215,6 +215,11 @@ pub struct WriteFileResourceInput {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileChangedEventVm {
     pub project_id: String,
+    /// Work location of a workspace watch: the linked worktree root, or `None`
+    /// for the project root and single-file external watches. Consumers route
+    /// by this identity rather than a path prefix (dynamic worktrees live
+    /// inside the project directory).
+    pub workspace_path: Option<String>,
     pub canonical_path: String,
     pub kind: String,
     pub revision: Option<FileRevisionVm>,

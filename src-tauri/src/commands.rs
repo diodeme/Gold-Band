@@ -3567,6 +3567,11 @@ pub fn record_source_control_load(report: gold_band::git::diagnostics::GitLoadRe
 }
 
 #[tauri::command]
+pub fn record_source_control_watch(report: gold_band::git::diagnostics::GitWatchReport) {
+    report.record();
+}
+
+#[tauri::command]
 pub async fn bootstrap_source_control(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -3603,12 +3608,17 @@ pub async fn bootstrap_source_control(
                 .complete_bootstrap(&project_id, preparation)
                 .map_err(command_error);
         };
+        let workspace_scope_path = preparation
+            .workspace_scope_path
+            .clone()
+            .map(camino::Utf8PathBuf::into_string);
         trace.stage("workspace-watch", || {
             watch_runtime.start_workspace(
                 app_handle.clone(),
                 file_runtime.inner().clone(),
                 project_id.clone(),
                 identity.workspace_path.as_std_path().to_path_buf(),
+                workspace_scope_path,
                 debounce_ms,
             )
         })?;
@@ -3638,7 +3648,7 @@ pub async fn bootstrap_source_control(
         .await;
         if result.is_err() {
             let _ =
-                monitor_runtime.stop(&project_id, &identity.common_dir, &identity.workspace_path);
+                monitor_runtime.stop(&project_id, identity.workspace_path.as_std_path());
             let _ =
                 watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path());
         }
@@ -4164,19 +4174,23 @@ pub async fn start_git_state_monitor(
         })?;
         let project_root = app.paths.repo_root;
         let debounce_ms = app.config.workspace_files.watch_debounce_ms;
-        let (identity, targets) = spawn_blocking_command(move || {
+        let (identity, workspace_scope_path, targets) = spawn_blocking_command(move || {
             worker_trace.stage("blocking-work", || {
                 let service = gold_band::git::GitSourceControlService::default();
-                let identity = service
-                    .resolve_scoped_workspace(
+                let scoped = service
+                    .resolve_scoped_workspace_identity(
                         &project_root,
                         workspace_path.as_deref().map(camino::Utf8Path::new),
                     )
                     .map_err(command_error)?;
                 let targets = service
-                    .metadata_watch_targets(&identity.workspace_path)
+                    .metadata_watch_targets(&scoped.repository.workspace_path)
                     .map_err(command_error)?;
-                Ok((identity, targets))
+                Ok((
+                    scoped.repository,
+                    scoped.scope_path.map(camino::Utf8PathBuf::into_string),
+                    targets,
+                ))
             })
         })
         .await?;
@@ -4186,6 +4200,7 @@ pub async fn start_git_state_monitor(
                 file_runtime.inner().clone(),
                 project_id.clone(),
                 identity.workspace_path.as_std_path().to_path_buf(),
+                workspace_scope_path,
                 debounce_ms,
             )
         })?;
@@ -4218,19 +4233,28 @@ pub async fn stop_git_state_monitor(
     project_id: String,
     workspace_path: Option<String>,
 ) -> CommandResult<()> {
-    let app = resolve_command_app(state.inner(), Some(&project_id))?;
-    let project_root = app.paths.repo_root;
-    let identity = spawn_blocking_command(move || {
-        gold_band::git::GitSourceControlService::default()
-            .resolve_scoped_workspace(
-                &project_root,
-                workspace_path.as_deref().map(camino::Utf8Path::new),
-            )
-            .map_err(command_error)
-    })
-    .await?;
-    monitor_runtime.stop(&project_id, &identity.common_dir, &identity.workspace_path)?;
-    watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path())
+    // A linked worktree stops by its own path without Git, so a reclaimed
+    // worktree still releases its watchers.
+    let workspace = match workspace_path.filter(|path| !path.trim().is_empty()) {
+        Some(path) => {
+            let path = std::path::PathBuf::from(path);
+            std::fs::canonicalize(&path).unwrap_or(path)
+        }
+        None => {
+            let app = resolve_command_app(state.inner(), Some(&project_id))?;
+            let project_root = app.paths.repo_root;
+            spawn_blocking_command(move || {
+                gold_band::git::GitSourceControlService::default()
+                    .resolve_scoped_workspace(&project_root, None)
+                    .map_err(command_error)
+            })
+            .await?
+            .workspace_path
+            .into_std_path_buf()
+        }
+    };
+    monitor_runtime.stop(&project_id, &workspace)?;
+    watch_runtime.stop_workspace(&project_id, &workspace)
 }
 
 #[tauri::command]

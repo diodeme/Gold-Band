@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -37,6 +38,14 @@ struct WatchHandle {
     _watcher: RecommendedWatcher,
     refs: usize,
     external_token: Option<Arc<Mutex<String>>>,
+    diagnostic_id: Option<uuid::Uuid>,
+    workspace_scope: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceWatchDiagnostic {
+    id: uuid::Uuid,
+    scope_hash: u64,
 }
 
 impl WorkspaceFileWatchRuntime {
@@ -46,23 +55,45 @@ impl WorkspaceFileWatchRuntime {
         file_runtime: WorkspaceFileRuntime,
         project_id: String,
         root: PathBuf,
+        workspace_path: Option<String>,
         debounce_ms: u64,
     ) -> CommandResult<()> {
         let mut inner = self.lock()?;
         let key = workspace_watch_key(&project_id, &root);
+        let scope_hash = workspace_watch_scope_hash(&key);
+        let workspace_scope = normalized_workspace_scope(workspace_path.as_deref());
+        let scope_kind = workspace_scope_kind(&workspace_scope);
         if let Some(handle) = inner.workspace.get_mut(&key) {
+            if let Err(error) =
+                ensure_workspace_watch_scope(&handle.workspace_scope, &workspace_scope, &project_id)
+            {
+                tracing::debug!(target: "gold_band::git::load", event = "workspace_watch_scope_conflict",
+                    watch_id = ?handle.diagnostic_id, %project_id, scope_hash,
+                    existing_scope_kind = workspace_scope_kind(&handle.workspace_scope),
+                    requested_scope_kind = scope_kind);
+                return Err(error);
+            }
             handle.refs = handle.refs.saturating_add(1);
+            tracing::debug!(target: "gold_band::git::load", event = "workspace_watch_reuse",
+                watch_id = ?handle.diagnostic_id, %project_id, scope_hash,
+                scope_kind, refs = handle.refs);
             return Ok(());
         }
+        let diagnostic = WorkspaceWatchDiagnostic {
+            id: uuid::Uuid::new_v4(),
+            scope_hash,
+        };
         let watcher = create_watcher(
             app_handle,
             file_runtime,
             project_id.clone(),
             root.clone(),
             None,
+            workspace_path,
             debounce_ms,
             RecursiveMode::Recursive,
             None,
+            Some(diagnostic),
         )?;
         inner.workspace.insert(
             key,
@@ -70,21 +101,34 @@ impl WorkspaceFileWatchRuntime {
                 _watcher: watcher,
                 refs: 1,
                 external_token: None,
+                diagnostic_id: Some(diagnostic.id),
+                workspace_scope,
             },
         );
+        tracing::debug!(target: "gold_band::git::load", event = "workspace_watch_start",
+            watch_id = %diagnostic.id, %project_id, scope_hash,
+            scope_kind, refs = 1usize, active_watches = inner.workspace.len());
         Ok(())
     }
 
     pub(crate) fn stop_workspace(&self, project_id: &str, root: &Path) -> CommandResult<()> {
         let mut inner = self.lock()?;
         let key = workspace_watch_key(project_id, root);
-        let remove = inner.workspace.get_mut(&key).is_some_and(|handle| {
-            handle.refs = handle.refs.saturating_sub(1);
-            handle.refs == 0
-        });
+        let scope_hash = workspace_watch_scope_hash(&key);
+        let (watch_id, refs, found) = match inner.workspace.get_mut(&key) {
+            Some(handle) => {
+                handle.refs = handle.refs.saturating_sub(1);
+                (handle.diagnostic_id, handle.refs, true)
+            }
+            None => (None, 0, false),
+        };
+        let remove = found && refs == 0;
         if remove {
             inner.workspace.remove(&key);
         }
+        tracing::debug!(target: "gold_band::git::load", event = "workspace_watch_stop",
+            watch_id = ?watch_id, %project_id, scope_hash, found, removed = remove,
+            refs, active_watches = inner.workspace.len());
         Ok(())
     }
 
@@ -109,9 +153,11 @@ impl WorkspaceFileWatchRuntime {
             project_id,
             parent,
             Some(path),
+            None,
             debounce_ms,
             RecursiveMode::NonRecursive,
             Some(external_token.clone()),
+            None,
         )?;
         inner.external.insert(
             token,
@@ -119,6 +165,8 @@ impl WorkspaceFileWatchRuntime {
                 _watcher: watcher,
                 refs: 1,
                 external_token: Some(external_token),
+                diagnostic_id: None,
+                workspace_scope: None,
             },
         );
         Ok(())
@@ -156,15 +204,50 @@ fn workspace_watch_key(project_id: &str, root: &Path) -> String {
     format!("{project_id}\0{path}")
 }
 
+fn workspace_watch_scope_hash(key: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn normalized_workspace_scope(workspace_path: Option<&str>) -> Option<String> {
+    workspace_path.map(|path| {
+        let path = display_path(Path::new(path)).replace('\\', "/");
+        #[cfg(target_os = "windows")]
+        let path = path.to_lowercase();
+        path.trim_end_matches('/').to_string()
+    })
+}
+
+fn workspace_scope_kind(scope: &Option<String>) -> &'static str {
+    if scope.is_some() { "linked" } else { "main" }
+}
+
+fn ensure_workspace_watch_scope(
+    existing: &Option<String>,
+    requested: &Option<String>,
+    project_id: &str,
+) -> CommandResult<()> {
+    if existing == requested {
+        return Ok(());
+    }
+    Err(error(
+        "workspace-file.watch-failed",
+        serde_json::json!({ "projectId": project_id }),
+    ))
+}
+
 fn create_watcher(
     app_handle: AppHandle,
     file_runtime: WorkspaceFileRuntime,
     project_id: String,
     watched_path: PathBuf,
     target_file: Option<PathBuf>,
+    workspace_path: Option<String>,
     debounce_ms: u64,
     recursive_mode: RecursiveMode,
     external_token: Option<Arc<Mutex<String>>>,
+    diagnostic: Option<WorkspaceWatchDiagnostic>,
 ) -> CommandResult<RecommendedWatcher> {
     let (sender, receiver) = mpsc::sync_channel::<notify::Result<Event>>(EVENT_QUEUE_CAPACITY);
     let queue_overflowed = Arc::new(AtomicBool::new(false));
@@ -192,12 +275,32 @@ fn create_watcher(
 
     let debounce = Duration::from_millis(debounce_ms.max(1));
     let invalidation_path = target_file.clone().unwrap_or_else(|| watched_path.clone());
+    // Events carry the work location identity (None is the project root) so
+    // consumers route them exactly; a vanished root (e.g. a reclaimed
+    // worktree) invalidates the whole watch.
+    let workspace_root =
+        (target_file.is_none() && external_token.is_none()).then(|| watched_path.clone());
     std::thread::spawn(move || {
-        while let Ok(first) = receiver.recv() {
+        let mut batch_number = 0u64;
+        loop {
+            let first = match receiver.recv() {
+                Ok(first) => first,
+                Err(_) => {
+                    if let Some(diagnostic) = diagnostic {
+                        tracing::debug!(target: "gold_band::git::load",
+                            event = "workspace_watch_thread_stop", watch_id = %diagnostic.id,
+                            scope_hash = diagnostic.scope_hash, reason = "channel-disconnected");
+                    }
+                    return;
+                }
+            };
+            batch_number = batch_number.wrapping_add(1);
             let batch_started = Instant::now();
+            let mut events = 1usize;
             let mut pending = HashMap::<PathBuf, String>::new();
-            let mut invalidated = queue_overflowed.swap(false, Ordering::AcqRel)
-                | collect_event(first, target_file.as_deref(), &mut pending);
+            let mut overflowed = queue_overflowed.swap(false, Ordering::AcqRel);
+            let mut invalidated =
+                overflowed | collect_event(first, target_file.as_deref(), &mut pending);
             loop {
                 let wait = next_batch_wait(debounce, batch_started.elapsed());
                 if wait.is_zero() {
@@ -205,19 +308,37 @@ fn create_watcher(
                 }
                 match receiver.recv_timeout(wait) {
                     Ok(event) => {
+                        events += 1;
                         invalidated |= collect_event(event, target_file.as_deref(), &mut pending);
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        if let Some(diagnostic) = diagnostic {
+                            tracing::debug!(target: "gold_band::git::load",
+                                event = "workspace_watch_thread_stop", watch_id = %diagnostic.id,
+                                scope_hash = diagnostic.scope_hash, reason = "channel-disconnected");
+                        }
+                        return;
+                    }
                 }
             }
-            invalidated |= queue_overflowed.swap(false, Ordering::AcqRel);
+            overflowed |= queue_overflowed.swap(false, Ordering::AcqRel);
+            invalidated |= overflowed;
+            invalidated |= workspace_root.as_deref().is_some_and(|root| !root.is_dir());
+            if let Some(diagnostic) = diagnostic {
+                tracing::debug!(target: "gold_band::git::load", event = "workspace_batch",
+                    watch_id = %diagnostic.id, scope_hash = diagnostic.scope_hash,
+                    batch_number, events, overflowed, invalidated,
+                    emitted_paths = if invalidated { 1 } else { pending.len() },
+                    elapsed_ms = batch_started.elapsed().as_secs_f64() * 1000.0);
+            }
             if invalidated {
                 pending.clear();
                 emit_change(
                     &app_handle,
                     WorkspaceFileChangedEventVm {
                         project_id: project_id.clone(),
+                        workspace_path: workspace_path.clone(),
                         canonical_path: display_path(&invalidation_path),
                         kind: "invalidated".to_string(),
                         revision: None,
@@ -246,6 +367,7 @@ fn create_watcher(
                     &app_handle,
                     WorkspaceFileChangedEventVm {
                         project_id: project_id.clone(),
+                        workspace_path: workspace_path.clone(),
                         canonical_path: display_path(&path),
                         kind,
                         revision,
@@ -356,6 +478,31 @@ mod tests {
         assert_ne!(
             workspace_watch_key("project-1", Path::new("D:/repo/worktree-a")),
             workspace_watch_key("project-1", Path::new("D:/repo/worktree-b")),
+        );
+    }
+
+    #[test]
+    fn workspace_watch_reuse_requires_the_same_semantic_scope_in_either_start_order() {
+        let linked = normalized_workspace_scope(Some(r"D:\repo\worktree"));
+        let linked_with_slashes = normalized_workspace_scope(Some("D:/repo/worktree/"));
+        let linked_with_verbatim_prefix = normalized_workspace_scope(Some(r"\\?\D:\repo\worktree"));
+        let main = normalized_workspace_scope(None);
+
+        assert_eq!(linked, linked_with_slashes);
+        assert_eq!(linked, linked_with_verbatim_prefix);
+        assert!(ensure_workspace_watch_scope(&main, &main, "project-1").is_ok());
+        assert!(ensure_workspace_watch_scope(&linked, &linked_with_slashes, "project-1").is_ok());
+        assert_eq!(
+            ensure_workspace_watch_scope(&main, &linked, "project-1")
+                .unwrap_err()
+                .code,
+            "workspace-file.watch-failed"
+        );
+        assert_eq!(
+            ensure_workspace_watch_scope(&linked, &main, "project-1")
+                .unwrap_err()
+                .code,
+            "workspace-file.watch-failed"
         );
     }
 

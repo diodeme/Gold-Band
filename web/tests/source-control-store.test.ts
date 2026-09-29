@@ -146,6 +146,7 @@ describe('source control session store', () => {
     const getBootstrap = vi.fn(async () => ({
       capability: capability('ready'),
       overview: { repository: overview.repository, status: overview.status },
+      workspaceScopePath: null,
     }));
     const startMonitor = vi.fn().mockResolvedValue(undefined);
     const store = new SourceControlStore({ ...api, getBootstrap, startMonitor });
@@ -177,6 +178,7 @@ describe('source control session store', () => {
     bootstrap.resolve({
       capability: capability('ready'),
       overview: { repository: overview.repository, status: overview.status },
+      workspaceScopePath: null,
     });
     await loading;
 
@@ -211,6 +213,7 @@ describe('source control session store', () => {
       getBootstrap: vi.fn(async () => ({
         capability: capability('ready'),
         overview: { repository: overview.repository, status: overview.status },
+        workspaceScopePath: null,
       })),
       getRemotes: vi.fn().mockRejectedValue(new Error('remote unavailable')),
     });
@@ -237,6 +240,7 @@ describe('source control session store', () => {
       getBootstrap: vi.fn(async () => ({
         capability: capability('ready'),
         overview: { repository: initial.repository, status: initial.status },
+        workspaceScopePath: null,
       })),
       getRemotes,
     });
@@ -960,6 +964,138 @@ describe('source control session store', () => {
     }
   });
 
+  it('routes a main-workspace event to a session opened with the explicit project root', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const initial = repositorySnapshot('D:/repo');
+      const store = new SourceControlStore({
+        ...events.api,
+        getBootstrap: vi.fn(async () => ({
+          capability: capability('ready'),
+          overview: { repository: initial.repository, status: initial.status },
+          workspaceScopePath: null,
+        })),
+      });
+      await store.ensureLoaded('project-1', 'D:/repo');
+      expect(store.session('project-1', 'D:/repo').requestedWorkspacePath).toBeNull();
+      expect(store.session('project-1', null)).toBe(store.session('project-1', 'D:/repo'));
+
+      events.emitWorkspace('D:/repo/src/current.ts', null);
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(events.api.getSnapshot).toHaveBeenCalledExactlyOnceWith('project-1', null);
+      expect(events.api.getHistory).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['drive', '\\\\?\\D:\\repo', 'D:\\repo\\data.csv'],
+    ['UNC', '\\\\?\\UNC\\server\\share\\repo', '\\\\server\\share\\repo\\data.csv'],
+  ])('routes Windows %s watcher paths without a verbatim prefix to a canonical repository path', async (
+    _kind,
+    repositoryPath,
+    eventPath,
+  ) => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const initial = repositorySnapshot(repositoryPath);
+      const store = new SourceControlStore({
+        ...events.api,
+        getBootstrap: vi.fn(async () => ({
+          capability: capability('ready'),
+          overview: { repository: initial.repository, status: initial.status },
+          workspaceScopePath: null,
+        })),
+      });
+      await store.ensureLoaded('project-1', null);
+
+      events.emitWorkspace(eventPath, null);
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(events.api.getSnapshot).toHaveBeenCalledExactlyOnceWith('project-1', null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports workspace routing and refresh timing without making diagnostics part of refresh', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const reportWatch = vi.fn(async () => { throw new Error('diagnostics unavailable'); });
+      const store = new SourceControlStore({ ...events.api, reportWatch });
+      await store.ensureLoaded('project-1', 'D:/repo');
+      reportWatch.mockClear();
+
+      events.emitWorkspace('D:/repo/src/current.ts');
+      await vi.advanceTimersByTimeAsync(251);
+
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(reportWatch).toHaveBeenCalledWith({
+        event: 'workspace-events',
+        projectId: 'project-1',
+        receivedEvents: 1,
+        projectSessions: 1,
+        routedSessions: 1,
+        metadataFilteredSessions: 0,
+        outOfScopeSessions: 0,
+        scopeMismatchSessions: 0,
+        nestedWorktreeFilteredSessions: 0,
+        pathOutsideWorkspaceSessions: 0,
+      });
+      expect(reportWatch).toHaveBeenCalledWith({
+        event: 'refresh-start',
+        projectId: 'project-1',
+        pendingPaths: 1,
+        invalidateAll: false,
+      });
+      expect(reportWatch).toHaveBeenCalledWith({
+        event: 'refresh-end',
+        projectId: 'project-1',
+        outcome: 'ready',
+        elapsedMs: expect.any(Number),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports metadata filtering and out-of-scope sessions without exposing paths', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const reportWatch = vi.fn(async () => undefined);
+      const store = new SourceControlStore({ ...events.api, reportWatch });
+      await store.ensureLoaded('project-1', 'D:/repo/worktree-a');
+      await store.ensureLoaded('project-1', 'D:/repo/worktree-b');
+      reportWatch.mockClear();
+
+      events.emitWorkspace('D:/repo/worktree-a/.git/index');
+      await vi.advanceTimersByTimeAsync(251);
+
+      expect(reportWatch).toHaveBeenCalledTimes(1);
+      expect(reportWatch).toHaveBeenCalledWith({
+        event: 'workspace-events',
+        projectId: 'project-1',
+        receivedEvents: 1,
+        projectSessions: 2,
+        routedSessions: 0,
+        metadataFilteredSessions: 1,
+        outOfScopeSessions: 1,
+        scopeMismatchSessions: 1,
+        nestedWorktreeFilteredSessions: 0,
+        pathOutsideWorkspaceSessions: 0,
+      });
+      expect(reportWatch.mock.calls[0]?.[0]).not.toHaveProperty('canonicalPath');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('bounds workspace-event debounce latency under continuous writes', async () => {
     vi.useFakeTimers();
     try {
@@ -1126,16 +1262,38 @@ describe('source control session store', () => {
     vi.useFakeTimers();
     try {
       const events = eventApi();
-      const store = new SourceControlStore(events.api);
+      const store = new SourceControlStore({
+        ...events.api,
+        getBootstrap: vi.fn(async (_projectId: string, workspacePath?: string | null) => {
+          const workspaceScopePath = workspacePath === 'D:/repo' ? null : workspacePath ?? null;
+          const snapshot = repositorySnapshot(workspaceScopePath ?? 'D:/repo');
+          return {
+            capability: capability('ready'),
+            overview: { repository: snapshot.repository, status: snapshot.status },
+            workspaceScopePath,
+          };
+        }),
+      });
+      await store.ensureLoaded('project-1', 'D:/repo');
       await store.ensureLoaded('project-1', 'D:/repo/worktree-a');
 
       events.emitWorkspace('D:/repo/worktree-b/src/other.ts');
       await vi.advanceTimersByTimeAsync(151);
-      expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+      expect(events.api.getSnapshot).not.toHaveBeenCalled();
 
       events.emitWorkspace('D:/repo/worktree-a/src/current.ts');
       await vi.advanceTimersByTimeAsync(151);
-      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(events.api.getSnapshot).toHaveBeenCalledExactlyOnceWith('project-1', 'D:/repo/worktree-a');
+
+      // The project-root watch also sees files of a nested worktree; only the
+      // worktree's own watch refreshes it.
+      events.emitWorkspace('D:/repo/worktree-a/src/current.ts', null);
+      await vi.advanceTimersByTimeAsync(151);
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+
+      events.emitWorkspace('D:/repo/src/main.ts', null);
+      await vi.advanceTimersByTimeAsync(151);
+      expect(events.api.getSnapshot).toHaveBeenLastCalledWith('project-1', null);
     } finally {
       vi.useRealTimers();
     }
@@ -1212,9 +1370,11 @@ function eventApi() {
     emitState(event: import('@/types').GitStateChangedEventVm) {
       stateListener?.(event);
     },
-    emitWorkspace(canonicalPath: string) {
+    /** Emits from the watch of the work location that contains the path. */
+    emitWorkspace(canonicalPath: string, workspacePath: string | null = canonicalPath.match(/^D:\/repo\/worktree-[a-z]+/u)?.[0] ?? 'D:/repo') {
       workspaceListener?.({
         projectId: 'project-1',
+        workspacePath,
         canonicalPath,
         kind: 'modified',
         revision: null,

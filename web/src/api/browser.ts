@@ -976,6 +976,7 @@ function browserExecutionPlan(projectId: string, taskId: string, taskUuid: strin
 
 export const browserApi: RuntimeApi = {
   reportSourceControlLoad: async () => {},
+  reportSourceControlWatch: async () => {},
   readProjectMemory: readBrowserMemory,
   writeProjectMemory: writeBrowserMemory,
   async subscribeScheduledNotifications() {
@@ -1140,11 +1141,14 @@ export const browserApi: RuntimeApi = {
   },
   async getSourceControlBootstrap(projectId, workspacePath) {
     const capability = await browserApi.getGitCapability(projectId);
+    const workspaceScopePath = workspacePath && workspacePath !== '/preview/gold-band'
+      ? workspacePath
+      : null;
     if (capability.status !== 'ready' && capability.status !== 'head-required') {
-      return { capability, overview: null };
+      return { capability, overview: null, workspaceScopePath };
     }
     const overview = await browserApi.getSourceControlOverview(projectId, workspacePath);
-    return { capability, overview };
+    return { capability, overview, workspaceScopePath };
   },
   async getSourceControlOverview(projectId, workspacePath) {
     const { repository, status } = await browserApi.getSourceControlSnapshot(projectId, workspacePath);

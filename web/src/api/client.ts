@@ -382,6 +382,7 @@ export interface BrowserBookmarkVm {
 
 export interface RuntimeApi {
   reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
+  reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
   writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
   getGitCapability(projectId?: string | null, loadId?: string): Promise<GitCapabilityVm>;

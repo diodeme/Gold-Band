@@ -239,6 +239,10 @@ export function reportSourceControlLoad(report: import("@/lib/source-control-loa
   return getRuntimeApi().reportSourceControlLoad(report);
 }
 
+export function reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport) {
+  return getRuntimeApi().reportSourceControlWatch(report);
+}
+
 export function getGitCapability(projectId?: string | null, loadId?: string) {
   return getRuntimeApi().getGitCapability(projectId, loadId);
 }

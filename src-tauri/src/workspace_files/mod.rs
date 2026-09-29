@@ -492,6 +492,7 @@ pub fn start_workspace_file_watch(
         runtime.inner().clone(),
         root.project_id,
         root.path,
+        None,
         root.config.watch_debounce_ms,
     )
 }

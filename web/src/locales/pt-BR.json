@@ -838,6 +838,7 @@
       "commit-review-worker-failed": "O worker de revisão de commits parou inesperadamente.",
       "commit-reachability-query-failed": "Não foi possível ler a acessibilidade atual do commit.",
       "diff-review-session-expired": "Esta sessão de revisão de diff expirou. Reabra-a pelo histórico de commits.",
+      "discard-failed": "Não foi possível descartar as alterações do arquivo.",
       "operation-failed": "A operação Git falhou."
     },
     "github": {
@@ -1841,6 +1842,9 @@
     "assetViewer": "Visualizador de arquivo de conversa"
   },
   "sourceControl": {
+    "discardChange": "Descartar alteração",
+    "discardDescription": "Restaurar este arquivo para HEAD, descartando alterações preparadas e não preparadas. Novos arquivos serão excluídos. Esta ação não pode ser desfeita.",
+    "discarding": "Descartando alterações…",
     "reviewStatisticsLoading": "Calculando linhas…",
     "reviewStatisticsRetry": "Tentar contagem novamente",
     "title": "Controle de versão",

@@ -39,6 +39,7 @@ import {
   type SourceControlWorkspaceResource,
 } from '../right-workspace-context';
 import { SourceControlRepositoryView } from './SourceControlRepositoryView';
+import { SourceControlDiscardMenu } from './SourceControlDiscardMenu';
 import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
 import { SourceControlChangesToolbar, SourceControlSyncActions } from './SourceControlChangesToolbar';
 import { SourceControlGitHubView } from './SourceControlGitHubView';
@@ -244,6 +245,9 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                   title={t('sourceControl.staged')}
                   changes={snapshot.status.staged}
                   tone="staged"
+                  key={`staged:${resource.projectId}:${resource.workspacePath}`}
+                  onDiscard={(change) => mutate({ kind: 'discard-path', path: change.path })}
+                  discardPendingPath={pendingAction?.kind === 'discard-path' ? pendingAction.path : null}
                   onOpen={(change) => openDiff(change, 'staged')}
                   actionLabel={t('sourceControl.unstage')}
                   actionIcon={<Undo2 className="size-3" />}
@@ -255,6 +259,9 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                   title={t('sourceControl.unstaged')}
                   changes={snapshot.status.unstaged}
                   tone="unstaged"
+                  key={`unstaged:${resource.projectId}:${resource.workspacePath}`}
+                  onDiscard={(change) => mutate({ kind: 'discard-path', path: change.path })}
+                  discardPendingPath={pendingAction?.kind === 'discard-path' ? pendingAction.path : null}
                   onOpen={(change) => openDiff(change, 'unstaged')}
                   actionLabel={t('sourceControl.stage')}
                   actionIcon={<Check className="size-3" />}
@@ -266,6 +273,9 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                   title={t('sourceControl.untracked')}
                   changes={snapshot.status.untracked}
                   tone="untracked"
+                  key={`untracked:${resource.projectId}:${resource.workspacePath}`}
+                  onDiscard={(change) => mutate({ kind: 'discard-path', path: change.path })}
+                  discardPendingPath={pendingAction?.kind === 'discard-path' ? pendingAction.path : null}
                   onOpen={(change) => openDiff(change, 'unstaged')}
                   actionLabel={t('sourceControl.stage')}
                   actionIcon={<Check className="size-3" />}
@@ -456,6 +466,8 @@ function ChangeGroup({
   pendingPath,
   disabled,
   onAction,
+  onDiscard,
+  discardPendingPath,
 }: {
   title: string;
   changes: GitFileChangeVm[];
@@ -466,7 +478,10 @@ function ChangeGroup({
   pendingPath?: string | null;
   disabled?: boolean;
   onAction?: (change: GitFileChangeVm) => void;
+  onDiscard?: (change: GitFileChangeVm) => void;
+  discardPendingPath?: string | null;
 }) {
+  const { t } = useTranslation();
   if (changes.length === 0) return null;
   return (
     <TooltipProvider>
@@ -476,7 +491,7 @@ function ChangeGroup({
       </div>
       {changes.map((change) => {
         const actionPending = pendingPath === change.path;
-        return (
+        const row = (
           <SourceControlDiffFileRow
             key={`${change.path}:${change.indexStatus ?? ''}:${change.worktreeStatus ?? ''}`}
             path={change.path}
@@ -485,7 +500,11 @@ function ChangeGroup({
             addedLines={change.addedLines}
             deletedLines={change.deletedLines}
             onClick={() => onOpen(change)}
-            trailing={onAction && (!disabled || actionPending) ? (
+            trailing={discardPendingPath === change.path ? (
+              <span className="flex size-6 shrink-0 items-center justify-center" data-source-control-row-progress="true">
+                <LoaderCircle className="size-3 animate-spin" aria-label={t('sourceControl.discarding')} />
+              </span>
+            ) : onAction && (!disabled || actionPending) ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button type="button" size="icon-xs" variant="ghost" className={cn('opacity-0 group-hover:opacity-100 focus-visible:opacity-100', actionPending && 'opacity-100 disabled:opacity-100')} disabled={disabled} aria-busy={actionPending} aria-label={`${actionLabel}: ${change.path}`} onClick={() => onAction(change)}>
@@ -497,6 +516,7 @@ function ChangeGroup({
             ) : null}
           />
         );
+        return onDiscard ? <SourceControlDiscardMenu key={change.path} change={change} disabled={Boolean(disabled)} pending={discardPendingPath === change.path} onDiscard={() => onDiscard(change)}>{row}</SourceControlDiscardMenu> : row;
       })}
     </section>
     </TooltipProvider>

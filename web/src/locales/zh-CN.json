@@ -838,6 +838,7 @@
       "commit-review-worker-failed": "提交变更汇总任务异常终止。",
       "commit-reachability-query-failed": "无法读取该提交的当前归属。",
       "diff-review-session-expired": "该 Diff 审阅会话已过期，请从提交历史重新打开。",
+      "discard-failed": "无法放弃文件更改。",
       "operation-failed": "Git 操作失败。"
     },
     "github": {
@@ -1841,6 +1842,9 @@
     "assetViewer": "会话文件查看器"
   },
   "sourceControl": {
+    "discardChange": "放弃更改",
+    "discardDescription": "将此文件还原至 HEAD，放弃已暂存和未暂存的更改。新增文件将被删除。此操作无法撤销。",
+    "discarding": "正在放弃更改…",
     "reviewStatisticsLoading": "正在统计行数…",
     "reviewStatisticsRetry": "重试行数统计",
     "title": "源码管理",

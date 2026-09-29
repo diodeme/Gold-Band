@@ -12,6 +12,112 @@ import type {
 } from '@/types';
 
 describe('source control session store', () => {
+  it.each(['same-row', 'new-path', 'old-path', 'kind', 'group', 'head', 'workspace', 'binary'] as const)('bounds retained statistics to the same comparison: %s', async (change) => {
+    const api = fakeApi();
+    const initial = repositorySnapshot('D:/repo');
+    const row = { path: 'keep.ts', oldPath: null, kind: 'modified' as const, indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 9, deletedLines: 2 };
+    initial.status.unstaged = [row];
+    api.getSnapshot.mockResolvedValueOnce(initial);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const next = structuredClone(initial);
+    next.repository.revision = next.status.snapshotRevision = 'new-revision';
+    next.status.unstaged[0].addedLines = null;
+    next.status.unstaged[0].deletedLines = null;
+    if (change === 'new-path') next.status.unstaged[0].path = 'new.ts';
+    if (change === 'old-path') next.status.unstaged[0].oldPath = 'old.ts';
+    if (change === 'kind') next.status.unstaged[0].kind = 'deleted';
+    if (change === 'group') next.status.staged = next.status.unstaged.splice(0);
+    if (change === 'head') next.repository.headOid = 'b'.repeat(40);
+    if (change === 'workspace') next.repository.workspacePath = 'D:/other';
+    if (change === 'binary') next.status.unstaged[0].binary = true;
+    api.getSnapshot.mockResolvedValueOnce(next);
+    await store.refresh('project-1', 'D:/repo');
+    const status = store.session('project-1', 'D:/repo').snapshot!.status;
+    expect([...status.unstaged, ...status.staged][0].addedLines).toBe(change === 'same-row' ? 9 : null);
+    store.clear('project-1', 'D:/repo');
+  });
+  it.each(['worktree', 'repository'] as const)('retains visible statistics after discard during %s watcher revalidation', async (scope) => {
+    vi.useFakeTimers();
+    const events = eventApi();
+    const initial = repositorySnapshot('D:/repo');
+    const row = { path: 'keep.ts', oldPath: null, kind: 'modified' as const, indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 9, deletedLines: 2 };
+    initial.status.unstaged = [row, { ...row, path: 'discard.ts' }];
+    events.api.getSnapshot.mockResolvedValue(initial);
+    const statistics = deferred<GitSourceControlSnapshotVm['status']>();
+    const getStatistics = vi.fn().mockResolvedValueOnce(initial.status).mockReturnValueOnce(statistics.promise);
+    const store = new SourceControlStore({ ...events.api, startMonitor: undefined, getStatistics });
+    try {
+      await store.ensureLoaded('project-1', 'D:/repo');
+      await vi.advanceTimersByTimeAsync(0);
+      const next = repositorySnapshot('D:/repo', 'after-discard');
+      next.status.unstaged = [{ ...row }];
+      events.api.executeMutation.mockResolvedValueOnce({ scope: 'workspace', status: next.status, repositoryRevision: 'after-discard' });
+      await store.mutate('project-1', 'D:/repo', { kind: 'discard-path', path: 'discard.ts' });
+      const lightweight = structuredClone(next);
+      lightweight.status.unstaged[0].addedLines = null;
+      lightweight.status.unstaged[0].deletedLines = null;
+      events.api.getSnapshot.mockResolvedValueOnce(lightweight);
+      const visible: unknown[] = [];
+      const unsubscribe = store.subscribe('project-1', 'D:/repo', () => visible.push(store.session('project-1', 'D:/repo').snapshot?.status.unstaged[0]?.addedLines));
+      if (scope === 'worktree') events.emitWorkspace('D:/repo/discard.ts');
+      else events.emitState({ projectId: 'project-1', repositoryCommonDir: 'D:/repo/.git', workspacePath: 'D:/repo', reason: 'metadata' });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(getStatistics).toHaveBeenCalledTimes(2);
+      expect(visible.every((count) => count === 9)).toBe(true);
+      expect(store.session('project-1', 'D:/repo').snapshot?.status.unstaged).toEqual([row]);
+      statistics.resolve({ ...next.status, unstaged: [{ ...row, addedLines: 12 }] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.session('project-1', 'D:/repo').snapshot?.status.unstaged[0].addedLines).toBe(12);
+      expect(events.api.getCatalog).not.toHaveBeenCalled();
+      expect(events.api.getHistory).not.toHaveBeenCalled();
+      unsubscribe();
+    } finally { store.clear('project-1', 'D:/repo'); vi.useRealTimers(); }
+  });
+  it('discards through the workspace API without loading catalog or history and rejects duplicate writes', async () => {
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const result = deferred<GitMutationResultVm>();
+    api.executeMutation.mockReturnValueOnce(result.promise);
+    const writing = store.mutate('project-1', 'D:/repo', { kind: 'discard-path', path: 'tracked.txt' });
+    expect(store.session('project-1', 'D:/repo').pendingAction).toEqual({ kind: 'discard-path', path: 'tracked.txt' });
+    await store.mutate('project-1', 'D:/repo', { kind: 'discard-path', path: 'tracked.txt' });
+    expect(api.executeMutation).toHaveBeenCalledExactlyOnceWith('project-1', 'D:/repo', { kind: 'discard-path', path: 'tracked.txt', expectedRevision: 'revision-1' });
+    const status = repositorySnapshot('D:/repo').status;
+    result.resolve({ scope: 'workspace', status, repositoryRevision: 'revision-2' });
+    await writing;
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({ pendingAction: null, error: null, snapshot: { repository: { revision: 'revision-2' }, status } });
+    expect(api.getCatalog).not.toHaveBeenCalled();
+    expect(api.getHistory).not.toHaveBeenCalled();
+    expect(api.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+  it.each(['start', 'dismiss'] as const)('does not resurrect a failure after %s during terminal refresh', async (action) => {
+    const events = eventApi();
+    const store = new SourceControlStore(events.api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const failed: GitOperationVm = {
+      operationId: 'old', kind: 'fetch', repositoryCommonDir: 'D:/repo/.git',
+      workspacePath: 'D:/repo', status: 'failed', cancelable: false,
+      startedAt: null, completedAt: null,
+      error: { code: 'git.authentication-failed', params: { reason: 'old failure' } },
+    };
+    const refresh = deferred<GitSourceControlSnapshotVm>();
+    events.api.getSnapshot.mockReturnValueOnce(refresh.promise);
+    events.api.startOperation.mockResolvedValueOnce(failed);
+    await store.startOperation('project-1', 'D:/repo', { kind: 'fetch', prune: true });
+    await vi.waitFor(() => expect(events.api.getSnapshot).toHaveBeenCalledTimes(2));
+    expect(store.session('project-1', 'D:/repo').error).toEqual(failed.error);
+    if (action === 'start') {
+      events.api.startOperation.mockResolvedValueOnce({ ...failed, operationId: 'new', status: 'running', error: null });
+      await store.startOperation('project-1', 'D:/repo', { kind: 'fetch', prune: true });
+    } else store.dismissOperationResult('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').error).toBeNull();
+    refresh.resolve(repositorySnapshot('D:/repo'));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').refreshing).toBeNull());
+    expect(store.session('project-1', 'D:/repo').error).toBeNull();
+    store.clear('project-1', 'D:/repo');
+  });
   it('publishes review before statistics and rejects statistics from a previous selection', async () => {
     const api = fakeApi();
     const first = deferred<GitCommitReviewVm>();

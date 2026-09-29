@@ -31,6 +31,15 @@
 - 验收：Web 全量 334 个文件、2523 项全部通过；TypeScript 和 Web 生产构建通过。Rust 核心库 1504 通过、3 ignored，桌面端 788 通过、1 ignored，最终 workspace `--no-fail-fast` 无失败；并发回归发现的日志轮转测试已改为等待 writer 关闭回执，不放宽轮转文件数量、大小或异步排空断言。ACP 退出日志定向集成测试、命令解析、AI-DYNAMIC Prompt 投影和两项 doctor 超时回收测试通过；`cargo fmt --all -- --check` 与 `git diff --check` 通过。按用户要求不继续前端实际交互验证。
 - 性能与过度设计评审：生产路径只增加常数级 Tooltip DOM、一次 exit-status pending 分支和已有 path config 的值复制；不增加请求、历史扫描、缓存、队列、订阅、持久字段或新依赖。doctor 的测试专用等待上限增加，但生产 180 秒预算不变；路径修复减少跨 workspace 错误 I/O，退出日志修复不轮询进程。复用现有 Provider、composer draft schema、ChatContainer、Tooltip、`StoragePathConfig` 和进程状态机，没有第二套领域模型。
 
+## 2026-09-24 UI 语言包按当前语言动态加载
+
+- 根因：七语言产品设计正确，但 Web 初始化把七份 locale JSON 全部静态导入，并用 `fallbackLng = en` 同时承担普通缺词和系统语言映射，加载边界与完整性门禁缺失。`v0.17.0` 主应用 chunk 相比 `v0.16.0` 增加约 754.6 KB raw / 218.1 KB gzip，其中七语言提交占约 91%。这属于正确设计实现不完整，不回退多语言能力。
+- 实现：沿用 i18next resource bundle 与 Vite literal dynamic import。启动取得 canonical `desktopLanguage` 后只加载并激活该语言，再发布 bootstrap；设置保存后按后端返回语言执行同一顺序。关闭 UI `fallbackLng`，保留系统不支持语言映射到英文；Prompt 角色的英文降级继续走独立规则。删除语言变化 repair effect，避免切换语言重复请求 bootstrap。
+- 完整性：以英文 locale 的叶子 key 集合作为基准，测试逐一校验七种语言完全一致；补齐既有 25 个 `executionPlan` 缺词、ACP 配置保存错误码和简中复数 key。Vitest setup 只在测试环境显式预载全部语言，不进入生产加载路径。
+- 验证：先建立两项最小失败测试，分别复现 key 不一致与静态全量导入；修改后语言加载、启动发布顺序、系统语言映射、问候语和错误翻译 4 个文件共 35 项测试通过，另有 3 个测试文件 17 项测试确认 Vitest 预载不改变既有 mock 边界。`web:build` 的主题生成、TypeScript 与 Vite 生产构建全部通过；七个 locale chunk 各自独立（117,477–167,948 B raw，37,538–45,477 B gzip），入口和 3,605,364 B 主应用 chunk 均不含抽查的中、英、西语文案。全量 Web 回归 327 个文件、2,385 项通过，当前工作区另一路 ACP、Workspace、Agent 和源码契约开发仍有 10 个文件、138 项失败；去掉本次 i18n setup 后抽样可复现相同失败。浏览器 deep link 设置页确认启动只请求 `zh-CN`，切换英语和西班牙语即时更新界面、选择值与 `html.lang`，西语 10 秒观察期稳定且控制台无错误。
+- 性能评审：启动从解析七份语言包收敛为一份；当前生产主应用 chunk 为 3,605,364 B raw / 1,063,195 B gzip，相对改动前记录减少 938,403 B raw / 274,563 B gzip。切换语言至多新增一次分包读取，不刷新业务数据；ES module 缓存会保留切换过的语言，最大仍受七份内置语言约束。
+- 过度设计评审：复用现有 i18next、Vite 和后端 canonical 偏好，不新增依赖、持久字段、缓存层、队列或状态机；已有偏好保存队列和原生 module cache 足以覆盖并发与复用。
+
 ## 2026-09-25 源码管理 monitored bootstrap 二次优化
 
 - [x] 根因证据：runtime(2).log 首次发布仍需 17.0842 秒；capability 5.949 秒/4 次 Git、monitor 4.546 秒/3 次 Git、overview 11.106 秒/7 次 Git。三个阶段重复版本/identity，overview 仍等待三次 remote，monitor 交接又触发 10.668 秒/7 次 Git 的整份 overview，随后才开始 7.683 秒/6 次 Git 的 statistics。根因仍是首屏加载边界设计缺陷，不归因于 React 渲染或 Git 算法本身。

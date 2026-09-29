@@ -11,6 +11,7 @@ export default defineConfig({
   },
   test: {
     include: ['web/tests/**/*.test.{ts,tsx}'],
+    setupFiles: ['web/tests/setup-i18n.ts'],
     environment: 'node',
     server: {
       deps: {

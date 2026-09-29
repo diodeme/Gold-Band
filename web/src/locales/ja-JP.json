@@ -710,6 +710,35 @@
     },
     "discardWorkflowChanges": "このワークフローには保存されていない変更があります。それらを破棄してタブを閉じますか?"
   },
+  "executionPlan": {
+    "configureAuto": "AUTO 設定",
+    "currentRun": "現在の Run",
+    "nextRun": "次回の Run",
+    "saveTarget": "保存先",
+    "save": "保存",
+    "saving": "保存中",
+    "working": "実行プランを更新中",
+    "diverged": "現在の Run と次回の Run が異なります。どちらかを変更する前にエディターを分割してください。",
+    "split": "分割表示",
+    "unsplit": "分割を解除",
+    "unsplitTitle": "1 つの下書きを保持",
+    "unsplitDescription": "エディターに残す下書きを選択します。保存先を確定するまで保存されません。",
+    "keepCurrent": "現在の Run を保持",
+    "keepNext": "次回の Run を保持",
+    "cancel": "キャンセル",
+    "reload": "再読み込み",
+    "viewIssues": "理由を表示",
+    "revert": "元に戻す",
+    "recover": "復元",
+    "committed": "保存済み",
+    "notCommitted": "未保存",
+    "saveFailed": "実行プランは保存されませんでした。",
+    "targets": {
+      "current": "現在の Run のみ",
+      "next": "次回の Run のみ",
+      "current-and-next": "現在の Run と次回の Run"
+    }
+  },
   "errors": {
     "browser": {
       "webview": {
@@ -858,6 +887,7 @@
       "session-request-failed": "セッションを準備できませんでした。もう一度やり直してください。",
       "missing-provider": "現在のノードにはプロバイダー構成がありません。",
       "session-config-value-unavailable": "選択したセッション構成は使用できなくなりました。最新のリストから別の値を選択します。",
+      "active-prompt-blocks-config-save": "セッションが実行中です。セッションを停止してから設定を保存してください。",
       "invalid-conversation-branch-id": "このAgentの会話リンクは無効であるか、使用できなくなりました。",
       "session-query-failed": "会話を読み込めませんでした。もう一度やり直してください。",
       "activity-detail-query-failed": "アクティビティの詳細を読み込めませんでした。もう一度やり直してください。",

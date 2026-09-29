@@ -710,6 +710,35 @@
     },
     "discardWorkflowChanges": "Este Workflow tem alterações não salvas. Descartá-las e fechar a aba?"
   },
+  "executionPlan": {
+    "configureAuto": "Configuração AUTO",
+    "currentRun": "Run atual",
+    "nextRun": "Próximo Run",
+    "saveTarget": "Destino do salvamento",
+    "save": "Salvar",
+    "saving": "Salvando",
+    "working": "Atualizando o plano de execução",
+    "diverged": "O Run atual e o próximo Run são diferentes. Divida o editor antes de alterar um dos lados.",
+    "split": "Dividir visualização",
+    "unsplit": "Encerrar divisão",
+    "unsplitTitle": "Manter um rascunho",
+    "unsplitDescription": "Escolha qual rascunho permanecerá no editor. Nada será salvo até você confirmar o destino.",
+    "keepCurrent": "Manter Run atual",
+    "keepNext": "Manter próximo Run",
+    "cancel": "Cancelar",
+    "reload": "Recarregar",
+    "viewIssues": "Ver motivos",
+    "revert": "Reverter",
+    "recover": "Recuperar",
+    "committed": "Salvo",
+    "notCommitted": "Não salvo",
+    "saveFailed": "O plano de execução não foi salvo.",
+    "targets": {
+      "current": "Somente o Run atual",
+      "next": "Somente o próximo Run",
+      "current-and-next": "Run atual e próximo Run"
+    }
+  },
   "errors": {
     "browser": {
       "webview": {
@@ -858,6 +887,7 @@
       "session-request-failed": "A sessão não pôde ser preparada. Tente novamente.",
       "missing-provider": "O nó atual não tem configuração de provider.",
       "session-config-value-unavailable": "A configuração de sessão selecionada não está mais disponível. Escolha outro valor da lista mais recente.",
+      "active-prompt-blocks-config-save": "Há uma sessão em execução. Interrompa-a antes de salvar a configuração.",
       "invalid-conversation-branch-id": "Este link de conversa do Agent é inválido ou não está mais disponível.",
       "session-query-failed": "A conversa não pôde ser carregada. Tente novamente.",
       "activity-detail-query-failed": "Os detalhes da atividade não puderam ser carregados. Tente novamente.",

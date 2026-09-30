@@ -39,6 +39,7 @@ use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_person
 use crate::conversation_workspace::WorkspaceIdentityMigrator;
 use crate::updater::{PendingUpdate, UpdateInfoVm, UpdateStatusVm, initial_update_status};
 use crate::wallpaper::reconcile_wallpaper_personalization;
+use crate::window_chrome::MainWindowPresence;
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -168,9 +169,6 @@ pub enum UpdateBadgeSeenTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationAttentionInput {
-    pub window_focused: bool,
-    pub window_minimized: bool,
-    pub window_visible: bool,
     pub project_id: Option<String>,
     pub task_id: Option<String>,
     pub run_id: Option<String>,
@@ -191,11 +189,9 @@ pub struct NotificationAttentionTarget<'a> {
     pub attempt_id: &'a str,
 }
 
-#[derive(Debug, Clone)]
+/// 前端当前展示的会话；窗口前台状态由后端在发送时向系统读取。
+#[derive(Debug, Clone, Default)]
 pub struct NotificationAttentionState {
-    window_focused: bool,
-    window_minimized: bool,
-    window_visible: bool,
     project_id: Option<String>,
     task_id: Option<String>,
     run_id: Option<String>,
@@ -206,29 +202,8 @@ pub struct NotificationAttentionState {
     outer_attempt_id: Option<String>,
 }
 
-impl Default for NotificationAttentionState {
-    fn default() -> Self {
-        Self {
-            window_focused: false,
-            window_minimized: true,
-            window_visible: false,
-            project_id: None,
-            task_id: None,
-            run_id: None,
-            round_id: None,
-            node_id: None,
-            attempt_id: None,
-            outer_node_id: None,
-            outer_attempt_id: None,
-        }
-    }
-}
-
 impl NotificationAttentionState {
     fn update(&mut self, input: NotificationAttentionInput) {
-        self.window_focused = input.window_focused;
-        self.window_minimized = input.window_minimized;
-        self.window_visible = input.window_visible;
         self.project_id = input.project_id;
         self.task_id = input.task_id;
         self.run_id = input.run_id;
@@ -243,8 +218,9 @@ impl NotificationAttentionState {
         &self,
         target: &NotificationAttentionTarget<'_>,
         require_session_match: bool,
+        presence: MainWindowPresence,
     ) -> bool {
-        if !self.window_focused || self.window_minimized || !self.window_visible {
+        if presence == MainWindowPresence::Background {
             return true;
         }
         if self.project_id.as_deref() != Some(target.project_id)
@@ -510,10 +486,11 @@ impl DesktopState {
         &self,
         target: &NotificationAttentionTarget<'_>,
         require_session_match: bool,
+        presence: MainWindowPresence,
     ) -> bool {
         self.notification_attention
             .lock()
-            .map(|state| state.should_notify(target, require_session_match))
+            .map(|state| state.should_notify(target, require_session_match, presence))
             .unwrap_or(true)
     }
 
@@ -2304,9 +2281,6 @@ mod tests {
 
     fn input() -> NotificationAttentionInput {
         NotificationAttentionInput {
-            window_focused: true,
-            window_minimized: false,
-            window_visible: true,
             project_id: Some("project-1".to_string()),
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
@@ -2319,29 +2293,34 @@ mod tests {
     }
 
     #[test]
-    fn notification_attention_suppresses_visible_selected_session() {
+    fn notification_attention_suppresses_foreground_selected_session() {
         let mut state = NotificationAttentionState::default();
         state.update(input());
-        assert!(!state.should_notify(&target(), true));
+        assert!(!state.should_notify(&target(), true, MainWindowPresence::Foreground));
     }
 
     #[test]
-    fn notification_attention_notifies_when_minimized_or_different_session() {
+    fn notification_attention_notifies_when_window_in_background() {
         let mut state = NotificationAttentionState::default();
-        let mut minimized = input();
-        minimized.window_minimized = true;
-        state.update(minimized);
-        assert!(state.should_notify(&target(), true));
+        state.update(input());
+        assert!(state.should_notify(&target(), true, MainWindowPresence::Background));
+    }
+
+    #[test]
+    fn notification_attention_notifies_different_or_unpresented_session() {
+        let mut state = NotificationAttentionState::default();
+        assert!(state.should_notify(&target(), true, MainWindowPresence::Foreground));
 
         let mut other_project = target();
         other_project.project_id = "project-2";
         state.update(input());
-        assert!(state.should_notify(&other_project, true));
+        assert!(state.should_notify(&other_project, true, MainWindowPresence::Foreground));
 
         let mut other = input();
         other.attempt_id = Some("attempt-2".to_string());
         state.update(other);
-        assert!(state.should_notify(&target(), true));
+        assert!(state.should_notify(&target(), true, MainWindowPresence::Foreground));
+        assert!(!state.should_notify(&target(), false, MainWindowPresence::Foreground));
     }
 
     #[test]

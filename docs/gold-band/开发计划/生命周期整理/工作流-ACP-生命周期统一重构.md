@@ -46,7 +46,8 @@
 - ACP 权限请求通知旁路移除：`commands.rs` 中的 `maybe_emit_permission_intervention` 不再直接调用 OS toast，改为通过 lifecycle bus 发布 `InterventionRequested { kind: PermissionRequested }`，由通知 subscriber 统一处理。
 - 用户主动停止过滤：`orchestrator.rs` 中的 `attempt_was_user_cancelled` 与 `attempt_dir_was_cancelled` 在 `ProcessInterrupted` 干预发布前检查 ACP snapshot/session 是否 `cancelled`，阻止用户主动停止触发 OS 通知。
 - 任务完成通知：`ControlDecision::CompleteRun(outcome)` 后新增 `emit_run_completed_lifecycle_event`，经 `RuntimeLifecycleEvent::RunCompleted` → 通知 subscriber 触发 `InterventionNotification::run_completed`。
-- 桌面注意力门禁：前端 `App.tsx` 监听窗口聚焦/最小化/可见性及当前选中 session leaf，通过 `update_notification_attention` Tauri 命令同步到后端 `NotificationAttentionState`；通知 subscriber 发送前调用 `should_send_notification`，窗口聚焦且当前页面匹配对应 task/run/session 时抑制通知。
+- 桌面注意力门禁：前端 `App.tsx` 只把当前展示的 task/run 与选中 session leaf 通过 `update_notification_attention` Tauri 命令同步到后端 `NotificationAttentionState`；通知 subscriber 发送前由 `window_chrome::main_window_presence` 向系统读取主窗口前台状态，再调用 `should_send_notification`，主窗口在前台且当前页面匹配对应 task/run/session 时抑制通知。
+- 2026-09-30 修正：原方案由前端推送 Tauri `isFocused()`，但 Windows 上键盘焦点位于 WebView2 子窗口，前台主窗口也恒报未聚焦，导致正在查看的会话仍弹通知。现改为后端在发送时判定：Windows 比较 `GetForegroundWindow()` 的根 owner 与主窗口 HWND 并排除最小化/隐藏，其他平台使用 Tauri `is_focused/is_visible/is_minimized`；删除前端的焦点字段与焦点/visibility 监听。
 - `src-tauri/src/state.rs` 新增 `NotificationAttentionInput`、`NotificationAttentionState`、`NotificationAttentionTarget` 及单元测试；前端 `web/src/types.ts` 与 `web/src/api/*` 同步新增对应类型与 API 端点。
 - `RunPaused` 与 `RunCompleted` 现在都会通过 `gold-band://conversation-run-state-updated` 触发前端刷新当前 run 与 sidebar；人工 check 从 `launching-next-node` 中间态收敛到 `manual_check_pending` 等待态依赖后端第二帧权威通知，不在前端按 manual check 写补丁判断。
 - `RuntimeStopProbe` 在 attempt-level paused/outcome=null 判断中排除 `manual_check_pending=true`，避免人工 check 判定门被误认为用户停止，普通 ACP 追问可继续发送给 agent，同时 runtime 仍保持 paused 等待成功/失败判定。
@@ -110,7 +111,7 @@
 - 用户主动停止不触发系统通知；如果底层 ACP cancel 写成 `cancelled` 或用户停止导致的 interrupted，只作为会话内状态展示。
 - ACP live event 的 `permissionRequest/pending` 不再直接调用 OS toast，而是发布 `RuntimeLifecycleEvent::InterventionRequested { kind: PermissionRequested }`，由通知 subscriber 统一处理。
 - `RunPaused` 不再等价于通知；它只表示 runtime 暂停事实。只有暂停被提升为明确的 `InterventionRequested` 时才可能弹窗。
-- 通知发送前必须经过桌面注意力门禁：窗口未聚焦、窗口最小化、窗口不可见，或当前前端页面不是该事件对应的 `taskId/runId/roundId/nodeId/attemptId` 时才发送；如果桌面正聚焦且正在查看对应 run/session，则抑制通知。
+- 通知发送前必须经过桌面注意力门禁：主窗口不在系统前台、最小化、不可见，或当前前端页面不是该事件对应的 `taskId/runId/roundId/nodeId/attemptId` 时才发送；如果主窗口在前台且正在查看对应 run/session，则抑制通知。前台状态由后端在发送时读取，不使用前端推送的焦点快照。
 
 #### 2.1 Hook Bus 设计模式
 

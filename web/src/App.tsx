@@ -1054,52 +1054,20 @@ export function App() {
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
-    let active = true;
-    const appWindow = getCurrentWindow();
+    // 只同步当前展示的会话；窗口是否在前台由后端发送通知时向系统读取。
     const convPage = conversationPage.kind === 'conversation-run' ? conversationPage : null;
-    const sync = async () => {
-      try {
-        const [windowFocused, windowMinimized, windowVisible] = await Promise.all([
-          appWindow.isFocused(),
-          appWindow.isMinimized(),
-          appWindow.isVisible(),
-        ]);
-        if (!active) return;
-        const leaf = convPage
-          ? selectedConversationLeaf(conversationRunRef.current?.sessionTree)
-          : null;
-        await updateNotificationAttention({
-          windowFocused: windowFocused && !document.hidden,
-          windowMinimized,
-          windowVisible,
-          projectId: convPage?.projectId ?? null,
-          taskId: convPage?.taskId ?? null,
-          runId: convPage?.runId ?? null,
-          roundId: leaf?.roundId ?? null,
-          nodeId: leaf?.nodeId ?? null,
-          attemptId: leaf?.attemptId ?? null,
-          outerNodeId: leaf?.outerNodeId ?? null,
-          outerAttemptId: leaf?.outerAttemptId ?? null,
-        });
-      } catch {
-      }
-    };
-    void sync();
-    const onVisibilityChange = () => void sync();
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    let unlistenFocus: (() => void) | undefined;
-    void appWindow.onFocusChanged(() => void sync()).then((dispose) => {
-      if (active) {
-        unlistenFocus = dispose;
-      } else {
-        dispose();
-      }
-    });
-    return () => {
-      active = false;
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      unlistenFocus?.();
-    };
+    const leaf = convPage ? selectedConversationLeaf(conversationRun?.sessionTree) : null;
+    void updateNotificationAttention({
+      projectId: convPage?.projectId ?? null,
+      taskId: convPage?.taskId ?? null,
+      runId: convPage?.runId ?? null,
+      roundId: leaf?.roundId ?? null,
+      nodeId: leaf?.nodeId ?? null,
+      attemptId: leaf?.attemptId ?? null,
+      outerNodeId: leaf?.outerNodeId ?? null,
+      outerAttemptId: leaf?.outerAttemptId ?? null,
+    }).catch(() => {});
+    return undefined;
   }, [conversationPage, conversationRun]);
 
   useEffect(() => {

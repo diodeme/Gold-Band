@@ -269,10 +269,11 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 - multica 的「执行业务逻辑」= 在绑定的本地目录里跑一次码灵会话执行；「状态上报」= lifecycle 事件转译为基础状态；「完成/失败」= run outcome 转译。不为 multica 重造执行链。
 - **bridge 直接调 `gold-band` 库层 App API，不走 Tauri command 层**：会话模式的两个 Tauri command（`create_conversation_run` / `submit_conversation_prompt`）内部只是把库层 API 包了一层 Tauri shell；bridge 同进程直接调库层更干净——**无需伪造 AppHandle、无需前端 AttemptLocator 协议**，`acp_live_update` / `acp_session_update` 转发器留 `None` 即可（对 ACP 执行无影响）。
 - **一个 remote_task ↔ 一个本地 task（= 一次执行、一个 run，不是可多轮的会话）**：multica `task_id` 即为天然关联键（无需另造 uuid 映射）；本地 task 在该 task 所属 workspace 绑定的本地目录里创建。**码灵作为 daemon，对一个 remote task 只执行 requirement 这一轮**——首轮 requirement 驱动 run 跑完（`RunCompleted`，runtime-continue 性质、自然终结）即该 task 完成；**不在单个 remote task 上承载多轮追问**（对话发起方是 multica，不是码灵客户端）。
-- **「多轮对话」由 task 序列承载（非单 task 多轮）**：用户在 multica web 对同一 issue 发起新需求 → 新 queued task → 码灵 claim 子任务后按响应 `parent_task_id` 反查父任务本地索引，续跑**同一 ACP session**（上下文连续，见 3.2.7）。即「多轮」= 多个 remote task + 同一 ACP session，而非一个 task 内多轮。因此**会话完成判定无歧义**：run 跑完即 complete，不存在「多轮会话何时算完」的问题。
+- **「多轮对话」由 task 序列承载（非单 task 多轮）**：用户在 multica web 对同一 issue 发起新需求 → 新 queued task → 码灵 claim 子任务后按响应 `parent_task_id` 反查父任务本地索引，续跑**同一 ACP session**（上下文连续，见 3.2.7）。即「多轮」= 多个 remote task + 同一 ACP session，而非一个 task 内多轮。~~因此会话完成判定无歧义：run 跑完即 complete~~ **（此论断已过时）**：M5-bl/bn 起码灵侧实际支持同一 task 内多轮追问（追问在同一 attempt 内收尾、不产生新的 RunCompleted）；**M5-bp 起 direct 模式完成判定由 `completion-output` 块门控**（见下），不再「run 跑完即 complete」。
 - **run 终态 4 分支（订阅器必须穷举，不能只 match success）**：`RunCompleted{Success}`→complete / `{Failure}`→fail / `{Killed}`→不上报（取消检测命中则清本地索引，否则 fail(timeout) 兜底）/ `RunPaused`·`InterventionRequested`→**不上报终态**，转本地 elicitation/permission 处理。源码依据 `provider/mod.rs:1086-1100` stop_reason 分类 → `node_executor.rs:998-1067` → `control/mod.rs:25-43` → `orchestrator.rs:2388-2437`（详见开发设计 2.5 终态表）。
 - **Paused 盲区（已决策：接受，multica 不感知）**：multica task 状态机无 paused 态。码灵本地 run 因 elicitation/permission 进 Paused 时，multica 端继续显示 running、码灵本地全权处理，不主动上报、不超时兜底；代价是发起人此期间在 multica web 仅见 running。
-- **不监听 `AcpTurnFinished`**：该事件当前未实现（仅定义于 `app/mod.rs:665`，全库零 emit 点），方案 A 不依赖它（多轮=task序列）。
+- **~~不监听 `AcpTurnFinished`~~（已过时，M5-bn 起消费）**：该事件 M5-bn 起已有发射点（`emit_acp_turn_finished`，携带 `attempt_dir`）并被 multica 订阅器消费（迟到补发触发）；**M5-bp 起兼作 direct 模式完成门控的 turn 级触发**（见「远程任务完成判定」要点）。
+- **远程任务完成判定（M5-bp，开发设计 §12.55）**：direct 模式下「run 跑完」只是一次对话轮的技术性成功，不等于任务业务完成——完成由**执行体显式声明**：issue 关联的 direct 任务，只有 agent 在最终回复末尾输出 `completion-output` 围栏块时才 `complete_task` + issue 流转 done；未输出块则**扣留完成**（远端保持 running，用户可继续多轮对话推进）。turn 收尾（`AcpTurnFinished`）与 run 收尾（`RunCompleted{Success}`）两个触发点走同一判定。**workflow 模式不受影响**（graph 终态即 definition of done）；非 issue 远程任务维持原语义（不注入协议块、fail-open）。逃生通道：会话补交（对话中说「完成」→ agent 输出块即完成）/ multica 看板取消。本地普通会话完全不受影响（门控仅存在于 multica bridge 层）。
 - **ACP session 跨重启可恢复性未验证**（多轮=续跑前提），列为 M1 首个集成测试验证项（开发设计 9.2）。
 - **首轮 prompt 不走 submit**：`create_task_from_requirement` 的 `requirement_content` 直接写入 `requirement.md`，Worker 节点自动读它作为首轮 prompt（`node_executor.rs:610`），无需 `submit_conversation_prompt`。
 - **断点续跑** = `app.run_continue_background_with_config_overrides(task_id, run_id, None, None, …)`，内部自动读 `worker-ref.json` 的 `continue_ref` 走 ACP `session/load` 恢复上次上下文（见 3.2.7），不重新建会话。
@@ -289,7 +290,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | `multica/state.rs` | 运行期状态：per-workspace runtime_id 映射、在飞 remote_task↔本地 task 映射（`multica_pending_issues` 失败待重试 issue 持久化在 StateConfig，非 state.rs 内存）；**执行注入**：claim 后由 composer 下拉选定的本地工作区 → 发送时随 `start_multica_conversation_run` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_repo_root`（参考 `commands_conversation.rs:257`）。**原 workspace 级 `binding_for_multica()` 已删除（M5-z）** |
 | `multica/loop.rs` | 心跳循环、**启动全量 register 已添加 workspace / 新添加 workspace 时 register**/recover-orphans/失败任务供 rerun、取消检测轮询 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus；不走 Tauri command 层） |
-| `multica/handoff.rs` | issue 完成输出传递（M5-bj）：从最终 assistant 回复提取 `completion-output` 围栏块（纯函数提取 + timeline 投影），随 issue done 流转一次 PUT 上送；fail-open |
+| `multica/handoff.rs` | issue 完成输出传递（M5-bj）：从最终 assistant 回复提取 `completion-output` 围栏块（纯函数提取 + timeline 投影），随 issue done 流转一次 PUT 上送；M5-bp 起提取结果兼作 direct 模式完成门控判据（有块才 complete，无块扣留——开发设计 §12.55），非 issue / workflow 路径仍 fail-open |
 
 **边界**：multica **业务逻辑**（HTTP / 心跳 / claim / 重试 / 状态机）留在 src-tauri 薄壳层（依赖 reqwest、tauri state、AppHandle）；但**会话执行复用 `gold-band` 库层 App 公开 API**（`create_task_from_requirement` / `run_start_background` / `worker_ref_show` / `run_continue_background_with_config_overrides`，均公开），并把会话 VM 现有私有的 Direct/Auto workflow 构造上提到 `gold_band::dsl::presets` 公开复用（库层唯一轻微改动）。multica 不新造 runtime、不碰核心 lifecycle 契约。
 
@@ -547,7 +548,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - ⚠️ 现有的 `POST /api/daemon/tasks/claim`（批量 FIFO）和 `POST /api/daemon/runtimes/{runtimeId}/tasks/claim`（逐 runtime FIFO）**不能指定 task_id**，不满足「点哪领哪」，所以才需要本接口。
 
 - **story dev/test 拆分（§12.42）**：claim 响应同带 `issue_kind` / `is_ready`，但码灵 claim 路径**不消费就绪字段做门控**（未就绪 test 任务照常领取执行）；claim 后本地建 run 失败时的回滚路径不变（`release_after_run_start_failure`，覆盖 workspace 解析 / 模型校验 / 本地建 run / start_task 失败）。
-- **issue 完成输出传递（M5-bj / M5-bk）**：claim / pending / detail 响应另带可选 `parent_output`（直接父 issue 完成时留下的交付说明，服务端 claim 时派生读取父行、omitempty）。码灵侧 serde-optional：旧 server / 无父 / 非 issue 任务缺失 → 不渲染「上游交付说明」块，行为与现状一致；消费为**纯执行上下文**（M5-bk 起随首条 prompt 的隐式隐藏区段下发；**三次调整（2026-09-21）后与 DPMS 溯源块同在 composer 预填可见侧**，仅完成输出协议块留在隐式区段，见 §3.2.4「任务执行」行），无门控语义。
+- **issue 完成输出传递（M5-bj / M5-bk）**：claim / pending / detail 响应另带可选 `parent_output`（直接父 issue 完成时留下的交付说明，服务端 claim 时派生读取父行、omitempty）。码灵侧 serde-optional：旧 server / 无父 / 非 issue 任务缺失 → 不渲染「上游交付说明」块，行为与现状一致；消费为**纯执行上下文**（M5-bk 起随首条 prompt 的隐式隐藏区段下发；**三次调整（2026-09-21）后与 DPMS 溯源块同在 composer 预填可见侧**，仅完成输出协议块留在隐式区段，见 §3.2.4「任务执行」行）。~~无门控语义~~ **（M5-bp 起语义升级：对 issue 关联的 direct 任务，该协议块转为完成门控——agent 输出块才 complete + issue done，见 C6 / 开发设计 §12.55）**。
 
 > claim 之后**没有退回/释放接口**，唯一出路是执行到 complete 或 fail。因此列表展示用只读的 B1，确认要做了再用 B2 领取。
 
@@ -584,6 +585,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `POST /api/daemon/tasks/{taskId}/complete` ｜ PAT
 - 请求：`{ "output": "<末轮产物摘要>", "session_id": "<ACP session_id>", "work_dir": "..." }`（后两个可选）
 - 说明：任务 → completed。带重试、幂等。`session_id` = 该会话的 ACP session_id（来自 `worker-ref.json` 的 `continue_ref.acpSessionId`，续跑依赖，故 complete 前先调 C8 `PinTaskSession` 回写）；`work_dir` 取自该任务**任务级** `ActiveRemoteRun.local_project_id` → `conversation_workspaces.workspace_path`（M5-z：绑定下沉到任务级，不再走 workspace 级 `local_project_id`）。
+- **完成触发时机（M5-bp 门控，开发设计 §12.55）**：issue 关联的 direct 模式任务**不再「run 跑完即 complete」**——run 收尾（`RunCompleted{Success}`）或 turn 收尾（`AcpTurnFinished{Completed}`）时从最终回复提取 `completion-output` 围栏块：有块 → 本接口 + issue done；无块 → 扣留完成（远端保持 running，对话可继续）。workflow 模式与非 issue 任务维持原触发（run 终态驱动）。
 
 **C7. 失败** ❌
 - `POST /api/daemon/tasks/{taskId}/fail` ｜ PAT
@@ -1186,6 +1188,14 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **问题（用户内网实测）**：码灵侧移出 + multica 侧删除后，刷新任务仍「复活」。根因：终态行唯一数据源是本地 `remote_completed_tasks` 历史（服务端不回传终态），视图过滤 + 刷新清空移出集合 → 终态行必然复活；multica 侧删除对本地历史无效。定性：好设计（服务端真源）但实现不完整（对终态行前提不成立）。
   - **实现**：按行数据源分派——终态行（completed/failed）移出 → 新命令 `remove_remote_completed_task`（`with_state` 原子 RMW 删本地历史条目，幂等，删到才广播 `remote-tasks-updated`）；pending/running 行维持纯视图过滤（每次从服务端/内存重建，服务端删除自然消失）。hint 按行分派：终态「移出并删除本地完成记录，刷新不再显示」vs active「仅从码灵侧列表移除，刷新后恢复」（中英同步）。删除的是列表回看索引，不删本地会话本体；仍不弹确认框。
   - **验证**：Rust 最小失败测试先行（E0425）后转绿——`remove_completed_task_entry`（存在→删且保序 / 不存在→幂等 no-op）；desktop `multica::` 154 passed。前端改写既有测试为新语义——终态行移出调 `removeRemoteCompletedTask` + 刷新不复活 / pending 行不调删除 API + 刷新恢复（服务端真源）；页面 21 + 看板 21 passed，改动文件 tsc 无错。
+
+- [x] **M5-bp**（2026-09-28）direct 模式远程任务完成门控——completion-output 块驱动（开发设计 §12.55 改动五十三）：
+  - **问题（用户设计评审）**：direct 模式远程任务首轮对话轮跑完即 `RunCompleted{Success}` → complete + issue done，但真实任务常需多轮（甚至十几轮）对话；后续追问只能走 M5-bl/bn 迟到补发被动通道。根因定性：**原有设计缺陷**——「run 终态 ≡ 任务业务完成」的前提只对 workflow 成立（graph 终态即 definition of done），direct run 是 runtime-continue 性质，没有结构性 definition of done。**仅针对 multica 远程任务，本地普通会话零影响。**
+  - **设计（方案 A：协议声明完成，复用 M5-bj/bk/bl/bn 全部资产）**：issue 关联的 direct 任务在 run 收尾（`RunCompleted{Success}`）与 turn 收尾（`AcpTurnFinished{Completed}`，跳过 batch 中间态 turn）两个触发点提取 `completion-output` 围栏块——**有块** → `complete_task`（output 传交付摘要）+ issue done；**无块** → 扣留完成（远端保持 running，对话可继续）。数据侧仅 `ActiveRemoteRun` 补内存 `run_mode` 快照（门控事实源；turn 事件自带 run_id，既有归属反查即可命中，**无需持久化字段/启动重建**——重启由 recover-orphans → auto-retry → 重领 resume 既有链路接管，见开发设计 §12.55 修正记录）；非 issue 远程任务维持 fail-open（当前内网任务全部来自 issue——用户确认；server 其他来源仅防御性保留）。提示词 `remote_task_completion_protocol.md`（zh-CN/en）升级为门控语义（块在才完成 + 未完成不得输出，锁定测试固化）。
+  - **边界与逃生**：App 关闭沿既有 sweeper 路径（150s offline → fail → auto-retry 克隆 → <2h 重领续跑 / >2h 链路终结），接受；「断线自动重领」另立需求。逃生通道：会话补交（说「完成」agent 输出块，M5-bl 实测已验证）/ 看板取消。无新 UI；`relay_late_completion_output` 迟到补发保留（与门控正交）。
+  - **实现**：`state.rs` `run_mode` 快照 + `REMOTE_RUN_MODE_DIRECT` + 完成路径认领集（`begin_completion`/`end_completion`——同 turn 双事件并发完成守卫，认领随 finalize 终结）；`commands.rs` Resume/Fresh 两登记点采集；`bridge.rs` 门控纯函数（`is_gated_direct_issue_run` / `decide_run_completion`）+ 决策点 1（`handle_run_completed` Complete 臂门控/扣留，块提取收敛在 issue 非空守卫内）+ 决策点 2（`handle_turn_completion_gate`）+ 公共完成路径 `complete_with_issue_done`（门控命中 / fail-open / turn 收尾三处同语义单实现）。
+  - **验收（最小失败测试先行）**：bridge 决策纯函数红（`E0609`/`E0425`）后转绿——门控判定双维度（direct+issue 命中；workflow/auto/非 issue/空白 issue 不命中）/ 无块扣留 / 有块完成（output=块内容）/ 非 Direct 与非 issue 走 Passthrough；desktop `multica::` 158 passed + 协议模板锁定测试 passed。事件路由依赖 AppHandle + 异步 spawn，以纯函数覆盖 + 编译器穷尽性为可审计轨迹，端到端打包内网验证。
+  - **内网验证根因修复（2026-09-30，开发设计 §12.55 修正记录 3）**：实测扣留正确，但 agent 按指示输出块后任务仍进行中——导出 timeline 取证：info 串被写到裸围栏下一行（非合法 GFM 形态），提取正确拒绝但与「完全未输出块」不可区分。定性：好设计、实现不完整（协议未给精确围栏示例 + 近似形态无诊断）。修复：提示词补单行开栏示例 + 同行规则（zh-CN/en，契约测试锁定）；`handoff.rs` `CompletionBlockProbe` 近似形态探测（`info_on_own_line_after_fence` / `fence_info_contains_target`，prose 提及不误报），门控与迟到补发的未命中日志按原因升级 WARN。提取器保持严格（fail-closed：宁保持进行中、不可误完成）。遗留（另立需求）：`complete_task` HTTP 失败后 `finalize_terminal` 无条件执行会使任务在远端永久搁浅（无重试/对账）。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

@@ -5,14 +5,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   checkUpdateManual,
+  startUpdateInstall,
   chooseWorkspace,
   continueRun,
   createConversationRun,
   createScheduledTask,
   createTask,
   deleteConversationTask,
-  dismissUpdateAnnouncement,
-  downloadAndInstallUpdate,
   getAgentRegistry,
   getConversationRun,
   getConversationRunMode,
@@ -85,14 +84,14 @@ import {
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from './lib/conversation-sidebar-activity';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
-import { X } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { Markdown } from '@/components/prompt-kit/markdown';
+import { UpdateDialog } from '@/components/update/UpdateDialog';
+import { TitleBarUpdateButton } from '@/components/update/TitleBarUpdateButton';
+import { setUpdateDownloadProgress } from '@/components/update/update-progress-store';
 import { Shell } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, loadI18nLanguage } from './i18n';
@@ -236,6 +235,7 @@ import {
   workspaceLayoutProfileForSurface,
 } from '@/components/workspace/workspace-layout';
 import type {
+  UpdateDownloadProgressVm,
   AgentRegistryVm,
   ManagedAgentVm,
   AppBootstrapVm,
@@ -503,7 +503,6 @@ export function App() {
   useEffect(() => {
     conversationPageRef.current = conversationPage;
   }, [conversationPage]);
-  const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
 
@@ -831,7 +830,6 @@ export function App() {
     composerDraftRef.current?.changeWorkspace(projectId);
     setDraftConversationWorkspaceId(projectId);
   }, []);
-  const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<GitRequirementState | null>(null);
 
@@ -912,7 +910,7 @@ export function App() {
       })
       .catch(() => undefined);
   }, [conversationRunModePersistence]);
-  const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -943,9 +941,7 @@ export function App() {
   const metricsSettings = bootstrap?.metricsSettings ?? null;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
   const updateBadges = bootstrap?.updateBadges ?? defaultUpdateBadges;
-  const persistedAvailableUpdate = bootstrap?.persistedAvailableUpdate ?? null;
-  const effectiveAvailableUpdate = updateStatus.update ?? persistedAvailableUpdate;
-  const availableUpdateVersion = effectiveAvailableUpdate?.version ?? null;
+  const availableUpdateVersion = updateStatus.update?.version ?? null;
   const showSettingsUpdateDot = availableUpdateVersion !== null && updateBadges.settingsEntrySeenVersion !== availableUpdateVersion;
   const showSettingsAdvancedUpdateDot = availableUpdateVersion !== null && updateBadges.settingsAdvancedSeenVersion !== availableUpdateVersion;
   const showUpdatesSectionDot = availableUpdateVersion !== null;
@@ -967,10 +963,6 @@ export function App() {
     layout: appConfig.workspaceLayout,
     profile: activeWorkspaceLayoutProfile,
   };
-  const shouldShowUpdateAnnouncement = useMemo(
-    () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
-    [availableUpdateVersion, updateBadges.announcementClosedVersion],
-  );
   useEffect(() => {
     applyAppearance(preferences.appearance);
   }, [preferences.appearance]);
@@ -1109,12 +1101,6 @@ export function App() {
       unlistenFocus?.();
     };
   }, [conversationPage, conversationRun]);
-
-  useEffect(() => {
-    if (primaryModule !== 'settings' && conversationPage.kind !== 'settings') {
-      setForceSettingsTab(null);
-    }
-  }, [primaryModule, conversationPage.kind]);
 
   useEffect(() => {
     replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
@@ -1694,11 +1680,8 @@ export function App() {
     let unlisten: (() => void) | undefined;
     void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
       if (!active) return;
-      setBootstrap((current) => current ? {
-        ...current,
-        updateStatus: event.payload,
-        persistedAvailableUpdate: event.payload.update ?? (event.payload.status === 'available' ? current.persistedAvailableUpdate : null),
-      } : current);
+      if (event.payload.status !== 'downloading') setUpdateDownloadProgress(null);
+      setBootstrap((current) => current ? { ...current, updateStatus: event.payload } : current);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -1716,9 +1699,9 @@ export function App() {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
+    void listen<UpdateDownloadProgressVm>('gold-band://update-download-progress', (event) => {
       if (!active) return;
-      setDownloadProgress(event.payload);
+      setUpdateDownloadProgress(event.payload);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -2150,7 +2133,7 @@ export function App() {
     setBusy(true);
     try {
       const status = await checkUpdateManual();
-      setBootstrap((current) => current ? { ...current, updateStatus: status, persistedAvailableUpdate: status.update ?? null } : current);
+      setBootstrap((current) => current ? { ...current, updateStatus: status } : current);
       return status;
     } catch (err) {
       setError(displayAppError(t, err));
@@ -2182,46 +2165,13 @@ export function App() {
     }
   }, [availableUpdateVersion, t, updateBadges.settingsAdvancedSeenVersion]);
 
-  const onDismissUpdateAnnouncement = useCallback(async () => {
-    if (!availableUpdateVersion) return;
-    if (updateBadges.announcementClosedVersion === availableUpdateVersion) return;
-    try {
-      const badges = await dismissUpdateAnnouncement(availableUpdateVersion);
-      setBootstrap((current) => current ? { ...current, updateBadges: badges } : current);
-    } catch (err) {
-      setError(displayAppError(t, err));
-    }
-  }, [availableUpdateVersion, t, updateBadges.announcementClosedVersion]);
-
-  const onOpenUpdateAnnouncement = () => {
-    setUpdateAnnouncementOpen(true);
-  };
-
-  const onGoToSettingsUpdate = () => {
-    setUpdateAnnouncementOpen(false);
-    setWorkspacePickerOpen(false);
-    setForceSettingsTab('advanced');
-    if (uiMode === 'conversation') {
-      setConversationPage({ kind: 'settings' });
-      pushRoute(primaryModule, taskPage, { kind: 'settings' });
-    } else {
-      setPrimaryModule('settings');
-      pushRoute('settings', taskPage);
-    }
-  };
-
+  // Download, ready and failure states arrive through the update-status event; the command
+  // result is not applied so a late response cannot overwrite a newer event.
   const onInstallUpdate = async () => {
-    setBusy(true);
-    setDownloadProgress(null);
-    setBootstrap((current) => current ? { ...current, updateStatus: { ...current.updateStatus, status: 'downloading', error: null } } : current);
     try {
-      await downloadAndInstallUpdate();
+      await startUpdateInstall();
     } catch (err) {
-      setDownloadProgress(null);
-      setBootstrap((current) => current ? { ...current, updateStatus: { ...current.updateStatus, status: 'available', error: { code: 'updater.install-failed', params: { message: String(err) } } } } : current);
       setError(displayAppError(t, err));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -2327,17 +2277,13 @@ export function App() {
     : primaryModule === 'settings'
       ? (
         <SettingsPage
-          key={forceSettingsTab ? 'settings-advanced' : 'settings-default'}
-          initialTab={forceSettingsTab ?? undefined}
           preferences={preferences}
           appInfo={appInfo}
           updaterSettings={updaterSettings}
           metricsSettings={metricsSettings}
           updateStatus={updateStatus}
-          availableUpdate={effectiveAvailableUpdate}
           showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
           showUpdatesSectionDot={showUpdatesSectionDot}
-          downloadProgress={downloadProgress}
           clientVersion={bootstrap?.clientVersion ?? ''}
           busy={busy}
           onSave={onSavePreferences}
@@ -2413,6 +2359,7 @@ export function App() {
         setConversationPage(page);
         pushRoute('task-orchestration', taskListPage, page);
       }}
+      titleBarUpdateAction={<TitleBarUpdateButton status={updateStatus} onOpen={() => setUpdateDialogOpen(true)} />}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
         const targetPid = resolveConversationHomeWorkspaceId(
@@ -2564,41 +2511,13 @@ export function App() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {shouldShowUpdateAnnouncement ? (
-        <div className="pointer-events-none fixed left-1/2 top-13 z-10 -translate-x-1/2">
-          <Alert className="pointer-events-auto w-auto min-w-[300px] max-w-[520px] border-border/60 bg-background/95 px-4 py-3 text-foreground shadow-lg backdrop-blur">
-            <AlertDescription className="flex items-center justify-between gap-4 text-sm">
-              <button type="button" className="inline-flex min-w-0 items-center gap-2 font-medium text-foreground hover:text-primary" onClick={onOpenUpdateAnnouncement}>
-                <span className="size-2 rounded-full bg-destructive" aria-hidden="true" />
-                <span className="truncate">{t('settings.updater.announcement.title', { version: availableUpdateVersion })}</span>
-              </button>
-              <Button size="icon" variant="ghost" className="-mr-3 h-7 w-7 shrink-0 text-muted-foreground" onClick={onDismissUpdateAnnouncement} aria-label={t('settings.updater.announcement.dismiss')}>
-                <X className="size-4" />
-              </Button>
-            </AlertDescription>
-          </Alert>
-        </div>
-      ) : null}
       {content}
-      <AlertDialog open={updateAnnouncementOpen} onOpenChange={setUpdateAnnouncementOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('settings.updater.announcement.dialogTitle', { version: availableUpdateVersion ?? '' })}</AlertDialogTitle>
-            <div className="space-y-3 text-sm text-muted-foreground">
-              <p>{t('settings.updater.announcement.dialogDescription')}</p>
-              {effectiveAvailableUpdate?.notes ? (
-                <div className="max-h-72 overflow-y-auto rounded-md border border-border/50 bg-muted/20 p-3 text-left">
-                  <Markdown>{effectiveAvailableUpdate.notes}</Markdown>
-                </div>
-              ) : null}
-            </div>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-            <AlertDialogAction onClick={onGoToSettingsUpdate}>{t('settings.updater.announcement.goToSettings')}</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <UpdateDialog
+        open={updateDialogOpen}
+        status={updateStatus}
+        onOpenChange={setUpdateDialogOpen}
+        onInstall={() => void onInstallUpdate()}
+      />
       <ConversationSearchDialog
         open={conversationSearchOpen}
         onOpenChange={setConversationSearchOpen}
@@ -2641,17 +2560,13 @@ export function App() {
       return (
         <TooltipProvider>
           <SettingsPage
-            key={forceSettingsTab ? 'settings-advanced' : 'settings-default'}
-            initialTab={forceSettingsTab ?? undefined}
             preferences={preferences}
             appInfo={appInfo}
             updaterSettings={updaterSettings}
             metricsSettings={metricsSettings}
             updateStatus={updateStatus}
-            availableUpdate={effectiveAvailableUpdate}
             showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
             showUpdatesSectionDot={showUpdatesSectionDot}
-            downloadProgress={downloadProgress}
             clientVersion={bootstrap?.clientVersion ?? ''}
             busy={busy}
             onSave={onSavePreferences}

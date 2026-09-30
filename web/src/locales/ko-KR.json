@@ -378,7 +378,8 @@
     "feedbackErrorUnconfigured": "피드백을 사용할 수 없습니다",
     "feedbackErrorSession": "관련 세션이 더 이상 존재하지 않습니다. 다시 선택하세요.",
     "feedbackErrorAttachment": "스크린샷을 읽을 수 없거나 지원되지 않는 형식입니다. PNG, JPEG 또는 WebP를 사용하세요.",
-    "feedbackErrorTooLarge": "업로드 크기가 너무 큽니다. 스크린샷이나 관련 세션을 제거하세요."
+    "feedbackErrorTooLarge": "업로드 크기가 너무 큽니다. 스크린샷이나 관련 세션을 제거하세요.",
+    "imagePreview": "이미지 미리보기"
   },
   "personalAnalytics": {
     "title": "개인 데이터 분석",
@@ -1061,10 +1062,16 @@
     },
     "updater": {
       "invalid-url": "업데이트 URL이 유효하지 않습니다.",
-      "check-failed": "업데이트 확인에 실패했습니다: {{message}}",
-      "install-failed": "업데이트 설치에 실패했습니다: {{message}}",
+      "check-failed": "{{detail}}",
+      "install-failed": "{{detail}}",
       "context-unavailable": "업데이트 컨텍스트를 가져올 수 없습니다. 먼저 워크스페이스를 선택하세요.",
-      "no-update": "사용 가능한 업데이트가 없습니다."
+      "no-update": "사용 가능한 업데이트가 없습니다.",
+      "download-failed": "{{detail}}",
+      "network": "네트워크 연결에 실패했습니다 ({{detail}})",
+      "signature-invalid": "업데이트 패키지 서명이 유효하지 않습니다.",
+      "manifest-invalid": "업데이트 매니페스트가 유효하지 않습니다 ({{detail}})",
+      "io": "업데이트 패키지를 읽거나 쓸 수 없습니다 ({{detail}})",
+      "stale-package": "다운로드한 패키지가 현재 버전보다 최신이 아닙니다."
     },
     "multica": {
       "not-configured": "Multica가 구성되어 있지 않습니다. 먼저 설정에서 구성을 완료해 주세요.",
@@ -2676,17 +2683,7 @@
       "saveOverride": "URL 저장",
       "resetToBuiltIn": "내장 URL 사용",
       "checkNow": "업데이트 확인",
-      "install": "다운로드 및 설치",
       "lastCheckedAt": "마지막 확인: {{time}}",
-      "announcement": {
-        "title": "새 버전 {{version}} 사용 가능",
-        "description": "설정 → 고급 → 업데이트에서 확인하고 설치하세요.",
-        "dismiss": "닫기",
-        "view": "업데이트 보기",
-        "dialogTitle": "새 버전 {{version}} 사용 가능",
-        "dialogDescription": "새 클라이언트 버전이 감지되었습니다. 설정 → 고급 → 업데이트에서 다운로드하고 설치하세요.",
-        "goToSettings": "설정에서 업데이트"
-      },
       "channel": {
         "default": "기본",
         "wb": "WB"
@@ -2697,7 +2694,37 @@
         "available": "업데이트 사용 가능",
         "downloading": "업데이트 다운로드 중...",
         "not-available": "최신 버전",
-        "error": "확인 실패"
+        "error": "확인 실패",
+        "ready": "업데이트 다운로드됨"
+      },
+      "downloaded": "{{size}} 다운로드됨",
+      "action": {
+        "available": "다운로드 및 설치",
+        "failed": "다시 다운로드 및 설치",
+        "ready": "다시 시작하여 설치"
+      },
+      "dialog": {
+        "title": "새 버전 {{version}} 사용 가능",
+        "noNotes": "이 버전에는 릴리스 노트가 없습니다.",
+        "action": {
+          "available": "지금 업데이트",
+          "failed": "다시 시도",
+          "ready": "다시 시작하여 설치",
+          "downloading": "다운로드 중"
+        }
+      },
+      "titleBar": {
+        "available": "업데이트",
+        "failed": "업데이트 실패",
+        "ready": "다시 시작하여 업데이트",
+        "downloading": "업데이트 중",
+        "downloadingPercent": "업데이트 중 {{percent}}%",
+        "tooltip": "새 버전 {{version}}"
+      },
+      "failure": {
+        "check": "업데이트 확인에 실패했습니다: {{reason}}",
+        "download": "업데이트 다운로드에 실패했습니다: {{reason}}",
+        "install": "업데이트 설치에 실패했습니다: {{reason}}"
       }
     }
   },

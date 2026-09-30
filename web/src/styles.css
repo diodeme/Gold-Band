@@ -167,6 +167,8 @@
   --color-gold-line-soft: var(--gold-line-soft);
   --color-link: var(--link);
   --color-gold-running: var(--gold-running);
+  --color-gold-attention: var(--gold-attention);
+  --color-gold-attention-foreground: var(--gold-attention-foreground);
   --color-gold-success: var(--gold-success);
   --color-gold-warning: var(--gold-warning);
   --color-gold-danger: var(--gold-danger);

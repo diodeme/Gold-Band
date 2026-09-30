@@ -42,7 +42,7 @@ export type AvatarKind = 'agent' | 'user';
 export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
-export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
+export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error';
 
 export interface PreferencesVm {
   appearance: AppearancePreference;
@@ -191,7 +191,11 @@ export interface UpdateStatusVm {
 export interface UpdateBadgeStateVm {
   settingsEntrySeenVersion?: string | null;
   settingsAdvancedSeenVersion?: string | null;
-  announcementClosedVersion?: string | null;
+}
+
+export interface UpdateDownloadProgressVm {
+  downloaded: number;
+  total: number | null;
 }
 
 export interface DesktopWindowChromeVm {
@@ -207,7 +211,6 @@ export interface AppBootstrapVm {
   metricsSettings: MetricsSettingsVm;
   updateStatus: UpdateStatusVm;
   updateBadges: UpdateBadgeStateVm;
-  persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   platform: DesktopPlatform;
   windowChrome: DesktopWindowChromeVm;

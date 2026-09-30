@@ -683,7 +683,6 @@ fn default_agent_icon() -> String {
 pub struct DesktopUpdateBadgeState {
     pub settings_entry_seen_version: Option<String>,
     pub settings_advanced_seen_version: Option<String>,
-    pub announcement_closed_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2526,7 +2525,6 @@ mod tests {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
-                announcement_closed_version: Some("1.2.2".to_string()),
             },
             desktop_available_update: Some(DesktopAvailableUpdate {
                 version: "1.2.3".to_string(),
@@ -2682,7 +2680,6 @@ mod tests {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
-                announcement_closed_version: Some("1.2.2".to_string()),
             },
             desktop_available_update: Some(DesktopAvailableUpdate {
                 version: "1.2.3".to_string(),
@@ -2903,7 +2900,6 @@ mod tests {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
-                announcement_closed_version: Some("1.2.2".to_string()),
             },
             desktop_available_update: Some(DesktopAvailableUpdate {
                 version: "1.2.3".to_string(),

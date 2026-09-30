@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -46,6 +46,8 @@ import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
 import { BrowserSettings } from '@/components/settings/BrowserSettings';
+import { UpdateDownloadProgress } from '@/components/update/UpdateDownloadProgress';
+import { describeUpdateError, updateActionState } from '@/components/update/update-state';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 type TypographySection = 'ui' | 'editor';
@@ -86,13 +88,10 @@ interface SettingsPageProps {
   appInfo: AppInfoVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
-  availableUpdate?: UpdateInfoVm | null;
   showAdvancedUpdateDot: boolean;
   showUpdatesSectionDot: boolean;
-  downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
-  initialTab?: 'general' | 'appearance' | 'advanced';
   onSave: (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: BrowserPreferences) => void;
   onSaveAvatar: (input: SaveDesktopAvatarInput) => Promise<AvatarPreferencesVm | undefined>;
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
@@ -111,7 +110,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const measuredThemeDrawerRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-drawer');
   const readOnly = useReadOnlyExperience();
   useThemeWallpaperSurface();
@@ -129,7 +128,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [typographyDisclosure, setTypographyDisclosure] = useState(initialTypographyDisclosure);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>(initialTab ?? 'general');
+  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>('general');
 
   useEffect(() => setAppearance(preferences.appearance), [preferences.appearance]);
   useEffect(() => setPersonalization(preferences.personalization), [preferences.personalization]);
@@ -576,7 +575,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </div>
                 <div className="flex">
                   <div className="w-28 shrink-0" />
-                  <UpdateStatusInline status={updateStatus} availableUpdate={availableUpdate} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
+                  <UpdateStatusInline status={updateStatus} busy={busy} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
                 </div>
               </div>
             </SettingsSection>
@@ -628,20 +627,17 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   );
 }
 
-function UpdateStatusInline({ status, availableUpdate, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; availableUpdate?: UpdateInfoVm | null; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
+function UpdateStatusInline({ status, busy, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
   const { t } = useTranslation();
-  const resolvedUpdate = status.update ?? availableUpdate ?? null;
-  const effectiveStatus = status.status === 'idle' && resolvedUpdate ? 'available' : status.status;
-  const downloading = effectiveStatus === 'downloading';
-  const statusClass = effectiveStatus === 'available' || effectiveStatus === 'downloading'
-    ? 'text-gold-success'
-    : effectiveStatus === 'error'
-      ? 'text-destructive'
+  const update = status.update ?? null;
+  const action = updateActionState(status);
+  const statusClass = action === 'failed' || status.status === 'error'
+    ? 'text-destructive'
+    : action
+      ? 'text-gold-success'
       : 'text-muted-foreground';
-  const progressPct = downloadProgress && downloadProgress.total ? Math.min(100, Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)) : 0;
-  const hasProgress = downloadProgress && downloadProgress.downloaded > 0;
-  const hasTotal = downloadProgress && downloadProgress.total != null;
-  const hasResultRow = resolvedUpdate !== null || status.status !== 'idle' || !!status.error;
+  const statusKey = action === 'failed' ? 'available' : status.status === 'idle' && update ? 'available' : status.status;
+  const hasResultRow = update !== null || status.status !== 'idle' || !!status.error;
   return (
     <div className="min-w-0 flex-1 space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
@@ -650,30 +646,17 @@ function UpdateStatusInline({ status, availableUpdate, busy, downloadProgress, o
       </div>
       {hasResultRow ? (
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${effectiveStatus}`)}</span>
-          {resolvedUpdate ? <span className="font-mono text-xs text-muted-foreground">{resolvedUpdate.currentVersion} → <span className="text-destructive">{resolvedUpdate.version}</span></span> : null}
-          {downloading ? (
+          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${statusKey}`)}</span>
+          {update ? <span className="font-mono text-xs text-muted-foreground">{update.currentVersion} → <span className="text-destructive">{update.version}</span></span> : null}
+          {action === 'downloading' ? (
             <Button size="sm" disabled><Loader2 className="mr-1.5 size-3.5 animate-spin" />{t('settings.updater.status.downloading')}</Button>
-          ) : effectiveStatus === 'available' ? (
-            <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
+          ) : action ? (
+            <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t(`settings.updater.action.${action}`)}</Button>
           ) : null}
-          {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}
+          {status.error ? <span className="text-xs text-destructive">{describeUpdateError(t, status.error)}</span> : null}
         </div>
       ) : null}
-      {downloading && hasProgress ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {hasTotal ? (
-            <>
-              <div className="h-1.5 max-w-80 flex-1 rounded-full bg-secondary">
-                <div className="h-full rounded-full bg-gold-success transition-all duration-300" style={{ width: `${progressPct}%` }} />
-              </div>
-              <span className="shrink-0 tabular-nums">{formatBytes(downloadProgress!.downloaded)} / {formatBytes(downloadProgress!.total!)}</span>
-            </>
-          ) : (
-            <span className="tabular-nums">{formatBytes(downloadProgress!.downloaded)} downloaded</span>
-          )}
-        </div>
-      ) : null}
+      {action === 'downloading' ? <UpdateDownloadProgress className="max-w-96" /> : null}
     </div>
   );
 }
@@ -682,11 +665,6 @@ function UpdateDot() {
   return <span className="size-2 rounded-full bg-destructive" aria-hidden="true" />;
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function formatCheckedAt(value: string) {
   return formatLocalDateTime(value, value);

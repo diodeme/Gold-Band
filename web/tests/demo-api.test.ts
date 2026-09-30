@@ -72,7 +72,7 @@ describe('public demo runtime', () => {
     const before = await browserApi.getProfiles();
     for (const method of ['writeFileResource', 'writeSkill', 'deleteSkill', 'saveTaskWorkflow', 'createProfile',
       'submitConversationPrompt', 'createConversationRun', 'createAgent', 'updateAgent', 'deleteAgent', 'doctorAgent', 'syncSkillToAgents', 'executeGitMutation', 'startGitOperation',
-      'pickLocalDirectory', 'openFileWithSystemApp', 'submitFeedback', 'downloadAndInstallUpdate'] as const) {
+      'pickLocalDirectory', 'openFileWithSystemApp', 'submitFeedback', 'startUpdateInstall'] as const) {
       await expect(Reflect.apply(api[method], api, [])).rejects.toMatchObject({ code: 'demo.operation-unavailable', params: { operation: method } });
     }
     expect(await browserApi.getProfiles()).toEqual(before);

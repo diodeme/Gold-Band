@@ -378,7 +378,8 @@
     "feedbackErrorUnconfigured": "Los comentarios no están disponibles",
     "feedbackErrorSession": "La sesión relacionada ya no existe. Selecciónala de nuevo.",
     "feedbackErrorAttachment": "No se pudo leer una captura o el formato no es compatible. Usa PNG, JPEG o WebP.",
-    "feedbackErrorTooLarge": "La carga es demasiado grande. Quita capturas o la sesión relacionada."
+    "feedbackErrorTooLarge": "La carga es demasiado grande. Quita capturas o la sesión relacionada.",
+    "imagePreview": "Vista previa de la imagen"
   },
   "personalAnalytics": {
     "title": "Análisis personal",
@@ -1061,10 +1062,16 @@
     },
     "updater": {
       "invalid-url": "URL de actualización no válida.",
-      "check-failed": "No se pudo comprobar si hay actualizaciones: {{message}}",
-      "install-failed": "No se pudo instalar la actualización: {{message}}",
+      "check-failed": "{{detail}}",
+      "install-failed": "{{detail}}",
       "context-unavailable": "No se pueden comprobar actualizaciones sin un espacio de trabajo seleccionado.",
-      "no-update": "No hay ninguna actualización disponible."
+      "no-update": "No hay ninguna actualización disponible.",
+      "download-failed": "{{detail}}",
+      "network": "Error de conexión de red ({{detail}})",
+      "signature-invalid": "La firma del paquete de actualización no es válida.",
+      "manifest-invalid": "El manifiesto de actualización no es válido ({{detail}})",
+      "io": "No se pudo leer ni escribir el paquete de actualización ({{detail}})",
+      "stale-package": "El paquete descargado no es más reciente que la versión en ejecución."
     },
     "multica": {
       "not-configured": "Multica no está configurado. Completa la conexión en Configuración primero.",
@@ -2676,17 +2683,7 @@
       "saveOverride": "Guardar URL",
       "resetToBuiltIn": "Usar URL integrada",
       "checkNow": "Comprobar actualización",
-      "install": "Descargar e instalar",
       "lastCheckedAt": "Última comprobación: {{time}}",
-      "announcement": {
-        "title": "Nueva versión {{version}} disponible",
-        "description": "Ve a Configuración → Avanzado → Actualizaciones para revisarla e instalarla.",
-        "dismiss": "Cerrar",
-        "view": "Ver actualización",
-        "dialogTitle": "Nueva versión {{version}} disponible",
-        "dialogDescription": "Se detectó una nueva versión del cliente. Ve a Configuración → Avanzado → Actualizaciones para descargarla e instalarla.",
-        "goToSettings": "Ir a Configuración"
-      },
       "channel": {
         "default": "Predeterminado",
         "wb": "WB"
@@ -2697,7 +2694,37 @@
         "available": "Actualización disponible",
         "downloading": "Descargando actualización...",
         "not-available": "Actualizado",
-        "error": "Comprobación fallida"
+        "error": "Comprobación fallida",
+        "ready": "Actualización descargada"
+      },
+      "downloaded": "{{size}} descargados",
+      "action": {
+        "available": "Descargar e instalar",
+        "failed": "Volver a descargar e instalar",
+        "ready": "Reiniciar e instalar"
+      },
+      "dialog": {
+        "title": "Nueva versión {{version}} disponible",
+        "noNotes": "Esta versión no tiene notas de la versión.",
+        "action": {
+          "available": "Actualizar ahora",
+          "failed": "Reintentar",
+          "ready": "Reiniciar e instalar",
+          "downloading": "Descargando"
+        }
+      },
+      "titleBar": {
+        "available": "Actualizar",
+        "failed": "Error al actualizar",
+        "ready": "Reiniciar para actualizar",
+        "downloading": "Actualizando",
+        "downloadingPercent": "Actualizando {{percent}}%",
+        "tooltip": "Nueva versión {{version}}"
+      },
+      "failure": {
+        "check": "No se pudo comprobar si hay actualizaciones: {{reason}}",
+        "download": "No se pudo descargar la actualización: {{reason}}",
+        "install": "No se pudo instalar la actualización: {{reason}}"
       }
     }
   },

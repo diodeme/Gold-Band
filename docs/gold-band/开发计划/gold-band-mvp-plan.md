@@ -2727,6 +2727,13 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 2026-09-30 回退 manifest 语言调整：`latest.json` 改为复制 `latest.zh-CN.json`（替代上文的英文兼容 manifest），旧客户端与 locale 资产缺失时的回退均展示简体中文说明；脚本接口回归同步固定 `latest.json` 与 `latest.zh-CN.json` 一致。
 - [x] 2026-09-30 Draft Release 正文对齐历史手写格式：`# Gold Band vX.Y.Z` + 中英文锚点 + `## 中文` / `## English`，release notes 标题在代码块外降一级；manifest `notes` 保持原文层级。接口回归逐字固定正文，并覆盖代码块内 `#` 不被降级。
 
+### 2026-09-30 版本级关键更新元数据契约
+
+- 发布准备：git-changelog 必须取得明确 Git 起止范围、目标版本和用户的普通 / 关键更新选择；同版本已有明确回答直接复用，缺失或含糊先询问，不从 commits、破坏性变更、安全修复或正文推断。普通更新只提示并等待手动更新；关键更新后台下载签名包，经正常退出生命周期或既有后续启动路径安装，不主动强制重启或中断工作。
+- 事实源：与七语言正文一起写入 `release-notes/<version>/release.json`，完整对象仅为 `{"critical": false}` 或 `{"critical": true}`，普通版本不得省略 false。覆盖前读取已有文件并核对用户确认，冲突先询问；完成报告目标版本与最终选择。正文和元数据必须进入实际发布 SHA/tag，生成器从该发布源码读取，不使用另一 workflow 分支或未提交工作区作为版本事实。准备文件不授权自动 commit、push、tag 或 publish。
+- 生成器验收契约：历史版本缺文件视为普通更新；存在时必须严格为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型和额外字段必须在任何输出写入前失败。七份 locale manifest 与 `latest.json` 共八份 default manifest 的 `critical` 完全一致，`latest.json` 继续等同简体中文 manifest；`wb` 单 manifest、既有关键更新构建参数及发布流程不变，不消费该 default 元数据。
+- [x] 实现与验证：生成器在写入输出前读取并严格校验版本元数据，复用既有 `--critical` 参数；关键更新八份清单均写入 `critical: true`，普通更新均省略字段。`npm run test:release-notes` 18 项通过，覆盖 true / false / 缺文件、非法 JSON / 结构 / 类型 / 额外字段、读取失败及非法元数据不覆盖已有输出，并保持多语言正文、签名和双语 Release body。未编译 EXE、未发布，也未重测客户端。过度设计与性能评审：复用现有版本目录、生成器与发布链路，不新增依赖、客户端状态、轮询或请求；每次发布仅读取解析一个小 JSON，八份 manifest 数量固定。
+
 ## 2026-09-25 源码管理后台刷新稳定性与历史审阅诊断
 
 - [x] 回溯：原设计要求已加载数据后台校准时保留组件；渐进 catalog 实现却在所有 overview 刷新后置空，并复用 worktree 请求代次，使普通文件事件卸载仓库/GitHub、使慢 catalog 反复过期。属于加载领域/生命周期边界实现缺陷；notify 纯访问事件被视为修改、statistics 用旧 repository 覆盖新 remotes 是另外两个已测试复现的逻辑错误。实际 Windows 连续事件的产生源仍待日志确认。
@@ -2782,6 +2789,15 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 修复：`fileChangeAffectsTree` 以树为准——仍存在且未知、父目录已加载的路径是新增节点；已知路径是内容；已不存在的已知路径才是删除；父目录未加载的事件跳过，不再把折叠目录内的批量写入（构建产物、checkout）累积到 64 项上限后退化为整根重读。根目录列表改为单飞，进行中的强制请求标记过期，返回后重读一次再进入 `ready`。后端批次合并保持不变，不再有消费端依赖 create/modify 的区分。
 - [x] 验收：`FileExplorerStore` 新增 6 项接口测试（未知路径 `modified` 刷新父目录、只刷新受影响的已加载目录、已知路径外部写入不发目录请求、未加载目录事件不发请求、列表进行中对账重读、列表进行中的变化不被旧列表覆盖），修复前 5 项失败、修复后全部通过；Web 全量除既有 `acp-runtime-continue-submit` 与 `acp-model-thought-selects` 外通过。
 - 性能与过度设计评审：每个事件多一次已加载树内的路径查找（原有已知路径判定同量级）；跳过未加载目录后大批量写入的目录请求更少。根列表单飞只增加一个 promise 与一个过期标记，不新增队列或轮询。
+
+## 2026-09-30 标题栏更新入口与统一安装流程
+
+- 现有实现补记：首次后台检查在启动 20 秒后执行，此后每 240 分钟检查一次；`default` / `wb` 均已启用静默更新策略，取代 2026-08-21 记录的 default 关闭状态。仅 manifest 明确 `critical: true` 时后台预下载，普通更新仍只提示并等待手动操作；静默下载完成不会立即重启或中断工作，安装复用正常退出或后续启动的 pending 路径。此条记录既有行为，不代表本次已重新执行验证。
+- [x] 根因：更新状态机只存在于前端（下载中、失败原因均为前端拼装），Windows 安装直接 `exit` 绕过退出清理，检查失败会清空已知更新，静默下载的 pending 包启动时不校验签名即安装。按“后端统一状态 + 结构化错误 + 退出生命周期安装”一并修复，不做入口级补丁。
+- [x] 后端：`UpdateCheckStatus` 新增 `ready`；`UpdaterError` 结构化码与 `phase/detail` 参数；`start_update_install` 单飞下载并在完成后经 `request_app_restart` 走完整退出清理再安装；pending 包按渠道隔离、原子写入并在安装前重新验签与比较版本；删除公告关闭状态与 `dismiss_update_announcement` / `download_and_install_update`。
+- [x] 前端：删除顶部横幅与“前往设置”；标题栏「帮助」右侧新增 `attention` 主题色更新按钮，以已知更新是否存在为唯一显示条件；更新弹窗改为响应式 Dialog，宽度上限收窄为 `50rem`（根字号 16px 时为 800px），保留 `92vw` 自适应、说明区滚动与固定标题/底部操作；底部「立即更新 / 重试 / 重启并安装」与设置页共用同一 command、进度组件与错误描述；弹窗内 Markdown 图片支持放大预览（抽取共享 `ImagePreviewDialog`）。
+- [x] 回归：Rust 覆盖错误码映射、检查失败保留已知更新、进度节流、签名校验、版本比较、pending 往返与单次安装、状态单飞；Web 覆盖按钮显隐与状态文案、进度 external store、弹窗安装/失败重试/下载禁用/就绪重启、Markdown 图片预览仅在 Provider 内生效；新增 `50rem` / `92vw` 宽度、长说明滚动区和固定标题/底部操作的 DOM 契约测试。宽度专项验收：12 项定向测试、前端类型检查及生产构建通过；独立 Vite fixture 挂载实际组件，在 1440×1000 → 480×800 → 1440×1000 下验证宽度 800px → 441.6px → 800px，60 段说明滚动时标题/底部保持可见，无横向溢出；未启动或构建 EXE。
+- 性能与过度设计评审：进度事件后端节流到 100ms，前端经 `useSyncExternalStore` 只刷新进度消费者，不进入 App bootstrap 状态；新增一个主题 token 和一个共享预览组件，复用既有 Dialog、退出生命周期与 updater 插件，无新增轮询、缓存或队列。签名校验只在安装前对单个安装包执行一次。
 
 ## 2026-09-30 fanout 释放后保留会话工作目录
 

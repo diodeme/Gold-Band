@@ -30,6 +30,31 @@ try {
   process.exit(1);
 }
 
+const metadataPath = path.join(versionNotesDir, 'release.json');
+let critical = false;
+try {
+  let source;
+  try {
+    source = await readFile(metadataPath, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (source !== undefined) {
+    const metadata = JSON.parse(source);
+    if (
+      metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)
+      || typeof metadata.critical !== 'boolean'
+      || Object.keys(metadata).some((key) => key !== 'critical')
+    ) {
+      throw new Error('Expected an object containing only a boolean critical field.');
+    }
+    critical = metadata.critical;
+  }
+} catch (error) {
+  console.error(`Invalid release metadata: ${metadataPath}: ${error.message}`);
+  process.exit(1);
+}
+
 await mkdir(outputDir, { recursive: true });
 const notesByLocale = new Map();
 
@@ -51,7 +76,7 @@ for (const locale of LOCALES) {
   const outputPath = path.join(outputDir, `latest.${locale}.json`);
   const result = spawnSync(
     process.execPath,
-    [generatorPath, assetDir, outputPath, '--version', version, '--notes-file', notesPath],
+    [generatorPath, assetDir, outputPath, '--version', version, '--notes-file', notesPath, ...(critical ? ['--critical'] : [])],
     {
       cwd: process.cwd(),
       env: { ...process.env, RELEASE_VERSION: version },

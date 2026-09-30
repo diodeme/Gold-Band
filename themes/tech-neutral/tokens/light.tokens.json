@@ -284,6 +284,8 @@
       "$type": "color",
       "$value": "#c23b4a"
     },
+    "attention": { "$type": "color", "$value": "#2563eb" },
+    "attentionForeground": { "$type": "color", "$value": "#ffffff" },
     "statusRunningSurface": { "$type": "color", "$value": "rgba(82,101,173,.10)" },
     "statusRunningBorder": { "$type": "color", "$value": "rgba(82,101,173,.30)" },
     "statusSuccessSurface": { "$type": "color", "$value": "rgba(46,121,84,.10)" },

@@ -10,7 +10,7 @@ use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    AppearancePreference, BrowserPreferences, DesktopAvailableUpdate, DesktopLanguage,
+    AppearancePreference, BrowserPreferences, DesktopLanguage,
     DesktopUpdateBadgeState, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
     McpServerDiagnosticState, PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
 };
@@ -32,7 +32,7 @@ use crate::channel::current_channel_config;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
-use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
+use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, persisted_update_info, updater_settings};
 use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
 use gold_band::storage::read_json;
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,6 @@ pub struct LocalClaudeStatusVm {
 pub struct UpdateBadgeStateVm {
     pub settings_entry_seen_version: Option<String>,
     pub settings_advanced_seen_version: Option<String>,
-    pub announcement_closed_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,7 +78,6 @@ pub struct AppBootstrapVm {
     pub metrics_settings: MetricsSettingsVm,
     pub update_status: UpdateStatusVm,
     pub update_badges: UpdateBadgeStateVm,
-    pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
     pub platform: String,
     pub window_chrome: DesktopWindowChromeVm,
@@ -1234,25 +1232,7 @@ fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm 
     UpdateBadgeStateVm {
         settings_entry_seen_version: state.settings_entry_seen_version.clone(),
         settings_advanced_seen_version: state.settings_advanced_seen_version.clone(),
-        announcement_closed_version: state.announcement_closed_version.clone(),
     }
-}
-
-fn persisted_available_update_vm(
-    update: Option<&DesktopAvailableUpdate>,
-    current_version: &str,
-) -> Option<UpdateInfoVm> {
-    let update = update?;
-    // 退出安装后 current_version 会变为新版本号，此时应清除旧的 available 记录
-    if update.current_version != current_version {
-        return None;
-    }
-    Some(UpdateInfoVm {
-        version: update.version.clone(),
-        current_version: update.current_version.clone(),
-        notes: update.notes.clone(),
-        pub_date: update.pub_date.clone(),
-    })
 }
 
 fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
@@ -1360,12 +1340,16 @@ pub fn bootstrap_vm(
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
-        update_status,
+        update_status: UpdateStatusVm {
+            update: update_status.update.clone().or_else(|| {
+                persisted_update_info(
+                    app.config.desktop_available_update.as_ref(),
+                    &client_version_string,
+                )
+            }),
+            ..update_status
+        },
         update_badges: update_badge_state_vm(&app.config.desktop_update_badges),
-        persisted_available_update: persisted_available_update_vm(
-            app.config.desktop_available_update.as_ref(),
-            &client_version_string,
-        ),
         client_version: client_version_string,
         platform: DESKTOP_PLATFORM.to_string(),
         window_chrome: desktop_window_chrome_vm(),

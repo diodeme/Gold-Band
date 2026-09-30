@@ -2205,9 +2205,6 @@ export interface WeComScanAuthorizationVm {
 }
 
 export interface NotificationAttentionInput {
-  windowFocused: boolean;
-  windowMinimized: boolean;
-  windowVisible: boolean;
   projectId?: string | null;
   taskId?: string | null;
   runId?: string | null;

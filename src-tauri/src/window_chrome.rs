@@ -98,6 +98,52 @@ fn raise_undecorated_edge_resize_hwnd<R: Runtime>(window: &WebviewWindow<R>) {
     }
 }
 
+/// 主窗口是否正被用户注视：可见、未最小化且处于系统前台。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainWindowPresence {
+    Foreground,
+    Background,
+}
+
+/// 在调用时向系统读取主窗口前台状态，不依赖前端推送的快照。
+pub fn main_window_presence<R: Runtime>(app: &tauri::AppHandle<R>) -> MainWindowPresence {
+    let Some(window) = app.get_webview_window("main") else {
+        return MainWindowPresence::Background;
+    };
+    if window_in_foreground(&window) {
+        MainWindowPresence::Foreground
+    } else {
+        MainWindowPresence::Background
+    }
+}
+
+/// Windows 上键盘焦点落在 WebView2 子窗口，Tauri `is_focused()` 会对前台主窗口返回
+/// false，因此以系统前台窗口的根 owner 判定（兼容主窗口拥有的原生对话框）。
+#[cfg(windows)]
+fn window_in_foreground<R: Runtime>(window: &WebviewWindow<R>) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GA_ROOTOWNER, GetAncestor, GetForegroundWindow, IsIconic, IsWindowVisible,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    unsafe {
+        let foreground = GetForegroundWindow();
+        !foreground.is_invalid()
+            && GetAncestor(foreground, GA_ROOTOWNER) == hwnd
+            && IsWindowVisible(hwnd).as_bool()
+            && !IsIconic(hwnd).as_bool()
+    }
+}
+
+#[cfg(not(windows))]
+fn window_in_foreground<R: Runtime>(window: &WebviewWindow<R>) -> bool {
+    window.is_focused().unwrap_or(false)
+        && window.is_visible().unwrap_or(false)
+        && !window.is_minimized().unwrap_or(true)
+}
+
 #[cfg(target_os = "windows")]
 fn current_desktop_window_chrome() -> DesktopWindowChromeVm {
     let version = windows_version::OsVersion::current();

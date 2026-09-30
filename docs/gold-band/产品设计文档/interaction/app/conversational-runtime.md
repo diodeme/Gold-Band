@@ -715,7 +715,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 每个手动 prompt 在进入 ACP 前必须拥有稳定 `turnId`。前端未提供时由后端生成并写入 prompt event；通知去重键必须包含 `run / round / node / attempt / turnId`，同一 attempt 的连续追问不能互相去重。
 - turn 终态统一为 `Completed / Failed / Cancelled`。Completed 和 Failed 产生通知；用户主动停止对应 Cancelled，不产生完成或失败通知。adapter transport interrupted 属于 Failed，不得伪装为用户停止。
 - Direct 首轮仍由内部单 Worker run 驱动，但 `RunCompleted` 事件必须携带从 `authoring/conversation.json` 固化的 Agent 展示身份。成功的 Direct `RunCompleted` 只更新运行状态，通知必须延后交给同一 prompt queue 批次决策；失败仍立即通知。通知订阅器不得根据 `direct-agent` 等节点 ID 判断 Direct，也不得依赖当前 UI 工作区回读元数据。
-- 当前窗口失焦、最小化、隐藏，或用户正在查看其他 task/run/session 时发送通知；当前目标 session 正在前台可见时抑制通知。permission 与 elicitation 继续沿用即时通知，不等待 turn 结束。
+- 当前窗口不在系统前台、最小化、隐藏，或用户正在查看其他 task/run/session 时发送通知；当前目标 session 正在前台可见时抑制通知。窗口前台状态由后端在发送时向系统读取（Windows 以系统前台窗口的根 owner 是否为主窗口判定，因为 WebView2 持有键盘焦点时 Tauri `isFocused()` 恒为 false），前端只同步当前展示的会话 locator。permission 与 elicitation 继续沿用即时通知，不等待 turn 结束。
 - 同一 Direct attempt 自动连续消费待发送队列时，从触发该批次的首条普通 prompt（包括 Direct 首轮）开始，所有成功 turn 都先进入统一的完成决策：`AcpPromptLifecycleEvent::Finished` 携带稳定 `promptId`，调度器等待 600ms 用户优先窗口并尝试领取后继。`AcpTurnFinished.batchProgress` 固定包含 `completedReplyCount + continues`；实际领取成功时仅累计计数并标记 `continues=true`，系统通知层不为该中间成功单独弹窗。队列清空、暂停、被用户优先输入抢占或无法继续领取时，终点事件携带整个连续批次的累计回复数并立即清理批次状态：计数为 1 使用“{Agent} 回复完成”，大于 1 使用“{Agent} 已连续回复 X 条”。批次计数属于当前进程内正在执行的 provider 生命周期，失败、取消或应用退出必须清理，不写入 durable prompt queue；应用重启后旧 provider turn 不可能继续回调。不得按 `turn-queued-*` 前缀区分首条与后续消息。Failed 始终立即通知，Cancelled 仍不通知；权限、elicitation、运行异常以及其他 project/session 的通知不参与合并。
 - 通知正文不包含 Agent 回复原文、工具参数或附件内容，避免在操作系统通知中心泄露会话正文；点击“查看详情”仍定位到对应 task/run/attempt。
 

@@ -35,6 +35,9 @@ TooltipTrigger.displayName = "TooltipTrigger"
 function TooltipContent({
   className,
   sideOffset = 0,
+  // 触发器被 display:none、滚出或移出裁剪区时，Radix 收不到 pointerleave，
+  // 定位会退化到视口原点；随触发器一起隐藏。
+  hideWhenDetached = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
@@ -42,6 +45,7 @@ function TooltipContent({
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        hideWhenDetached={hideWhenDetached}
         className={cn(
           "pointer-events-none z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md border bg-popover px-3 py-1.5 text-xs text-popover-foreground shadow-md fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           className

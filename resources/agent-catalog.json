@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-30T04:49:15.152Z"
+    "fetchedAt": "2026-09-30T08:06:07.798Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.84.0",
+      "version": "0.81.2",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.84.0"
+        "@agentclientprotocol/claude-agent-acp@0.81.2"
       ],
       "env": {},
       "primaryAgentDir": ".claude",
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "2.0.1",
+      "version": "1.13.1",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@2.0.1"
+        "@agentclientprotocol/codex-acp@1.13.1"
       ],
       "env": {},
       "primaryAgentDir": ".codex",

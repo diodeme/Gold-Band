@@ -26,11 +26,16 @@ use std::process::Stdio;
 /// Toast「查看详情」点击后，后端 emit 导航事件，前端 deep link 到节点。
 pub const INTERVENTION_NAVIGATE_EVENT: &str = "gold-band://intervention-navigate";
 
-/// 干预通知 OS 文案中的应用名（本次硬编码「码灵」，方案 §11）。
-const APP_DISPLAY_NAME: &str = "码灵";
-/// Windows AUMID（系统注册标识，与展示名是两回事），取自 tauri.conf.json identifier。
+/// 通知展示名复用当前构建渠道配置。
+fn app_display_name() -> &'static str {
+    crate::channel::current_channel_config().app_name
+}
+
+/// 通知来源与 Tauri 合并后的安装包身份一致。
 #[cfg(windows)]
-const WINDOWS_AUMID: &str = "local.gold-band.desktop";
+fn windows_aumid(config: &tauri::Config) -> &str {
+    &config.identifier
+}
 
 /// Windows 原生 Toast 只提供 Short（约 7 秒）/Long（约 25 秒）两档。
 #[cfg(windows)]
@@ -383,15 +388,15 @@ fn send_scheduled_os_notification(
     {
         use tauri_winrt_notification::{IconCrop, Toast};
 
-        ensure_notification_registry();
+        ensure_notification_registry(app_handle.config());
         let view_action = encode_scheduled_view_action(payload);
         let dismiss_action = encode_dismiss_action(&DismissActionPayload {
             dedup_key: dedup_key.to_string(),
         });
         let handle = app_handle.clone();
         let default_target = InterventionNavigationTarget::Scheduled(payload.clone());
-        let toast = Toast::new(WINDOWS_AUMID)
-            .title(&format!("{} - {}", APP_DISPLAY_NAME, title))
+        let toast = Toast::new(windows_aumid(app_handle.config()))
+            .title(&format!("{} - {}", app_display_name(), title))
             .text1(body)
             .add_button("查看详情", &view_action)
             .add_button("忽略", &dismiss_action)
@@ -401,7 +406,7 @@ fn send_scheduled_os_notification(
             });
         let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
         if let Some(icon_path) = resolve_app_icon_path(app_handle) {
-            toast = toast.icon(&icon_path, IconCrop::Square, APP_DISPLAY_NAME);
+            toast = toast.icon(&icon_path, IconCrop::Square, app_display_name());
         }
         if let Err(error) = toast.show() {
             warn!(?error, %dedup_key, "windows scheduled toast failed");
@@ -416,8 +421,8 @@ fn send_scheduled_os_notification(
         {
             use notify_rust::{Notification, Timeout};
             if let Err(error) = Notification::new()
-                .appname(APP_DISPLAY_NAME)
-                .summary(&format!("{} - {}", APP_DISPLAY_NAME, title))
+                .appname(app_display_name())
+                .summary(&format!("{} - {}", app_display_name(), title))
                 .body(body)
                 .timeout(Timeout::from(std::time::Duration::from_secs(
                     auto_dismiss_target_secs,
@@ -438,7 +443,7 @@ fn send_windows_toast(
 ) -> Result<(), tauri_winrt_notification::Error> {
     use tauri_winrt_notification::{IconCrop, Toast};
 
-    ensure_notification_registry();
+    ensure_notification_registry(app_handle.config());
 
     let payload = ViewActionPayload {
         project_id: notification.project_id.clone(),
@@ -460,8 +465,8 @@ fn send_windows_toast(
 
     let handle = app_handle.clone();
     let default_target = InterventionNavigationTarget::Conversation(payload.clone());
-    let toast = Toast::new(WINDOWS_AUMID)
-        .title(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
+    let toast = Toast::new(windows_aumid(app_handle.config()))
+        .title(&format!("{} - {}", app_display_name(), notification.title))
         .text1(&notification.body)
         .add_button("查看详情", &view_action)
         .add_button("忽略", &dismiss_action)
@@ -471,9 +476,9 @@ fn send_windows_toast(
         });
     let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
 
-    // 显式设置码灵 app 图标，避免落到默认/powershell 图标。
+    // 显式设置当前构建的 app 图标，避免落到默认/powershell 图标。
     if let Some(icon_path) = resolve_app_icon_path(app_handle) {
-        toast = toast.icon(&icon_path, IconCrop::Square, APP_DISPLAY_NAME);
+        toast = toast.icon(&icon_path, IconCrop::Square, app_display_name());
     }
 
     toast.show()
@@ -496,7 +501,7 @@ fn apply_windows_toast_display_policy(
     }
 }
 
-/// 码灵 app 图标（编译期嵌入 `src-tauri/icons/icon.png`）。
+/// 当前构建的 app 图标（编译期嵌入 `src-tauri/icons/icon.png`）。
 ///
 /// 不走运行时 `BaseDirectory::Resource` 解析：dev/prod 资源目录解析易落空，导致
 /// `toast.icon()` 被跳过、回退默认图标。嵌入字节后运行时写入 app local data 目录，
@@ -508,7 +513,7 @@ const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
 #[cfg(windows)]
 const TOAST_ICON_FILE_NAME: &str = "maling-toast-icon.png";
 
-/// 解析码灵 Toast 图标路径：首次运行时把嵌入字节写入 app local data 目录，后续直接返回。
+/// 解析 Toast 图标路径：首次运行时把嵌入字节写入 app local data 目录，后续直接返回。
 ///
 /// 写入用 `Once` 守护，幂等：已存在则跳过，避免每次弹窗都写盘。失败仅 warn，
 /// 返回 `None` 时 `toast.icon()` 被跳过、回退默认图标（不阻断 Toast 主体）。
@@ -549,10 +554,10 @@ fn ensure_icon_file(path: &std::path::Path) {
 
 /// AUMID 注册与 Start Menu 快捷方式校验/重建：进程内只执行一次（方案 §9.2）。
 #[cfg(windows)]
-fn ensure_notification_registry() {
+fn ensure_notification_registry(config: &tauri::Config) {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        if let Err(error) = register_aumid_and_shortcut() {
+        if let Err(error) = register_aumid_and_shortcut(config) {
             warn!(
                 ?error,
                 "ensure_notification_registry failed; toast may not appear"
@@ -566,17 +571,17 @@ fn ensure_notification_registry() {
 /// 0.7.2 版 `tauri-winrt-notification` 不自带注册助手，故用 `reg` + PowerShell
 /// `WScript.Shell` COM 自行完成（方案 §9.2：PowerShell + WScript.Shell COM，同步等待）。
 #[cfg(windows)]
-fn register_aumid_and_shortcut() -> Result<(), Box<dyn std::error::Error>> {
+fn register_aumid_and_shortcut(config: &tauri::Config) -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     let exe_path = exe.to_string_lossy().to_string();
 
     // 1. 注册 AUMID 到 HKCU\Software\Classes\AppUserModelId\<AUMID>。
     //    Toast 需要 AUMID 关联 DisplayIcon 等元数据，否则通知无法正常显示。
-    register_aumid_in_registry(&exe_path)?;
+    register_aumid_in_registry(config, &exe_path)?;
 
     // 2. 校验/重建 Start Menu 快捷方式，使其 TargetPath 指向当前 exe。
     let start_menu = start_menu_programs_dir()?;
-    let lnk = start_menu.join(format!("{}.lnk", APP_DISPLAY_NAME));
+    let lnk = start_menu.join(format!("{}.lnk", app_display_name()));
     if !lnk.exists() || shortcut_target_mismatch(&lnk, &exe_path) {
         create_or_rebuild_shortcut(&lnk, &exe_path)?;
     }
@@ -584,8 +589,14 @@ fn register_aumid_and_shortcut() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(windows)]
-fn register_aumid_in_registry(exe_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let key = format!(r"HKCU\Software\Classes\AppUserModelId\{}", WINDOWS_AUMID);
+fn register_aumid_in_registry(
+    config: &tauri::Config,
+    exe_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key = format!(
+        r"HKCU\Software\Classes\AppUserModelId\{}",
+        windows_aumid(config)
+    );
     // 注册失败不致命（Toast 仍可能以默认行为显示），但记录 warn。
     let status = gold_band::process::background_command("reg")
         .args([
@@ -596,7 +607,7 @@ fn register_aumid_in_registry(exe_path: &str) -> Result<(), Box<dyn std::error::
             "/t",
             "REG_SZ",
             "/d",
-            APP_DISPLAY_NAME,
+            app_display_name(),
             "/f",
         ])
         .stdout(Stdio::null())
@@ -695,8 +706,8 @@ fn send_notify_rust(
             dedup_key: notification.dedup_key.clone(),
         };
         let handle = match Notification::new()
-            .appname(APP_DISPLAY_NAME)
-            .summary(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
+            .appname(app_display_name())
+            .summary(&format!("{} - {}", app_display_name(), notification.title))
             .body(&notification.body)
             .action("view", "查看详情")
             .timeout(Timeout::from(std::time::Duration::from_secs(
@@ -930,7 +941,8 @@ pub fn create_intervention_notification_subscriber(
             node_id: &notification.node_id,
             attempt_id: &notification.attempt_id,
         };
-        if !state.should_send_notification(&target, true) {
+        let presence = crate::window_chrome::main_window_presence(&app_handle);
+        if !state.should_send_notification(&target, true, presence) {
             tracing::debug!(
                 dedup_key = %notification.dedup_key,
                 "intervention notification suppressed while target is visible"
@@ -962,6 +974,79 @@ fn should_defer_direct_run_completion_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_name_matches_current_channel() {
+        assert_eq!(
+            app_display_name(),
+            crate::channel::current_channel_config().app_name
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notification_identity_matches_each_channel() {
+        for source in [
+            include_str!("../../configs/channels/default.json"),
+            include_str!("../../configs/channels/wb.json"),
+        ] {
+            let config: serde_json::Value = serde_json::from_str(source).unwrap();
+            let tauri_config = tauri::Config {
+                identifier: config["identifier"].as_str().unwrap().to_string(),
+                ..Default::default()
+            };
+            assert_eq!(
+                windows_aumid(&tauri_config),
+                config["identifier"].as_str().unwrap()
+            );
+        }
+    }
+
+    /// Explicit Windows integration check; never touches an installed application's identity.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "writes and removes an isolated HKCU notification registration"]
+    fn windows_registration_refreshes_display_name() {
+        let config = tauri::Config {
+            identifier: format!("local.gold-band.notification-test.{}", std::process::id()),
+            ..Default::default()
+        };
+        let key = format!(
+            r"HKCU\Software\Classes\AppUserModelId\{}",
+            config.identifier
+        );
+        let seeded = gold_band::process::background_command("reg")
+            .args([
+                "ADD",
+                &key,
+                "/v",
+                "DisplayName",
+                "/t",
+                "REG_SZ",
+                "/d",
+                "old-brand",
+                "/f",
+            ])
+            .output()
+            .unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let registered = register_aumid_in_registry(&config, exe.to_str().unwrap());
+        let queried = gold_band::process::background_command("reg")
+            .args(["QUERY", &key, "/v", "DisplayName"])
+            .output();
+        let removed = gold_band::process::background_command("reg")
+            .args(["DELETE", &key, "/f"])
+            .output()
+            .unwrap();
+        assert!(removed.status.success());
+        assert!(seeded.status.success());
+        registered.unwrap();
+        let queried = queried.unwrap();
+        assert!(queried.status.success());
+        let output = String::from_utf8_lossy(&queried.stdout);
+        assert!(output.contains(app_display_name()), "{output}");
+        assert!(!output.contains("old-brand"));
+    }
 
     fn sample_view() -> ViewActionPayload {
         ViewActionPayload {

@@ -14590,30 +14590,6 @@ fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -
     dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, workspace_id))
 }
 
-#[derive(Debug, Clone)]
-struct DynamicWorktreeNamespace {
-    task: Utf8PathBuf,
-    run: Utf8PathBuf,
-    leaf: Utf8PathBuf,
-}
-
-fn remove_empty_dynamic_worktree_directory_best_effort(path: &Utf8Path, scope: &str) -> bool {
-    match std::fs::remove_dir(path.as_std_path()) {
-        Ok(()) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => false,
-        Err(error) => {
-            tracing::warn!(
-                workspace_path = path.as_str(),
-                cleanup_scope = scope,
-                %error,
-                "failed to remove an empty released dynamic worktree directory"
-            );
-            false
-        }
-    }
-}
-
 fn canonical_existing_dynamic_namespace_path(path: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
     match std::fs::symlink_metadata(path.as_std_path()) {
         Ok(_) => {
@@ -14647,7 +14623,7 @@ fn preflight_dynamic_worktree_namespace(
     ctx: &DynamicExecutionContext<'_>,
     workspace_id: &str,
     workspace_path: &Utf8Path,
-) -> Result<DynamicWorktreeNamespace> {
+) -> Result<Utf8PathBuf> {
     let worktrees_root = ctx.app.paths.repo_gold_band_root.join("worktrees");
     let task_ref = safe_dynamic_ref(ctx.task_id);
     let run_ref = safe_dynamic_ref(ctx.run_id);
@@ -14707,39 +14683,36 @@ fn preflight_dynamic_worktree_namespace(
         ensure_dynamic_namespace_path_matches_canonical_location(path, expected)?;
     }
 
-    Ok(DynamicWorktreeNamespace {
-        task: task_namespace,
-        run: run_namespace,
-        leaf,
-    })
+    Ok(leaf)
 }
 
-fn prune_released_dynamic_worktree_namespace_best_effort(
+fn ensure_released_dynamic_worktree_directory_best_effort(
     ctx: &DynamicExecutionContext<'_>,
     workspace_id: &str,
     workspace_path: &Utf8Path,
 ) {
-    let namespace = match preflight_dynamic_worktree_namespace(ctx, workspace_id, workspace_path) {
+    let leaf = match preflight_dynamic_worktree_namespace(ctx, workspace_id, workspace_path) {
         Ok(namespace) => namespace,
         Err(error) => {
             tracing::warn!(
                 workspace_id,
                 workspace_path = workspace_path.as_str(),
                 %error,
-                "refused to prune a released dynamic worktree outside its canonical namespace"
+                "refused to restore a released dynamic worktree directory outside its canonical namespace"
             );
             return;
         }
     };
 
-    for (scope, path) in [
-        ("leaf", namespace.leaf.as_path()),
-        ("run", namespace.run.as_path()),
-        ("task", namespace.task.as_path()),
-    ] {
-        if !remove_empty_dynamic_worktree_directory_best_effort(path, scope) {
-            break;
-        }
+    // Session history keeps this cwd after Git releases the worktree. Directory
+    // restoration is best-effort and must not change the Git release outcome.
+    if let Err(error) = std::fs::create_dir_all(leaf.as_std_path()) {
+        tracing::warn!(
+            workspace_id,
+            workspace_path = leaf.as_str(),
+            %error,
+            "failed to restore a released dynamic worktree directory"
+        );
     }
 }
 
@@ -15025,10 +14998,10 @@ fn release_dynamic_workspace_best_effort(
         if let Err(error) = GitCoordinationService.with_runtime_write(
             &repository.common_dir,
             Some(&expected_path),
-            "dynamic-worktree-prune",
+            "dynamic-worktree-retain-directory",
             || {
                 preflight_dynamic_worktree_namespace(ctx, workspace_id, &workspace.path)?;
-                prune_released_dynamic_worktree_namespace_best_effort(
+                ensure_released_dynamic_worktree_directory_best_effort(
                     ctx,
                     workspace_id,
                     &expected_path,
@@ -15040,7 +15013,7 @@ fn release_dynamic_workspace_best_effort(
                 workspace_id,
                 workspace_path = workspace.path.as_str(),
                 %error,
-                "failed to coordinate released dynamic worktree pruning"
+                "failed to coordinate released dynamic worktree directory restoration"
             );
         }
         return false;
@@ -15055,7 +15028,7 @@ fn release_dynamic_workspace_best_effort(
                 Ok(())
             },
             || {
-                prune_released_dynamic_worktree_namespace_best_effort(
+                ensure_released_dynamic_worktree_directory_best_effort(
                     ctx,
                     workspace_id,
                     &expected_path,
@@ -23257,9 +23230,9 @@ mod tests {
                 .status,
             WorkspaceStatus::Released
         );
-        assert!(!workspace.path.exists());
-        assert!(!run_namespace.exists());
-        assert!(!task_namespace.exists());
+        assert!(workspace.path.is_dir());
+        assert!(run_namespace.is_dir());
+        assert!(task_namespace.is_dir());
         assert!(worktrees_root.exists());
     }
 
@@ -23404,7 +23377,7 @@ mod tests {
     }
 
     #[test]
-    fn released_dynamic_worktree_pruning_preserves_nonempty_and_outside_directories() {
+    fn released_dynamic_worktree_directory_preserves_nonempty_and_outside_directories() {
         let (temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -23415,18 +23388,18 @@ mod tests {
         let sentinel = canonical_leaf.join("preserve.txt");
         std::fs::write(sentinel.as_std_path(), "preserve").unwrap();
 
-        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &canonical_leaf);
+        ensure_released_dynamic_worktree_directory_best_effort(&ctx, workspace_id, &canonical_leaf);
 
         assert!(sentinel.exists());
 
         let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside-empty")).unwrap();
         std::fs::create_dir_all(outside.as_std_path()).unwrap();
-        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &outside);
+        ensure_released_dynamic_worktree_directory_best_effort(&ctx, workspace_id, &outside);
         assert!(outside.exists());
     }
 
     #[test]
-    fn released_dynamic_worktree_pruning_keeps_shared_parents_until_last_leaf() {
+    fn released_dynamic_worktree_directory_retains_siblings_and_parents() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -23441,32 +23414,120 @@ mod tests {
         std::fs::create_dir_all(first_leaf.as_std_path()).unwrap();
         std::fs::create_dir_all(second_leaf.as_std_path()).unwrap();
 
-        prune_released_dynamic_worktree_namespace_best_effort(
+        ensure_released_dynamic_worktree_directory_best_effort(
             &ctx,
             first_workspace_id,
             &first_leaf,
         );
 
-        assert!(!first_leaf.exists());
+        assert!(first_leaf.is_dir());
         assert!(second_leaf.exists());
         assert!(run_namespace.exists());
         assert!(task_namespace.exists());
         assert!(worktrees_root.exists());
 
-        prune_released_dynamic_worktree_namespace_best_effort(
+        ensure_released_dynamic_worktree_directory_best_effort(
             &ctx,
             second_workspace_id,
             &second_leaf,
         );
 
-        assert!(!second_leaf.exists());
-        assert!(!run_namespace.exists());
-        assert!(!task_namespace.exists());
+        assert!(second_leaf.is_dir());
+        assert!(run_namespace.is_dir());
+        assert!(task_namespace.is_dir());
         assert!(worktrees_root.exists());
     }
 
     #[test]
-    fn already_released_dynamic_worktree_retries_empty_namespace_pruning() {
+    fn dynamic_worktree_release_retains_session_directory_without_changing_release_outcome() {
+        for block_directory_creation in [false, true] {
+            let (_temp, repo_root) = init_repo();
+            let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+            let workspace_id = fork_dynamic_workspace(
+                &ctx,
+                &mut graph,
+                "workspace-main",
+                "closed-group",
+                "closed-child",
+            )
+            .unwrap();
+            let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+            if block_directory_creation {
+                // Git already released the checkout, but a file now occupies cwd.
+                git(
+                    &repo_root,
+                    &["worktree", "remove", "--force", workspace.path.as_str()],
+                );
+                std::fs::write(&workspace.path, "preserve").unwrap();
+            }
+
+            assert!(release_dynamic_workspace_best_effort(
+                &ctx,
+                &mut graph,
+                &workspace_id,
+            ));
+            assert_eq!(
+                dynamic_workspace(&graph, &workspace_id).unwrap().status,
+                WorkspaceStatus::Released
+            );
+            let catalog = git_output(&repo_root, &["worktree", "list", "--porcelain"]).unwrap();
+            assert!(catalog.success);
+            assert!(
+                !catalog
+                    .stdout
+                    .contains(workspace.branch.as_deref().unwrap())
+            );
+            assert!(
+                !git_output(
+                    &repo_root,
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{}", workspace.branch.as_deref().unwrap()),
+                    ],
+                )
+                .unwrap()
+                .success
+            );
+            if block_directory_creation {
+                assert_eq!(
+                    std::fs::read_to_string(&workspace.path).unwrap(),
+                    "preserve"
+                );
+                std::fs::remove_file(&workspace.path).unwrap();
+            } else {
+                assert!(workspace.path.is_dir());
+                assert_eq!(std::fs::read_dir(&workspace.path).unwrap().count(), 0);
+            }
+
+            let released = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+            assert!(!release_dynamic_workspace_best_effort(
+                &ctx,
+                &mut graph,
+                &workspace_id,
+            ));
+            assert!(workspace.path.is_dir());
+            assert_eq!(
+                serde_json::to_value(dynamic_workspace(&graph, &workspace_id).unwrap()).unwrap(),
+                serde_json::to_value(released).unwrap()
+            );
+            let sentinel = workspace.path.join("follow-up.txt");
+            std::fs::write(&sentinel, "preserve").unwrap();
+            assert!(!release_dynamic_workspace_best_effort(
+                &ctx,
+                &mut graph,
+                &workspace_id,
+            ));
+            assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "preserve");
+        }
+    }
+
+    #[test]
+    fn already_released_dynamic_worktree_restores_missing_session_directory() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -23485,7 +23546,6 @@ mod tests {
             &repo_root,
             &["worktree", "remove", "--force", workspace.path.as_str()],
         );
-        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
         dynamic_workspace_mut(&mut graph, &workspace_id)
             .unwrap()
             .status = WorkspaceStatus::Released;
@@ -23495,13 +23555,17 @@ mod tests {
             &mut graph,
             &workspace_id,
         ));
-        assert!(!workspace.path.exists());
-        assert!(!dynamic_worktree_base_dir(&ctx).exists());
-        assert!(!dynamic_worktree_base_dir(&ctx).parent().unwrap().exists());
+        assert!(workspace.path.is_dir());
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert!(workspace.path.is_dir());
     }
 
     #[test]
-    fn released_dynamic_worktree_pruning_waits_for_the_shared_repository_lock() {
+    fn released_dynamic_worktree_directory_waits_for_the_shared_repository_lock() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -23649,9 +23713,9 @@ mod tests {
             dynamic_workspace(&graph, &workspace_id).unwrap().status,
             WorkspaceStatus::Released
         );
-        assert!(!canonical_path.exists());
-        assert!(!run_namespace.exists());
-        assert!(!task_namespace.exists());
+        assert!(canonical_path.is_dir());
+        assert!(run_namespace.is_dir());
+        assert!(task_namespace.is_dir());
     }
 
     #[test]

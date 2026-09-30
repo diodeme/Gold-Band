@@ -5,7 +5,7 @@
 //! `runtime_ids` 为缓存（register 幂等取回，丢失下次启动重建），M2 仅内存持有；
 //! 待持久化的 pending_issues / task_conversations 在 M4 进库层 StateConfig。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// 运行期内存状态容器。
@@ -15,6 +15,13 @@ pub struct MulticaRuntimeState {
     pub runtime_ids: HashMap<String, String>,
     /// remote_task_id → 本地 task/run 映射（claim/start 后填充；bridge 归属用）。
     pub active_runs: HashMap<String, ActiveRemoteRun>,
+    /// 完成路径认领集（M5-bp）：正在执行 complete+finalize 的 remote_task_id。
+    ///
+    /// 门控命中时同一终 turn 会触发 `RunCompleted` 与 `AcpTurnFinished` 两个事件，且两者的
+    /// 归属查找都发生在各自订阅器回调（任一 finalize 之前）——不加守卫则两个 handler 并发
+    /// 跑完整完成路径（重复 complete HTTP + 冗余日志/通知）。认领保证完成路径单飞：先到者
+    /// 进入，后到者整体退出；认领随 finalize 终结（成功/失败皆走 finalize，见 bridge）。
+    pub completing: HashSet<String>,
 }
 
 /// 单个在飞 remote task 的本地映射。
@@ -41,7 +48,16 @@ pub struct ActiveRemoteRun {
     /// `RemoteCompletedTask.issue_kind` 的写入源——running 行与终态行的类型徽标都由它供给。
     /// `is_ready` 不快照：领取后无「就绪」语义。
     pub issue_kind: Option<String>,
+    /// run 模式快照（发送时 `ConversationCreateInputVm.run_mode` 的字面值，M5-bp 完成门控的
+    /// 事实源）。lifecycle 事件不携带模式信息，bridge 的 run/turn 收尾判定只能靠此快照。
+    /// 仅内存（重启后 active_runs 丢失由 recover-orphans → auto-retry → re-claim resume
+    /// 既有链路兜底，resume 时重新快照）。
+    pub run_mode: String,
 }
+
+/// 门控命中的 run 模式字面量（`ConversationCreateInputVm.run_mode` 的 "direct" 值，
+/// 见 `view_models_conversation.rs` / `scheduled_content_snapshot` 的模式映射）。
+pub const REMOTE_RUN_MODE_DIRECT: &str = "direct";
 
 /// 共享句柄：loop 创建（managed），bridge（M4）取同一份。
 pub type SharedMulticaState = Arc<Mutex<MulticaRuntimeState>>;
@@ -174,6 +190,20 @@ impl MulticaRuntimeState {
     pub fn active_run(&self, remote_task_id: &str) -> Option<ActiveRemoteRun> {
         self.active_runs.get(remote_task_id).cloned()
     }
+
+    /// 原子认领完成路径（M5-bp 双事件竞态守卫）。
+    ///
+    /// 返回 false = 已有进行中的完成（另一事件先到认领），调用方须整体退出（complete/
+    /// finalize/通知全部由认领方负责）。按 remote_task_id 粒度，不同任务互不阻塞。
+    pub fn begin_completion(&mut self, remote_task_id: &str) -> bool {
+        self.completing.insert(remote_task_id.to_string())
+    }
+
+    /// 终结认领（finalize 时调用，成功/失败皆然；幂等）。之后同任务的后续事件可再认领
+    /// （如 server 侧 complete 失败后的迟到重试路径）。
+    pub fn end_completion(&mut self, remote_task_id: &str) {
+        self.completing.remove(remote_task_id);
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +220,7 @@ mod tests {
             title: Some(format!("title-{local}")),
             started_at: "2026-08-05T00:00:00".into(),
             issue_kind: Some("dev".into()),
+            run_mode: "direct".into(),
         }
     }
 
@@ -298,6 +329,25 @@ mod tests {
         // 已移除 → 再 drop 返回 None。
         assert!(state.drop_active_run("remote-9").is_none());
         assert!(state.active_runs.is_empty());
+    }
+
+    // ---- M5-bp：完成路径认领（RunCompleted / AcpTurnFinished 双事件竞态单飞）----
+
+    #[test]
+    fn begin_completion_claims_exclusively_and_end_releases() {
+        let mut state = MulticaRuntimeState::default();
+        // 首个认领成功（先到事件进入完成路径）。
+        assert!(state.begin_completion("remote-1"));
+        // 并发第二事件认领失败 → 整体退出，完成路径单飞。
+        assert!(!state.begin_completion("remote-1"));
+        // 不同任务互不阻塞（认领按 remote_task_id 粒度）。
+        assert!(state.begin_completion("remote-2"));
+        // finalize 终结认领（成功/失败皆然）：之后同任务可再认领（重试/新事件）。
+        state.end_completion("remote-1");
+        assert!(state.begin_completion("remote-1"));
+        // 幂等：重复 end 无副作用。
+        state.end_completion("remote-1");
+        state.end_completion("remote-x");
     }
 
     #[test]

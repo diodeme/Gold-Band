@@ -1132,8 +1132,8 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 
 | 模式 | 完成路径 |
 |---|---|
-| direct | agent 跑完 -> `RunCompleted{Success}` -> `handle_run_completed` -> `classify_terminal(Success)` -> `TerminalAction::Complete` -> `complete_task` + `finalize_terminal` |
-| workflow | workflow run 跑到终态（自然结束 / 节点序列走完）-> 同上 `RunCompleted{Success}` -> `complete_task`。「按终止来完成」即完成由 run 终止事件驱动，不另设手动入口 |
+| direct | agent 跑完 -> `RunCompleted{Success}` -> `handle_run_completed` -> `classify_terminal(Success)` -> `TerminalAction::Complete` -> `complete_task` + `finalize_terminal`（**M5-bp / §12.55 起对 issue 关联任务改为 completion-output 块门控**：无块扣留完成，见 §12.55） |
+| workflow | workflow run 跑到终态（自然结束 / 节点序列走完）-> 同上 `RunCompleted{Success}` -> `complete_task`。「按终止来完成」即完成由 run 终止事件驱动，不另设手动入口（workflow graph 终态即 definition of done，**不受 §12.55 门控影响**） |
 
 **已知缺口（已接受）**：open-ended workflow 在 interview/round 节点 `RunPaused`（等人工判定）时 `RunCompleted` 不 fire -> 远端保持 running；无手动完成入口，由 server sweeper（running-stuck 2.5h）兜底转 failed。agent-driven 模型下「暂停等人工」的预期代价，暂不补。
 
@@ -2493,6 +2493,56 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **过度设计评审**：一个纯函数 + 一个薄命令 + 前端回调分派，无新组件/状态机；不为 pending 行引入本地删除清单（服务端真源语义保持不变）。
 
 **性能评审**：`remove_remote_completed_task` 为用户手动触发的一次 state.json RMW（上限 50 条的小文件），无热路径；前端零新增渲染开销（仅既有过滤层复用）；删除后的事件广播复用既有 `remote-tasks-updated` 通道。
+
+### 12.55 改动五十三：direct 模式远程任务完成门控——completion-output 块驱动（M5-bp，2026-09-28）
+
+**背景（用户设计评审）**：需求管理中，direct 模式远程任务在**首轮对话轮跑完后即被标记完成**——`RunCompleted{Success}` → `complete_task` + issue done。但真实任务往往需要多轮（甚至十几轮）对话才能完成：首轮跑完后用户继续追问时，远端早已终态，后续轮次只能走 M5-bl/M5-bn 的「迟到补发」被动通道。工作流模式无此问题（graph 走到终态即 definition of done）。**该问题只针对 multica 远程任务，本地普通会话完全不受影响。**
+
+**根因追溯**：§12.3 的「完成语义 = run 终止事件驱动」隐含前提是 **run 终态 ≡ 任务业务完成**。该前提对 workflow 模式成立（graph 终态由设计者显式定义），对 direct 模式**不成立**——direct run 是 runtime-continue 性质，首轮 requirement 驱动 run 跑完（`RunCompleted`）只是**一次对话轮的技术性成功**，与任务是否完成无关；且 direct 后续追问在同一 attempt 内收尾、不产生新的 `RunCompleted`（M5-bn 已确证）。即 direct 模式**没有结构性的 definition of done**，把「跑完一轮」当「任务完成」是概念错配。定性：**原有设计缺陷（非实现不完整）**——按工程规则应修设计而非补丁：延迟完成、超时窗口、追问计数等 patch 手段都无法回答「何时算完成」这个本体问题，必须由**执行体显式声明完成**。
+
+**先例检索（方案 A：协议声明完成，全部复用既有资产）**：
+- M5-bj/bk：`completion-output` 协议已存在——issue 关联任务的首条 prompt 以隐式隐藏区段注入协议块（`vm.rs` `completion_protocol_block`，仅 issue 关联任务注入）；`handoff.rs` 已有纯函数提取（嵌套安全、末块优先、未闭合围栏容错）+ timeline 投影（`final_assistant_reply`）。
+- M5-bl/bn：迟到补发通道已建立——`AcpTurnFinished` 携带 `attempt_dir`，订阅器已有按事件提块的分支与过滤顺序（内存 → state.json 小文件 → 大 timeline）。
+- server 侧：running 任务与心跳 AND 门控（2.5h backstop 只杀无心跳者），长对话期间远端保持 running **无超时风险**——门控扣留完成不会触发 sweeper 误杀。
+
+**设计（先定数据，再定接口，再补实现）**：
+
+数据——`ActiveRemoteRun`（state.rs）新增 `run_mode` 快照：`start_remote_conversation_run` 从 input 的 run 模式采集（Resume / Fresh 两个登记点）。**必要性**：`AcpTurnFinished` / `RunCompleted` 事件都不携带模式信息，无此快照则门控判定无事实源。**仅内存、不持久化**（实现修正，见下方修正记录）：重启后 `active_runs` 丢失由既有链路兜底——启动 `recover-orphans` 无条件 fail 上个进程的 dispatched/running 任务 → server auto-retry 克隆 T' → 用户重领 → resume 路径重新登记 `active_runs`（连同新鲜 `run_mode` 快照）。`task_conversations` / `MulticaTaskConversation` 不加字段，无启动重建、无持久化回退。
+
+接口（两个决策点，bridge.rs）——
+
+| 决策点 | 触发 | 判定 | 动作 |
+| --- | --- | --- | --- |
+| **决策点 1（run 收尾）** | `RunCompleted{Success}` | active_run 命中 + `run_mode == Direct` + `issue_id` 非空 | **有块**：`complete_task`（output 传提取的交付摘要）+ `update_issue_status(done)` + `finalize_terminal`（现行为）；**无块**：**扣留完成**——不上报终态、保留 `active_runs` + `task_conversations`，远端保持 running |
+| **决策点 2（turn 收尾）** | `AcpTurnFinished{Completed}` 且**非 batch 中间态**（`batch_progress.continues` 为 false——Direct 排队的多条追问逐条触发 turn 事件，中间 turn 不是最终回复，块可能是中间产物） | 事件自带 `run_id`，既有 `find_active_run_by_local(task_id, run_id)` 归属反查（**无需新索引**）+ 快照 `run_mode` + `issue_id` 判 Direct + issue | **有块**：走决策点 1 同一完成路径（complete + issue done + finalize + 刷新通知）；**无块**：no-op（对话继续，扣留状态不变）；**归属未命中**（任务已终态/普通本地会话）→ 既有 `relay_late_completion_output` 补发通道，不动 |
+| 既有路径不变 | 同上 | 非 Direct（workflow）或非 issue | 维持 §12.3 现路径 fail-open（workflow graph 终态即完成；非 issue 任务不注入协议块，无门控依据） |
+
+提示词——`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md` 升级为门控语义：「远程任务**只有**在最终回复末尾输出 `completion-output` 块时才会被标记完成；未完成全部工作时**不得**输出此块；需要继续对话推进任务时正常回复即可」。仅 zh-CN + en 两目录（remote_task_* 既定范围）。
+
+**范围与边界（用户确认）**：
+- 码灵客户端上来自 multica 的远程任务**目前全部来自 issue**（用户确认）；server 侧 chat/autopilot/quick-create 等非 issue 来源仅作防御性判定保留（非 issue → 现路径），后续有实例再调整。
+- **App 关闭影响（接受，非新机制）**：门控把远端保持 running 的窗口从「一轮」拉长到「整个对话生命周期」，App 关闭沿既有 sweeper 路径（心跳停 → 150s offline → fail → auto-retry 克隆 T' → <2h 重领续跑 / >2h 链路终结、issue 回 todo）。「断线后自动重新认领并续跑」另立需求，不进本期。
+- **逃生通道**（无新 UI）：① 会话补交——用户在对话中说「完成/可以了」，agent 输出块 → 决策点 2 完成（M5-bl 内网实测已验证该行为模式可靠）；② 看板取消——既有取消检测作废本地 run。
+- `relay_late_completion_output`（M5-bl/bn 迟到补发）保留不动：它服务于「已完成任务的 output 补写」，与门控语义正交。
+- 本地普通会话零影响：门控全部位于 bridge 层，只对 multica 归属 + Direct + issue 生效。
+
+**风险与对策**：
+- **提示词遵从性**：agent 若永不输出块，任务永不 complete——对策：协议块措辞强化 + 会话补交/看板取消双逃生 + server sweeper 兜底（无心跳场景）；这是 agent-driven 模型的固有代价，与 §12.3 已接受的 Paused 盲区同类。
+- **同 turn 双事件并发完成（实现期发现）**：门控命中的任务在首轮带块完成时，`RunCompleted` 与 `AcpTurnFinished` 几乎同时到达，两个 handler 的归属查找都先于任一 finalize——初版「先到者 finalize 后到者落空」的互斥论证**不成立**，会并发跑两次完成路径（重复 complete HTTP + 冗余日志/通知；本地操作已核实幂等，无数据损坏）。对策：`MulticaRuntimeState` 新增**完成路径认领集**（`begin_completion` / `end_completion`，`HashSet` 按 remote_task_id 粒度）——先认领者执行，后到者整体退出；认领随 finalize 终结（成功/失败皆然，不泄漏）；认领置于 context/client 取得之后（断连早退不认领）。守卫本身 fail-open（状态不可达时放行，退回旧行为）。
+- **决策点 2 归属误判**：`AcpTurnFinished` 无 remote 上下文——对策：事件自带 `run_id`，`active_runs` 按 (task_id, run_id) 双键精确反查（串台防护既有测试固化），未命中走既有补发通道（补发自身有 completed 历史反查 + 无 issue 关联静默退出两层过滤）；本地普通会话在内存检查即排除。
+- **batch 中间态块的迟到补发窗口**：`continues=true` 的中间 turn 整体跳过（含补发）——若**已终态任务**的排队追问中块只出现在非最终轮，该块不补写（补发按最终 assistant 回复提取，本就不逐轮）。窗口极窄且 issue 已 done、PATCH 尽力而为，接受。
+- **run_mode 快照漂移（重领换模式）**：resume 实际继续既有 run，但登记时沿用本次请求的模式选定（用户重领时若改选 workflow，快照随之变化）——接受：重领即用户重新决策执行方式，以最新意愿为准，不为回溯旧模式加持久化。
+
+**最小失败测试先行（验收计划）**：先写 bridge 决策纯函数的最小失败测试确认红（`E0609` no field `run_mode` + `E0425` 两个决策函数未定义），再实现转绿——① Direct+issue+`RunCompleted{Success}`+无块 → 扣留（不 complete、保留 active_runs/task_conversations）；② 同场景+有块 → complete（output=块内容）+ issue done + finalize；③ 非 Direct（workflow/auto）→ 现路径不门控；④ 非 issue → 现路径 fail-open；⑤ 门控判定双维度（`is_gated_direct_issue_run`：direct+issue 命中，workflow/auto/非 issue/空白 issue 均不命中）。事件路由依赖 Tauri AppHandle + 异步 spawn（M5-bl/bn 先例），以决策纯函数覆盖 + 编译器穷尽性为可审计轨迹，端到端打包内网验证。
+
+**过度设计评审**：无新 aggregate/状态机/持久化身份——`run_mode` 是既有输入的内存快照（补齐门控判定的事实源缺口，非新概念）；归属反查复用既有 `find_active_run_by_local`（事件自带 run_id，无需新索引/持久化回退）；完成动作收敛为公共 `complete_with_issue_done`（门控命中 / fail-open / turn 收尾三处同语义单实现）；不引入「完成中/待确认」等中间态（扣留 = 远端保持 running，天然已有）。非 issue 判定为防御性最小实现，不建兼容层。
+
+**性能评审**：决策点 1 在 `RunCompleted` 一次性发生（读一次 timeline 提块，M5-bj 同量级）；决策点 2 每 direct turn 一次，订阅器先做纯内存过滤（非 Completed / batch 中间态 / `active_runs` 未命中均不触发块提取），门控命中才读 timeline 提块，本地普通会话纯内存检查即返回；无新增轮询/订阅/缓存/持久化字段。
+
+**修正记录（实现期，2026-09-28）**：
+1. 初版设计为决策点 2 规划了「`task_conversations` 持久化回退 + `MulticaTaskConversation` 加 run_mode 字段 + 启动重建 active_runs」。实现时复核推翻：① `AcpTurnFinished` 事件自带 `run_id`，既有 (task_id, run_id) 双键归属即可精确命中，持久化回退无对应场景；② 启动 `recover-orphans` 无条件 fail 上个进程的在飞任务，重启场景本就由「auto-retry 克隆 → 重领 → resume 重登记」链路整体接管，重建 active_runs 反而与该链路冲突（重建的映射指向已死进程的 run，无人收尾）。故收缩为纯内存快照——少一个持久化字段、少一条重建路径、少一层回退判定，行为边界更小。
+2. 自评审发现两处实现缺陷并同日修复：①「同 turn 双事件并发完成」竞态（见风险与对策）→ 完成路径认领集；② run 收尾 Complete 臂无条件读 acp.timeline 提块（非 issue 任务/issue 为空路径上的大文件无谓 IO，旧实现只在 issue 非空时读）→ 提取收敛回 issue 非空守卫内（门控判定 ⊆ issue 非空，语义不变）。
+3. **内网验证根因修复（2026-09-30）**：M5-bp 部署后实测——扣留行为正确，但 agent 按指示输出块后任务仍保持 running。导出该会话 `acp.timeline.jsonl` 取证还原全程四轮：前三轮 agent 按协议正确拒绝输出块（正常扣留），第四轮用户明确要求「直接输出 completion-output」后 agent 首次真实输出块——**info 串被写到裸围栏的下一行**（非合法 GFM 形态，info 串必须与 ``` 同行），提取器按 GFM 语义正确拒绝（fail-closed 不动），但该结果与「完全未输出块」不可区分，任务静默卡在进行中（UI 渲染成普通代码块，肉眼不可辨）。定性：**好设计（围栏块协议 + 严格 GFM 提取）、实现不完整**——协议把精确语法当作完成判据，提示词却从未展示完整围栏示例（仅行内代码提及 info 串），agent 首次输出只能靠想象排版；且近似形态无任何诊断（M5-bl「静默 return 让触发缺失不可见」教训在提取层的同款复现）。修复两处：① 提示词（zh-CN/en）补精确的单行开栏示例 + 同行规则文案（契约测试锁锚点）；② `handoff.rs` 新增 `CompletionBlockProbe`（`block` + `near_miss_reason`：`info_on_own_line_after_fence` / `fence_info_contains_target`，纯函数、只识别**结构化**围栏滑落——prose 提及 info 串不误报，正常扣留轮次不告警），`completion_output_for_issue_done` 改回 probe（仍一次 timeline 读，探测复用已读文本零额外 IO），bridge 两处门控与迟到补发的未命中日志按近似原因升级 WARN（内网日志一眼定位，不再需要导出 timeline）。**不放宽提取器**：容忍近似形态有真实歧义（普通围栏内容首行恰为该串会误命中），违背 fail-closed 原则（宁保持进行中、不可误完成）。测试先行：4 个 handoff 纯函数测试 + bridge 接口层近似形态测试 + 契约测试锚点，先红（`near_miss_reason` None ≠ Some / 模板无 ```` ```completion-output ````）后转绿；提示词遵从性无法本地单测（模型行为），记录局限、内网打包 E2E 验证。另发现**独立**健壮性缺陷（不属本次根因，另立处理）：`complete_with_issue_done` 中 `complete_task` HTTP 失败仅 warn 且 `finalize_terminal` 无条件执行——完成请求失败时本地映射已清、任务在远端永久搁浅（心跳是 runtime 级持续，不触发 sweeper 重开，且无重试/对账通道）。
 
 ---
 

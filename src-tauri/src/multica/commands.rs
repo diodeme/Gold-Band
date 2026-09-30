@@ -837,6 +837,10 @@ pub async fn start_remote_conversation_run(
                             title: title.clone(),
                             started_at: chrono::Utc::now().to_rfc3339(),
                             issue_kind: task.issue_kind.clone(),
+                            // M5-bp：run 模式快照（发送时用户选定模式；lifecycle 事件不携带，
+                            // bridge 完成/issue 门控的唯一事实源）。续跑沿用本次请求的模式
+                            // 选定（实际执行继续既有 run，模式不回退）。
+                            run_mode: input.run_mode.clone(),
                         },
                     );
                 }
@@ -928,6 +932,8 @@ pub async fn start_remote_conversation_run(
                         title,
                         started_at: chrono::Utc::now().to_rfc3339(),
                         issue_kind: task.issue_kind.clone(),
+                        // M5-bp：run 模式快照（bridge 完成/issue 门控的事实源）。
+                        run_mode: input.run_mode.clone(),
                     },
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
@@ -1115,10 +1121,8 @@ pub fn remove_remote_completed_task(
     let removed = context
         .app()
         .with_state(|state_cfg| {
-            let removed = crate::multica::bridge::remove_completed_task_entry(
-                state_cfg,
-                &remote_task_id,
-            );
+            let removed =
+                crate::multica::bridge::remove_completed_task_entry(state_cfg, &remote_task_id);
             (removed, removed)
         })
         .map_err(command_error)?;

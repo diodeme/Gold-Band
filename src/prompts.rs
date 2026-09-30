@@ -193,7 +193,8 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
 pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str = RUNTIME_ARTIFACT_FINALIZE.zh_cn;
 pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str = RUNTIME_ARTIFACT_FINALIZE.en;
 pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str = RUNTIME_CONTROL_RESUME.zh_cn;
-pub const RUNTIME_CONTROL_RESUME_EN: &str = RUNTIME_CONTROL_RESUME.en;pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
+pub const RUNTIME_CONTROL_RESUME_EN: &str = RUNTIME_CONTROL_RESUME.en;
+pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
     RUNTIME_CONTROL_RESUME_WITH_MESSAGE.zh_cn;
 pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str = RUNTIME_CONTROL_RESUME_WITH_MESSAGE.en;
 pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str = RUNTIME_WORKFLOW_RESUME.zh_cn;
@@ -479,7 +480,8 @@ mod tests {
     fn remote_task_parent_output_templates_render_handoff() {
         // 上游交付说明块（issue 完成输出传递特性；三次调整后随预填进 composer）：parent_output 渲染
         // 进模板正文，中英文都需完整渲染且锁定关键语义（执行上下文 + 交付说明）。
-        let ctx = json!({"parent_output": "部署地址: https://t.example.com\n测试要点: 回归登录链路"});
+        let ctx =
+            json!({"parent_output": "部署地址: https://t.example.com\n测试要点: 回归登录链路"});
         let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN, ctx.clone());
         assert!(zh.contains("执行上下文"));
         assert!(zh.contains("部署地址: https://t.example.com"));
@@ -497,6 +499,8 @@ mod tests {
         // 2k 字符以内、超长走工作区文件 + 块内路径引用（超长 400 会卡整个 done 请求）、
         // 传递给下游子任务（读侧 parent_output 的消费方）。协议块改由隐式隐藏区段注入（M5-bk），
         // 文案同步精简为要点列表，契约锚点不变。
+        // M5-bp（开发设计 §12.55）：块由「尽力附带」升级为 direct+issue 任务的**完成门控**
+        // （有块才完成、无块扣留保持进行中）——文案必须双向锁定：块在才标完成 + 未完成不得输出。
         for template in [
             RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN,
             RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN,
@@ -518,6 +522,18 @@ mod tests {
         assert!(en.contains("cannot be marked done"));
         assert!(en.contains("file path references"));
         assert!(en.contains("downstream sub-tasks"));
+        // M5-bp 门控语义双向锁定：块在才完成 + 未完成不得输出。
+        assert!(zh.contains("才会被标记完成"));
+        assert!(zh.contains("未完成全部工作时不得输出此块"));
+        assert!(en.contains("is marked done only when"));
+        assert!(en.contains("Do not output this block until all work is finished"));
+        // §12.55 根因修复：内网实测 agent 把 info 串写到裸围栏下一行，提取按 GFM 语义正确
+        // 拒绝、任务静默卡在进行中——协议必须给出**精确的单行开栏示例**（```completion-output
+        // 同行）+ 同行规则文案，堵住「靠想象排版」；两语言均锁定。
+        assert!(zh.contains("```completion-output"));
+        assert!(zh.contains("同一行"));
+        assert!(en.contains("```completion-output"));
+        assert!(en.contains("on the same line"));
     }
 
     #[test]

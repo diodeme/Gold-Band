@@ -100,6 +100,69 @@ pub(crate) fn completion_output_from_reply(reply: &str) -> Option<String> {
     )
 }
 
+/// 近似形态 1：info 串 `completion-output` 被写在裸围栏（或其它 info 围栏）开栏后的新行——
+/// 合法形态必须与 ``` 同行（GFM info-string 语义，与提取器 [`opening_fence`] 同口径）。
+pub(crate) const NEAR_MISS_INFO_ON_OWN_LINE: &str = "info_on_own_line_after_fence";
+/// 近似形态 2：围栏 info 串包含 `completion-output` 但不精确相等（如 `completion-output:`）。
+pub(crate) const NEAR_MISS_SIMILAR_INFO_STRING: &str = "fence_info_contains_target";
+
+/// 完成块探测结果：`block` 为提取命中（trim + 16k 截断后）的交付说明；块缺失且回复中存在
+/// 「近似 completion-output 围栏」时 `near_miss_reason` 给出机器可检索的原因 slug。
+/// `near_miss_reason` **仅作日志诊断、不参与门控判定**——门控仍只看 `block`（fail-closed：
+/// 宁可保持进行中，不可把形态不符的块误当完成）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CompletionBlockProbe {
+    pub(crate) block: Option<String>,
+    pub(crate) near_miss_reason: Option<&'static str>,
+}
+
+/// 提取 + 近似形态探测（门控日志诊断用，纯函数；开发设计 §12.55 根因修复）。
+///
+/// 背景：内网实测 agent 首次真实输出块时把 info 串写到了裸围栏的下一行，提取正确拒绝
+/// （GFM 语义）但与「完全未输出块」不可区分，任务静默卡在进行中、排查需导出 timeline
+/// 取证。探测补上这层可见性；块命中时无需诊断。
+pub(crate) fn completion_block_probe(reply: &str) -> CompletionBlockProbe {
+    let block = completion_output_from_reply(reply);
+    let near_miss_reason = if block.is_some() {
+        None
+    } else {
+        near_miss_completion_fence(reply)
+    };
+    CompletionBlockProbe {
+        block,
+        near_miss_reason,
+    }
+}
+
+/// 近似完成围栏检测（纯函数）：只识别**结构化**的围栏形态滑落——(1) 围栏 info 串包含
+/// `completion-output` 但不精确相等；(2) 裸围栏（或其它 info 围栏）开栏后的首个非空行
+/// 恰为 `completion-output`（info 串被写到了新行）。纯 prose 提及该串（如 agent 解释
+/// 「未完成不得输出块」）**不**触发——按协议正常扣留的轮次不得误报成格式错误。
+///
+/// 其它围栏内容首行恰好是该串的极端构造可能误报——仅影响日志级别、不影响门控行为，可接受。
+fn near_miss_completion_fence(reply: &str) -> Option<&'static str> {
+    let lines: Vec<&str> = reply.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let Some((_, info)) = opening_fence(line) else {
+            continue;
+        };
+        if info == "completion-output" {
+            continue;
+        }
+        if info.contains("completion-output") {
+            return Some(NEAR_MISS_SIMILAR_INFO_STRING);
+        }
+        let next_content_line = lines[index + 1..]
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty());
+        if next_content_line == Some("completion-output") {
+            return Some(NEAR_MISS_INFO_ON_OWN_LINE);
+        }
+    }
+    None
+}
+
 /// 投影 run 最终 attempt 的最终 assistant 回复文本（设计方案 §5.2 支撑改动 2）。
 ///
 /// `acp.timeline.jsonl` 中同流 textDelta 已由 runtime 合并为单条目（`apply_streaming_delta`，
@@ -190,6 +253,41 @@ mod tests {
         let output = completion_output_from_reply(&reply).expect("hit");
         assert_eq!(output.chars().count(), MAX_COMPLETION_OUTPUT_CHARS);
         assert!(output.chars().all(|c| c == '门'));
+    }
+
+    #[test]
+    fn probe_flags_info_string_written_on_own_line_after_bare_fence() {
+        // §12.55 内网实测断裂形态：agent 输出裸围栏 + info 串另起一行。GFM 语义下不是
+        // completion-output 块——提取必须继续返回 None（fail-closed），但探测要给出可检索
+        // 原因（门控日志升级 WARN，内网不再需要导出 timeline 取证）。
+        let reply =
+            "```\ncompletion-output\n任务性质：测试性工作项，无实质代码变更。\n当前分支：sit\n```";
+        let probe = completion_block_probe(reply);
+        assert_eq!(probe.block, None);
+        assert_eq!(probe.near_miss_reason, Some(NEAR_MISS_INFO_ON_OWN_LINE));
+    }
+
+    #[test]
+    fn probe_flags_fence_info_string_similar_but_not_exact() {
+        let probe = completion_block_probe("```completion-output:\n交付说明\n```");
+        assert_eq!(probe.block, None);
+        assert_eq!(probe.near_miss_reason, Some(NEAR_MISS_SIMILAR_INFO_STRING));
+    }
+
+    #[test]
+    fn probe_stays_quiet_for_prose_mention_without_fence_slip() {
+        // agent 按协议解释「未完成不得输出块」（prose 提及 info 串）→ 非近似形态，不告警：
+        // 正常扣留轮次不得被误报成格式错误（观测 timeline 第 2/3 轮均为此类回复）。
+        let probe = completion_block_probe("工作尚未完成，等确认后再附加 completion-output 块。");
+        assert_eq!(probe.block, None);
+        assert_eq!(probe.near_miss_reason, None);
+    }
+
+    #[test]
+    fn probe_hits_block_without_near_miss() {
+        let probe = completion_block_probe("完成。\n```completion-output\n交付说明\n```\n");
+        assert_eq!(probe.block, Some("交付说明".to_string()));
+        assert_eq!(probe.near_miss_reason, None);
     }
 
     #[test]

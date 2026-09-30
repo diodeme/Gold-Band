@@ -224,10 +224,7 @@ pub(crate) fn remote_task_hidden_section(
 /// 是否执行仍按 `is_ready` 判定（父曾 done 又 reopen 时本块仍可能渲染）。
 fn parent_output_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
     let parent_output = blank_to_none(task.parent_output.as_deref())?;
-    let template = prompt_by_language(
-        language,
-        RUNTIME_REMOTE_TASK_PARENT_OUTPUT,
-    );
+    let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_PARENT_OUTPUT);
     let rendered = render(
         template,
         &ParentOutputTemplateContext {
@@ -245,10 +242,7 @@ fn parent_output_block(task: &RemoteTask, language: DesktopLanguage) -> Option<S
 /// 子任务无法从 claim 响应得知，顶层无子的输出无人消费、无害（multica 侧「一律带」亦成立）。
 fn completion_protocol_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
     blank_to_none(task.issue_id.as_deref())?;
-    let template = prompt_by_language(
-        language,
-        RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
-    );
+    let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL);
     // 模板无变量（协议指令恒定文案），空上下文渲染即原文。
     let rendered =
         render(template, serde_json::json!({})).expect("remote task completion protocol renders");
@@ -276,10 +270,7 @@ fn dpms_context_block(task: &RemoteTask, language: DesktopLanguage) -> Option<St
     if context.is_empty() {
         return None;
     }
-    let template = prompt_by_language(
-        language,
-        RUNTIME_REMOTE_TASK_CONTEXT,
-    );
+    let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_CONTEXT);
     let rendered = render(template, &context).expect("remote task context template renders");
     Some(rendered.trim().to_string())
 }
@@ -1059,6 +1050,7 @@ mod tests {
             title: Some("In flight".into()),
             started_at: "2026-08-07T03:00:00Z".into(),
             issue_kind: Some("test".into()),
+            run_mode: "direct".into(),
         };
         let vm = RemoteTaskVm::from_active_run("remote-9", &run, "proj-1");
         assert_eq!(vm.id, "remote-9");

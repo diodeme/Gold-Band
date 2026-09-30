@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band-desktop"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "arboard",

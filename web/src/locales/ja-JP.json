@@ -1560,7 +1560,7 @@
     "profileCatalogLoadFailed": "ロール一覧を読み込めませんでした",
     "profileCatalogRetry": "リロード",
     "selectHint": "キャンバス上のノードまたはエッジを選択して構成します。",
-    "terminalSelectionHint": "終点ノードに設定はありません。キャンバス上の削除で取り除けます。",
+    "terminalSelectionHint": "終点ノードに設定はありません。キャンバス上方の削除で取り除けます。",
     "currentSelection": "現在の選択内容",
     "currentSelectionHelp": "ここでは、ノードとエッジの構成が最初に表示されます。",
     "workflowSettings": "ワークフロー設定",

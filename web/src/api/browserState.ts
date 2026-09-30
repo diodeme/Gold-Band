@@ -19,7 +19,6 @@ export class BrowserPreviewState {
       updateStatus: this.getUpdateStatus(),
       updateBadges: this.getUpdateBadges(),
       recentWorkspaces: [...this.recentWorkspaces],
-      persistedAvailableUpdate: this.updateStatus.update ?? null,
       clientVersion: mockBootstrap.clientVersion,
     };
   }

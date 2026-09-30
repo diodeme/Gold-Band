@@ -37,7 +37,7 @@ use tracing::{debug, warn};
 
 use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_personalization};
 use crate::conversation_workspace::WorkspaceIdentityMigrator;
-use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
+use crate::updater::{PendingUpdate, UpdateInfoVm, UpdateStatusVm, initial_update_status};
 use crate::wallpaper::reconcile_wallpaper_personalization;
 
 #[derive(Debug, Clone)]
@@ -163,7 +163,6 @@ enum DoctorRetryPolicy {
 pub enum UpdateBadgeSeenTarget {
     SettingsEntry,
     SettingsAdvanced,
-    Announcement,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,7 +336,7 @@ pub struct DesktopState {
     agent_command_catalogs: Mutex<BTreeMap<String, AcpCommandCatalog>>,
     agent_command_update: Mutex<Option<Arc<dyn Fn(&AcpCommandCatalog) + Send + Sync>>>,
     update_status: Mutex<UpdateStatusVm>,
-    pending_critical_update: Mutex<Option<Utf8PathBuf>>,
+    pending_update: Mutex<Option<PendingUpdate>>,
     notification_attention: Mutex<NotificationAttentionState>,
     conversation_attention_write_lock: Arc<Mutex<()>>,
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
@@ -379,7 +378,7 @@ impl DesktopState {
             agent_command_catalogs: Mutex::new(persisted_command_catalogs),
             agent_command_update: Mutex::new(None),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
-            pending_critical_update: Mutex::new(None),
+            pending_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
             conversation_attention_write_lock: Arc::new(Mutex::new(())),
             notification_dedup: Arc::new(NotificationDedup::new()),
@@ -860,24 +859,33 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn store_pending_update(&self, path: Utf8PathBuf) -> Result<()> {
-        self.pending_critical_update
+    /// Applies a status transition atomically; `None` from `next` leaves the status untouched.
+    pub fn transition_update_status(
+        &self,
+        next: impl FnOnce(&UpdateStatusVm) -> Option<UpdateStatusVm>,
+    ) -> Option<UpdateStatusVm> {
+        let mut guard = self.update_status.lock().ok()?;
+        let status = next(&guard)?;
+        *guard = status.clone();
+        Some(status)
+    }
+
+    pub fn store_pending_update(&self, pending: PendingUpdate) -> Result<()> {
+        self.pending_update
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .replace(path);
+            .replace(pending);
         Ok(())
     }
 
-    pub fn pending_update_path(&self) -> Result<Option<Utf8PathBuf>> {
-        Ok(self
-            .pending_critical_update
+    pub fn has_pending_update(&self) -> bool {
+        self.pending_update
             .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .clone())
+            .is_ok_and(|guard| guard.is_some())
     }
 
-    pub fn take_pending_update(&self) -> Option<Utf8PathBuf> {
-        self.pending_critical_update
+    pub fn take_pending_update(&self) -> Option<PendingUpdate> {
+        self.pending_update
             .lock()
             .ok()
             .and_then(|mut guard| guard.take())
@@ -911,9 +919,6 @@ impl DesktopState {
             }
             UpdateBadgeSeenTarget::SettingsAdvanced => {
                 next_badges.settings_advanced_seen_version = Some(version);
-            }
-            UpdateBadgeSeenTarget::Announcement => {
-                next_badges.announcement_closed_version = Some(version);
             }
         }
         let state = app.set_user_desktop_update_badges(next_badges)?;
@@ -1419,11 +1424,6 @@ impl DesktopState {
             .agent_diagnostics
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = persisted_diagnostics;
-        *self
-            .update_status
-            .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? =
-            initial_update_status(next_context.config.desktop_updater_last_checked_at.clone());
         Ok(next_context)
     }
 
@@ -1678,13 +1678,40 @@ mod tests {
     }
 
     #[test]
-    fn pending_update_path_reads_without_consuming_install_work() {
+    fn pending_update_is_installed_at_most_once() {
         let (_root, state) = desktop_state();
-        let path = Utf8PathBuf::from("D:/Temp/gold-band-update/update-0.13.2.pkg");
-        state.store_pending_update(path.clone()).unwrap();
+        state
+            .store_pending_update(crate::updater::PendingUpdate {
+                version: "0.13.2".to_string(),
+                package: Utf8PathBuf::from("D:/Temp/gold-band-update/update-0.13.2.pkg"),
+                signature: "signature".to_string(),
+                update: None,
+            })
+            .unwrap();
 
-        assert_eq!(state.pending_update_path().unwrap(), Some(path.clone()));
-        assert_eq!(state.take_pending_update(), Some(path));
+        assert!(state.has_pending_update());
+        assert_eq!(state.take_pending_update().unwrap().version, "0.13.2");
+        assert!(state.take_pending_update().is_none());
+        assert!(!state.has_pending_update());
+    }
+
+    #[test]
+    fn update_status_transitions_are_single_flight() {
+        use crate::updater::UpdateCheckStatus;
+        let (_root, state) = desktop_state();
+        let downloading = |current: &UpdateStatusVm| {
+            (current.status != UpdateCheckStatus::Downloading).then(|| UpdateStatusVm {
+                status: UpdateCheckStatus::Downloading,
+                ..current.clone()
+            })
+        };
+
+        assert!(state.transition_update_status(downloading).is_some());
+        assert!(state.transition_update_status(downloading).is_none());
+        assert_eq!(
+            state.update_status().unwrap().status,
+            UpdateCheckStatus::Downloading
+        );
     }
 
     #[test]

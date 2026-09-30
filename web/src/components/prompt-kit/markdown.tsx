@@ -13,6 +13,7 @@ import {
   useIsCodeFenceIncomplete,
 } from 'streamdown';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { ImagePreviewDialog, type ImagePreviewTarget } from '@/components/shared/ImagePreviewDialog';
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isHttpUrlHref, isLocalFileHref, isSystemHandlerHref, parseLocalFileLinkTarget } from '@/lib/file-link';
@@ -55,6 +56,19 @@ export function MarkdownResourceLinkProvider({ handler, children }: { handler: M
 
 export function useMarkdownResourceLinkHandler() {
   return useContext(MarkdownResourceLinkContext);
+}
+
+const MarkdownImagePreviewContext = createContext<((image: ImagePreviewTarget) => void) | null>(null);
+
+/** Lets images inside modal Markdown (e.g. release notes) open a zoomed preview. */
+export function MarkdownImagePreviewProvider({ children }: { children: React.ReactNode }) {
+  const [image, setImage] = useState<ImagePreviewTarget | null>(null);
+  return (
+    <MarkdownImagePreviewContext.Provider value={setImage}>
+      {children}
+      <ImagePreviewDialog image={image} onClose={() => setImage(null)} />
+    </MarkdownImagePreviewContext.Provider>
+  );
 }
 
 export { isLocalFileHref };
@@ -326,6 +340,7 @@ function downloadImageBlob(blob: Blob, fileName: string) {
 
 function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError, ...props }: MarkdownImageProps) {
   const { t } = useTranslation();
+  const openPreview = useContext(MarkdownImagePreviewContext);
   const imageRef = useRef<HTMLImageElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -371,8 +386,9 @@ function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError,
         {...props}
         ref={imageRef}
         alt={alt}
-        className={cn('max-w-full rounded-lg', showFallback && 'hidden', className)}
+        className={cn('max-w-full rounded-lg', showFallback && 'hidden', openPreview && showImage && 'cursor-zoom-in', className)}
         src={src}
+        onClick={openPreview && showImage ? () => openPreview({ src, alt }) : undefined}
         onLoad={handleLoad}
         onError={handleError}
       />

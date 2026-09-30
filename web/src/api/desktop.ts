@@ -600,14 +600,11 @@ export const desktopApi: RuntimeApi = {
   markSettingsAdvancedUpdateSeen(version: string) {
     return invokeCommand('mark_settings_advanced_update_seen', { version });
   },
-  dismissUpdateAnnouncement(version: string) {
-    return invokeCommand('dismiss_update_announcement', { version });
-  },
   checkUpdateManual() {
     return invokeCommand('check_update_manual');
   },
-  downloadAndInstallUpdate() {
-    return invokeCommand('download_and_install_update');
+  startUpdateInstall() {
+    return invokeCommand('start_update_install');
   },
   // ── Conversation UI ──
   saveDesktopUiMode(mode) {

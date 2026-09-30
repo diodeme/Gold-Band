@@ -1,18 +1,25 @@
 use std::io::Write;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
-use gold_band::config::{DesktopLanguage, RuntimeConfig};
+use anyhow::Result;
+use base64::Engine;
+use camino::{Utf8Path, Utf8PathBuf};
+use gold_band::config::{DesktopAvailableUpdate, DesktopLanguage, RuntimeConfig};
 use gold_band::storage::atomic_write_file;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use tracing::warn;
 use url::Url;
 
 use crate::{channel::current_channel_config, state::DesktopState};
 
 const POLL_INTERVAL_MINUTES: u64 = 240;
+/// Lets startup restore and Agent diagnostics settle before the first background check.
+const INITIAL_POLL_DELAY: Duration = Duration::from_secs(20);
+const UPDATE_STATUS_EVENT: &str = "gold-band://update-status";
+const UPDATE_PROGRESS_EVENT: &str = "gold-band://update-download-progress";
+const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,16 +31,26 @@ pub struct UpdaterSettingsVm {
     pub poll_interval_minutes: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+/// Lifecycle of the single app-wide update. `update` always carries the newest known remote
+/// release; failures are reported through `error` without forgetting that release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UpdateCheckStatus {
     Idle,
     Checking,
     Available,
-    #[allow(dead_code)]
-    Downloading,
     NotAvailable,
+    Downloading,
+    Ready,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdatePhase {
+    Check,
+    Download,
+    Install,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +79,121 @@ pub struct UpdateStatusVm {
     pub background: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum UpdaterError {
+    #[error("updater.invalid-url")]
+    InvalidUrl,
+    #[error("updater.context-unavailable")]
+    ContextUnavailable,
+    #[error("updater.no-update")]
+    NoUpdate,
+    #[error("update package signature is invalid")]
+    InvalidSignature,
+    #[error("update package is not newer than the running version")]
+    StalePackage,
+    #[error("updater {phase:?} failed")]
+    Plugin {
+        phase: UpdatePhase,
+        #[source]
+        source: tauri_plugin_updater::Error,
+    },
+    #[error("updater {phase:?} io failed")]
+    Io {
+        phase: UpdatePhase,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl UpdaterError {
+    fn plugin(phase: UpdatePhase) -> impl FnOnce(tauri_plugin_updater::Error) -> Self {
+        move |source| Self::Plugin { phase, source }
+    }
+
+    fn io(phase: UpdatePhase) -> impl FnOnce(std::io::Error) -> Self {
+        move |source| Self::Io { phase, source }
+    }
+
+    pub fn phase(&self) -> UpdatePhase {
+        match self {
+            Self::InvalidUrl | Self::ContextUnavailable | Self::NoUpdate => UpdatePhase::Check,
+            Self::InvalidSignature | Self::StalePackage => UpdatePhase::Install,
+            Self::Plugin { phase, .. } | Self::Io { phase, .. } => *phase,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        use tauri_plugin_updater::Error as PluginError;
+        match self {
+            Self::InvalidUrl => "updater.invalid-url",
+            Self::ContextUnavailable => "updater.context-unavailable",
+            Self::NoUpdate => "updater.no-update",
+            Self::InvalidSignature => "updater.signature-invalid",
+            Self::StalePackage => "updater.stale-package",
+            Self::Io { .. } => "updater.io",
+            Self::Plugin { phase, source } => match source {
+                PluginError::Reqwest(_) | PluginError::Network(_) => "updater.network",
+                PluginError::Minisign(_)
+                | PluginError::Base64(_)
+                | PluginError::SignatureUtf8(_) => "updater.signature-invalid",
+                PluginError::ReleaseNotFound
+                | PluginError::Serialization(_)
+                | PluginError::Semver(_)
+                | PluginError::UrlParse(_)
+                | PluginError::TargetNotFound(_)
+                | PluginError::TargetsNotFound(_) => "updater.manifest-invalid",
+                PluginError::Io(_) => "updater.io",
+                _ => match phase {
+                    UpdatePhase::Check => "updater.check-failed",
+                    UpdatePhase::Download => "updater.download-failed",
+                    UpdatePhase::Install => "updater.install-failed",
+                },
+            },
+        }
+    }
+
+    /// Structured params only: the phase for UI copy and the technical cause chain for diagnostics.
+    pub fn params(&self) -> serde_json::Value {
+        serde_json::json!({ "phase": self.phase(), "detail": error_chain(self) })
+    }
+
+    pub fn vm(&self) -> UpdateErrorVm {
+        UpdateErrorVm {
+            code: self.code().to_string(),
+            params: self.params(),
+        }
+    }
+}
+
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut detail = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        detail.push_str(": ");
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    detail
+}
+
+/// A verified-at-download package waiting for the exit lifecycle to install it. The package and
+/// its signature are persisted so a crash cannot lose a critical update; `update` is only
+/// available when the package was downloaded by the running process.
+#[derive(Clone)]
+pub struct PendingUpdate {
+    pub version: String,
+    pub package: Utf8PathBuf,
+    pub signature: String,
+    pub update: Option<Update>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingUpdateManifest {
+    version: String,
+    signature: String,
+}
+
 struct UpdateCheckOutcome {
     status: UpdateStatusVm,
     update: Option<Update>,
@@ -75,6 +207,24 @@ pub fn initial_update_status(checked_at: Option<String>) -> UpdateStatusVm {
         error: None,
         background: false,
     }
+}
+
+/// The persisted release is only meaningful while the app still runs the version it was
+/// compared against; after an upgrade the record is stale.
+pub fn persisted_update_info(
+    update: Option<&DesktopAvailableUpdate>,
+    running_version: &str,
+) -> Option<UpdateInfoVm> {
+    let update = update?;
+    if update.current_version != running_version {
+        return None;
+    }
+    Some(UpdateInfoVm {
+        version: update.version.clone(),
+        current_version: update.current_version.clone(),
+        notes: update.notes.clone(),
+        pub_date: update.pub_date.clone(),
+    })
 }
 
 pub fn updater_settings(config: &RuntimeConfig) -> UpdaterSettingsVm {
@@ -102,24 +252,20 @@ pub fn normalize_updater_url_override(value: Option<String>) -> Result<Option<St
     Ok(Some(value))
 }
 
-pub fn validate_updater_url(value: &str) -> Result<()> {
-    let parsed = Url::parse(value).map_err(|_| anyhow!("updater.invalid-url"))?;
+pub fn validate_updater_url(value: &str) -> Result<(), UpdaterError> {
+    let parsed = Url::parse(value).map_err(|_| UpdaterError::InvalidUrl)?;
     match parsed.scheme() {
         "https" => Ok(()),
         "http" if current_channel_config().allow_http_updater || cfg!(debug_assertions) => Ok(()),
-        _ => Err(anyhow!("updater.invalid-url")),
+        _ => Err(UpdaterError::InvalidUrl),
     }
 }
 
 pub fn start_update_polling<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(90)).await;
+        tokio::time::sleep(INITIAL_POLL_DELAY).await;
         loop {
-            if let Err(e) =
-                poll_update_once(&app, current_channel_config().silent_update_enabled).await
-            {
-                eprintln!("Background critical download failed: {e}");
-            }
+            poll_update_once(&app, current_channel_config().silent_update_enabled).await;
             tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_MINUTES * 60)).await;
         }
     });
@@ -129,134 +275,306 @@ pub async fn check_update<R: Runtime>(app: &AppHandle<R>, background: bool) -> U
     perform_update_check(app, background).await.status
 }
 
-async fn poll_update_once<R: Runtime>(
-    app: &AppHandle<R>,
-    silent_update_enabled: bool,
-) -> Result<()> {
+async fn poll_update_once<R: Runtime>(app: &AppHandle<R>, silent_update_enabled: bool) {
     let outcome = perform_update_check(app, true).await;
-    if silent_update_enabled && let Some(update) = outcome.update.as_ref() {
-        try_background_download(app, update).await?;
+    if silent_update_enabled
+        && let Some(update) = outcome.update
+        && is_critical(&update)
+        && begin_download(app, true).is_some()
+    {
+        finish_download(app, download_pending_update(app, Some(update)).await);
     }
-    Ok(())
+}
+
+fn is_critical(update: &Update) -> bool {
+    update
+        .raw_json
+        .get("critical")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 async fn perform_update_check<R: Runtime>(
     app: &AppHandle<R>,
     background: bool,
 ) -> UpdateCheckOutcome {
-    let checking = UpdateStatusVm {
-        status: UpdateCheckStatus::Checking,
-        checked_at: None,
-        update: None,
-        error: None,
-        background,
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return UpdateCheckOutcome {
+            status: initial_update_status(None),
+            update: None,
+        };
     };
-    if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.set_update_status(checking);
-    }
-
-    let checked_at = current_timestamp();
-    let (status, update) = match check_update_inner(app).await {
-        Ok(Some(update)) => {
-            let info = update_info(&update);
-            (
-                UpdateStatusVm {
-                    status: UpdateCheckStatus::Available,
-                    checked_at: Some(checked_at.clone()),
-                    update: Some(info),
-                    error: None,
-                    background,
-                },
-                Some(update),
-            )
+    let known_update = known_update(app);
+    let started = state.transition_update_status(|current| {
+        if install_in_flight(current.status) {
+            return None;
         }
-        Ok(None) => (
-            UpdateStatusVm {
-                status: UpdateCheckStatus::NotAvailable,
-                checked_at: Some(checked_at.clone()),
-                update: None,
-                error: None,
-                background,
-            },
-            None,
-        ),
-        Err(error) => (
-            UpdateStatusVm {
-                status: UpdateCheckStatus::Error,
-                checked_at: Some(checked_at.clone()),
-                update: None,
-                error: Some(UpdateErrorVm {
-                    code: updater_error_code(&error),
-                    params: serde_json::json!({ "message": error.to_string() }),
-                }),
-                background,
-            },
-            None,
-        ),
+        Some(UpdateStatusVm {
+            status: UpdateCheckStatus::Checking,
+            checked_at: current.checked_at.clone(),
+            update: known_update.clone(),
+            error: None,
+            background,
+        })
+    });
+    let Some(checking) = started else {
+        return UpdateCheckOutcome {
+            status: state.update_status().unwrap_or_else(|_| initial_update_status(None)),
+            update: None,
+        };
     };
+    let _ = app.emit(UPDATE_STATUS_EVENT, &checking);
 
-    if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.persist_updater_last_checked_at(Some(checked_at));
-        let _ = state.set_update_status(status.clone());
+    let checked_at = Some(current_timestamp());
+    let result = check_remote_update(app).await;
+    let update = result.as_ref().ok().and_then(|update| update.clone());
+    let status = checked_status(result, known_update, checked_at.clone(), background);
+    let _ = state.persist_updater_last_checked_at(checked_at);
+    if !matches!(status.status, UpdateCheckStatus::Error) && status.error.is_none() {
         let _ = state.persist_available_update(status.update.clone());
     }
-    if matches!(
-        status.status,
-        UpdateCheckStatus::Available | UpdateCheckStatus::NotAvailable | UpdateCheckStatus::Error
-    ) {
-        let _ = app.emit("gold-band://update-status", &status);
-    }
+    publish_status(app, status.clone());
     UpdateCheckOutcome { status, update }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateDownloadProgress {
-    downloaded: usize,
-    total: Option<u64>,
+/// Version comparison is the only source of truth: a failed check keeps the last known release.
+fn checked_status(
+    result: Result<Option<Update>, UpdaterError>,
+    known_update: Option<UpdateInfoVm>,
+    checked_at: Option<String>,
+    background: bool,
+) -> UpdateStatusVm {
+    let (status, update, error) = match result {
+        Ok(Some(update)) => (UpdateCheckStatus::Available, Some(update_info(&update)), None),
+        Ok(None) => (UpdateCheckStatus::NotAvailable, None, None),
+        Err(error) => {
+            let status = if known_update.is_some() {
+                UpdateCheckStatus::Available
+            } else {
+                UpdateCheckStatus::Error
+            };
+            (status, known_update, Some(error.vm()))
+        }
+    };
+    UpdateStatusVm {
+        status,
+        checked_at,
+        update,
+        error,
+        background,
+    }
 }
 
-pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
-    // 清除后台静默下载的文件，防止退出时重复安装
-    if let Some(state) = app.try_state::<DesktopState>() {
-        if let Some(path) = state.take_pending_update() {
-            let _ = std::fs::remove_file(path.as_std_path());
-            let _ = std::fs::remove_dir(pending_update_dir());
-        }
-    }
+fn install_in_flight(status: UpdateCheckStatus) -> bool {
+    matches!(
+        status,
+        UpdateCheckStatus::Downloading | UpdateCheckStatus::Ready
+    )
+}
 
-    let updater = build_updater(app)?;
-    let Some(update) = updater.check().await.context("updater.check-failed")? else {
-        return Err(anyhow!("updater.no-update"));
+fn known_update<R: Runtime>(app: &AppHandle<R>) -> Option<UpdateInfoVm> {
+    let state = app.try_state::<DesktopState>()?;
+    if let Some(update) = state.update_status().ok().and_then(|status| status.update) {
+        return Some(update);
+    }
+    let config = state.context().ok()?.config;
+    persisted_update_info(
+        config.desktop_available_update.as_ref(),
+        &app.package_info().version.to_string(),
+    )
+}
+
+fn publish_status<R: Runtime>(app: &AppHandle<R>, status: UpdateStatusVm) {
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let _ = state.set_update_status(status.clone());
+    }
+    let _ = app.emit(UPDATE_STATUS_EVENT, &status);
+}
+
+/// Starts the one app-wide install: an already downloaded package goes straight to the exit
+/// lifecycle, otherwise a single download runs in the background and every entry point observes
+/// it through status events.
+pub fn start_update_install(app: &AppHandle) -> Result<UpdateStatusVm, UpdaterError> {
+    let state = app.state::<DesktopState>();
+    if state.has_pending_update() {
+        request_install_restart(app);
+        return state.update_status().map_err(|_| UpdaterError::ContextUnavailable);
+    }
+    let Some(status) = begin_download(app, false) else {
+        return state.update_status().map_err(|_| UpdaterError::ContextUnavailable);
     };
-    let app_handle = app.clone();
-    let cumulative = Arc::new(Mutex::new(0usize));
-    update
-        .download_and_install(
-            {
-                let cumulative = cumulative.clone();
-                move |chunk_size, total| {
-                    let mut acc = cumulative.lock().unwrap();
-                    *acc += chunk_size;
-                    let _ = app_handle.emit(
-                        "gold-band://update-download-progress",
-                        UpdateDownloadProgress {
-                            downloaded: *acc,
-                            total,
-                        },
-                    );
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = download_pending_update(&handle, None).await;
+        let ready = result.is_ok();
+        finish_download(&handle, result);
+        if ready {
+            request_install_restart(&handle);
+        }
+    });
+    Ok(status)
+}
+
+fn request_install_restart(app: &AppHandle) {
+    if let Err(error) = crate::desktop_lifecycle::request_app_restart(app) {
+        warn!(code = %error.code, "update install restart was not started");
+    }
+}
+
+fn begin_download<R: Runtime>(app: &AppHandle<R>, background: bool) -> Option<UpdateStatusVm> {
+    let state = app.try_state::<DesktopState>()?;
+    let known_update = known_update(app);
+    let status = state.transition_update_status(|current| {
+        if install_in_flight(current.status) {
+            return None;
+        }
+        Some(UpdateStatusVm {
+            status: UpdateCheckStatus::Downloading,
+            checked_at: current.checked_at.clone(),
+            update: current.update.clone().or(known_update),
+            error: None,
+            background,
+        })
+    })?;
+    let _ = app.emit(UPDATE_STATUS_EVENT, &status);
+    Some(status)
+}
+
+fn finish_download<R: Runtime>(app: &AppHandle<R>, result: Result<UpdateInfoVm, UpdaterError>) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let Ok(current) = state.update_status() else {
+        return;
+    };
+    let next = match result {
+        Ok(update) => {
+            let _ = state.persist_available_update(Some(update.clone()));
+            UpdateStatusVm {
+                status: UpdateCheckStatus::Ready,
+                update: Some(update),
+                error: None,
+                ..current
+            }
+        }
+        Err(UpdaterError::NoUpdate) => {
+            let _ = state.persist_available_update(None);
+            UpdateStatusVm {
+                status: UpdateCheckStatus::NotAvailable,
+                update: None,
+                error: None,
+                ..current
+            }
+        }
+        Err(error) => {
+            warn!(code = error.code(), detail = %error_chain(&error), "update download failed");
+            let status = if current.update.is_some() {
+                UpdateCheckStatus::Available
+            } else {
+                UpdateCheckStatus::Error
+            };
+            UpdateStatusVm {
+                status,
+                error: Some(error.vm()),
+                ..current
+            }
+        }
+    };
+    publish_status(app, next);
+}
+
+async fn download_pending_update<R: Runtime>(
+    app: &AppHandle<R>,
+    update: Option<Update>,
+) -> Result<UpdateInfoVm, UpdaterError> {
+    let update = match update {
+        Some(update) => update,
+        None => check_remote_update(app).await?.ok_or(UpdaterError::NoUpdate)?,
+    };
+    let info = update_info(&update);
+    let progress_app = app.clone();
+    let mut progress = DownloadProgress::default();
+    let bytes = update
+        .download(
+            move |chunk, total| {
+                if let Some(payload) = progress.record(chunk, total, Instant::now()) {
+                    let _ = progress_app.emit(UPDATE_PROGRESS_EVENT, payload);
                 }
             },
             || {},
         )
         .await
-        .context("updater.install-failed")?;
-    Ok(())
+        .map_err(UpdaterError::plugin(UpdatePhase::Download))?;
+
+    let dir = pending_update_dir();
+    let version = update.version.clone();
+    let signature = update.signature.clone();
+    let package = tokio::task::spawn_blocking(move || {
+        write_pending_update(&dir, &version, &signature, &bytes)
+    })
+    .await
+    .map_err(|error| UpdaterError::Io {
+        phase: UpdatePhase::Download,
+        source: std::io::Error::other(error),
+    })?
+    .map_err(UpdaterError::io(UpdatePhase::Download))?;
+
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let _ = state.store_pending_update(PendingUpdate {
+            version: update.version.clone(),
+            package,
+            signature: update.signature.clone(),
+            update: Some(update),
+        });
+    }
+    Ok(info)
 }
 
-async fn check_update_inner<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>> {
-    let updater = build_updater(app)?;
-    updater.check().await.context("updater.check-failed")
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// Coalesces per-chunk callbacks so the UI receives at most one progress event per interval,
+/// plus the first and the completing chunk.
+#[derive(Default)]
+struct DownloadProgress {
+    downloaded: u64,
+    last_emit: Option<Instant>,
+}
+
+impl DownloadProgress {
+    fn record(
+        &mut self,
+        chunk: usize,
+        total: Option<u64>,
+        now: Instant,
+    ) -> Option<UpdateDownloadProgress> {
+        self.downloaded += chunk as u64;
+        let complete = total.is_some_and(|total| self.downloaded >= total);
+        let due = self
+            .last_emit
+            .is_none_or(|last| now.duration_since(last) >= PROGRESS_EMIT_INTERVAL);
+        if !complete && !due {
+            return None;
+        }
+        self.last_emit = Some(now);
+        Some(UpdateDownloadProgress {
+            downloaded: self.downloaded,
+            total,
+        })
+    }
+}
+
+async fn check_remote_update<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Option<Update>, UpdaterError> {
+    build_updater(app)?
+        .check()
+        .await
+        .map_err(UpdaterError::plugin(UpdatePhase::Check))
 }
 
 fn update_info(update: &Update) -> UpdateInfoVm {
@@ -268,10 +586,16 @@ fn update_info(update: &Update) -> UpdateInfoVm {
     }
 }
 
-fn build_updater<R: Runtime>(app: &AppHandle<R>) -> Result<tauri_plugin_updater::Updater> {
-    let state = app.state::<DesktopState>();
-    let context = state.context().context("updater.context-unavailable")?;
-    let config = context.config;
+fn build_updater<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<tauri_plugin_updater::Updater, UpdaterError> {
+    let state = app
+        .try_state::<DesktopState>()
+        .ok_or(UpdaterError::ContextUnavailable)?;
+    let config = state
+        .context()
+        .map_err(|_| UpdaterError::ContextUnavailable)?
+        .config;
     let channel_config = current_channel_config();
     let endpoints = updater_endpoint_strings(
         channel_config.channel,
@@ -282,15 +606,15 @@ fn build_updater<R: Runtime>(app: &AppHandle<R>) -> Result<tauri_plugin_updater:
     .into_iter()
     .map(|endpoint| {
         validate_updater_url(&endpoint)?;
-        Url::parse(&endpoint).context("updater.invalid-url")
+        Url::parse(&endpoint).map_err(|_| UpdaterError::InvalidUrl)
     })
-    .collect::<Result<Vec<_>>>()?;
+    .collect::<Result<Vec<_>, _>>()?;
     app.updater_builder()
-        .pubkey(current_channel_config().updater_public_key)
+        .pubkey(channel_config.updater_public_key)
         .endpoints(endpoints)
-        .context("updater.invalid-url")?
+        .map_err(|_| UpdaterError::InvalidUrl)?
         .build()
-        .context("updater.check-failed")
+        .map_err(UpdaterError::plugin(UpdatePhase::Check))
 }
 
 fn updater_endpoint_strings(
@@ -347,129 +671,152 @@ fn release_notes_locale(language: DesktopLanguage) -> &'static str {
     }
 }
 
-fn updater_error_code(error: &anyhow::Error) -> String {
-    let message = error.to_string();
-    if message.contains("updater.invalid-url") {
-        "updater.invalid-url".to_string()
-    } else if message.contains("updater.context-unavailable") {
-        "updater.context-unavailable".to_string()
-    } else if message.contains("updater.no-update") {
-        "updater.no-update".to_string()
-    } else if message.contains("updater.install-failed") {
-        "updater.install-failed".to_string()
-    } else {
-        "updater.check-failed".to_string()
-    }
-}
-
 fn current_timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-// ── Silent / background critical update ──
+// ── Pending package: download → persist → install from the exit lifecycle ──
 
-fn pending_update_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join("gold-band-update")
+fn pending_update_dir() -> Utf8PathBuf {
+    let dir = std::env::temp_dir().join(format!("{}-update", current_channel_config().app_key));
+    Utf8PathBuf::from_path_buf(dir).unwrap_or_else(|dir| Utf8PathBuf::from(dir.to_string_lossy().as_ref()))
 }
 
-/// 复用本轮检查到的关键更新并静默下载到文件，不安装
-async fn try_background_download<R: Runtime>(app: &AppHandle<R>, update: &Update) -> Result<()> {
-    let is_critical = update
-        .raw_json
-        .get("critical")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !is_critical {
-        return Ok(());
-    }
-
-    let dir = pending_update_dir();
-    let path = dir.join(format!("update-{}.pkg", update.version));
-    let path =
-        camino::Utf8PathBuf::from_path_buf(path).map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?;
-    let state = app.state::<DesktopState>();
-    let pending = state.pending_update_path()?;
-    if pending_update_is_ready(pending.as_deref(), &path) {
-        return Ok(());
-    }
-
-    let bytes = update.download(|_chunk, _total| {}, || {}).await?;
-    let write_path = path.clone();
-    tokio::task::spawn_blocking(move || write_pending_update(&write_path, &bytes))
-        .await
-        .context("updater.pending-write-task-failed")??;
-    state.store_pending_update(path)?;
-
-    Ok(())
+fn pending_package_path(dir: &Utf8Path, version: &str) -> Utf8PathBuf {
+    dir.join(format!("update-{version}.pkg"))
 }
 
-fn pending_update_is_ready(
-    pending: Option<&camino::Utf8Path>,
-    expected: &camino::Utf8Path,
-) -> bool {
-    pending == Some(expected) && expected.is_file()
+fn pending_manifest_path(dir: &Utf8Path) -> Utf8PathBuf {
+    dir.join("pending.json")
 }
 
-fn write_pending_update(path: &camino::Utf8Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    atomic_write_file(path.as_std_path(), |file| -> Result<()> {
-        file.write_all(bytes)?;
-        Ok(())
+/// Keeps exactly one pending package: the manifest is committed last, so a crash mid-write
+/// never leaves a manifest pointing at a partial package.
+fn write_pending_update(
+    dir: &Utf8Path,
+    version: &str,
+    signature: &str,
+    bytes: &[u8],
+) -> std::io::Result<Utf8PathBuf> {
+    clear_pending_dir(dir);
+    std::fs::create_dir_all(dir.as_std_path())?;
+    let package = pending_package_path(dir, version);
+    atomic_write_file(package.as_std_path(), |file| file.write_all(bytes))?;
+    let manifest = serde_json::to_vec(&PendingUpdateManifest {
+        version: version.to_string(),
+        signature: signature.to_string(),
+    })
+    .map_err(std::io::Error::other)?;
+    atomic_write_file(pending_manifest_path(dir).as_std_path(), |file| {
+        file.write_all(&manifest)
+    })?;
+    Ok(package)
+}
+
+fn read_pending_update(dir: &Utf8Path) -> Option<PendingUpdate> {
+    let manifest = std::fs::read(pending_manifest_path(dir).as_std_path()).ok()?;
+    let manifest: PendingUpdateManifest = serde_json::from_slice(&manifest).ok()?;
+    let package = pending_package_path(dir, &manifest.version);
+    package.is_file().then_some(PendingUpdate {
+        version: manifest.version,
+        package,
+        signature: manifest.signature,
+        update: None,
     })
 }
 
-/// 从文件路径安装更新包
-/// 先删文件再 install：Windows NSIS 安装器会重启 App 杀死当前进程，
-/// 若 install 后删文件可能没机会执行，残留文件导致下次启动死循环
-pub async fn install_pending_file<R: Runtime>(
-    app: &AppHandle<R>,
-    path: &camino::Utf8Path,
-) -> Result<()> {
-    let bytes = std::fs::read(path.as_std_path()).context("failed to read pending update file")?;
-    let updater = build_updater(app)?;
-    let Some(update) = updater.check().await.context("updater.check-failed")? else {
-        let _ = std::fs::remove_file(path.as_std_path());
-        let _ = std::fs::remove_dir(pending_update_dir());
-        return Err(anyhow!("updater.no-update"));
-    };
-    // 先删再装——即使 install 内 App 被重启，文件也不残留
-    let _ = std::fs::remove_file(path.as_std_path());
-    let _ = std::fs::remove_dir(pending_update_dir());
-    update.install(bytes).context("updater.install-failed")?;
-    Ok(())
+fn clear_pending_dir(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
 }
 
-/// 启动时检查 /tmp 是否有上次未安装成功的残留包
-pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
+fn verify_package_signature(
+    bytes: &[u8],
+    signature: &str,
+    public_key: &str,
+) -> Result<(), UpdaterError> {
+    let decode = |value: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .ok()
+            .and_then(|decoded| String::from_utf8(decoded).ok())
+            .ok_or(UpdaterError::InvalidSignature)
+    };
+    let public_key = minisign_verify::PublicKey::decode(&decode(public_key)?)
+        .map_err(|_| UpdaterError::InvalidSignature)?;
+    let signature = minisign_verify::Signature::decode(&decode(signature)?)
+        .map_err(|_| UpdaterError::InvalidSignature)?;
+    public_key
+        .verify(bytes, &signature, true)
+        .map_err(|_| UpdaterError::InvalidSignature)
+}
+
+fn is_newer_version(candidate: &str, running: &str) -> bool {
+    match (semver::Version::parse(candidate), semver::Version::parse(running)) {
+        (Ok(candidate), Ok(running)) => candidate > running,
+        _ => false,
+    }
+}
+
+/// Final step of the exit cleanup and the crash-recovery path at startup. The package is
+/// re-verified against the channel key and the running version before the installer takes over.
+pub async fn install_pending_update<R: Runtime>(
+    app: &AppHandle<R>,
+    pending: PendingUpdate,
+) -> Result<(), UpdaterError> {
     let dir = pending_update_dir();
-    if !dir.is_dir() {
-        return;
+    let running_version = app.package_info().version.to_string();
+    if !is_newer_version(&pending.version, &running_version) {
+        clear_pending_dir(&dir);
+        return Err(UpdaterError::StalePackage);
     }
-    // 清理空目录（之前完全处理完的）
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let handle = app.clone();
-                let utf8_path = match camino::Utf8PathBuf::from_path_buf(path.clone()) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                tauri::async_runtime::spawn(async move {
-                    let _ = install_pending_file(&handle, &utf8_path).await;
-                });
+    let bytes = std::fs::read(pending.package.as_std_path())
+        .map_err(UpdaterError::io(UpdatePhase::Install))?;
+    if let Err(error) = verify_package_signature(
+        &bytes,
+        &pending.signature,
+        current_channel_config().updater_public_key,
+    ) {
+        clear_pending_dir(&dir);
+        return Err(error);
+    }
+    let update = match pending.update {
+        Some(update) => update,
+        None => match check_remote_update(app).await? {
+            Some(update) if update.version == pending.version => update,
+            _ => {
+                clear_pending_dir(&dir);
+                return Err(UpdaterError::StalePackage);
             }
+        },
+    };
+    // Windows installers terminate this process; drop the package first so it cannot loop.
+    clear_pending_dir(&dir);
+    update
+        .install(bytes)
+        .map_err(UpdaterError::plugin(UpdatePhase::Install))
+}
+
+/// A package that survived a crash is installed before any session starts, so no cleanup is
+/// needed; everything else waits for the exit lifecycle.
+pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
+    let Some(pending) = read_pending_update(&pending_update_dir()) else {
+        return;
+    };
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = install_pending_update(&handle, pending).await {
+            warn!(code = error.code(), detail = %error_chain(&error), "pending update was not installed");
         }
-    }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        localized_default_updater_endpoint, pending_update_is_ready, poll_update_once,
-        updater_endpoint_strings, updater_settings, validate_updater_url, write_pending_update,
+        DownloadProgress, PROGRESS_EMIT_INTERVAL, UpdateCheckStatus, UpdateInfoVm, UpdatePhase,
+        UpdaterError, checked_status, is_newer_version, localized_default_updater_endpoint,
+        poll_update_once, read_pending_update, updater_endpoint_strings, updater_settings,
+        validate_updater_url, verify_package_signature, write_pending_update,
     };
     use crate::state::{DesktopContext, DesktopState};
     use gold_band::config::DesktopLanguage;
@@ -481,7 +828,13 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use std::thread;
+    use std::time::{Duration, Instant};
     use tauri::Manager;
+
+    // Throwaway key pair generated with `tauri signer generate`; the private key was discarded.
+    const FIXTURE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGMDM3ODNCRDA2ODY2RUQKUldUdFptalFPM2dEcjdJc1BheDZUVHR4MHIraXU1ZTBEZTdmM0hPNXhnM2UxV0xyYS9SQ01qR2IK";
+    const FIXTURE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdFptalFPM2dEcnlucFM4K093VUQ2aHo4ZVpCUHJXL0hpWTg2YnpxR2xueVozUi92eWoxcFpuN1RwRVNNUSt6Qit4M1N3Q2hYWU05M3BsaW9iWWNsUmdmNFF1djRyQmdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNzA1ODk1CWZpbGU6cGtnLmJpbgpIaThjR3ByTDFSMjVYOVNJY0NNRURCWmYwVFZTWDhxU3RlSkxIdC9tZGZCWjQ1VTAvLzdERFp0aTVvajdDcG1xaHFIK0xvSlJMa2Vxa2tvbk9tdmpBUT09Cg==";
+    const FIXTURE_PACKAGE: &[u8] = b"gold-band pending update fixture";
 
     fn mock_app(endpoint: String) -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
         let root = tempfile::tempdir().unwrap();
@@ -530,6 +883,15 @@ mod tests {
             .unwrap();
         });
         (endpoint, requests, handle)
+    }
+
+    fn known_update() -> UpdateInfoVm {
+        UpdateInfoVm {
+            version: "99.0.0".to_string(),
+            current_version: "0.17.2".to_string(),
+            notes: Some("notes".to_string()),
+            pub_date: None,
+        }
     }
 
     #[test]
@@ -622,6 +984,134 @@ mod tests {
     }
 
     #[test]
+    fn failed_check_keeps_the_known_release_and_reports_the_cause() {
+        let error = UpdaterError::Plugin {
+            phase: UpdatePhase::Check,
+            source: tauri_plugin_updater::Error::Network("connection refused".to_string()),
+        };
+        let status = checked_status(Err(error), Some(known_update()), None, true);
+
+        assert_eq!(status.status, UpdateCheckStatus::Available);
+        assert_eq!(status.update.unwrap().version, "99.0.0");
+        let error = status.error.unwrap();
+        assert_eq!(error.code, "updater.network");
+        assert_eq!(error.params["phase"], "check");
+        assert!(
+            error.params["detail"]
+                .as_str()
+                .unwrap()
+                .contains("connection refused")
+        );
+    }
+
+    #[test]
+    fn failed_check_without_a_known_release_is_an_error() {
+        let status = checked_status(Err(UpdaterError::InvalidUrl), None, None, false);
+
+        assert_eq!(status.status, UpdateCheckStatus::Error);
+        assert_eq!(status.error.unwrap().code, "updater.invalid-url");
+    }
+
+    #[test]
+    fn updater_errors_map_plugin_causes_to_stable_codes() {
+        use tauri_plugin_updater::Error as PluginError;
+        let code = |phase, source| UpdaterError::Plugin { phase, source }.code();
+
+        assert_eq!(
+            code(UpdatePhase::Download, PluginError::Network("503".into())),
+            "updater.network"
+        );
+        assert_eq!(
+            code(UpdatePhase::Check, PluginError::ReleaseNotFound),
+            "updater.manifest-invalid"
+        );
+        assert_eq!(
+            code(UpdatePhase::Download, PluginError::SignatureUtf8("sig".into())),
+            "updater.signature-invalid"
+        );
+        assert_eq!(
+            code(UpdatePhase::Install, PluginError::EmptyEndpoints),
+            "updater.install-failed"
+        );
+        assert_eq!(UpdaterError::StalePackage.code(), "updater.stale-package");
+        assert_eq!(UpdaterError::InvalidSignature.params()["phase"], "install");
+    }
+
+    #[test]
+    fn download_progress_emits_first_due_and_final_chunks_only() {
+        let start = Instant::now();
+        let mut progress = DownloadProgress::default();
+
+        assert_eq!(progress.record(10, Some(100), start).unwrap().downloaded, 10);
+        assert!(progress.record(10, Some(100), start + Duration::from_millis(5)).is_none());
+        let due = progress
+            .record(10, Some(100), start + PROGRESS_EMIT_INTERVAL)
+            .unwrap();
+        assert_eq!(due.downloaded, 30);
+        let complete = progress
+            .record(70, Some(100), start + PROGRESS_EMIT_INTERVAL + Duration::from_millis(1))
+            .unwrap();
+        assert_eq!((complete.downloaded, complete.total), (100, Some(100)));
+    }
+
+    #[test]
+    fn pending_package_signature_is_verified_against_the_channel_key() {
+        verify_package_signature(FIXTURE_PACKAGE, FIXTURE_SIGNATURE, FIXTURE_PUBLIC_KEY).unwrap();
+
+        let tampered = verify_package_signature(
+            b"tampered package",
+            FIXTURE_SIGNATURE,
+            FIXTURE_PUBLIC_KEY,
+        );
+        assert!(matches!(tampered, Err(UpdaterError::InvalidSignature)));
+        let foreign_key = verify_package_signature(
+            FIXTURE_PACKAGE,
+            FIXTURE_SIGNATURE,
+            crate::channel::current_channel_config().updater_public_key,
+        );
+        assert!(matches!(foreign_key, Err(UpdaterError::InvalidSignature)));
+    }
+
+    #[test]
+    fn pending_package_must_be_newer_than_the_running_version() {
+        assert!(is_newer_version("0.17.3", "0.17.2"));
+        assert!(is_newer_version(
+            "0.17.2-wb.202609301230+abc1234",
+            "0.17.2-wb.202609301200+abc1234"
+        ));
+        assert!(!is_newer_version("0.17.2", "0.17.2"));
+        assert!(!is_newer_version("0.17.1", "0.17.2"));
+        assert!(!is_newer_version("not-a-version", "0.17.2"));
+    }
+
+    #[test]
+    fn pending_package_round_trips_and_keeps_a_single_package() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(root.path().join("app-update")).unwrap();
+
+        write_pending_update(&dir, "0.17.3", "old-signature", b"old").unwrap();
+        let package = write_pending_update(&dir, "0.17.4", FIXTURE_SIGNATURE, FIXTURE_PACKAGE)
+            .unwrap();
+
+        let pending = read_pending_update(&dir).unwrap();
+        assert_eq!(pending.version, "0.17.4");
+        assert_eq!(pending.package, package);
+        assert_eq!(pending.signature, FIXTURE_SIGNATURE);
+        assert!(pending.update.is_none());
+        assert_eq!(std::fs::read(package.as_std_path()).unwrap(), FIXTURE_PACKAGE);
+        assert_eq!(std::fs::read_dir(dir.as_std_path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn pending_package_without_a_committed_manifest_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        std::fs::write(dir.join("update-0.17.3.pkg").as_std_path(), b"partial").unwrap();
+
+        assert!(read_pending_update(&dir).is_none());
+    }
+
+    #[test]
     fn polling_reuses_one_manifest_check_for_silent_channel() {
         let (endpoint, requests, server) = update_server(
             serde_json::json!({
@@ -636,37 +1126,12 @@ mod tests {
         );
         let (app, _root) = mock_app(endpoint);
 
-        tauri::async_runtime::block_on(poll_update_once(&app.handle(), true)).unwrap();
+        tauri::async_runtime::block_on(poll_update_once(&app.handle(), true));
         server.join().unwrap();
 
         assert_eq!(requests.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn pending_update_is_ready_only_for_existing_same_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let expected = camino::Utf8PathBuf::from_path_buf(dir.path().join("update.pkg")).unwrap();
-        std::fs::write(expected.as_std_path(), b"complete").unwrap();
-        let other = camino::Utf8PathBuf::from_path_buf(dir.path().join("other.pkg")).unwrap();
-
-        assert!(pending_update_is_ready(Some(&expected), &expected));
-        assert!(!pending_update_is_ready(Some(&other), &expected));
-
-        std::fs::remove_file(expected.as_std_path()).unwrap();
-        assert!(!pending_update_is_ready(Some(&expected), &expected));
-    }
-
-    #[test]
-    fn pending_update_write_commits_complete_bytes_atomically() {
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            camino::Utf8PathBuf::from_path_buf(dir.path().join("nested/update.pkg")).unwrap();
-
-        write_pending_update(&path, b"complete package").unwrap();
-
-        assert_eq!(
-            std::fs::read(path.as_std_path()).unwrap(),
-            b"complete package"
-        );
+        let status = app.state::<DesktopState>().update_status().unwrap();
+        assert_eq!(status.status, UpdateCheckStatus::Available);
+        assert_eq!(status.update.unwrap().version, "999.0.0");
     }
 }

@@ -249,11 +249,14 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。收集签名安装包时必须使用 Cargo 解析后的 target 目录：优先 `cargo metadata` 的 `target_directory`（覆盖本机 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 与用户/项目 `build.target-dir`），再回退环境变量和仓库内 `target/`、`src-tauri/target/`；不得写死某台机器的绝对路径。清理过期 bundle 与生成 `latest.json` 使用同一组候选目录。
-- 桌面端启动 90 秒后执行首次后台更新检查，此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 渠道仍只更新状态并提示用户，不自动下载或安装；`wb` 渠道仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。相同版本已经作为完整 pending 文件存在时必须幂等跳过下载；pending 文件使用临时文件加原子替换写入，最终路径存在即代表本次完整写入已经提交。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
+- 桌面端启动 20 秒后执行首次后台更新检查（避开启动恢复与 Agent 诊断高峰），此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 与 `wb` 渠道均启用静默更新：非关键更新只更新状态并在标题栏提示用户，不自动下载或安装；仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。pending 更新按渠道 `appKey` 隔离在临时目录，先原子写入安装包、最后提交 `pending.json`（版本 + 签名）；安装前必须用渠道 public key 重新校验签名并确认版本仍高于运行版本，校验失败清理目录且不安装。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27 起更新提示增加三级红点：后台发现当前可更新版本后，左侧 `Settings`、设置页 `Advanced` tab、`Updates` 分组标题同时显示红点。用户进入设置页时只清除 `Settings` 红点；切到 `Advanced` tab 时只清除 `Advanced` 红点；`Updates` 红点不因进入页面消失，只有当前已无可更新版本时才自动消失。
-- 红点状态按“当前可用版本号 + 分层已读版本号”计算，而不是简单布尔值：`Settings`、`Advanced` 和公告关闭状态都持久化到用户级桌面配置，并与版本号绑定；同一版本已读/关闭后不再重复提示，但一旦后台发现更高版本，三级红点和公告都会重新出现。
-- 右侧主内容区顶部新增公告区：首次发现某个新版本且该版本公告尚未被关闭时，页面 header 下方展示一条可关闭公告，提示“发现新版本，可前往 设置 → 高级 → 更新”。点击“查看更新”打开轻量弹窗，明确引导用户前往设置页更新；关闭公告后仅移除公告本身，不影响三级红点。
-- 可用更新快照持久化到用户级桌面配置，因此用户在发现更新后关闭应用再打开，公告、设置页状态和更新版本信息不会因为重启丢失；只要存在这份快照，高级页更新状态区就按“可更新”态展示版本信息与安装入口，而不是回退成“尚未检查”；只有后续检查确认当前已无可更新版本时，才清空这份快照与 `Updates` 红点。
+- 红点状态按“当前可用版本号 + 分层已读版本号”计算，而不是简单布尔值：`Settings`、`Advanced` 已读状态持久化到用户级桌面配置，并与版本号绑定；同一版本已读后不再重复提示，但一旦后台发现更高版本，三级红点会重新出现。
+- 2026-09-30 起顶部公告横幅移除，改为标题栏「帮助」右侧的高对比度更新按钮（主题 token `attention` / `attentionForeground`）。按钮以版本比较为唯一事实：只要已知远端版本高于运行版本就一直显示，不可关闭；用户点击更新但安装未发生（失败、取消退出）时按钮仍保留。按钮文案随状态切换为「更新 / 更新中 N% / 重启安装 / 更新失败」，点击均打开更新弹窗。
+- 更新弹窗为响应式 Dialog：宽度上限收窄为 `50rem`（根字号 16px 时为 800px），保留 `92vw` 自适应宽度与 `min(88vh,56rem)` 高度上限；标题与底部操作固定，更新说明区域滚动；说明中的图片点击后打开放大预览（仅限弹窗内 Markdown，会话 Markdown 图片不变）。底部主按钮直接执行与设置页「下载并安装」相同的 `start_update_install`：下载中显示进度条并禁用，失败显示「阶段 + 原因」并提供重试，下载完成后自动走应用重启流程安装；已下载就绪时主按钮为「重启并安装」。
+- 更新状态由后端统一管理：`idle / checking / available / downloading / ready / not-available / error`，下载单飞；检查失败时保留已知更新并附带错误，只有没有已知更新时才进入 `error`。错误为结构化码（`updater.network / signature-invalid / manifest-invalid / io / stale-package / check-failed / download-failed / install-failed` 等）加 `params.phase` 与 `params.detail`，前端按码与阶段本地化。下载进度事件节流为 100ms，前端以独立 external store 订阅，只刷新进度消费组件。
+- 下载完成后的安装与普通关闭应用共用同一退出生命周期：先完成前端文件保存握手，再暂停运行中的会话（`Paused + ProcessInterrupted`）、关闭 ACP 连接、浏览器、调度与 IM，最后才安装 pending 更新；不得绕过清理直接退出。
+- 可用更新快照持久化到用户级桌面配置，因此用户在发现更新后关闭应用再打开，标题栏更新按钮、设置页状态和更新版本信息不会因为重启丢失；只要存在这份快照，高级页更新状态区就按“可更新”态展示版本信息与安装入口，而不是回退成“尚未检查”；只有后续检查确认当前已无可更新版本时，才清空这份快照与 `Updates` 红点。
 
 ## 9. 2026-06-12 指标上报地址展示
 
@@ -285,5 +288,10 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。
 
 ## 13. 多语言更新日志
+
+- 发布准备必须明确 Git 起止范围、目标版本，以及用户确认的普通更新 / 关键更新选择；已明确回答的同版本选择直接复用，缺失或含糊时先询问，不得根据提交类型、破坏性变更、安全修复或更新日志措辞推断关键性。普通更新只提示、由用户手动触发下载与安装；关键更新后台下载签名包，在正常退出生命周期或既有后续启动安装路径中安装，不因发现或下载完成而强制重启、中断当前工作。
+- `release-notes/<version>/release.json` 是 default 渠道该版本关键性的唯一事实源，与七语言 Markdown 同时准备；完整对象只能是 `{"critical": false}` 或 `{"critical": true}`，普通更新也必须显式写入 false。覆盖已有文件前必须读取并核对用户选择，有冲突先确认；已有文件本身不能替代用户确认。git-changelog 完成时报告目标版本、最终普通 / 关键选择及文件清单。
+- 生成器从实际发布 SHA/tag 对应版本目录读取元数据；七语言正文和 `release.json` 必须进入该发布 SHA/tag，不能只存在于工作区或另一 workflow 分支。历史版本缺少 `release.json` 时按普通更新处理；文件存在时必须严格校验为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型或额外字段均在写入任何生成产物前失败，不能静默回落或留下部分输出。七个 locale manifest 与兼容 `latest.json` 共八份 default manifest 必须携带相同 `critical` 值；`wb` 的单 manifest 与既有关键更新构建参数保持不变，不消费该 default 元数据。
+- 文件准备不授权提交、push、打 tag 或发布；这些操作均需用户另行明确请求。
 
 - `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。default 发布生成七个 `latest.<locale>.json`，并保留与简体中文 manifest 相同的 `latest.json` 供旧客户端与缺失 locale 资产时回退；客户端按已保存界面语言选择 locale manifest；该选择只发生在后台更新请求中，设置页「更新地址」始终展示配置的 `latest.json`，不随语言变化。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成并覆盖 release-please 默认正文，格式为 `# Gold Band vX.Y.Z` 标题、中英文锚点跳转、`## 中文` / `## English` 两段，原文标题（代码块外）各降一级；图片继续引用 `static.dion.blue`。`wb`、自定义更新 URL 和 `npm run build:wb` 均保持单一 `latest.json`，不接入 locale 选择。

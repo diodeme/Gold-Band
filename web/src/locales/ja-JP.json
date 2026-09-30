@@ -378,7 +378,8 @@
     "feedbackErrorUnconfigured": "フィードバックは利用できません",
     "feedbackErrorSession": "関連するセッションは存在しません。再度選択してください。",
     "feedbackErrorAttachment": "スクリーンショットを読み取れないか、形式が未対応です。PNG、JPEG、または WebP を使用してください。",
-    "feedbackErrorTooLarge": "アップロードの内容がサイズ上限を超えています。スクリーンショットを減らすか、関連セッションの紐付けを解除してください。"
+    "feedbackErrorTooLarge": "アップロードの内容がサイズ上限を超えています。スクリーンショットを減らすか、関連セッションの紐付けを解除してください。",
+    "imagePreview": "画像プレビュー"
   },
   "personalAnalytics": {
     "title": "個人分析",
@@ -1061,10 +1062,16 @@
     },
     "updater": {
       "invalid-url": "更新 URL が無効です。",
-      "check-failed": "アップデートのチェックに失敗しました: {{message}}",
-      "install-failed": "アップデートのインストールに失敗しました: {{message}}",
+      "check-failed": "{{detail}}",
+      "install-failed": "{{detail}}",
       "context-unavailable": "ワークスペースが選択されていないと更新を確認できません。",
-      "no-update": "利用可能なアップデートはありません。"
+      "no-update": "利用可能なアップデートはありません。",
+      "download-failed": "{{detail}}",
+      "network": "ネットワーク接続に失敗しました ({{detail}})",
+      "signature-invalid": "更新パッケージの署名が無効です。",
+      "manifest-invalid": "更新マニフェストが無効です ({{detail}})",
+      "io": "更新パッケージを読み書きできません ({{detail}})",
+      "stale-package": "ダウンロード済みのパッケージは現在のバージョンより新しくありません。"
     },
     "multica": {
       "not-configured": "Multica がまだ設定されていません。先に設定で接続を完了してください。",
@@ -2676,17 +2683,7 @@
       "saveOverride": "URLを保存",
       "resetToBuiltIn": "組み込みの URL を使用する",
       "checkNow": "アップデートを確認する",
-      "install": "ダウンロードしてインストールする",
       "lastCheckedAt": "最終チェック日: {{time}}",
-      "announcement": {
-        "title": "新しいバージョン {{version}} が利用可能になりました",
-        "description": "[設定] → [詳細設定] → [アップデート] に移動して確認し、インストールします。",
-        "dismiss": "閉じる",
-        "view": "更新を見る",
-        "dialogTitle": "新しいバージョン {{version}} が利用可能になりました",
-        "dialogDescription": "新しいクライアント バージョンが検出されました。 「設定」→「詳細設定」→「アップデート」に移動して、ダウンロードしてインストールします。",
-        "goToSettings": "設定に移動"
-      },
       "channel": {
         "default": "デフォルト",
         "wb": "WB"
@@ -2697,7 +2694,37 @@
         "available": "利用可能なアップデート",
         "downloading": "アップデートをダウンロード中...",
         "not-available": "最新です",
-        "error": "チェックに失敗しました"
+        "error": "チェックに失敗しました",
+        "ready": "アップデートをダウンロードしました"
+      },
+      "downloaded": "{{size}} ダウンロード済み",
+      "action": {
+        "available": "ダウンロードしてインストール",
+        "failed": "再ダウンロードしてインストール",
+        "ready": "再起動してインストール"
+      },
+      "dialog": {
+        "title": "新しいバージョン {{version}} があります",
+        "noNotes": "このバージョンにはリリースノートがありません。",
+        "action": {
+          "available": "今すぐ更新",
+          "failed": "再試行",
+          "ready": "再起動してインストール",
+          "downloading": "ダウンロード中"
+        }
+      },
+      "titleBar": {
+        "available": "更新",
+        "failed": "更新失敗",
+        "ready": "再起動して更新",
+        "downloading": "更新中",
+        "downloadingPercent": "更新中 {{percent}}%",
+        "tooltip": "新しいバージョン {{version}}"
+      },
+      "failure": {
+        "check": "アップデートの確認に失敗しました: {{reason}}",
+        "download": "アップデートのダウンロードに失敗しました: {{reason}}",
+        "install": "アップデートのインストールに失敗しました: {{reason}}"
       }
     }
   },

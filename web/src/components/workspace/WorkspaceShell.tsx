@@ -58,6 +58,7 @@ import {
 
 interface WorkspaceShellProps {
   titleBarTrailingContent?: React.ReactNode;
+  titleBarUpdateAction?: React.ReactNode;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -297,6 +298,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
 function WorkspaceShellLayout({
   appName,
   titleBarTrailingContent,
+  titleBarUpdateAction,
   feedbackEnabled,
   platform,
   windowFrameStyle,
@@ -729,6 +731,7 @@ function WorkspaceShellLayout({
       {memoryWorkspace && <ProjectMemorySheet key={memoryWorkspace.projectId} {...memoryWorkspace} onClose={() => setMemoryWorkspace(null)} />}
       <AppTitleBar
         trailingContent={titleBarTrailingContent}
+        updateAction={titleBarUpdateAction}
         appName={appName}
         feedbackEnabled={feedbackEnabled}
         platform={platform}

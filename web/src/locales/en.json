@@ -378,7 +378,8 @@
     "feedbackErrorUnconfigured": "Feedback is unavailable",
     "feedbackErrorSession": "The related session no longer exists. Please select it again.",
     "feedbackErrorAttachment": "A screenshot could not be read or is unsupported. Use PNG, JPEG, or WebP.",
-    "feedbackErrorTooLarge": "The upload is too large. Remove screenshots or the related session."
+    "feedbackErrorTooLarge": "The upload is too large. Remove screenshots or the related session.",
+    "imagePreview": "Image preview"
   },
   "personalAnalytics": {
     "title": "Personal analytics",
@@ -1061,10 +1062,16 @@
     },
     "updater": {
       "invalid-url": "Invalid update URL.",
-      "check-failed": "Failed to check for updates: {{message}}",
-      "install-failed": "Failed to install update: {{message}}",
+      "check-failed": "{{detail}}",
+      "install-failed": "{{detail}}",
       "context-unavailable": "Cannot check for updates without a workspace selected.",
-      "no-update": "No update is available."
+      "no-update": "No update is available.",
+      "download-failed": "{{detail}}",
+      "network": "Network connection failed ({{detail}})",
+      "signature-invalid": "The update package signature is invalid.",
+      "manifest-invalid": "The update manifest is invalid ({{detail}})",
+      "io": "Could not read or write the update package ({{detail}})",
+      "stale-package": "The downloaded package is not newer than the running version."
     },
     "multica": {
       "not-configured": "Multica is not configured. Complete setup in Settings first.",
@@ -2676,17 +2683,7 @@
       "saveOverride": "Save URL",
       "resetToBuiltIn": "Restore built-in URL",
       "checkNow": "Check for updates",
-      "install": "Download and install",
       "lastCheckedAt": "Last checked: {{time}}",
-      "announcement": {
-        "title": "New version {{version}} available",
-        "description": "Go to Settings → Advanced → Updates to review and install it.",
-        "dismiss": "Close",
-        "view": "View update",
-        "dialogTitle": "New version {{version}} available",
-        "dialogDescription": "A new client version has been detected. Go to Settings → Advanced → Updates to download and install it.",
-        "goToSettings": "Go to Settings to update"
-      },
       "channel": {
         "default": "Default",
         "wb": "WB"
@@ -2697,7 +2694,37 @@
         "available": "Update available",
         "downloading": "Downloading update...",
         "not-available": "Up to date",
-        "error": "Check failed"
+        "error": "Check failed",
+        "ready": "Update downloaded"
+      },
+      "downloaded": "{{size}} downloaded",
+      "action": {
+        "available": "Download and install",
+        "failed": "Download and install again",
+        "ready": "Restart and install"
+      },
+      "dialog": {
+        "title": "New version {{version}} available",
+        "noNotes": "This version has no release notes.",
+        "action": {
+          "available": "Update now",
+          "failed": "Retry",
+          "ready": "Restart and install",
+          "downloading": "Downloading"
+        }
+      },
+      "titleBar": {
+        "available": "Update",
+        "failed": "Update failed",
+        "ready": "Restart to update",
+        "downloading": "Updating",
+        "downloadingPercent": "Updating {{percent}}%",
+        "tooltip": "New version {{version}}"
+      },
+      "failure": {
+        "check": "Failed to check for updates: {{reason}}",
+        "download": "Failed to download the update: {{reason}}",
+        "install": "Failed to install the update: {{reason}}"
       }
     }
   },

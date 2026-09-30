@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ImagePreviewDialog } from './ImagePreviewDialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { isImageMime } from '@/lib/attachments';
 import { cn } from '@/lib/utils';
@@ -144,23 +145,10 @@ export function AttachmentPreviewDialogs({
 }: AttachmentPreviewDialogsProps) {
   return (
     <>
-      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) onCloseImage?.(); }}>
-        <DialogContent
-          showCloseButton={false}
-          overlayClassName="bg-black/70"
-          className="!w-auto !max-w-[calc(100vw-4rem)] !gap-0 border-0 bg-transparent p-0 shadow-none sm:!max-w-[calc(100vw-4rem)]"
-        >
-          <DialogTitle className="sr-only">{previewImage?.name ?? 'Image Preview'}</DialogTitle>
-          {previewImage?.previewUrl ? (
-            <img
-              src={previewImage.previewUrl}
-              alt={previewImage.name}
-              draggable={false}
-              className="block max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] object-contain"
-            />
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      <ImagePreviewDialog
+        image={previewImage?.previewUrl ? { src: previewImage.previewUrl, alt: previewImage.name } : null}
+        onClose={() => onCloseImage?.()}
+      />
 
       <Dialog open={!!textPreview} onOpenChange={(open) => { if (!open) onCloseText(); }}>
         <DialogContent className="max-h-[86vh] max-w-4xl gap-0 overflow-hidden p-0">

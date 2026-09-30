@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 
 interface AppTitleBarProps {
   trailingContent?: React.ReactNode;
+  updateAction?: React.ReactNode;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -33,6 +34,7 @@ export const APP_TITLE_BAR_LAYOUT = {
 
 export function AppTitleBar({
   trailingContent,
+  updateAction,
   appName,
   feedbackEnabled = false,
   platform,
@@ -157,7 +159,7 @@ export function AppTitleBar({
       />
 
       {trailingContent}
-      {feedbackEnabled || onOpenPersonalAnalytics || onToggleRightWorkspace ? (
+      {feedbackEnabled || onOpenPersonalAnalytics || onToggleRightWorkspace || updateAction ? (
         <div
           className={cn(
             'app-titlebar-no-drag flex h-full flex-none items-center gap-0.5',
@@ -237,6 +239,7 @@ export function AppTitleBar({
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
+          {updateAction}
           {onToggleRightWorkspace ? (
             <Tooltip>
               <TooltipTrigger asChild>

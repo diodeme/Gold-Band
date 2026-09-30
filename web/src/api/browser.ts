@@ -2426,10 +2426,6 @@ export const browserApi: RuntimeApi = {
     const current = browserPreviewState.getUpdateBadges();
     return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, settingsAdvancedSeenVersion: version }));
   },
-  dismissUpdateAnnouncement(version: string) {
-    const current = browserPreviewState.getUpdateBadges();
-    return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, announcementClosedVersion: version }));
-  },
   checkUpdateManual() {
     return Promise.resolve(browserPreviewState.setUpdateStatus({
       status: 'error',
@@ -2439,8 +2435,8 @@ export const browserApi: RuntimeApi = {
       background: false,
     }));
   },
-  downloadAndInstallUpdate() {
-    return Promise.resolve();
+  startUpdateInstall() {
+    return Promise.resolve(browserPreviewState.getUpdateStatus());
   },
   // ── Conversation UI mocks ──
   saveDesktopUiMode(_mode) {

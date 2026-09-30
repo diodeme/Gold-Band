@@ -378,7 +378,8 @@
     "feedbackErrorUnconfigured": "回饋功能暫不可用",
     "feedbackErrorSession": "關聯工作階段不存在或已被移除，請重新選擇",
     "feedbackErrorAttachment": "截圖無法讀取或格式不受支援，請使用 PNG、JPEG 或 WebP",
-    "feedbackErrorTooLarge": "上傳內容超過大小限制，請減少截圖或取消關聯工作階段"
+    "feedbackErrorTooLarge": "上傳內容超過大小限制，請減少截圖或取消關聯工作階段",
+    "imagePreview": "圖片預覽"
   },
   "personalAnalytics": {
     "title": "個人資料分析",
@@ -1061,10 +1062,16 @@
     },
     "updater": {
       "invalid-url": "更新網址無效。",
-      "check-failed": "檢查更新失敗：{{message}}",
-      "install-failed": "安裝更新失敗：{{message}}",
+      "check-failed": "{{detail}}",
+      "install-failed": "{{detail}}",
       "context-unavailable": "無法取得更新上下文，請先選擇工作區。",
-      "no-update": "目前沒有可安裝更新。"
+      "no-update": "目前沒有可安裝更新。",
+      "download-failed": "{{detail}}",
+      "network": "網路連線失敗（{{detail}}）",
+      "signature-invalid": "更新套件簽章驗證失敗。",
+      "manifest-invalid": "更新清單無效（{{detail}}）",
+      "io": "讀寫更新套件失敗（{{detail}}）",
+      "stale-package": "已下載的更新套件不高於目前版本。"
     },
     "multica": {
       "not-configured": "尚未設定 Multica，請先在設定中完成接入。",
@@ -2676,17 +2683,7 @@
       "saveOverride": "儲存網址",
       "resetToBuiltIn": "還原內建網址",
       "checkNow": "檢查更新",
-      "install": "下載並安裝",
       "lastCheckedAt": "上次檢查：{{time}}",
-      "announcement": {
-        "title": "發現新版本 {{version}}",
-        "description": "可前往 設定 → 進階 → 更新 查看並安裝。",
-        "dismiss": "關閉",
-        "view": "查看更新",
-        "dialogTitle": "發現新版本 {{version}}",
-        "dialogDescription": "檢測到新的用戶端版本。請前往 設定 → 進階 → 更新 完成下載和安裝。",
-        "goToSettings": "前往設定更新"
-      },
       "channel": {
         "default": "預設",
         "wb": "WB"
@@ -2697,7 +2694,37 @@
         "available": "發現新版本",
         "downloading": "正在下載更新...",
         "not-available": "已是最新版本",
-        "error": "檢查失敗"
+        "error": "檢查失敗",
+        "ready": "更新已下載"
+      },
+      "downloaded": "已下載 {{size}}",
+      "action": {
+        "available": "下載並安裝",
+        "failed": "重新下載並安裝",
+        "ready": "重新啟動並安裝"
+      },
+      "dialog": {
+        "title": "發現新版本 {{version}}",
+        "noNotes": "此版本沒有更新說明。",
+        "action": {
+          "available": "立即更新",
+          "failed": "重試",
+          "ready": "重新啟動並安裝",
+          "downloading": "正在下載"
+        }
+      },
+      "titleBar": {
+        "available": "更新",
+        "failed": "更新失敗",
+        "ready": "重啟安裝",
+        "downloading": "更新中",
+        "downloadingPercent": "更新中 {{percent}}%",
+        "tooltip": "新版本 {{version}}"
+      },
+      "failure": {
+        "check": "檢查更新失敗：{{reason}}",
+        "download": "下載更新失敗：{{reason}}",
+        "install": "安裝更新失敗：{{reason}}"
       }
     }
   },

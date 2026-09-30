@@ -97,8 +97,7 @@ use crate::state::{
     DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
 };
 use crate::updater::{
-    UpdateStatusVm, UpdaterSettingsVm, check_update,
-    download_and_install_update as run_download_and_install_update, install_pending_file,
+    UpdateStatusVm, UpdaterError, UpdaterSettingsVm, check_update, install_pending_update,
     normalize_updater_url_override, updater_settings,
 };
 use crate::view_models::{
@@ -2532,8 +2531,8 @@ pub(crate) async fn prepare_app_exit_inner(
         result.record_warning("app-exit.diagnostic-cleanup-failed", &error);
     }
 
-    if let Some(path) = state.take_pending_update()
-        && let Err(error) = install_pending_file(&app_handle, &path).await
+    if let Some(pending) = state.take_pending_update()
+        && let Err(error) = install_pending_update(app_handle, pending).await
     {
         result.record_warning("app-exit.update-install-failed", &error);
     }
@@ -9105,7 +9104,6 @@ pub fn mark_settings_update_seen(
     Ok(UpdateBadgeStateVm {
         settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
         settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
-        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
     })
 }
 
@@ -9120,22 +9118,6 @@ pub fn mark_settings_advanced_update_seen(
     Ok(UpdateBadgeStateVm {
         settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
         settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
-        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
-    })
-}
-
-#[tauri::command]
-pub fn dismiss_update_announcement(
-    state: State<'_, DesktopState>,
-    version: String,
-) -> CommandResult<UpdateBadgeStateVm> {
-    let config = state
-        .mark_update_badge_seen(UpdateBadgeSeenTarget::Announcement, version)
-        .map_err(command_error)?;
-    Ok(UpdateBadgeStateVm {
-        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
-        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
-        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
     })
 }
 
@@ -9145,11 +9127,9 @@ pub async fn check_update_manual(app: AppHandle) -> CommandResult<UpdateStatusVm
 }
 
 #[tauri::command]
-pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
-    run_download_and_install_update(&app)
-        .await
-        .map_err(command_error)?;
-    crate::desktop_lifecycle::request_app_restart(&app)
+pub fn start_update_install(app: AppHandle) -> CommandResult<UpdateStatusVm> {
+    crate::updater::start_update_install(&app)
+        .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
 }
 
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
@@ -9225,10 +9205,10 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<MulticaError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
-    let message = error.to_string();
-    if let Some(code) = updater_command_error_code(&message) {
-        return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
+    if let Some(error) = error.downcast_ref::<UpdaterError>() {
+        return CommandErrorVm::new(error.code(), error.params());
     }
+    let message = error.to_string();
     CommandErrorVm::new("app.unexpected", serde_json::json!({ "message": message }))
 }
 
@@ -9333,20 +9313,6 @@ fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) ->
         return command_error(error);
     }
     CommandErrorVm::new(fallback_code, serde_json::json!({}))
-}
-
-fn updater_command_error_code(message: &str) -> Option<&'static str> {
-    if message.contains("updater.invalid-url") {
-        Some("updater.invalid-url")
-    } else if message.contains("updater.no-update") {
-        Some("updater.no-update")
-    } else if message.contains("updater.install-failed") {
-        Some("updater.install-failed")
-    } else if message.contains("updater.check-failed") {
-        Some("updater.check-failed")
-    } else {
-        None
-    }
 }
 
 fn workflow_validation_command_error(error: &WorkflowValidationError) -> CommandErrorVm {

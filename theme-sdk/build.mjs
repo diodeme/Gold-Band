@@ -442,7 +442,7 @@ function semanticCssVariable(name) {
   if (name === 'messageUser' || name === 'messageUserForeground') return `--${kebab}`;
   if (name.startsWith('sidebar') || name.startsWith('titlebar')) return `--${kebab}`;
   if (name.startsWith('scrollbar')) return `--gold-${kebab}`;
-  if (['workspace', 'surfaceLow', 'surfaceHigh', 'lineSoft', 'windowOutline', 'windowEdgeShadow', 'running', 'success', 'warning', 'danger', 'permission'].includes(name)) return `--gold-${kebab}`;
+  if (['workspace', 'surfaceLow', 'surfaceHigh', 'lineSoft', 'windowOutline', 'windowEdgeShadow', 'running', 'success', 'warning', 'danger', 'attention', 'attentionForeground', 'permission'].includes(name)) return `--gold-${kebab}`;
   if (!SEMANTIC_TOKEN_NAMES.includes(name)) throw themeError('theme.package-invalid', `unknown semantic token ${name}`);
   if (['background', 'foreground', 'title', 'card', 'cardForeground', 'popover', 'popoverForeground', 'primary', 'primaryForeground', 'secondary', 'secondaryForeground', 'muted', 'mutedForeground', 'accent', 'accentForeground', 'destructive', 'border', 'input', 'ring', 'link'].includes(name)) return `--${kebab}`;
   return `--gb-${kebab}`;

@@ -9473,7 +9473,6 @@ mod tests {
         let badges = DesktopUpdateBadgeState {
             settings_entry_seen_version: Some("0.3.1".to_string()),
             settings_advanced_seen_version: None,
-            announcement_closed_version: Some("0.3.0".to_string()),
         };
         app.set_user_desktop_update_badges(badges).unwrap();
 
@@ -9488,13 +9487,6 @@ mod tests {
                 .settings_entry_seen_version
                 .as_deref(),
             Some("0.3.1")
-        );
-        assert_eq!(
-            state
-                .desktop_update_badges
-                .announcement_closed_version
-                .as_deref(),
-            Some("0.3.0")
         );
 
         let settings = app.load_settings().unwrap();

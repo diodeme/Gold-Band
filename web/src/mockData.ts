@@ -59,7 +59,6 @@ export const mockUpdateStatus: UpdateStatusVm = {
 export const mockUpdateBadges: UpdateBadgeStateVm = {
   settingsEntrySeenVersion: null,
   settingsAdvancedSeenVersion: null,
-  announcementClosedVersion: null,
 };
 const profileTimestamp = localTimestamp();
 
@@ -476,7 +475,6 @@ export const mockBootstrap: AppBootstrapVm = {
   metricsSettings: { enabled: false, toggleLocked: false, metricsBaseUrl: null, heartbeatEndpoint: null, nodeMetricsEndpoint: null, apiKeySet: false },
   updateStatus: mockUpdateStatus,
   updateBadges: mockUpdateBadges,
-  persistedAvailableUpdate: null,
   clientVersion: '',
   platform: 'windows',
   windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },

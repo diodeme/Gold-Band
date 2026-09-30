@@ -592,16 +592,12 @@ export function markSettingsAdvancedUpdateSeen(version: string) {
   return getRuntimeApi().markSettingsAdvancedUpdateSeen(version);
 }
 
-export function dismissUpdateAnnouncement(version: string) {
-  return getRuntimeApi().dismissUpdateAnnouncement(version);
-}
-
 export function checkUpdateManual() {
   return getRuntimeApi().checkUpdateManual();
 }
 
-export function downloadAndInstallUpdate() {
-  return getRuntimeApi().downloadAndInstallUpdate();
+export function startUpdateInstall() {
+  return getRuntimeApi().startUpdateInstall();
 }
 
 export function getMetricsSettings() {

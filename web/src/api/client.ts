@@ -569,9 +569,8 @@ export interface RuntimeApi {
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
-  dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
   checkUpdateManual(): Promise<UpdateStatusVm>;
-  downloadAndInstallUpdate(): Promise<void>;
+  startUpdateInstall(): Promise<UpdateStatusVm>;
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;

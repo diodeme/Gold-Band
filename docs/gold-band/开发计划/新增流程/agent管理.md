@@ -106,6 +106,13 @@ Agent 实例新增两个独立能力配置：
 - 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
 - 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
 
+### 2026-09-30 固定压缩事件兼容版本
+
+- 通过现有 `versionPins` 固定 Claude ACP `0.81.2`、Codex ACP `1.13.1`；这些正式版仍输出 `_meta.contextCompaction`，供现有压缩生命周期识别使用。
+- 基于现有 Registry snapshot 离线重建 Catalog，版本元数据与 npx 启动参数同步固定；上游 snapshot 保留原值。
+- 回归测试同时模拟两个 Agent 的 Registry 版本变化，验证本地固定版本仍优先。后续接入 ACP 预览版 `compaction_update` 并完成验收后再评估解除固定。
+- 过度设计与性能评审：复用现有配置和生成接口，无新增依赖、状态或运行时开销。
+
 ### 2026-09-25 解除 Claude / Codex 版本固定
 
 - 删除 `claude-acp` `0.72.0` 与 `codex-acp` `1.12.0` 两项 pin，`versionPins` 为空对象；在线刷新后 Catalog 为 claude-agent-acp `0.81.2`、codex-acp `1.13.1`，其余模板随 Registry 小版本更新。原 `0.72.0` 用于规避 SDK `0.3.257` 的 macOS 12 启动回归，解除后需要在 macOS 12 回归验证。

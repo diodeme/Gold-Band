@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Changelog"
+  short_description: "Draft and localize reviewed release changelogs"
+  default_prompt: "Use $git-changelog to prepare localized release notes for a specified change range."

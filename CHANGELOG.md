@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.18.0](https://github.com/diodeme/Gold-Band/compare/v0.17.2...v0.18.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **prompt:** AcpContentBlock::ResourceLink is replaced by File, and the get_supported_attachment_extensions command is removed.
+
+### Features
+
+* **agents:** add targeted npx cache repair ([75d8648](https://github.com/diodeme/Gold-Band/commit/75d8648a829d58223970705c9ecbdad5f7589f4e))
+* **composer:** browse and search workspace files from the @ menu ([79fd542](https://github.com/diodeme/Gold-Band/commit/79fd54295329e56030093dcd6c30b66871e48629))
+* **composer:** show icons on @ mention categories ([310d073](https://github.com/diodeme/Gold-Band/commit/310d073b1712518e354011749b253346471f4c4c))
+* **composer:** use document and brain icons for @ categories ([ead6a2d](https://github.com/diodeme/Gold-Band/commit/ead6a2dd580062c961e5bffd7b7c7e6786dfb7f5))
+* **composer:** use the document icon for workspace file chips ([d2c2ee6](https://github.com/diodeme/Gold-Band/commit/d2c2ee6ed3a83ea1155248171e00c0bc61fae81c))
+* **navigation:** hide requirements in default channel ([1a7b0cd](https://github.com/diodeme/Gold-Band/commit/1a7b0cdf8131604620a0dc300e4c436639f32b34))
+* **prompt:** list referenced files by path instead of resource_link ([7adcb25](https://github.com/diodeme/Gold-Band/commit/7adcb25c09512a33dbc1a55f510ab539abe49a74))
+* **prompt:** send task quotes and workspace files to every node ([8183222](https://github.com/diodeme/Gold-Band/commit/818322287a4b70c0aaa7c6818d232ae32841437e))
+* **quotes:** quote file and diff selections into the composer ([b2de39a](https://github.com/diodeme/Gold-Band/commit/b2de39ae2b13ed708d00da9a61195eca137994c6))
+* **release:** add localized update notes pipeline ([2652757](https://github.com/diodeme/Gold-Band/commit/26527577756f4c29b5cbf174024da1a87e1dcae1))
+* **skills:** add localized changelog workflow ([d0e5668](https://github.com/diodeme/Gold-Band/commit/d0e5668f0ec02bddb47edeeb4040c424a96d2511))
+* **source-control:** add file discard and stabilize operation feedback ([9fc5bff](https://github.com/diodeme/Gold-Band/commit/9fc5bffdb40a7732f68fc19273032afe86b9fd45))
+* **updater:** unify update UX and verified install lifecycle ([7f68cc7](https://github.com/diodeme/Gold-Band/commit/7f68cc7f939f29a4577debd99cc92388144fd79f))
+* **workspace-files:** create, rename and delete tree entries with undo ([26f3d5b](https://github.com/diodeme/Gold-Band/commit/26f3d5b0c7de03e3c5ccfe14deb4040532d95f78))
+* **workspace-files:** render SVG previews natively and open them in the built-in browser ([8f3e497](https://github.com/diodeme/Gold-Band/commit/8f3e49782cd8fcadc26b23caa43d5813b7daa76e))
+* **workspace:** follow the session worktree in the right workspace ([6232119](https://github.com/diodeme/Gold-Band/commit/62321198333bf88636a2118591ba1ddcb048609c))
+
+
+### Bug Fixes
+
+* **acp:** pin adapters for compaction metadata ([30c29e2](https://github.com/diodeme/Gold-Band/commit/30c29e242f21a57466e0068b240edb5e98596ef6))
+* **acp:** preserve recorded file diffs with background processing ([9ea0da7](https://github.com/diodeme/Gold-Band/commit/9ea0da741608fdaf9ffb26c2930510313b3286f8))
+* **composer:** keep textarea focus when the role tag is removed ([016d654](https://github.com/diodeme/Gold-Band/commit/016d654959283d2a5b22a234fb6430c7b967ff8e))
+* **composer:** open / and @ menus before existing text ([3e6b19a](https://github.com/diodeme/Gold-Band/commit/3e6b19a3844c857e7e274ecde79442f5265a2c19))
+* **conversation-sidebar:** derive empty state instead of storing ready-empty ([368acfd](https://github.com/diodeme/Gold-Band/commit/368acfdf8042a500d989a06b57535d520328f6a1))
+* **diff:** select whole removed blocks when dragging across them ([eed188a](https://github.com/diodeme/Gold-Band/commit/eed188a32d5717e23cbda5ba94ac789601697084))
+* **diff:** snap unified diff selection to whole changes ([9248568](https://github.com/diodeme/Gold-Band/commit/92485689b87af4cd934123ab437c8574d93c2386))
+* **i18n:** correct ja-JP mistranslations ([7f76d04](https://github.com/diodeme/Gold-Band/commit/7f76d0434fd6abc065d3c0b0a48c3770c6c0f4a1))
+* **i18n:** correct leftover analytics and end-node copy ([48662dc](https://github.com/diodeme/Gold-Band/commit/48662dc7af58494738e826b8cf487a07129950e0))
+* **i18n:** correct UI copy and record locale rules ([a18f88e](https://github.com/diodeme/Gold-Band/commit/a18f88e2aa7f87b04fe5a8074c17d3cdd027ac7c))
+* **notifications:** read window foreground state from the OS ([ba3d8a8](https://github.com/diodeme/Gold-Band/commit/ba3d8a8d5d5a8f6e0ac68c14e8002a7cb59273d3))
+* **notifications:** use channel branding and application identity ([f0e9a65](https://github.com/diodeme/Gold-Band/commit/f0e9a65d3b7a50211c915ce7b82a965dc94d80df))
+* **opener:** route system-browser and system-app opens through Rust ([d683fe7](https://github.com/diodeme/Gold-Band/commit/d683fe7ce2d9b3ad3295a8618863cdb1962879df))
+* **quotes:** read quotes stored with only a message key as agent quotes ([de2142f](https://github.com/diodeme/Gold-Band/commit/de2142ff08a3183eae1d80e857596ac08170fd0a))
+* **release:** refine localized update manifests and release body ([636f170](https://github.com/diodeme/Gold-Band/commit/636f1703b86667b73f7cfd793357ae91095e0e47))
+* **runtime:** retain session directories after fanout release ([3114919](https://github.com/diodeme/Gold-Band/commit/31149190c83d03f0e64255047ec819116c20afe9))
+* **runtime:** stabilize regression contracts ([88d51bb](https://github.com/diodeme/Gold-Band/commit/88d51bbb96b04587f0bd91ad70b474290c700da6))
+* **source-control:** restore workspace change detection ([bf319b9](https://github.com/diodeme/Gold-Band/commit/bf319b9ac8f4eeb211c1eb54a3b60d9eb9922188))
+* **ui:** hide tooltips when their trigger becomes hidden ([c183fa4](https://github.com/diodeme/Gold-Band/commit/c183fa47b009a682d944b1d4f4880cf083ce9bfe))
+* **ui:** open overflow tooltips only on keyboard focus ([c6e1f15](https://github.com/diodeme/Gold-Band/commit/c6e1f153f87afbb97e8103e161b937d7f7ca4f11))
+* **window:** keep Win10 borders visible without system shadows ([71dcbdc](https://github.com/diodeme/Gold-Band/commit/71dcbdc04092fbdeacd3e74cef0bc185a29677af))
+* **window:** preserve Win10 borders after native resizing ([ddd8cab](https://github.com/diodeme/Gold-Band/commit/ddd8cab7337b905f68203e7a80bb1b985241976e))
+
+
+### Performance Improvements
+
+* **i18n:** load only the active locale ([aa20cff](https://github.com/diodeme/Gold-Band/commit/aa20cffc3aca1a6adbc859a8e9839e526dca9bd7))
+* **source-control:** defer heavy reads and batch Git probes ([64369c1](https://github.com/diodeme/Gold-Band/commit/64369c19dd80ec0a007c268afb161536149f0f78))
+* **source-control:** streamline loading and commit reviews ([e0fc2e1](https://github.com/diodeme/Gold-Band/commit/e0fc2e18718196773667d95434be2734429e0ff4))
+* **workspace-files:** skip .git when searching workspace files ([3a7d7f8](https://github.com/diodeme/Gold-Band/commit/3a7d7f8577d672024278a4e74113587f86e0c2dc))
+
 ## [0.17.2](https://github.com/diodeme/Gold-Band/compare/v0.17.1...v0.17.2) (2026-09-25)
 
 

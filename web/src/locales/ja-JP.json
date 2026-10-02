@@ -379,7 +379,15 @@
     "feedbackErrorSession": "関連するセッションは存在しません。再度選択してください。",
     "feedbackErrorAttachment": "スクリーンショットを読み取れないか、形式が未対応です。PNG、JPEG、または WebP を使用してください。",
     "feedbackErrorTooLarge": "アップロードの内容がサイズ上限を超えています。スクリーンショットを減らすか、関連セッションの紐付けを解除してください。",
-    "imagePreview": "画像プレビュー"
+    "imagePreview": "画像プレビュー",
+    "markdownAlert": {
+      "note": "注記",
+      "tip": "ヒント",
+      "important": "重要",
+      "warning": "警告",
+      "caution": "注意"
+    },
+    "releaseNotes": "リリースノート"
   },
   "personalAnalytics": {
     "title": "個人分析",
@@ -2725,6 +2733,12 @@
         "check": "アップデートの確認に失敗しました: {{reason}}",
         "download": "アップデートのダウンロードに失敗しました: {{reason}}",
         "install": "アップデートのインストールに失敗しました: {{reason}}"
+      },
+      "releaseNotes": {
+        "title": "{{appName}} {{version}} リリースノート",
+        "empty": "このバージョンのリリースノートはありません。",
+        "loadFailed": "リリースノートを読み込めませんでした。",
+        "more": "もっと見る"
       }
     }
   },

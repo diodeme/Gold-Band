@@ -37,6 +37,7 @@ const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'b
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,
+  releaseNotesUrl: 'https://github.com/diodeme/Gold-Band/releases',
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',

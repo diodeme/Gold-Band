@@ -165,6 +165,12 @@ describe('UpdateDialog', () => {
     expect(document.querySelector('[data-update-download-progress="true"]')).not.toBeNull();
   });
 
+  it('keeps initial focus on the dialog instead of controls inside the notes', async () => {
+    const notes = '```sh\necho ok\n```';
+    await render(<UpdateDialog open status={status({ update: { ...update, notes } })} onOpenChange={() => {}} onInstall={() => {}} />);
+    expect(document.activeElement).toBe(document.querySelector('[role="dialog"]'));
+  });
+
   it('offers restart once the package is ready', async () => {
     await render(<UpdateDialog open status={status({ status: 'ready' })} onOpenChange={() => {}} onInstall={() => {}} />);
     expect(buttonByText('settings.updater.dialog.action.ready')?.disabled).toBe(false);
@@ -194,5 +200,45 @@ describe('Markdown image preview', () => {
     expect(image.className).not.toContain('cursor-zoom-in');
     await act(async () => image.click());
     expect(document.querySelectorAll('img[src="https://example.com/shot.png"]')).toHaveLength(1);
+  });
+});
+
+describe('GitHub release Markdown flavor', () => {
+  const alerts = ['note', 'tip', 'important', 'warning', 'caution'];
+  // Each alert type uses its own theme token so the five callouts stay distinguishable in every theme.
+  const alertColors: Record<string, string> = { note: 'attention', tip: 'success', important: 'emphasis', warning: 'warning', caution: 'danger' };
+  const notes = [
+    'First line\nSecond line',
+    ...alerts.map((type) => `> [!${type.toUpperCase()}]\n> ${type} body`),
+    '> [!attention] Not a GitHub alert',
+  ].join('\n\n');
+
+  it('renders single newlines and the five GitHub alerts in the UI language', async () => {
+    const container = await render(<Markdown flavor="github-release">{notes}</Markdown>);
+    expect(container.querySelector('p br')).not.toBeNull();
+    for (const type of alerts) {
+      const alert = container.querySelector(`[data-gb-markdown-alert="${type}"]`)!;
+      expect(alert.getAttribute('role')).toBe('note');
+      expect(alert.querySelector('[data-slot="alert-title"]')?.textContent).toBe(`common.markdownAlert.${type}`);
+      expect(alert.querySelector('[data-slot="alert-description"]')?.textContent?.trim()).toBe(`${type} body`);
+      expect(alert.querySelector('svg.octicon')).toBeNull();
+      expect(alert.className).toContain(`text-gold-${alertColors[type]}`);
+    }
+    const plainQuotes = Array.from(container.querySelectorAll('blockquote')).filter((quote) => !quote.hasAttribute('data-gb-markdown-alert'));
+    expect(plainQuotes.map((quote) => quote.textContent?.trim())).toEqual(['[!attention] Not a GitHub alert']);
+  });
+
+  it('keeps default Markdown semantics unchanged', async () => {
+    const container = await render(<Markdown>{notes}</Markdown>);
+    expect(container.querySelector('br')).toBeNull();
+    expect(container.querySelector('[data-gb-markdown-alert]')).toBeNull();
+    expect(container.querySelectorAll('blockquote')).toHaveLength(alerts.length + 1);
+    expect(container.textContent).toContain('[!NOTE]');
+  });
+
+  it('only lets the alert marker classes through the release sanitizer', async () => {
+    const container = await render(<Markdown flavor="github-release">{'<blockquote class="markdown-alert-warning evil">raw</blockquote>\n\n<p class="evil">text</p>'}</Markdown>);
+    expect(container.querySelector('.evil')).toBeNull();
+    expect(container.innerHTML).not.toContain('evil');
   });
 });

@@ -379,7 +379,15 @@
     "feedbackErrorSession": "关联会话不存在或已被移除，请重新选择",
     "feedbackErrorAttachment": "截图无法读取或格式不受支持，请使用 PNG、JPEG 或 WebP",
     "feedbackErrorTooLarge": "上传内容超过大小限制，请减少截图或取消关联会话",
-    "imagePreview": "图片预览"
+    "imagePreview": "图片预览",
+    "markdownAlert": {
+      "note": "说明",
+      "tip": "提示",
+      "important": "重要",
+      "warning": "警告",
+      "caution": "注意"
+    },
+    "releaseNotes": "更新日志"
   },
   "personalAnalytics": {
     "title": "个人数据分析",
@@ -2725,6 +2733,12 @@
         "check": "检查更新失败：{{reason}}",
         "download": "下载更新失败：{{reason}}",
         "install": "安装更新失败：{{reason}}"
+      },
+      "releaseNotes": {
+        "title": "{{appName}} {{version}} 更新日志",
+        "empty": "当前版本暂无更新日志。",
+        "loadFailed": "更新日志加载失败。",
+        "more": "更多"
       }
     }
   },

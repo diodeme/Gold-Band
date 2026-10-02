@@ -379,7 +379,15 @@
     "feedbackErrorSession": "關聯工作階段不存在或已被移除，請重新選擇",
     "feedbackErrorAttachment": "截圖無法讀取或格式不受支援，請使用 PNG、JPEG 或 WebP",
     "feedbackErrorTooLarge": "上傳內容超過大小限制，請減少截圖或取消關聯工作階段",
-    "imagePreview": "圖片預覽"
+    "imagePreview": "圖片預覽",
+    "markdownAlert": {
+      "note": "說明",
+      "tip": "提示",
+      "important": "重要",
+      "warning": "警告",
+      "caution": "注意"
+    },
+    "releaseNotes": "更新日誌"
   },
   "personalAnalytics": {
     "title": "個人資料分析",
@@ -2725,6 +2733,12 @@
         "check": "檢查更新失敗：{{reason}}",
         "download": "下載更新失敗：{{reason}}",
         "install": "安裝更新失敗：{{reason}}"
+      },
+      "releaseNotes": {
+        "title": "{{appName}} {{version}} 更新日誌",
+        "empty": "目前版本沒有更新日誌。",
+        "loadFailed": "更新日誌載入失敗。",
+        "more": "更多"
       }
     }
   },

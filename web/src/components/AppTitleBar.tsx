@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BarChart3, Copy, MessageSquareWarning, Minus, PanelLeft, PanelRight, Square, X } from 'lucide-react';
+import { BarChart3, Copy, MessageSquareWarning, Minus, NotebookText, PanelLeft, PanelRight, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import type { DesktopPlatform } from '../types';
@@ -23,6 +23,7 @@ interface AppTitleBarProps {
   rightWorkspaceOpen?: boolean;
   onToggleRightWorkspace?: () => void;
   onOpenPersonalAnalytics?: () => void;
+  onOpenReleaseNotes?: () => void;
 }
 
 export const APP_TITLE_BAR_LAYOUT = {
@@ -43,6 +44,7 @@ export function AppTitleBar({
   rightWorkspaceOpen = false,
   onToggleRightWorkspace,
   onOpenPersonalAnalytics,
+  onOpenReleaseNotes,
 }: AppTitleBarProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
@@ -50,9 +52,14 @@ export function AppTitleBar({
   const isMaximized = windowState.maximized;
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
-  const [helpTooltipOpen, setHelpTooltipOpen] = useState(false);
-  const [helpTooltipSuppressed, setHelpTooltipSuppressed] = useState(false);
   const helpNavigationPendingRef = useRef(false);
+  const hasHelpMenu = feedbackEnabled || Boolean(onOpenPersonalAnalytics) || Boolean(onOpenReleaseNotes);
+  // Close the menu first so the opened surface keeps focus instead of the help trigger.
+  const openFromHelpMenu = (open: () => void) => {
+    helpNavigationPendingRef.current = true;
+    setHelpMenuOpen(false);
+    requestAnimationFrame(open);
+  };
   const syncWindowStateRef = useRef<() => void>(() => {});
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform, readOnly ? 'browser' : 'desktop');
@@ -159,7 +166,7 @@ export function AppTitleBar({
       />
 
       {trailingContent}
-      {feedbackEnabled || onOpenPersonalAnalytics || onToggleRightWorkspace || updateAction ? (
+      {hasHelpMenu || onToggleRightWorkspace || updateAction ? (
         <div
           className={cn(
             'app-titlebar-no-drag flex h-full flex-none items-center gap-0.5',
@@ -168,35 +175,13 @@ export function AppTitleBar({
           data-titlebar-no-drag="true"
           data-titlebar-trailing-actions="true"
         >
-          {!readOnly && (feedbackEnabled || onOpenPersonalAnalytics) ? (
-            <DropdownMenu open={helpMenuOpen} onOpenChange={(open) => {
-              setHelpMenuOpen(open);
-              if (open) setHelpTooltipOpen(false);
-            }}>
-              <Tooltip
-                open={helpTooltipOpen && !helpMenuOpen && !helpTooltipSuppressed}
-                onOpenChange={(open) => {
-                  if (open && (helpMenuOpen || helpTooltipSuppressed)) return;
-                  setHelpTooltipOpen(open);
-                }}
-              >
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      className={APP_TITLE_BAR_LAYOUT.helpActionClassName}
-                      aria-label={t('common.help')}
-                      onPointerLeave={() => setHelpTooltipSuppressed(false)}
-                      onBlur={() => {
-                        if (!helpMenuOpen) setHelpTooltipSuppressed(false);
-                      }}
-                    >
-                      {t('common.help')}
-                    </button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent>{t('common.help')}</TooltipContent>
-              </Tooltip>
+          {!readOnly && hasHelpMenu ? (
+            <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button type="button" className={APP_TITLE_BAR_LAYOUT.helpActionClassName}>
+                  {t('common.help')}
+                </button>
+              </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
                 className="min-w-40"
@@ -206,32 +191,20 @@ export function AppTitleBar({
                   event.preventDefault();
                 }}
               >
+                {onOpenReleaseNotes ? (
+                  <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenReleaseNotes)} className="gap-2">
+                    <NotebookText className="size-4" />
+                    {t('common.releaseNotes')}
+                  </DropdownMenuItem>
+                ) : null}
                 {onOpenPersonalAnalytics ? (
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      helpNavigationPendingRef.current = true;
-                      setHelpTooltipOpen(false);
-                      setHelpTooltipSuppressed(true);
-                      setHelpMenuOpen(false);
-                      requestAnimationFrame(onOpenPersonalAnalytics);
-                    }}
-                    className="gap-2"
-                  >
+                  <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenPersonalAnalytics)} className="gap-2">
                     <BarChart3 className="size-4" />
                     {t('common.personalAnalytics')}
                   </DropdownMenuItem>
                 ) : null}
                 {feedbackEnabled ? (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    helpNavigationPendingRef.current = true;
-                    setHelpTooltipOpen(false);
-                    setHelpTooltipSuppressed(true);
-                    setHelpMenuOpen(false);
-                    requestAnimationFrame(() => setFeedbackOpen(true));
-                  }}
-                  className="gap-2"
-                >
+                <DropdownMenuItem onSelect={() => openFromHelpMenu(() => setFeedbackOpen(true))} className="gap-2">
                   <MessageSquareWarning className="size-4" />
                   {t('common.userFeedback')}
                 </DropdownMenuItem>

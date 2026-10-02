@@ -171,6 +171,7 @@ pub struct WorkspaceLayoutProfileVm {
 pub struct AppInfoVm {
     pub channel: String,
     pub feedback_enabled: bool,
+    pub release_notes_url: String,
     pub app_name: String,
     pub app_key: String,
     pub config_dir_name: String,
@@ -1356,6 +1357,7 @@ pub fn bootstrap_vm(
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             feedback_enabled: channel_config.feedback_enabled,
+            release_notes_url: channel_config.release_notes_url.to_string(),
             app_name: channel_config.app_name.to_string(),
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),

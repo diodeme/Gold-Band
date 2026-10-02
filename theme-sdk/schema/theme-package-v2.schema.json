@@ -229,6 +229,7 @@
                 "danger",
                 "attention",
                 "attentionForeground",
+                "emphasis",
                 "statusRunningSurface",
                 "statusRunningBorder",
                 "statusSuccessSurface",
@@ -533,6 +534,10 @@
                   "minLength": 1
                 },
                 "attentionForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "emphasis": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -1117,6 +1122,7 @@
                 "danger",
                 "attention",
                 "attentionForeground",
+                "emphasis",
                 "statusRunningSurface",
                 "statusRunningBorder",
                 "statusSuccessSurface",
@@ -1421,6 +1427,10 @@
                   "minLength": 1
                 },
                 "attentionForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "emphasis": {
                   "type": "string",
                   "minLength": 1
                 },

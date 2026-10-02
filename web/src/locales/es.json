@@ -379,7 +379,15 @@
     "feedbackErrorSession": "La sesión relacionada ya no existe. Selecciónala de nuevo.",
     "feedbackErrorAttachment": "No se pudo leer una captura o el formato no es compatible. Usa PNG, JPEG o WebP.",
     "feedbackErrorTooLarge": "La carga es demasiado grande. Quita capturas o la sesión relacionada.",
-    "imagePreview": "Vista previa de la imagen"
+    "imagePreview": "Vista previa de la imagen",
+    "markdownAlert": {
+      "note": "Nota",
+      "tip": "Sugerencia",
+      "important": "Importante",
+      "warning": "Advertencia",
+      "caution": "Precaución"
+    },
+    "releaseNotes": "Notas de la versión"
   },
   "personalAnalytics": {
     "title": "Análisis personal",
@@ -2725,6 +2733,12 @@
         "check": "No se pudo comprobar si hay actualizaciones: {{reason}}",
         "download": "No se pudo descargar la actualización: {{reason}}",
         "install": "No se pudo instalar la actualización: {{reason}}"
+      },
+      "releaseNotes": {
+        "title": "Notas de la versión de {{appName}} {{version}}",
+        "empty": "Esta versión no tiene notas de la versión.",
+        "loadFailed": "No se pudieron cargar las notas de la versión.",
+        "more": "Más"
       }
     }
   },

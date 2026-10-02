@@ -89,6 +89,7 @@ import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { ReleaseNotesDialog } from '@/components/update/ReleaseNotesDialog';
 import { UpdateDialog } from '@/components/update/UpdateDialog';
 import { TitleBarUpdateButton } from '@/components/update/TitleBarUpdateButton';
 import { setUpdateDownloadProgress } from '@/components/update/update-progress-store';
@@ -351,6 +352,7 @@ const defaultUpdateBadges: UpdateBadgeStateVm = {
 const defaultAppInfo: AppInfoVm = {
   channel: 'default',
   feedbackEnabled: false,
+  releaseNotesUrl: 'https://github.com/diodeme/Gold-Band/releases',
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
@@ -911,6 +913,7 @@ export function App() {
       .catch(() => undefined);
   }, [conversationRunModePersistence]);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -2327,6 +2330,7 @@ export function App() {
         setConversationPage(page);
         pushRoute('task-orchestration', taskListPage, page);
       }}
+      onOpenReleaseNotes={() => setReleaseNotesOpen(true)}
       titleBarUpdateAction={<TitleBarUpdateButton status={updateStatus} onOpen={() => setUpdateDialogOpen(true)} />}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
@@ -2480,6 +2484,12 @@ export function App() {
         </AlertDialogContent>
       </AlertDialog>
       {content}
+      <ReleaseNotesDialog
+        open={releaseNotesOpen}
+        appName={appInfo.appName}
+        releaseNotesUrl={appInfo.releaseNotesUrl}
+        onOpenChange={setReleaseNotesOpen}
+      />
       <UpdateDialog
         open={updateDialogOpen}
         status={updateStatus}

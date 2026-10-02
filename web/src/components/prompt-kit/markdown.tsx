@@ -1,17 +1,22 @@
 import type React from 'react';
 import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Download, FileCode2 } from 'lucide-react';
+import { Download, FileCode2, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert, type LucideIcon } from 'lucide-react';
+import remarkBreaks from 'remark-breaks';
+import { remarkAlert } from 'remark-github-blockquote-alert';
 import { useTranslation } from 'react-i18next';
 import {
   Block,
   CodeBlock,
   CodeBlockCopyButton,
+  defaultRehypePlugins,
+  defaultRemarkPlugins,
   defaultUrlTransform,
   Streamdown,
   type BlockProps,
   type StreamdownProps,
   useIsCodeFenceIncomplete,
 } from 'streamdown';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ImagePreviewDialog, type ImagePreviewTarget } from '@/components/shared/ImagePreviewDialog';
 import { openExternalUrl } from '@/api';
@@ -24,10 +29,17 @@ import {
 } from '@/lib/streaming-markdown-playback';
 import { wasmCode } from '@/lib/streamdown-wasm-code';
 
+/**
+ * `github-release` renders text authored for GitHub Release bodies: single newlines are line
+ * breaks and GitHub alerts (`> [!NOTE]` …) render as callouts. Chat and file Markdown keep `default`.
+ */
+export type MarkdownFlavor = 'default' | 'github-release';
+
 export type MarkdownProps = {
   children: string;
   className?: string;
   streaming?: boolean;
+  flavor?: MarkdownFlavor;
 };
 
 export interface MarkdownResourceLinkError {
@@ -413,6 +425,14 @@ function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError,
   );
 }
 
+function MarkdownParagraph({ children }: { children?: React.ReactNode }) {
+  return <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere]">{children}</p>;
+}
+
+function MarkdownBlockquote({ children }: { children?: React.ReactNode }) {
+  return <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>;
+}
+
 const markdownComponents = {
   h1: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={1}>{children}</CompactHeading>,
   h2: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={2}>{children}</CompactHeading>,
@@ -420,7 +440,7 @@ const markdownComponents = {
   h4: ({ children }: { children?: React.ReactNode }) => <h4 className="mt-2 mb-1 text-sm font-medium leading-6 text-foreground first:mt-0">{children}</h4>,
   h5: ({ children }: { children?: React.ReactNode }) => <h5 className="mt-2 mb-1 text-sm font-medium leading-6 text-foreground first:mt-0">{children}</h5>,
   h6: ({ children }: { children?: React.ReactNode }) => <h6 className="mt-2 mb-1 text-sm font-medium leading-6 text-muted-foreground first:mt-0">{children}</h6>,
-  p: ({ children }: { children?: React.ReactNode }) => <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere]">{children}</p>,
+  p: MarkdownParagraph,
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-foreground">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="text-foreground/90">{children}</em>,
   a: MarkdownLink,
@@ -429,7 +449,7 @@ const markdownComponents = {
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="my-1.5 list-disc space-y-1 pl-5 marker:text-muted-foreground">{children}</ul>,
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-muted-foreground">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
-  blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>,
+  blockquote: MarkdownBlockquote,
   inlineCode: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
     <code className={cn('rounded-md bg-gold-surface-high px-1.5 py-0.5 font-sans text-[1em] font-normal leading-[inherit] tracking-normal text-foreground', className)} {...props}>
       {children}
@@ -445,6 +465,81 @@ const markdownComponents = {
   td: ({ children }: { children?: React.ReactNode }) => <td className="border-t border-border/40 px-3 py-2 text-muted-foreground">{children}</td>,
   hr: () => <hr className="my-3 border-border/70" />,
 } as NonNullable<StreamdownProps['components']>;
+
+const GITHUB_ALERT_TYPES = ['note', 'tip', 'important', 'warning', 'caution'] as const;
+type GithubAlertType = typeof GITHUB_ALERT_TYPES[number];
+const GITHUB_ALERT_TITLE_CLASS = 'markdown-alert-title';
+const githubAlertStyles: Record<GithubAlertType, { icon: LucideIcon; className: string }> = {
+  note: { icon: Info, className: 'border-gold-attention text-gold-attention' },
+  tip: { icon: Lightbulb, className: 'border-gold-success text-gold-success' },
+  important: { icon: MessageSquareWarning, className: 'border-gold-emphasis text-gold-emphasis' },
+  warning: { icon: TriangleAlert, className: 'border-gold-warning text-gold-warning' },
+  caution: { icon: OctagonAlert, className: 'border-gold-danger text-gold-danger' },
+};
+
+function classTokens(className: unknown) {
+  return typeof className === 'string' ? className.split(/\s+/u) : [];
+}
+
+function GithubAlertBlockquote({ className, children }: { className?: string; children?: React.ReactNode }) {
+  const { t } = useTranslation();
+  const tokens = classTokens(className);
+  const type = GITHUB_ALERT_TYPES.find((candidate) => tokens.includes(`markdown-alert-${candidate}`));
+  if (!type) return <MarkdownBlockquote>{children}</MarkdownBlockquote>;
+  const { icon: Icon, className: typeClassName } = githubAlertStyles[type];
+  return (
+    <Alert
+      role="note"
+      className={cn('my-2 rounded-none border-0 border-l-2 bg-transparent px-3 py-1', typeClassName)}
+      data-gb-markdown-alert={type}
+    >
+      <Icon aria-hidden="true" />
+      <AlertTitle className="font-semibold">{t(`common.markdownAlert.${type}`)}</AlertTitle>
+      <AlertDescription className="block space-y-2 text-foreground">{children}</AlertDescription>
+    </Alert>
+  );
+}
+
+// Single newlines are line breaks here, so paragraphs need visible spacing. The alert title is
+// rendered by GithubAlertBlockquote in the UI language.
+function GithubReleaseParagraph({ className, children }: { className?: string; children?: React.ReactNode }) {
+  if (classTokens(className).includes(GITHUB_ALERT_TITLE_CLASS)) return null;
+  return <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere] [&+p]:mt-3">{children}</p>;
+}
+
+type Pluggable = NonNullable<StreamdownProps['remarkPlugins']>[number];
+type SanitizeSchema = { attributes?: Record<string, unknown[]> };
+const [sanitizePlugin, sanitizeSchema] = defaultRehypePlugins.sanitize as [Extract<Pluggable, (...parameters: never[]) => unknown>, SanitizeSchema];
+const githubReleaseRemarkPlugins: Pluggable[] = [
+  ...Object.values(defaultRemarkPlugins),
+  [remarkAlert, { tagName: 'blockquote' }],
+  remarkBreaks,
+];
+// Streamdown's sanitizer strips classes; allow only the alert markers so callouts survive.
+const githubReleaseRehypePlugins: Pluggable[] = [
+  defaultRehypePlugins.raw,
+  [sanitizePlugin, {
+    ...sanitizeSchema,
+    attributes: {
+      ...sanitizeSchema.attributes,
+      blockquote: [
+        ...(sanitizeSchema.attributes?.blockquote ?? []),
+        ['className', 'markdown-alert', ...GITHUB_ALERT_TYPES.map((type) => `markdown-alert-${type}`)],
+      ],
+      p: [...(sanitizeSchema.attributes?.p ?? []), ['className', GITHUB_ALERT_TITLE_CLASS]],
+    },
+  }],
+  defaultRehypePlugins.harden,
+];
+
+const markdownFlavors: Record<MarkdownFlavor, Pick<StreamdownProps, 'components' | 'remarkPlugins' | 'rehypePlugins'>> = {
+  default: { components: markdownComponents },
+  'github-release': {
+    components: { ...markdownComponents, blockquote: GithubAlertBlockquote, p: GithubReleaseParagraph } as NonNullable<StreamdownProps['components']>,
+    remarkPlugins: githubReleaseRemarkPlugins,
+    rehypePlugins: githubReleaseRehypePlugins,
+  },
+};
 
 const streamdownPlaybackTokens: NonNullable<StreamdownProps['animated']> = {
   animation: 'fadeIn',
@@ -462,7 +557,7 @@ function StreamingMarkdownBlock(props: BlockProps) {
   );
 }
 
-export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ children, className, streaming = false, flavor = 'default' }: MarkdownProps) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
@@ -521,7 +616,9 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
         animated={streaming ? streamdownPlaybackTokens : false}
         BlockComponent={StreamingMarkdownBlock}
         className="space-y-2"
-        components={markdownComponents}
+        components={markdownFlavors[flavor].components}
+        remarkPlugins={markdownFlavors[flavor].remarkPlugins}
+        rehypePlugins={markdownFlavors[flavor].rehypePlugins}
         controls={markdownControls}
         isAnimating={streaming}
         lineNumbers={false}

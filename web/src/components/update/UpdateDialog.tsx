@@ -1,9 +1,9 @@
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Markdown, MarkdownImagePreviewProvider } from '@/components/prompt-kit/markdown';
+import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import type { UpdateStatusVm } from '@/types';
+import { ReleaseNotesBody, ReleaseNotesDialogContent } from './release-notes-layout';
 import { UpdateDownloadProgress } from './UpdateDownloadProgress';
 import { describeUpdateError, updateActionState } from './update-state';
 
@@ -20,22 +20,14 @@ export function UpdateDialog({ open, status, onOpenChange, onInstall }: UpdateDi
   const action = updateActionState(status);
   return (
     <Dialog open={open && update !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[min(88vh,56rem)] w-[min(92vw,50rem)] flex-col gap-0 p-0 sm:max-w-[min(92vw,50rem)]">
+      <ReleaseNotesDialogContent>
         <DialogHeader className="shrink-0 px-6 pt-5 pb-3">
           <DialogTitle>{t('settings.updater.dialog.title', { version: update?.version ?? '' })}</DialogTitle>
           <DialogDescription className="font-mono text-xs">
             {update ? `${update.currentVersion} → ${update.version}` : null}
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4 text-sm" data-update-dialog-notes="true">
-          {update?.notes ? (
-            <MarkdownImagePreviewProvider>
-              <Markdown>{update.notes}</Markdown>
-            </MarkdownImagePreviewProvider>
-          ) : (
-            <p className="text-muted-foreground">{t('settings.updater.dialog.noNotes')}</p>
-          )}
-        </div>
+        <ReleaseNotesBody notes={update?.notes} emptyText={t('settings.updater.dialog.noNotes')} />
         <DialogFooter className="shrink-0 items-center gap-3 px-6 pt-3 pb-5 sm:justify-between">
           <div className="min-w-0 flex-1 text-xs">
             {action === 'downloading' ? <UpdateDownloadProgress className="max-w-96" /> : null}
@@ -53,7 +45,7 @@ export function UpdateDialog({ open, status, onOpenChange, onInstall }: UpdateDi
             </Button>
           </div>
         </DialogFooter>
-      </DialogContent>
+      </ReleaseNotesDialogContent>
     </Dialog>
   );
 }

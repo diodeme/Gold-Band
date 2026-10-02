@@ -379,7 +379,15 @@
     "feedbackErrorSession": "A sessão relacionada não existe mais. Selecione-a novamente.",
     "feedbackErrorAttachment": "Uma captura de tela não pôde ser lida ou não é suportada. Use PNG, JPEG ou WebP.",
     "feedbackErrorTooLarge": "O envio é muito grande. Remova capturas de tela ou a sessão relacionada.",
-    "imagePreview": "Visualização da imagem"
+    "imagePreview": "Visualização da imagem",
+    "markdownAlert": {
+      "note": "Observação",
+      "tip": "Dica",
+      "important": "Importante",
+      "warning": "Aviso",
+      "caution": "Cuidado"
+    },
+    "releaseNotes": "Notas da versão"
   },
   "personalAnalytics": {
     "title": "Análises pessoais",
@@ -2725,6 +2733,12 @@
         "check": "Falha ao verificar atualizações: {{reason}}",
         "download": "Falha ao baixar a atualização: {{reason}}",
         "install": "Falha ao instalar a atualização: {{reason}}"
+      },
+      "releaseNotes": {
+        "title": "Notas da versão do {{appName}} {{version}}",
+        "empty": "Esta versão não tem notas da versão.",
+        "loadFailed": "Não foi possível carregar as notas da versão.",
+        "more": "Mais"
       }
     }
   },

@@ -461,6 +461,7 @@ export interface WorkspaceLayoutProfileVm {
 export interface AppInfoVm {
   channel: string;
   feedbackEnabled: boolean;
+  releaseNotesUrl: string;
   appName: string;
   appKey: string;
   configDirName: string;

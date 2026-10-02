@@ -2799,6 +2799,21 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 回归：Rust 覆盖错误码映射、检查失败保留已知更新、进度节流、签名校验、版本比较、pending 往返与单次安装、状态单飞；Web 覆盖按钮显隐与状态文案、进度 external store、弹窗安装/失败重试/下载禁用/就绪重启、Markdown 图片预览仅在 Provider 内生效；新增 `50rem` / `92vw` 宽度、长说明滚动区和固定标题/底部操作的 DOM 契约测试。宽度专项验收：12 项定向测试、前端类型检查及生产构建通过；独立 Vite fixture 挂载实际组件，在 1440×1000 → 480×800 → 1440×1000 下验证宽度 800px → 441.6px → 800px，60 段说明滚动时标题/底部保持可见，无横向溢出；未启动或构建 EXE。
 - 性能与过度设计评审：进度事件后端节流到 100ms，前端经 `useSyncExternalStore` 只刷新进度消费者，不进入 App bootstrap 状态；新增一个主题 token 和一个共享预览组件，复用既有 Dialog、退出生命周期与 updater 插件，无新增轮询、缓存或队列。签名校验只在安装前对单个安装包执行一次。
 
+## 2026-10-01 更新弹窗按 GitHub Release 规则渲染
+
+- [x] 根因：更新日志按 GitHub Release 正文规则编写（单个换行即换行、GitHub 提示框），客户端却按标准 CommonMark + GFM 渲染，导致换行合并、提示框缺少样式；同时 git-changelog 要求的 `[!attention]` 不是 GitHub 支持的提示框类型。属于更新日志渲染规则未定义，按“明确渲染模式 + 规范编写约定”修复，不对单个版本打补丁；已发布的 0.18.0 不回改。
+- [x] 实现：共享 `Markdown` 新增可选 `flavor="github-release"`，仅更新弹窗使用；在 Streamdown 默认插件后追加成熟库 `remark-github-blockquote-alert` 与 `remark-breaks`，插件、安全过滤配置和组件映射均为模块级常量。安全过滤只额外放行提示框标记类；提示框复用 shadcn `Alert`、lucide 图标与主题 token，标题改用七语言 `common.markdownAlert.*` 文案，插件自带 SVG 与英文标题不展示。颜色依次为 `attention`、`success`、`emphasis`、`warning`、`danger`：浏览器验收发现 `primary` 是按钮填充色，tech-neutral 深色下对比度仅约 1.4，且 gold-band 浅色的 `link` 与 `success` 同色，因此新增 `emphasis` 主题 token（浅色 `#8250df`、深色 `#a371f7`）并经 theme-sdk 重新生成。该模式段落间保留间距；更新弹窗打开时焦点停在弹窗本身，避免说明中的代码复制按钮自动弹出提示。git-changelog 改为只允许 GitHub 五种提示框，并说明换行、编号列表和图片宽度写法。
+- [x] 回归：`web/tests/update-ux.test.tsx` 覆盖单个换行、五种提示框结构、本地化标题与主题色映射、`[!attention]` 保持普通引用、默认 Markdown 换行与引用不变、作者传入的其他 class 被过滤，以及弹窗初始焦点；定向测试及 i18n 契约 23 项通过，前端类型检查通过。两个 mock `streamdown` 的测试补充真实默认插件导出。全量 Web 测试其余 8 项失败（模型思考标签、continue 提交）在撤回本次 Markdown 改动后同样失败，与本次无关。
+- 性能与过度设计评审：仅更新弹窗打开时对一份更新说明解析一次，两个 remark 插件为线性 AST 遍历；不新增状态、依赖之外的抽象或缓存，聊天流式渲染路径与默认插件不变。
+
+## 2026-10-02 帮助菜单查看当前版本更新日志
+
+- [x] 背景：静默更新的用户若不点「重启安装」，直接退出完成安装后再也看不到本次更新日志；升级后首次检查会清空“已发现的更新”记录，客户端没有当前版本日志的来源。
+- [x] 方案：日志随安装包打包，而不是升级时转存运行期记录。Vite 插件 `web/config/release-notes-plugin.ts` 按 `package.json` 版本生成虚拟模块，每种语言一个 `?raw` 懒加载分块，所有渠道使用基础版本日志；全新安装、手动安装和离线都可查看，版本与日志由同一次构建决定，不新增状态或持久化。
+- [x] 入口：「帮助」菜单新增「更新日志」并对所有渠道显示，删除帮助按钮 Tooltip 及相关状态。弹窗与更新弹窗共用 `release-notes-layout` 外壳和 `github-release` 渲染；底部「更多」打开渠道配置新增的 `releaseNotesUrl`（default 为 GitHub Releases，wb 为企业微信文档），经 build.rs → `DesktopChannelConfig` → `AppInfoVm` 下发，不从更新地址推导。
+- [x] 回归：插件只嵌入当前版本且每种语言一个懒加载分块、无日志时无加载器；弹窗仅在打开时按界面语言加载、空状态与加载失败区分、「更多」打开渠道地址且为空时隐藏；帮助按钮无 Tooltip、菜单项顺序与焦点不回到触发器；Rust 校验 `releaseNotesUrl` 与渠道配置一致。生产构建确认日志为独立分块（单个约 4–5.5 KB），启动入口分块不包含日志正文。
+- 性能与过度设计评审：启动零开销，单种语言几 KB 且仅在打开弹窗时读取；只打包当前版本，体积不随版本增长。
+
 ## 2026-09-30 fanout 释放后保留会话工作目录
 
 - [x] 根因：Git worktree 释放及后续空目录清理移除了历史 ACP 会话仍引用的 cwd；属于释放实现没有覆盖会话目录生命周期。

@@ -169,6 +169,7 @@
   --color-gold-running: var(--gold-running);
   --color-gold-attention: var(--gold-attention);
   --color-gold-attention-foreground: var(--gold-attention-foreground);
+  --color-gold-emphasis: var(--gold-emphasis);
   --color-gold-success: var(--gold-success);
   --color-gold-warning: var(--gold-warning);
   --color-gold-danger: var(--gold-danger);

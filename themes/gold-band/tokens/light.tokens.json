@@ -286,6 +286,7 @@
     },
     "attention": { "$type": "color", "$value": "#2563eb" },
     "attentionForeground": { "$type": "color", "$value": "#ffffff" },
+    "emphasis": { "$type": "color", "$value": "#8250df" },
     "statusRunningSurface": { "$type": "color", "$value": "rgba(37,99,235,.10)" },
     "statusRunningBorder": { "$type": "color", "$value": "rgba(37,99,235,.30)" },
     "statusSuccessSurface": { "$type": "color", "$value": "rgba(10,122,94,.10)" },

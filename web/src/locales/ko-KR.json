@@ -379,7 +379,15 @@
     "feedbackErrorSession": "관련 세션이 더 이상 존재하지 않습니다. 다시 선택하세요.",
     "feedbackErrorAttachment": "스크린샷을 읽을 수 없거나 지원되지 않는 형식입니다. PNG, JPEG 또는 WebP를 사용하세요.",
     "feedbackErrorTooLarge": "업로드 크기가 너무 큽니다. 스크린샷이나 관련 세션을 제거하세요.",
-    "imagePreview": "이미지 미리보기"
+    "imagePreview": "이미지 미리보기",
+    "markdownAlert": {
+      "note": "참고",
+      "tip": "팁",
+      "important": "중요",
+      "warning": "경고",
+      "caution": "주의"
+    },
+    "releaseNotes": "릴리스 노트"
   },
   "personalAnalytics": {
     "title": "개인 데이터 분석",
@@ -2725,6 +2733,12 @@
         "check": "업데이트 확인에 실패했습니다: {{reason}}",
         "download": "업데이트 다운로드에 실패했습니다: {{reason}}",
         "install": "업데이트 설치에 실패했습니다: {{reason}}"
+      },
+      "releaseNotes": {
+        "title": "{{appName}} {{version}} 릴리스 노트",
+        "empty": "이 버전의 릴리스 노트가 없습니다.",
+        "loadFailed": "릴리스 노트를 불러오지 못했습니다.",
+        "more": "더 보기"
       }
     }
   },

@@ -379,7 +379,15 @@
     "feedbackErrorSession": "The related session no longer exists. Please select it again.",
     "feedbackErrorAttachment": "A screenshot could not be read or is unsupported. Use PNG, JPEG, or WebP.",
     "feedbackErrorTooLarge": "The upload is too large. Remove screenshots or the related session.",
-    "imagePreview": "Image preview"
+    "imagePreview": "Image preview",
+    "markdownAlert": {
+      "note": "Note",
+      "tip": "Tip",
+      "important": "Important",
+      "warning": "Warning",
+      "caution": "Caution"
+    },
+    "releaseNotes": "Release notes"
   },
   "personalAnalytics": {
     "title": "Personal analytics",
@@ -2725,6 +2733,12 @@
         "check": "Failed to check for updates: {{reason}}",
         "download": "Failed to download the update: {{reason}}",
         "install": "Failed to install the update: {{reason}}"
+      },
+      "releaseNotes": {
+        "title": "{{appName}} {{version}} release notes",
+        "empty": "There are no release notes for this version.",
+        "loadFailed": "Couldn't load the release notes.",
+        "more": "More"
       }
     }
   },

@@ -29,7 +29,9 @@ const { getAgentCommandCatalog, mergeAcpEventWindowsCounter, streamdownRender } 
   streamdownRender: vi.fn(),
 }));
 
-vi.mock('streamdown', () => ({
+vi.mock('streamdown', async (importOriginal) => ({
+  defaultRemarkPlugins: (await importOriginal<typeof import('streamdown')>()).defaultRemarkPlugins,
+  defaultRehypePlugins: (await importOriginal<typeof import('streamdown')>()).defaultRehypePlugins,
   defaultUrlTransform: (url: string) => url,
   parseMarkdownIntoBlocks: (markdown: string) => [markdown],
   Streamdown: ({ children }: { children: React.ReactNode }) => {

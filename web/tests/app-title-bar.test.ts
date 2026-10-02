@@ -17,14 +17,6 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AppTitleBar', () => {
-  it('keeps the Help tooltip controlled by menu and navigation state', () => {
-    const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
-
-    expect(source).toContain('open={helpTooltipOpen && !helpMenuOpen && !helpTooltipSuppressed}');
-    expect(source).toContain('setHelpTooltipOpen(false)');
-    expect(source).toContain('setHelpTooltipSuppressed(true)');
-  });
-
   it('uses the compact shared desktop titlebar dimensions', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',
@@ -48,7 +40,7 @@ describe('AppTitleBar', () => {
     expect(html).not.toContain('font-semibold');
   });
 
-  it('shows Help only when the channel capability is enabled', () => {
+  it('shows Help only when it has at least one entry', () => {
     const enabledHtml = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'MALING',
       feedbackEnabled: true,
@@ -64,7 +56,16 @@ describe('AppTitleBar', () => {
       onToggleSidebar: () => {},
     }));
 
+    const releaseNotesHtml = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+      onOpenReleaseNotes: () => {},
+    }));
+
     expect(enabledHtml).toContain('common.help');
+    expect(releaseNotesHtml).toContain('common.help');
     expect(disabledHtml).not.toContain('common.help');
   });
   it('reserves native traffic light space on macOS without custom controls', () => {

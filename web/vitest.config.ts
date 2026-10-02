@@ -1,8 +1,10 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 import { identitySensitiveDependencies } from './config/identity-sensitive-dependencies';
+import { releaseNotesPlugin } from './config/release-notes-plugin';
 
 export default defineConfig({
+  plugins: [releaseNotesPlugin(path.resolve(__dirname, '..'))],
   resolve: {
     dedupe: [...identitySensitiveDependencies],
     alias: {

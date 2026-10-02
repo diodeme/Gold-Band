@@ -22,7 +22,11 @@ Before overwriting any existing target-version file, read it. Inspect an existin
 
 1. Read the Release PR, release-please `CHANGELOG.md`, merged PRs and commits in the range, and relevant product documents.
 2. Draft the user-facing Simplified Chinese release notes. Use `release-notes/0.15.0/zh-CN.md` through `release-notes/0.17.0/zh-CN.md` as style references.
-3. Keep the historical structure and tone: `## 功能新增/调整`, `## 体验优化`, numbered feature headings, short workflow steps, explicit limitations, and `> [!attention]` callouts when needed.
+3. Keep the historical structure and tone: `## 功能新增/调整`, `## 体验优化`, numbered feature headings, short workflow steps, explicit limitations, and callouts when needed. Write GitHub-compatible Markdown, because GitHub Release and the in-app update dialog render it the same way:
+   - Use only GitHub alerts: `> [!NOTE]` for supplementary information, `> [!TIP]` for usage advice, `> [!IMPORTANT]` for changes users must know, `> [!WARNING]` for limitations or risky operations, and `> [!CAUTION]` for irreversible actions or possible data loss. Do not use Obsidian callouts such as `> [!attention]`; they render as plain quotes. Put the `[!TYPE]` marker alone on the first line; alert titles are fixed by type and cannot be customized (no `> [!WARNING] Custom title`). When a callout needs a heading, make the next line bold, for example `> [!CAUTION]` / `> **放弃更改无法撤销**` / `> 正文…`.
+   - A single newline is a line break; separate paragraphs with a blank line.
+   - Write numbered lists as `1. item`, with a space after the number.
+   - Do not use Obsidian image sizing such as `![image.png|500](…)`.
 4. Include only verified user-visible changes. Do not invent details from commit titles alone. Remove duplicates and internal-only implementation details.
 5. Use stable `https://static.dion.blue/...` image URLs. Check supplied images and links when network access is available; do not rewrite images to GitHub asset URLs.
 6. Translate the confirmed Chinese source into `zh-TW`, `en`, `ja-JP`, `ko-KR`, `pt-BR`, and `es`. Preserve facts, Markdown structure, URLs, warnings, code, identifiers, and product terms.
@@ -51,6 +55,6 @@ Always write `release.json` alongside all seven locale files, including for a no
 - A present file must parse as a JSON object containing exactly `critical` with a boolean value. Malformed JSON, missing fields, non-boolean values, arrays/null, or extra keys are invalid; fail before writing any generated output, rather than falling back to normal or leaving partial output.
 - All eight default manifests (seven `latest.<locale>.json` plus `latest.json`) must reflect the same choice: include `critical: true` for a critical release; omit the field for a normal release. `latest.json` remains identical to the Simplified Chinese manifest.
 
-GitHub Release uses the Chinese and English files. The `default` client channel uses all seven languages. The `wb` channel remains a single `latest.json`; its existing build/critical controls are unchanged and do not consume this default-channel metadata. Keep `CHANGELOG.md` managed by release-please.
+GitHub Release uses the Chinese and English files. The `default` client channel uses all seven languages. Every app build, including `wb`, also embeds `release-notes/<package.json version>/<locale>.md` for Help → Release notes, so builds made before the notes exist ship without them. The `wb` channel remains a single `latest.json`; its existing build/critical controls are unchanged and do not consume this default-channel metadata. Keep `CHANGELOG.md` managed by release-please.
 
 Do not automatically commit, push, tag, or publish a GitHub Release. The requirement to include these files in the release SHA/tag is not authorization to do so; each action requires a separate user request.

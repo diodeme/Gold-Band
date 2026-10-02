@@ -137,6 +137,7 @@ pub struct SemanticThemeTokens {
     pub danger: String,
     pub attention: String,
     pub attention_foreground: String,
+    pub emphasis: String,
     pub status_running_surface: String,
     pub status_running_border: String,
     pub status_success_surface: String,

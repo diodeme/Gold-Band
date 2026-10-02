@@ -32,6 +32,7 @@ interface ShellProps {
   onSelectConversation: (page: ConversationPage) => void;
   onToggleSidebar: () => void;
   onOpenPersonalAnalytics: () => void;
+  onOpenReleaseNotes?: () => void;
   titleBarUpdateAction?: React.ReactNode;
   onChooseWorkspace: () => void;
   onConversationNew: () => void;
@@ -57,7 +58,7 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, showMulticaTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, showMulticaTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -75,6 +76,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, s
         onSelect={onSelectConversation}
         onToggleSidebar={onToggleSidebar}
         onOpenPersonalAnalytics={onOpenPersonalAnalytics}
+        onOpenReleaseNotes={onOpenReleaseNotes}
         titleBarUpdateAction={titleBarUpdateAction}
         onNewConversation={onConversationNew}
         onSearch={onConversationSearch}
@@ -115,6 +117,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, s
       onSelect={onSelect}
       onToggleSidebar={onToggleSidebar}
       onOpenPersonalAnalytics={onOpenPersonalAnalytics}
+      onOpenReleaseNotes={onOpenReleaseNotes}
       titleBarUpdateAction={titleBarUpdateAction}
       onChooseWorkspace={onChooseWorkspace}
     >
@@ -138,12 +141,13 @@ interface WorkbenchShellProps {
   onSelect: (module: PrimaryModule) => void;
   onToggleSidebar: () => void;
   onOpenPersonalAnalytics: () => void;
+  onOpenReleaseNotes?: () => void;
   titleBarUpdateAction?: React.ReactNode;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar, onOpenPersonalAnalytics, titleBarUpdateAction }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -161,6 +165,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
           onOpenPersonalAnalytics={onOpenPersonalAnalytics}
+          onOpenReleaseNotes={onOpenReleaseNotes}
           updateAction={titleBarUpdateAction}
         />
         <div className="flex min-h-0 flex-1 bg-sidebar">

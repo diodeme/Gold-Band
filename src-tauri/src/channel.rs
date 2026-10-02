@@ -13,6 +13,7 @@ pub struct DesktopChannelConfig {
     pub updater_endpoint: &'static str,
     pub updater_public_key: &'static str,
     pub allow_http_updater: bool,
+    pub release_notes_url: &'static str,
     pub metrics_enabled: bool,
     pub feedback_enabled: bool,
     pub metrics_toggle_locked: bool,
@@ -37,6 +38,8 @@ pub fn current_channel_config() -> DesktopChannelConfig {
             .unwrap_or("https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json"),
         updater_public_key: option_env!("GOLD_BAND_UPDATER_PUBLIC_KEY").unwrap_or("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwQkQwNjYyMTA0MjdDQ0IKUldUTGZFSVFZZ2E5OEN3QnY2eHRkM0xVRnlreC9UMFNpSWdXSC9oK0ZWMlpsWXpuZ0hhbEFnWGQK"),
         allow_http_updater: option_env!("GOLD_BAND_ALLOW_HTTP_UPDATER") == Some("true"),
+        release_notes_url: option_env!("GOLD_BAND_RELEASE_NOTES_URL")
+            .unwrap_or("https://github.com/diodeme/Gold-Band/releases"),
         metrics_enabled: option_env!("GOLD_BAND_METRICS_ENABLED") == Some("true"),
         feedback_enabled: option_env!("GOLD_BAND_FEEDBACK_ENABLED") == Some("true"),
         metrics_toggle_locked: option_env!("GOLD_BAND_METRICS_TOGGLE_LOCKED") == Some("true"),
@@ -70,6 +73,20 @@ mod tests {
         assert_eq!(
             option_env!("GOLD_BAND_RELEASE_CHANNEL").unwrap_or("default"),
             gold_band::channel::RELEASE_CHANNEL
+        );
+    }
+
+    /// 「帮助 → 更新日志 → 更多」只打开渠道配置声明的页面，不从更新地址推导。
+    #[test]
+    fn release_notes_url_comes_from_the_channel_config() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../configs/channels")
+            .join(format!("{}.json", gold_band::channel::RELEASE_CHANNEL));
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            super::current_channel_config().release_notes_url,
+            config["releaseNotesUrl"].as_str().unwrap()
         );
     }
 }

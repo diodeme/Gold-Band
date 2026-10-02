@@ -15,6 +15,7 @@ struct ChannelConfig {
     updater_endpoint: String,
     updater_public_key: String,
     allow_http_updater: bool,
+    release_notes_url: String,
     metrics_enabled: bool,
     #[serde(default)]
     feedback_enabled: bool,
@@ -101,6 +102,10 @@ fn main() {
     println!(
         "cargo:rustc-env=GOLD_BAND_ALLOW_HTTP_UPDATER={}",
         config.allow_http_updater
+    );
+    println!(
+        "cargo:rustc-env=GOLD_BAND_RELEASE_NOTES_URL={}",
+        config.release_notes_url
     );
     println!(
         "cargo:rustc-env=GOLD_BAND_METRICS_ENABLED={}",

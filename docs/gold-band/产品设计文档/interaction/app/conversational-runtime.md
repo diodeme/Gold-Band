@@ -273,6 +273,8 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - **Agent 正文复制**：已经退出流式态、非失败且正文非空的 Agent `textDelta` 在正文下方提供复制操作；桌面指针 hover 或键盘 focus 时显示，无法 hover 的触摸环境保持可见，操作区预留固定高度以避免消息布局跳动。复制内容直接使用该消息用于渲染的 canonical Markdown 原文；带 runtime control 的消息只复制剥离隐藏控制协议后的可见正文。Thought、Activity/Tool、Permission、Elicitation、用户消息及仍在流式输出的正文不提供该入口。复制反馈只属于单条消息的局部状态，不提升到会话 timeline 状态。
 - **行内语义标签**：Streamdown 渲染的反引号行内内容与所在正文使用相同的 UI 字体、字号、字重和行高，只通过主题 `surfaceHigh` 语义底色、圆角与水平内边距表达标签边界；可点击本地文件标签复用同一层级的底色。标签底色必须直接消费主题的高层 surface，不得再叠加 `muted` 透明度而与会话背景二次混合。不得因行内代码切换到更小的等宽字体，也不得靠额外强边框补偿对比度。
 - **围栏代码块**：共享 prompt-kit Markdown 渲染器使用 Streamdown 官方代码块与 `@streamdown/code` Shiki 插件。带语言标记的 fenced code block 在顶部展示声明语言并按该语言高亮，右上角始终提供该代码块自己的复制按钮；复制内容只包含代码正文，不包含围栏或语言标记。一条消息的多个代码块相互独立；未声明语言时保持纯文本，不进行自动语言探测。代码正文保留源码换行与缩进，单行超过消息宽度时在代码块内部自动折行，不产生横向撑宽或横向滚动。代码块复制与消息级 Markdown 原文复制并存，分别满足局部代码和整条回复的复制需求；Tooltip 组合不得覆盖 Streamdown 复制按钮自身的点击处理。
+- **网络图片**：共享 prompt-kit Markdown 渲染器按[受信任的图片域名](settings.md#14-受信任的图片域名)加载网络图片。图片 URL 由 Agent 输出控制，被注入的 Agent 可以把敏感数据拼进图片地址，渲染即发出请求，Agent 侧的 sandbox 与工具权限都不覆盖这条路径，因此渲染层负责拦截：host 未受信任时不创建 `<img>`，显示 alt（或文件名）、host 与“加载”按钮的占位；点击后信任该 host 并持久化，同一 host 的图片随即全部显示，失败时保留占位并提示重试。图片外层有链接时，点击按钮不会触发外层链接。已加载图片的点击与链接点击共用 `MarkdownResourceLinkHandler`：外层有链接时执行外层链接；存在 `MarkdownImagePreviewProvider`（如更新弹窗）时原位放大；否则网络图片用内置浏览器打开（无工作区 handler 时交给系统浏览器），本地路径用文件工作区打开。我们发布的更新说明使用 `github-release` 渲染模式，网络图片直接加载，不经过信任列表。
+- **GitHub 提示框**：所有 Markdown 渲染模式都支持 GitHub 五种提示框（`NOTE / TIP / IMPORTANT / WARNING / CAUTION`），使用 `remark-github-blockquote-alert` 解析，显示为带图标、本地化标题和类型主题色的 shadcn `Alert`；类型、图标与主题 token 和文件预览共用 `web/src/lib/markdown-alerts.ts`。安全过滤只额外放行提示框标记类；其他 `[!…]` 保持普通引用。单个换行即换行只属于 `github-release` 模式，对话与文件仍按 CommonMark 合并软换行。
 
 ### Composer 附件
 

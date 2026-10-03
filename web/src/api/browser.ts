@@ -2442,6 +2442,12 @@ export const browserApi: RuntimeApi = {
   saveDesktopUiMode(_mode) {
     return Promise.resolve();
   },
+  trustRemoteImageHosts(hosts) {
+    return Promise.resolve(browserPreviewState.trustRemoteImageHosts(hosts));
+  },
+  revokeRemoteImageHost(host) {
+    return Promise.resolve(browserPreviewState.revokeRemoteImageHost(host));
+  },
   getConversationSidebarBootstrap() {
     return Promise.resolve({
       workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],

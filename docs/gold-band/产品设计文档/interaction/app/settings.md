@@ -246,6 +246,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-08-16 Theme SDK 补齐字体声明名与文件内建 family 的一致性校验；内置 `Inter Variable / Gold Band MiSans` 保持既有展示名与用户偏好语义，产品展示名继续独立管理。应用入口与依赖清单均移除 Fontsource Inter 全局旁路。后续以构建器派生的 `runtimeFamily` 隔离浏览器全局 font-face identity，自定义栈随当前主题重新投影；两个内置主题不再因复用作者 family 而相互请求字体资源。
 - UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
+- 「高级」页中“记录详细日志”所在分组标题为「日志」（2026-10-03 起，原为与 tab 重名的「高级」）。
 - 设置页中的问号帮助入口（如“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
@@ -299,6 +300,14 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 文档类标题：H1/H2 为 18px 粗体并带弱分隔线、上方 32px 间距，H3 为 16px 粗体、上方 24px 间距，首个标题无上间距。
 - 更新日志弹窗与更新弹窗共用同一外壳与 `github-release` 渲染，底部「更多」打开渠道配置 `releaseNotesUrl` 声明的页面（default 为 GitHub Releases 页面，wb 为企业微信更新日志文档），不从更新地址推导；该值为空时不显示「更多」。
 - 更新日志以 GitHub Release 的显示效果为准，按 GitHub 兼容 Markdown 编写：提示框只使用 `NOTE / TIP / IMPORTANT / WARNING / CAUTION` 五种，`[!TYPE]` 单独占第一行，标题由类型固定、不可自定义，需要小标题时把下一行写成加粗文字；不使用 Obsidian 的 `[!attention]` 等 callout 和 `![…|500]` 图片宽度写法；单个换行即换行，编号列表写成 `1. 内容`。
-- 客户端更新弹窗使用共享 `Markdown` 的 `github-release` 渲染模式，与 GitHub Release 正文保持一致：单个换行显示为换行，五种 GitHub 提示框显示为带图标的提示框，标题跟随界面语言，颜色依次使用 `attention`、`success`、`emphasis`、`warning`、`danger` 主题 token，保证五种提示框在各主题下可区分且清晰；其他类型保持为普通引用。该模式下段落之间保留间距，避免与单个换行混淆；弹窗打开时焦点停在弹窗本身，不落到说明中的代码复制按钮等控件。安全过滤仅为该模式额外放行提示框标记类，聊天、文件预览等其他 Markdown 渲染保持标准 CommonMark + GFM 不变。
+- 客户端更新弹窗使用共享 `Markdown` 的 `github-release` 渲染模式，与 GitHub Release 正文保持一致：单个换行显示为换行，五种 GitHub 提示框显示为带图标的提示框，标题跟随界面语言，颜色依次使用 `attention`、`success`、`emphasis`、`warning`、`danger` 主题 token，保证五种提示框在各主题下可区分且清晰；其他类型保持为普通引用。该模式下段落之间保留间距，避免与单个换行混淆；弹窗打开时焦点停在弹窗本身，不落到说明中的代码复制按钮等控件。提示框属于 GFM 通用语法，聊天和文件预览同样渲染（见[对话运行时](conversational-runtime.md)与[工作区文件](workspace-files.md)）；`github-release` 只额外把单个换行渲染为换行，并直接加载更新说明中的网络图片，不经过受信任图片域名。
 
 - `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。default 发布生成七个 `latest.<locale>.json`，并保留与简体中文 manifest 相同的 `latest.json` 供旧客户端与缺失 locale 资产时回退；客户端按已保存界面语言选择 locale manifest；该选择只发生在后台更新请求中，设置页「更新地址」始终展示配置的 `latest.json`，不随语言变化。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成并覆盖 release-please 默认正文，格式为 `# Gold Band vX.Y.Z` 标题、中英文锚点跳转、`## 中文` / `## English` 两段，原文标题（代码块外）各降一级；图片继续引用 `static.dion.blue`。`wb`、自定义更新 URL 和 `npm run build:wb` 均保持单一 `latest.json`，不接入 locale 选择。
+
+## 14. 受信任的图片域名
+
+- Markdown 中的网络图片只从用户信任的 host 加载。加载图片会把请求发给文档作者或 Agent 指定的服务器，可能暴露 IP，也可能被注入的 Agent 用来把数据拼进图片地址外传；Agent 侧的 sandbox 和工具权限不覆盖渲染这一步，所以由渲染层把关。
+- 信任从图片本身产生：对话中点击图片占位上的“加载”，或在文件预览顶部提示中点击“加载”。确认后写入持久化列表，之后任何会话和文档中来自这些 host 的图片直接显示。我们发布的更新说明不经过此列表。
+- 「高级」页的“受信任的图片域名”分组以自动换行的胶囊标签列出已信任的 host，标签内提供移除按钮，不设内部滚动和最大高度；超过 20 个时只显示前 20 个，末尾以同款胶囊显示被折叠数量「+N」（悬停提示「显示全部 N 个」），点击原地展开，展开后末尾「收起」；移除失败时标签标记为错误并提示重试；列表为空时显示空状态。不提供手动添加入口：信任应在看到图片时决定，避免凭空填写宽泛域名。
+- 数据：`state.json` 的 `remoteImageTrust { schemaVersion: 1, trustedHosts }`，经 `with_state` 事务读改写，多处同时信任不会丢更新。host 按 WHATWG URL 规则规范化（小写、IDN 转 punycode、默认端口省略、非默认端口保留），只做精确匹配，不支持子域名通配，也不区分 http/https。
+- 接口：启动 bootstrap 携带 `remoteImageTrust`；`trust_remote_image_hosts(hosts)` 批量信任，任一 host 非法时整体拒绝并返回 `remote-image.host-invalid`；`revoke_remote_image_host(host)` 移除。两者幂等，成功时返回最新的完整列表，前端 `remote-image-trust-store` 以最后一次写入的响应收敛，每张图片只订阅自己 host 是否受信任。

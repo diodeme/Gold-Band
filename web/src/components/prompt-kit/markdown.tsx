@@ -1,6 +1,6 @@
 import type React from 'react';
 import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Download, FileCode2, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert, type LucideIcon } from 'lucide-react';
+import { Download, FileCode2, ImageIcon, Loader2 } from 'lucide-react';
 import remarkBreaks from 'remark-breaks';
 import { remarkAlert } from 'remark-github-blockquote-alert';
 import { useTranslation } from 'react-i18next';
@@ -17,12 +17,16 @@ import {
   useIsCodeFenceIncomplete,
 } from 'streamdown';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ImagePreviewDialog, type ImagePreviewTarget } from '@/components/shared/ImagePreviewDialog';
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isHttpUrlHref, isLocalFileHref, isSystemHandlerHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
+import { MARKDOWN_ALERT_TYPES, markdownAlertStyles, markdownAlertTitleKey } from '@/lib/markdown-alerts';
+import { remoteImageHost, type RemoteImagePolicy } from '@/lib/remote-image-trust';
+import { trustRemoteImageHosts, useRemoteImageHostTrusted } from '@/lib/remote-image-trust-store';
 import {
   createStreamingMarkdownPlayback,
   type StreamingMarkdownPlayback,
@@ -30,10 +34,11 @@ import {
 import { wasmCode } from '@/lib/streamdown-wasm-code';
 
 /**
+ * Every flavor renders CommonMark + GFM, including GitHub alerts (`> [!NOTE]` …).
  * `chat` is for replies inside a message flow and keeps headings close to body size.
  * `document` is for standalone documents (prompts, context bodies) and uses a document heading hierarchy.
- * `github-release` is a document flavor for text authored for GitHub Release bodies: single newlines
- * are line breaks and GitHub alerts (`> [!NOTE]` …) render as callouts.
+ * `github-release` is a document flavor for release notes Gold Band publishes: single newlines are
+ * line breaks and remote images load without host trust.
  */
 export type MarkdownFlavor = 'chat' | 'document' | 'github-release';
 
@@ -354,9 +359,74 @@ function downloadImageBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(objectUrl);
 }
 
-function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError, ...props }: MarkdownImageProps) {
+const MarkdownRemoteImagePolicyContext = createContext<RemoteImagePolicy>('user-trust');
+
+function MarkdownImage(props: MarkdownImageProps) {
+  const policy = useContext(MarkdownRemoteImagePolicyContext);
+  const host = props.src ? remoteImageHost(props.src) : null;
+  const trusted = useRemoteImageHostTrusted(host);
+  if (host && policy === 'user-trust' && !trusted) {
+    return <BlockedRemoteImage host={host} src={props.src ?? ''} alt={props.alt ?? ''} />;
+  }
+  return <LoadedMarkdownImage {...props} />;
+}
+
+function imageLabel(src: string, alt: string) {
+  if (alt.trim()) return alt.trim();
+  try {
+    return new URL(src).pathname.split('/').at(-1) || src;
+  } catch {
+    return src;
+  }
+}
+
+/** Remote image from an untrusted host: no request is made until the user trusts the host. */
+function BlockedRemoteImage({ host, src, alt }: { host: string; src: string; alt: string }) {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const load = useCallback(async (event: React.MouseEvent) => {
+    // The image may sit inside a link; loading must not also follow it.
+    event.preventDefault();
+    event.stopPropagation();
+    setPending(true);
+    setFailed(false);
+    try {
+      await trustRemoteImageHosts([host]);
+    } catch {
+      setFailed(true);
+    } finally {
+      setPending(false);
+    }
+  }, [host]);
+  return (
+    <span
+      className="my-2 inline-flex max-w-full items-center gap-2 rounded-md border border-dashed border-border/70 px-2.5 py-1.5 align-middle text-xs text-muted-foreground"
+      data-gb-markdown-image-blocked={host}
+    >
+      <ImageIcon className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 truncate text-foreground">{imageLabel(src, alt)}</span>
+      <span className="min-w-0 truncate">{host}</span>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="h-6 shrink-0 px-2 text-xs"
+        disabled={pending}
+        onClick={(event) => void load(event)}
+      >
+        {pending ? <Loader2 className="size-3 animate-spin" aria-hidden="true" /> : null}
+        {t('common.remoteImage.load')}
+      </Button>
+      {failed ? <span className="shrink-0 text-destructive">{t('common.remoteImage.trustFailed')}</span> : null}
+    </span>
+  );
+}
+
+function LoadedMarkdownImage({ node: _node, className, src, alt = '', onLoad, onError, ...props }: MarkdownImageProps) {
   const { t } = useTranslation();
   const openPreview = useContext(MarkdownImagePreviewContext);
+  const linkHandler = useContext(MarkdownResourceLinkContext);
   const imageRef = useRef<HTMLImageElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -395,6 +465,33 @@ function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError,
     }
   }, [alt, src]);
 
+  // Clicking an image opens its own source like a link to it: a modal that provides a preview
+  // zooms in place; otherwise web images open like web links and local images like file links.
+  const openMode = !src || !showImage
+    ? null
+    : openPreview
+      ? 'preview'
+      : isExternalUrlHref(src) || (linkHandler && isLocalFileHref(src))
+        ? 'open'
+        : null;
+  const handleClick = useCallback((event: React.MouseEvent<HTMLImageElement>) => {
+    // A linked image follows its outer link instead.
+    if (!src || !openMode || event.currentTarget.closest('a')) return;
+    if (openMode === 'preview') {
+      openPreview?.({ src, alt });
+      return;
+    }
+    if (isLocalFileHref(src)) {
+      void linkHandler?.openLocalFile(src);
+      return;
+    }
+    if (isSystemHandlerHref(src) || !linkHandler?.openWebUrl || !isHttpUrlHref(src)) {
+      void openExternalUrl(src);
+      return;
+    }
+    void linkHandler.openWebUrl(src);
+  }, [alt, linkHandler, openMode, openPreview, src]);
+
   if (!src) return null;
   return (
     <span className="group relative my-4 inline-block" data-gb-markdown-image="true">
@@ -402,9 +499,9 @@ function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError,
         {...props}
         ref={imageRef}
         alt={alt}
-        className={cn('max-w-full rounded-lg', showFallback && 'hidden', openPreview && showImage && 'cursor-zoom-in', className)}
+        className={cn('max-w-full rounded-lg', showFallback && 'hidden', openMode === 'preview' && 'cursor-zoom-in', openMode === 'open' && 'cursor-pointer', className)}
         src={src}
-        onClick={openPreview && showImage ? () => openPreview({ src, alt }) : undefined}
+        onClick={handleClick}
         onLoad={handleLoad}
         onError={handleError}
       />
@@ -470,27 +567,18 @@ const markdownComponents = {
   hr: () => <hr className="my-3 border-border/70" />,
 } as NonNullable<StreamdownProps['components']>;
 
-const GITHUB_ALERT_TYPES = ['note', 'tip', 'important', 'warning', 'caution'] as const;
-type GithubAlertType = typeof GITHUB_ALERT_TYPES[number];
-const GITHUB_ALERT_TITLE_CLASS = 'markdown-alert-title';
-const githubAlertStyles: Record<GithubAlertType, { icon: LucideIcon; className: string }> = {
-  note: { icon: Info, className: 'border-gold-attention text-gold-attention' },
-  tip: { icon: Lightbulb, className: 'border-gold-success text-gold-success' },
-  important: { icon: MessageSquareWarning, className: 'border-gold-emphasis text-gold-emphasis' },
-  warning: { icon: TriangleAlert, className: 'border-gold-warning text-gold-warning' },
-  caution: { icon: OctagonAlert, className: 'border-gold-danger text-gold-danger' },
-};
+const MARKDOWN_ALERT_TITLE_CLASS = 'markdown-alert-title';
 
 function classTokens(className: unknown) {
   return typeof className === 'string' ? className.split(/\s+/u) : [];
 }
 
-function GithubAlertBlockquote({ className, children }: { className?: string; children?: React.ReactNode }) {
+function MarkdownAlertBlockquote({ className, children }: { className?: string; children?: React.ReactNode }) {
   const { t } = useTranslation();
   const tokens = classTokens(className);
-  const type = GITHUB_ALERT_TYPES.find((candidate) => tokens.includes(`markdown-alert-${candidate}`));
+  const type = MARKDOWN_ALERT_TYPES.find((candidate) => tokens.includes(`markdown-alert-${candidate}`));
   if (!type) return <MarkdownBlockquote>{children}</MarkdownBlockquote>;
-  const { icon: Icon, className: typeClassName } = githubAlertStyles[type];
+  const { icon: Icon, className: typeClassName } = markdownAlertStyles[type];
   return (
     <Alert
       role="note"
@@ -498,16 +586,21 @@ function GithubAlertBlockquote({ className, children }: { className?: string; ch
       data-gb-markdown-alert={type}
     >
       <Icon aria-hidden="true" />
-      <AlertTitle className="font-semibold">{t(`common.markdownAlert.${type}`)}</AlertTitle>
+      <AlertTitle className="font-semibold">{t(markdownAlertTitleKey(type))}</AlertTitle>
       <AlertDescription className="block space-y-2 text-foreground">{children}</AlertDescription>
     </Alert>
   );
 }
 
-// Single newlines are line breaks here, so paragraphs need visible spacing. The alert title is
-// rendered by GithubAlertBlockquote in the UI language.
+// The alert title is rendered by MarkdownAlertBlockquote in the UI language.
+function MarkdownAlertAwareParagraph({ className, children }: { className?: string; children?: React.ReactNode }) {
+  if (classTokens(className).includes(MARKDOWN_ALERT_TITLE_CLASS)) return null;
+  return <MarkdownParagraph>{children}</MarkdownParagraph>;
+}
+
+// Single newlines are line breaks in GitHub Release bodies, so paragraphs need visible spacing.
 function GithubReleaseParagraph({ className, children }: { className?: string; children?: React.ReactNode }) {
-  if (classTokens(className).includes(GITHUB_ALERT_TITLE_CLASS)) return null;
+  if (classTokens(className).includes(MARKDOWN_ALERT_TITLE_CLASS)) return null;
   return <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere] [&+p]:mt-3">{children}</p>;
 }
 
@@ -521,13 +614,13 @@ const documentHeadingComponents = {
 type Pluggable = NonNullable<StreamdownProps['remarkPlugins']>[number];
 type SanitizeSchema = { attributes?: Record<string, unknown[]> };
 const [sanitizePlugin, sanitizeSchema] = defaultRehypePlugins.sanitize as [Extract<Pluggable, (...parameters: never[]) => unknown>, SanitizeSchema];
-const githubReleaseRemarkPlugins: Pluggable[] = [
+// GitHub alerts are GFM syntax, so every Markdown surface renders them.
+const alertRemarkPlugins: Pluggable[] = [
   ...Object.values(defaultRemarkPlugins),
   [remarkAlert, { tagName: 'blockquote' }],
-  remarkBreaks,
 ];
 // Streamdown's sanitizer strips classes; allow only the alert markers so callouts survive.
-const githubReleaseRehypePlugins: Pluggable[] = [
+const alertRehypePlugins: Pluggable[] = [
   defaultRehypePlugins.raw,
   [sanitizePlugin, {
     ...sanitizeSchema,
@@ -535,21 +628,37 @@ const githubReleaseRehypePlugins: Pluggable[] = [
       ...sanitizeSchema.attributes,
       blockquote: [
         ...(sanitizeSchema.attributes?.blockquote ?? []),
-        ['className', 'markdown-alert', ...GITHUB_ALERT_TYPES.map((type) => `markdown-alert-${type}`)],
+        ['className', 'markdown-alert', ...MARKDOWN_ALERT_TYPES.map((type) => `markdown-alert-${type}`)],
       ],
-      p: [...(sanitizeSchema.attributes?.p ?? []), ['className', GITHUB_ALERT_TITLE_CLASS]],
+      p: [...(sanitizeSchema.attributes?.p ?? []), ['className', MARKDOWN_ALERT_TITLE_CLASS]],
     },
   }],
   defaultRehypePlugins.harden,
 ];
 
-const markdownFlavors: Record<MarkdownFlavor, Pick<StreamdownProps, 'components' | 'remarkPlugins' | 'rehypePlugins'>> = {
-  chat: { components: markdownComponents },
-  document: { components: { ...markdownComponents, ...documentHeadingComponents } as NonNullable<StreamdownProps['components']> },
+type MarkdownFlavorProfile = Pick<StreamdownProps, 'components' | 'remarkPlugins' | 'rehypePlugins'> & {
+  /** `user-trust` loads remote images only from hosts the user trusted; `allow` is for content we publish. */
+  remoteImages: RemoteImagePolicy;
+};
+
+const markdownFlavors: Record<MarkdownFlavor, MarkdownFlavorProfile> = {
+  chat: {
+    components: { ...markdownComponents, blockquote: MarkdownAlertBlockquote, p: MarkdownAlertAwareParagraph } as NonNullable<StreamdownProps['components']>,
+    remarkPlugins: alertRemarkPlugins,
+    rehypePlugins: alertRehypePlugins,
+    remoteImages: 'user-trust',
+  },
+  document: {
+    components: { ...markdownComponents, ...documentHeadingComponents, blockquote: MarkdownAlertBlockquote, p: MarkdownAlertAwareParagraph } as NonNullable<StreamdownProps['components']>,
+    remarkPlugins: alertRemarkPlugins,
+    rehypePlugins: alertRehypePlugins,
+    remoteImages: 'user-trust',
+  },
   'github-release': {
-    components: { ...markdownComponents, ...documentHeadingComponents, blockquote: GithubAlertBlockquote, p: GithubReleaseParagraph } as NonNullable<StreamdownProps['components']>,
-    remarkPlugins: githubReleaseRemarkPlugins,
-    rehypePlugins: githubReleaseRehypePlugins,
+    components: { ...markdownComponents, ...documentHeadingComponents, blockquote: MarkdownAlertBlockquote, p: GithubReleaseParagraph } as NonNullable<StreamdownProps['components']>,
+    remarkPlugins: [...alertRemarkPlugins, remarkBreaks],
+    rehypePlugins: alertRehypePlugins,
+    remoteImages: 'allow',
   },
 };
 
@@ -624,6 +733,7 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
       data-gb-streaming-markdown={streaming ? 'true' : undefined}
       ref={rootRef}
     >
+      <MarkdownRemoteImagePolicyContext.Provider value={markdownFlavors[flavor].remoteImages}>
       <Streamdown
         animated={streaming ? streamdownPlaybackTokens : false}
         BlockComponent={StreamingMarkdownBlock}
@@ -647,6 +757,7 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
       >
         {proxyLocalFileLinks(children)}
       </Streamdown>
+      </MarkdownRemoteImagePolicyContext.Provider>
     </div>
   );
 });

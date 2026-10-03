@@ -387,7 +387,11 @@
       "warning": "警告",
       "caution": "注意"
     },
-    "releaseNotes": "更新日志"
+    "releaseNotes": "更新日志",
+    "remoteImage": {
+      "load": "加载",
+      "trustFailed": "加载失败，请重试"
+    }
   },
   "personalAnalytics": {
     "title": "个人数据分析",
@@ -717,7 +721,9 @@
           "workspace-unavailable": "会话工作树不可用，可能已被收回或删除。",
           "workspace-outside-project": "该目录不属于当前项目的 Git 工作树。"
         }
-      }
+      },
+      "remoteMarkdownImages": "此文档包含 {{count}} 张来自 {{hosts}} 的网络图片",
+      "remoteMarkdownImageHostSeparator": "、"
     },
     "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
     "rootUnavailable": {
@@ -2399,7 +2405,7 @@
     "appearance": "外观",
     "language": "语言",
     "typography": "字体",
-    "advanced": "高级",
+    "logging": "日志",
     "light": "浅色",
     "dark": "深色",
     "system": "跟随系统",
@@ -2740,6 +2746,16 @@
         "loadFailed": "更新日志加载失败。",
         "more": "更多"
       }
+    },
+    "remoteImages": {
+      "title": "受信任的图片域名",
+      "description": "Markdown 中来自这些域名的网络图片会直接加载。其他网络图片需要先点击“加载”。",
+      "empty": "还没有受信任的域名",
+      "remove": "移除 {{host}}",
+      "removeFailed": "移除失败，请重试",
+      "hiddenCount": "+{{count}}",
+      "showAll": "显示全部 {{count}} 个",
+      "showLess": "收起"
     }
   },
   "multica": {

@@ -387,7 +387,11 @@
       "warning": "警告",
       "caution": "注意"
     },
-    "releaseNotes": "更新日誌"
+    "releaseNotes": "更新日誌",
+    "remoteImage": {
+      "load": "載入",
+      "trustFailed": "載入失敗，請重試"
+    }
   },
   "personalAnalytics": {
     "title": "個人資料分析",
@@ -717,7 +721,9 @@
           "workspace-unavailable": "工作階段的工作樹無法使用，可能已被收回或刪除。",
           "workspace-outside-project": "該目錄不屬於目前專案的 Git 工作樹。"
         }
-      }
+      },
+      "remoteMarkdownImages": "此文件包含 {{count}} 張來自 {{hosts}} 的網路圖片",
+      "remoteMarkdownImageHostSeparator": "、"
     },
     "discardWorkflowChanges": "工作流還有未儲存的修改。確定要放棄這些修改並關閉嗎？",
     "rootUnavailable": {
@@ -2399,7 +2405,7 @@
     "appearance": "外觀",
     "language": "語言",
     "typography": "字型",
-    "advanced": "進階",
+    "logging": "日誌",
     "light": "淺色",
     "dark": "深色",
     "system": "跟隨系統",
@@ -2740,6 +2746,16 @@
         "loadFailed": "更新日誌載入失敗。",
         "more": "更多"
       }
+    },
+    "remoteImages": {
+      "title": "受信任的圖片網域",
+      "description": "Markdown 中來自這些網域的網路圖片會直接載入。其他網路圖片需要先點選「載入」。",
+      "empty": "尚未有受信任的網域",
+      "remove": "移除 {{host}}",
+      "removeFailed": "移除失敗，請重試",
+      "hiddenCount": "+{{count}}",
+      "showAll": "顯示全部 {{count}} 個",
+      "showLess": "收合"
     }
   },
   "multica": {

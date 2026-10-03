@@ -83,6 +83,7 @@ pub struct AppBootstrapVm {
     pub window_chrome: DesktopWindowChromeVm,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
+    pub remote_image_trust: gold_band::remote_image_trust::RemoteImageTrust,
     pub needs_workspace: bool,
 }
 
@@ -1363,6 +1364,7 @@ pub fn bootstrap_vm(
             config_dir_name: channel_config.config_dir_name.to_string(),
         },
         app_config: app_config_vm(&app.config),
+        remote_image_trust: crate::remote_image_trust::load_remote_image_trust(app),
         needs_workspace,
     }
 }

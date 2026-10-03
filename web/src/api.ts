@@ -680,6 +680,14 @@ export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
 }
 
+export function trustRemoteImageHosts(hosts: string[]) {
+  return getRuntimeApi().trustRemoteImageHosts(hosts);
+}
+
+export function revokeRemoteImageHost(host: string) {
+  return getRuntimeApi().revokeRemoteImageHost(host);
+}
+
 export function getConversationSidebarBootstrap() {
   return getRuntimeApi().getConversationSidebarBootstrap();
 }

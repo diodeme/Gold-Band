@@ -46,6 +46,7 @@ import type {
   SkillContentVm,
   SkillListVm,
   PreferencesVm,
+  RemoteImageTrustVm,
   ResolvedColorScheme,
   AvatarKind,
   AvatarShape,
@@ -573,6 +574,8 @@ export interface RuntimeApi {
   startUpdateInstall(): Promise<UpdateStatusVm>;
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
+  trustRemoteImageHosts(hosts: string[]): Promise<RemoteImageTrustVm>;
+  revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;

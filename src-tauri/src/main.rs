@@ -25,6 +25,7 @@ mod multica;
 mod notifications;
 mod npx_cache;
 mod personal_analytics;
+mod remote_image_trust;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -453,6 +454,8 @@ fn run() -> anyhow::Result<()> {
             doctor_agent,
             npx_cache::preview_agent_cache_repair,
             npx_cache::repair_agent_cache,
+            remote_image_trust::trust_remote_image_hosts,
+            remote_image_trust::revoke_remote_image_host,
             get_task_list,
             get_profiles,
             get_profile,

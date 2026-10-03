@@ -52,7 +52,7 @@ describe('Markdown preview DOM contract', () => {
       '<!-- README-I18N:START -->\n\n中文 | English\n\n<!-- README-I18N:END -->\n\n```md\n<!-- visible example -->\n```',
       [
         markdown({ base: markdownLanguage }),
-        markdownImagePreview(new Map()),
+        markdownImagePreview({ images: new Map() }),
       ],
     );
 
@@ -87,7 +87,7 @@ describe('Markdown preview DOM contract', () => {
       ].join('\n'),
       [
         markdown({ base: markdownLanguage }),
-        markdownImagePreview(new Map(), undefined, onLinkClick),
+        markdownImagePreview({ images: new Map(), onLinkClick }),
       ],
     );
 
@@ -108,7 +108,7 @@ describe('Markdown preview DOM contract', () => {
       '[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)',
       [
         markdown({ base: markdownLanguage }),
-        markdownImagePreview(new Map(), undefined, onLinkClick),
+        markdownImagePreview({ images: new Map(), onLinkClick }),
       ],
     );
 
@@ -140,7 +140,7 @@ describe('Markdown preview DOM contract', () => {
       [languageExtension, ...previewExtensions, markdownImagePreview()],
     );
 
-    updateMarkdownImagePreview(view, new Map([['diagram.png', {
+    updateMarkdownImagePreview(view, { images: new Map([['diagram.png', {
       kind: 'ready',
       rawSrc: 'diagram.png',
       canonicalPath: 'D:/repo/diagram.png',
@@ -149,7 +149,7 @@ describe('Markdown preview DOM contract', () => {
       width: 640,
       height: 360,
       animated: false,
-    }]]));
+    }]]) });
 
     expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
     expect(view.dom.querySelector('img:not(.cm-widgetBuffer)')).not.toBeNull();

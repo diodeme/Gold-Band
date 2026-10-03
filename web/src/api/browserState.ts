@@ -1,4 +1,4 @@
-import type { AppBootstrapVm, AutoTemplateStore, PersonalizationPreference, PreferencesVm, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
+import type { AppBootstrapVm, AutoTemplateStore, PersonalizationPreference, PreferencesVm, ProfileListVm, ProfileVm, RemoteImageTrustVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
 import { mockBootstrap, mockProfileList, mockUpdateBadges, mockUpdateStatus, mockUpdaterSettings, mockWorkflowTemplates } from '../mockData';
 
 export class BrowserPreviewState {
@@ -10,6 +10,7 @@ export class BrowserPreviewState {
   private recentWorkspaces: string[] = [...mockBootstrap.recentWorkspaces];
   private workflowTemplates: WorkflowTemplateStore = cloneWorkflowTemplateStore(mockWorkflowTemplates);
   private autoTemplates: AutoTemplateStore = { version: '0.1', templates: [] };
+  private trustedImageHosts = new Set<string>(mockBootstrap.remoteImageTrust.trustedHosts);
 
   getAppBootstrap(): AppBootstrapVm {
     return {
@@ -18,9 +19,24 @@ export class BrowserPreviewState {
       updaterSettings: this.getUpdaterSettings(),
       updateStatus: this.getUpdateStatus(),
       updateBadges: this.getUpdateBadges(),
+      remoteImageTrust: this.getRemoteImageTrust(),
       recentWorkspaces: [...this.recentWorkspaces],
       clientVersion: mockBootstrap.clientVersion,
     };
+  }
+
+  getRemoteImageTrust(): RemoteImageTrustVm {
+    return { schemaVersion: 1, trustedHosts: [...this.trustedImageHosts].sort() };
+  }
+
+  trustRemoteImageHosts(hosts: string[]) {
+    for (const host of hosts) this.trustedImageHosts.add(host.trim().toLowerCase());
+    return this.getRemoteImageTrust();
+  }
+
+  revokeRemoteImageHost(host: string) {
+    this.trustedImageHosts.delete(host.trim().toLowerCase());
+    return this.getRemoteImageTrust();
   }
 
   setRecentWorkspaces(workspaces: string[]) {

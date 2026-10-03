@@ -77,7 +77,9 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - Atomic table、Markdown 图片与 README decoration 只在模式 Compartment 内显式重配置，不随 React extensions props 反复重组；Markdown/GFM parser 只位于语言 Compartment。这样 table `StateField` 每次进入预览时都消费同一棵持续增长的语法树，长文档从源码返回预览不会因重新解析尚未完成而退化成原始 Markdown。图片授权状态继续由稳定 `StateField + StateEffect` 更新；源码切到预览前，对当前源码视口及有限 overscan 内已有 preview grant 的图片执行 `HTMLImageElement.decode()`，解码完成或明确失败后再原子提交模式 transaction。图片 URL 与 token 不因模式切换释放，禁止用截图、遮罩、淡入或固定延迟掩盖重挂载闪烁。
 - 合法 GFM 表格使用 Atomic table widget；只有表格单元格本身含图片时才关闭该 widget，防止上游把原始地址直接交给 `<img>`。文档其他位置含图片不影响表格渲染。表格采用详情容器宽度和 fixed layout，长文本在单元格内部换行，不得把 CodeMirror 或文件详情撑出横向滚动。
 - README 常见的单行 `<div|p align="left|center|right">`、闭合标签、`<br>` 和单行 `<img>` 进入安全白名单视图；Markdown HTML 注释属于非展示元数据，在实时预览中隐藏，在 fenced code 中作为示例出现的注释仍正常显示。只解释布局语义，图片仍通过 preview token。其他原始 HTML 显示源码，不使用 `dangerouslySetInnerHTML`。
-- 单独占行的本地 Markdown 图片交给安全图片 widget。网络图片永不进入 `<img>`：普通网络图片显示以 alt 为名称、指向图片 URL 的普通超链接；“图片包在链接中”的 badge 显示以 alt 为名称、严格执行外层目标的普通超链接。目标统一分为本地文件、同文档 `#` 锚点和 HTTP/HTTPS/mailto/tel 外链：本地相对路径复用工作区导航并以当前 Markdown 文件目录为基准（`.html/.htm` 打开内置浏览器，其余文件打开文件工作区）；同文档 `#` 由当前编辑器处理；`http(s)` 打开内置浏览器；`mailto:` / `tel:` 通过 Tauri opener 交给系统默认应用。不使用主 WebView `window.open`。内置浏览器边界见 [内置浏览器](in-app-browser.md)。
+- 单独占行的本地 Markdown 图片交给安全图片 widget。网络图片按[受信任的图片域名](settings.md#14-受信任的图片域名)加载：host 未受信任时不发请求，普通网络图片显示以 alt 为名称、指向图片 URL 的普通超链接，“图片包在链接中”的 badge 显示以 alt 为名称、严格执行外层目标的普通超链接；文档顶部提示“此文档包含 N 张来自 X 的网络图片”，提示文字过长截断时悬停显示全文（与文件头部路径相同：只有实际截断才显示 Tooltip），点击“加载”一次信任这些 host 并持久化，之后任何文档中来自这些 host 的图片直接显示。已受信任的网络图片以 `referrerPolicy=no-referrer` 的 `<img>` 显示，点击普通图片打开图片地址，点击链接图片执行外层目标。图片、提示框和引用文本的 widget 由 Gold Band decoration 以 `Prec.high` 渲染，Atomic inline preview 只负责隐藏这些节点的源码，二者在同一区间时以 Gold Band widget 为准，避免图片行被隐藏成空白。
+- GitHub 提示框 `> [!NOTE]`、`[!TIP]`、`[!IMPORTANT]`、`[!WARNING]`、`[!CAUTION]`（标记独占首行，大小写不敏感）渲染为带图标、本地化标题和类型主题色左边框的提示框，类型、图标与主题 token 与对话 Markdown 共用 `web/src/lib/markdown-alerts.ts`；其他 `[!…]` 保持普通引用。没有对应引用定义的 `[文字]`、`[文字][label]` 不是链接，按 CommonMark 显示为带方括号的普通文本，不显示链接色和外链图标。
+- 链接目标统一分为本地文件、同文档 `#` 锚点和 HTTP/HTTPS/mailto/tel 外链：本地相对路径复用工作区导航并以当前 Markdown 文件目录为基准（`.html/.htm` 打开内置浏览器，其余文件打开文件工作区）；同文档 `#` 由当前编辑器处理；`http(s)` 打开内置浏览器；`mailto:` / `tel:` 通过 Tauri opener 交给系统默认应用。不使用主 WebView `window.open`。内置浏览器边界见 [内置浏览器](in-app-browser.md)。
 - 超过配置阈值的 Markdown 自动降级源码模式，避免长文档 decoration、表格和图片 widget 影响输入性能。
 - 详细数据、接口、安全和验收约束见[Markdown 实时预览编辑开发方案](../../../开发计划/新UI/Markdown实时预览编辑开发方案.md)。
 
@@ -104,7 +106,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 工作空间外 watcher 在每批事件发出前重新校验并读取轮换后的 grant；授权过期或释放后立即停止向前端发送该文件事件。
 - `turn-attachment` 不接受前端绝对路径。后端必须先以完整 attempt locator、branch、changeSetId 和 attachmentId 查询 finalized manifest，验证 branch ownership，再在 attempt `attachments/` 根内解析 manifest 相对路径；canonicalize 后越界、缺失、非普通文件或 symlink escape 一律拒绝。验证通过后才可复用工作空间外精确读写 grant 与 watcher。
 - 图片不使用 `file://`。Rust 完成文件签名、字节数、像素数和 revision 校验后签发 `WorkspaceFilePreviewGrantVm { token, expiresAtMs }`；SVG 禁止原始 DOM 注入和外部资源加载。
-- Markdown 图片不使用组件默认的原始 `<img src>`：工作空间内图片以及工作空间外 Markdown 同目录/子目录相对图片自动签发 preview grant；文档目录外引用按当前文档统一确认一次，且只授权文档实际引用的精确文件。grant 到期前按当前引用批量原子轮换，新 token 生效后再释放旧 token；页面重新可见、图片加载失败或开发后端重启导致内存 grant 丢失时幂等补发。UNC 和危险 scheme 不加载，网络图片只保留超链接。
+- Markdown 图片不使用组件默认的原始 `<img src>`：工作空间内图片以及工作空间外 Markdown 同目录/子目录相对图片自动签发 preview grant；文档目录外引用按当前文档统一确认一次，且只授权文档实际引用的精确文件。grant 到期前按当前引用批量原子轮换，新 token 生效后再释放旧 token；页面重新可见、图片加载失败或开发后端重启导致内存 grant 丢失时幂等补发。UNC 和危险 scheme 不加载；网络图片不经过 preview grant，只有 host 已受信任时才直接加载。
 - 所有文件错误继续使用 `CommandErrorVm { code, params }`；Rust 不产生对客文案，前端同步维护中英文恢复提示。
 - “在文件管理器中显示”必须先由 Rust 按当前 project/attempt 根目录解析相对路径、执行 canonicalize 并完成越界校验，再把已授权 canonical path 交给官方 `tauri-plugin-opener` 的 `reveal_item_in_dir`。工作空间与运行/会话目录复用同一平台抽象，不在业务代码中拼接 Explorer 参数，也不维护 `xdg-open`/Finder 分支。
 

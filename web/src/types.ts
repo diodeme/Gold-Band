@@ -216,7 +216,14 @@ export interface AppBootstrapVm {
   windowChrome: DesktopWindowChromeVm;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
+  remoteImageTrust: RemoteImageTrustVm;
   needsWorkspace: boolean;
+}
+
+/** Hosts the user trusts to serve remote Markdown images; normalized like `new URL(src).host`. */
+export interface RemoteImageTrustVm {
+  schemaVersion: 1;
+  trustedHosts: string[];
 }
 
 export interface AppConfigVm {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -7,6 +7,7 @@ import { readChannelConfig, repoRoot, tauriConfigOverlay } from './channel-confi
 
 const baseChannelConfig = {
   productName: 'Gold Band',
+  mainBinaryName: 'gold-band-desktop',
   identifier: 'local.gold-band.desktop',
   windowTitle: 'Gold Band',
   updaterPublicKey: 'test-public-key',
@@ -54,4 +55,19 @@ test('wb overlay embeds MALING as both product name and publisher', () => {
 
   assert.equal(overlay.productName, 'MALING');
   assert.equal(overlay.bundle.publisher, 'MALING');
+});
+
+test('channel overlay sets the configured main binary name', () => {
+  assert.equal(tauriConfigOverlay(baseChannelConfig).mainBinaryName, 'gold-band-desktop');
+  assert.equal(tauriConfigOverlay(readChannelConfig('wb')).mainBinaryName, 'maling-desktop');
+});
+
+test('every channel uses a distinct main binary name so installers only close their own channel', () => {
+  const channels = readdirSync(join(repoRoot, 'configs', 'channels'))
+    .filter((file) => file.endsWith('.json'))
+    .map((file) => file.slice(0, -'.json'.length));
+  const names = channels.map((channel) => readChannelConfig(channel).mainBinaryName.toLowerCase());
+
+  assert.ok(channels.length > 1);
+  assert.equal(new Set(names).size, names.length);
 });

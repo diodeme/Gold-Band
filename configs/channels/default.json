@@ -6,6 +6,7 @@
   "configDirName": ".gold-band",
   "homeEnvVar": "GOLD_BAND_HOME",
   "productName": "Gold Band",
+  "mainBinaryName": "gold-band-desktop",
   "windowTitle": "Gold Band",
   "identifier": "local.gold-band.desktop",
   "updaterEndpoint": "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json",

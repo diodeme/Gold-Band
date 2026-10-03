@@ -510,6 +510,7 @@ export const mockBootstrap: AppBootstrapVm = {
     },
     workspaceFiles: FALLBACK_WORKSPACE_FILES,
   },
+  remoteImageTrust: { schemaVersion: 1, trustedHosts: [] },
   needsWorkspace: false,
 };
 

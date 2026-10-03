@@ -187,19 +187,11 @@ describe('Markdown image preview', () => {
   }
 
   it('opens a zoomed preview inside a preview provider', async () => {
-    await render(<MarkdownImagePreviewProvider><Markdown>{markdown}</Markdown></MarkdownImagePreviewProvider>);
+    await render(<MarkdownImagePreviewProvider><Markdown flavor="github-release">{markdown}</Markdown></MarkdownImagePreviewProvider>);
     const image = await loadImage();
     expect(image.className).toContain('cursor-zoom-in');
     await act(async () => image.click());
     expect(document.querySelectorAll('img[src="https://example.com/shot.png"]')).toHaveLength(2);
-  });
-
-  it('keeps chat Markdown images non-interactive without a provider', async () => {
-    await render(<Markdown>{markdown}</Markdown>);
-    const image = await loadImage();
-    expect(image.className).not.toContain('cursor-zoom-in');
-    await act(async () => image.click());
-    expect(document.querySelectorAll('img[src="https://example.com/shot.png"]')).toHaveLength(1);
   });
 });
 
@@ -228,12 +220,12 @@ describe('GitHub release Markdown flavor', () => {
     expect(plainQuotes.map((quote) => quote.textContent?.trim())).toEqual(['[!attention] Not a GitHub alert']);
   });
 
-  it('keeps default Markdown semantics unchanged', async () => {
+  it('renders GitHub alerts in default Markdown but keeps CommonMark line breaks', async () => {
     const container = await render(<Markdown>{notes}</Markdown>);
     expect(container.querySelector('br')).toBeNull();
-    expect(container.querySelector('[data-gb-markdown-alert]')).toBeNull();
-    expect(container.querySelectorAll('blockquote')).toHaveLength(alerts.length + 1);
-    expect(container.textContent).toContain('[!NOTE]');
+    expect([...container.querySelectorAll('[data-gb-markdown-alert]')].map((alert) => alert.getAttribute('data-gb-markdown-alert'))).toEqual(alerts);
+    const plainQuotes = Array.from(container.querySelectorAll('blockquote')).filter((quote) => !quote.hasAttribute('data-gb-markdown-alert'));
+    expect(plainQuotes.map((quote) => quote.textContent?.trim())).toEqual(['[!attention] Not a GitHub alert']);
   });
 
   it('gives document flavors a heading hierarchy while chat headings stay near body size', async () => {
@@ -262,6 +254,11 @@ describe('GitHub release Markdown flavor', () => {
       expect(heading.className).toContain('[[data-gb-stream-block]:first-child>&]:mt-0');
       expect(heading.className).not.toContain('first:mt-0');
     }
+  });
+
+  it('only lets the alert marker classes through the default sanitizer', async () => {
+    const container = await render(<Markdown>{'<blockquote class="markdown-alert-warning evil">raw</blockquote>\n\n<p class="evil">text</p>'}</Markdown>);
+    expect(container.innerHTML).not.toContain('evil');
   });
 
   it('only lets the alert marker classes through the release sanitizer', async () => {

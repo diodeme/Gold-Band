@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FilePlus2, FileQuestion, FolderOpen, Globe, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, FilePlus2, FileQuestion, FolderOpen, Globe, ImageIcon, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { cn } from '@/lib/utils';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm, WorkspaceFileLocatorVm } from '@/types';
@@ -26,7 +28,8 @@ import { OpenWithSystemAppButton } from './OpenWithSystemAppButton';
 import { fileExplorerStore, type FileTreeEntryMutation } from './file-explorer-store';
 import { remapWorkspacePath, workspacePathIsWithin } from './workspace-path';
 import { WorkspaceFileEditor, type EditorViewportAnchor } from './WorkspaceFileEditor';
-import { markdownImageSources } from './markdown-image-preview';
+import { markdownImageSources, markdownRemoteImageHosts } from './markdown-image-preview';
+import { trustRemoteImageHosts, useRemoteImageTrust } from '@/lib/remote-image-trust-store';
 import { isMarkdownDocumentPath } from './markdown-document';
 import { markdownHasTableImages } from './markdown-live-preview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
@@ -36,6 +39,26 @@ import { workspaceRootKey, workspaceRootRef } from '@/lib/workspace-root';
 interface FileWorkspacePanelProps {
   resource: Extract<RightWorkspaceResource, { kind: 'file' | 'file-browser' }>;
   layout: FileWorkspaceLayoutVm;
+}
+
+/** Single-line text that reveals its full value on hover, only when it is actually truncated. */
+function TruncatedText({ text, className, contentClassName }: { text: string; className?: string; contentClassName?: string }) {
+  const { valueRef, tooltipOpen, showTooltipIfOverflowing, hideTooltip, handleTooltipOpenChange } = useOverflowTooltip();
+  return (
+    <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+      <TooltipTrigger asChild>
+        <span
+          ref={valueRef}
+          className={cn('truncate', className)}
+          onPointerEnter={showTooltipIfOverflowing}
+          onPointerLeave={hideTooltip}
+        >
+          {text}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className={cn('max-w-[420px]', contentClassName)}>{text}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function fileResourceFromEntry(
@@ -230,10 +253,7 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5">
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">{resource.title}</p>
-          <Tooltip>
-            <TooltipTrigger asChild><p className="truncate text-ui-micro text-muted-foreground">{path}</p></TooltipTrigger>
-            <TooltipContent className="max-w-[420px] break-all">{path}</TooltipContent>
-          </Tooltip>
+          <TruncatedText text={path} className="block text-ui-micro text-muted-foreground" contentClassName="break-all" />
         </div>
         {svgSource ? (
           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void (async () => {
@@ -335,6 +355,30 @@ function FileSnapshotContent({
     }
   }, [markdownResourceLinkHandler, resource.locator.canonicalPath]);
   const approvalCount = [...markdownImages.values()].filter((image) => image.kind === 'approvalRequired').length;
+  const remoteImageHosts = useMemo(
+    () => snapshot?.kind === 'text' && markdown ? markdownRemoteImageHosts(snapshot.content) : [],
+    [markdown, snapshot?.kind === 'text' ? snapshot.content : null],
+  );
+  const remoteImageTrust = useRemoteImageTrust();
+  const untrustedRemoteImages = useMemo(() => {
+    const trusted = new Set(remoteImageTrust.trustedHosts);
+    const untrusted = remoteImageHosts.filter((host) => !trusted.has(host));
+    return { count: untrusted.length, hosts: [...new Set(untrusted)] };
+  }, [remoteImageHosts, remoteImageTrust]);
+  const remoteImagesMessage = t('workspace.filesPanel.remoteMarkdownImages', {
+    count: untrustedRemoteImages.count,
+    hosts: untrustedRemoteImages.hosts.join(t('workspace.filesPanel.remoteMarkdownImageHostSeparator')),
+  });
+  const [remoteImageTrustState, setRemoteImageTrustState] = useState<'idle' | 'pending' | 'failed'>('idle');
+  const loadRemoteImages = useCallback(async () => {
+    setRemoteImageTrustState('pending');
+    try {
+      await trustRemoteImageHosts(untrustedRemoteImages.hosts);
+      setRemoteImageTrustState('idle');
+    } catch {
+      setRemoteImageTrustState('failed');
+    }
+  }, [untrustedRemoteImages.hosts]);
   useEffect(() => {
     if (!markdown) return;
     void fileContentStore.syncMarkdownImages(
@@ -362,6 +406,25 @@ function FileSnapshotContent({
             <span className="min-w-0 flex-1">{t('workspace.filesPanel.externalMarkdownImages', { count: approvalCount })}</span>
             <Button size="sm" variant="outline" className="h-7" onClick={() => void fileContentStore.approveMarkdownImages(resource.key)}>
               {t('workspace.filesPanel.loadExternalMarkdownImages')}
+            </Button>
+          </div>
+        ) : null}
+        {markdownMode === 'live-preview' && untrustedRemoteImages.count > 0 ? (
+          <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2 text-xs" data-remote-markdown-images="true">
+            <ImageIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <TruncatedText text={remoteImagesMessage} className="min-w-0 flex-1" contentClassName="break-words" />
+            {remoteImageTrustState === 'failed' ? (
+              <span className="shrink-0 text-destructive">{t('common.remoteImage.trustFailed')}</span>
+            ) : null}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7"
+              disabled={remoteImageTrustState === 'pending'}
+              onClick={() => void loadRemoteImages()}
+            >
+              {remoteImageTrustState === 'pending' ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
+              {t('common.remoteImage.load')}
             </Button>
           </div>
         ) : null}

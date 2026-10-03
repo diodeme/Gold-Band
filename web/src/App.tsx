@@ -71,6 +71,7 @@ import {
   DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
 } from './lib/acp-chat-resource-cache';
 import { configureAcpResourceCacheSessionCount } from '@/components/acp/ACPChatDialog';
+import { seedRemoteImageTrust } from '@/lib/remote-image-trust-store';
 import { subscribeConversationEvents } from './lib/conversation-event-router';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import { prefetchImSettings } from '@/components/settings/useImSettings';
@@ -1097,6 +1098,7 @@ export function App() {
         configureAcpResourceCacheSessionCount(
           bootstrap.appConfig.acpChatResourceCacheSessionCount,
         );
+        seedRemoteImageTrust(bootstrap.remoteImageTrust);
         setBootstrap(bootstrap);
         // 静默预取设置页运行时区块，让首次进入「通用」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();

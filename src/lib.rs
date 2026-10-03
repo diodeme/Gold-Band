@@ -25,6 +25,7 @@ pub mod personal_analytics;
 pub mod process;
 pub mod prompts;
 pub mod provider;
+pub mod remote_image_trust;
 pub mod runtime;
 pub mod runtime_error;
 pub mod scheduler;

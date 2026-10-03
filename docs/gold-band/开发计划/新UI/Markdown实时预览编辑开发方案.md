@@ -26,7 +26,7 @@
 - 将 Markdown 转换为 HTML、富文本或 AST 后再反向序列化保存。
 - 多人协作编辑、评论、修订模式。
 - Mermaid、数学公式和任意 HTML 的完整执行环境。
-- 网络图片的无提示自动加载。
+- 未受信任域名的网络图片无提示自动加载（受信任域名见 settings.md §14）。
 - Markdown 图片上传、裁剪和资源重命名。
 - 为标题标记设计特例，例如强制“标题文字删空后必须立即显示 `##`”。标记显隐采用 Atomic Editor 的成熟规则，验收关注语义可编辑性、源码一致性和撤销连续性。
 
@@ -215,7 +215,7 @@ CodeMirror markdown language（GFM）
 | 工作区外 Markdown 同目录及子目录的相对图片 | 自动解析并安全展示 |
 | 外部 Markdown 的 `../`、其他盘符或目录外绝对图片 | 当前文档统一确认一次，只授权实际引用的精确文件 |
 | UNC/网络共享路径 | 默认阻止自动加载 |
-| `http://`、`https://` 网络图片 | 不渲染、不下载，保留为普通超链接 |
+| `http://`、`https://` 网络图片 | 域名未受信任时不渲染、不下载，保留为普通超链接，顶部提示条一键信任文档内全部图片域名；已受信任域名直接以 `<img referrerpolicy="no-referrer">` 渲染，点击打开图片地址。不经过本地解析接口 |
 | `data:`、`javascript:`、任意 HTML 注入 | 拒绝 |
 
 “文档统一确认”不是开放目录：前端先解析当前文档内待确认引用，用户确认一次后，只把该批 canonical path 放入当前 Markdown runtime 的授权集合。新增的目录外引用需要再次确认。
@@ -317,7 +317,8 @@ markdownEmbeddedImageMaxConcurrent = 4
 - 图片引用删除、变更、reload、LRU 和 Tab 关闭均释放 token。
 - 过期图片解析响应不能覆盖新引用状态。
 - preview grant 在到期前轮换；续签失败保留旧状态并退避重试，图片加载错误只对仍为当前 token 的 widget 触发补发。
-- 网络图片和 badge 不进入本地解析接口，只生成目标正确的普通超链接。
+- 网络图片和 badge 不进入本地解析接口；未受信任域名只生成目标正确的普通超链接，受信任域名渲染图片且不出现空白（图片 widget 以 `Prec.high` 声明对 Image 节点的渲染所有权，压过 Atomic 的空替换）。
+- 五种 GFM 提示框（NOTE/TIP/IMPORTANT/WARNING/CAUTION）首行渲染为本地化标题；`[!attention]`、`[1]` 等未定义引用按 CommonMark 显示为普通文本而不是链接。
 - badge 外层为 `LICENSE`、`../LICENSE` 等本地目标时，点击由工作区 handler 接管，WebView 不得解析成应用的 localhost 页面。
 
 ### 13.2 Rust 接口测试
@@ -380,7 +381,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - [x] 标题、列表、强调、链接、代码块、任务项和合法 GFM 表格可直接编辑。
 - [x] Markdown 本地图片只通过安全 preview grant 展示，并在到期前轮换。
 - [x] 工作区外 Markdown 同目录图片自动展示，目录外引用按文档统一确认且只授权精确引用。
-- [x] SVG 以图片模式安全预览；网络图片只保留超链接，UNC 和危险 scheme 不会静默加载。
+- [x] SVG 以图片模式安全预览；未受信任域名的网络图片只保留超链接并可一键信任，UNC 和危险 scheme 不会静默加载。
 - [x] 大文档、多图片、过期异步响应和 grant 生命周期符合性能与安全约束。
 - [x] 前端、Rust 接口和组件测试覆盖关键验收。
 - [ ] 真实 UI 的深浅主题、宽窄布局和编辑流程由需求方验证。

@@ -46,6 +46,7 @@ import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
 import { BrowserSettings } from '@/components/settings/BrowserSettings';
+import { RemoteImageTrustSettings } from '@/components/settings/RemoteImageTrustSettings';
 import { UpdateDownloadProgress } from '@/components/update/UpdateDownloadProgress';
 import { describeUpdateError, updateActionState } from '@/components/update/update-state';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
@@ -497,7 +498,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
         <TabsContent value="advanced" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
-            <SettingsSection title={t('settings.advanced')}>
+            <SettingsSection title={t('settings.logging')}>
               <div className="flex items-center gap-3 py-2">
                 <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
                 <SettingInfoTooltip content={t('settings.verboseLogging.description')} />
@@ -523,6 +524,17 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                 </button>
               </div>
+            </SettingsSection>
+            <SettingsSection
+              divided
+              title={(
+                <span className="inline-flex items-center gap-2">
+                  {t('settings.remoteImages.title')}
+                  <SettingInfoTooltip content={t('settings.remoteImages.description')} />
+                </span>
+              )}
+            >
+              <RemoteImageTrustSettings />
             </SettingsSection>
             <SettingsSection title={<span className="inline-flex items-center gap-2">{t('settings.updater.title')}{showUpdatesSectionDot ? <UpdateDot /> : null}</span>}>
               <div className="max-w-4xl space-y-3">

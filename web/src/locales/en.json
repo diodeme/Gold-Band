@@ -387,7 +387,11 @@
       "warning": "Warning",
       "caution": "Caution"
     },
-    "releaseNotes": "Release notes"
+    "releaseNotes": "Release notes",
+    "remoteImage": {
+      "load": "Load",
+      "trustFailed": "Couldn't load. Try again."
+    }
   },
   "personalAnalytics": {
     "title": "Personal analytics",
@@ -717,7 +721,9 @@
           "workspace-unavailable": "The session's worktree is unavailable. It may have been reclaimed or deleted.",
           "workspace-outside-project": "This folder is not a Git worktree of the current project."
         }
-      }
+      },
+      "remoteMarkdownImages": "This document contains {{count}} web images from {{hosts}}",
+      "remoteMarkdownImageHostSeparator": ", "
     },
     "discardWorkflowChanges": "This workflow has unsaved changes. Discard them and close the tab?",
     "rootUnavailable": {
@@ -2399,7 +2405,7 @@
     "appearance": "Appearance",
     "language": "Language",
     "typography": "Typography",
-    "advanced": "Advanced",
+    "logging": "Logging",
     "light": "Light",
     "dark": "Dark",
     "system": "System",
@@ -2740,6 +2746,16 @@
         "loadFailed": "Couldn't load the release notes.",
         "more": "More"
       }
+    },
+    "remoteImages": {
+      "title": "Trusted image domains",
+      "description": "Web images in Markdown from these domains load automatically. Other web images load after you click \"Load\".",
+      "empty": "No trusted domains yet",
+      "remove": "Remove {{host}}",
+      "removeFailed": "Couldn't remove. Try again.",
+      "hiddenCount": "+{{count}}",
+      "showAll": "Show all {{count}}",
+      "showLess": "Show less"
     }
   },
   "multica": {

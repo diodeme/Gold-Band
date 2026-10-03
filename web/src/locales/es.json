@@ -387,7 +387,11 @@
       "warning": "Advertencia",
       "caution": "Precaución"
     },
-    "releaseNotes": "Notas de la versión"
+    "releaseNotes": "Notas de la versión",
+    "remoteImage": {
+      "load": "Cargar",
+      "trustFailed": "No se pudo cargar. Inténtalo de nuevo."
+    }
   },
   "personalAnalytics": {
     "title": "Análisis personal",
@@ -717,7 +721,9 @@
           "workspace-unavailable": "El worktree de la sesión no está disponible. Puede que se haya recuperado o eliminado.",
           "workspace-outside-project": "Esta carpeta no es un worktree de Git del proyecto actual."
         }
-      }
+      },
+      "remoteMarkdownImages": "Este documento contiene {{count}} imágenes web de {{hosts}}",
+      "remoteMarkdownImageHostSeparator": ", "
     },
     "discardWorkflowChanges": "Este flujo de trabajo tiene cambios sin guardar. ¿Descartarlos y cerrar la pestaña?",
     "rootUnavailable": {
@@ -2399,7 +2405,7 @@
     "appearance": "Apariencia",
     "language": "Idioma",
     "typography": "Tipografía",
-    "advanced": "Avanzado",
+    "logging": "Registros",
     "light": "Claro",
     "dark": "Oscuro",
     "system": "Sistema",
@@ -2740,6 +2746,16 @@
         "loadFailed": "No se pudieron cargar las notas de la versión.",
         "more": "Más"
       }
+    },
+    "remoteImages": {
+      "title": "Dominios de imágenes de confianza",
+      "description": "Las imágenes web de Markdown de estos dominios se cargan automáticamente. Las demás se cargan cuando haces clic en \"Cargar\".",
+      "empty": "Aún no hay dominios de confianza",
+      "remove": "Quitar {{host}}",
+      "removeFailed": "No se pudo quitar. Inténtalo de nuevo.",
+      "hiddenCount": "+{{count}}",
+      "showAll": "Mostrar todos ({{count}})",
+      "showLess": "Mostrar menos"
     }
   },
   "multica": {

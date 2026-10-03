@@ -1391,6 +1391,11 @@ pub struct StateConfig {
     pub conversation_pins: Vec<ConversationPin>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::remote_image_trust::RemoteImageTrust::is_empty"
+    )]
+    pub remote_image_trust: crate::remote_image_trust::RemoteImageTrust,
     // —— multica 持久化状态（程序写入/恢复）——
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multica_runtime_ids: Option<std::collections::HashMap<String, String>>,

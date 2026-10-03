@@ -2805,6 +2805,7 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：共享 `Markdown` 新增可选 `flavor="github-release"`，仅更新弹窗使用；在 Streamdown 默认插件后追加成熟库 `remark-github-blockquote-alert` 与 `remark-breaks`，插件、安全过滤配置和组件映射均为模块级常量。安全过滤只额外放行提示框标记类；提示框复用 shadcn `Alert`、lucide 图标与主题 token，标题改用七语言 `common.markdownAlert.*` 文案，插件自带 SVG 与英文标题不展示。颜色依次为 `attention`、`success`、`emphasis`、`warning`、`danger`：浏览器验收发现 `primary` 是按钮填充色，tech-neutral 深色下对比度仅约 1.4，且 gold-band 浅色的 `link` 与 `success` 同色，因此新增 `emphasis` 主题 token（浅色 `#8250df`、深色 `#a371f7`）并经 theme-sdk 重新生成。该模式段落间保留间距；更新弹窗打开时焦点停在弹窗本身，避免说明中的代码复制按钮自动弹出提示。git-changelog 改为只允许 GitHub 五种提示框，并说明换行、编号列表和图片宽度写法。
 - [x] 回归：`web/tests/update-ux.test.tsx` 覆盖单个换行、五种提示框结构、本地化标题与主题色映射、`[!attention]` 保持普通引用、默认 Markdown 换行与引用不变、作者传入的其他 class 被过滤，以及弹窗初始焦点；定向测试及 i18n 契约 23 项通过，前端类型检查通过。两个 mock `streamdown` 的测试补充真实默认插件导出。全量 Web 测试其余 8 项失败（模型思考标签、continue 提交）在撤回本次 Markdown 改动后同样失败，与本次无关。
 - 性能与过度设计评审：仅更新弹窗打开时对一份更新说明解析一次，两个 remark 插件为线性 AST 遍历；不新增状态、依赖之外的抽象或缓存，聊天流式渲染路径与默认插件不变。
+- 后续变更：2026-10-02「Markdown 网络图片受信任域名与 GitHub 提示框统一」起，提示框移入默认 Markdown 渲染（Chat 与文件预览同样支持五种类型），`github-release` 只保留单换行转 `<br>` 与网络图片直接加载。
 
 ## 2026-10-02 帮助菜单查看当前版本更新日志
 
@@ -2836,3 +2837,13 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：复用现有 Git remove、runtime workspace 状态及双层 Git 锁；canonical preflight 后用标准库 `create_dir_all` best-effort 保留原路径。已 Released 的重放同样补回缺失目录，不重复 Git remove、不清空已有内容。补目录失败只记录 diagnostic，不阻断原流程、不修改或回滚任何状态。删除原空目录清理辅助函数与只为删除父目录服务的返回结构，保留全部路径防护。
 - [x] 验收：最小回归在旧实现上因 `workspace.path.is_dir()` 为 false 失败，修复后转绿；`cargo test -p gold-band --lib dynamic_worktree` 13 项、`loading_dynamic_graph` 2 项、`git::tests::remove_worktree` 3 项，共 18 项通过。覆盖首次释放目录保留、Git catalog/branch 移除、重复释放、缺失目录恢复、文件占位导致补目录失败不影响 Released、后来新增文件与复用 Worktree 保留，以及路径与共享锁防护。本次仅修改后端释放逻辑，未启动前端或真实 Agent，不将目录验收视为所有 provider 的会话恢复实测。
 - 性能与过度设计评审：只在既有释放/Closed group 恢复路径操作指定 workspace，保留固定层级 canonical 校验，每项增加一次目录确保，不扫描目录内容或全量历史；空目录数量随历史 fanout workspace 增长。不新增依赖、状态、持久字段、缓存、队列或锁；原 Git 注销判定及锁范围不变，无需专项 benchmark。
+
+## 2026-10-02 Markdown 网络图片受信任域名与 GitHub 提示框统一
+
+- [x] 背景：远程图片由文档作者控制请求地址，Agent 被提示注入后可把数据编码进图片 URL，渲染即外发；Agent 沙箱不覆盖渲染层，因此保留默认拦截，但提供按域名持久信任，避免每次手动确认。
+- [x] 根因 1（文件预览空白图片）：Atomic inline preview 对 Image 节点做空替换，优先级高于我们的图片 widget，结果图片和链接都被隐藏。最小失败测试复现空白后，图片 decoration 以 `Prec.high` 明确声明 Image 节点渲染所有权，不针对单张图片打补丁。
+- [x] 根因 2（`[!attention]` 显示为链接）：Lezer 把任意 `[text]` 解析为 Link 节点，Atomic 按链接渲染。按 CommonMark 规则，未定义的引用链接显示为普通文本（字面方括号 + 普通样式）；GitHub 五种提示框首行渲染为本地化标题与语义色侧边。
+- [x] 数据与接口：core 新增 `RemoteImageTrust { schemaVersion, trustedHosts }` 存于 `state.json`（经 `with_state` 事务读写，并发安全），`normalize_remote_image_host` 按 WHATWG 规范化（小写、punycode、去默认端口），与前端 `new URL(src).host` 一致；Tauri 命令 `trust_remote_image_hosts`（全部校验后原子写入）、`revoke_remote_image_host`，错误码 `remote-image.host-invalid`；bootstrap 下发初始值，前端 external store 以最后一次写入为准，忽略过期响应与写入中的 bootstrap 覆盖。
+- [x] 交互：Chat 中未受信任图片显示占位与「加载」，信任后同域名全部加载；已加载图片点击按链接规则打开（网页走内置浏览器，本地走文件工作区，无工作区回退系统浏览器），链接图片跟随外层链接，更新弹窗保留放大预览。文件预览未受信任图片保持超链接，顶部提示条一键信任文档内全部图片域名。设置 → 高级新增「受信任的图片域名」，以自动换行的胶囊标签展示（不设内部滚动，超过 20 个折叠为同款胶囊「+N」），只支持移除；同组「记录详细日志」的分组标题由与 tab 重名的「高级」改为「日志」。提示框移入默认 flavor，`github-release` 只保留 `remark-breaks` 与网络图片直接加载；已发布的 0.18.0 更新日志不回改。
+- [x] 回归：Rust 规范化/幂等/持久化/原子拒绝/8 线程并发信任；Web `markdown-live-preview-atomic.test.ts`（Atomic + 本项目扩展的真实组合：受信任图片可见与点击目标、五种提示框、`[!attention]`/`[1]` 为普通文本）、`markdown-remote-image-trust.test.tsx`（host 规范化、store 收敛、设置列表移除、占位加载与失败、点击路由、系统浏览器回退、release 放大），并更新 `update-ux` 与 `prompt-kit-markdown` 测试。全量 Web 测试其余 8 项失败（模型思考标签、continue 提交）为既有问题。
+- 性能与过度设计评审：信任列表为用户手动添加的小集合，每个图片组件只订阅自身 host 的布尔值；文件预览仅在文档变更时线性扫描一次图片节点；未新增依赖、轮询、缓存或队列。持久化复用既有 state.json 事务，没有新建存储。

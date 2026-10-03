@@ -140,6 +140,8 @@ describe('prompt-kit Markdown', () => {
       TooltipProvider,
       null,
       createElement(Markdown, {
+        // Release notes load remote images without host trust, so the loaded-image adapter renders.
+        flavor: 'github-release',
         children: '<img src="https://example.com/preview.png" alt="Preview" width="64" />',
       }),
     ));

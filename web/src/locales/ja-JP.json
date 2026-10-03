@@ -387,7 +387,11 @@
       "warning": "警告",
       "caution": "注意"
     },
-    "releaseNotes": "リリースノート"
+    "releaseNotes": "リリースノート",
+    "remoteImage": {
+      "load": "読み込む",
+      "trustFailed": "読み込めませんでした。もう一度お試しください"
+    }
   },
   "personalAnalytics": {
     "title": "個人分析",
@@ -717,7 +721,9 @@
           "workspace-unavailable": "セッションの worktree を利用できません。回収または削除された可能性があります。",
           "workspace-outside-project": "このフォルダーは現在のプロジェクトの Git worktree ではありません。"
         }
-      }
+      },
+      "remoteMarkdownImages": "このドキュメントには {{hosts}} の Web 画像が {{count}} 件含まれています",
+      "remoteMarkdownImageHostSeparator": "、"
     },
     "discardWorkflowChanges": "このワークフローには保存されていない変更があります。それらを破棄してタブを閉じますか?",
     "rootUnavailable": {
@@ -2399,7 +2405,7 @@
     "appearance": "外観",
     "language": "言語",
     "typography": "フォント",
-    "advanced": "詳細設定",
+    "logging": "ログ",
     "light": "ライト",
     "dark": "ダーク",
     "system": "システム",
@@ -2740,6 +2746,16 @@
         "loadFailed": "リリースノートを読み込めませんでした。",
         "more": "もっと見る"
       }
+    },
+    "remoteImages": {
+      "title": "信頼済みの画像ドメイン",
+      "description": "これらのドメインの Markdown 内の Web 画像は自動で読み込まれます。その他の Web 画像は「読み込む」をクリックすると読み込まれます。",
+      "empty": "信頼済みのドメインはまだありません",
+      "remove": "{{host}} を削除",
+      "removeFailed": "削除できませんでした。もう一度お試しください",
+      "hiddenCount": "+{{count}}",
+      "showAll": "すべて表示（{{count}} 件）",
+      "showLess": "折りたたむ"
     }
   },
   "multica": {

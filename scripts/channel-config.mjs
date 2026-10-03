@@ -7,6 +7,8 @@ const baseTauriConfig = JSON.parse(
   readFileSync(join(repoRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'),
 );
 
+const MAIN_BINARY_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
 export function readChannelConfig(channel) {
   const configPath = join(repoRoot, 'configs', 'channels', `${channel}.json`);
   let config;
@@ -20,6 +22,12 @@ export function readChannelConfig(channel) {
     throw new Error(`Channel config mismatch: expected ${channel}, found ${config.channel}.`);
   }
 
+  // The NSIS installer finds and kills running instances by executable name only, so every channel
+  // needs its own name to keep installing one channel from closing the others.
+  if (typeof config.mainBinaryName !== 'string' || !MAIN_BINARY_NAME_PATTERN.test(config.mainBinaryName)) {
+    throw new Error(`Channel ${channel} must set mainBinaryName to a lowercase executable name without extension.`);
+  }
+
   return config;
 }
 
@@ -30,6 +38,7 @@ export function channelEnvPrefix(channel) {
 export function tauriConfigOverlay(config, version, buildOptions = {}) {
   const overlay = {
     productName: config.productName,
+    mainBinaryName: config.mainBinaryName,
     identifier: config.identifier,
     app: {
       ...baseTauriConfig.app,

@@ -6,6 +6,7 @@
   "configDirName": ".maling",
   "homeEnvVar": "MALING_HOME",
   "productName": "MALING",
+  "mainBinaryName": "maling-desktop",
   "windowTitle": "maling",
   "identifier": "local.maling.desktop",
   "updaterEndpoint": "http://maling.weoa.com/api/file/download/latest.json",

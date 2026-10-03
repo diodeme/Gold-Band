@@ -191,12 +191,6 @@ export function AppTitleBar({
                   event.preventDefault();
                 }}
               >
-                {onOpenReleaseNotes ? (
-                  <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenReleaseNotes)} className="gap-2">
-                    <NotebookText className="size-4" />
-                    {t('common.releaseNotes')}
-                  </DropdownMenuItem>
-                ) : null}
                 {onOpenPersonalAnalytics ? (
                   <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenPersonalAnalytics)} className="gap-2">
                     <BarChart3 className="size-4" />
@@ -208,6 +202,12 @@ export function AppTitleBar({
                   <MessageSquareWarning className="size-4" />
                   {t('common.userFeedback')}
                 </DropdownMenuItem>
+                ) : null}
+                {onOpenReleaseNotes ? (
+                  <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenReleaseNotes)} className="gap-2">
+                    <NotebookText className="size-4" />
+                    {t('common.releaseNotes')}
+                  </DropdownMenuItem>
                 ) : null}
               </DropdownMenuContent>
             </DropdownMenu>

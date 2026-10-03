@@ -79,13 +79,13 @@ describe('AppTitleBar Help menu', () => {
     expect(document.activeElement).not.toBe(help);
   });
 
-  it('lists release notes before the channel-specific Help entries', async () => {
+  it('lists release notes after the channel-specific Help entries', async () => {
     const onOpenPersonalAnalytics = vi.fn();
     const help = await renderTitleBar({ onOpenReleaseNotes: () => {}, onOpenPersonalAnalytics, feedbackEnabled: true });
     const items = await openHelpMenu(help);
-    expect(items.map((item) => item.textContent)).toEqual(['common.releaseNotes', 'common.personalAnalytics', 'common.userFeedback']);
+    expect(items.map((item) => item.textContent)).toEqual(['common.personalAnalytics', 'common.userFeedback', 'common.releaseNotes']);
     await act(async () => {
-      items[1].click();
+      items[0].click();
       await Promise.resolve();
     });
     expect(onOpenPersonalAnalytics).toHaveBeenCalledTimes(1);

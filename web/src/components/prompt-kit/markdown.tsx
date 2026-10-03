@@ -30,10 +30,12 @@ import {
 import { wasmCode } from '@/lib/streamdown-wasm-code';
 
 /**
- * `github-release` renders text authored for GitHub Release bodies: single newlines are line
- * breaks and GitHub alerts (`> [!NOTE]` …) render as callouts. Chat and file Markdown keep `default`.
+ * `chat` is for replies inside a message flow and keeps headings close to body size.
+ * `document` is for standalone documents (prompts, context bodies) and uses a document heading hierarchy.
+ * `github-release` is a document flavor for text authored for GitHub Release bodies: single newlines
+ * are line breaks and GitHub alerts (`> [!NOTE]` …) render as callouts.
  */
-export type MarkdownFlavor = 'default' | 'github-release';
+export type MarkdownFlavor = 'chat' | 'document' | 'github-release';
 
 export type MarkdownProps = {
   children: string;
@@ -248,10 +250,12 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
   );
 }
 
+// Static Markdown drops the first block's top margin through Streamdown's root; streamed blocks are each
+// wrapped in a `contents` div, so only the heading in the first wrapper may drop it. `first:` would match every block.
 function CompactHeading({ level, children }: { level: 1 | 2 | 3; children: React.ReactNode }) {
   if (level === 1) {
     return (
-      <h1 className="mt-3 mb-1.5 flex min-w-0 items-center gap-2 text-sm font-semibold leading-6 text-foreground first:mt-0">
+      <h1 className="mt-3.5 mb-1.5 flex min-w-0 items-center gap-2 text-[15px] font-bold leading-6 text-foreground [[data-gb-stream-block]:first-child>&]:mt-0">
         <span className="h-3.5 w-1 shrink-0 rounded-full bg-primary/70" aria-hidden="true" />
         <span className="min-w-0 break-words [overflow-wrap:anywhere]">{children}</span>
       </h1>
@@ -259,10 +263,10 @@ function CompactHeading({ level, children }: { level: 1 | 2 | 3; children: React
   }
 
   if (level === 2) {
-    return <h2 className="mt-3 mb-1 text-sm font-semibold leading-6 text-foreground first:mt-0">{children}</h2>;
+    return <h2 className="mt-3.5 mb-1 text-[15px] font-bold leading-6 text-foreground [[data-gb-stream-block]:first-child>&]:mt-0">{children}</h2>;
   }
 
-  return <h3 className="mt-2.5 mb-1 text-sm font-medium leading-6 text-foreground first:mt-0">{children}</h3>;
+  return <h3 className="mt-3 mb-1 text-sm font-semibold leading-6 text-foreground [[data-gb-stream-block]:first-child>&]:mt-0">{children}</h3>;
 }
 
 const CODE_LANGUAGE_PATTERN = /language-([^\s]+)/;
@@ -437,9 +441,9 @@ const markdownComponents = {
   h1: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={1}>{children}</CompactHeading>,
   h2: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={2}>{children}</CompactHeading>,
   h3: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={3}>{children}</CompactHeading>,
-  h4: ({ children }: { children?: React.ReactNode }) => <h4 className="mt-2 mb-1 text-sm font-medium leading-6 text-foreground first:mt-0">{children}</h4>,
-  h5: ({ children }: { children?: React.ReactNode }) => <h5 className="mt-2 mb-1 text-sm font-medium leading-6 text-foreground first:mt-0">{children}</h5>,
-  h6: ({ children }: { children?: React.ReactNode }) => <h6 className="mt-2 mb-1 text-sm font-medium leading-6 text-muted-foreground first:mt-0">{children}</h6>,
+  h4: ({ children }: { children?: React.ReactNode }) => <h4 className="mt-2 mb-1 text-sm font-medium leading-6 text-foreground [[data-gb-stream-block]:first-child>&]:mt-0">{children}</h4>,
+  h5: ({ children }: { children?: React.ReactNode }) => <h5 className="mt-2 mb-1 text-sm font-medium leading-6 text-foreground [[data-gb-stream-block]:first-child>&]:mt-0">{children}</h5>,
+  h6: ({ children }: { children?: React.ReactNode }) => <h6 className="mt-2 mb-1 text-sm font-medium leading-6 text-muted-foreground [[data-gb-stream-block]:first-child>&]:mt-0">{children}</h6>,
   p: MarkdownParagraph,
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-foreground">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="text-foreground/90">{children}</em>,
@@ -507,6 +511,13 @@ function GithubReleaseParagraph({ className, children }: { className?: string; c
   return <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere] [&+p]:mt-3">{children}</p>;
 }
 
+// Standalone documents are read top to bottom, so their sections keep a GitHub-like heading hierarchy.
+const documentHeadingComponents = {
+  h1: ({ children }: { children?: React.ReactNode }) => <h1 className="mt-8 mb-3 border-b border-border/60 pb-2 text-lg font-bold leading-7 text-foreground">{children}</h1>,
+  h2: ({ children }: { children?: React.ReactNode }) => <h2 className="mt-8 mb-3 border-b border-border/60 pb-2 text-lg font-bold leading-7 text-foreground">{children}</h2>,
+  h3: ({ children }: { children?: React.ReactNode }) => <h3 className="mt-6 mb-2 text-base font-bold leading-6 text-foreground">{children}</h3>,
+};
+
 type Pluggable = NonNullable<StreamdownProps['remarkPlugins']>[number];
 type SanitizeSchema = { attributes?: Record<string, unknown[]> };
 const [sanitizePlugin, sanitizeSchema] = defaultRehypePlugins.sanitize as [Extract<Pluggable, (...parameters: never[]) => unknown>, SanitizeSchema];
@@ -533,9 +544,10 @@ const githubReleaseRehypePlugins: Pluggable[] = [
 ];
 
 const markdownFlavors: Record<MarkdownFlavor, Pick<StreamdownProps, 'components' | 'remarkPlugins' | 'rehypePlugins'>> = {
-  default: { components: markdownComponents },
+  chat: { components: markdownComponents },
+  document: { components: { ...markdownComponents, ...documentHeadingComponents } as NonNullable<StreamdownProps['components']> },
   'github-release': {
-    components: { ...markdownComponents, blockquote: GithubAlertBlockquote, p: GithubReleaseParagraph } as NonNullable<StreamdownProps['components']>,
+    components: { ...markdownComponents, ...documentHeadingComponents, blockquote: GithubAlertBlockquote, p: GithubReleaseParagraph } as NonNullable<StreamdownProps['components']>,
     remarkPlugins: githubReleaseRemarkPlugins,
     rehypePlugins: githubReleaseRehypePlugins,
   },
@@ -557,7 +569,7 @@ function StreamingMarkdownBlock(props: BlockProps) {
   );
 }
 
-export const Markdown = memo(function Markdown({ children, className, streaming = false, flavor = 'default' }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ children, className, streaming = false, flavor = 'chat' }: MarkdownProps) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);

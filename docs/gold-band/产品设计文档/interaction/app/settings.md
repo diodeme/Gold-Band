@@ -170,6 +170,7 @@
 - 设置里还没有 `desktopLanguage` 时，桌面端第一次加载按系统界面语言写入一次。简体中文、繁体中文（含香港、澳门）、日语、韩语、巴西葡萄牙语、西班牙语映射到上表；葡萄牙语其他地区和其他语言写入 `en`。写入之后以设置为准，系统语言再变化不覆盖。
 - Prompt 本地化独立于 UI 语言包；角色缺少对应语言时仍按 Prompt 规则降级到英文，不改变 UI 语言包的无 fallback 契约。
 - Windows 安装包按系统界面语言选择 NSIS 语言，未匹配时使用英文，不弹出语言对话框。安装包语言不会写入应用设置。
+- 每个渠道在渠道配置 `mainBinaryName` 声明独立的主程序文件名（default 为 `gold-band-desktop.exe`，wb 为 `maling-desktop.exe`），构建时写入 Tauri `mainBinaryName`，渠道名重复或格式非法时构建失败。NSIS 安装与更新只按文件名检测并关闭运行中的进程，因此同一台机器上安装或更新一个渠道不会关闭另一个渠道的客户端。旧版本升级时由安装器删除旧文件名的程序并把开始菜单、桌面快捷方式改指向新程序；通知 AUMID、开始菜单快捷方式与内置 memory MCP 启动路径在启动时按当前程序路径自动校正。
 
 ### 6.3 UI 形式
 推荐使用下拉选择：
@@ -294,6 +295,8 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 生成器从实际发布 SHA/tag 对应版本目录读取元数据；七语言正文和 `release.json` 必须进入该发布 SHA/tag，不能只存在于工作区或另一 workflow 分支。历史版本缺少 `release.json` 时按普通更新处理；文件存在时必须严格校验为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型或额外字段均在写入任何生成产物前失败，不能静默回落或留下部分输出。七个 locale manifest 与兼容 `latest.json` 共八份 default manifest 必须携带相同 `critical` 值；`wb` 的单 manifest 与既有关键更新构建参数保持不变，不消费该 default 元数据。
 - 文件准备不授权提交、push、打 tag 或发布；这些操作均需用户另行明确请求。
 - 「帮助 → 更新日志」查看当前版本的更新日志：构建时由 Vite 插件把 `release-notes/<package.json 版本>/<语言>.md` 打进前端，所有渠道（含 wb）都使用其基础版本的日志；每种语言是独立的懒加载分块（单个约 4–7 KB），启动时不加载，打开弹窗时只读取当前界面语言，缺少翻译时回退到 zh-CN，没有日志时显示“当前版本暂无更新日志”。只打包当前版本，不提供历史版本列表；日志随安装包固定，发布后修改需要发新版本。
+- Markdown 渲染分两类：`chat` 用于消息流内的回复（Agent 会话消息、Agent 提问卡片），标题字号接近正文；`document` 用于独立阅读的文档（会话系统提示词渲染视图、上下文管理正文），标题使用文档层级；`github-release` 是在 `document` 基础上增加单换行即换行与直接加载远程图片的更新日志渲染。
+- 文档类标题：H1/H2 为 18px 粗体并带弱分隔线、上方 32px 间距，H3 为 16px 粗体、上方 24px 间距，首个标题无上间距。
 - 更新日志弹窗与更新弹窗共用同一外壳与 `github-release` 渲染，底部「更多」打开渠道配置 `releaseNotesUrl` 声明的页面（default 为 GitHub Releases 页面，wb 为企业微信更新日志文档），不从更新地址推导；该值为空时不显示「更多」。
 - 更新日志以 GitHub Release 的显示效果为准，按 GitHub 兼容 Markdown 编写：提示框只使用 `NOTE / TIP / IMPORTANT / WARNING / CAUTION` 五种，`[!TYPE]` 单独占第一行，标题由类型固定、不可自定义，需要小标题时把下一行写成加粗文字；不使用 Obsidian 的 `[!attention]` 等 callout 和 `![…|500]` 图片宽度写法；单个换行即换行，编号列表写成 `1. 内容`。
 - 客户端更新弹窗使用共享 `Markdown` 的 `github-release` 渲染模式，与 GitHub Release 正文保持一致：单个换行显示为换行，五种 GitHub 提示框显示为带图标的提示框，标题跟随界面语言，颜色依次使用 `attention`、`success`、`emphasis`、`warning`、`danger` 主题 token，保证五种提示框在各主题下可区分且清晰；其他类型保持为普通引用。该模式下段落之间保留间距，避免与单个换行混淆；弹窗打开时焦点停在弹窗本身，不落到说明中的代码复制按钮等控件。安全过滤仅为该模式额外放行提示框标记类，聊天、文件预览等其他 Markdown 渲染保持标准 CommonMark + GFM 不变。

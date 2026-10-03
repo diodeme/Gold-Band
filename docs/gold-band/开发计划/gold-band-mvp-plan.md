@@ -2810,9 +2810,25 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 
 - [x] 背景：静默更新的用户若不点「重启安装」，直接退出完成安装后再也看不到本次更新日志；升级后首次检查会清空“已发现的更新”记录，客户端没有当前版本日志的来源。
 - [x] 方案：日志随安装包打包，而不是升级时转存运行期记录。Vite 插件 `web/config/release-notes-plugin.ts` 按 `package.json` 版本生成虚拟模块，每种语言一个 `?raw` 懒加载分块，所有渠道使用基础版本日志；全新安装、手动安装和离线都可查看，版本与日志由同一次构建决定，不新增状态或持久化。
-- [x] 入口：「帮助」菜单新增「更新日志」并对所有渠道显示，删除帮助按钮 Tooltip 及相关状态。弹窗与更新弹窗共用 `release-notes-layout` 外壳和 `github-release` 渲染；底部「更多」打开渠道配置新增的 `releaseNotesUrl`（default 为 GitHub Releases，wb 为企业微信文档），经 build.rs → `DesktopChannelConfig` → `AppInfoVm` 下发，不从更新地址推导。
+- [x] 入口：「帮助」菜单末尾新增「更新日志」（操作类入口在前、信息类在后）并对所有渠道显示，删除帮助按钮 Tooltip 及相关状态。弹窗与更新弹窗共用 `release-notes-layout` 外壳和 `github-release` 渲染；底部「更多」打开渠道配置新增的 `releaseNotesUrl`（default 为 GitHub Releases，wb 为企业微信文档），经 build.rs → `DesktopChannelConfig` → `AppInfoVm` 下发，不从更新地址推导。
 - [x] 回归：插件只嵌入当前版本且每种语言一个懒加载分块、无日志时无加载器；弹窗仅在打开时按界面语言加载、空状态与加载失败区分、「更多」打开渠道地址且为空时隐藏；帮助按钮无 Tooltip、菜单项顺序与焦点不回到触发器；Rust 校验 `releaseNotesUrl` 与渠道配置一致。生产构建确认日志为独立分块（单个约 4–5.5 KB），启动入口分块不包含日志正文。
 - 性能与过度设计评审：启动零开销，单种语言几 KB 且仅在打开弹窗时读取；只打包当前版本，体积不随版本增长。
+- [x] 标题层级：`github-release` 原沿用会话的紧凑标题（与正文同为 14px），更新日志章节难以区分；改为该渲染专属的文档标题（H1/H2 18px + 弱分隔线，H3 16px，加大上间距），会话 Markdown 不变。单测覆盖两种渲染的标题样式，浏览器在浅/深色下确认层级与首标题无上间距。
+
+## 2026-10-03 Markdown 分为 chat 与 document 两类渲染
+
+- [x] 背景：会话的紧凑标题各级字重接近（H2 450、H3 380、正文 330），上间距与段落间距相近，章节难以区分；系统提示词、上下文正文等独立文档也沿用紧凑标题。
+- [x] 方案：`MarkdownFlavor` 改为 `chat`（默认）/ `document` / `github-release`。chat 标题仍贴近正文：H1 15px 粗体 + 竖条、H2 15px 粗体、H3 14px 半粗，上间距 14/14/12px；document 与 github-release 共用文档标题（H1/H2 18px 粗体 + 弱分隔线，H3 16px 粗体）。系统提示词渲染视图与上下文管理两处正文改用 document。
+- [x] 根因修复：标题原用 `first:mt-0`，流式渲染时每个块包在 `contents` 容器里，导致流式期间所有标题上间距为 0、结束后突然出现。改为只对第一个流式块生效的选择器，静态模式由 Streamdown 根节点处理首块，流式与静态布局一致。
+- [x] 回归：单测覆盖 chat 各级字重、document/github-release 文档标题、流式块的标题间距；浏览器在浅/深色下确认 chat 静态与流式高度一致（528px）、首标题无上间距、document 层级与分隔线可见。
+- 性能与过度设计评审：只调整标题组件的样式类与渲染配置映射，不新增依赖、状态或渲染路径。
+
+## 2026-10-02 渠道主程序文件名隔离
+
+- [x] 根因：所有渠道都沿用 Cargo 二进制名 `gold-band-desktop.exe`，而 Tauri NSIS 安装器只按可执行文件名查找并结束运行中的进程，不区分安装目录；安装或静默更新 MALING 时会把正在运行的 Gold Band 一起关闭，反之亦然。属于渠道身份缺少“主程序名”维度的设计缺陷。
+- [x] 方案：渠道配置新增必填 `mainBinaryName`（default `gold-band-desktop`，wb `maling-desktop`），`scripts/channel-config.mjs` 校验格式后写入 Tauri 配置 overlay 的 `mainBinaryName`，由 tauri-cli 重命名产物和安装器检测目标；不修改 Cargo 包名、不定制 NSIS 模板。旧安装升级由 Tauri 安装器按注册表记录的旧程序名删除旧文件并迁移快捷方式。
+- [x] 回归：channel-config 测试覆盖 overlay 写入配置的程序名、所有渠道程序名互不相同；`npm run test:channel-config` 21 项通过。
+- 性能与过度设计评审：只在打包时多读一个配置字段，运行期无影响；复用 Tauri 原生配置与升级迁移，不新增状态或兼容逻辑。
 
 ## 2026-09-30 fanout 释放后保留会话工作目录
 

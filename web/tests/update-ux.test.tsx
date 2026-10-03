@@ -236,6 +236,34 @@ describe('GitHub release Markdown flavor', () => {
     expect(container.textContent).toContain('[!NOTE]');
   });
 
+  it('gives document flavors a heading hierarchy while chat headings stay near body size', async () => {
+    const headings = '## Section\n\nText\n\n### 1.Feature\n\nText';
+    for (const flavor of ['document', 'github-release'] as const) {
+      const doc = await render(<Markdown flavor={flavor}>{headings}</Markdown>);
+      expect(doc.querySelector('h2')?.className).toContain('text-lg');
+      expect(doc.querySelector('h2')?.className).toContain('border-b');
+      expect(doc.querySelector('h3')?.className).toContain('text-base');
+    }
+    const chat = await render(<Markdown>{'# Title\n\n' + headings}</Markdown>);
+    // Each level is one weight step above the next so chat sections stay distinguishable at body size.
+    expect(chat.querySelector('h1')?.className).toContain('font-bold');
+    expect(chat.querySelector('h2')?.className).toMatch(/text-\[15px\].*\bfont-bold\b/);
+    expect(chat.querySelector('h3')?.className).toMatch(/\btext-sm\b.*\bfont-semibold\b/);
+  });
+
+  it('keeps chat heading spacing while streaming and only drops it for the first streamed block', async () => {
+    const container = await render(<Markdown streaming>{'## First\n\nText\n\n## Second\n\nText'}</Markdown>);
+    const blocks = [...container.querySelectorAll('[data-gb-stream-block]')];
+    const headings = [...container.querySelectorAll('h2')];
+    expect(headings).toHaveLength(2);
+    expect(blocks[0]?.firstElementChild).toBe(headings[0]);
+    for (const heading of headings) {
+      expect(heading.className).toContain('mt-3.5');
+      expect(heading.className).toContain('[[data-gb-stream-block]:first-child>&]:mt-0');
+      expect(heading.className).not.toContain('first:mt-0');
+    }
+  });
+
   it('only lets the alert marker classes through the release sanitizer', async () => {
     const container = await render(<Markdown flavor="github-release">{'<blockquote class="markdown-alert-warning evil">raw</blockquote>\n\n<p class="evil">text</p>'}</Markdown>);
     expect(container.querySelector('.evil')).toBeNull();

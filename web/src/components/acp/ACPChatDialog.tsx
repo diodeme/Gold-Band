@@ -7682,7 +7682,7 @@ function ReadonlyMarkdownDocument({
       </div>
       {rendered ? (
         <div className={goldThemedScrollbarClassName("h-full overflow-y-auto px-6 py-5 pr-12")}>
-          <Markdown className="mx-auto w-full max-w-4xl" streaming={false}>{content}</Markdown>
+          <Markdown className="mx-auto w-full max-w-4xl" flavor="document">{content}</Markdown>
         </div>
       ) : (
         <WorkspaceFileEditor

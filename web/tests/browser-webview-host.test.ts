@@ -20,6 +20,8 @@ const api = vi.hoisted(() => ({
   browserSetViewMode: vi.fn(async () => undefined),
   browserDiscardAll: vi.fn(async () => undefined),
   browserStop: vi.fn(async () => undefined),
+  browserReload: vi.fn(async () => undefined),
+  browserAllowLocalAccess: vi.fn(async (_input: { pageId: string; directories: string[] }) => undefined),
   subscribeBrowserPageEvents: vi.fn(async () => () => undefined),
 }));
 
@@ -121,6 +123,35 @@ describe('browser webview host lifecycle', () => {
     });
     expect(browserSessionStore.snapshot().pages).toHaveLength(2);
     expect(browserSessionStore.page(browserSessionStore.snapshot().activePageId!)?.url).toBe('https://github.com/');
+  });
+
+  it('allows refused local directories, clears the notice and reloads the page', async () => {
+    const page = liveNativePage('file:///E:/demo/tmp/index.html');
+    browserWebviewHost.handleNativeEvent({
+      kind: 'local-access-denied',
+      pageId: page.pageId,
+      directories: ['E:\\demo\\node_modules\\mermaid'],
+    });
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.access_denied');
+
+    await browserWebviewHost.allowLocalAccess(page.pageId, ['E:\\demo\\node_modules\\mermaid']);
+
+    expect(api.browserAllowLocalAccess).toHaveBeenCalledWith({
+      pageId: page.pageId,
+      directories: ['E:\\demo\\node_modules\\mermaid'],
+    });
+    expect(api.browserReload).toHaveBeenCalledWith({ pageId: page.pageId });
+    expect(browserSessionStore.snapshot().notice).toBeNull();
+  });
+
+  it('keeps the page and reports a stale grant when allowing local access fails', async () => {
+    const page = liveNativePage('file:///E:/demo/tmp/index.html');
+    api.browserAllowLocalAccess.mockRejectedValueOnce({ code: 'browser.local_html.grant_failed', params: {} });
+
+    await browserWebviewHost.allowLocalAccess(page.pageId, ['E:\\elsewhere']);
+
+    expect(api.browserReload).not.toHaveBeenCalled();
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
   });
 
   it('does not treat a closed menu as a blocking overlay', async () => {
@@ -430,7 +461,7 @@ describe('browser webview host lifecycle', () => {
       url: 'https://example.com/',
       loading: false,
     });
-    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
   });
 
   it('suppresses show while hide is in flight so a leftover webview cannot cover the empty workspace', async () => {
@@ -529,7 +560,7 @@ describe('browser webview host lifecycle', () => {
       code: 'browser.local_html.grant_failed',
     });
     expect(api.browserSetBounds).toHaveBeenCalledWith({ pageId: page.pageId, bounds: shifted });
-    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
   });
 
   it('clears loading when native create fails so the loader cannot cover the workspace forever', async () => {

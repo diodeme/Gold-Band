@@ -592,6 +592,7 @@
       "reload": "Reload",
       "stop": "Stop loading",
       "openInSystemBrowser": "Open in system browser",
+      "allowLocalAccess": "Allow access",
       "switchToMobile": "Switch to mobile site",
       "switchToDesktop": "Switch to desktop site",
       "newPage": "New tab",
@@ -780,7 +781,9 @@
         "cancelled": "Save cancelled."
       },
       "local_html": {
-        "grant_failed": "This local HTML file could not be authorized."
+        "grant_failed": "This local HTML file could not be authorized.",
+        "access_denied": "This page needs to read {{directory}}, which is not allowed yet.",
+        "access_denied_more": "This page needs to read {{count}} folders that are not allowed yet, including {{directory}}."
       },
       "system_open": {
         "failed": "The system browser could not open this page."

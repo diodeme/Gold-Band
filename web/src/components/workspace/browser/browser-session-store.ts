@@ -13,10 +13,18 @@ export interface BrowserPage {
   viewMode: BrowserViewMode;
 }
 
+export interface BrowserNotice {
+  pageId: string;
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export const BROWSER_LOCAL_ACCESS_DENIED_CODE = 'browser.local_html.access_denied';
+
 export interface BrowserSessionState {
   pages: BrowserPage[];
   activePageId: string | null;
-  noticeCode: string | null;
+  notice: BrowserNotice | null;
 }
 
 export interface BrowserPageLimitError {
@@ -57,20 +65,19 @@ export function isBrowserPortalUrl(url: string) {
 function cloneState(state: BrowserSessionState): BrowserSessionState {
   return {
     activePageId: state.activePageId,
-    noticeCode: state.noticeCode,
+    notice: state.notice ? { ...state.notice, params: { ...state.notice.params } } : null,
     pages: state.pages.map((page) => ({ ...page })),
   };
 }
 
-function isDownloadNotice(code: string | null) {
+function isDownloadNotice(code: string) {
   return code === 'browser.download.cancelled' || code === 'browser.download.unsupported';
 }
 
 export class BrowserSessionStore {
-  private state: BrowserSessionState = { pages: [], activePageId: null, noticeCode: null };
+  private state: BrowserSessionState = { pages: [], activePageId: null, notice: null };
   private readonly listeners = new Set<BrowserSessionListener>();
   private readonly loadStallTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private noticePageId: string | null = null;
   private eventRevision = 0;
   private noticeRevision = 0;
   private readonly loadStartRevision = new Map<string, number>();
@@ -107,11 +114,10 @@ export class BrowserSessionStore {
       live: false,
       viewMode: 'desktop',
     };
-    this.noticePageId = null;
     this.state = {
       pages: [...this.state.pages, page],
       activePageId: page.pageId,
-      noticeCode: null,
+      notice: null,
     };
     if (canonical !== BLANK_BROWSER_URL) this.scheduleLoadStallRecovery(page.pageId);
     this.emit();
@@ -200,8 +206,7 @@ export class BrowserSessionStore {
   closeAll() {
     const closed = this.state.pages.map((page) => page.pageId);
     for (const pageId of closed) this.clearLoadStallTimer(pageId);
-    this.noticePageId = null;
-    this.state = { pages: [], activePageId: null, noticeCode: null };
+    this.state = { pages: [], activePageId: null, notice: null };
     this.emit();
     return closed;
   }
@@ -226,8 +231,7 @@ export class BrowserSessionStore {
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, loading: true } : page
     ));
-    this.noticePageId = null;
-    this.state = { ...this.state, pages, noticeCode: null };
+    this.state = { ...this.state, pages, notice: null };
     this.scheduleLoadStallRecovery(pageId);
     this.emit();
   }
@@ -241,8 +245,7 @@ export class BrowserSessionStore {
         ? { ...page, url: canonical, loading: canonical !== BLANK_BROWSER_URL }
         : page
     ));
-    this.noticePageId = null;
-    this.state = { ...this.state, pages, noticeCode: null };
+    this.state = { ...this.state, pages, notice: null };
     this.emit();
     if (canonical === BLANK_BROWSER_URL) this.clearLoadStallTimer(pageId);
     else this.scheduleLoadStallRecovery(pageId);
@@ -255,24 +258,36 @@ export class BrowserSessionStore {
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, loading: false } : page
     ));
-    this.showNotice(pageId, code, pages);
+    this.showNotice({ pageId, code, params: {} }, pages);
   }
 
   /** Surfaces a page-scoped failure that is not a navigation, such as the system browser refusing it. */
   reportNotice(pageId: string, code: string) {
     if (!this.page(pageId)) return;
-    this.showNotice(pageId, code, this.state.pages);
+    this.showNotice({ pageId, code, params: {} }, this.state.pages);
   }
 
-  private showNotice(pageId: string, code: string, pages: BrowserPage[]) {
-    this.eventRevision += 1;
-    this.noticeRevision = this.eventRevision;
-    this.noticePageId = pageId;
-    this.state = { ...this.state, pages, noticeCode: code };
+  /** Drops the page's notice once the user acted on it, such as allowing local access. */
+  dismissNotice(pageId: string) {
+    if (this.state.notice?.pageId !== pageId) return;
+    this.state = { ...this.state, notice: null };
     this.emit();
   }
 
-  applyNativeEvent(event: { kind: string; pageId: string; url?: string | null; title?: string | null }) {
+  private showNotice(notice: BrowserNotice, pages: BrowserPage[]) {
+    this.eventRevision += 1;
+    this.noticeRevision = this.eventRevision;
+    this.state = { ...this.state, pages, notice };
+    this.emit();
+  }
+
+  applyNativeEvent(event: {
+    kind: string;
+    pageId: string;
+    url?: string | null;
+    title?: string | null;
+    directories?: string[];
+  }) {
     if (event.kind === 'discarded') {
       this.markDiscarded([event.pageId]);
       return;
@@ -291,16 +306,29 @@ export class BrowserSessionStore {
       this.patch(event.pageId, {
         loading: true,
         ...(event.url ? { url: event.url } : {}),
-      });
+      }, this.localAccessNoticeLeftBehind(event.pageId, event.url));
       this.scheduleLoadStallRecovery(event.pageId);
+      return;
+    }
+    if (event.kind === 'local-access-denied') {
+      if (!this.page(event.pageId) || !event.directories?.length) return;
+      this.showNotice({
+        pageId: event.pageId,
+        code: BROWSER_LOCAL_ACCESS_DENIED_CODE,
+        params: { directories: [...event.directories] },
+      }, this.state.pages);
       return;
     }
     if (event.kind === 'download-unsupported' || event.kind === 'download-cancelled') {
       this.state = {
         ...this.state,
-        noticeCode: event.kind === 'download-cancelled'
-          ? 'browser.download.cancelled'
-          : 'browser.download.unsupported',
+        notice: {
+          pageId: event.pageId,
+          code: event.kind === 'download-cancelled'
+            ? 'browser.download.cancelled'
+            : 'browser.download.unsupported',
+          params: {},
+        },
       };
       this.emit();
       return;
@@ -347,17 +375,27 @@ export class BrowserSessionStore {
     for (const timer of this.loadStallTimers.values()) clearTimeout(timer);
     this.loadStallTimers.clear();
     this.loadStartRevision.clear();
-    this.noticePageId = null;
     this.eventRevision = 0;
     this.noticeRevision = 0;
-    this.state = { pages: [], activePageId: null, noticeCode: null };
+    this.state = { pages: [], activePageId: null, notice: null };
     this.emit();
   }
 
   private navigationNoticeExpired(pageId: string, loadStartedAt?: number) {
-    if (this.noticePageId !== pageId || this.state.noticeCode == null) return false;
-    if (isDownloadNotice(this.state.noticeCode)) return false;
+    const notice = this.state.notice;
+    if (notice?.pageId !== pageId) return false;
+    // Refused local directories stay pending across reloads until the user answers.
+    if (isDownloadNotice(notice.code) || notice.code === BROWSER_LOCAL_ACCESS_DENIED_CODE) return false;
     return loadStartedAt === undefined || loadStartedAt > this.noticeRevision;
+  }
+
+  /** The page left local documents, which also drops its pending directories natively. */
+  private localAccessNoticeLeftBehind(pageId: string, url?: string | null) {
+    const notice = this.state.notice;
+    return notice?.pageId === pageId
+      && notice.code === BROWSER_LOCAL_ACCESS_DENIED_CODE
+      && typeof url === 'string'
+      && !url.startsWith('file:');
   }
 
   private scheduleLoadStallRecovery(pageId: string) {
@@ -375,15 +413,14 @@ export class BrowserSessionStore {
     this.loadStallTimers.delete(pageId);
   }
 
-  private patch(pageId: string, patch: Partial<BrowserPage>, clearNavigationNotice = false) {
+  private patch(pageId: string, patch: Partial<BrowserPage>, clearNotice = false) {
     const index = this.state.pages.findIndex((page) => page.pageId === pageId);
     if (index < 0) return;
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, ...patch } : page
     ));
-    const noticeCode = clearNavigationNotice ? null : this.state.noticeCode;
-    if (clearNavigationNotice) this.noticePageId = null;
-    this.state = { ...this.state, pages, noticeCode };
+    const notice = clearNotice ? null : this.state.notice;
+    this.state = { ...this.state, pages, notice };
     this.emit();
   }
 

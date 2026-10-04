@@ -328,6 +328,18 @@ class BrowserWebviewHost {
     browserSessionStore.markLoading(pageId, true);
   }
 
+  /** Grants the directories the page was refused, then reloads so its assets load. */
+  async allowLocalAccess(pageId: string, directories: string[]) {
+    try {
+      await api().browserAllowLocalAccess({ pageId, directories });
+    } catch (error) {
+      browserSessionStore.reportNotice(pageId, browserErrorCode(error));
+      return;
+    }
+    browserSessionStore.dismissNotice(pageId);
+    await this.reload(pageId);
+  }
+
   async stop(pageId: string) {
     await api().browserStop?.({ pageId });
     browserSessionStore.markLoading(pageId, false);

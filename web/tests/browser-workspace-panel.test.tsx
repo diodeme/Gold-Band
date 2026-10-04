@@ -63,6 +63,7 @@ vi.mock('@/components/workspace/browser/browser-webview-host', () => ({
     stop: vi.fn(),
     navigate: vi.fn(),
     commitNavigation: vi.fn(),
+    allowLocalAccess: vi.fn(async () => undefined),
     setViewMode: vi.fn(),
     resume: vi.fn(),
     suppress: vi.fn(),
@@ -219,6 +220,36 @@ describe('BrowserWorkspacePanel', () => {
       await act(async () => openExternal?.click());
       expect(browserOpenInSystemBrowser).toHaveBeenCalledWith(localHtml);
       expect(container.querySelector('[data-browser-notice="browser.system_open.failed"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('names the refused local directory and allows it from the notice row', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      let pageId = '';
+      await act(async () => {
+        pageId = browserSessionStore.openUrl('file:///E:/demo/tmp/index.html');
+        root.render(<BrowserWorkspacePanel />);
+      });
+      await act(async () => browserSessionStore.applyNativeEvent({
+        kind: 'local-access-denied',
+        pageId,
+        directories: ['E:\\demo\\node_modules\\mermaid', 'E:\\shared'],
+      }));
+
+      const notice = container.querySelector('[data-browser-notice="browser.local_html.access_denied"]');
+      expect(notice?.textContent).toContain('E:\\demo\\node_modules\\mermaid');
+      expect(notice?.textContent).toContain('2');
+      const allow = container.querySelector<HTMLButtonElement>('[data-browser-allow-local-access="true"]');
+      await act(async () => allow?.click());
+      expect(browserWebviewHost.allowLocalAccess).toHaveBeenCalledWith(
+        pageId,
+        ['E:\\demo\\node_modules\\mermaid', 'E:\\shared'],
+      );
     } finally {
       await act(async () => root.unmount());
     }

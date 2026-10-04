@@ -592,6 +592,7 @@
       "reload": "重新整理",
       "stop": "停止載入",
       "openInSystemBrowser": "用系統瀏覽器開啟",
+      "allowLocalAccess": "允許存取",
       "switchToMobile": "切換到移動版",
       "switchToDesktop": "切換到電腦版",
       "newPage": "新分頁",
@@ -780,7 +781,9 @@
         "cancelled": "已取消儲存。"
       },
       "local_html": {
-        "grant_failed": "無法授權開啟該本機 HTML。"
+        "grant_failed": "無法授權開啟該本機 HTML。",
+        "access_denied": "頁面需要讀取未授權的目錄 {{directory}}。",
+        "access_denied_more": "頁面需要讀取 {{count}} 個未授權的目錄，包括 {{directory}}。"
       },
       "system_open": {
         "failed": "系統瀏覽器無法開啟此頁面。"

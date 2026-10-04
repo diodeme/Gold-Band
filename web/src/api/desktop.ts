@@ -884,6 +884,9 @@ export const desktopApi: RuntimeApi = {
   browserNavigate(input) {
     return invokeCommand('browser_navigate', { input });
   },
+  browserAllowLocalAccess(input) {
+    return invokeCommand('browser_allow_local_access', { input });
+  },
   browserGoBack(input) {
     return invokeCommand('browser_go_back', { input });
   },

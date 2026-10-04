@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::http::{Method, Response, StatusCode, header};
+use tauri::http::{Method, Response, StatusCode};
 use tauri::webview::Color as WebviewColor;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, Window};
@@ -17,15 +17,18 @@ use tauri_plugin_opener::OpenerExt;
 use tracing::{info, warn};
 use url::Url;
 
+use crate::browser_local_files::{
+    LocalFileAccess, LocalFileGrant, browser_display_url, canonicalize_display_path,
+    is_browser_local_file_url, local_document_navigation_url, local_file_error,
+    local_file_response, local_path_for_url, workspace_roots_containing,
+};
 use crate::commands::{CommandErrorVm, CommandResult};
 use crate::state::DesktopState;
 
 pub const BROWSER_PAGE_EVENT: &str = "gold-band://browser-page";
 pub const BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT: &str =
     "gold-band://browser-address-suggestion-action";
-pub const BROWSER_LOCAL_FILE_PROTOCOL: &str = "gold-band-browser-file";
 pub const BROWSER_LIVE_WEBVIEW_LIMIT: usize = 5;
-const BROWSER_LOCAL_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAIN_WEBVIEW_LABEL: &str = "main";
 const BROWSER_PROFILE_DIR_NAME: &str = "browser-profile";
 const BROWSER_WEBVIEW_LABEL_PREFIX: &str = "gb-b-";
@@ -94,7 +97,9 @@ fn view_mode_user_agent<'a>(
 #[derive(Debug, Clone)]
 struct BrowserNativePage {
     label: String,
-    allowed_file_root: Option<PathBuf>,
+    /// Directories the local file protocol may serve to this page; `None` once it
+    /// leaves local documents.
+    local_grant: Option<LocalFileGrant>,
     view_mode: BrowserViewMode,
     last_http_url: Option<String>,
     /// Last top-level location already projected to the address bar. Same-document
@@ -126,6 +131,13 @@ pub struct BrowserPageIdInput {
 pub struct BrowserNavigateInput {
     pub page_id: String,
     pub url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserAllowLocalAccessInput {
+    pub page_id: String,
+    pub directories: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -236,6 +248,9 @@ pub struct BrowserPageEventVm {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// `local-access-denied`: directories the page asked for outside its grant.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<String>,
 }
 
 pub fn discard_all_browser_webviews(app: &AppHandle) {
@@ -265,10 +280,12 @@ pub fn discard_all_browser_webviews(app: &AppHandle) {
 pub async fn browser_create_page(
     app: AppHandle,
     host: State<'_, BrowserHost>,
+    state: State<'_, DesktopState>,
     input: BrowserCreatePageInput,
 ) -> CommandResult<BrowserPageVm> {
     let page_id = validate_page_id(&input.page_id)?;
-    let resolved = resolve_browser_target(&input.url, None)?;
+    let resolved = resolve_browser_target(&input.url)?;
+    let workspace_paths = registered_workspace_paths(&state, &resolved);
     info!(
         target: "gold_band::browser",
         operation = "create",
@@ -285,6 +302,7 @@ pub async fn browser_create_page(
         &host,
         page_id,
         resolved,
+        &workspace_paths,
         input.bounds,
         input.view_mode,
     )
@@ -641,14 +659,17 @@ fn validate_address_suggestion_action(
 pub async fn browser_navigate(
     app: AppHandle,
     host: State<'_, BrowserHost>,
+    state: State<'_, DesktopState>,
     input: BrowserNavigateInput,
 ) -> CommandResult<BrowserPageVm> {
     let page_id = validate_page_id(&input.page_id)?;
-    let current_root = lock_host(&host)?
-        .pages
-        .get(page_id)
-        .and_then(|page| page.allowed_file_root.clone());
-    let resolved = resolve_browser_target(&input.url, current_root.as_deref())?;
+    let resolved = resolve_browser_target(&input.url)?;
+    let current_grant = current_local_grant(&host, page_id);
+    let local_grant = next_local_grant(
+        current_grant.as_ref(),
+        &resolved,
+        &registered_workspace_paths(&state, &resolved),
+    );
     let label = host_label(&host, page_id)?;
     info!(
         target: "gold_band::browser",
@@ -661,7 +682,7 @@ pub async fn browser_navigate(
     {
         let mut inner = lock_host(&host)?;
         if let Some(page) = inner.pages.get_mut(page_id) {
-            page.allowed_file_root = resolved.allowed_file_root.clone();
+            page.local_grant = local_grant;
         }
         inner.touch(page_id);
     }
@@ -672,6 +693,36 @@ pub async fn browser_navigate(
         url: resolved.url.to_string(),
         label,
     })
+}
+
+/// Grants directories the page was refused, after the user confirmed them. Only
+/// directories still pending for this page are accepted; the caller reloads.
+#[tauri::command]
+pub async fn browser_allow_local_access(
+    host: State<'_, BrowserHost>,
+    input: BrowserAllowLocalAccessInput,
+) -> CommandResult<()> {
+    let page_id = validate_page_id(&input.page_id)?;
+    let directories: Vec<PathBuf> = input.directories.iter().map(PathBuf::from).collect();
+    let allowed = {
+        let mut inner = lock_host(&host)?;
+        inner
+            .pages
+            .get_mut(page_id)
+            .and_then(|page| page.local_grant.as_mut())
+            .map_or(0, |grant| grant.allow(&directories))
+    };
+    if allowed == 0 {
+        return Err(local_html_grant_failed());
+    }
+    info!(
+        target: "gold_band::browser",
+        operation = "allow-local-access",
+        page_id,
+        allowed,
+        "browser local file grant extended"
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -1220,14 +1271,17 @@ fn create_or_reuse_page(
     host: &BrowserHost,
     page_id: &str,
     resolved: ResolvedBrowserTarget,
+    workspace_paths: &[String],
     bounds: BrowserBoundsVm,
     view_mode: BrowserViewMode,
 ) -> CommandResult<BrowserPageVm> {
+    let current_grant = current_local_grant(host, page_id);
+    let local_grant = next_local_grant(current_grant.as_ref(), &resolved, workspace_paths);
     if let Ok(existing) = host_label(host, page_id) {
         {
             let mut inner = lock_host(host)?;
             if let Some(page) = inner.pages.get_mut(page_id) {
-                page.allowed_file_root = resolved.allowed_file_root.clone();
+                page.local_grant = local_grant;
             }
             inner.touch(page_id);
         }
@@ -1266,6 +1320,7 @@ fn create_or_reuse_page(
                 page_id: evicted_page_id,
                 url: None,
                 title: None,
+                directories: Vec::new(),
             },
         );
     }
@@ -1273,7 +1328,6 @@ fn create_or_reuse_page(
     let window = main_window(app)?;
     let label = webview_label(page_id);
     let profile_dir = browser_profile_dir(app)?;
-    let allowed_root = resolved.allowed_file_root.clone();
     let builder = browser_webview_builder(
         app,
         page_id,
@@ -1291,7 +1345,7 @@ fn create_or_reuse_page(
             page_id.to_string(),
             BrowserNativePage {
                 label: label.clone(),
-                allowed_file_root: allowed_root,
+                local_grant,
                 view_mode,
                 last_http_url: crate::browser_history::http_visit_url(&resolved.url),
                 last_location: Some(resolved.url.to_string()),
@@ -1357,13 +1411,19 @@ fn browser_webview_builder(
     Ok(builder
         .initialization_script_for_all_frames(BROWSER_LINK_CLICK_SCRIPT)
         .on_navigation(move |target| {
-            let current_root = current_allowed_root(&host_app, &host_page);
-            let allowed = navigation_allowed(target, current_root.as_deref());
+            let grant = page_local_grant(&host_app, &host_page);
+            let allowed = navigation_allowed(target, grant.as_ref());
             if allowed
                 && matches!(target.scheme(), "http" | "https")
                 && !is_browser_local_file_url(target)
             {
-                clear_allowed_root(&host_app, &host_page);
+                clear_local_grant(&host_app, &host_page);
+            }
+            if let Some(LocalFileAccess::Denied { directory }) = is_browser_local_file_url(target)
+                .then(|| grant.as_ref().map(|grant| grant.access(target)))
+                .flatten()
+            {
+                record_local_access_denied(&host_app, &host_page, directory);
             }
             allowed
         })
@@ -1378,6 +1438,7 @@ fn browser_webview_builder(
                     page_id: title_page.clone(),
                     url: None,
                     title: Some(title),
+                    directories: Vec::new(),
                 },
             );
         })
@@ -1386,10 +1447,7 @@ fn browser_webview_builder(
                 PageLoadEvent::Started => "load-start",
                 PageLoadEvent::Finished => "load-finish",
             };
-            let display_url = current_allowed_root(&load_app, &load_page)
-                .as_deref()
-                .map(|root| browser_display_url(payload.url(), Some(root)))
-                .unwrap_or_else(|| payload.url().clone());
+            let display_url = browser_display_url(payload.url());
             remember_page_url(&load_app, &load_page, &display_url);
             if payload.event() == PageLoadEvent::Finished {
                 crate::browser_history::record_finished_url(&load_app, &display_url);
@@ -1411,14 +1469,26 @@ fn browser_webview_builder(
                     page_id: load_page.clone(),
                     url: Some(display_url.to_string()),
                     title: None,
+                    directories: Vec::new(),
                 },
             );
         })
         .on_new_window(move |url, _features| {
-            let display_url = current_allowed_root(&window_app, &window_page)
-                .as_deref()
-                .map(|root| browser_display_url(&url, Some(root)))
-                .unwrap_or(url);
+            // Web content must not reach local documents. A local page may only open
+            // documents its own grant already covers.
+            if (url.scheme() == "file" || is_browser_local_file_url(&url))
+                && !page_local_grant(&window_app, &window_page)
+                    .is_some_and(|grant| new_window_local_target_allowed(&grant, &url))
+            {
+                warn!(
+                    target: "gold_band::browser",
+                    operation = "new-window",
+                    page_id = window_page,
+                    "local new-window target outside the page grant refused"
+                );
+                return NewWindowResponse::Deny;
+            }
+            let display_url = browser_display_url(&url);
             emit_page_event(
                 &window_app,
                 BrowserPageEventVm {
@@ -1426,6 +1496,7 @@ fn browser_webview_builder(
                     page_id: window_page.clone(),
                     url: Some(display_url.to_string()),
                     title: None,
+                    directories: Vec::new(),
                 },
             );
             NewWindowResponse::Deny
@@ -1459,6 +1530,7 @@ fn browser_webview_builder(
                                     page_id: download_page.clone(),
                                     url: None,
                                     title: None,
+                                    directories: Vec::new(),
                                 },
                             );
                             false
@@ -1472,6 +1544,7 @@ fn browser_webview_builder(
                                 page_id: download_page.clone(),
                                 url: None,
                                 title: None,
+                                directories: Vec::new(),
                             },
                         );
                         false
@@ -1491,6 +1564,7 @@ fn browser_webview_builder(
                             page_id: download_page.clone(),
                             url: Some(url.to_string()),
                             title: None,
+                            directories: Vec::new(),
                         },
                     );
                 }
@@ -1504,26 +1578,24 @@ fn browser_webview_builder(
 pub(crate) struct ResolvedBrowserTarget {
     url: Url,
     navigation_url: Url,
-    allowed_file_root: Option<PathBuf>,
+    /// Canonical path when the target is a local document.
+    local_document: Option<PathBuf>,
 }
 
-pub(crate) fn resolve_browser_target(
-    raw: &str,
-    current_file_root: Option<&Path>,
-) -> CommandResult<ResolvedBrowserTarget> {
+pub(crate) fn resolve_browser_target(raw: &str) -> CommandResult<ResolvedBrowserTarget> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("about:blank") {
         return Ok(ResolvedBrowserTarget {
             url: Url::parse("about:blank").expect("about:blank"),
             navigation_url: Url::parse("about:blank").expect("about:blank"),
-            allowed_file_root: None,
+            local_document: None,
         });
     }
     if looks_like_local_path(trimmed) {
         return resolved_from_file_path(Path::new(trimmed));
     }
     if let Ok(url) = Url::parse(trimmed) {
-        return resolved_from_url(url, current_file_root);
+        return resolved_from_url(url);
     }
     let prefixed = if trimmed.contains(' ') {
         return Err(navigation_invalid());
@@ -1531,38 +1603,28 @@ pub(crate) fn resolve_browser_target(
         format!("https://{trimmed}")
     };
     let url = Url::parse(&prefixed).map_err(|_| navigation_invalid())?;
-    resolved_from_url(url, current_file_root)
+    resolved_from_url(url)
 }
 
-fn resolved_from_url(
-    url: Url,
-    current_file_root: Option<&Path>,
-) -> CommandResult<ResolvedBrowserTarget> {
-    if !navigation_allowed(&url, current_file_root) {
-        if url.scheme() == "file" {
-            let path = url.to_file_path().map_err(|_| local_html_grant_failed())?;
-            if is_browser_document_path(&path) {
-                return resolved_from_file_path(&path);
-            }
+fn resolved_from_url(url: Url) -> CommandResult<ResolvedBrowserTarget> {
+    if url.scheme() == "file" {
+        let path = url.to_file_path().map_err(|_| local_html_grant_failed())?;
+        if is_browser_document_path(&path) {
+            return resolved_from_file_path(&path);
         }
         return Err(navigation_invalid());
     }
-    let allowed_file_root = if url.scheme() == "file" {
-        url.to_file_path()
-            .ok()
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-    } else if is_browser_local_file_url(&url) {
-        // Re-navigating an already authorized local page must keep its directory
-        // instead of silently dropping the grant.
-        current_file_root.map(Path::to_path_buf)
-    } else {
-        None
-    };
-    let navigation_url = browser_navigation_url(&url, allowed_file_root.as_deref())?;
+    if is_browser_local_file_url(&url) {
+        let path = local_path_for_url(&url).map_err(|_| local_html_grant_failed())?;
+        return resolved_from_file_path(&path);
+    }
+    if !navigation_allowed(&url, None) {
+        return Err(navigation_invalid());
+    }
     Ok(ResolvedBrowserTarget {
+        navigation_url: url.clone(),
         url,
-        navigation_url,
-        allowed_file_root,
+        local_document: None,
     })
 }
 
@@ -1575,100 +1637,49 @@ fn resolved_from_file_path(path: &Path) -> CommandResult<ResolvedBrowserTarget> 
         return Err(local_html_grant_failed());
     }
     let url = Url::from_file_path(&canonical).map_err(|_| local_html_grant_failed())?;
-    let allowed_file_root = canonical.parent().map(Path::to_path_buf);
-    let navigation_url = browser_navigation_url(&url, allowed_file_root.as_deref())?;
+    let navigation_url =
+        local_document_navigation_url(&canonical).map_err(|_| local_html_grant_failed())?;
     Ok(ResolvedBrowserTarget {
         url,
         navigation_url,
-        allowed_file_root,
+        local_document: Some(canonical),
     })
 }
 
-fn browser_navigation_url(url: &Url, allowed_file_root: Option<&Path>) -> CommandResult<Url> {
-    let path = if url.scheme() == "file" {
-        let root = allowed_file_root.ok_or_else(local_html_grant_failed)?;
-        url.to_file_path()
-            .map_err(|_| local_html_grant_failed())
-            .and_then(|path| {
-                path_is_within(&path, root)
-                    .then_some(path)
-                    .ok_or_else(local_html_grant_failed)
-            })?
-    } else if is_browser_local_file_url(url) {
-        // Keep the directory the page was granted instead of dropping it when the
-        // address is typed or reloaded directly.
-        let root = allowed_file_root.ok_or_else(local_html_grant_failed)?;
-        browser_local_path(url, root).map_err(|_| local_html_grant_failed())?
-    } else {
-        return Ok(url.clone());
-    };
-    let root = allowed_file_root.ok_or_else(local_html_grant_failed)?;
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| local_html_grant_failed())?;
-    // WebView2 cannot navigate directly to a non-standard scheme; wry only rewrites
-    // the initial URL. Use the documented workaround form on Windows and the
-    // registered scheme elsewhere.
-    let base = if cfg!(windows) {
-        format!("http://{BROWSER_LOCAL_FILE_PROTOCOL}.localhost/")
-    } else {
-        format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/")
-    };
-    let mut navigation_url = Url::parse(&base).map_err(|_| local_html_grant_failed())?;
-    {
-        let mut segments = navigation_url
-            .path_segments_mut()
-            .map_err(|_| local_html_grant_failed())?;
-        segments.clear();
-        for component in relative.components() {
-            let std::path::Component::Normal(segment) = component else {
-                return Err(local_html_grant_failed());
-            };
-            let segment = segment.to_str().ok_or_else(local_html_grant_failed)?;
-            segments.push(segment);
-        }
+/// Grant a page holds after navigating to `target`. A document inside the current
+/// grant keeps it, so typed reloads and in-page links keep what the user allowed.
+pub(crate) fn next_local_grant(
+    current: Option<&LocalFileGrant>,
+    target: &ResolvedBrowserTarget,
+    workspace_paths: &[String],
+) -> Option<LocalFileGrant> {
+    let document = target.local_document.as_deref()?;
+    if let Some(current) = current.filter(|grant| grant.covers(document)) {
+        return Some(current.clone());
     }
-    Ok(navigation_url)
+    LocalFileGrant::for_document(
+        document,
+        &workspace_roots_containing(document, workspace_paths),
+    )
 }
 
-pub(crate) fn is_browser_local_file_url(url: &Url) -> bool {
-    url.scheme() == BROWSER_LOCAL_FILE_PROTOCOL
-        || (matches!(url.scheme(), "http" | "https")
-            && url.host_str().is_some_and(|host| {
-                host.eq_ignore_ascii_case(&format!("{BROWSER_LOCAL_FILE_PROTOCOL}.localhost"))
-            }))
-}
-
-fn browser_local_path(url: &Url, root: &Path) -> Result<PathBuf, ()> {
-    if !is_browser_local_file_url(url) {
-        return Err(());
+/// Registered workspace paths, read only when a local document is being opened.
+fn registered_workspace_paths(state: &DesktopState, target: &ResolvedBrowserTarget) -> Vec<String> {
+    if target.local_document.is_none() {
+        return Vec::new();
     }
-    let mut relative = PathBuf::new();
-    for segment in url.path_segments().ok_or(())? {
-        let decoded = percent_encoding::percent_decode_str(segment)
-            .decode_utf8()
-            .map_err(|_| ())?;
-        if decoded.is_empty() || decoded == "." || decoded == ".." || decoded.contains(['/', '\\'])
-        {
-            return Err(());
-        }
-        relative.push(decoded.as_ref());
-    }
-    if relative.as_os_str().is_empty() {
-        return Err(());
-    }
-    let path = canonicalize_display_path(&root.join(relative)).map_err(|_| ())?;
-    path_is_within(&path, root).then_some(path).ok_or(())
-}
-
-fn browser_display_url(url: &Url, allowed_file_root: Option<&Path>) -> Url {
-    let Some(root) = allowed_file_root else {
-        return url.clone();
-    };
-    browser_local_path(url, root)
+    state
+        .context()
         .ok()
-        .and_then(|path| Url::from_file_path(path).ok())
-        .unwrap_or_else(|| url.clone())
+        .and_then(|context| context.app().load_state().ok())
+        .map(|persisted| {
+            persisted
+                .conversation_workspaces
+                .into_iter()
+                .map(|workspace| workspace.workspace_path)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn browser_local_file_protocol_response(
@@ -1677,76 +1688,77 @@ pub fn browser_local_file_protocol_response(
     method: &Method,
     uri: &str,
 ) -> Response<Vec<u8>> {
-    let Some(root) = allowed_root_for_label(app, webview_label) else {
-        return browser_protocol_error(StatusCode::NOT_FOUND);
+    let Some((page_id, grant)) = local_grant_for_label(app, webview_label) else {
+        return local_file_error(StatusCode::NOT_FOUND);
     };
-    browser_local_file_response(&root, method, uri)
-}
-
-pub(crate) fn browser_local_file_response(
-    root: &Path,
-    method: &Method,
-    uri: &str,
-) -> Response<Vec<u8>> {
-    if method != Method::GET && method != Method::HEAD {
-        return browser_protocol_error(StatusCode::METHOD_NOT_ALLOWED);
+    let (response, access) = local_file_response(&grant, method, uri);
+    if let LocalFileAccess::Denied { directory } = access {
+        record_local_access_denied(app, &page_id, directory);
     }
-    let Ok(url) = Url::parse(uri) else {
-        return browser_protocol_error(StatusCode::BAD_REQUEST);
-    };
-    let Ok(path) = browser_local_path(&url, root) else {
-        return browser_protocol_error(StatusCode::NOT_FOUND);
-    };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return browser_protocol_error(StatusCode::NOT_FOUND);
-    };
-    if !metadata.is_file() || metadata.len() > BROWSER_LOCAL_FILE_MAX_BYTES {
-        return browser_protocol_error(StatusCode::NOT_FOUND);
-    }
-    let body = if method == Method::HEAD {
-        Vec::new()
-    } else {
-        match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(_) => return browser_protocol_error(StatusCode::NOT_FOUND),
-        }
-    };
-    let mime = mime_guess::from_path(&path).first_or_octet_stream();
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, mime.as_ref())
-        .header(header::CACHE_CONTROL, "no-store")
-        .header("x-content-type-options", "nosniff")
-        .header(header::CONTENT_LENGTH, metadata.len())
-        .body(body)
-        .unwrap_or_else(|_| browser_protocol_error(StatusCode::INTERNAL_SERVER_ERROR))
+    response
 }
 
-fn browser_protocol_error(status: StatusCode) -> Response<Vec<u8>> {
-    Response::builder()
-        .status(status)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header("x-content-type-options", "nosniff")
-        .body(Vec::new())
-        .expect("static browser protocol response")
-}
-
-fn allowed_root_for_label(app: &AppHandle, label: &str) -> Option<PathBuf> {
+fn local_grant_for_label(app: &AppHandle, label: &str) -> Option<(String, LocalFileGrant)> {
     let host = app.try_state::<BrowserHost>()?;
     let inner = lock_host(host.inner()).ok()?;
-    inner
-        .pages
-        .values()
-        .find(|page| page.label == label)
-        .and_then(|page| page.allowed_file_root.clone())
+    inner.pages.iter().find_map(|(page_id, page)| {
+        (page.label == label)
+            .then(|| {
+                page.local_grant
+                    .clone()
+                    .map(|grant| (page_id.clone(), grant))
+            })
+            .flatten()
+    })
 }
 
-pub(crate) fn navigation_allowed(url: &Url, allowed_file_root: Option<&Path>) -> bool {
-    if is_browser_local_file_url(url) {
-        let Some(root) = allowed_file_root else {
-            return false;
+/// Records a refused directory and tells the front end once per new directory.
+fn record_local_access_denied(app: &AppHandle, page_id: &str, directory: PathBuf) {
+    let directories = {
+        let Some(host) = app.try_state::<BrowserHost>() else {
+            return;
         };
-        return browser_local_path(url, root).is_ok();
+        let Ok(mut inner) = lock_host(host.inner()) else {
+            return;
+        };
+        let Some(grant) = inner
+            .pages
+            .get_mut(page_id)
+            .and_then(|page| page.local_grant.as_mut())
+        else {
+            return;
+        };
+        if !grant.record_denied(directory) {
+            return;
+        }
+        grant
+            .denied_directories()
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    info!(
+        target: "gold_band::browser",
+        operation = "local-access-denied",
+        page_id,
+        pending = directories.len(),
+        "browser local file request outside the page grant"
+    );
+    emit_page_event(
+        app,
+        BrowserPageEventVm {
+            kind: "local-access-denied".into(),
+            page_id: page_id.to_string(),
+            url: None,
+            title: None,
+            directories,
+        },
+    );
+}
+
+pub(crate) fn navigation_allowed(url: &Url, grant: Option<&LocalFileGrant>) -> bool {
+    if is_browser_local_file_url(url) {
+        return grant.is_some_and(|grant| matches!(grant.access(url), LocalFileAccess::Granted(_)));
     }
     if is_privileged_url(url) {
         return false;
@@ -1798,37 +1810,6 @@ fn looks_like_local_path(value: &str) -> bool {
         || is_browser_document_path(path)
 }
 
-fn path_is_within(path: &Path, root: &Path) -> bool {
-    let Ok(root) = canonicalize_display_path(root) else {
-        return false;
-    };
-    path == root || path.starts_with(&root)
-}
-
-fn canonicalize_display_path(path: &Path) -> std::io::Result<PathBuf> {
-    let canonical = if path.exists() {
-        dunce_canonicalize(path)?
-    } else {
-        strip_verbatim_prefix(path.to_path_buf())
-    };
-    Ok(canonical)
-}
-
-fn dunce_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
-    Ok(strip_verbatim_prefix(std::fs::canonicalize(path)?))
-}
-
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    let value = path.to_string_lossy();
-    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        path
-    }
-}
-
 fn last_http_url_for_page(app: &AppHandle, page_id: &str) -> Option<String> {
     let host = app.try_state::<BrowserHost>()?;
     let inner = host.inner.lock().ok()?;
@@ -1874,10 +1855,7 @@ pub(crate) fn publish_same_document_location(
     let Ok(parsed) = Url::parse(raw_url.trim()) else {
         return;
     };
-    let location_url = current_allowed_root(app, page_id)
-        .as_deref()
-        .map(|root| browser_display_url(&parsed, Some(root)))
-        .unwrap_or(parsed);
+    let location_url = browser_display_url(&parsed);
     let location_text = location_url.to_string();
     let decision = {
         let Some(host) = app.try_state::<BrowserHost>() else {
@@ -1924,6 +1902,7 @@ pub(crate) fn publish_same_document_location(
             page_id: page_id.to_string(),
             url: Some(url),
             title: None,
+            directories: Vec::new(),
         },
     );
 }
@@ -1970,16 +1949,19 @@ fn host_label(host: &BrowserHost, page_id: &str) -> CommandResult<String> {
     lock_host(host)?.label_for(page_id).map(str::to_string)
 }
 
-fn current_allowed_root(app: &AppHandle, page_id: &str) -> Option<PathBuf> {
-    let host = app.try_state::<BrowserHost>()?;
-    lock_host(host.inner())
+fn current_local_grant(host: &BrowserHost, page_id: &str) -> Option<LocalFileGrant> {
+    lock_host(host)
         .ok()?
         .pages
         .get(page_id)
-        .and_then(|page| page.allowed_file_root.clone())
+        .and_then(|page| page.local_grant.clone())
 }
 
-fn clear_allowed_root(app: &AppHandle, page_id: &str) {
+fn page_local_grant(app: &AppHandle, page_id: &str) -> Option<LocalFileGrant> {
+    current_local_grant(app.try_state::<BrowserHost>()?.inner(), page_id)
+}
+
+fn clear_local_grant(app: &AppHandle, page_id: &str) {
     let Some(host) = app.try_state::<BrowserHost>() else {
         return;
     };
@@ -1987,8 +1969,20 @@ fn clear_allowed_root(app: &AppHandle, page_id: &str) {
         return;
     };
     if let Some(page) = inner.pages.get_mut(page_id) {
-        page.allowed_file_root = None;
+        page.local_grant = None;
     }
+}
+
+/// A local `window.open` / Ctrl+click target is only forwarded when the opener's
+/// grant already covers it.
+pub(crate) fn new_window_local_target_allowed(grant: &LocalFileGrant, url: &Url) -> bool {
+    let path = if url.scheme() == "file" {
+        url.to_file_path().ok()
+    } else {
+        local_path_for_url(url).ok()
+    };
+    path.and_then(|path| canonicalize_display_path(&path).ok())
+        .is_some_and(|path| path.is_file() && grant.covers(&path))
 }
 
 fn apply_bounds(app: &AppHandle, label: &str, bounds: BrowserBoundsVm) -> CommandResult<()> {
@@ -2376,6 +2370,7 @@ impl BrowserHostInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::http::header;
 
     #[test]
     fn https_and_blank_are_allowed() {
@@ -2400,80 +2395,155 @@ mod tests {
         }
     }
 
-    #[test]
-    fn local_html_is_limited_to_authorized_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let page = dir.path().join("index.html");
-        std::fs::write(&page, "<html></html>").unwrap();
-        let sibling = dir.path().join("app.js");
-        std::fs::write(&sibling, "console.log(1)").unwrap();
-        let outside = dir.path().parent().unwrap().join("secret.txt");
-        std::fs::write(&outside, "nope").unwrap();
-
-        let target = resolve_browser_target(page.to_str().unwrap(), None).unwrap();
-        assert_eq!(target.url.scheme(), "file");
-        assert!(is_browser_local_file_url(&target.navigation_url));
-        let root = target.allowed_file_root.as_deref();
-        assert!(navigation_allowed(
-            &browser_navigation_url(&Url::from_file_path(&sibling).unwrap(), root).unwrap(),
-            root
-        ));
-        assert!(!navigation_allowed(
-            &Url::from_file_path(&outside).unwrap(),
-            root
-        ));
+    fn local_url(path: &Path) -> Url {
+        local_document_navigation_url(&canonicalize_display_path(path).unwrap()).unwrap()
     }
 
     #[test]
-    fn local_html_protocol_path_cannot_escape_the_authorized_directory() {
+    fn local_html_parent_relative_asset_addresses_its_real_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let pages = workspace.path().join("tmp");
+        std::fs::create_dir_all(&pages).unwrap();
+        let page = pages.join("index.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        let lib = workspace.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let asset = lib.join("app.js");
+        std::fs::write(&asset, "console.log(1)").unwrap();
+
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
+        let request = target.navigation_url.join("../lib/app.js").unwrap();
+        let display = browser_display_url(&request);
+        assert_eq!(
+            display.to_file_path().ok(),
+            Some(canonicalize_display_path(&asset).unwrap()),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn local_html_grant_defaults_to_the_containing_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let pages = workspace.path().join("tmp");
+        let modules = workspace.path().join("node_modules/mermaid");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::create_dir_all(&modules).unwrap();
+        let page = pages.join("mermaid-themes.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        std::fs::write(modules.join("mermaid.min.js"), "window.mermaid = {}").unwrap();
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
+        let request = target
+            .navigation_url
+            .join("../node_modules/mermaid/mermaid.min.js")
+            .unwrap();
+
+        let workspace_paths = vec![workspace.path().to_string_lossy().into_owned()];
+        let grant = next_local_grant(None, &target, &workspace_paths).unwrap();
+        let (response, _) = local_file_response(&grant, &Method::GET, request.as_str());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body(), b"window.mermaid = {}");
+
+        // Outside any workspace the document's own directory is the grant.
+        let grant = next_local_grant(None, &target, &[]).unwrap();
+        let (response, access) = local_file_response(&grant, &Method::GET, request.as_str());
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            access,
+            LocalFileAccess::Denied {
+                directory: canonicalize_display_path(&modules).unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn refused_directory_is_served_after_the_user_allows_it() {
+        let workspace = tempfile::tempdir().unwrap();
+        let page = workspace.path().join("site/index.html");
+        std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+        std::fs::write(&page, "<html></html>").unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        std::fs::write(shared.path().join("theme.css"), "body{}").unwrap();
+        let request = local_url(&shared.path().join("theme.css"));
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
+        let mut grant = next_local_grant(None, &target, &[]).unwrap();
+
+        let (response, access) = local_file_response(&grant, &Method::GET, request.as_str());
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let LocalFileAccess::Denied { directory } = access else {
+            panic!("expected a refused directory");
+        };
+        assert!(grant.record_denied(directory.clone()));
+        assert!(!grant.record_denied(directory.clone()), "recorded once");
+
+        assert_eq!(grant.allow(&[PathBuf::from("C:/not-requested")]), 0);
+        assert_eq!(grant.allow(std::slice::from_ref(&directory)), 1);
+        assert!(grant.denied_directories().is_empty());
+        let (response, _) = local_file_response(&grant, &Method::GET, request.as_str());
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn renavigating_inside_the_grant_keeps_allowed_directories() {
         let dir = tempfile::tempdir().unwrap();
-        let root = canonicalize_display_path(dir.path()).unwrap();
-        std::fs::write(root.join("index.html"), "<html></html>").unwrap();
+        let page = dir.path().join("index.html");
+        let next = dir.path().join("next.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        std::fs::write(&next, "<html></html>").unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        let shared_root = canonicalize_display_path(shared.path()).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let elsewhere = other.path().join("other.html");
+        std::fs::write(&elsewhere, "<html></html>").unwrap();
+
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
+        let mut grant = next_local_grant(None, &target, &[]).unwrap();
+        assert!(grant.record_denied(shared_root.clone()));
+        grant.allow(&[shared_root]);
+
+        let typed = resolve_browser_target(local_url(&next).as_str()).unwrap();
+        assert_eq!(
+            next_local_grant(Some(&grant), &typed, &[]),
+            Some(grant.clone())
+        );
+
+        let moved = resolve_browser_target(elsewhere.to_str().unwrap()).unwrap();
+        let fresh = next_local_grant(Some(&grant), &moved, &[]).unwrap();
+        assert_ne!(fresh, grant);
+        assert!(fresh.covers(&canonicalize_display_path(&elsewhere).unwrap()));
+
+        let web = resolve_browser_target("https://example.com").unwrap();
+        assert_eq!(next_local_grant(Some(&grant), &web, &[]), None);
+    }
+
+    #[test]
+    fn local_html_protocol_path_cannot_escape_the_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("index.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
+        let grant = next_local_grant(None, &target, &[]).unwrap();
+        let base = target
+            .navigation_url
+            .as_str()
+            .trim_end_matches("index.html")
+            .to_string();
 
         for raw in [
-            // Encoded separators and backslashes survive URL parsing, so the
-            // authorized-directory guard is what rejects them.
-            format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/..%5Csecret.txt"),
-            format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/%2Fsecret.txt"),
-            format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/nested%2F..%2F..%2Fsecret.txt"),
-            format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/"),
+            format!("{base}..%5Csecret.txt"),
+            format!("{base}%2Fsecret.txt"),
+            format!("{base}nested%2F..%2F..%2Fsecret.txt"),
+            base.clone(),
         ] {
             let url = Url::parse(&raw).unwrap();
+            assert!(local_path_for_url(&url).is_err(), "should reject {raw}");
             assert!(
-                browser_local_path(&url, &root).is_err(),
-                "should reject {raw}"
-            );
-            assert!(
-                !navigation_allowed(&url, Some(&root)),
+                !navigation_allowed(&url, Some(&grant)),
                 "should reject {raw}"
             );
         }
 
-        // WHATWG URL parsing resolves raw and percent-encoded dot segments before the
-        // protocol handler sees them, so the result stays inside the authorized
-        // directory instead of escaping it.
-        for raw in [
-            format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/../index.html"),
-            format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/%2e%2e/index.html"),
-        ] {
-            let normalized = Url::parse(&raw).unwrap();
-            assert_eq!(normalized.path(), "/index.html");
-            assert_eq!(
-                browser_local_path(&normalized, &root).unwrap(),
-                root.join("index.html")
-            );
-        }
-
-        let allowed = Url::parse(&format!(
-            "{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/index.html"
-        ))
-        .unwrap();
-        assert_eq!(
-            browser_local_path(&allowed, &root).unwrap(),
-            root.join("index.html")
-        );
-        assert!(navigation_allowed(&allowed, Some(&root)));
-        assert!(!navigation_allowed(&allowed, None));
+        assert!(navigation_allowed(&target.navigation_url, Some(&grant)));
+        assert!(!navigation_allowed(&target.navigation_url, None));
     }
 
     #[test]
@@ -2482,14 +2552,11 @@ mod tests {
         let page = dir.path().join("index.html");
         std::fs::write(&page, "<html></html>").unwrap();
 
-        let target = resolve_browser_target(page.to_str().unwrap(), None).unwrap();
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
 
         assert!(is_browser_local_file_url(&target.navigation_url));
-        assert_eq!(target.navigation_url.path(), "/index.html");
-        assert_eq!(
-            browser_display_url(&target.navigation_url, target.allowed_file_root.as_deref()),
-            target.url
-        );
+        assert_eq!(target.navigation_url.path(), target.url.path());
+        assert_eq!(browser_display_url(&target.navigation_url), target.url);
     }
 
     #[test]
@@ -2498,15 +2565,12 @@ mod tests {
         let image = dir.path().join("pelican.svg");
         std::fs::write(&image, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#).unwrap();
 
-        let target = resolve_browser_target(image.to_str().unwrap(), None).unwrap();
+        let target = resolve_browser_target(image.to_str().unwrap()).unwrap();
+        let grant = next_local_grant(None, &target, &[]).unwrap();
 
         assert!(is_browser_local_file_url(&target.navigation_url));
-        assert_eq!(target.navigation_url.path(), "/pelican.svg");
-        let response = browser_local_file_response(
-            target.allowed_file_root.as_deref().unwrap(),
-            &Method::GET,
-            target.navigation_url.as_str(),
-        );
+        let (response, _) =
+            local_file_response(&grant, &Method::GET, target.navigation_url.as_str());
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -2520,33 +2584,12 @@ mod tests {
         let text = dir.path().join("notes.txt");
         std::fs::write(&text, "notes").unwrap();
 
-        assert!(resolve_browser_target(text.to_str().unwrap(), None).is_err());
+        assert!(resolve_browser_target(text.to_str().unwrap()).is_err());
+        assert!(resolve_browser_target(local_url(&text).as_str()).is_err());
     }
 
     #[test]
-    fn renavigating_an_authorized_local_page_keeps_its_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonicalize_display_path(dir.path()).unwrap();
-        std::fs::write(root.join("index.html"), "<html></html>").unwrap();
-
-        let typed = resolve_browser_target(
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/index.html"),
-            Some(&root),
-        )
-        .unwrap();
-        assert_eq!(typed.allowed_file_root.as_deref(), Some(root.as_path()));
-        assert!(is_browser_local_file_url(&typed.navigation_url));
-        assert_eq!(typed.navigation_url.path(), "/index.html");
-
-        let ungranted = resolve_browser_target(
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/index.html"),
-            None,
-        );
-        assert!(ungranted.is_err());
-    }
-
-    #[test]
-    fn local_html_protocol_serves_only_authorized_files() {
+    fn local_html_protocol_serves_only_granted_files() {
         let dir = tempfile::tempdir().unwrap();
         let root = canonicalize_display_path(dir.path()).unwrap();
         std::fs::write(root.join("index.html"), "<html><body>pelican</body></html>").unwrap();
@@ -2554,12 +2597,12 @@ mod tests {
         std::fs::write(root.join("assets/app.js"), "console.log(1)").unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret.txt"), "nope").unwrap();
+        let target = resolve_browser_target(root.join("index.html").to_str().unwrap()).unwrap();
+        let grant = next_local_grant(None, &target, &[]).unwrap();
+        let respond =
+            |method: &Method, url: &Url| local_file_response(&grant, method, url.as_str());
 
-        let page = browser_local_file_response(
-            &root,
-            &Method::GET,
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/index.html"),
-        );
+        let (page, _) = respond(&Method::GET, &target.navigation_url);
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(
             page.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -2567,59 +2610,62 @@ mod tests {
         );
         assert_eq!(page.body(), b"<html><body>pelican</body></html>");
 
-        let asset = browser_local_file_response(
-            &root,
-            &Method::GET,
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/assets/app.js"),
-        );
+        let (asset, _) = respond(&Method::GET, &local_url(&root.join("assets/app.js")));
         assert_eq!(asset.status(), StatusCode::OK);
         assert_eq!(
             asset.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/javascript"
         );
 
-        let head = browser_local_file_response(
-            &root,
-            &Method::HEAD,
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/index.html"),
-        );
+        let (head, _) = respond(&Method::HEAD, &target.navigation_url);
         assert_eq!(head.status(), StatusCode::OK);
         assert!(head.body().is_empty());
         assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "33");
 
-        let escaped = browser_local_file_response(
-            &root,
-            &Method::GET,
-            &format!(
-                "{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/{}",
-                outside
-                    .path()
-                    .join("secret.txt")
-                    .display()
-                    .to_string()
-                    .replace('\\', "/")
-            ),
-        );
+        let (escaped, access) =
+            respond(&Method::GET, &local_url(&outside.path().join("secret.txt")));
         assert_eq!(escaped.status(), StatusCode::NOT_FOUND);
+        assert!(matches!(access, LocalFileAccess::Denied { .. }));
 
-        let missing = browser_local_file_response(
-            &root,
-            &Method::GET,
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/missing.html"),
-        );
+        // A missing file outside the grant looks the same to the page and is not offered.
+        let (missing, access) = respond(&Method::GET, &local_url(&outside.path().join("gone.txt")));
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(access, LocalFileAccess::Unavailable);
 
-        let wrong_method = browser_local_file_response(
-            &root,
-            &Method::POST,
-            &format!("{BROWSER_LOCAL_FILE_PROTOCOL}://localhost/index.html"),
-        );
+        let (wrong_method, _) = respond(&Method::POST, &target.navigation_url);
         assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[test]
+    fn local_new_window_targets_stay_inside_the_opener_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("index.html");
+        let sibling = dir.path().join("other.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        std::fs::write(&sibling, "<html></html>").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let foreign = outside.path().join("foreign.html");
+        std::fs::write(&foreign, "<html></html>").unwrap();
+        let target = resolve_browser_target(page.to_str().unwrap()).unwrap();
+        let grant = next_local_grant(None, &target, &[]).unwrap();
+
+        assert!(new_window_local_target_allowed(
+            &grant,
+            &local_url(&sibling)
+        ));
+        assert!(new_window_local_target_allowed(
+            &grant,
+            &Url::from_file_path(canonicalize_display_path(&sibling).unwrap()).unwrap()
+        ));
+        assert!(!new_window_local_target_allowed(
+            &grant,
+            &local_url(&foreign)
+        ));
+    }
+
+    #[test]
     fn address_bar_https_is_normalized() {
-        let target = resolve_browser_target("example.com/path", None).unwrap();
+        let target = resolve_browser_target("example.com/path").unwrap();
         assert_eq!(target.url.as_str(), "https://example.com/path");
     }
 
@@ -2630,12 +2676,12 @@ mod tests {
         std::fs::write(&page, "<html></html>").unwrap();
         let raw = Url::from_file_path(canonicalize_display_path(&page).unwrap()).unwrap();
 
-        let target = resolve_browser_target(raw.as_str(), None).unwrap();
+        let target = resolve_browser_target(raw.as_str()).unwrap();
 
         assert_eq!(target.url, raw);
         assert!(is_browser_local_file_url(&target.navigation_url));
-        assert_eq!(target.navigation_url.path(), "/pelican-bike.html");
-        assert!(target.allowed_file_root.is_some());
+        assert!(target.navigation_url.path().ends_with("/pelican-bike.html"));
+        assert!(target.local_document.is_some());
     }
 
     #[test]
@@ -2645,11 +2691,11 @@ mod tests {
         std::fs::write(&script, "console.log(1)").unwrap();
         let raw = Url::from_file_path(canonicalize_display_path(&script).unwrap()).unwrap();
 
-        assert!(resolve_browser_target(raw.as_str(), None).is_err());
+        assert!(resolve_browser_target(raw.as_str()).is_err());
 
         let missing = dir.path().join("missing.html");
         let raw = Url::from_file_path(canonicalize_display_path(&missing).unwrap()).unwrap();
-        assert!(resolve_browser_target(raw.as_str(), None).is_err());
+        assert!(resolve_browser_target(raw.as_str()).is_err());
     }
 
     #[test]
@@ -2688,7 +2734,7 @@ mod tests {
 
     #[test]
     fn mailto_is_rejected() {
-        assert!(resolve_browser_target("mailto:a@b.com", None).is_err());
+        assert!(resolve_browser_target("mailto:a@b.com").is_err());
     }
 
     #[test]
@@ -2705,7 +2751,7 @@ mod tests {
                 page_id.to_string(),
                 BrowserNativePage {
                     label: format!("gb-b-{page_id}"),
-                    allowed_file_root: None,
+                    local_grant: None,
                     view_mode: BrowserViewMode::Desktop,
                     last_http_url: None,
                     last_location: None,

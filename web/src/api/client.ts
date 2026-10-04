@@ -301,6 +301,11 @@ export interface BrowserNavigateInput extends BrowserPageIdInput {
   url: string;
 }
 
+export interface BrowserAllowLocalAccessInput extends BrowserPageIdInput {
+  /** Directories the page was refused, exactly as reported by `local-access-denied`. */
+  directories: string[];
+}
+
 export interface BrowserResolveLocalHtmlInput {
   projectId: string;
   workspacePath: string | null;
@@ -326,6 +331,8 @@ export interface BrowserPageNativeEventVm {
   pageId: string;
   url?: string | null;
   title?: string | null;
+  /** `local-access-denied`: every directory the page is still waiting on. */
+  directories?: string[];
 }
 
 export interface BrowserAddressSuggestionOverlayItemVm {
@@ -644,6 +651,7 @@ export interface RuntimeApi {
   browserShowAddressSuggestions(input: BrowserAddressSuggestionOverlayInput): Promise<void>;
   browserHideAddressSuggestions(input: BrowserAddressSuggestionOverlayRevisionInput): Promise<void>;
   browserNavigate(input: BrowserNavigateInput): Promise<BrowserPageNativeVm>;
+  browserAllowLocalAccess(input: BrowserAllowLocalAccessInput): Promise<void>;
   browserGoBack(input: BrowserPageIdInput): Promise<void>;
   browserGoForward(input: BrowserPageIdInput): Promise<void>;
   browserReload(input: BrowserPageIdInput): Promise<void>;

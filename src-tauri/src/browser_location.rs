@@ -71,7 +71,7 @@ pub(crate) fn document_href_from_script_result(result: &str) -> Option<String> {
 
 fn is_reflectable_document_url(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
-        || crate::browser::is_browser_local_file_url(url)
+        || crate::browser_local_files::is_browser_local_file_url(url)
 }
 
 pub(crate) fn attach_document_location_watch(app: &AppHandle, page_id: &str, label: &str) {

@@ -592,6 +592,7 @@
       "reload": "リロード",
       "stop": "読み込みを停止",
       "openInSystemBrowser": "システムブラウザで開く",
+      "allowLocalAccess": "アクセスを許可",
       "switchToMobile": "モバイルサイトに切り替える",
       "switchToDesktop": "デスクトップサイトに切り替える",
       "newPage": "新しいタブ",
@@ -780,7 +781,9 @@
         "cancelled": "保存がキャンセルされました。"
       },
       "local_html": {
-        "grant_failed": "このローカル HTML ファイルは承認できませんでした。"
+        "grant_failed": "このローカル HTML ファイルは承認できませんでした。",
+        "access_denied": "このページは許可されていないフォルダー {{directory}} を読み込もうとしています。",
+        "access_denied_more": "このページは許可されていない {{count}} 個のフォルダー（{{directory}} など）を読み込もうとしています。"
       },
       "system_open": {
         "failed": "システムブラウザーでこのページを開けませんでした。"

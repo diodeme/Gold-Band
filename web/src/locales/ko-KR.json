@@ -592,6 +592,7 @@
       "reload": "새로고침",
       "stop": "로딩 중지",
       "openInSystemBrowser": "시스템 브라우저에서 열기",
+      "allowLocalAccess": "접근 허용",
       "switchToMobile": "모바일 사이트로 전환",
       "switchToDesktop": "데스크톱 사이트로 전환",
       "newPage": "새 탭",
@@ -780,7 +781,9 @@
         "cancelled": "저장이 취소되었습니다."
       },
       "local_html": {
-        "grant_failed": "이 로컬 HTML 파일을 승인할 수 없습니다."
+        "grant_failed": "이 로컬 HTML 파일을 승인할 수 없습니다.",
+        "access_denied": "이 페이지가 허용되지 않은 폴더 {{directory}}을(를) 읽으려고 합니다.",
+        "access_denied_more": "이 페이지가 허용되지 않은 폴더 {{count}}개({{directory}} 등)를 읽으려고 합니다."
       },
       "system_open": {
         "failed": "시스템 브라우저에서 이 페이지를 열 수 없습니다."

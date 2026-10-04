@@ -44,6 +44,8 @@
 
 本地 HTML 打不开属于原有设计缺陷：§9 原先把「已授权目录 + `file://` 导航」当作可用方案，但 Windows WebView2 对子 WebView 不保证 `file://` 导航与相对资源加载，实际表现为白屏且没有任何 load 事件；同时前端在提交地址时先写权威 URL、再异步下发原生命令，失败既不回滚也不给出结构化错误，重复点击还会在同一个 page 上并发下发多条原生导航。修复方向是改用与图片预览同源的 Tauri 自定义协议承载本地 HTML（按当前页已授权目录读取、逐段拒绝越界路径），并把「提交地址 → 原生命令 → 权威 URL 收敛」变成单一在途队列：同目标重复提交合并为一次，失败回滚到上一次确认 URL 并写结构化错误码，而不是新增第二套页状态或对某个文件类型打补丁。
 
+本地 HTML 引用上级目录资源（如 `<script src="../node_modules/x.js">`）时白屏，也属于原有设计缺陷：协议 URL 的根直接等于授权目录，`..` 越过 URL 根后被 WHATWG 解析静默丢弃，请求被改写成授权目录下另一个不存在的路径。协议处理器既拿不到页面原本要的文件，也无法告诉用户缺了什么。只放大授权目录不能消除这个缺陷，修复方向是把「地址映射」和「授权」拆开：协议 URL 一一对应文件的绝对路径，相对引用永远解析到真实文件；授权是独立的一层，默认取文件所在的工作空间，越界请求记录被拒目录，由用户在 notice 行确认放开。
+
 不能把网页画在主应用 WebView 的 iframe 里：多数站点会拒绝嵌入，且会和 Gold Band IPC 同进程。子 WebView 是原生图层，不是 CSS div，必须按占位盒同步坐标，并在右栏折叠、Sheet、Dialog、切 Tab 时显隐。
 
 启用 Tauri `unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只会给 `WindowContent` 挂 `TAURI_DRAG_RESIZE_WINDOW`。Win10 关闭 native shadow 后没有 DWM 外侧缩放框，冷启动就会失去四边拖拽，不需要先打开浏览器页。这是正确的无边框缩放设计下的宿主挂钩缺口，不是 Win10 阴影策略错误，也不该改成 HTML 缩放手柄。修复是窗口就绪后重新断言 `resizable` 以挂上 Tauri overlay，并在任何 child WebView `HWND_TOP` 之后把该 overlay 再抬到最前；其客户区有孔洞，建议浮层仍可在孔内接收点击。
@@ -245,8 +247,10 @@ BrowserPanel
 - 浏览用子 WebView **零 Tauri IPC**。capability 不得授予任何 Gold Band command。
 - 地址建议 child WebView 只加载应用内受信任入口，capability 仅授予 `core:event:default`，用于把 choose/remove 事件发给主 WebView；不得继承浏览页权限，也不得直接读取历史文件或调用浏览器命令。
 - 与主界面 WebView 使用不同的用户数据目录：`{appData}/browser-profile/`。退出时不 `clear_all_browsing_data`。产品可后续提供「清除浏览数据」，第一版不做入口也可以。
-- 本地 HTML 不通过 `file://` 导航，而是经 `gold-band-browser-file://` 自定义协议加载：Rust 只在「当前页已授权目录」内按路径段解析请求，拒绝越界、编码分隔符和非 GET/HEAD，响应带 `no-store`、`nosniff` 和按扩展名推断的 `Content-Type`。返回给前端与地址栏的展示 URL 仍是 canonical `file://` 路径，协议 URL 只存在于原生图层内部。
-- 授权目录只由「打开本地 HTML 时解析出的文件父目录」产生，不随导航扩散；页面一旦跳到 `http(s)`，该页的授权目录立即清空，协议请求随即 404，避免本地目录在浏览过程中被长期占有。授权目录的解析是浏览器专用轻量解析，不签发外部文件访问令牌、不启动文件监听，避免连续打开链接时堆积授权与 watcher。
+- 本地 HTML 不通过 `file://` 导航，而是经 `gold-band-browser-file://` 自定义协议加载。协议 URL 的路径就是文件 `file://` URL 的路径（如 `http://gold-band-browser-file.localhost/E:/repo/tmp/a.html`），与授权无关，因此 `../`、`./` 等相对引用总是解析到真实文件。Rust 拒绝点段、编码分隔符和非 GET/HEAD，canonical 后再按页面授权判定；响应带 `no-store`、`nosniff` 和按扩展名推断的 `Content-Type`。返回给前端与地址栏的展示 URL 仍是 canonical `file://` 路径，协议 URL 只存在于原生图层内部。
+- 授权（`LocalFileGrant`）属于原生页，是一组授权根加一组待确认的被拒目录。打开本地 HTML 时默认授权根取包含该文件的最内层工作空间：已注册工作空间根，或 Gold Band 托管的会话 worktree 根；都不包含时取文件所在目录。这与 VS Code Webview 默认 `localResourceRoots` 为工作空间目录一致。导航到已授权范围内的文档（含地址栏重新输入、页内链接）保留现有授权；导航到范围外的本地文档重新取默认授权；跳到 `http(s)` 立即清空授权，协议请求随即 404。授权解析不签发外部文件访问令牌、不启动文件监听，也不列目录。
+- 所有本地文件在该协议下同源，授权范围内的文件都能被页面脚本 `fetch` 读出，因此不默认放开整个磁盘。授权外的请求一律按 404 返回，页面无法据此探测路径是否存在；文件真实存在时，Rust 记录其所在目录（合并父子目录，最多 16 个），每新增一个就发一次 `local-access-denied { pageId, directories }` 事件。前端在该页 notice 行显示被拒目录和「允许访问」；点击后经 `browser_allow_local_access { pageId, directories }` 把仍处于待确认的目录并入授权根并刷新页面。Rust 只接受该页自己请求过的目录，其他路径一律忽略。该授权只在当前页生效、不落盘，页面离开本地文档时随授权一起清空。
+- 页内 `window.open` / Ctrl+点击打开的本地目标（`file://` 或本协议 URL）只有在打开它的页面授权已覆盖该文件时才转成内部新页，远程网页无法借此打开本地文档。
 - Windows 下 WebView2 只保证自定义协议以 `http://<scheme>.localhost/<path>` 形态参与导航（`wry` 仅改写初始 URL，`navigate` 不会改写），因此导航 URL 需要平台化生成；协议处理器同时接受 `http(s)://<scheme>.localhost` 与 `<scheme>://localhost` 两种形态。
 - 禁止把任意 `file://`、`tauri://`、`ipc.localhost` 暴露给不可信页；`file://` 不再进入导航白名单，只保留 canonical 展示语义。
 - `gold-band-preview` 仍用于图片预览；其 CSP 不能承载可执行 HTML，故不作为内置浏览器文档协议。
@@ -293,7 +297,8 @@ Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、�
 | `browser.navigation.invalid` | URL 不合法或 scheme 不允许 |
 | `browser.download.unsupported` | 该次下载无法另存为 |
 | `browser.download.cancelled` | 用户取消另存为（若需与失败区分） |
-| `browser.local_html.grant_failed` | 本地 HTML 路径无法授权或不是可读 HTML |
+| `browser.local_html.grant_failed` | 本地 HTML 路径无法授权或不是可读 HTML；或「允许访问」提交的目录已不在该页待确认列表中 |
+| `browser.local_html.access_denied` | 仅前端 notice code，由 `local-access-denied` 事件生成，`params.directories` 为待确认目录；不随加载完成清除，页面离开本地文档、用户允许或切换导航时清除 |
 | `browser.system_open.failed` | 系统 opener 未能用系统浏览器打开已校验的目标 |
 | `browser.page.limit_reached` | 内部页已达 32 个上限 |
 | `browser.bookmark.limit_reached` | 门户书签已达 32 个上限 |
@@ -307,6 +312,6 @@ Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、�
 
 过度设计：不把每个 URL 做成工作区资源；不按工作空间复制浏览会话；不用 1GB 内存做主阈值；不在启动预热 WebView；不导入外站 Cookie；不做下载队列。浏览会话单例比「每 scope 一份」更少状态。现有工作区 Tab、ContextMenu、BrandLoadingState、preview grant、文件链接 resolver 直接复用。
 
-本地 HTML 协议不引入本地 HTTP 服务、缓存、临时目录或第二份授权状态：协议处理器直接复用页面已持有的授权目录与 Tauri 异步自定义协议能力，读文件是单次有界读取（上限 64MB），请求之间无共享状态。导航收敛不新增页状态字段，只复用现有 `page.url` 与 `loading`，因此也没有引入额外的事实源。
+本地 HTML 协议不引入本地 HTTP 服务、缓存、临时目录或第二份授权状态：协议处理器直接复用页面已持有的 `LocalFileGrant` 与 Tauri 异步自定义协议能力，读文件是单次有界读取（上限 64MB）。授权只是把原先的单个目录换成授权根列表加有界的被拒目录列表，仍挂在原生页上，与页同生命周期；默认授权根只在打开本地文档时读取一次已注册工作空间并做路径前缀比较，不扫描目录。被拒目录只在新增时发一次事件，单页最多 16 个，不随请求数增长。导航收敛不新增页状态字段，只复用现有 `page.url` 与 `loading`，因此也没有引入额外的事实源。
 
 性能：未打开路径零增量。打开后最多 5 块 WebView，可见时每动画帧最多一次 bounds IPC。关右栏或 × 投影 Tab 必须停同步并丢弃实例，避免看不见时占内存。内部页摘要有界（建议内部页上限 32，超出拒绝新建或淘汰最旧非当前页标题，实现时在开发方案固定）。坐标同步不得触发会话 Markdown 重渲染。本地 HTML 协议按需读取单个文件，不做目录扫描、不做递归遍历；同一目标连续提交不产生额外原生调用，因此性能风险与点击次数无关。

@@ -3,6 +3,7 @@ import {
   BROWSER_LOAD_STALL_MS,
   BROWSER_PAGE_LIMIT,
   BLANK_BROWSER_URL,
+  BROWSER_LOCAL_ACCESS_DENIED_CODE,
   BrowserSessionStore,
   canonicalizeBrowserUrl,
   isBrowserPortalUrl,
@@ -51,7 +52,7 @@ describe('browser session store', () => {
     store.openUrl('https://one.example');
     store.openUrl('https://two.example');
     expect(store.closeAll()).toHaveLength(2);
-    expect(store.snapshot()).toEqual({ pages: [], activePageId: null, noticeCode: null });
+    expect(store.snapshot()).toEqual({ pages: [], activePageId: null, notice: null });
   });
 
   it('commits an address onto an existing blank page', () => {
@@ -88,12 +89,12 @@ describe('browser session store', () => {
     const pageId = store.openUrl('file:///E:/demo/index.html');
     store.failNavigation(pageId, 'browser.local_html.grant_failed');
     store.markLive(pageId, true);
-    expect(store.snapshot().noticeCode).toBeNull();
+    expect(store.snapshot().notice).toBeNull();
 
     store.failNavigation(pageId, 'browser.local_html.grant_failed');
     store.applyNativeEvent({ kind: 'load-start', pageId, url: 'file:///E:/demo/index.html' });
     store.applyNativeEvent({ kind: 'load-finish', pageId, url: 'file:///E:/demo/index.html' });
-    expect(store.snapshot().noticeCode).toBeNull();
+    expect(store.snapshot().notice).toBeNull();
   });
 
   it('keeps a navigation notice when an older load finishes or another page is created', () => {
@@ -103,7 +104,35 @@ describe('browser session store', () => {
     store.failNavigation(failedPageId, 'browser.local_html.grant_failed');
     store.applyNativeEvent({ kind: 'load-finish', pageId: failedPageId, url: 'file:///E:/demo/index.html' });
     store.markLive(otherPageId, true);
-    expect(store.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+    expect(store.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
+  });
+
+  it('surfaces refused local directories as a page notice that survives reloads', () => {
+    const pageId = store.openUrl('file:///E:/demo/tmp/index.html');
+    store.applyNativeEvent({ kind: 'load-start', pageId, url: 'file:///E:/demo/tmp/index.html' });
+    store.applyNativeEvent({ kind: 'local-access-denied', pageId, directories: ['E:\\shared'] });
+    expect(store.snapshot().notice).toEqual({
+      pageId,
+      code: BROWSER_LOCAL_ACCESS_DENIED_CODE,
+      params: { directories: ['E:\\shared'] },
+    });
+
+    store.applyNativeEvent({ kind: 'load-finish', pageId, url: 'file:///E:/demo/tmp/index.html' });
+    store.applyNativeEvent({ kind: 'load-start', pageId, url: 'file:///E:/demo/tmp/index.html' });
+    store.applyNativeEvent({ kind: 'load-finish', pageId, url: 'file:///E:/demo/tmp/index.html' });
+    expect(store.snapshot().notice?.code).toBe(BROWSER_LOCAL_ACCESS_DENIED_CODE);
+
+    store.dismissNotice('another-page');
+    expect(store.snapshot().notice?.code).toBe(BROWSER_LOCAL_ACCESS_DENIED_CODE);
+    store.dismissNotice(pageId);
+    expect(store.snapshot().notice).toBeNull();
+  });
+
+  it('drops refused local directories once the page leaves local documents', () => {
+    const pageId = store.openUrl('file:///E:/demo/index.html');
+    store.applyNativeEvent({ kind: 'local-access-denied', pageId, directories: ['E:\\shared'] });
+    store.applyNativeEvent({ kind: 'load-start', pageId, url: 'https://example.com/' });
+    expect(store.snapshot().notice).toBeNull();
   });
 
   it('keeps a download notice when the page is created or finishes loading', () => {
@@ -112,7 +141,7 @@ describe('browser session store', () => {
     store.markLive(pageId, true);
     store.applyNativeEvent({ kind: 'load-start', pageId, url: 'https://example.com/file' });
     store.applyNativeEvent({ kind: 'load-finish', pageId, url: 'https://example.com/file' });
-    expect(store.snapshot().noticeCode).toBe('browser.download.cancelled');
+    expect(store.snapshot().notice?.code).toBe('browser.download.cancelled');
   });
 
   it('clears a hung load so the native page can be shown again', () => {

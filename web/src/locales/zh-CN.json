@@ -592,6 +592,7 @@
       "reload": "刷新",
       "stop": "停止载入",
       "openInSystemBrowser": "用系统浏览器打开",
+      "allowLocalAccess": "允许访问",
       "switchToMobile": "切换到移动版",
       "switchToDesktop": "切换到电脑版",
       "newPage": "新建标签页",
@@ -780,7 +781,9 @@
         "cancelled": "已取消保存。"
       },
       "local_html": {
-        "grant_failed": "无法授权打开该本地 HTML。"
+        "grant_failed": "无法授权打开该本地 HTML。",
+        "access_denied": "页面需要读取未授权的目录 {{directory}}。",
+        "access_denied_more": "页面需要读取 {{count}} 个未授权的目录，包括 {{directory}}。"
       },
       "system_open": {
         "failed": "系统浏览器无法打开此页面。"

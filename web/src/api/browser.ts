@@ -3228,6 +3228,9 @@ export const browserApi: RuntimeApi = {
   browserNavigate() {
     return Promise.reject(browserCommandError('browser.webview.unavailable'));
   },
+  browserAllowLocalAccess() {
+    return Promise.reject(browserCommandError('browser.webview.unavailable'));
+  },
   browserGoBack() {
     return Promise.resolve();
   },

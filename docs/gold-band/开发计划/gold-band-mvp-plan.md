@@ -2847,3 +2847,11 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 交互：Chat 中未受信任图片显示占位与「加载」，信任后同域名全部加载；已加载图片点击按链接规则打开（网页走内置浏览器，本地走文件工作区，无工作区回退系统浏览器），链接图片跟随外层链接，更新弹窗保留放大预览。文件预览未受信任图片保持超链接，顶部提示条一键信任文档内全部图片域名。设置 → 高级新增「受信任的图片域名」，以自动换行的胶囊标签展示（不设内部滚动，超过 20 个折叠为同款胶囊「+N」），只支持移除；同组「记录详细日志」的分组标题由与 tab 重名的「高级」改为「日志」。提示框移入默认 flavor，`github-release` 只保留 `remark-breaks` 与网络图片直接加载；已发布的 0.18.0 更新日志不回改。
 - [x] 回归：Rust 规范化/幂等/持久化/原子拒绝/8 线程并发信任；Web `markdown-live-preview-atomic.test.ts`（Atomic + 本项目扩展的真实组合：受信任图片可见与点击目标、五种提示框、`[!attention]`/`[1]` 为普通文本）、`markdown-remote-image-trust.test.tsx`（host 规范化、store 收敛、设置列表移除、占位加载与失败、点击路由、系统浏览器回退、release 放大），并更新 `update-ux` 与 `prompt-kit-markdown` 测试。全量 Web 测试其余 8 项失败（模型思考标签、continue 提交）为既有问题。
 - 性能与过度设计评审：信任列表为用户手动添加的小集合，每个图片组件只订阅自身 host 的布尔值；文件预览仅在文档变更时线性扫描一次图片节点；未新增依赖、轮询、缓存或队列。持久化复用既有 state.json 事务，没有新建存储。
+
+## 2026-10-03 内置浏览器本地 HTML 上级目录资源与授权拆分
+
+- [x] 现象：`tmp/mermaid-themes.html` 通过 `../node_modules/mermaid/dist/mermaid.min.js` 加载脚本，Chrome 能正常打开，内置浏览器白屏。
+- [x] 根因（原有设计缺陷）：`gold-band-browser-file` 协议的 URL 根等于授权目录（文件父目录），`..` 越过 URL 根后被 WHATWG 解析静默丢弃，请求被改写到授权目录下不存在的路径，处理器既不知道页面要什么，也无法提示。地址空间和授权绑在一起，所以只放大授权目录仍会在越界引用时静默失败。改为自定义协议本身没有问题（Electron 安全清单、VS Code Webview `localResourceRoots` 都采用同类做法），这次只拆开地址映射和授权，不回退到 `file://`。
+- [x] 实现：协议 URL 路径一一对应绝对路径（`browser_local_files.rs`）；`BrowserNativePage.local_grant` 保存授权根和有界被拒目录。默认授权根取已注册工作空间或托管 worktree，否则用父目录。授权外请求统一 404（页面无法探测路径），文件存在时发 `local-access-denied`，notice 行「允许访问」调用 `browser_allow_local_access`，Rust 只接受该页待确认的目录，然后 reload。远程页 `window.open` 不能再打开本地文档。前端 notice 由 `noticeCode` 改为结构化 `{ pageId, code, params }`。
+- [x] 红绿证据：Rust `local_html_parent_relative_asset_addresses_its_real_path` 修复前稳定失败（请求解析为 `…\tmp\lib\app.js`），修复后转绿。新增工作空间默认授权、允许后可读、导航保留授权、越界与点段拒绝、只服务授权文件且缺失文件不提示、new-window 本地目标限制、被拒目录合并与上限等测试；`browser` 相关 Rust 测试 45 项通过。Web 新增 store notice 生命周期、host 允许与失败回退、面板 notice 行 DOM 用例；浏览器相关 14 个测试文件 113 项通过，`tsc -p web/tsconfig.build.json` 通过。
+- 过度设计与性能评审：没有新增实体或持久字段，只把单个授权目录换成挂在原生页上的授权结构，与页同生命周期。默认根只在打开本地文档时读一次 `state.json` 并做前缀比较，不列目录。被拒目录有界，事件只在新增目录时发送。每个协议请求多一次 canonicalize 和前缀比较，量级为微秒。

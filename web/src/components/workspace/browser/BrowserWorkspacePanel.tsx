@@ -18,7 +18,13 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import type { BrowserSearchEngine } from './web-target';
-import { browserSessionStore, BLANK_BROWSER_URL, isBrowserPortalUrl } from './browser-session-store';
+import {
+  BLANK_BROWSER_URL,
+  BROWSER_LOCAL_ACCESS_DENIED_CODE,
+  browserSessionStore,
+  isBrowserPortalUrl,
+  type BrowserNotice,
+} from './browser-session-store';
 import { browserWebviewHost } from './browser-webview-host';
 import { BrowserAddressField } from './BrowserAddressField';
 import { BrowserFavicon } from './BrowserFavicon';
@@ -267,10 +273,8 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
           <Plus />
         </Button>
       </div>
-      {session.noticeCode ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5 text-xs text-muted-foreground" data-browser-notice={session.noticeCode}>
-          <span className="min-w-0 flex-1">{t(`errors.${session.noticeCode}`)}</span>
-        </div>
+      {session.notice ? (
+        <BrowserNoticeRow notice={session.notice} />
       ) : null}
       {active ? (
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -287,6 +291,47 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
         </div>
       ) : portal}
     </section>
+  );
+}
+
+function BrowserNoticeRow({ notice }: { notice: BrowserNotice }) {
+  const { t } = useTranslation();
+  const [allowing, setAllowing] = useState(false);
+  const directories = notice.code === BROWSER_LOCAL_ACCESS_DENIED_CODE && Array.isArray(notice.params.directories)
+    ? notice.params.directories.filter((directory): directory is string => typeof directory === 'string')
+    : [];
+  const message = directories.length === 0
+    ? t(`errors.${notice.code}`)
+    : t(directories.length === 1
+      ? 'errors.browser.local_html.access_denied'
+      : 'errors.browser.local_html.access_denied_more', {
+      directory: directories[0],
+      count: directories.length,
+    });
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5 text-xs text-muted-foreground"
+      data-browser-notice={notice.code}
+    >
+      <span className="min-w-0 flex-1 break-all">{message}</span>
+      {directories.length > 0 ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="shrink-0"
+          disabled={allowing}
+          data-browser-allow-local-access="true"
+          onClick={() => {
+            setAllowing(true);
+            void browserWebviewHost.allowLocalAccess(notice.pageId, directories)
+              .finally(() => setAllowing(false));
+          }}
+        >
+          {t('workspace.browser.allowLocalAccess')}
+        </Button>
+      ) : null}
+    </div>
   );
 }
 

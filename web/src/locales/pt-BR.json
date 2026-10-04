@@ -592,6 +592,7 @@
       "reload": "Recarregar",
       "stop": "Parar carregamento",
       "openInSystemBrowser": "Abrir no navegador do sistema",
+      "allowLocalAccess": "Permitir acesso",
       "switchToMobile": "Alternar para site móvel",
       "switchToDesktop": "Alternar para site desktop",
       "newPage": "Nova aba",
@@ -780,7 +781,9 @@
         "cancelled": "Salvamento cancelado."
       },
       "local_html": {
-        "grant_failed": "Este arquivo HTML local não pôde ser autorizado."
+        "grant_failed": "Este arquivo HTML local não pôde ser autorizado.",
+        "access_denied": "Esta página precisa ler a pasta {{directory}}, que ainda não foi permitida.",
+        "access_denied_more": "Esta página precisa ler {{count}} pastas ainda não permitidas, incluindo {{directory}}."
       },
       "system_open": {
         "failed": "O navegador do sistema não conseguiu abrir esta página."

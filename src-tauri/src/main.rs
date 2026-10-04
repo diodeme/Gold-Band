@@ -5,6 +5,7 @@ mod avatar;
 mod browser;
 mod browser_bookmarks;
 mod browser_history;
+mod browser_local_files;
 mod browser_location;
 mod browser_ua;
 mod builtin_mcp;
@@ -217,10 +218,10 @@ fn run() -> anyhow::Result<()> {
             },
         )
         // Browser local HTML is served through the same bounded custom-protocol
-        // mechanism so the child WebView keeps a single authorized directory
-        // instead of relying on file:// (unsupported on WebView2 navigation).
+        // mechanism instead of file:// (unsupported on WebView2 navigation); each
+        // page reads only the directories its grant covers.
         .register_asynchronous_uri_scheme_protocol(
-            browser::BROWSER_LOCAL_FILE_PROTOCOL,
+            browser_local_files::BROWSER_LOCAL_FILE_PROTOCOL,
             |protocol_context, request, responder| {
                 let app = protocol_context.app_handle().clone();
                 let label = protocol_context.webview_label().to_string();
@@ -664,6 +665,7 @@ fn run() -> anyhow::Result<()> {
             browser::browser_address_suggestion_action,
             browser::browser_address_suggestions_ready,
             browser::browser_navigate,
+            browser::browser_allow_local_access,
             browser::browser_go_back,
             browser::browser_go_forward,
             browser::browser_reload,

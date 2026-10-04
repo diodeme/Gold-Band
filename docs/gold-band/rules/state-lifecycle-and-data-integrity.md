@@ -34,6 +34,7 @@
 
 - 快速切换、并发请求、snapshot/live 交接和后台校准必须携带 request ID、generation、revision、sequence 或 CAS 条件。
 - 旧请求、迟到失败、旧 snapshot、旧 permission 和旧 live event 不得覆盖更新事实。
+- 同一份数据不得在多个缓存中各存一份、按不同节奏更新；恢复时只使用带 generation/revision 水位的那一份，不在多份缓存之间二选一。
 - 合并必须单调：revision 和 sequence 只能前进；`cancelled / failed / completed` 等终态不得回退为 processing。
 - Snapshot 与增量事件交接必须定义水位、缺口追平、取消和超时语义，不得依赖固定延迟猜测“应该已经同步”。
 - 分页不得切开同 revision 的原子事件组；合并和裁剪必须保留稳定身份、语义顺序及阅读锚点。

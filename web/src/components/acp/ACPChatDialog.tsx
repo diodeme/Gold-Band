@@ -831,8 +831,11 @@ export function restoreAcpSession(sessionKey: string) {
   return acpResourceStore.get(sessionKey)?.session ?? null;
 }
 
+// The cached session only carries metadata. Timeline events live solely in the
+// cached event window, which live updates keep current; caching a second copy
+// here would let an older snapshot shadow the window on remount.
 export function storeAcpSession(sessionKey: string, session: AcpSessionVm) {
-  storeAcpResourcePart(sessionKey, { session });
+  storeAcpResourcePart(sessionKey, { session: { ...session, events: [] } });
 }
 
 export function hasHydratedAcpSessionContent(sessionKey: string) {
@@ -1484,7 +1487,7 @@ export function ACPChatDialog(
       eventWindowKey,
       ...restoreAcpLoadedEventWindow(
         eventWindowKey,
-        restoredSession,
+        session,
         effectiveLoadedEventBufferLimit,
         hasStoredExplicitHistoricalTimelineIntent(restoredBranchViewState),
       ),
@@ -2220,7 +2223,7 @@ export function ACPChatDialog(
     const storedBranchViewState = restoreAcpBranchViewState(eventWindowKey);
     const storedLoadedEventWindow = restoreAcpLoadedEventWindow(
       eventWindowKey,
-      cachedSession,
+      session,
       effectiveLoadedEventBufferLimit,
       hasStoredExplicitHistoricalTimelineIntent(storedBranchViewState),
     );

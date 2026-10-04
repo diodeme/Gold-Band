@@ -85,9 +85,12 @@ import {
   createAcpEventWindowCacheKey,
   createAcpSessionCacheKey,
   loadedEventBufferLimit,
+  markAcpSessionContentHydrated,
   optimisticUserEvent,
   resetAcpResourceCache,
   restoreAcpSession,
+  storeAcpLoadedEventWindow,
+  storeAcpSession,
   updateAcpOptimisticEvents,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -4520,6 +4523,46 @@ describe('ACP session re-entry reconciliation', () => {
       expect(second.container.textContent).not.toContain('缓存中的一代旧内容');
     } finally {
       await unmount(second.root);
+    }
+  });
+
+  it('restores the live-updated event window instead of an older cached session snapshot on remount', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const staleSnapshot = session([
+      event('stale-snapshot-head', 10, 'textDelta', '旧快照末尾内容'),
+    ]);
+    storeAcpSession(cacheKey, staleSnapshot);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: 'session-watermark',
+      timelineGeneration: 2,
+      events: [event('live-window-head', 30, 'textDelta', '实时窗口最新内容')],
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    vi.mocked(getAcpSession).mockImplementation(() => new Promise(() => undefined));
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TestProviders>
+            <ACPChatDialog
+              session={null}
+              {...locator}
+              branchId="root"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('实时窗口最新内容');
+      expect(container.textContent).not.toContain('旧快照末尾内容');
+    } finally {
+      await unmount(root);
     }
   });
 

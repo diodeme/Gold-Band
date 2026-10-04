@@ -1834,7 +1834,7 @@
   "turnFiles": {
     "title": "Alterações registradas · {{count}} arquivos",
     "incompleteTitle": "Registro de alterações incompleto",
-    "recordedOnly": "Somente alterações registradas pelas ferramentas; não é o Git diff final.",
+    "recordedOnly": "Somente alterações registradas pelas ferramentas. Em arquivos editados várias vezes, as linhas somam cada edição; não é o Git diff final.",
     "editCount": "{{count}} edições",
     "editNumber": "Edição {{number}}",
     "evidenceUnavailable": "Não é possível exibir esta comparação porque o registro está incompleto.",

@@ -6,46 +6,106 @@ pub(super) struct RecordedStatsCache {
     entries: HashMap<String, (Option<u64>, Option<u64>)>,
 }
 
+/// A maximal run of captured mutations whose endpoints connect exactly.
+struct RecordedRun<'a> {
+    source: &'a TurnFileMutation,
+    before: Option<FileVersionRef>,
+    after: Option<FileVersionRef>,
+    /// Content produced by fragment replay; written to CAS only when the run is emitted.
+    replayed_after: Option<String>,
+    /// Whole-file content of `after`, known only when the run starts from a captured creation.
+    whole_after: Option<String>,
+}
+
 impl TurnFileStore {
     pub(super) fn recorded_changes(
         &self,
         path: &str,
         chain: &[TurnFileMutation],
     ) -> Result<Vec<TurnFileChange>> {
-        let first = &chain[0];
-        let last = chain.last().unwrap();
-        // Equality is exact and applies to the entire captured comparison range.
-        // A missing endpoint means absence; never confuse it with an empty blob.
-        let linear = chain.iter().all(|m| m.limitation_code.is_none())
-            && chain
-                .windows(2)
-                .all(|pair| pair[0].after_version == pair[1].before_version);
-        if linear {
-            return Ok(self
-                .recorded_change(path, first, last, false)?
-                .into_iter()
-                .collect());
+        let mut runs = Vec::<RecordedRun>::new();
+        for mutation in chain {
+            if let Some(run) = runs.last_mut()
+                && mutation.limitation_code.is_none()
+                && run.source.limitation_code.is_none()
+            {
+                // Equality is exact and applies to the entire captured comparison range.
+                // A missing endpoint means absence; never confuse it with an empty blob.
+                if run.after == mutation.before_version {
+                    run.after = mutation.after_version.clone();
+                    run.replayed_after = None;
+                    run.whole_after = match (&run.whole_after, &mutation.after_version) {
+                        (Some(_), Some(after)) => self.read_blob(after).ok(),
+                        _ => None,
+                    };
+                    continue;
+                }
+                if let Some(replayed) = self.replay_fragment(run.whole_after.as_deref(), mutation) {
+                    run.after = Some(text_version_ref(&replayed));
+                    run.replayed_after = Some(replayed.clone());
+                    run.whole_after = Some(replayed);
+                    continue;
+                }
+            }
+            // A creation captures the whole file, so later fragments can be located in it.
+            let whole_after = match (&mutation.before_version, &mutation.after_version) {
+                (None, Some(after)) if mutation.limitation_code.is_none() => {
+                    self.read_blob(after).ok()
+                }
+                _ => None,
+            };
+            runs.push(RecordedRun {
+                source: mutation,
+                before: mutation.before_version.clone(),
+                after: mutation.after_version.clone(),
+                replayed_after: None,
+                whole_after,
+            });
         }
-        chain
-            .iter()
-            .map(|m| self.recorded_change(path, m, m, true))
-            .collect::<Result<Vec<_>>>()
-            .map(|changes| changes.into_iter().flatten().collect())
+        let independent = runs.len() > 1;
+        let mut changes = Vec::new();
+        for run in runs {
+            if let Some(content) = &run.replayed_after {
+                self.write_blob(content)?;
+            }
+            changes.extend(self.recorded_change(
+                path,
+                run.source,
+                run.before,
+                run.after,
+                independent,
+            )?);
+        }
+        Ok(changes)
+    }
+
+    /// Applies one fragment edit to known whole-file content. Absent, empty, missing or
+    /// repeated anchors end the run instead of guessing where the fragment belongs.
+    fn replay_fragment(&self, whole: Option<&str>, mutation: &TurnFileMutation) -> Option<String> {
+        let whole = whole?;
+        let old = self.read_blob(mutation.before_version.as_ref()?).ok()?;
+        let new = self.read_blob(mutation.after_version.as_ref()?).ok()?;
+        if old.is_empty() {
+            return None;
+        }
+        let mut matches = whole.match_indices(old.as_str());
+        let (offset, _) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let replayed = format!("{}{new}{}", &whole[..offset], &whole[offset + old.len()..]);
+        (replayed.len() <= self.config.capture_max_file_bytes).then_some(replayed)
     }
 
     fn recorded_change(
         &self,
         path: &str,
-        first: &TurnFileMutation,
-        last: &TurnFileMutation,
+        source: &TurnFileMutation,
+        before: Option<FileVersionRef>,
+        after: Option<FileVersionRef>,
         independent: bool,
     ) -> Result<Option<TurnFileChange>> {
-        let mut limitation = first
-            .limitation_code
-            .clone()
-            .or_else(|| last.limitation_code.clone());
-        let before = first.before_version.clone();
-        let after = last.after_version.clone();
+        let mut limitation = source.limitation_code.clone();
         if limitation.is_none() && before == after {
             return Ok(None);
         }
@@ -86,10 +146,10 @@ impl TurnFileStore {
         let identity = if independent {
             format!(
                 "{}\0{}\0{path}\0{}\0{}",
-                first.turn_id, first.branch_id, first.tool_call_id, first.content_index
+                source.turn_id, source.branch_id, source.tool_call_id, source.content_index
             )
         } else {
-            format!("{}\0{}\0{path}", first.turn_id, first.branch_id)
+            format!("{}\0{}\0{path}", source.turn_id, source.branch_id)
         };
         let change_kind = match (&before, &after) {
             (None, Some(_)) => FileChangeKind::Added,

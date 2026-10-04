@@ -20,14 +20,18 @@ pub const CHANGE_SET_NOT_FOUND: &str = "turn-files.change-set-not-found";
 pub const VERSION_NOT_FOUND: &str = "turn-files.version-not-found";
 pub const BLOB_CORRUPTED: &str = "turn-files.blob-corrupted";
 pub const INVALID_TOOL_DIFF: &str = "turn-files.invalid-tool-diff";
-pub const NON_LINEAR_MUTATION: &str = "turn-files.non-linear-mutation";
 pub const CAPTURE_LIMIT_EXCEEDED: &str = "turn-files.capture-limit-exceeded";
 pub const ATTACHMENT_BASELINE_MISSING: &str = "turn-files.attachment-baseline-missing";
 pub const ATTACHMENT_SCAN_FAILED: &str = "turn-files.attachment-scan-failed";
 pub const ATTACHMENT_SCAN_LIMIT_EXCEEDED: &str = "turn-files.attachment-scan-limit-exceeded";
 pub const ATTACHMENT_NOT_FOUND: &str = "turn-files.attachment-not-found";
 pub const ATTACHMENT_ACCESS_DENIED: &str = "turn-files.attachment-access-denied";
-pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 5;
+const ATTACHMENT_LIMITATION_CODES: [&str; 3] = [
+    ATTACHMENT_BASELINE_MISSING,
+    ATTACHMENT_SCAN_FAILED,
+    ATTACHMENT_SCAN_LIMIT_EXCEEDED,
+];
+pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 6;
 
 const UNIFIED_DIFF_NO_NEWLINE_MARKERS: [&str; 2] =
     [r"\ No newline at end of file", " No newline at end of file"];
@@ -168,6 +172,9 @@ pub struct TurnFileChangeSet {
     #[serde(default)]
     pub attachments: Vec<TurnAttachment>,
     pub limitation_codes: Vec<String>,
+    /// Directory relative tool paths were resolved against; a display root, never a read target.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -515,11 +522,7 @@ impl TurnFileStore {
             .unwrap_or_default();
         let mut changes = Vec::new();
         for (path, chain) in by_path {
-            let recorded = self.recorded_changes(&path, &chain)?;
-            if recorded.len() > 1 && !limitations.iter().any(|code| code == NON_LINEAR_MUTATION) {
-                limitations.push(NON_LINEAR_MUTATION.into());
-            }
-            for change in recorded {
+            for change in self.recorded_changes(&path, &chain)? {
                 if let Some(code) = &change.limitation_code
                     && !limitations.contains(code)
                 {
@@ -566,6 +569,7 @@ impl TurnFileStore {
             changes,
             attachments,
             limitation_codes: limitations,
+            workspace_root: workspace_root(workspace_dir),
         };
         write_json(&self.change_set_path(&id), &change_set)?;
         Ok(Some(change_set))
@@ -582,7 +586,12 @@ impl TurnFileStore {
         if change_set.schema_version >= TURN_FILE_CHANGE_SET_SCHEMA_VERSION {
             return Ok(change_set);
         }
-        let rebuilt = self.finalize_turn_branch(
+        // Rebuilding derives changes again; attachments and the display root are
+        // turn facts that the journal does not carry, so they are kept as recorded.
+        let attachment_delta = self.recorded_attachment_delta(&change_set);
+        let include_attachments = !attachment_delta.attachments.is_empty()
+            || !attachment_delta.limitation_codes.is_empty();
+        let rebuilt = self.finalize_turn_branch_with_attachments(
             &change_set.turn_id,
             &change_set.prompt_event_id,
             &change_set.branch_id,
@@ -592,6 +601,9 @@ impl TurnFileStore {
                 .as_deref()
                 .unwrap_or(&change_set.started_at),
             &self.legacy_tool_outcomes(&change_set.turn_id, &change_set.branch_id)?,
+            change_set.workspace_root.as_deref().map(Utf8Path::new),
+            &attachment_delta,
+            include_attachments,
         )?;
         if let Some(rebuilt) = rebuilt {
             return Ok(rebuilt);
@@ -609,9 +621,31 @@ impl TurnFileStore {
             changes: Vec::new(),
             attachments: Vec::new(),
             limitation_codes: Vec::new(),
+            workspace_root: change_set.workspace_root,
         };
         write_json(&path, &empty)?;
         Ok(empty)
+    }
+
+    fn recorded_attachment_delta(&self, change_set: &TurnFileChangeSet) -> TurnAttachmentDelta {
+        let root = self.attempt_dir.join("attachments");
+        TurnAttachmentDelta {
+            canonical_path_keys: change_set
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    let path = root.join(&attachment.relative_path).into_std_path_buf();
+                    canonical_path_key(&std::fs::canonicalize(&path).unwrap_or(path))
+                })
+                .collect(),
+            attachments: change_set.attachments.clone(),
+            limitation_codes: change_set
+                .limitation_codes
+                .iter()
+                .filter(|code| ATTACHMENT_LIMITATION_CODES.contains(&code.as_str()))
+                .cloned()
+                .collect(),
+        }
     }
 
     pub fn comparison(&self, change_set_id: &str, change_id: &str) -> Result<FileComparison> {
@@ -713,8 +747,8 @@ impl TurnFileStore {
     }
 
     pub(crate) fn write_blob(&self, content: &str) -> Result<FileVersionRef> {
-        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let path = self.blob_path(&hash);
+        let version = text_version_ref(content);
+        let path = self.blob_path(&version.content_hash);
         if !path.exists() {
             ensure_parent_dir(&path)?;
             atomic_write_file(path.as_std_path(), |file| -> Result<()> {
@@ -722,14 +756,7 @@ impl TurnFileStore {
                 Ok(())
             })?;
         }
-        Ok(FileVersionRef {
-            id: format!("captured-{hash}"),
-            storage_kind: FileVersionStorageKind::CapturedBlob,
-            content_hash: hash,
-            byte_length: content.len() as u64,
-            encoding: Some("utf-8".to_string()),
-            line_ending: Some(detect_line_ending(content).to_string()),
-        })
+        Ok(version)
     }
 
     pub(crate) fn read_blob(&self, version: &FileVersionRef) -> Result<String> {
@@ -1033,6 +1060,10 @@ fn recorded_logical_path(workspace: &Utf8Path, path: &str) -> Result<String> {
     normalize_logical_path(components.as_str())
 }
 
+fn workspace_root(workspace_dir: Option<&Utf8Path>) -> Option<String> {
+    workspace_dir.and_then(|dir| normalize_logical_path(dir.as_str()).ok())
+}
+
 fn canonical_change_path_key(
     logical_path: &str,
     workspace_dir: Option<&Utf8Path>,
@@ -1120,18 +1151,25 @@ fn summarize(changes: &[TurnFileChange]) -> TurnFileChangeSummary {
     }
     summary.file_count = by_path.len();
     for edits in by_path.values() {
-        let kind = if edits.len() == 1 {
-            edits[0].change_kind
-        } else {
-            FileChangeKind::Modified
-        };
-        match kind {
+        match path_change_kind(edits) {
             FileChangeKind::Added => summary.added_files += 1,
             FileChangeKind::Modified | FileChangeKind::Renamed => summary.modified_files += 1,
             FileChangeKind::Deleted => summary.deleted_files += 1,
         }
     }
     summary
+}
+
+/// Existence across the turn decides the path kind; unlinked edits in between do not.
+fn path_change_kind(edits: &[&TurnFileChange]) -> FileChangeKind {
+    let first = edits[0].change_kind;
+    let last = edits[edits.len() - 1].change_kind;
+    match (first, last) {
+        _ if edits.len() == 1 => first,
+        (FileChangeKind::Added, kind) if kind != FileChangeKind::Deleted => FileChangeKind::Added,
+        (kind, FileChangeKind::Deleted) if kind != FileChangeKind::Added => FileChangeKind::Deleted,
+        _ => FileChangeKind::Modified,
+    }
 }
 
 fn line_stats(before: &str, after: &str) -> (Option<u64>, Option<u64>) {
@@ -1148,6 +1186,18 @@ fn line_stats(before: &str, after: &str) -> (Option<u64>, Option<u64>) {
         }
     }
     (Some(added), Some(deleted))
+}
+
+fn text_version_ref(content: &str) -> FileVersionRef {
+    let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    FileVersionRef {
+        id: format!("captured-{hash}"),
+        storage_kind: FileVersionStorageKind::CapturedBlob,
+        content_hash: hash,
+        byte_length: content.len() as u64,
+        encoding: Some("utf-8".to_string()),
+        line_ending: Some(detect_line_ending(content).to_string()),
+    }
 }
 
 fn detect_line_ending(content: &str) -> &'static str {
@@ -1249,7 +1299,8 @@ mod tests {
         assert_eq!((set.summary.added_lines, set.summary.deleted_lines), (2, 2));
         assert_eq!(set.summary.file_count, 1);
         assert_eq!(set.changes.len(), 2);
-        assert_eq!(set.limitation_codes, vec![NON_LINEAR_MUTATION]);
+        assert_eq!(set.status, TurnFileChangeSetStatus::Finalized);
+        assert!(set.limitation_codes.is_empty());
         let second = store.comparison(&set.id, &set.changes[1].id).unwrap();
         assert_eq!(second.before.unwrap().content, "last original\n");
         assert_eq!(second.after.unwrap().content, "last changed\n");
@@ -1493,6 +1544,18 @@ mod tests {
                 .iter()
                 .all(|change| !change.logical_path.ends_with("report.md"))
         );
+        let workspace_root = workspace_dir.as_str().replace('\\', "/");
+        assert_eq!(set.workspace_root.as_deref(), Some(workspace_root.as_str()));
+
+        let mut legacy = set.clone();
+        legacy.schema_version = TURN_FILE_CHANGE_SET_SCHEMA_VERSION - 1;
+        write_json(&store.change_set_path(&legacy.id), &legacy).unwrap();
+        write_tool_terminal(&store, "write", "completed");
+        let rebuilt = store.load_change_set(&legacy.id).unwrap();
+        assert_eq!(rebuilt.schema_version, TURN_FILE_CHANGE_SET_SCHEMA_VERSION);
+        assert_eq!(rebuilt.attachments, set.attachments);
+        assert_eq!(rebuilt.changes, set.changes);
+        assert_eq!(rebuilt.workspace_root, set.workspace_root);
     }
 
     #[test]
@@ -1910,34 +1973,12 @@ mod tests {
     }
 
     #[test]
-    fn non_linear_chain_is_partial_and_keeps_evidence() {
+    fn unlinked_fragments_stay_separate_without_marking_partial() {
         let (_dir, store) = store();
-        store
-            .capture_event_diffs(
-                "turn",
-                "prompt",
-                "root",
-                "one",
-                2,
-                "2Z",
-                &raw(serde_json::json!([
-                    { "type": "diff", "path": "a.txt", "oldText": "A", "newText": "B" }
-                ])),
-            )
-            .unwrap();
-        store
-            .capture_event_diffs(
-                "turn",
-                "prompt",
-                "root",
-                "two",
-                3,
-                "3Z",
-                &raw(serde_json::json!([
-                    { "type": "diff", "path": "a.txt", "oldText": "X", "newText": "C" }
-                ])),
-            )
-            .unwrap();
+        capture_diffs(
+            &store,
+            &[("one", 2, Some("A"), "B"), ("two", 3, Some("X"), "C\nD")],
+        );
         let set = store
             .finalize_turn_branch(
                 "turn",
@@ -1949,9 +1990,10 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(set.status, TurnFileChangeSetStatus::Partial);
-        assert_eq!(set.limitation_codes, vec![NON_LINEAR_MUTATION]);
+        assert_eq!(set.status, TurnFileChangeSetStatus::Finalized);
+        assert!(set.limitation_codes.is_empty());
         assert_eq!(set.summary.file_count, 1);
+        assert_eq!((set.summary.added_lines, set.summary.deleted_lines), (3, 2));
         assert_eq!(set.changes.len(), 2);
         assert!(set.changes.iter().all(|c| c.limitation_code.is_none()));
         let first = store.comparison(&set.id, &set.changes[0].id).unwrap();
@@ -1959,7 +2001,92 @@ mod tests {
         assert_eq!(first.before.unwrap().content, "A");
         assert_eq!(first.after.unwrap().content, "B");
         assert_eq!(second.before.unwrap().content, "X");
-        assert_eq!(second.after.unwrap().content, "C");
+        assert_eq!(second.after.unwrap().content, "C\nD");
+    }
+
+    #[test]
+    fn fragment_edits_replay_onto_a_created_file() {
+        let (_dir, store) = store();
+        capture_diffs(
+            &store,
+            &[
+                ("write", 1, None, "a\nb\nc\n"),
+                ("edit-b", 2, Some("b\n"), "B\n"),
+                ("edit-c", 3, Some("c\n"), "C\nD\n"),
+            ],
+        );
+        let set = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "4Z",
+                &succeeded_tools(&["write", "edit-b", "edit-c"]),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.status, TurnFileChangeSetStatus::Finalized);
+        assert_eq!(set.changes.len(), 1);
+        assert_eq!(set.changes[0].change_kind, FileChangeKind::Added);
+        assert_eq!(set.summary.added_files, 1);
+        assert_eq!((set.summary.added_lines, set.summary.deleted_lines), (4, 0));
+        let comparison = store.comparison(&set.id, &set.changes[0].id).unwrap();
+        assert!(comparison.before.is_none());
+        assert_eq!(comparison.after.unwrap().content, "a\nB\nC\nD\n");
+    }
+
+    #[test]
+    fn ambiguous_fragment_ends_the_replayed_run_without_guessing() {
+        let (_dir, store) = store();
+        capture_diffs(
+            &store,
+            &[
+                ("write", 1, None, "x\nx\ny\n"),
+                ("unique", 2, Some("y\n"), "Y\n"),
+                ("ambiguous", 3, Some("x\n"), "z\n"),
+                ("unknown", 4, Some("Y\n"), "W\n"),
+            ],
+        );
+        let set = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "5Z",
+                &succeeded_tools(&["write", "unique", "ambiguous", "unknown"]),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.status, TurnFileChangeSetStatus::Finalized);
+        assert_eq!(set.changes.len(), 3);
+        let created = store.comparison(&set.id, &set.changes[0].id).unwrap();
+        assert!(created.before.is_none());
+        assert_eq!(created.after.unwrap().content, "x\nx\nY\n");
+        let ambiguous = store.comparison(&set.id, &set.changes[1].id).unwrap();
+        assert_eq!(ambiguous.before.unwrap().content, "x\n");
+        let unknown = store.comparison(&set.id, &set.changes[2].id).unwrap();
+        assert_eq!(unknown.before.unwrap().content, "Y\n");
+        assert_eq!(unknown.after.unwrap().content, "W\n");
+    }
+
+    fn capture_diffs(store: &TurnFileStore, diffs: &[(&str, u64, Option<&str>, &str)]) {
+        for (tool, seq, old, new) in diffs {
+            store
+                .capture_event_diffs(
+                    "turn",
+                    "prompt",
+                    "root",
+                    tool,
+                    *seq,
+                    "now",
+                    &raw(serde_json::json!([
+                        { "type": "diff", "path": "a.txt", "oldText": old, "newText": new }
+                    ])),
+                )
+                .unwrap();
+        }
     }
 
     #[test]

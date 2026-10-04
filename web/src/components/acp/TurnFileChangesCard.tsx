@@ -7,6 +7,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react';
 import { ChevronDown, FileDiff, FileMinus2, FilePlus2, FileText, Info, Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -43,6 +44,10 @@ export const TurnFileCardPreviewLimitContext = createContext(DEFAULT_TURN_FILE_C
 export const TurnAttachmentCardPreviewLimitContext = createContext(DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT);
 
 const TURN_FILE_HOVER_LOG_PREFIX = '[GoldBand][Turn file hover]';
+// Single files, grouped files and their edits share one row shape.
+const FILE_LIST_CLASS = 'divide-y divide-border/35';
+const FILE_ROW_CLASS = 'flex h-8 w-full items-center gap-2 px-3 text-left';
+const FILE_ROW_INTERACTIVE_CLASS = 'outline-none hover:bg-muted/40 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring';
 let turnFileHoverInstanceSequence = 0;
 let turnFileHoverLogSequence = 0;
 
@@ -94,6 +99,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const incomplete = (changeSet?.status ?? event.status) === 'partial';
   const changes = changeSet?.changes ?? [];
   const attachments = changeSet?.attachments ?? [];
+  const workspaceRoot = changeSet?.workspaceRoot ?? null;
   const fileGroups = useMemo(() => {
     const groups = new Map<string, TurnFileChangeVm[]>();
     for (const change of changeSet?.changes ?? []) {
@@ -171,9 +177,9 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
         ) : (
           <Collapsible open={expanded} onOpenChange={handleOpenChange}>
             {!expanded ? (
-              <div role="list" aria-label={t('turnFiles.fileList')}>
+              <div role="list" aria-label={t('turnFiles.fileList')} className={FILE_LIST_CLASS}>
                 {previewGroups.map((edits) => (
-                  <RecordedFileGroup key={edits[0]!.logicalPath} edits={edits} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
+                  <RecordedFileGroup key={edits[0]!.logicalPath} edits={edits} workspaceRoot={workspaceRoot} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
                 ))}
               </div>
             ) : null}
@@ -182,9 +188,9 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
               hasUserToggled && 'data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down',
             )}>
               <ScrollArea className={cn(fileGroups.length > 8 ? 'h-64' : 'h-auto')}>
-                <div role="list" aria-label={t('turnFiles.fileList')}>
+                <div role="list" aria-label={t('turnFiles.fileList')} className={FILE_LIST_CLASS}>
                   {fileGroups.map((edits) => (
-                    <RecordedFileGroup key={edits[0]!.logicalPath} edits={edits} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
+                    <RecordedFileGroup key={edits[0]!.logicalPath} edits={edits} workspaceRoot={workspaceRoot} locator={locator} changeSetId={changeSetId} onOpen={openChange} />
                   ))}
                 </div>
               </ScrollArea>
@@ -320,8 +326,9 @@ function TurnAttachmentRow({
   );
 }
 
-function RecordedFileGroup({ edits, locator, changeSetId, onOpen }: {
+function RecordedFileGroup({ edits, workspaceRoot, locator, changeSetId, onOpen }: {
   edits: TurnFileChangeVm[];
+  workspaceRoot: string | null;
   locator: TurnFileLocatorVm | null;
   changeSetId: string;
   onOpen: (change: TurnFileChangeVm) => void;
@@ -329,42 +336,107 @@ function RecordedFileGroup({ edits, locator, changeSetId, onOpen }: {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const first = edits[0]!;
-  if (edits.length === 1) return <TurnFileChangeRow change={first} locator={locator} changeSetId={changeSetId} onOpen={onOpen} />;
+  const path = splitDisplayPath(first.logicalPath, workspaceRoot);
+  if (edits.length === 1) {
+    return (
+      <TurnFileChangeRow change={first} locator={locator} changeSetId={changeSetId} onOpen={onOpen}>
+        <FileRowContent kind={first.changeKind} name={path.name} directory={path.directory} stats={recordedStats(edits)} />
+      </TurnFileChangeRow>
+    );
+  }
   return (
     <Collapsible open={expanded} onOpenChange={setExpanded}>
       <CollapsibleTrigger asChild>
-        <button type="button" role="listitem" data-recorded-file-group={first.logicalPath} className="flex min-h-10 w-full items-center gap-2 px-3 text-left hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-          <FileDiff className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1 truncate font-mono text-xs">{first.logicalPath}</span>
-          <span className="shrink-0 text-xs text-muted-foreground">{t('turnFiles.editCount', { count: edits.length })}</span>
-          <ChevronDown className={cn('size-3.5 shrink-0', expanded && 'rotate-180')} />
+        <button
+          type="button"
+          role="listitem"
+          data-recorded-file-group={first.logicalPath}
+          className={cn(FILE_ROW_CLASS, FILE_ROW_INTERACTIVE_CLASS)}
+          aria-label={`${first.logicalPath} · ${t('turnFiles.editCount', { count: edits.length })}`}
+        >
+          <FileRowContent
+            kind={pathChangeKind(edits)}
+            name={path.name}
+            directory={path.directory}
+            stats={recordedStats(edits)}
+            trailing={(
+              <>
+                <span data-file-edit-count className="tabular-nums">×{edits.length}</span>
+                <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', expanded && 'rotate-180')} />
+              </>
+            )}
+          />
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <ScrollArea className={edits.length > 6 ? 'h-60' : 'h-auto'}>
-          {expanded && edits.map((change, index) => (
-            <div key={change.id} data-recorded-edit={change.id} className="pl-3">
-              <TurnFileChangeRow change={change} label={t('turnFiles.editNumber', { number: index + 1 })} locator={locator} changeSetId={changeSetId} onOpen={onOpen} />
-            </div>
-          ))}
+          <div className={cn(FILE_LIST_CLASS, 'border-t border-border/35')}>
+            {expanded && edits.map((change, index) => (
+              <div key={change.id} data-recorded-edit={change.id} className="pl-5">
+                <TurnFileChangeRow change={change} locator={locator} changeSetId={changeSetId} onOpen={onOpen}>
+                  <FileRowContent kind={change.changeKind} name={t('turnFiles.editNumber', { number: index + 1 })} stats={recordedStats([change])} />
+                </TurnFileChangeRow>
+              </div>
+            ))}
+          </div>
         </ScrollArea>
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
+function FileRowContent({ kind, name, directory, stats, trailing }: {
+  kind: TurnFileChangeVm['changeKind'];
+  name: string;
+  directory?: string;
+  stats: { added: number; deleted: number } | null;
+  trailing?: ReactNode;
+}) {
+  const icon = kind === 'added'
+    ? <FilePlus2 className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+    : kind === 'deleted'
+      ? <FileMinus2 className="size-3.5 shrink-0 text-destructive" />
+      : <FileDiff className="size-3.5 shrink-0 text-gold-running" />;
+  return (
+    <>
+      {icon}
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span data-file-name className="min-w-0 max-w-full shrink-0 truncate text-xs font-medium text-foreground">{name}</span>
+        {directory ? (
+          // RTL keeps the tail of a long directory visible and elides its start.
+          <span className="min-w-0 flex-1 truncate text-left text-ui-micro text-muted-foreground [direction:rtl]">
+            <bdi data-file-directory>{directory}</bdi>
+          </span>
+        ) : null}
+      </span>
+      {trailing ? (
+        <span className="flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground">{trailing}</span>
+      ) : null}
+      {/* Stats are always the last column so every row aligns with the header total. */}
+      <span data-file-stats className="flex shrink-0 gap-2 text-xs tabular-nums">
+        {stats ? (
+          <>
+            <span className="text-emerald-600 dark:text-emerald-400">+{stats.added}</span>
+            <span className="text-destructive">-{stats.deleted}</span>
+          </>
+        ) : null}
+      </span>
+    </>
+  );
+}
+
 function TurnFileChangeRow({
   change,
-  label,
   locator,
   changeSetId,
   onOpen,
+  children,
 }: {
   change: TurnFileChangeVm;
-  label?: string;
   locator: TurnFileLocatorVm | null;
   changeSetId: string;
   onOpen: (change: TurnFileChangeVm) => void;
+  children: ReactNode;
 }) {
   const { t } = useTranslation();
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -435,20 +507,7 @@ function TurnFileChangeRow({
     observer.observe(content, { attributes: true, attributeFilter: ['data-state', 'data-side'] });
     return () => observer.disconnect();
   }, [change.changeKind, change.id, diagnosticInstanceId, previewOpen]);
-  const icon = change.changeKind === 'added'
-    ? <FilePlus2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-    : change.changeKind === 'deleted'
-      ? <FileMinus2 className="size-3.5 text-destructive" />
-      : <FileDiff className="size-3.5 text-gold-running" />;
-  const content = (
-    <>
-      {icon}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{label ?? change.logicalPath}</span>
-      {change.addedLines != null && <span className="text-xs tabular-nums text-emerald-600 dark:text-emerald-400">+{change.addedLines}</span>}
-      {change.deletedLines != null && <span className="text-xs tabular-nums text-destructive">-{change.deletedLines}</span>}
-    </>
-  );
-  const className = 'flex h-8 w-full items-center gap-2 border-b border-border/35 px-3 text-left last:border-b-0';
+  const content = children;
   const openWorkspaceChange = (event: ReactMouseEvent<HTMLButtonElement>) => {
     pointerFocusPendingRef.current = false;
     const nextSuppression: TurnFileHoverSuppression = event.detail === 0
@@ -571,13 +630,13 @@ function TurnFileChangeRow({
       onPointerEnter={handlePreviewPointerEnter}
       onPointerLeave={handlePreviewPointerLeave}
       onPointerMove={handlePreviewPointerMove}
-      className={cn(className, 'cursor-default text-muted-foreground outline-none hover:bg-muted/40 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
+      className={cn(FILE_ROW_CLASS, FILE_ROW_INTERACTIVE_CLASS, 'cursor-default text-muted-foreground')}
       aria-label={t('turnFiles.previewDeleted', { path: change.logicalPath })}
     >
       {content}
     </div>
   ) : (
-    <button type="button" role="listitem" className={cn(className, 'outline-none hover:bg-muted/40 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')} onFocus={handlePreviewFocus} onBlur={handlePreviewBlur} onPointerDown={handlePreviewPointerDown} onPointerUp={handlePreviewPointerUp} onPointerCancel={handlePreviewPointerCancel} onPointerEnter={handlePreviewPointerEnter} onPointerLeave={handlePreviewPointerLeave} onPointerMove={handlePreviewPointerMove} onClick={openWorkspaceChange} aria-label={t(change.changeKind === 'added' ? 'turnFiles.openVersion' : 'turnFiles.openDiff', { path: change.logicalPath })}>
+    <button type="button" role="listitem" className={cn(FILE_ROW_CLASS, FILE_ROW_INTERACTIVE_CLASS)} onFocus={handlePreviewFocus} onBlur={handlePreviewBlur} onPointerDown={handlePreviewPointerDown} onPointerUp={handlePreviewPointerUp} onPointerCancel={handlePreviewPointerCancel} onPointerEnter={handlePreviewPointerEnter} onPointerLeave={handlePreviewPointerLeave} onPointerMove={handlePreviewPointerMove} onClick={openWorkspaceChange} aria-label={t(change.changeKind === 'added' ? 'turnFiles.openVersion' : 'turnFiles.openDiff', { path: change.logicalPath })}>
       {content}
     </button>
   );
@@ -626,6 +685,43 @@ function numberValue(value: unknown) {
 
 function fileName(path: string) {
   return path.replaceAll('\\', '/').split('/').at(-1) || path;
+}
+
+/** Paths under the recorded workspace root are shown relative; others stay absolute. */
+export function splitDisplayPath(logicalPath: string, workspaceRoot: string | null) {
+  const path = logicalPath.replaceAll('\\', '/');
+  const root = workspaceRoot?.replaceAll('\\', '/').replace(/\/+$/u, '') ?? '';
+  // Drive-letter roots compare case-insensitively, matching Windows path identity.
+  const caseless = /^[a-z]:\//iu.test(root);
+  const prefix = `${root}/`;
+  const inside = root.length > 0 && (caseless
+    ? path.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()
+    : path.startsWith(prefix));
+  const shown = inside ? path.slice(prefix.length) : path;
+  const slash = shown.lastIndexOf('/');
+  return { name: shown.slice(slash + 1) || shown, directory: slash > 0 ? shown.slice(0, slash) : '' };
+}
+
+/** Sum of each recorded comparison; unknown when any edit lacks statistics. */
+function recordedStats(edits: TurnFileChangeVm[]) {
+  let added = 0;
+  let deleted = 0;
+  for (const edit of edits) {
+    if (edit.addedLines == null || edit.deletedLines == null) return null;
+    added += edit.addedLines;
+    deleted += edit.deletedLines;
+  }
+  return { added, deleted };
+}
+
+/** Existence across the turn decides the kind; unlinked edits in between do not. */
+function pathChangeKind(edits: TurnFileChangeVm[]): TurnFileChangeVm['changeKind'] {
+  const first = edits[0]!.changeKind;
+  const last = edits[edits.length - 1]!.changeKind;
+  if (edits.length === 1) return first;
+  if (first === 'added' && last !== 'deleted') return 'added';
+  if (last === 'deleted' && first !== 'added') return 'deleted';
+  return 'modified';
 }
 
 function formatByteLength(byteLength: number) {

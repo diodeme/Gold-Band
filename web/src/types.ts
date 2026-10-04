@@ -2024,6 +2024,8 @@ export interface TurnFileChangeSetVm {
   changes: TurnFileChangeVm[];
   attachments: TurnAttachmentVm[];
   limitationCodes: string[];
+  /** Directory relative tool paths were resolved against; display only. */
+  workspaceRoot?: string | null;
 }
 
 export interface CapturedTextSnapshotVm {

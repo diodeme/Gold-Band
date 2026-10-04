@@ -1834,7 +1834,7 @@
   "turnFiles": {
     "title": "已記錄變更 · {{count}} 個檔案",
     "incompleteTitle": "變更記錄不完整",
-    "recordedOnly": "僅含工具已記錄的修改，不代表最終 Git diff。",
+    "recordedOnly": "僅含工具已記錄的修改；同一檔案多次編輯的行數按次累加，不代表最終 Git diff。",
     "editCount": "{{count}} 次編輯",
     "editNumber": "第 {{number}} 次編輯",
     "evidenceUnavailable": "修改證據不完整，無法顯示此比較。",

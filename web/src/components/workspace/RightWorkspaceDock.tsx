@@ -1,4 +1,4 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, Workflow, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -335,6 +335,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
               ? <Globe className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'
               ? <FileDiff className="size-3.5 shrink-0" />
+            : tab.kind === 'mermaid-diagram'
+              ? <Workflow className="size-3.5 shrink-0" />
               : <FileText className="size-3.5 shrink-0" />;
 }
 

@@ -387,6 +387,16 @@
       "warning": "경고",
       "caution": "주의"
     },
+    "mermaid": {
+      "title": "Mermaid 다이어그램",
+      "open": "워크스페이스에서 열기",
+      "showSource": "소스 보기",
+      "showDiagram": "다이어그램 보기",
+      "errors": {
+        "renderFailed": "Mermaid 다이어그램을 렌더링하지 못했습니다",
+        "cacheFull": "다이어그램이 너무 많아 지금은 렌더링할 수 없습니다"
+      }
+    },
     "releaseNotes": "릴리스 노트",
     "remoteImage": {
       "load": "불러오기",

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
+import { mermaidSourceDigest } from '@/lib/mermaid-diagram';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from '@/lib/attachment-service';
 import {
   WorkspaceFileReferenceBridgeProvider,
@@ -186,8 +187,18 @@ export type BrowserWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'browser';
 };
 
+/**
+ * A Mermaid diagram from rendered Markdown. Markdown has no locator back to its
+ * message, so the bounded diagram source itself is the content-addressed identity.
+ */
+export type MermaidDiagramWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'mermaid-diagram';
+  source: string;
+};
+
 export type RightWorkspaceResource =
   | AcpImageWorkspaceResource
+  | MermaidDiagramWorkspaceResource
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
   | ConversationDirectoryWorkspaceResource
@@ -872,6 +883,10 @@ export { MAIN_WORKSPACE_TAB_ROOT };
 
 export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
   return `scheduled-task-config:${scopeKey}`;
+}
+
+export function mermaidDiagramWorkspaceResourceKey(scopeKey: string, source: string) {
+  return `mermaid-diagram:${scopeKey}:${mermaidSourceDigest(source)}`;
 }
 
 export function gitFileComparisonWorkspaceResourceKey(projectId: string, source: import('@/types').GitComparisonSourceVm) {

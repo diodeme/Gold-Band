@@ -387,6 +387,16 @@
       "warning": "警告",
       "caution": "注意"
     },
+    "mermaid": {
+      "title": "Mermaid 图表",
+      "open": "在工作区打开",
+      "showSource": "查看源码",
+      "showDiagram": "显示图表",
+      "errors": {
+        "renderFailed": "Mermaid 图表渲染失败",
+        "cacheFull": "图表过多，暂时无法渲染"
+      }
+    },
     "releaseNotes": "更新日志",
     "remoteImage": {
       "load": "加载",

@@ -32,6 +32,8 @@ import {
   type StreamingMarkdownPlayback,
 } from '@/lib/streaming-markdown-playback';
 import { wasmCode } from '@/lib/streamdown-wasm-code';
+import { MERMAID_LANGUAGE } from '@/lib/mermaid-diagram';
+import { MarkdownMermaidBlock } from './markdown-mermaid';
 
 /**
  * Every flavor renders CommonMark + GFM, including GitHub alerts (`> [!NOTE]` …).
@@ -290,6 +292,7 @@ type MarkdownCodeBlockProps = React.HTMLAttributes<HTMLElement> & {
 function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCodeBlockProps) {
   const { t } = useTranslation();
   const isIncomplete = useIsCodeFenceIncomplete();
+  const openPreview = useContext(MarkdownImagePreviewContext);
   const language = className?.match(CODE_LANGUAGE_PATTERN)?.[1] ?? '';
   const meta = node?.properties?.metastring;
   const parsedStartLine = meta?.match(CODE_START_LINE_PATTERN)?.[1];
@@ -303,7 +306,7 @@ function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCode
     source = children;
   }
 
-  return (
+  const renderCodeBlock = (actions: React.ReactNode = null) => (
     <CodeBlock
       {...props}
       className={className}
@@ -313,6 +316,7 @@ function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCode
       lineNumbers={lineNumbers}
       startLine={startLine && startLine >= 1 ? startLine : undefined}
     >
+      {actions}
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex">
@@ -327,6 +331,12 @@ function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCode
       </Tooltip>
     </CodeBlock>
   );
+
+  // A streaming fence stays a code block until the renderer reports it closed.
+  if (language === MERMAID_LANGUAGE && !isIncomplete) {
+    return <MarkdownMermaidBlock source={source} renderSource={renderCodeBlock} onOpenPreview={openPreview} />;
+  }
+  return renderCodeBlock();
 }
 
 type MarkdownImageProps = React.ImgHTMLAttributes<HTMLImageElement> & { node?: unknown };

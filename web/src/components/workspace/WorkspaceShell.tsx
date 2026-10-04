@@ -152,6 +152,7 @@ const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspaceP
 const LazyTurnAttachmentWorkspacePanel = lazy(() => import('./files/TurnAttachmentWorkspacePanel').then((module) => ({ default: module.TurnAttachmentWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
 const LazyAcpImageWorkspacePanel = lazy(() => import('@/components/acp/AcpImageStrip').then((module) => ({ default: module.AcpImageWorkspacePanel })));
+const LazyMermaidDiagramWorkspacePanel = lazy(() => import('./files/MermaidDiagramWorkspacePanel').then((module) => ({ default: module.MermaidDiagramWorkspacePanel })));
 const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
@@ -199,6 +200,9 @@ function FileWorkspaceIntegration({
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('acp-image', (resource: RightWorkspaceResource) => (
     resource.kind === 'acp-image' ? <Suspense fallback={null}><LazyAcpImageWorkspacePanel resource={resource} /></Suspense> : null
+  )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('mermaid-diagram', (resource: RightWorkspaceResource) => (
+    resource.kind === 'mermaid-diagram' ? <Suspense fallback={null}><LazyMermaidDiagramWorkspacePanel resource={resource} /></Suspense> : null
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('conversation-asset', (resource: RightWorkspaceResource) => (
     resource.kind === 'conversation-asset'

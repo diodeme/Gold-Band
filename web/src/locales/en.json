@@ -387,6 +387,16 @@
       "warning": "Warning",
       "caution": "Caution"
     },
+    "mermaid": {
+      "title": "Mermaid diagram",
+      "open": "Open in workspace",
+      "showSource": "View source",
+      "showDiagram": "Show diagram",
+      "errors": {
+        "renderFailed": "Couldn't render the Mermaid diagram",
+        "cacheFull": "Too many diagrams to render right now"
+      }
+    },
     "releaseNotes": "Release notes",
     "remoteImage": {
       "load": "Load",

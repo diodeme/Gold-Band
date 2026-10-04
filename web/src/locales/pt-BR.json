@@ -387,6 +387,16 @@
       "warning": "Aviso",
       "caution": "Cuidado"
     },
+    "mermaid": {
+      "title": "Diagrama Mermaid",
+      "open": "Abrir no espaço de trabalho",
+      "showSource": "Ver código-fonte",
+      "showDiagram": "Mostrar diagrama",
+      "errors": {
+        "renderFailed": "Não foi possível renderizar o diagrama Mermaid",
+        "cacheFull": "Há diagramas demais para renderizar agora"
+      }
+    },
     "releaseNotes": "Notas da versão",
     "remoteImage": {
       "load": "Carregar",

@@ -1834,7 +1834,7 @@
   "turnFiles": {
     "title": "已记录变更 · {{count}} 个文件",
     "incompleteTitle": "变更记录不完整",
-    "recordedOnly": "仅含工具已记录的修改，不代表最终 Git diff。",
+    "recordedOnly": "仅含工具已记录的修改；同一文件多次编辑的行数按次累加，不代表最终 Git diff。",
     "editCount": "{{count}} 次编辑",
     "editNumber": "第 {{number}} 次编辑",
     "evidenceUnavailable": "修改证据不完整，无法展示此比较。",

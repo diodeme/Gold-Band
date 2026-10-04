@@ -125,6 +125,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 ## 7. 实现状态
 
+- 2026-10-03 新增只读 `mermaid-diagram` 资源：会话 Markdown 中的 Mermaid 图表点击后打开，key 为 `mermaid-diagram:{scopeKey}:{源码摘要}`。Markdown 没有回到消息的 locator，Tab 直接保存有界的图表源码作为内容寻址身份；面板按当前配色方案从共享缓存租用渲染结果，复用 `WorkspaceImageCanvas`，复制与另存为导出 PNG。交互与渲染约束见 [会话运行时 Mermaid 图表](conversational-runtime.md)。
 - 2026-09-29 文件根改为跟随会话工作位置（2.2）：会话 VM 以三态 `workLocation` 取代 `worktreePath/worktreeBranch`；文件命令、watch、目录树与正文代际按 `projectId + workspacePath` 隔离；worktree 收回后文件与源码管理 Tab 展示不可用状态和“浏览主工作区”；prompt 文件引用与 `@` 菜单按会话 canonical 工作目录解析。Rust 根校验与有界缓存、watch 身份、三态投影，以及前端 store 根隔离、事件路由、Tab 根投影与不可用状态均有单元测试固化，并已在本地页面验证可用 / 已收回 / 浏览主工作区三种状态。
 - 2026-09-22 会话切回时的目录对账改为按目录 identity 合并已加载子树。列表未变化不发布快照，已展开后代不再先清空再逐层打开。
 - 2026-09-20 工作空间文件引用到 Composer 已完成：文件树 / 搜索结果右键、首页与 ACP 草稿、结构化 prompt DTO、Rust admission/dispatch 前解析、queue / promptSubmission 持久化、ACP ResourceLink、Timeline 消息 chip 与浏览器 mock 已接入。引用链路保持轻量 metadata，不读取正文、不复制文件、不进入普通附件路径。
@@ -152,11 +153,12 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 - 变更卡表示成功工具调用通过 ACP 记录的比较，不表示最终 Git 净变化。范围外路径同样显示；路径只作标识，比较正文只从本 attempt 的 CAS 读取，不读取目标路径补齐历史。
 - Write 创建后，即使 Bash/Python 或外部操作改变磁盘内容，只要没有后续 ACP diff，仍保留当时的创建比较，不推测未采集改动，也不以当前磁盘内容否定已有证据。
-- 同文件编辑仅在所有捕获范围的前后版本精确衔接时折叠为首尾比较；恢复原样则不显示。任意断链时保留各次独立比较，不模糊拼接局部片段。同一路径在卡片中只占一项，展开查看各次编辑，复用原有悬浮和右侧 CodeMirror viewer。
+- 同文件编辑在前后版本精确衔接时折叠为首尾比较；本轮创建的文件以捕获全文为起点，后续局部片段在全文中唯一命中才重放并入同一比较。未命中、多处命中或无全文起点时从该处分段保留独立比较，不猜测位置；恢复原样不显示。判定只依据 ACP diff 结构，不区分 provider。同一路径在卡片中只占一项，展开查看各次编辑，复用原有悬浮和右侧 CodeMirror viewer。
 - 删除与清空必须区分：ACP 明确标记 `_meta.kind = delete` 且旧正文存在、新正文为空或缺省时，删除后版本为不存在；普通空正文仍表示文件存在。矛盾或缺失证据不生成有效比较。连续创建再删除首尾均不存在时不展示；创建空文件和清空保留存在性变化。
 - 每个活跃 Prompt Turn 沿用一个有界后台 worker；事件先持久化再非阻塞提交，待处理同工具调用只保留最终 revision。后台存储正文并按文件预计算 similar Diff 行数，使用有界的端点 hash 统计缓存，不保留或复核磁盘见证快照。会话完成状态先发布，随后等待已接收编辑处理完成再发布变更卡；不向聊天流发布预计算更新。
 - 沿用捕获条目、单文件和总字节上限；失败或超限标为 partial，单次 Diff 设置 300ms 算法预算。正文仍按用户打开预览或右侧资源时懒加载，不扫描全仓或历史。
-- 文件计数按唯一逻辑路径统计；多次不可合并编辑显示编辑次数，不显示伪净行数。partial 隐藏轮次增删总计；没有可展示文件时显示记录不完整，不伪装成成功的零变更。
+- 文件计数按唯一逻辑路径统计；多次不可合并编辑的文件行显示各次记录的增删合计与 `×N`，与标题同口径，Info 提示说明按次累加、不代表 Git diff。断链不是证据缺失，不标记 partial；只有超限、失败或校验矛盾才 partial 并隐藏总计；没有可展示文件时显示记录不完整。
+- 单文件、分组文件及展开后的各次编辑共用一种行：类型图标、文件名、从左截断的目录和增删数；增删数始终位于最后一列并与标题总计对齐，`×N` 与展开箭头只在多次编辑行出现于其左侧。工作区内路径相对 change set 记录的 `workspaceRoot` 显示，范围外保持绝对路径。
 - 复用现有 mutation journal、CAS、comparison identity 和组件，不新增 schema、依赖或持久队列；本次不新增历史迁移，不重写已有记录。
 
 - 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。

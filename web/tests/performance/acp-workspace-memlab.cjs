@@ -6,8 +6,8 @@ const conversationUrl = `${origin}/chat/projects/default/tasks/mock-task/runs/ru
 module.exports = {
   url: () => conversationUrl,
   action: async (page) => {
-    const versionSelector = '[aria-label="查看 docs/workspace-notes.md 的本轮版本"]';
-    const diffSelector = '[aria-label="查看 src/config.json 的差异"]';
+    const versionSelector = '[aria-label="查看 /default/docs/workspace-notes.md 的本轮版本"]';
+    const diffSelector = '[aria-label="查看 /default/src/config.json 的差异"]';
     await page.waitForSelector(versionSelector);
     for (let index = 0; index < 15; index += 1) {
       await page.click(index % 2 === 0 ? versionSelector : diffSelector);

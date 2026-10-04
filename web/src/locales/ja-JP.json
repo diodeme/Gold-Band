@@ -1834,7 +1834,7 @@
   "turnFiles": {
     "title": "記録された変更 · {{count}} ファイル",
     "incompleteTitle": "変更記録が不完全です",
-    "recordedOnly": "ツールが記録した変更のみ。最終的な Git diff ではありません。",
+    "recordedOnly": "ツールが記録した変更のみ。複数回編集したファイルの行数は各編集の合計で、最終的な Git diff ではありません。",
     "editCount": "{{count}} 件の編集",
     "editNumber": "編集 {{number}}",
     "evidenceUnavailable": "変更の記録が不完全なため、この比較を表示できません。",

@@ -1834,7 +1834,7 @@
   "turnFiles": {
     "title": "기록된 변경 · 파일 {{count}}개",
     "incompleteTitle": "변경 기록이 불완전합니다",
-    "recordedOnly": "도구가 기록한 변경만 포함하며 최종 Git diff가 아닙니다.",
+    "recordedOnly": "도구가 기록한 변경만 포함합니다. 여러 번 편집한 파일의 줄 수는 편집별 합계이며 최종 Git diff가 아닙니다.",
     "editCount": "편집 {{count}}회",
     "editNumber": "편집 {{number}}",
     "evidenceUnavailable": "변경 기록이 불완전하여 비교를 표시할 수 없습니다.",

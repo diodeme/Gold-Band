@@ -373,6 +373,7 @@ fn run_worker(
                 changes: Vec::new(),
                 attachments: attachments.attachments.clone(),
                 limitation_codes: vec![CAPTURE_LIMIT_EXCEEDED.into()],
+                workspace_root: workspace_root(Some(&workspace)),
             };
             write_json(&store.change_set_path(&set.id), &set)?;
             sets.push(set);

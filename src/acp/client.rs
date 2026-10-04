@@ -11124,6 +11124,7 @@ mod tests {
                     "terminal_output_delta": {
                         "terminal_id": "tool-1",
                         "data": "partial output"
+            workspace_root: None,
                     }
                 }
             })),

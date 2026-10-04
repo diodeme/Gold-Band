@@ -1834,7 +1834,7 @@
   "turnFiles": {
     "title": "Recorded changes · {{count}} files",
     "incompleteTitle": "Recorded changes incomplete",
-    "recordedOnly": "Only tool-recorded changes; not the final Git diff.",
+    "recordedOnly": "Only tool-recorded changes. Line counts for a file edited several times add up each edit; not the final Git diff.",
     "editCount": "{{count}} edits",
     "editNumber": "Edit {{number}}",
     "evidenceUnavailable": "This comparison is unavailable because the recorded evidence is incomplete.",

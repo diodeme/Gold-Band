@@ -203,35 +203,66 @@ describe('turn file changes card', () => {
     } finally { await act(async () => root.unmount()); }
   });
 
-  it('groups disconnected edits by file and loads only the selected edit', async () => {
+  it('groups disconnected edits by file with recorded totals and loads only the selected edit', async () => {
     const set = changeSet();
-    set.status = 'partial';
-    set.limitationCodes = ['turn-files.non-linear-mutation'];
-    set.summary.fileCount = 1;
-    set.changes = [set.changes[1]!, { ...set.changes[1]!, id: 'modified-2' }];
+    set.summary = { ...set.summary, fileCount: 2, addedLines: 7, deletedLines: 2 };
+    set.changes = [set.changes[0]!, set.changes[1]!, { ...set.changes[1]!, id: 'modified-2' }];
     getTurnFileChangeSetMock.mockResolvedValue(set);
     const container = document.createElement('div');
     document.body.append(container);
     const root = await renderCard(container);
     try {
-      expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(1);
+      const rows = [...container.querySelectorAll<HTMLElement>('[role="listitem"]')];
+      expect(rows).toHaveLength(2);
       expect(getFileComparisonMock).not.toHaveBeenCalled();
       const group = container.querySelector<HTMLButtonElement>('[data-recorded-file-group]');
       expect(group).not.toBeNull();
+      expect(group!.textContent).toContain('+4');
+      expect(group!.textContent).toContain('-2');
+      expect(group!.textContent).toContain('×2');
+      // One row shape: single and grouped files share height and stat slots.
+      expect(group).toBe(rows[1]);
+      expect(group!.className).toBe(rows[0]!.className);
+      // Stats stay the last column on every row, aligned with the header total;
+      // the edit count is not reserved on rows that do not have one.
+      for (const row of rows) expect(row.lastElementChild?.hasAttribute('data-file-stats')).toBe(true);
+      expect(rows[0]!.querySelector('[data-file-edit-count]')).toBeNull();
+      expect(group!.querySelector('[data-file-edit-count]')?.textContent).toBe('×2');
+      expect(container.querySelector('[data-slot="card-header"]')?.textContent).toContain('+7');
       await act(async () => group!.click());
       expect(container.querySelectorAll('[data-recorded-edit]')).toHaveLength(2);
       expect(getFileComparisonMock).not.toHaveBeenCalled();
-      expect(container.querySelector('[data-slot="card-header"]')?.textContent).not.toContain('+5');
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('shows workspace files relative to the recorded root and keeps outside paths absolute', async () => {
+    const set = changeSet();
+    set.workspaceRoot = 'E:/Repo';
+    set.summary.fileCount = 2;
+    set.changes = [
+      { ...set.changes[0]!, logicalPath: 'e:/repo/src/deep/new.ts' },
+      { ...set.changes[1]!, logicalPath: 'C:/Temp/outside.rs' },
+    ];
+    getTurnFileChangeSetMock.mockResolvedValue(set);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const rows = [...container.querySelectorAll<HTMLElement>('[role="listitem"]')];
+      expect(rows[0]!.querySelector('[data-file-name]')?.textContent).toBe('new.ts');
+      expect(rows[0]!.querySelector('[data-file-directory]')?.textContent).toBe('src/deep');
+      expect(rows[1]!.querySelector('[data-file-name]')?.textContent).toBe('outside.rs');
+      expect(rows[1]!.querySelector('[data-file-directory]')?.textContent).toBe('C:/Temp');
     } finally { await act(async () => root.unmount()); }
   });
 
   it('does not present incomplete net statistics as a complete total', async () => {
     const partial = changeSet();
     partial.status = 'partial';
-    partial.limitationCodes = ['turn-files.non-linear-mutation'];
+    partial.limitationCodes = ['turn-files.capture-limit-exceeded'];
     partial.changes[1]!.addedLines = null;
     partial.changes[1]!.deletedLines = null;
-    partial.changes[1]!.limitationCode = 'turn-files.non-linear-mutation';
+    partial.changes[1]!.limitationCode = 'turn-files.capture-limit-exceeded';
     getTurnFileChangeSetMock.mockResolvedValue(partial);
     const container = document.createElement('div');
     document.body.append(container);
@@ -444,7 +475,7 @@ describe('turn file changes card', () => {
     const container = document.createElement('div');
     document.body.append(container);
     const limitedChangeSet = changeSet();
-    limitedChangeSet.changes[1]!.limitationCode = 'turn-files.non-linear-mutation';
+    limitedChangeSet.changes[1]!.limitationCode = 'turn-files.capture-limit-exceeded';
     getTurnFileChangeSetMock.mockResolvedValue(limitedChangeSet);
     const root = await renderCard(container);
     try {

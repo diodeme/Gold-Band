@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-30T08:06:07.798Z"
+    "fetchedAt": "2026-10-04T08:39:24.973Z"
   },
   "agents": [
     {
@@ -53,7 +53,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.09.26",
+      "version": "2026.10.01",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.160.0",
+      "version": "2.161.1",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.160.0",
+        "@tencent-ai/codebuddy-code@2.161.1",
         "--acp"
       ],
       "env": {},
@@ -121,7 +121,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.52.0",
+      "version": "1.53.0",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",
@@ -164,7 +164,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.18.33",
+      "version": "1.18.34",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",

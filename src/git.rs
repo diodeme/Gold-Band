@@ -536,6 +536,43 @@ impl GitRepositoryService {
         Ok(capability)
     }
 
+    /// Declares a repository-relative pattern in the shared local exclude file
+    /// (`<common-dir>/info/exclude`). Unlike `.gitignore`, this never changes
+    /// tracked user files, and linked worktrees inherit it. Idempotent.
+    pub fn ensure_local_exclude(&self, repository_root: &Utf8Path, pattern: &str) -> Result<()> {
+        let identity = GitSourceControlService::default().repository_identity(repository_root)?;
+        let exclude_file = identity.common_dir.join("info").join("exclude");
+        GitCoordinationService.with_runtime_write(
+            &identity.common_dir,
+            None,
+            "runtime-local-exclude",
+            || {
+                let existing = match std::fs::read_to_string(exclude_file.as_std_path()) {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("failed to read `{exclude_file}`"));
+                    }
+                };
+                if existing.lines().any(|line| line.trim() == pattern) {
+                    return Ok(());
+                }
+                let mut content = existing;
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push_str(pattern);
+                content.push('\n');
+                crate::storage::ensure_parent_dir(&exclude_file)?;
+                crate::storage::atomic_write_file(exclude_file.as_std_path(), |file| {
+                    std::io::Write::write_all(file, content.as_bytes())
+                })
+                .with_context(|| format!("failed to write `{exclude_file}`"))
+            },
+        )
+    }
+
     pub fn head(&self, cwd: &Utf8Path) -> Result<String> {
         let output = self.runner.run(cwd, &["rev-parse", "HEAD"])?;
         ensure!(

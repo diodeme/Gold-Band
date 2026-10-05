@@ -59,9 +59,6 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 walkdir = "2"
 file-rotate = "0.8"
-ratatui = "0.29"
-crossterm = "0.28"
-figlet-rs = "1.0.0"
 rusqlite = { version = "0.34", features = ["bundled", "hooks"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 url = "2"

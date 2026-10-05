@@ -1,21 +1,34 @@
-use crate::app::App;
-use crate::command::execute::execute_command;
-use crate::command::{ArtifactCommand, Command, CommandResult, RunCommand, TaskCommand};
-use crate::config::{
-    ConsoleThemeName, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-};
-use crate::console::run_console;
-use crate::observability::{init_tracing, touch_log_file_best_effort};
-use crate::storage::{GoldBandPaths, load_settings_file, read_json};
-use anyhow::Result;
+//! Headless automation entry point.
+//!
+//! `gold-band run` executes one AUTO conversation unattended in the current
+//! Git repository: it creates the task through the same core service as the
+//! desktop app, drives the run in the foreground until it completes or
+//! pauses, prints the canonical `RunState` JSON to stdout and maps the run
+//! lifecycle onto [`CliExitStatus`].
+
+use std::process::ExitCode;
+
+use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
+use crate::app::{
+    App, CONVERSATION_SOURCE_CLI, ConversationRunLaunch, CreateConversationTaskCommand,
+};
+use crate::config::{
+    ConversationAutoConfig, ConversationRunMode, InteractionMode, RuntimeConfig, RuntimeLogLevel,
+    StateConfig,
+};
+use crate::domain::{RunOutcome, RunStatus};
+use crate::observability::{init_tracing, touch_log_file_best_effort};
+use crate::runtime::RunState;
+use crate::storage::{GoldBandPaths, load_settings_file, read_json};
+
 #[derive(Debug, Parser)]
 #[command(name = "gold-band")]
-#[command(about = "Gold Band CLI MVP")]
+#[command(about = "Gold Band headless runner")]
 pub struct Cli {
-    #[arg(long, default_value = "debug")]
+    #[arg(long, default_value = "info", global = true)]
     log_level: RuntimeLogLevel,
     #[command(subcommand)]
     command: Commands,
@@ -23,262 +36,172 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Task {
-        #[command(subcommand)]
-        command: TaskCommands,
-    },
-    Run {
-        #[command(subcommand)]
-        command: RunCommands,
-    },
-    Artifact {
-        #[command(subcommand)]
-        command: ArtifactCommands,
-    },
-    Console {
-        #[arg(long)]
-        theme: Option<ConsoleThemeName>,
-    },
+    /// Run one AUTO conversation in the current Git repository.
+    Run(RunArgs),
 }
 
-#[derive(Debug, Subcommand)]
-enum TaskCommands {
-    Show { task_id: String },
+#[derive(Debug, clap::Args)]
+struct RunArgs {
+    /// Markdown file whose content is the conversation requirement.
+    #[arg(long)]
+    requirement_file: Utf8PathBuf,
+    /// JSON file deserialized as the AUTO configuration (`ConversationAutoConfig`).
+    #[arg(long)]
+    auto_config: Utf8PathBuf,
 }
 
-#[derive(Debug, Subcommand)]
-enum RunCommands {
-    Start {
-        task_id: String,
-        #[arg(long)]
-        workflow: Option<Utf8PathBuf>,
-    },
-    Status {
-        task_id: String,
-        run_id: String,
-    },
-    Continue {
-        task_id: String,
-        run_id: String,
-    },
-    Retry {
-        task_id: String,
-        run_id: String,
-    },
-    OpenSession {
-        task_id: String,
-        run_id: String,
-        #[arg(long)]
-        round: String,
-        #[arg(long)]
-        node: String,
-        #[arg(long)]
-        attempt: String,
-    },
+/// Process exit status. Only the category is encoded here; the precise
+/// status, outcome and pause reason are in the printed `RunState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliExitStatus {
+    Success,
+    RunFailed,
+    RunPaused,
+    CommandFailed,
+    RunNotSettled,
 }
 
-#[derive(Debug, Subcommand)]
-enum ArtifactCommands {
-    List {
-        task_id: String,
-        run_id: String,
-        #[arg(long)]
-        round: String,
-        #[arg(long)]
-        node: String,
-        #[arg(long)]
-        attempt: String,
-    },
-    Show {
-        task_id: String,
-        run_id: String,
-        #[arg(long)]
-        round: String,
-        #[arg(long)]
-        node: String,
-        #[arg(long)]
-        attempt: String,
-        #[arg(long)]
-        name: String,
-    },
-    ShowPath {
-        path: Utf8PathBuf,
-    },
+impl CliExitStatus {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Success => 0,
+            Self::RunFailed => 1,
+            Self::RunPaused => 2,
+            Self::CommandFailed => 3,
+            Self::RunNotSettled => 4,
+        }
+    }
+
+    pub fn from_run(run: &RunState) -> Self {
+        Self::from_lifecycle(run.status, run.outcome)
+    }
+
+    pub fn from_lifecycle(status: RunStatus, outcome: Option<RunOutcome>) -> Self {
+        match (status, outcome) {
+            (RunStatus::Completed, Some(RunOutcome::Success)) => Self::Success,
+            (RunStatus::Completed, _) => Self::RunFailed,
+            (RunStatus::Paused, _) => Self::RunPaused,
+            (RunStatus::Running, _) => Self::RunNotSettled,
+        }
+    }
 }
 
-pub async fn run() -> Result<()> {
+impl From<CliExitStatus> for ExitCode {
+    fn from(status: CliExitStatus) -> Self {
+        ExitCode::from(status.code())
+    }
+}
+
+pub async fn run() -> ExitCode {
     let cli = Cli::parse();
+    match execute(cli) {
+        Ok(status) => status.into(),
+        Err(error) => {
+            eprintln!("{error:#}");
+            CliExitStatus::CommandFailed.into()
+        }
+    }
+}
+
+fn execute(cli: Cli) -> Result<CliExitStatus> {
     let cwd = std::env::current_dir()?;
     let repo_root = Utf8PathBuf::from_path_buf(cwd)
         .map_err(|_| anyhow::anyhow!("working directory is not valid UTF-8"))?;
     let paths = GoldBandPaths::new(repo_root.clone());
     let settings = load_settings_file(&paths.user_settings_file()).unwrap_or_default();
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
-    let enable_stderr_progress = !matches!(cli.command, Commands::Console { .. });
-    let config = resolve_runtime_config(&cli, &settings, &state);
+    let mut config = RuntimeConfig::default()
+        .apply_settings(&settings)
+        .apply_state(&state);
+    config.log_level = cli.log_level;
+    // The headless runner has no responder for prompt interactions.
+    config.interaction_mode = InteractionMode::Unattended;
     let app = App::with_config(repo_root, config);
-    let _runtime_log_guard = init_tracing(&app.paths, &app.config, enable_stderr_progress);
+    let _runtime_log_guard = init_tracing(&app.paths, &app.config, true);
     touch_log_file_best_effort(&app.paths);
 
     match cli.command {
-        Commands::Console { .. } => run_console(&app),
-        Commands::Task { command } => print_result(execute_command(
-            &app,
-            Command::Task(map_task_command(command)?),
-        )?),
-        Commands::Run { command } => print_result(execute_command(
-            &app,
-            Command::Run(map_run_command(command)?),
-        )?),
-        Commands::Artifact { command } => print_result(execute_command(
-            &app,
-            Command::Artifact(map_artifact_command(command)?),
-        )?),
+        Commands::Run(args) => {
+            let run = run_auto(&app, &args)?;
+            println!("{}", serde_json::to_string_pretty(&run)?);
+            Ok(CliExitStatus::from_run(&run))
+        }
     }
 }
 
-fn resolve_runtime_config(
-    cli: &Cli,
-    settings: &SettingsConfig,
-    state: &StateConfig,
-) -> RuntimeConfig {
-    let mut config = RuntimeConfig::default()
-        .apply_settings(settings)
-        .apply_state(state);
-    config.log_level = cli.log_level;
-    if let Commands::Console { theme: Some(theme) } = &cli.command {
-        config.console_theme = *theme;
-    }
-    config
-}
-
-fn map_task_command(command: TaskCommands) -> Result<TaskCommand> {
-    Ok(match command {
-        TaskCommands::Show { task_id } => TaskCommand::Show { task_id },
-    })
-}
-
-fn map_run_command(command: RunCommands) -> Result<RunCommand> {
-    Ok(match command {
-        RunCommands::Start { task_id, workflow } => RunCommand::Start { task_id, workflow },
-        RunCommands::Status { task_id, run_id } => RunCommand::Status { task_id, run_id },
-        RunCommands::Continue { task_id, run_id } => RunCommand::Continue { task_id, run_id },
-        RunCommands::Retry { task_id, run_id } => RunCommand::Retry { task_id, run_id },
-        RunCommands::OpenSession {
-            task_id,
-            run_id,
-            round,
-            node,
-            attempt,
-        } => RunCommand::OpenSession {
-            task_id,
-            run_id,
-            round,
-            node,
-            attempt,
-        },
-    })
-}
-
-fn map_artifact_command(command: ArtifactCommands) -> Result<ArtifactCommand> {
-    Ok(match command {
-        ArtifactCommands::List {
-            task_id,
-            run_id,
-            round,
-            node,
-            attempt,
-        } => ArtifactCommand::List {
-            task_id,
-            run_id,
-            round,
-            node,
-            attempt,
-        },
-        ArtifactCommands::Show {
-            task_id,
-            run_id,
-            round,
-            node,
-            attempt,
-            name,
-        } => ArtifactCommand::Show {
-            task_id,
-            run_id,
-            round,
-            node,
-            attempt,
-            name,
-        },
-        ArtifactCommands::ShowPath { path } => ArtifactCommand::ShowPath { path },
-    })
-}
-
-fn print_result(result: CommandResult) -> Result<()> {
-    match result {
-        CommandResult::Json(value) => println!("{}", serde_json::to_string_pretty(&value)?),
-        CommandResult::Text(text) => println!("{text}"),
-    }
-    Ok(())
+fn run_auto(app: &App, args: &RunArgs) -> Result<RunState> {
+    let requirement = std::fs::read_to_string(&args.requirement_file)
+        .with_context(|| format!("failed to read `{}`", args.requirement_file))?;
+    let auto_config: ConversationAutoConfig = read_json(&args.auto_config)
+        .with_context(|| format!("failed to parse `{}`", args.auto_config))?;
+    let mut command = CreateConversationTaskCommand::new(
+        CONVERSATION_SOURCE_CLI,
+        requirement,
+        ConversationRunMode::Auto,
+    );
+    command.auto_config = Some(auto_config);
+    Ok(app
+        .create_conversation_run(&command, ConversationRunLaunch::Foreground)?
+        .run)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands, resolve_runtime_config};
-
-    fn stderr_progress_enabled(cli: &Cli) -> bool {
-        !matches!(cli.command, Commands::Console { .. })
-    }
-    use crate::config::{ConsoleThemeName, RuntimeLogLevel, SettingsConfig, StateConfig};
+    use super::{Cli, CliExitStatus, Commands};
+    use crate::domain::{RunOutcome, RunStatus};
     use clap::Parser;
 
     #[test]
-    fn console_disables_stderr_progress() {
-        let cli = Cli::parse_from(["gold-band", "console"]);
-        assert!(!stderr_progress_enabled(&cli));
+    fn run_command_parses_requirement_and_auto_config() {
+        let cli = Cli::parse_from([
+            "gold-band",
+            "run",
+            "--requirement-file",
+            "task.md",
+            "--auto-config",
+            "auto.json",
+        ]);
+        let Commands::Run(args) = cli.command;
+        assert_eq!(args.requirement_file, "task.md");
+        assert_eq!(args.auto_config, "auto.json");
     }
 
     #[test]
-    fn non_console_commands_keep_stderr_progress() {
-        let cli = Cli::parse_from(["gold-band", "run", "status", "task-001", "run-001"]);
-        assert!(stderr_progress_enabled(&cli));
-    }
-
-    #[test]
-    fn console_without_theme_uses_user_config_theme() {
-        let cli = Cli::parse_from(["gold-band", "console"]);
-        let config = resolve_runtime_config(
-            &cli,
-            &SettingsConfig {
-                console_theme: Some(ConsoleThemeName::Nord),
-                ..SettingsConfig::default()
-            },
-            &StateConfig::default(),
+    fn run_command_requires_auto_config() {
+        assert!(
+            Cli::try_parse_from(["gold-band", "run", "--requirement-file", "task.md"]).is_err()
         );
-
-        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
-        assert!(matches!(cli.command, Commands::Console { theme: None }));
     }
 
     #[test]
-    fn console_theme_flag_overrides_user_config_theme() {
-        let cli = Cli::parse_from(["gold-band", "console", "--theme", "cyber"]);
-        let config = resolve_runtime_config(
-            &cli,
-            &SettingsConfig {
-                console_theme: Some(ConsoleThemeName::Nord),
-                ..SettingsConfig::default()
-            },
-            &StateConfig::default(),
-        );
-
-        assert_eq!(config.console_theme, ConsoleThemeName::Cyber);
-        assert!(matches!(
-            cli.command,
-            Commands::Console {
-                theme: Some(ConsoleThemeName::Cyber)
-            }
-        ));
-        assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+    fn exit_status_follows_run_lifecycle() {
+        let cases = [
+            (
+                RunStatus::Completed,
+                Some(RunOutcome::Success),
+                CliExitStatus::Success,
+                0,
+            ),
+            (
+                RunStatus::Completed,
+                Some(RunOutcome::Failure),
+                CliExitStatus::RunFailed,
+                1,
+            ),
+            (
+                RunStatus::Completed,
+                Some(RunOutcome::Killed),
+                CliExitStatus::RunFailed,
+                1,
+            ),
+            (RunStatus::Paused, None, CliExitStatus::RunPaused, 2),
+            (RunStatus::Running, None, CliExitStatus::RunNotSettled, 4),
+        ];
+        for (status, outcome, expected, code) in cases {
+            let actual = CliExitStatus::from_lifecycle(status, outcome);
+            assert_eq!(actual, expected);
+            assert_eq!(actual.code(), code);
+        }
+        assert_eq!(CliExitStatus::CommandFailed.code(), 3);
     }
 }

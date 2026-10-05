@@ -10,16 +10,15 @@ use serde::{Deserialize, Serialize};
 use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError, ScheduleSpec};
 
 use crate::view_models::{
-    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
-    dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
-    SessionWorkLocationVm, session_work_location, workflow_graph_vm,
+    AssetItemVm, GraphVm, RuntimeDisplayVm, SessionWorkLocationVm, acp_session_status,
+    dynamic_acp_session_status, dynamic_runtime_graph_vm, latest_control_failure_vm,
+    round_detail_vm, runtime_display_vm, session_work_location, workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
 use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
 use gold_band::app::{
-    App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference,
-    is_run_continuable,
+    App, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference, is_run_continuable,
 };
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
@@ -27,9 +26,7 @@ use gold_band::domain::{
     NodeOutcome, NodeType, PauseReason, RunStatus, SessionMode, TurnControlMode,
     TurnControlTransitionCause,
 };
-use gold_band::dsl::{
-    END_NODE, EdgeDsl, EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
-};
+use gold_band::dsl::WorkflowDsl;
 use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{PromptWorkspaceFileRef, conversation_prompt_has_payload};
@@ -39,7 +36,7 @@ use gold_band::runtime::{
 use gold_band::runtime_error::RuntimeErrorInfo;
 use gold_band::storage::{read_json, write_json};
 use gold_band::workflow_model_binding::{
-    TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
+    TaskAuthoringWorkflow, migrate_authoring_workflow, validate_and_inject,
 };
 
 use crate::conversation_attention::{ConversationTerminalResultVm, unread_terminal_results};
@@ -871,27 +868,8 @@ pub struct ConversationRunModeVm {
     pub auto_config: Option<ConversationAutoConfigVm>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationDirectConfigVm {
-    pub agent_type: String,
-    pub model_id: Option<String>,
-    pub permission_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub auto_accept: bool,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub config_options: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationAgentIdentityVm {
-    pub agent_type: String,
-    pub display_name: String,
-    pub icon_key: String,
-}
+pub type ConversationDirectConfigVm = gold_band::config::ConversationDirectConfig;
+pub type ConversationAgentIdentityVm = gold_band::app::ConversationAgentIdentity;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -959,13 +937,7 @@ pub struct ConversationDynamicControlVm {
     pub allow_nested_dynamic: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConversationWorkLocationVm {
-    #[default]
-    Main,
-    Worktree,
-}
+pub type ConversationWorkLocationVm = gold_band::app::ConversationWorkLocation;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1123,29 +1095,7 @@ pub struct ConversationSearchResultVm {
     pub last_activity_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ConversationMetadata {
-    pub(crate) version: String,
-    pub(crate) source: String,
-    pub(crate) run_mode: String,
-    pub(crate) workflow_template_id: Option<String>,
-    pub(crate) include_optional_entry: Option<bool>,
-    pub(crate) direct_config: Option<ConversationDirectConfigVm>,
-    pub(crate) agent_identity: Option<ConversationAgentIdentityVm>,
-    pub(crate) title_auto_generated: bool,
-    pub(crate) initial_attachment_names: Option<Vec<String>>,
-    #[serde(default)]
-    pub(crate) initial_workspace_files: Vec<PromptWorkspaceFileRef>,
-    pub(crate) created_at: String,
-    pub(crate) last_activity_at: Option<String>,
-    #[serde(default)]
-    pub(crate) work_location: ConversationWorkLocationVm,
-    #[serde(default)]
-    pub(crate) scheduled_task_id: Option<String>,
-    #[serde(default)]
-    pub(crate) scheduled_content_fingerprint: Option<String>,
-}
+pub(crate) use gold_band::app::ConversationMetadata;
 
 fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMetadata> {
     read_json::<ConversationMetadata>(
@@ -1233,12 +1183,7 @@ fn attach_direct_prompt_queue(
 }
 
 fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgentIdentityVm> {
-    let (_, config) = app.managed_agent(agent_type).ok()?;
-    Some(ConversationAgentIdentityVm {
-        agent_type: agent_type.to_string(),
-        display_name: config.adapter.display_name.clone(),
-        icon_key: config.icon.clone(),
-    })
+    app.conversation_agent_identity(agent_type)
 }
 
 pub fn touch_conversation_activity_at(
@@ -4213,10 +4158,7 @@ pub fn conversation_run_vm(
                 .as_ref()
                 .map(|dsl| workflow_graph_vm(app, dsl))
         })
-        .unwrap_or_else(|| GraphVm {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        });
+        .unwrap_or_default();
 
     Ok(ConversationRunVm {
         workflow_graph,
@@ -4540,20 +4482,6 @@ pub fn validate_conversation_create_vm(
 
 // ── Real create ──
 
-fn conversation_auto_title(content: &str, max_chars: usize) -> String {
-    if content.is_empty() {
-        "New Task".to_string()
-    } else {
-        content
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(max_chars.max(1))
-            .collect()
-    }
-}
-
 fn auto_config_from_vm(
     config: &ConversationAutoConfigVm,
 ) -> gold_band::config::ConversationAutoConfig {
@@ -4614,259 +4542,39 @@ fn auto_config_from_vm(
     }
 }
 
-fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl {
-    let compiled = config.map(auto_config_from_vm);
-    gold_band::execution_plan::compile_auto_workflow(compiled.as_ref())
-}
+pub use gold_band::app::PreparedConversationTask;
 
-fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
-    WorkflowDsl {
-        version: "0.1".to_string(),
-        id: "direct-agent".to_string(),
-        entry: "direct-agent".to_string(),
-        control: Default::default(),
-        nodes: vec![NodeDsl::Worker(WorkerNode {
-            id: "direct-agent".to_string(),
-            execution_slot_id: None,
-            provider: Some(config.agent_type.clone()),
-            model: config.model_id.clone(),
-            profile: None,
-            goal: None,
-            output: None,
-            success_condition: None,
-            permission_mode: config.permission_mode.clone(),
-            auto_accept: config.auto_accept,
-            config_options: config.config_options.clone(),
-            manual_check: Some(false),
-            prompt_envelope: PromptEnvelopeMode::RawAgent,
-        })],
-        edges: vec![EdgeDsl {
-            from: "direct-agent".to_string(),
-            to: END_NODE.to_string(),
-            on: EdgeOutcome::Success,
-            session: None,
-            new_round_entry: None,
-        }],
-    }
-}
-
-pub struct PreparedConversationTask {
-    task_id: String,
-    task_uuid: Option<String>,
-    title: String,
-    task_dir: camino::Utf8PathBuf,
-    armed: bool,
-}
-
-impl PreparedConversationTask {
-    pub fn task_id(&self) -> &str {
-        &self.task_id
-    }
-
-    pub fn task_uuid(&self) -> Option<&str> {
-        self.task_uuid.as_deref()
-    }
-
-    pub fn accept(mut self) -> (String, Option<String>, String) {
-        self.armed = false;
-        (
-            std::mem::take(&mut self.task_id),
-            self.task_uuid.take(),
-            std::mem::take(&mut self.title),
-        )
-    }
-}
-
-impl Drop for PreparedConversationTask {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = std::fs::remove_dir_all(self.task_dir.as_std_path());
-        }
-    }
+fn conversation_create_command(
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<gold_band::app::CreateConversationTaskCommand> {
+    let run_mode = conversation_run_mode_from_label(&input.run_mode)
+        .ok_or_else(|| anyhow::anyhow!("unsupported conversation run mode: {}", input.run_mode))?;
+    let mut command = gold_band::app::CreateConversationTaskCommand::new(
+        gold_band::app::CONVERSATION_SOURCE_DESKTOP,
+        input.content.clone(),
+        run_mode,
+    );
+    command.workflow_template_id = input.workflow_template_id.clone();
+    command.include_optional_entry = input.include_optional_entry;
+    command.direct_config = input.direct_config.clone();
+    command.auto_config = input.auto_config.as_ref().map(auto_config_from_vm);
+    command.workflow_authoring = input.workflow_authoring.clone();
+    command.attachment_paths = input.attachment_paths.clone().unwrap_or_default();
+    command.work_location = input.work_location;
+    command.selected_branch = input.selected_branch.clone();
+    command.scheduled_task_id = input.scheduled_task_id.clone();
+    command.scheduled_content_fingerprint = input.scheduled_content_fingerprint.clone();
+    command.role = input.role.clone();
+    command.workspace_files = input.workspace_files.clone();
+    command.quotes = input.quotes.clone();
+    Ok(command)
 }
 
 pub fn prepare_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<PreparedConversationTask> {
-    anyhow::ensure!(
-        conversation_prompt_has_payload(
-            &input.content,
-            input
-                .attachment_paths
-                .as_ref()
-                .map(|paths| paths.len())
-                .unwrap_or(0),
-            input.role.as_ref(),
-            input.workspace_files.len(),
-        ),
-        "conversation payload cannot be empty"
-    );
-    let title =
-        conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
-
-    // Build workflow
-    let (mut workflow, mut model_bindings, effective_include_optional_entry) = if input.run_mode
-        == ConversationRunMode::Direct.as_str()
-    {
-        let config = input
-            .direct_config
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("direct config is required"))?;
-        (
-            build_direct_workflow(config),
-            WorkflowModelBindings::default(),
-            None,
-        )
-    } else if input.run_mode == ConversationRunMode::Auto.as_str() {
-        (
-            build_auto_workflow(input.auto_config.as_ref()),
-            gold_band::workflow_model_binding::WorkflowModelBindings::default(),
-            None,
-        )
-    } else if let Some(authoring) = input.workflow_authoring.as_ref() {
-        (
-            authoring.workflow.clone(),
-            authoring.model_bindings.clone(),
-            input.include_optional_entry,
-        )
-    } else {
-        // Load from template
-        let store = app.workflow_templates()?;
-        let template_id = input
-            .workflow_template_id
-            .as_deref()
-            .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
-        let template = store
-            .templates
-            .iter()
-            .find(|t| t.id == template_id)
-            .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
-        let mut workflow = template.workflow.clone();
-        let include_optional_entry =
-            apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
-        (
-            workflow,
-            template.model_bindings.clone(),
-            include_optional_entry,
-        )
-    };
-    migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
-
-    // Git is an authoritative prerequisite for Auto and every workflow that
-    // directly contains AI-DYNAMIC. Check before creating either the task or run.
-    if gold_band::dsl::workflow_contains_ai_dynamic(&workflow) {
-        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
-    }
-    if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
-    }
-
-    // Create task
-    let task_input = CreateTaskInput {
-        title: Some(title.clone()),
-        description: None,
-        requirement_file_name: None,
-        requirement_content: input.content.clone(),
-        workflow: workflow.clone(),
-        workflow_template_id: input.workflow_template_id.clone(),
-    };
-    let summary = app.create_conversation_task_from_payload_with_bindings(
-        task_input,
-        workflow,
-        model_bindings,
-    )?;
-
-    let task_id = summary.task.id.clone();
-    let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
-    let prepared = PreparedConversationTask {
-        task_id: task_id.clone(),
-        task_uuid,
-        title,
-        task_dir: app.paths.task_dir(&task_id),
-        armed: true,
-    };
-
-    // Save conversation metadata
-    let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
-    fs::create_dir_all(authoring_dir.as_std_path())?;
-
-    let created_at = chrono::Utc::now().to_rfc3339();
-    let agent_identity = input
-        .direct_config
-        .as_ref()
-        .and_then(|config| direct_agent_identity(app, &config.agent_type));
-    let meta = ConversationMetadata {
-        version: "3".to_string(),
-        source: "conversation-ui".to_string(),
-        run_mode: input.run_mode.clone(),
-        workflow_template_id: input.workflow_template_id.clone(),
-        include_optional_entry: effective_include_optional_entry,
-        direct_config: input.direct_config.clone(),
-        agent_identity,
-        title_auto_generated: true,
-        initial_attachment_names: Some(
-            input
-                .attachment_paths
-                .as_ref()
-                .map(|paths| {
-                    paths
-                        .iter()
-                        .map(|path| {
-                            Path::new(path)
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("unknown")
-                                .to_string()
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-        ),
-        initial_workspace_files: input.workspace_files.clone(),
-        created_at: created_at.clone(),
-        last_activity_at: Some(created_at),
-        work_location: input.work_location,
-        scheduled_task_id: input.scheduled_task_id.clone(),
-        scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
-    };
-    write_json(&authoring_dir.join("conversation.json"), &meta)?;
-    if input.run_mode == ConversationRunMode::Auto.as_str()
-        && let Some(config) = input.auto_config.as_ref().map(auto_config_from_vm)
-    {
-        let mut config = config;
-        config.active_template_id = None;
-        config.active_template_name = None;
-        write_json(&app.paths.task_auto_config_file(&task_id), &config)?;
-    }
-    let task_prompt_input = gold_band::provider::TaskPromptInput {
-        quotes: input.quotes.clone(),
-        role: input.role.clone(),
-        workspace_files: input.workspace_files.clone(),
-    };
-    if !task_prompt_input.is_empty() {
-        write_json(
-            &app.paths.task_prompt_input_file(&task_id),
-            &task_prompt_input,
-        )?;
-    }
-
-    // Copy attachments to authoring dir
-    if let Some(ref paths) = input.attachment_paths {
-        let attach_dir = authoring_dir.join("inputs");
-        fs::create_dir_all(attach_dir.as_std_path())?;
-        for src in paths {
-            let src_path = Path::new(src);
-            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                let dest = attach_dir.join(name);
-                fs::copy(src_path, &dest)?;
-            }
-        }
-    }
-
-    app.record_task_activity_index(&task_id, &meta.created_at);
-
-    Ok(prepared)
+    app.prepare_conversation_task(&conversation_create_command(input)?)
 }
 
 pub fn create_conversation_task_vm(
@@ -4880,35 +4588,13 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationCreateResultVm> {
-    let fork_point = if input.work_location == ConversationWorkLocationVm::Worktree {
-        Some(
-            gold_band::git::GitSourceControlService::default().resolve_branch_fork_point(
-                &app.paths.repo_root,
-                input.selected_branch.as_deref(),
-            )?,
-        )
-    } else {
-        None
-    };
-    let prepared_task = prepare_conversation_task_vm(app, input)?;
-    let task_id = prepared_task.task_id().to_string();
-    let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
-
-    let prepared_run = if input.run_mode == ConversationRunMode::Auto.as_str()
-        && let Some(auto_config) = input.auto_config.as_ref().map(auto_config_from_vm)
-    {
-        if let Some(fork_point) = fork_point {
-            app.prepare_auto_run_in_worktree_at(&task_id, auto_config, fork_point.head_oid)?
-        } else {
-            app.prepare_auto_run(&task_id, auto_config)?
-        }
-    } else if let Some(fork_point) = fork_point {
-        app.prepare_run_in_worktree_at(&task_id, None, fork_point.head_oid)?
-    } else {
-        app.prepare_run(&task_id, None)?
-    };
-    let run = app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
-    prepared_task.accept();
+    let created = app.create_conversation_run(
+        &conversation_create_command(input)?,
+        gold_band::app::ConversationRunLaunch::Background,
+    )?;
+    let task_id = created.task_id;
+    let task_uuid = created.task_uuid;
+    let run = created.run;
     if let Some(run_mode) = conversation_run_mode_from_label(&input.run_mode) {
         emit_conversation_run_started(app, &input.project_id, &task_id, &run.id, run_mode);
     }
@@ -4942,10 +4628,7 @@ pub fn create_conversation_run_vm(
                 workflow_valid: true,
                 workflow_error: None,
                 workflow_json: None,
-                workflow_graph: GraphVm {
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                },
+                workflow_graph: GraphVm::default(),
                 resumable: false,
                 pause_reason: None,
                 runtime_error_message: None,
@@ -5031,10 +4714,7 @@ pub fn rerun_conversation_task_vm(
             workflow_valid: true,
             workflow_error: None,
             workflow_json: None,
-            workflow_graph: GraphVm {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            },
+            workflow_graph: GraphVm::default(),
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
@@ -5086,17 +4766,16 @@ mod tests {
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, PromptActivity, attempt_control_mode, attempt_control_projection,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_summary_page_vm, conversation_run_vm,
-        conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
-        conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity, conversation_task_page_vm, conversation_task_row_vm,
-        conversation_workspace_vms, create_conversation_run_vm, create_conversation_task_vm,
-        derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
-        find_leaf_by_key, lifecycle_is_active, paged_task_ids_by_activity,
-        rerun_conversation_task_vm, scheduled_content_snapshot, scheduled_task_vms_from_sources,
-        touch_conversation_activity_at, update_task_metadata_vm, validate_conversation_create_vm,
-        workflow_binding_missing_item,
+        auto_config_from_vm, conversation_attempt_lifecycle_vm, conversation_run_summary_page_vm,
+        conversation_run_vm, conversation_session_successors_from_state,
+        conversation_sidebar_bootstrap_vm, conversation_sidebar_vm_from_sources,
+        conversation_status_from_session, conversation_task_activity, conversation_task_page_vm,
+        conversation_task_row_vm, conversation_workspace_vms, create_conversation_run_vm,
+        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
+        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
+        paged_task_ids_by_activity, rerun_conversation_task_vm, scheduled_content_snapshot,
+        scheduled_task_vms_from_sources, touch_conversation_activity_at, update_task_metadata_vm,
+        validate_conversation_create_vm, workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -5110,6 +4789,23 @@ mod tests {
     use gold_band::runtime::{RoundState, RuntimeExecutionPhase, RuntimeExecutionState};
     use gold_band::workflow_model_binding::WorkflowModelBindings;
     use serde_json::json;
+
+    fn build_auto_workflow(
+        config: Option<&ConversationAutoConfigVm>,
+    ) -> gold_band::dsl::WorkflowDsl {
+        let compiled = config.map(auto_config_from_vm);
+        gold_band::execution_plan::compile_auto_workflow(compiled.as_ref())
+    }
+
+    fn build_direct_workflow(config: &ConversationDirectConfigVm) -> gold_band::dsl::WorkflowDsl {
+        gold_band::dsl::presets::direct_workflow(
+            config.agent_type.clone(),
+            config.model_id.clone(),
+            config.permission_mode.clone(),
+            config.auto_accept,
+            config.config_options.clone(),
+        )
+    }
 
     #[test]
     fn workflow_binding_missing_item_preserves_repair_locator_params() {
@@ -5221,6 +4917,7 @@ mod tests {
 
     #[test]
     fn conversation_auto_title_uses_configured_character_limit() {
+        use gold_band::app::conversation_auto_title;
         let content = "在.claude下输出两个python类，一个输出hello，一个输出good bye";
 
         assert_eq!(conversation_auto_title(content, 12), "在.claude下输出两");

@@ -1,3 +1,4 @@
+mod conversation_run;
 mod execution_plan_service;
 mod ids;
 pub mod intervention;
@@ -12,6 +13,12 @@ mod state_access;
 mod state_factory;
 mod transition_context;
 
+pub use self::conversation_run::{
+    CONVERSATION_METADATA_VERSION, CONVERSATION_SOURCE_CLI, CONVERSATION_SOURCE_DESKTOP,
+    ConversationAgentIdentity, ConversationMetadata, ConversationRunLaunch,
+    ConversationWorkLocation, CreateConversationTaskCommand, CreatedConversationRun,
+    PreparedConversationTask, conversation_auto_title,
+};
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
     direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
@@ -25,8 +32,8 @@ pub use self::runtime_recovery::{
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
 use crate::config::{
-    AppearancePreference, ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate,
-    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    AppearancePreference, ConversationAutoConfig, DesktopAvailableUpdate, DesktopLanguage,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
     McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
     RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
@@ -3355,13 +3362,6 @@ impl App {
         Ok(value)
     }
 
-    pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
-        settings.console_theme = Some(theme);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
     pub fn set_user_desktop_appearance(
         &self,
         appearance: AppearancePreference,
@@ -6412,10 +6412,10 @@ mod tests {
     };
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
-        AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, MulticaCompletedTask,
-        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
-        StateConfig, catalog_agent_default_config,
+        AppearancePreference, ColorSchemePreference, DesktopLanguage, DesktopUpdateBadgeState,
+        FontSizePreference, FontStackPreference, MulticaCompletedTask, PersonalizationPreference,
+        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, StateConfig,
+        catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -9406,18 +9406,6 @@ mod tests {
     }
 
     #[test]
-    fn user_console_theme_is_persisted_to_settings() {
-        let _guard = env_guard();
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app(repo_root.clone());
-        app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();
-
-        let settings = app.load_settings().unwrap();
-        assert_eq!(settings.console_theme, Some(ConsoleThemeName::Nord));
-    }
-
-    #[test]
     fn desktop_preferences_persisted_to_settings() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -9488,9 +9476,6 @@ mod tests {
                 .as_deref(),
             Some("0.3.1")
         );
-
-        let settings = app.load_settings().unwrap();
-        assert!(settings.console_theme.is_none());
     }
 
     #[test]

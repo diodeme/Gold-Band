@@ -20,7 +20,6 @@ use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 use crate::config::{RuntimeConfig, RuntimeLogLevel};
 use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
-use crate::inspect::render_run_status;
 use crate::runtime::RunState;
 use crate::storage::{GoldBandPaths, append_jsonl, ensure_parent_dir, write_json};
 
@@ -360,7 +359,7 @@ pub fn runtime_log_filter(metadata: &tracing::Metadata<'_>) -> bool {
 }
 
 pub fn progress(run_summary: &str) {
-    tracing::info!(target: PROGRESS_TARGET, "{}", render_run_status(run_summary));
+    tracing::info!(target: PROGRESS_TARGET, "{run_summary}");
 }
 
 pub fn write_run_progress_best_effort(

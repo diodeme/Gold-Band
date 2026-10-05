@@ -31,7 +31,7 @@ const ATTACHMENT_LIMITATION_CODES: [&str; 3] = [
     ATTACHMENT_SCAN_FAILED,
     ATTACHMENT_SCAN_LIMIT_EXCEEDED,
 ];
-pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 6;
+pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 7;
 
 const UNIFIED_DIFF_NO_NEWLINE_MARKERS: [&str; 2] =
     [r"\ No newline at end of file", " No newline at end of file"];
@@ -784,22 +784,39 @@ impl TurnFileStore {
         &self,
         mut mutation: TurnFileMutation,
     ) -> Result<TurnFileMutation> {
-        mutation.before_version = self.normalize_version(mutation.before_version)?;
-        mutation.after_version = self.normalize_version(mutation.after_version)?;
+        // Journal entries captured before a normalization rule existed are repaired here,
+        // so rebuilding a change set applies the same rules as fresh capture.
+        let before = mutation
+            .before_version
+            .as_ref()
+            .map(|version| self.read_blob(version))
+            .transpose()?;
+        let after = mutation
+            .after_version
+            .as_ref()
+            .map(|version| self.read_blob(version))
+            .transpose()?;
+        let (normalized_before, normalized_after) =
+            normalize_tool_texts(&mutation.logical_path, before.clone(), after.clone());
+        mutation.before_version =
+            self.renormalized_version(mutation.before_version, before, normalized_before)?;
+        mutation.after_version =
+            self.renormalized_version(mutation.after_version, after, normalized_after)?;
         Ok(mutation)
     }
 
-    fn normalize_version(&self, version: Option<FileVersionRef>) -> Result<Option<FileVersionRef>> {
-        let Some(version) = version else {
-            return Ok(None);
-        };
-        let content = self.read_blob(&version)?;
-        let normalized = strip_unified_diff_no_newline_markers(&content);
-        if normalized == content {
-            Ok(Some(version))
-        } else {
-            self.write_blob(&normalized).map(Some)
+    fn renormalized_version(
+        &self,
+        version: Option<FileVersionRef>,
+        original: Option<String>,
+        normalized: Option<String>,
+    ) -> Result<Option<FileVersionRef>> {
+        if normalized == original {
+            return Ok(version);
         }
+        normalized
+            .map(|content| self.write_blob(&content))
+            .transpose()
     }
 
     fn load_mutations(&self) -> Result<Vec<TurnFileMutation>> {
@@ -963,10 +980,11 @@ pub fn extract_standard_tool_diffs(raw: &Value) -> Vec<CapturedToolDiff> {
         .filter_map(|(content_index, item)| {
             (item.get("type").and_then(Value::as_str) == Some("diff")).then(|| {
                 let path = item.get("path")?.as_str()?.to_string();
-                let old_text = optional_text(item, "oldText")?
-                    .map(|text| strip_unified_diff_no_newline_markers(&text));
-                let mut new_text = optional_text(item, "newText")?
-                    .map(|text| strip_unified_diff_no_newline_markers(&text));
+                let (old_text, mut new_text) = normalize_tool_texts(
+                    &path,
+                    optional_text(item, "oldText")?,
+                    optional_text(item, "newText")?,
+                );
                 // ACP providers may encode a deletion as an empty newText plus
                 // explicit operation metadata. Empty content alone is NOT absence.
                 let limitation_code =
@@ -1001,6 +1019,71 @@ fn optional_text(value: &Value, key: &str) -> Option<Option<String>> {
         Some(Value::String(text)) => Some(Some(text.clone())),
         Some(_) => None,
     }
+}
+
+/// Some providers flatten a unified diff into `oldText/newText` after removing
+/// each line's one-character prefix, so `--- a/x`, `+++ b/x` and `\ No newline`
+/// arrive as `-- a/x`, `++ b/x` and ` No newline`. That metadata is never file content.
+fn normalize_tool_texts(
+    path: &str,
+    old_text: Option<String>,
+    new_text: Option<String>,
+) -> (Option<String>, Option<String>) {
+    // File headers always come as a pair naming this file or /dev/null; a lone
+    // header-like line is treated as ordinary content.
+    if let (Some(old), Some(new)) = (&old_text, &new_text)
+        && let (Some(old), Some(new)) = (
+            flattened_diff_side(old, "-", path),
+            flattened_diff_side(new, "+", path),
+        )
+    {
+        return (old, new);
+    }
+    (
+        old_text.map(|text| strip_unified_diff_no_newline_markers(&text)),
+        new_text.map(|text| strip_unified_diff_no_newline_markers(&text)),
+    )
+}
+
+/// Returns the file content of one flattened side: `None` for `/dev/null`.
+fn flattened_diff_side(text: &str, prefix: &str, path: &str) -> Option<Option<String>> {
+    let (header, body) = text.split_once('\n').unwrap_or((text, ""));
+    let header = header.strip_suffix('\r').unwrap_or(header);
+    let target = [prefix.repeat(3), prefix.repeat(2)]
+        .iter()
+        .find_map(|marker| header.strip_prefix(&format!("{marker} ")))?;
+    if target == "/dev/null" {
+        return body.is_empty().then_some(None);
+    }
+    let target = target
+        .strip_prefix("a/")
+        .or_else(|| target.strip_prefix("b/"))
+        .unwrap_or(target);
+    if !same_reported_path(target, path) {
+        return None;
+    }
+    // Unified diff lines are newline-terminated unless the no-newline marker says otherwise.
+    let ends_with_marker = body
+        .lines()
+        .next_back()
+        .is_some_and(|line| UNIFIED_DIFF_NO_NEWLINE_MARKERS.contains(&line));
+    let mut content = strip_unified_diff_no_newline_markers(body);
+    if !ends_with_marker && !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    Some(Some(content))
+}
+
+fn same_reported_path(left: &str, right: &str) -> bool {
+    let normalize = |path: &str| path.trim().replace('\\', "/");
+    let (left, right) = (normalize(left), normalize(right));
+    left.eq_ignore_ascii_case(&right)
+        || right
+            .to_ascii_lowercase()
+            .ends_with(&format!("/{}", left.to_ascii_lowercase()))
+        || left
+            .to_ascii_lowercase()
+            .ends_with(&format!("/{}", right.to_ascii_lowercase()))
 }
 
 fn strip_unified_diff_no_newline_markers(content: &str) -> String {
@@ -1378,6 +1461,131 @@ mod tests {
                 "春望\n[唐] 杜甫\n\n国破山河在，城春草木深。\n感时花溅泪，恨别鸟惊心。\n烽火连三月，家书抵万金。\n白头搔更短，浑欲不胜簪。"
             )
         );
+    }
+
+    #[test]
+    fn flattened_unified_diff_headers_are_metadata_not_file_content() {
+        let (_dir, store) = store();
+        let path = r"E:\Repo\tmp\created.md";
+        // Captured from Cursor: a creation flattened from a unified diff whose
+        // one-character line prefixes were removed, then followed by full-file edits.
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "write",
+                1,
+                "1Z",
+                &raw(serde_json::json!([{
+                    "type": "diff",
+                    "path": path,
+                    "oldText": "-- /dev/null",
+                    "newText": format!("++ b/{path}\n# Created\nline-1\nline-3")
+                }])),
+            )
+            .unwrap();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                2,
+                "2Z",
+                &raw(serde_json::json!([{
+                    "type": "diff",
+                    "path": path,
+                    "oldText": "# Created\nline-1\nline-3\n",
+                    "newText": "# Created\nline-1\nline-2\nline-3\n"
+                }])),
+            )
+            .unwrap();
+        let set = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "0Z",
+                "3Z",
+                &succeeded_tools(&["write", "edit"]),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.changes.len(), 1);
+        assert_eq!(set.changes[0].change_kind, FileChangeKind::Added);
+        let comparison = store.comparison(&set.id, &set.changes[0].id).unwrap();
+        assert!(comparison.before.is_none());
+        assert_eq!(
+            comparison.after.unwrap().content,
+            "# Created\nline-1\nline-2\nline-3\n"
+        );
+
+        // A flattened body that carries the no-newline marker keeps the file unterminated.
+        let diffs = extract_standard_tool_diffs(&raw(serde_json::json!([{
+            "type": "diff",
+            "path": "notes.txt",
+            "oldText": "-- /dev/null",
+            "newText": "++ b/notes.txt\nlast\n No newline at end of file"
+        }])));
+        assert_eq!(diffs[0].old_text, None);
+        assert_eq!(diffs[0].new_text.as_deref(), Some("last"));
+        // Header-like text without a matching pair stays ordinary content.
+        let diffs = extract_standard_tool_diffs(&raw(serde_json::json!([{
+            "type": "diff",
+            "path": "notes.txt",
+            "oldText": "-- /dev/null",
+            "newText": "++ b/other.txt\nlast"
+        }])));
+        assert_eq!(diffs[0].old_text.as_deref(), Some("-- /dev/null"));
+    }
+
+    #[test]
+    fn loading_an_older_change_set_repairs_flattened_diff_headers_from_the_journal() {
+        let (_dir, store) = store();
+        let path = "E:/Repo/created.md";
+        let legacy_before = store.write_blob("-- /dev/null").unwrap();
+        let legacy_after = store.write_blob(&format!("++ b/{path}\nbody")).unwrap();
+        append_jsonl_durable(
+            &store.mutation_journal_path(),
+            &TurnFileMutation {
+                idempotency_key: "legacy-write".to_string(),
+                turn_id: "turn".to_string(),
+                prompt_event_id: "prompt".to_string(),
+                branch_id: "root".to_string(),
+                tool_call_id: "write".to_string(),
+                event_seq: 2,
+                content_index: 0,
+                logical_path: path.to_string(),
+                before_version: Some(legacy_before),
+                after_version: Some(legacy_after),
+                captured_at: "2Z".to_string(),
+                limitation_code: None,
+            },
+        )
+        .unwrap();
+        write_tool_terminal(&store, "write", "completed");
+        let mut legacy = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "3Z",
+                &succeeded_tools(&["write"]),
+            )
+            .unwrap()
+            .unwrap();
+        legacy.schema_version = TURN_FILE_CHANGE_SET_SCHEMA_VERSION - 1;
+        write_json(&store.change_set_path(&legacy.id), &legacy).unwrap();
+
+        let rebuilt = store.load_change_set(&legacy.id).unwrap();
+        assert_eq!(rebuilt.changes[0].change_kind, FileChangeKind::Added);
+        let comparison = store
+            .comparison(&rebuilt.id, &rebuilt.changes[0].id)
+            .unwrap();
+        assert!(comparison.before.is_none());
+        assert_eq!(comparison.after.unwrap().content, "body\n");
     }
 
     #[test]

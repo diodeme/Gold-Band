@@ -30,19 +30,23 @@ import {
   NEW_ROUND_NODE,
   NODE_WIDTH,
   NODE_HEIGHT,
-  TERMINAL_NODE_WIDTH,
   TERMINAL_NODE_HEIGHT,
   collectAuthoringNodes,
+  edgeLabelWidth,
+  entryAnchoredViewport,
+  newRoundEntryNodeId,
+  terminalNodeWidth,
   workflowSuccessTopologyOrder,
   isBackwardEdge,
   authoringEdgeColor,
-  layoutSuccessPath,
-  routeWorkflowBranchEdges,
-  topLeft,
   SOURCE_POS,
   TARGET_POS,
-  type WorkflowGraphBranchRoute,
+  type WorkflowLayout,
+  type WorkflowLayoutRoute,
+  type WorkflowLayoutSpec,
 } from './workflowGraph';
+import { useWorkflowLayout } from '@/hooks/useWorkflowLayout';
+import { WorkflowLayoutStatus } from '@/components/WorkflowLayoutStatus';
 import { AppCard } from '@/components/AppCard';
 import {
   AcpModelThoughtSelects,
@@ -103,6 +107,7 @@ type EditorNodeData = {
   label: string;
   kind: string;
   terminal?: boolean;
+  targetPosition?: Position;
   iconKey?: string;
   entryCandidate?: boolean;
   entryLabel?: string;
@@ -115,7 +120,7 @@ type EditorNodeData = {
   onQuickAdd?: (outcome: EdgeOutcome) => void;
   onDelete?: () => void;
 };
-type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; route?: WorkflowGraphBranchRoute };
+type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; route?: WorkflowLayoutRoute };
 export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; nodeIds?: string[]; edgeIndex?: number };
 export type WorkflowValidationResult = {
   valid: boolean;
@@ -132,10 +137,10 @@ const WORKFLOW_EDITOR_COMPACT_WIDTH = 820;
 const WORKFLOW_EDITOR_MIN_ZOOM = 0.3;
 const WORKFLOW_EDITOR_MAX_ZOOM = 1.4;
 const WORKFLOW_EDITOR_FIT_MAX_ZOOM = 0.92;
+const WORKFLOW_EDITOR_FIT_PADDING = 0.22;
 const WORKFLOW_EDITOR_DRAFT_DELAY_MS = 180;
 const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';
 const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;
-const WORKFLOW_NODE_SPLIT_OUTCOME_RATIO = { success: 0.34, failure: 0.66 } as const;
 
 export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
 
@@ -340,9 +345,14 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
   }, [data.supportsFailureOutcome, id, updateNodeInternals]);
   if (data.terminal) {
     return (
-      <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
-        <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
-        {data.label}
+      <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 px-3 text-xs tracking-wide text-muted-foreground">
+        <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="min-w-0 truncate">{data.label}</span>
+          </TooltipTrigger>
+          <TooltipContent>{data.label}</TooltipContent>
+        </Tooltip>
       </div>
     );
   }
@@ -384,7 +394,8 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
           {data.entryLabel}
         </Badge>
       ) : null}
-      <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+      {/* Shares the primary source handle height so success chains stay on one row (workflowTargetHandleRatio). */}
+      <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={{ top: successHandleTop }} />
       <Tooltip>
         <TooltipTrigger asChild>
           <Handle id="success" type="source" position={Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={{ top: successHandleTop }} />
@@ -488,7 +499,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const historyRef = useRef<WorkflowEditorHistory>({ past: [], future: [] });
   const viewportRef = useRef<Viewport>(initialSessionDraft?.viewport ?? { x: 0, y: 0, zoom: 1 });
   const hasStableViewportRef = useRef(Boolean(initialSessionDraft?.viewport));
-  const initialFitFrameRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasActionsRef = useRef<{
     quickAdd: (nodeId: string, outcome: EdgeOutcome) => void;
     deleteNode: (nodeId: string) => void;
@@ -529,15 +540,17 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     () => new Map(Object.entries(nodeAgentIds).map(([nodeId, agentId]) => [nodeId, agentIconKeys.get(agentId) ?? DEFAULT_AGENT_ICON_KEY])),
     [agentIconKeys, nodeAgentSignature],
   );
-  const graphLayout = useMemo(
-    () => createAuthoringGraphLayout(workflow, visibleTerminalIds),
-    [visibleTerminalSignature, workflowTopologySignature],
+  const authoringGraph = useMemo(
+    () => createAuthoringGraph(workflow, visibleTerminalIds, t),
+    [visibleTerminalSignature, workflowTopologySignature, t],
   );
+  const layoutState = useWorkflowLayout(authoringGraph.spec);
+  const graphLayout = layoutState.layout;
   const handleCanvasQuickAdd = useCallback((nodeId: string, outcome: EdgeOutcome) => canvasActionsRef.current.quickAdd(nodeId, outcome), []);
   const handleCanvasDelete = useCallback((nodeId: string) => canvasActionsRef.current.deleteNode(nodeId), []);
   const { nodes, edges } = useMemo(
-    () => createAuthoringFlowProjection(workflow, graphLayout, selectedNodeId, selectedEdgeId, invalidNodeIds, nodeIconKeys, t, handleCanvasQuickAdd, handleCanvasDelete, selectedTerminalId),
-    [graphLayout, handleCanvasDelete, handleCanvasQuickAdd, invalidNodeSignature, nodeIconKeys, selectedEdgeId, selectedNodeId, selectedTerminalId, t, workflowGraphSignature],
+    () => createAuthoringFlowProjection(workflow, authoringGraph, graphLayout, selectedNodeId, selectedEdgeId, invalidNodeIds, nodeIconKeys, t, handleCanvasQuickAdd, handleCanvasDelete, selectedTerminalId),
+    [authoringGraph, graphLayout, handleCanvasDelete, handleCanvasQuickAdd, invalidNodeSignature, nodeIconKeys, selectedEdgeId, selectedNodeId, selectedTerminalId, t, workflowGraphSignature],
   );
   useEffect(() => {
     if (!onSessionDraftChangeRef.current) return undefined;
@@ -603,7 +616,6 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       window.clearTimeout(externalChangeTimerRef.current);
       onChangeRef.current?.(workflowRef.current);
     }
-    if (initialFitFrameRef.current) window.cancelAnimationFrame(initialFitFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -653,7 +665,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   useEffect(() => {
     if (!pendingFocusNodeId || !flowInstance) return;
     const node = nodes.find((item) => item.id === pendingFocusNodeId);
-    if (!node) return;
+    if (!node || node.hidden) return;
     window.requestAnimationFrame(() => {
       const width = Number(node.style?.width ?? NODE_WIDTH);
       const height = Number(node.style?.height ?? NODE_HEIGHT);
@@ -1010,20 +1022,29 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const handleFlowInit = useCallback((instance: ReactFlowInstance<Node<EditorNodeData>, Edge>) => {
     setFlowInstance(instance);
-    if (hasStableViewportRef.current) {
-      void instance.setViewport(viewportRef.current);
-      return;
-    }
-    initialFitFrameRef.current = window.requestAnimationFrame(() => {
-      initialFitFrameRef.current = window.requestAnimationFrame(() => {
-        void instance.fitView({ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM, duration: 0 }).then(() => {
-          viewportRef.current = instance.getViewport();
-          hasStableViewportRef.current = true;
-          setViewportRevision((revision) => revision + 1);
-        });
-      });
-    });
+    if (hasStableViewportRef.current) void instance.setViewport(viewportRef.current);
   }, []);
+
+  // Fits from the layout bounds instead of measured DOM nodes, which only become visible
+  // with that same layout.
+  const fitLayoutViewport = useCallback((): Viewport | null => {
+    const canvas = canvasRef.current;
+    const bounds = graphLayout?.bounds;
+    if (!flowInstance || !canvas || !bounds || canvas.clientWidth === 0 || canvas.clientHeight === 0) return null;
+    const viewport = entryAnchoredViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, { padding: WORKFLOW_EDITOR_FIT_PADDING, minZoom: WORKFLOW_EDITOR_MIN_ZOOM, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM });
+    void flowInstance.setViewport(viewport);
+    return viewport;
+  }, [flowInstance, graphLayout]);
+
+  // Only the first finished layout fits; later relayouts keep the user's viewport.
+  useEffect(() => {
+    if (hasStableViewportRef.current) return;
+    const viewport = fitLayoutViewport();
+    if (!viewport) return;
+    viewportRef.current = viewport;
+    hasStableViewportRef.current = true;
+    setViewportRevision((revision) => revision + 1);
+  }, [fitLayoutViewport]);
 
   const handleMoveEnd = useCallback((_: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     viewportRef.current = viewport;
@@ -1086,7 +1107,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       </CardHeader>
       <CardContent className="min-h-0 flex-1 p-0">
         {tab === 'canvas' ? (
-          <div className="relative size-full min-h-0">
+          <div ref={canvasRef} className="relative size-full min-h-0">
             {terminalMenu ? (
               <div className="absolute z-30 w-44 overflow-hidden rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-lg" style={{ left: terminalMenu.x, top: terminalMenu.y }}>
                 <button type="button" className="flex min-h-9 w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(END_NODE)}>{t('workflowEditor.addEndTarget')}</button>
@@ -1153,9 +1174,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 disabled={!flowInstance}
                 onZoomIn={() => { void flowInstance?.zoomIn(); }}
                 onZoomOut={() => { void flowInstance?.zoomOut(); }}
-                onFitView={() => { void flowInstance?.fitView({ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM }); }}
+                onFitView={() => { fitLayoutViewport(); }}
               />
             </ReactFlow>
+            <WorkflowLayoutStatus state={layoutState} />
           </div>
         ) : (
           <div className="flex size-full min-h-0 flex-col p-4">
@@ -2921,62 +2943,82 @@ function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl 
   return workflow.entry === entry ? workflow : { ...workflow, entry };
 }
 
-export type AuthoringGraphLayout = {
+type AuthoringTranslate = (key: string, options?: Record<string, unknown>) => string;
+
+/** Layout-independent authoring graph: visible items, display labels and the layout input. */
+export type AuthoringGraph = {
   items: Array<{ id: string; terminal: boolean }>;
-  layoutPositions: Map<string, { x: number; y: number }>;
-  branchRouteByEdgeIndex: Map<number, WorkflowGraphBranchRoute>;
   entryCandidateIds: Set<string>;
+  nodeLabels: Map<string, string>;
+  edgeLabels: Map<string, string>;
+  spec: WorkflowLayoutSpec;
 };
 
-export function createAuthoringGraphLayout(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set()): AuthoringGraphLayout {
+export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set(), t: AuthoringTranslate = (key) => key): AuthoringGraph {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
+  const nodeOrder = workflowSuccessTopologyOrder(workflow);
   const items = [
-    ...collectedNodes,
+    ...collectedNodes.filter((node) => !node.terminal).sort((left, right) => nodeOrder.get(left.id)! - nodeOrder.get(right.id)!),
+    ...collectedNodes.filter((node) => node.terminal),
     ...Array.from(visibleTerminalIds).filter((id) => !collectedIds.has(id)).map((id) => ({ id, terminal: true })),
   ];
-  const nodeIds = new Set(items.map((node) => node.id));
-  const entryCandidateIds = new Set(deriveWorkflowEntryCandidateIds(workflow));
-  const nodeOrder = workflowSuccessTopologyOrder(workflow);
-  const nodeSpecs = items.map((node) => ({ id: node.id, width: node.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: node.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT }));
-  const layoutPositions = layoutSuccessPath(
-    nodeSpecs,
-    workflow.edges.map((e) => ({ from: e.from, to: e.to, on: e.on })),
-    nodeIds,
-    nodeOrder,
-  );
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const branchRouteByEdgeIndex = routeWorkflowBranchEdges(
-    nodeSpecs,
-    layoutPositions,
-    workflow.edges.map((edge, index) => {
-      const sourceNode = nodeById.get(edge.from);
-      const sourceYOffset = nodeSupportsFailureOutcome(sourceNode)
-        ? NODE_HEIGHT * (WORKFLOW_NODE_SPLIT_OUTCOME_RATIO[edge.on === 'failure' ? 'failure' : 'success'] - 0.5)
-        : 0;
-      return {
-        index,
-        sourceId: edge.from,
-        targetId: edge.to,
-        sourceYOffset,
-        branch: edge.on !== 'success' || isBackwardEdge(edge.from, edge.to, nodeOrder),
-      };
-    }),
-  );
-  return { items, layoutPositions, branchRouteByEdgeIndex, entryCandidateIds };
+  // `new_round_entry` lives on each edge: a single restart node is named on the
+  // `$new-round` target, several are named on their own edges.
+  const newRoundEntries = new Set(workflow.edges.filter((edge) => edge.to === NEW_ROUND_NODE).map((edge) => newRoundEntryNodeId(workflow, edge)));
+  const uniqueNewRoundEntry = newRoundEntries.size === 1 ? [...newRoundEntries][0] : null;
+  const nodeLabels = new Map(items.map((item) => [
+    item.id,
+    item.id === NEW_ROUND_NODE && uniqueNewRoundEntry
+      ? t('workflowEditor.nodeLabels.newRoundFrom', { node: uniqueNewRoundEntry })
+      : workflowNodeLabel(item.id, nodeById.get(item.id)?.type, t),
+  ]));
+  const edgeLabels = new Map(workflow.edges.map((edge, index) => [
+    edgeId(edge, index),
+    edge.to === NEW_ROUND_NODE && newRoundEntries.size > 1
+      ? t('workflowEditor.edgeLabels.newRoundFrom', { outcome: workflowEdgeLabel(edge.on, t), node: newRoundEntryNodeId(workflow, edge) })
+      : workflowEdgeLabel(edge.on, t),
+  ]));
+  const entryCandidateIds = new Set(deriveWorkflowEntryCandidateIds(workflow));
+  return {
+    items,
+    entryCandidateIds,
+    nodeLabels,
+    edgeLabels,
+    spec: {
+      nodes: items.map((item) => ({
+        id: item.id,
+        width: item.terminal ? terminalNodeWidth(nodeLabels.get(item.id)!) : NODE_WIDTH,
+        height: item.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT,
+        sourceHandles: item.terminal ? 'none' : nodeSupportsFailureOutcome(nodeById.get(item.id)) ? 'split' : 'single',
+        // Pinned under the entry so a restart loop is visible in the initial viewport.
+        pinBelow: item.id === NEW_ROUND_NODE && workflow.entry ? workflow.entry : null,
+      })),
+      edges: workflow.edges.map((edge, index) => ({
+        id: edgeId(edge, index),
+        from: edge.from,
+        to: edge.to,
+        outcome: edge.on === 'failure' ? 'failure' : 'success',
+        labelWidth: edgeLabelWidth(edgeLabels.get(edgeId(edge, index))!),
+      })),
+      groups: [],
+    },
+  };
 }
 
 export function authoringWorkflowTopologySignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodeIds: workflow.nodes.map((node) => node.id),
-    edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node)]),
+    edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on, edge.new_round_entry ?? null]),
   });
 }
 
 export function createAuthoringFlowProjection(
   workflow: WorkflowDsl,
-  layout: AuthoringGraphLayout,
+  graph: AuthoringGraph,
+  layout: WorkflowLayout | null,
   selectedNodeId: string | null,
   selectedEdgeId: string | null,
   invalidNodeIds: ReadonlySet<string>,
@@ -2987,27 +3029,33 @@ export function createAuthoringFlowProjection(
   selectedTerminalId: string | null = null,
 ): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const nodes: Node<EditorNodeData>[] = layout.items.map((item) => {
-    const pos = layout.layoutPositions.get(item.id) ?? { x: 0, y: 0 };
-    const width = item.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH;
-    const height = item.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT;
+  const specById = new Map(graph.spec.nodes.map((node) => [node.id, node]));
+  const nodes: Node<EditorNodeData>[] = graph.items.map((item) => {
+    const rect = layout?.nodes.get(item.id);
+    const spec = specById.get(item.id)!;
+    const width = rect?.width ?? spec.width;
+    const height = rect?.height ?? spec.height;
     const node = nodeById.get(item.id);
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
     const iconKey = node ? nodeIconKeys.get(node.id) : undefined;
     const supportsFailureOutcome = nodeSupportsFailureOutcome(node);
     const selected = item.terminal ? item.id === selectedTerminalId : item.id === selectedNodeId;
+    const targetPosition = spec.pinBelow ? SOURCE_POS : TARGET_POS;
     return {
       id: item.id,
       type: 'editorCanvas',
-      position: topLeft(pos.x, pos.y, width, height),
+      position: rect ? { x: rect.x, y: rect.y } : { x: 0, y: 0 },
+      // A node added after the last finished layout appears once its position is known.
+      hidden: !rect,
       sourcePosition: SOURCE_POS,
-      targetPosition: TARGET_POS,
+      targetPosition,
       data: {
-        label: workflowNodeLabel(item.id, item.terminal, node?.type, t),
+        label: graph.nodeLabels.get(item.id) ?? item.id,
         kind: item.terminal ? 'terminal' : node?.type ?? 'node',
         terminal: item.terminal,
+        targetPosition,
         iconKey,
-        entryCandidate: !item.terminal && layout.entryCandidateIds.has(item.id),
+        entryCandidate: !item.terminal && graph.entryCandidateIds.has(item.id),
         entryLabel: t('workflowEditor.entryBadge'),
         selected,
         supportsFailureOutcome,
@@ -3029,7 +3077,7 @@ export function createAuthoringFlowProjection(
 
   const edges: Edge<WorkflowEdgeData>[] = workflow.edges.map((edge, index) => {
     const id = edgeId(edge, index);
-    const branchRoute = layout.branchRouteByEdgeIndex.get(index);
+    const route = layout?.edges.get(id);
     const color = authoringEdgeColor(edge.on);
     const sourceNode = nodeById.get(edge.from);
     const sourceHandle = edge.on === 'failure' && !nodeSupportsFailureOutcome(sourceNode) ? 'success' : edge.on;
@@ -3038,14 +3086,14 @@ export function createAuthoringFlowProjection(
       source: edge.from,
       target: edge.to,
       sourceHandle,
-      label: workflowEdgeLabel(edge.on, t),
+      label: graph.edgeLabels.get(id),
       type: 'workflowRouted',
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
       style: { stroke: color, strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
-      className: cn('workflow-edge-flow', (edge.on !== 'success' || branchRoute?.detour === true) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
+      className: cn('workflow-edge-flow', edge.on !== 'success' && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
       selected: id === selectedEdgeId,
-      data: { outcome: edge.on, route: branchRoute },
+      data: { outcome: edge.on, route },
       zIndex: 0,
     };
   });
@@ -3057,7 +3105,7 @@ function edgeColor(edge: WorkflowEdgeDsl) {
   return authoringEdgeColor(edge.on);
 }
 
-function workflowNodeLabel(id: string, terminal: boolean, nodeType: WorkflowNodeDsl['type'] | undefined, t: (key: string) => string) {
+function workflowNodeLabel(id: string, nodeType: WorkflowNodeDsl['type'] | undefined, t: (key: string) => string) {
   if (id === END_NODE) return t('workflowEditor.nodeLabels.end');
   if (id === NEW_ROUND_NODE) return t('workflowEditor.nodeLabels.newRound');
   if (nodeType === 'ai-dynamic' && /^ai-dynamic(?:-\d+)?$/.test(id)) return t('workflowEditor.nodeLabels.aiDynamic');

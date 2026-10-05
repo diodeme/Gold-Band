@@ -208,6 +208,7 @@ const graph = {
     { from: 'test', to: 'validate', label: 'success' },
     { from: 'validate', to: 'finalize', label: 'success' },
   ],
+  groups: [],
 };
 
 const failedAcceptanceGraph = {
@@ -218,6 +219,7 @@ const failedAcceptanceGraph = {
   edges: [
     { from: 'dev', to: 'accept', label: 'observed' },
   ],
+  groups: [],
 };
 
 const errorBlockedGraph = {
@@ -228,6 +230,7 @@ const errorBlockedGraph = {
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
   ],
+  groups: [],
 };
 
 const errorBlockedLifecycle = {

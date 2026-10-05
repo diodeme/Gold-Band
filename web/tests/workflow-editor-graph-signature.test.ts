@@ -64,7 +64,9 @@ describe('authoringWorkflowGraphSignature', () => {
 
     expect(authoringWorkflowGraphSignature(manualCheck)).not.toBe(authoringWorkflowGraphSignature(before));
     expect(authoringWorkflowGraphSignature(aiValidation)).toBe(authoringWorkflowGraphSignature(manualCheck));
-    expect(authoringWorkflowTopologySignature(manualCheck)).toBe(authoringWorkflowTopologySignature(before));
+    // A failure handle adds a source port, so the layout must be recomputed too.
+    expect(authoringWorkflowTopologySignature(manualCheck)).not.toBe(authoringWorkflowTopologySignature(before));
+    expect(authoringWorkflowTopologySignature(aiValidation)).toBe(authoringWorkflowTopologySignature(manualCheck));
   });
 
   it('changes only when topology or canvas presentation fields change', () => {

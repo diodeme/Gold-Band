@@ -317,7 +317,7 @@ MVP 范围：
 本轮桌面端工作流展示从卡片列表升级为真实节点-边图：
 - 任务工作流页的原始 workflow 图使用只读画布，展示 authoring workflow 的节点、边、分支标签与 UML 风格节点卡片。
 - Round 详情页的实际工作图使用可交互画布，支持缩放、平移、节点选中、双击详情和右键节点菜单。
-- 图布局使用 `dagre` 基于有向边自动排布，节点渲染使用 React/Tailwind/shadcn 组合，状态色仍来自 canonical state 的 status/outcome。
+- 图布局（2026-10-04 起）使用 ELK layered 自动排布，规则见 `task-workflow.md`；节点渲染使用 React/Tailwind/shadcn 组合，状态色仍来自 canonical state 的 status/outcome。
 - 当前实现只改变图形表达方式，不改变 Tauri command、view model 或 runtime state 契约。
 
 ---

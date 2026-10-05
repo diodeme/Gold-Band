@@ -1652,6 +1652,13 @@ export interface RoundSummaryVm {
 export interface GraphVm {
   nodes: GraphNodeVm[];
   edges: GraphEdgeVm[];
+  /** Structural containers enclosing nodes with a matching `dynamicGroupId`. */
+  groups: GraphGroupVm[];
+}
+
+export interface GraphGroupVm {
+  id: string;
+  parentGroupId?: string | null;
 }
 
 export interface RuntimeDisplayVm {

@@ -10,9 +10,9 @@ use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    AppearancePreference, BrowserPreferences, DesktopLanguage,
-    DesktopUpdateBadgeState, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
-    McpServerDiagnosticState, PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
+    AppearancePreference, BrowserPreferences, DesktopLanguage, DesktopUpdateBadgeState,
+    DiagnosticError, ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState,
+    PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -472,11 +472,20 @@ pub struct RoundSummaryVm {
     pub attachment_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphVm {
     pub nodes: Vec<GraphNodeVm>,
     pub edges: Vec<GraphEdgeVm>,
+    /// Structural containers that enclose `GraphNodeVm.dynamic_group_id` members.
+    pub groups: Vec<GraphGroupVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphGroupVm {
+    pub id: String,
+    pub parent_group_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2117,6 +2126,7 @@ pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
                 blocked_reason: None,
             })
             .collect(),
+        groups: Vec::new(),
     }
 }
 
@@ -2177,6 +2187,7 @@ fn round_graph_vm(
     Ok(GraphVm {
         nodes: graph_nodes,
         edges,
+        groups: Vec::new(),
     })
 }
 
@@ -2460,6 +2471,7 @@ fn round_trace_graph_vm(
     Ok(GraphVm {
         nodes: graph_nodes,
         edges: graph_edges,
+        groups: Vec::new(),
     })
 }
 
@@ -2772,7 +2784,20 @@ fn dynamic_internal_graph_vm(
         })
         .collect();
 
-    GraphVm { nodes, edges }
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| GraphGroupVm {
+            id: group.id.clone(),
+            parent_group_id: group.parent_group_id.clone(),
+        })
+        .collect();
+
+    GraphVm {
+        nodes,
+        edges,
+        groups,
+    }
 }
 
 fn dynamic_graph_relations(graph: &DynamicGraphState) -> Vec<GraphEdgeVm> {
@@ -7845,10 +7870,7 @@ fn enum_label<T: Serialize>(value: &T) -> String {
 }
 
 fn empty_graph() -> GraphVm {
-    GraphVm {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-    }
+    GraphVm::default()
 }
 
 fn read_optional_text(path: &camino::Utf8Path) -> Result<Option<String>> {
@@ -9033,6 +9055,58 @@ mod tests {
                     .any(|edge| edge.from == "bootstrap" && edge.to == to && edge.label == label)
             );
         }
+    }
+
+    #[test]
+    fn dynamic_graph_exposes_group_containment_for_layout() {
+        let directory = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap());
+        seed_dynamic_round_graph_fixture(&app);
+        let mut graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+        ))
+        .unwrap();
+        let group = |id: &str, parent: Option<&str>| {
+            serde_json::from_value::<gold_band::dynamic::DynamicGroupState>(json!({
+                "version": "0.1", "id": id, "dynamicRunId": "dynamic-run-001",
+                "status": "closed", "depth": if parent.is_some() { 2 } else { 1 },
+                "parentGroupId": parent, "rootNodeIds": [], "terminalNodeIds": [],
+                "targetWorkspaceId": "workspace-main", "childWorkspaceIds": [],
+                "mergeNodeId": null, "acceptanceNodeId": null, "createdByNodeId": "bootstrap",
+                "merge": {"title": "Merge", "task": "Merge"},
+                "acceptance": {"title": "Accept", "task": "Accept"},
+                "createdAt": "2026-06-17T10:00:00Z", "updatedAt": "2026-06-17T10:00:00Z"
+            }))
+            .unwrap()
+        };
+        graph.groups = vec![group("wave-1", None), group("wave-1-fix", Some("wave-1"))];
+        graph.nodes[1].group_id = Some("wave-1-fix".to_string());
+
+        let vm = dynamic_internal_graph_vm(
+            &app,
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+            &graph,
+        );
+
+        let groups = vm
+            .groups
+            .iter()
+            .map(|group| (group.id.as_str(), group.parent_group_id.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            groups,
+            vec![("wave-1", None), ("wave-1-fix", Some("wave-1"))]
+        );
+        assert_eq!(vm.nodes[1].dynamic_group_id.as_deref(), Some("wave-1-fix"));
+        assert!(vm.groups.len() == 2 && empty_graph().groups.is_empty());
     }
 
     #[test]
@@ -10746,7 +10820,10 @@ mod tests {
                 path: None,
             },
         );
-        assert_eq!(session_work_location(None, None, None), SessionWorkLocationVm::Main);
+        assert_eq!(
+            session_work_location(None, None, None),
+            SessionWorkLocationVm::Main
+        );
         assert_eq!(
             session_work_location(Some(&run_worktree), None, None),
             SessionWorkLocationVm::Worktree {

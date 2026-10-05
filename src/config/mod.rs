@@ -113,33 +113,16 @@ impl FromStr for RuntimeLogLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether the hosting process can route pending prompt interactions
+/// (elicitation, permission requests) to a person. This is a property of the
+/// host, not of a run: a run resumed in the desktop app becomes interactive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ConsoleThemeName {
-    GoldBand,
-    Nord,
-    Dracula,
-    Cyber,
-    Onyx,
-    Mist,
-    HighContrast,
-}
-
-impl FromStr for ConsoleThemeName {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "gold-band" => Ok(Self::GoldBand),
-            "nord" => Ok(Self::Nord),
-            "dracula" => Ok(Self::Dracula),
-            "cyber" => Ok(Self::Cyber),
-            "onyx" => Ok(Self::Onyx),
-            "mist" => Ok(Self::Mist),
-            "high-contrast" => Ok(Self::HighContrast),
-            _ => Err(anyhow!("unsupported console theme: {value}")),
-        }
-    }
+pub enum InteractionMode {
+    #[default]
+    Interactive,
+    /// No responder exists; pending interactions are settled immediately.
+    Unattended,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -885,7 +868,6 @@ pub struct SettingsConfig {
     pub log_prompts: Option<bool>,
     pub log_provider_command: Option<bool>,
     pub log_retention_days: Option<u64>,
-    pub console_theme: Option<ConsoleThemeName>,
     pub appearance: Option<AppearancePreference>,
     pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
@@ -1812,10 +1794,11 @@ pub struct ProviderDiagnosticSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub log_level: RuntimeLogLevel,
+    #[serde(default)]
+    pub interaction_mode: InteractionMode,
     pub log_prompts: bool,
     pub log_provider_command: bool,
     pub log_retention_days: u64,
-    pub console_theme: ConsoleThemeName,
     pub appearance: AppearancePreference,
     pub personalization: PersonalizationPreference,
     pub desktop_language: DesktopLanguage,
@@ -1881,10 +1864,10 @@ impl Default for RuntimeConfig {
         );
         let base = Self {
             log_level: RuntimeLogLevel::Info,
+            interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
             log_provider_command: true,
             log_retention_days: 30,
-            console_theme: ConsoleThemeName::GoldBand,
             appearance: AppearancePreference::default(),
             personalization: PersonalizationPreference::default(),
             desktop_language: DesktopLanguage::ZhCn,
@@ -1953,9 +1936,6 @@ impl RuntimeConfig {
         }
         if let Some(log_retention_days) = settings.log_retention_days {
             self.log_retention_days = log_retention_days;
-        }
-        if let Some(console_theme) = settings.console_theme {
-            self.console_theme = console_theme;
         }
         if let Some(appearance) = &settings.appearance {
             self.appearance = appearance.clone();
@@ -2179,7 +2159,7 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, BrowserPreferences, BrowserSearchEngine,
-        ColorSchemePreference, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
+        ColorSchemePreference, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
@@ -2247,38 +2227,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_console_theme_names() {
-        assert!(matches!(
-            ConsoleThemeName::from_str("gold-band").unwrap(),
-            ConsoleThemeName::GoldBand
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("nord").unwrap(),
-            ConsoleThemeName::Nord
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("dracula").unwrap(),
-            ConsoleThemeName::Dracula
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("cyber").unwrap(),
-            ConsoleThemeName::Cyber
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("onyx").unwrap(),
-            ConsoleThemeName::Onyx
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("mist").unwrap(),
-            ConsoleThemeName::Mist
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("high-contrast").unwrap(),
-            ConsoleThemeName::HighContrast
-        ));
-    }
-
-    #[test]
     fn parses_desktop_preferences() {
         assert!(matches!(
             serde_json::from_str::<ColorSchemePreference>("\"light\"").unwrap(),
@@ -2308,9 +2256,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_console_theme_to_gold_band() {
+    fn runtime_config_defaults() {
         let config = RuntimeConfig::default();
-        assert!(matches!(config.console_theme, ConsoleThemeName::GoldBand));
         assert_eq!(config.appearance, AppearancePreference::default());
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
         assert_eq!(config.personalization, PersonalizationPreference::default());
@@ -2493,7 +2440,6 @@ mod tests {
     #[test]
     fn settings_config_roundtrips_json() {
         let settings = SettingsConfig {
-            console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
                 theme_id: "builtin.tech-neutral".to_string(),
@@ -2513,7 +2459,6 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&settings).unwrap();
         let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.console_theme, Some(ConsoleThemeName::Nord));
         assert_eq!(roundtripped.appearance, settings.appearance);
         assert_eq!(roundtripped.personalization, settings.personalization);
         assert_eq!(roundtripped.desktop_language, Some(DesktopLanguage::En));
@@ -2576,7 +2521,6 @@ mod tests {
     #[test]
     fn apply_settings_overrides_defaults() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
-            console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
                 theme_id: "builtin.tech-neutral".to_string(),
@@ -2594,7 +2538,6 @@ mod tests {
             log_level: Some(RuntimeLogLevel::Trace),
             ..SettingsConfig::default()
         });
-        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
         assert_eq!(config.appearance.theme_id, "builtin.tech-neutral");
         assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
@@ -2717,7 +2660,6 @@ mod tests {
     #[test]
     fn empty_settings_keeps_defaults() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig::default());
-        assert_eq!(config.console_theme, ConsoleThemeName::GoldBand);
         assert_eq!(config.appearance, AppearancePreference::default());
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.personalization, PersonalizationPreference::default());
@@ -2886,7 +2828,6 @@ mod tests {
     #[test]
     fn full_roundtrip_from_settings_and_state() {
         let settings = SettingsConfig {
-            console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
                 theme_id: "builtin.tech-neutral".to_string(),
@@ -2917,7 +2858,6 @@ mod tests {
         let config = RuntimeConfig::default()
             .apply_settings(&settings)
             .apply_state(&state);
-        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
         assert_eq!(config.appearance.theme_id, "builtin.tech-neutral");
         assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);

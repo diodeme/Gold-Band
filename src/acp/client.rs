@@ -376,6 +376,7 @@ use crate::acp::permission::{
     bind_pending_permission_timeline_identity, cancel_pending_permission_requests,
     permission_response_file, remove_permission_signal_files, session_auto_accept_override,
     wait_for_permission_response_until_cancelled, write_pending_permission,
+    write_permission_response_if_pending,
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
@@ -394,7 +395,7 @@ use crate::acp::usage::{
 };
 use crate::config::{
     AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,
-    ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
+    InteractionMode, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
@@ -1790,6 +1791,7 @@ pub struct AcpRuntimePolicy {
     pub supports_system_prompt: bool,
     pub turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig,
     pub detailed_pipeline_diagnostics: bool,
+    pub interaction_mode: InteractionMode,
 }
 
 impl Default for AcpRuntimePolicy {
@@ -1809,6 +1811,7 @@ impl Default for AcpRuntimePolicy {
             supports_system_prompt: false,
             turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig::default(),
             detailed_pipeline_diagnostics: false,
+            interaction_mode: InteractionMode::Interactive,
         }
     }
 }
@@ -1837,6 +1840,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
             supports_system_prompt: false,
             turn_file_capture: config.turn_files.into(),
             detailed_pipeline_diagnostics: config.log_level.allows(&tracing::Level::DEBUG),
+            interaction_mode: config.interaction_mode,
         }
     }
 }
@@ -1851,6 +1855,40 @@ impl AcpRuntimePolicy {
         self.supports_system_prompt = supported;
         self
     }
+}
+
+/// Without a responder a pending permission request is cancelled through the
+/// same first-writer-wins hand-off the desktop and IM responders use, so the
+/// response record and timeline stay identical to a human decision. Returns
+/// whether this call settled the request.
+pub(crate) fn settle_permission_without_responder(
+    mode: InteractionMode,
+    attempt_dir: &Utf8Path,
+    request_id: &str,
+) -> Result<bool> {
+    if mode != InteractionMode::Unattended {
+        return Ok(false);
+    }
+    write_permission_response_if_pending(attempt_dir, request_id, None, true, current_timestamp())
+}
+
+/// Without a responder a pending elicitation is declined, letting the agent
+/// continue on its own judgement. Returns whether this call settled it.
+pub(crate) fn settle_elicitation_without_responder(
+    mode: InteractionMode,
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+) -> Result<bool> {
+    if mode != InteractionMode::Unattended {
+        return Ok(false);
+    }
+    crate::acp::elicitation::write_elicitation_response_if_pending(
+        attempt_dir,
+        elicitation_id,
+        crate::acp::elicitation::ElicitationAction::Decline,
+        None,
+        current_timestamp(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6310,6 +6348,7 @@ impl<'a> AcpRuntime<'a> {
                 },
             )?;
         }
+        self.settle_unattended_permission(&request_id)?;
         let response = wait_for_permission_response_until_cancelled(
             &self.paths.attempt_dir,
             &request_id,
@@ -6346,6 +6385,24 @@ impl<'a> AcpRuntime<'a> {
         });
         self.append_outbound_frame(&frame);
         self.connection.send_response(rpc_id, result)
+    }
+
+    fn settle_unattended_permission(&self, request_id: &str) -> Result<()> {
+        settle_permission_without_responder(
+            self.runtime_policy.interaction_mode,
+            &self.paths.attempt_dir,
+            request_id,
+        )
+        .map(drop)
+    }
+
+    fn settle_unattended_elicitation(&self, elicitation_id: &str) -> Result<()> {
+        settle_elicitation_without_responder(
+            self.runtime_policy.interaction_mode,
+            &self.paths.attempt_dir,
+            elicitation_id,
+        )
+        .map(drop)
     }
 
     fn send_auto_accepted_permission_response(
@@ -6531,6 +6588,7 @@ impl<'a> AcpRuntime<'a> {
         }
 
         // 3. 同步阻塞等待用户响应（含超时保护）
+        self.settle_unattended_elicitation(&elicitation_id)?;
         let response = wait_for_elicitation_response_until_cancelled(
             &self.paths.attempt_dir,
             &elicitation_id,
@@ -9145,6 +9203,135 @@ mod tests {
     }
 
     #[test]
+    fn unattended_host_cancels_pending_permission_without_waiting() {
+        use crate::acp::events::current_timestamp;
+        use crate::acp::permission::{
+            permission_response_file, wait_for_permission_response_until_cancelled,
+        };
+        use crate::config::InteractionMode;
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt_dir).unwrap();
+        crate::acp::permission::write_pending_permission(
+            &attempt_dir,
+            "request-1",
+            "turn-1",
+            "prompt-turn-1",
+            json!({ "options": [{ "optionId": "reject", "kind": "reject_once" }] }),
+            current_timestamp(),
+        )
+        .unwrap();
+        let response_file = permission_response_file(&attempt_dir, "request-1");
+
+        assert!(
+            !super::settle_permission_without_responder(
+                InteractionMode::Interactive,
+                &attempt_dir,
+                "request-1"
+            )
+            .unwrap()
+        );
+        assert!(!response_file.exists());
+
+        assert!(
+            super::settle_permission_without_responder(
+                InteractionMode::Unattended,
+                &attempt_dir,
+                "request-1"
+            )
+            .unwrap()
+        );
+        assert!(response_file.exists());
+        // A second responder never overrides the first decision.
+        assert!(
+            !super::settle_permission_without_responder(
+                InteractionMode::Unattended,
+                &attempt_dir,
+                "request-1"
+            )
+            .unwrap()
+        );
+        // The response file exists, so the wait returns on its first poll.
+        let response =
+            wait_for_permission_response_until_cancelled(&attempt_dir, "request-1", || false)
+                .unwrap();
+        assert!(response.cancelled);
+        assert!(response.option_id.is_none());
+    }
+
+    #[test]
+    fn unattended_host_declines_pending_elicitation_without_waiting() {
+        use crate::acp::elicitation::{
+            ElicitationAction, elicitation_response_file, pending_elicitation_state,
+            wait_for_elicitation_response, write_pending_elicitation,
+        };
+        use crate::acp::events::current_timestamp;
+        use crate::config::InteractionMode;
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt_dir).unwrap();
+        let request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-test",
+            "toolCallId": "tool-test",
+            "message": "Pick one",
+            "requestedSchema": { "type": "object", "properties": {} }
+        }))
+        .unwrap();
+        write_pending_elicitation(
+            &attempt_dir,
+            &pending_elicitation_state(
+                "elicitation-1",
+                "turn-1",
+                "prompt-turn-1",
+                json!(7),
+                request,
+                current_timestamp(),
+            ),
+        )
+        .unwrap();
+        let response_file = elicitation_response_file(&attempt_dir, "elicitation-1");
+
+        assert!(
+            !super::settle_elicitation_without_responder(
+                InteractionMode::Interactive,
+                &attempt_dir,
+                "elicitation-1"
+            )
+            .unwrap()
+        );
+        assert!(!response_file.exists());
+
+        assert!(
+            super::settle_elicitation_without_responder(
+                InteractionMode::Unattended,
+                &attempt_dir,
+                "elicitation-1"
+            )
+            .unwrap()
+        );
+        let response =
+            wait_for_elicitation_response(&attempt_dir, "elicitation-1", Duration::ZERO).unwrap();
+        assert!(response_file.exists());
+        assert_eq!(response.action, ElicitationAction::Decline);
+    }
+
+    #[test]
+    fn interaction_mode_follows_runtime_config() {
+        use crate::config::InteractionMode;
+        let mut config = RuntimeConfig::default();
+        assert_eq!(
+            AcpRuntimePolicy::from(&config).interaction_mode,
+            InteractionMode::Interactive
+        );
+        config.interaction_mode = InteractionMode::Unattended;
+        assert_eq!(
+            AcpRuntimePolicy::from(&config).interaction_mode,
+            InteractionMode::Unattended
+        );
+    }
+
+    #[test]
     fn permission_event_is_bound_to_the_active_prompt_turn() {
         let mut event = crate::acp::events::permission_request_event(
             2,
@@ -10937,6 +11124,7 @@ mod tests {
             changes: Vec::new(),
             attachments: Vec::new(),
             limitation_codes: Vec::new(),
+            workspace_root: None,
         };
 
         let mut event = turn_file_change_set_event(
@@ -11124,7 +11312,6 @@ mod tests {
                     "terminal_output_delta": {
                         "terminal_id": "tool-1",
                         "data": "partial output"
-            workspace_root: None,
                     }
                 }
             })),

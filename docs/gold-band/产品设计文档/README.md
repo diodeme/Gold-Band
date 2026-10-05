@@ -6,14 +6,10 @@ Gold Band 当前文档按目录式结构整理为 6 个主板块：
 - [产品概览](product/overview.md)
 
 ## 2. 交互层
-- [交互层概览](interaction/overview.md)
+- [交互层概览](interaction/cli/overview.md)
 - [定时任务交互设计](interaction/app/scheduled-task-management.md)
-- [CLI 规范](interaction/cli.md)
-- [Console 概览](interaction/console-overview.md)
-- [Console 信息架构](interaction/console-information-architecture.md)
-- [Console 命令模型](interaction/console-command-model.md)
-- [Console 状态与事件](interaction/console-state-and-events.md)
-- [Progress 规范](interaction/progress.md)
+- [CLI 规范](interaction/cli/cli.md)
+- [Progress 规范](interaction/cli/progress.md)
 - [右侧工作区文件浏览与编辑](interaction/app/workspace-files.md)
 - [右侧工作区内置浏览器](interaction/app/in-app-browser.md)
 

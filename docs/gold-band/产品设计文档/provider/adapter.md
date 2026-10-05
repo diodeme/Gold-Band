@@ -214,7 +214,7 @@ Claude 私有会话选项经 `_meta.claudeCode.options` 下发。是否下发只
 - 外部 CLI handoff
 
 ## 4. 与其他文档的关系
-- [CLI 规范](../interaction/cli.md)
+- [CLI 规范](../interaction/cli/cli.md)
 - [Progress 规范](../interaction/progress.md)
 - [Worker Invocation Contract](invocation.md)
 - [Prompt Bundle 规范](prompt-bundle.md)

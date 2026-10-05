@@ -3681,8 +3681,7 @@ pub async fn bootstrap_source_control(
         })
         .await;
         if result.is_err() {
-            let _ =
-                monitor_runtime.stop(&project_id, identity.workspace_path.as_std_path());
+            let _ = monitor_runtime.stop(&project_id, identity.workspace_path.as_std_path());
             let _ =
                 watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path());
         }
@@ -4006,7 +4005,8 @@ pub async fn get_git_commit_review_statistics(
     workspace_path: Option<String>,
     review: gold_band::git::GitCommitReview,
 ) -> CommandResult<gold_band::git::GitCommitReview> {
-    let mut diagnostic = gold_band::git::diagnostics::GitReadRequest::new(None, "commit-review-statistics");
+    let mut diagnostic =
+        gold_band::git::diagnostics::GitReadRequest::new(None, "commit-review-statistics");
     let trace = diagnostic.trace();
     let result = async {
         let app = trace.stage("resolve-app", || {

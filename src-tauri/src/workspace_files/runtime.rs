@@ -264,10 +264,7 @@ impl WorkspaceFileRuntime {
                 .header(header::CONTENT_TYPE, mime_type)
                 .header(header::CACHE_CONTROL, "no-store")
                 .header("X-Content-Type-Options", "nosniff")
-                .header(
-                    "Content-Security-Policy",
-                    PREVIEW_CONTENT_SECURITY_POLICY,
-                )
+                .header("Content-Security-Policy", PREVIEW_CONTENT_SECURITY_POLICY)
                 .body(bytes)
                 .unwrap_or_else(|_| empty_response(StatusCode::INTERNAL_SERVER_ERROR)),
             Err(status) => empty_response(status),
@@ -359,7 +356,9 @@ impl WorkspaceFileRuntime {
 
     pub(crate) fn forget_workspace_root(&self, project_id: &str, root: &Path) -> CommandResult<()> {
         let key = workspace_root_key(project_id, root);
-        self.lock()?.validated_roots.retain(|entry| entry.key != key);
+        self.lock()?
+            .validated_roots
+            .retain(|entry| entry.key != key);
         Ok(())
     }
 
@@ -641,7 +640,11 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(policy.contains("default-src 'none'"));
-        assert!(policy.split(';').any(|directive| directive.trim() == "sandbox"));
+        assert!(
+            policy
+                .split(';')
+                .any(|directive| directive.trim() == "sandbox")
+        );
         assert!(!policy.contains("script-src"));
     }
 }

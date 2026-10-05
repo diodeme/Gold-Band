@@ -319,7 +319,9 @@ async fn perform_update_check<R: Runtime>(
     });
     let Some(checking) = started else {
         return UpdateCheckOutcome {
-            status: state.update_status().unwrap_or_else(|_| initial_update_status(None)),
+            status: state
+                .update_status()
+                .unwrap_or_else(|_| initial_update_status(None)),
             update: None,
         };
     };
@@ -345,7 +347,11 @@ fn checked_status(
     background: bool,
 ) -> UpdateStatusVm {
     let (status, update, error) = match result {
-        Ok(Some(update)) => (UpdateCheckStatus::Available, Some(update_info(&update)), None),
+        Ok(Some(update)) => (
+            UpdateCheckStatus::Available,
+            Some(update_info(&update)),
+            None,
+        ),
         Ok(None) => (UpdateCheckStatus::NotAvailable, None, None),
         Err(error) => {
             let status = if known_update.is_some() {
@@ -398,10 +404,14 @@ pub fn start_update_install(app: &AppHandle) -> Result<UpdateStatusVm, UpdaterEr
     let state = app.state::<DesktopState>();
     if state.has_pending_update() {
         request_install_restart(app);
-        return state.update_status().map_err(|_| UpdaterError::ContextUnavailable);
+        return state
+            .update_status()
+            .map_err(|_| UpdaterError::ContextUnavailable);
     }
     let Some(status) = begin_download(app, false) else {
-        return state.update_status().map_err(|_| UpdaterError::ContextUnavailable);
+        return state
+            .update_status()
+            .map_err(|_| UpdaterError::ContextUnavailable);
     };
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -489,7 +499,9 @@ async fn download_pending_update<R: Runtime>(
 ) -> Result<UpdateInfoVm, UpdaterError> {
     let update = match update {
         Some(update) => update,
-        None => check_remote_update(app).await?.ok_or(UpdaterError::NoUpdate)?,
+        None => check_remote_update(app)
+            .await?
+            .ok_or(UpdaterError::NoUpdate)?,
     };
     let info = update_info(&update);
     let progress_app = app.clone();
@@ -679,7 +691,8 @@ fn current_timestamp() -> String {
 
 fn pending_update_dir() -> Utf8PathBuf {
     let dir = std::env::temp_dir().join(format!("{}-update", current_channel_config().app_key));
-    Utf8PathBuf::from_path_buf(dir).unwrap_or_else(|dir| Utf8PathBuf::from(dir.to_string_lossy().as_ref()))
+    Utf8PathBuf::from_path_buf(dir)
+        .unwrap_or_else(|dir| Utf8PathBuf::from(dir.to_string_lossy().as_ref()))
 }
 
 fn pending_package_path(dir: &Utf8Path, version: &str) -> Utf8PathBuf {
@@ -751,7 +764,10 @@ fn verify_package_signature(
 }
 
 fn is_newer_version(candidate: &str, running: &str) -> bool {
-    match (semver::Version::parse(candidate), semver::Version::parse(running)) {
+    match (
+        semver::Version::parse(candidate),
+        semver::Version::parse(running),
+    ) {
         (Ok(candidate), Ok(running)) => candidate > running,
         _ => false,
     }
@@ -1026,7 +1042,10 @@ mod tests {
             "updater.manifest-invalid"
         );
         assert_eq!(
-            code(UpdatePhase::Download, PluginError::SignatureUtf8("sig".into())),
+            code(
+                UpdatePhase::Download,
+                PluginError::SignatureUtf8("sig".into())
+            ),
             "updater.signature-invalid"
         );
         assert_eq!(
@@ -1042,14 +1061,25 @@ mod tests {
         let start = Instant::now();
         let mut progress = DownloadProgress::default();
 
-        assert_eq!(progress.record(10, Some(100), start).unwrap().downloaded, 10);
-        assert!(progress.record(10, Some(100), start + Duration::from_millis(5)).is_none());
+        assert_eq!(
+            progress.record(10, Some(100), start).unwrap().downloaded,
+            10
+        );
+        assert!(
+            progress
+                .record(10, Some(100), start + Duration::from_millis(5))
+                .is_none()
+        );
         let due = progress
             .record(10, Some(100), start + PROGRESS_EMIT_INTERVAL)
             .unwrap();
         assert_eq!(due.downloaded, 30);
         let complete = progress
-            .record(70, Some(100), start + PROGRESS_EMIT_INTERVAL + Duration::from_millis(1))
+            .record(
+                70,
+                Some(100),
+                start + PROGRESS_EMIT_INTERVAL + Duration::from_millis(1),
+            )
             .unwrap();
         assert_eq!((complete.downloaded, complete.total), (100, Some(100)));
     }
@@ -1058,11 +1088,8 @@ mod tests {
     fn pending_package_signature_is_verified_against_the_channel_key() {
         verify_package_signature(FIXTURE_PACKAGE, FIXTURE_SIGNATURE, FIXTURE_PUBLIC_KEY).unwrap();
 
-        let tampered = verify_package_signature(
-            b"tampered package",
-            FIXTURE_SIGNATURE,
-            FIXTURE_PUBLIC_KEY,
-        );
+        let tampered =
+            verify_package_signature(b"tampered package", FIXTURE_SIGNATURE, FIXTURE_PUBLIC_KEY);
         assert!(matches!(tampered, Err(UpdaterError::InvalidSignature)));
         let foreign_key = verify_package_signature(
             FIXTURE_PACKAGE,
@@ -1090,15 +1117,18 @@ mod tests {
         let dir = camino::Utf8PathBuf::from_path_buf(root.path().join("app-update")).unwrap();
 
         write_pending_update(&dir, "0.17.3", "old-signature", b"old").unwrap();
-        let package = write_pending_update(&dir, "0.17.4", FIXTURE_SIGNATURE, FIXTURE_PACKAGE)
-            .unwrap();
+        let package =
+            write_pending_update(&dir, "0.17.4", FIXTURE_SIGNATURE, FIXTURE_PACKAGE).unwrap();
 
         let pending = read_pending_update(&dir).unwrap();
         assert_eq!(pending.version, "0.17.4");
         assert_eq!(pending.package, package);
         assert_eq!(pending.signature, FIXTURE_SIGNATURE);
         assert!(pending.update.is_none());
-        assert_eq!(std::fs::read(package.as_std_path()).unwrap(), FIXTURE_PACKAGE);
+        assert_eq!(
+            std::fs::read(package.as_std_path()).unwrap(),
+            FIXTURE_PACKAGE
+        );
         assert_eq!(std::fs::read_dir(dir.as_std_path()).unwrap().count(), 2);
     }
 

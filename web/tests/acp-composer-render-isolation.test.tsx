@@ -782,4 +782,48 @@ describe('ACP composer render isolation', () => {
       vi.useRealTimers();
     }
   });
+it.each([
+    { title: '工作流已暂停' as string | null, expected: '工作流已暂停', absent: 'ACP 会话失败' },
+    { title: null, expected: 'ACP 会话失败', absent: '工作流已暂停' },
+  ])('titles the runtime error banner from runtimeErrorTitle ($expected)', async ({ title, expected, absent }) => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TestProviders>
+            <ACPChatDialog
+              session={completedSession()}
+              projectId="project-render"
+              taskId="task-render"
+              runId="run-render"
+              roundId="round-render"
+              nodeId="node-render"
+              attemptId="attempt-render"
+              runtimeComposerContext={{
+                isOrchestrated: true,
+                lifecycle: inactiveWithoutFailureLifecycle(),
+                runtimeStatus: 'paused',
+                workflowValid: true,
+                runtimeError: '节点输出经 3 次修复仍不符合协议，工作流已暂停。',
+                runtimeErrorTitle: title,
+              }}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        );
+      });
+
+      const banner = Array.from(container.querySelectorAll('span.font-semibold.text-destructive'))
+        .map((element) => element.textContent);
+      expect(banner).toContain(expected);
+      expect(banner).not.toContain(absent);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });
+

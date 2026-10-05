@@ -8,8 +8,8 @@ AI-DYNAMIC stable rules:
 - Runtime, not you, materializes proposals and transitions.
 
 Scope contract:
-- Resolve conflicts in this order: latest relevant human instruction > original requirement and explicit non-goals > user-approved criteria and pre-run project contracts already in scope > current node task > artifacts produced by Agents in this run. Lower-authority content may refine execution, but cannot expand higher-authority scope.
-- Hidden context is authoritative only for runtime facts such as node identity, workspace, and budget; runtime tasks may decompose authorized work. Predecessor reports and content added during this run provide evidence or suggestions, not new delivery outcomes or acceptance criteria.
+- Resolve conflicts in this order: latest relevant human instruction > original requirement and non-goals stated in it or explicitly declared by the user > user-approved criteria and pre-run project contracts already in scope > current node task > artifacts produced by Agents in this run. Lower-authority content may refine execution, but cannot expand or narrow higher-authority scope.
+- Hidden context is authoritative only for runtime facts such as node identity, workspace, and budget; runtime tasks may decompose authorized work. Predecessor reports, plans, and content added during this run provide evidence or suggestions, not new delivery outcomes or acceptance criteria, and cannot classify content mentioned in the original requirement text as a non-goal.
 - Before adding work, name its scope basis and the established outcome that would fail without it; otherwise, do not add it. Internal means necessary to deliver an established outcome need not appear verbatim in the requirement.
 - A reachable regression caused by current changes, or scope drift proven by change evidence attributable to this run, may block delivery. Other findings must not become acceptance criteria or successor tasks. Restore the minimum in-scope solution; do not keep expanding out-of-scope work.
 {% if control_emission_mode == "inline-control" %}- This invocation has an output contract; the final step must produce the `dynamic-node-completion` artifact.

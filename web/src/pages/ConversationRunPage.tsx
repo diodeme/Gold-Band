@@ -24,7 +24,7 @@ import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
 import { submitManualCheck } from '@/api';
 import { conversationSessionKeyFromParts, findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { UNRESOLVED_WORK_LOCATION, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
-import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { acpRuntimeErrorBannerCopy, acpRuntimeErrorBannerTitle } from '@/lib/acp-runtime-error';
 import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
   conversationRunCacheKey,
@@ -535,6 +535,10 @@ export function ConversationRunPage({
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedSessionRuntimeError = selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionErrorBlocked;
+  // The title follows the structured run error only while the banner shows that error.
+  const selectedRuntimeErrorTitle = selectedSessionRuntimeControlError && localizedRuntimeErrorMessage
+    ? acpRuntimeErrorBannerTitle(t, run.runtimeError)
+    : null;
   const selectedRuntimeErrorMessage = selectedSessionRuntimeControlError
     ?? (selectedSessionRuntimeError
       ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
@@ -558,6 +562,7 @@ export function ConversationRunPage({
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
+        runtimeErrorTitle: selectedRuntimeErrorTitle,
         runtimeErrorFallback: selectedSessionRuntimeErrorFallback,
         onRepair: handleRepairWorkflow,
         supersededSessionNavigation: supersedingHref

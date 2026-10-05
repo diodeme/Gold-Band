@@ -1,7 +1,7 @@
 上一輪 `dynamic-node-completion` proposal 尚未接受，請處理下列校驗項或提醒後重新輸出。
 
 你必須修復最終的 `dynamic-node-completion` 輸出，使其滿足下面這些 runtime 約束。
-只修復協定校驗錯誤，不重新執行任務；後繼任務仍須符合範圍契約，越界項只刪除或收窄。
+只修復協定校驗錯誤，不重新執行任務；`dynamic.handoff-file.*` 錯誤只需寫入或修正對應檔案及路徑，其餘欄位保持不變；後繼任務仍須符合範圍契約，越界項只刪除或收窄。
 {% if fanout_workspace_dirty %}
 本次fanout即將從HEAD開始建立worktree，偵測到源工作區仍有未提交程式碼，故提醒：
 - 分叉源工作區：{{ fanout_workspace_path }}。請檢查是否有本次任務產生、且後續分支需要的業務改動尚未提交；如有，審閱後按具體路徑提交，可使用 Conventional Commits。

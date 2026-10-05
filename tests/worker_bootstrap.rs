@@ -876,6 +876,25 @@ fn invalid_output_repair_exhaustion_pauses_as_resumable_runtime_abnormal() {
     assert_eq!(node.status, RunStatus::Paused);
     assert_eq!(node.outcome, None);
     assert_eq!(node.runtime_execution_id, None);
+    let events =
+        std::fs::read_to_string(app.paths.run_events_file(task_id, "run-001").as_std_path())
+            .unwrap();
+    let paused_event: serde_json::Value = events
+        .lines()
+        .rev()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|event| event["type"] == "run_paused")
+        .expect("run_paused event");
+    let runtime_error = &paused_event["data"]["controlFailure"]["runtimeError"];
+    assert_eq!(runtime_error["code"]["domain"], "workflow");
+    assert_eq!(
+        runtime_error["code"]["code"],
+        "workflow.output.repair-exhausted"
+    );
+    assert_eq!(runtime_error["recovery"], "manual");
+    assert_eq!(runtime_error["params"]["nodeId"], "accept");
+    assert_eq!(runtime_error["params"]["repairAttempts"], 3);
+    assert_eq!(runtime_error["params"]["maxRepairAttempts"], 3);
 
     {
         let invocations = provider.invocations.lock().unwrap();

@@ -1075,7 +1075,10 @@
       "dynamic-agent-duplicate": "AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 重复。",
       "dynamic-agent-model-blank": "AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 模型不能为空。",
       "agent-model-blank": "Agent {{provider}} 的模型不能为空。",
-      "invalid": "工作流配置无效。"
+      "invalid": "工作流配置无效。",
+      "output": {
+        "repair-exhausted": "节点输出经 {{repairAttempts}} 次修复仍不符合输出格式，工作流已暂停。"
+      }
     },
     "workspace": {
       "path-invalid-utf8": "选择的工作空间路径不是有效 UTF-8。",
@@ -1113,6 +1116,11 @@
       "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
       "workspace-already-bound": "该工作空间已绑定。",
       "workspace-not-found": "找不到该工作空间绑定。"
+    },
+    "dynamic": {
+      "completion": {
+        "repair-exhausted": "节点输出经 {{repairAttempts}} 次修复仍不符合协议，工作流已暂停。"
+      }
     }
   },
   "status": {
@@ -1765,11 +1773,13 @@
       "cleanup": "清理",
       "aiDynamic": "AI 动态节点",
       "end": "结束",
-      "newRound": "新 Round"
+      "newRound": "新 Round",
+      "newRoundFrom": "新 Round · 从 {{node}}"
     },
     "edgeLabels": {
       "success": "成功",
-      "failure": "失败"
+      "failure": "失败",
+      "newRoundFrom": "{{outcome}} · 从 {{node}}"
     },
     "successPath": "成功字段路径",
     "successEquals": "期望值",
@@ -2328,6 +2338,7 @@
     "sessionElapsed": "会话累计 {{duration}}",
     "timingSession": "会话累计",
     "sessionFailed": "ACP 会话失败",
+    "workflowPaused": "工作流已暂停",
     "retrying": "正在重试 {{current}}/{{total}} 次",
     "retryFailed": "重试 {{count}} 次后失败",
     "retryStopped": "重试 {{count}} 次后已停止",
@@ -2410,7 +2421,9 @@
     "viewSession": "查看会话",
     "viewLog": "查看日志",
     "copyNodeId": "复制 node id",
-    "retryFromNode": "从该节点重试"
+    "retryFromNode": "从该节点重试",
+    "layoutPending": "正在排布工作流图",
+    "layoutFailed": "工作流图排布失败"
   },
   "settings": {
     "title": "设置",

@@ -1,5 +1,10 @@
 Seu passo final deve produzir apenas o conteúdo JSON do artifact `dynamic-node-completion`. Não produza explicações, Markdown, cercas de código ou qualquer texto extra.
 
+Textos longos são entregues por meio de arquivos:
+- O resumo deste node e o corpo de cada task sucessora (incluindo merge / acceptance) não vão no JSON. Primeiro grave o corpo no diretório attachments desta attempt e, em seguida, preencha no JSON o caminho do arquivo relativo ao diretório attachments: o resumo em `summaryPath` e o corpo da task em `taskPath`.
+- Nomes recomendados: `handoff/summary.md`, `handoff/<id do node sucessor>.md`, `handoff/merge.md`, `handoff/acceptance.md`. O caminho deve ser relativo e não pode conter `..`; o arquivo deve ser texto UTF-8 não vazio.
+- O Runtime lê e fixa o conteúdo desses arquivos ao aceitar o artifact; modificar os arquivos após a aceitação não altera o resumo ou a task já enviados.
+
 {% if agent_strategy_mode == "fixed" %}
 Este node AI-DYNAMIC usa a estratégia fixed-agent: exceto para `workflow-invocation`, todos os nodes internos worker, merge e acceptance usarão o mesmo provider fixo escolhido pelo runtime. Não produza campos provider para nenhum node.
 {{ model_policy }}
@@ -21,8 +26,8 @@ Lembretes de restrição:
 - Não produza `provider` para `workflow-invocation`.
 {% endif %}- {{ model_policy }}
 - Quando `next.type="end"`, não inclua `node / groupId / nodes / merge / acceptance`.
-{% if end_summary_is_outer_handoff %}- Se usar `next.type="end"`, `summary` deve ser um handoff de negócio completo para o sucessor fora do AI-DYNAMIC: declare o que foi concluído, conclusões-chave, saídas importantes e preocupações restantes. Não descreva apenas roteamento nem diga "accepted".
-{% else %}- Se usar `next.type="end"`, `summary` é um relatório interno de progresso ou de ramo. Declare com precisão o que este node concluiu para o manifesto de relatório do Runtime e o grupo envolvente.
+{% if end_summary_is_outer_handoff %}- Se usar `next.type="end"`, o resumo apontado por `summaryPath` deve ser um handoff de negócio completo para o sucessor fora do AI-DYNAMIC: declare o que foi concluído, conclusões-chave, saídas importantes e preocupações restantes. Não descreva apenas roteamento nem diga "accepted".
+{% else %}- Se usar `next.type="end"`, o resumo apontado por `summaryPath` é um relatório interno de progresso ou de ramo. Declare com precisão o que este node concluiu para o manifesto de relatório do Runtime e o grupo envolvente.
 {% endif %}
 - Quando `next.type="single"`, você deve fornecer um `next.node` completo e não deve fornecer `groupId / nodes / merge / acceptance`.
 - Não produza `workspace`, modo de workspace, caminho ou ramo para nenhum node. O runtime detém exclusivamente a atribuição de workspace.

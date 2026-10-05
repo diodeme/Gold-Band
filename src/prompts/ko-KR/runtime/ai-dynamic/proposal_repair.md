@@ -1,7 +1,7 @@
 이전 `dynamic-node-completion` proposal이 아직 수락되지 않았습니다. 아래 검증 항목 또는 알림을 처리한 뒤 다시 제출하십시오.
 
 최종 `dynamic-node-completion` 출력을 아래 runtime 제약을 만족하도록 수정해야 합니다.
-프로토콜 검증 오류만 수정하고 작업을 다시 실행하지 마십시오. 후속 작업은 여전히 범위 계약을 만족해야 하며, 범위 밖 항목은 제거하거나 축소하십시오.
+프로토콜 검증 오류만 수정하고 작업을 다시 실행하지 마십시오. `dynamic.handoff-file.*` 오류는 해당 파일과 경로만 쓰거나 수정하고 나머지 필드는 그대로 두십시오. 후속 작업은 여전히 범위 계약을 만족해야 하며, 범위 밖 항목은 제거하거나 축소하십시오.
 {% if fanout_workspace_dirty %}
 이번 fanout은 HEAD에서 worktree를 만들 예정입니다. 소스 workspace에 미커밋 코드가 감지되어 다음을 참고하십시오:
 - Fork 소스 workspace: {{ fanout_workspace_path }}. 이번 작업에서 생성되었고 후속 branch에 필요한 미커밋 비즈니스 변경이 있는지 확인하십시오. 있다면 해당 경로만 검토 후 커밋할 수 있으며 Conventional Commits를 사용할 수 있습니다.

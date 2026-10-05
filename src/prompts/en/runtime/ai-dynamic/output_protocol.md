@@ -1,5 +1,10 @@
 Your final step must output only the JSON content for the `dynamic-node-completion` artifact. Do not output explanations, Markdown, code fences, or any extra text.
 
+Hand over long text through files:
+- Do not put this node's summary or any successor task body (including merge / acceptance) in the JSON. First write the body to this attempt's attachments directory, then put the file path relative to the attachments directory in the JSON: `summaryPath` for the summary and `taskPath` for a task body.
+- Recommended names are `handoff/summary.md`, `handoff/<successor node id>.md`, `handoff/merge.md`, and `handoff/acceptance.md`. Paths must be relative and must not contain `..`; each file must be non-empty UTF-8 text.
+- Runtime reads and freezes the content of these files when it accepts the artifact; editing a file after acceptance does not change the submitted summary or task.
+
 {% if agent_strategy_mode == "fixed" %}
 This AI-DYNAMIC node uses the fixed-agent strategy: except for `workflow-invocation`, all internal worker, merge, and acceptance nodes will use the same fixed provider chosen by runtime. Do not output provider fields for any node.
 {{ model_policy }}
@@ -21,8 +26,8 @@ Constraint reminders:
 - Do not output `provider` for `workflow-invocation`.
 {% endif %}- {{ model_policy }}
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
-{% if end_summary_is_outer_handoff %}- If you use `next.type="end"`, `summary` must be a complete business handoff for the successor outside AI-DYNAMIC: state what was completed, key conclusions, important outputs, and any remaining concerns. Do not merely describe routing or say “accepted.”
-{% else %}- If you use `next.type="end"`, `summary` is an internal progress or branch report. Accurately state what this node completed for the Runtime report manifest and the enclosing group.
+{% if end_summary_is_outer_handoff %}- If you use `next.type="end"`, the summary referenced by `summaryPath` must be a complete business handoff for the successor outside AI-DYNAMIC: state what was completed, key conclusions, important outputs, and any remaining concerns. Do not merely describe routing or say “accepted.”
+{% else %}- If you use `next.type="end"`, the summary referenced by `summaryPath` is an internal progress or branch report. Accurately state what this node completed for the Runtime report manifest and the enclosing group.
 {% endif %}
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
 - Do not output `workspace`, a workspace mode, a path, or a branch for any node. Runtime exclusively owns workspace assignment.

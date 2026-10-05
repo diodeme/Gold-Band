@@ -251,7 +251,7 @@ plan에 acceptance criteria를 정의합니다. "tests pass" restatement가 아�
 acceptance criteria cover:
 
 * Requirement completeness: user requirement마다 implementation, validation method, observable result.
-* Scope control: unplanned feature, unrelated refactor, extra behavior change 없음.
+* Scope control: 범위는 원래 requirement 기준이며 plan은 구체화만 하고 축소하지 않음; non-goal은 requirement 원문 또는 user 명시 선언에서만 오고 출처를 명기하며, requirement 원문에 언급된 내용은 non-goal로 둘 수 없음; implementation에 requirement 밖 feature, unrelated refactor, extra behavior change 없음.
 * Quality gates: review node·test node structured pass.
 * Validation completeness: validation matrix required item complete; frontend UI/interaction/client flow는 browser-level verification complete 또는 user downgrade explicit accept.
 * Delivery completeness: code, test, configuration, migration, documentation, prompt change finish.
@@ -267,7 +267,7 @@ Acceptance criteria format:
 - [ ] The review node result is passing.
 - [ ] The test node result is passing.
 - [ ] Frontend integration verification complete; if not, reason recorded and user confirmed.
-- [ ] No unresolved blockers or unplanned changes.
+- [ ] No unresolved blockers or out-of-requirement changes.
 ```
 
 ---

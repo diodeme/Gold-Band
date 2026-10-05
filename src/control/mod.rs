@@ -2,6 +2,7 @@ use crate::domain::{PauseReason, RunOutcome, SessionMode};
 use crate::dsl::{END_NODE, ENTRY_NODE, EdgeOutcome, NEW_ROUND_NODE, ValidatedWorkflow};
 use crate::provider::supports_continue_session;
 use crate::runtime::{NodeState, RoundState};
+use crate::runtime_error::RuntimeErrorInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlDecision {
@@ -13,7 +14,11 @@ pub enum ControlDecision {
         entry_node_id: String,
     },
     CompleteRun(RunOutcome),
-    PauseRun(PauseReason),
+    PauseRun {
+        reason: PauseReason,
+        /// Structured cause recorded on the `run_paused` event when known.
+        runtime_error: Option<Box<RuntimeErrorInfo>>,
+    },
 }
 
 pub fn decide_next_step(
@@ -39,7 +44,10 @@ pub fn decide_next_step(
         Some(crate::domain::NodeOutcome::Killed) => {
             ControlDecision::CompleteRun(RunOutcome::Failure)
         }
-        None => ControlDecision::PauseRun(PauseReason::ProcessInterrupted),
+        None => ControlDecision::PauseRun {
+            reason: PauseReason::ProcessInterrupted,
+            runtime_error: None,
+        },
     }
 }
 

@@ -1,5 +1,10 @@
 最終ステップでは `dynamic-node-completion` artifact の JSON 内容のみを出力する。説明、Markdown、コードフェンス、または余分なテキストを出力してはならない。
 
+長文はファイルで引き渡す：
+- 本ノードの summary と各後続タスク（merge / acceptance を含む）の本文は JSON に書かない。まず本文を本 attempt の attachments ディレクトリに書き込み、JSON には attachments ディレクトリからの相対パスを記入する：summary は `summaryPath`、タスク本文は `taskPath` に記入する。
+- 推奨名は `handoff/summary.md`、`handoff/<後続ノード id>.md`、`handoff/merge.md`、`handoff/acceptance.md`。パスは相対パスでなければならず、`..` を含めてはならない。ファイルは空でない UTF-8 テキストでなければならない。
+- Runtime は artifact を受理する際にこれらのファイルの内容を読み取って固定する。受理後にファイルを変更しても、提出済みの summary やタスクは変わらない。
+
 {% if agent_strategy_mode == "fixed" %}
 本 AI-DYNAMIC ノードは fixed-agent 戦略を使用する：`workflow-invocation` を除くすべての内部 worker、merge、acceptance ノードは、runtime が選択した同一 fixed provider を使用する。いかなるノードにも provider フィールドを出力しない。
 {{ model_policy }}
@@ -21,8 +26,8 @@
 - `workflow-invocation` には `provider` を出力しない。
 {% endif %}- {{ model_policy }}
 - `next.type="end"` の場合、`node / groupId / nodes / merge / acceptance` を含めない。
-{% if end_summary_is_outer_handoff %}- `next.type="end"` を使用する場合、`summary` は AI-DYNAMIC 外の後続への完全な業務引き渡しであること：完了内容、主要結論、重要出力、残る懸念を述べる。ルーティングの説明のみ、または「accepted」と言うだけにしてはならない。
-{% else %}- `next.type="end"` を使用する場合、`summary` は内部進捗またはブランチレポートである。Runtime レポート manifest と包含グループ向けに本ノードが完了した内容を正確に述べる。
+{% if end_summary_is_outer_handoff %}- `next.type="end"` を使用する場合、`summaryPath` が指す summary は AI-DYNAMIC 外の後続への完全な業務引き渡しであること：完了内容、主要結論、重要出力、残る懸念を述べる。ルーティングの説明のみ、または「accepted」と言うだけにしてはならない。
+{% else %}- `next.type="end"` を使用する場合、`summaryPath` が指す summary は内部進捗またはブランチレポートである。Runtime レポート manifest と包含グループ向けに本ノードが完了した内容を正確に述べる。
 {% endif %}
 - `next.type="single"` の場合、完全な `next.node` を提供し、`groupId / nodes / merge / acceptance` を提供してはならない。
 - いかなるノードにも `workspace`、ワークスペースモード、パス、またはブランチを出力しない。Runtime がワークスペース割り当てを独占所有する。

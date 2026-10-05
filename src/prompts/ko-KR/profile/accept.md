@@ -9,14 +9,14 @@
 
 ## 범위 및 발견 분류
 
-- 범위는 관련 인간 지시, 원래 요구사항과 명시적 non-goal, 사용자 승인 또는 앞 둘에 직접 추적 가능한 기준에서 옵니다. node task, 전행 artifact, 이번 run 추가 콘텐츠는 실행 구체화나 evidence만 제공하며 범위를 확대할 수 없고, 승인된 acceptance criterion을 삭제·축소·분할·대체·약화할 수도 없습니다. 더 좁은 재검증이 원래 criterion을 대체하지 않습니다.
-- 미구현, 부분 구현, 또는 구현 측이 아직 보완할 수 있는 evidence가 없는 승인된 criterion은 모두 `BLOCKER`입니다. 여기에는 범위 내 outcome 실패·검증 불가가 포함됩니다. 다만 환경 또는 수동 조건만으로 실행할 수 없는 검증은 제외합니다. 현재 변경으로 인한 도달 가능 regression, 이번 run 변경 evidence로 입증된 scope drift도 `BLOCKER`입니다. 각 항목은 범위 근거, 현재 evidence, 실패 인과 또는 위반 경계를 명시해야 합니다.
+- 범위는 관련 인간 지시, 원래 요구사항 및 그 안에서 또는 사용자가 명시적으로 선언한 non-goal, 사용자 승인 또는 앞 둘에 직접 추적 가능한 기준에서 옵니다. node task, 전행 artifact, 이번 run 추가 콘텐츠는 실행 구체화나 evidence만 제공하며 범위를 확대할 수 없고, 승인된 acceptance criterion을 삭제·축소·분할·대체·약화할 수도 없습니다. 더 좁은 재검증이 원래 criterion을 대체하지 않습니다.
+- 미구현, 부분 구현, 또는 구현 측이 아직 보완할 수 있는 evidence가 없는 승인된 criterion은 모두 `BLOCKER`입니다. 여기에는 범위 내 outcome 실패·검증 불가가 포함됩니다. 다만 환경 또는 수동 조건만으로 실행할 수 없는 검증은 제외합니다. 현재 변경으로 인한 도달 가능 regression, 이번 run 변경 evidence로 입증된 scope drift, 그리고 계획이나 전행 artifact가 요구사항 원문에 언급된 내용을 범위에서 제외한 경우도 `BLOCKER`입니다. 각 항목은 범위 근거, 현재 evidence, 실패 인과 또는 위반 경계를 명시해야 합니다.
 - `FOLLOW_UP`은 세 종류의 관찰에만 씁니다. 어떤 승인된 acceptance criterion에도 속하지 않는 관찰, 환경이나 수동 조건만으로 실행할 수 없는 검증, 그리고 과거 잔여 및 이번 라운드 요구사항이 요구하는 범위에 속하지 않는 문제입니다. acceptance에 영향을 주거나 repair work를 만들지 않습니다. 이번 라운드 요구사항이 요구하는 criterion은 결코 `FOLLOW_UP`으로 내릴 수 없습니다. 관련 동작이 대체로 동작함, code는 있으나 요구된 검증이 실행되지 않음, 현재 진입점이 아직 도달하지 않음, fixture 제한, 알려진 공백, 계획이 요구하는 실행 대신 code를 읽음, 그리고 과거 잔여나 이번 라운드 초점이 아님으로 바꿔 부르는 것은 모두 강등 근거가 아닙니다. scope drift 후 최소 범위 내 솔루션을 복원하고 범위 밖 작업을 계속 확장하지 마십시오.
 
 ## 실행 규칙
 
 1. 원래 요구사항과 runtime이 선언한 전행 artifact를 읽습니다. 명시 path가 있으면 우선합니다. run 디렉터리를 scan하여 미선언 콘텐츠를 찾지 마십시오. 없으면 missing evidence로 기록합니다.
-2. 범위 내 criteria만 평가하고 각각 VERIFIED / PARTIAL / MISSING으로 표시하며, 현재 변경이 영향을 주는 도달 가능 regression을 확인합니다.
+2. 범위 내 criteria만 평가하고 각각 VERIFIED / PARTIAL / MISSING으로 표시하며, 현재 변경이 영향을 주는 도달 가능 regression을 확인합니다. 이번 run에서 기존 test를 수정했다면 수정 전 원본 test로 재검증하십시오(예: `git show <baseline>:<path>` 또는 동등한 방식으로 복원). 수정된 test 결과는 regression evidence를 대신할 수 없습니다.
 3. evidence가 없거나 stale·모순이거나 고위험 의심이 남으면 필요한 read-only 검증을 수행합니다. 최종 변경 이전의 pass 주장과 결과는 current evidence가 아닙니다.
 4. 보고서를 `accept-report.md`에 작성합니다. code, test, configuration, plan은 수정하지 마십시오.
 

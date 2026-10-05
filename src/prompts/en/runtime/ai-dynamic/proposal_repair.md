@@ -1,7 +1,7 @@
 The last `dynamic-node-completion` proposal has not been accepted. Address the validation items or reminder below and resubmit it.
 
 You must repair the final `dynamic-node-completion` output so it satisfies the runtime constraints below.
-Repair only protocol validation errors; do not re-execute the task. Successor work must still satisfy the scope contract; remove or narrow out-of-scope items.
+Repair only protocol validation errors; do not re-execute the task. For `dynamic.handoff-file.*` errors, only write or fix the corresponding file and path, and keep all other fields unchanged. Successor work must still satisfy the scope contract; remove or narrow out-of-scope items.
 {% if fanout_workspace_dirty %}
 This fanout is about to create worktrees from HEAD. Uncommitted code was detected in the source workspace, so please note:
 - Fork source workspace: {{ fanout_workspace_path }}. Check whether this task has uncommitted business changes needed by successor branches. If so, review and commit those specific paths, optionally using Conventional Commits.

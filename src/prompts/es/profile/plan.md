@@ -251,7 +251,7 @@ El plan debe definir criterios de aceptación. Los criterios de aceptación no s
 Los criterios de aceptación deben cubrir:
 
 * Integridad de requisitos: cada requisito del usuario tiene implementación, método de validación y resultado observable correspondientes.
-* Control de alcance: la implementación no introduce funcionalidades no planificadas, refactors no relacionados ni cambios de comportamiento extra.
+* Control de alcance: el alcance lo define el requisito original y el plan solo lo refina, nunca lo reduce; los no objetivos solo pueden provenir del texto del requisito o de una declaración explícita del usuario, con su origen indicado, y nada mencionado en el texto del requisito puede listarse como no objetivo; la implementación no introduce funcionalidades fuera del requisito, refactors no relacionados ni cambios de comportamiento extra.
 * Puertas de calidad: tanto el nodo review como el nodo test devuelven resultados estructurados de aprobación.
 * Integridad de validación: se completan todos los ítems requeridos en la matriz de validación; para UI/interacción/flujos cliente frontend, la verificación a nivel navegador está completa, o el usuario ha aceptado explícitamente verificación degradada.
 * Integridad de entrega: terminan todos los cambios necesarios de código, pruebas, configuración, migración, documentación o prompts.
@@ -267,7 +267,7 @@ Formato de criterios de aceptación:
 - [ ] El resultado del nodo review es aprobación.
 - [ ] El resultado del nodo test es aprobación.
 - [ ] La verificación de integración frontend está completa; si no, se ha registrado el motivo y el usuario lo ha confirmado.
-- [ ] No hay bloqueos sin resolver ni cambios no planificados.
+- [ ] No hay bloqueos sin resolver ni cambios fuera del requisito.
 ```
 
 ---

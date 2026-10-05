@@ -1,7 +1,7 @@
 La proposal `dynamic-node-completion` anterior no ha sido aceptada. Aborda los elementos de validación o el recordatorio siguientes y vuelve a enviarla.
 
 Debes reparar la salida final `dynamic-node-completion` para que cumpla las restricciones de runtime siguientes.
-Repara solo errores de validación de protocolo; no vuelvas a ejecutar la tarea. El trabajo sucesor debe seguir cumpliendo el contrato de alcance; elimina o reduce los elementos fuera de alcance.
+Repara solo errores de validación de protocolo; no vuelvas a ejecutar la tarea. Ante errores `dynamic.handoff-file.*`, solo escribe o corrige el archivo y la ruta correspondientes y deja el resto de campos sin cambios. El trabajo sucesor debe seguir cumpliendo el contrato de alcance; elimina o reduce los elementos fuera de alcance.
 {% if fanout_workspace_dirty %}
 Este fanout está a punto de crear worktrees desde HEAD. Se detectó código sin confirmar en el workspace origen, así que ten en cuenta:
 - Workspace origen de bifurcación: {{ fanout_workspace_path }}. Comprueba si esta tarea tiene cambios de negocio sin confirmar necesarios para las ramas sucesoras. Si los hay, revísalos y confírmalos por rutas concretas, opcionalmente usando Conventional Commits.

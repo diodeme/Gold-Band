@@ -1,7 +1,7 @@
 A última proposta `dynamic-node-completion` não foi aceita. Trate os itens de validação ou o lembrete abaixo e reenvie-a.
 
 Você deve reparar a saída final `dynamic-node-completion` para que satisfaça as restrições de runtime abaixo.
-Repare apenas erros de validação de protocolo; não reexecute a task. O trabalho sucessor ainda deve satisfazer o contrato de escopo; remova ou estreite itens fora do escopo.
+Repare apenas erros de validação de protocolo; não reexecute a task; para erros `dynamic.handoff-file.*`, apenas grave ou corrija o arquivo e o caminho correspondentes e mantenha os demais campos inalterados. O trabalho sucessor ainda deve satisfazer o contrato de escopo; remova ou estreite itens fora do escopo.
 {% if fanout_workspace_dirty %}
 Este fanout está prestes a criar worktrees a partir de HEAD. Código não commitado foi detectado no workspace de origem, então observe:
 - Fork source workspace: {{ fanout_workspace_path }}. Verifique se esta task tem alterações de negócio não commitadas necessárias para ramos sucessores. Se sim, revise e faça commit desses caminhos específicos, opcionalmente usando Conventional Commits.

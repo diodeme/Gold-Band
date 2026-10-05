@@ -16,6 +16,18 @@ function stringArrayParam(value: unknown): string[] {
     : [];
 }
 
+const WORKFLOW_PAUSE_ERROR_DOMAINS = new Set(['workflow', 'dynamic']);
+
+/** Workflow-level pauses are not ACP session failures; other domains keep the default title. */
+export function acpRuntimeErrorBannerTitle(
+  t: Translate,
+  runtimeError: RuntimeErrorInfoVm | null | undefined,
+): string | null {
+  return runtimeError && WORKFLOW_PAUSE_ERROR_DOMAINS.has(runtimeError.code.domain)
+    ? t('acp.workflowPaused')
+    : null;
+}
+
 /** Keeps the current turn's original reason when no product mapping exists. */
 export function acpRuntimeErrorBannerCopy(
   t: Translate,

@@ -1075,7 +1075,10 @@
       "dynamic-agent-duplicate": "El Agent {{provider}} está duplicado en el nodo AI-DYNAMIC {{nodeId}}.",
       "dynamic-agent-model-blank": "El modelo del Agent {{provider}} en el nodo AI-DYNAMIC {{nodeId}} no puede estar en blanco.",
       "agent-model-blank": "El modelo del Agent {{provider}} no puede estar en blanco.",
-      "invalid": "La configuración del flujo de trabajo no es válida."
+      "invalid": "La configuración del flujo de trabajo no es válida.",
+      "output": {
+        "repair-exhausted": "La salida del nodo sigue sin cumplir el formato de salida tras {{repairAttempts}} intentos de corrección. El flujo de trabajo está en pausa."
+      }
     },
     "workspace": {
       "path-invalid-utf8": "La ruta del espacio de trabajo seleccionada no es UTF-8 válida.",
@@ -1113,6 +1116,11 @@
       "session-resume-failed": "La reanudación de la sesión falló. Se iniciará una ejecución nueva.",
       "workspace-already-bound": "Este espacio de trabajo ya está vinculado.",
       "workspace-not-found": "No se pudo encontrar este vínculo de espacio de trabajo."
+    },
+    "dynamic": {
+      "completion": {
+        "repair-exhausted": "La salida del nodo sigue sin cumplir el protocolo tras {{repairAttempts}} intentos de corrección. El flujo de trabajo está en pausa."
+      }
     }
   },
   "status": {
@@ -1765,11 +1773,13 @@
       "cleanup": "Limpieza",
       "aiDynamic": "Nodo AI Dynamic",
       "end": "Fin",
-      "newRound": "New Round"
+      "newRound": "New Round",
+      "newRoundFrom": "New Round · desde {{node}}"
     },
     "edgeLabels": {
       "success": "Éxito",
-      "failure": "Fallo"
+      "failure": "Fallo",
+      "newRoundFrom": "{{outcome}} · desde {{node}}"
     },
     "successPath": "Ruta del campo de éxito",
     "successEquals": "Valor esperado",
@@ -2328,6 +2338,7 @@
     "sessionElapsed": "Sesión {{duration}}",
     "timingSession": "Sesión",
     "sessionFailed": "La sesión ACP falló",
+    "workflowPaused": "Flujo de trabajo en pausa",
     "retrying": "Reintentando {{current}}/{{total}}",
     "retryFailed": "Falló tras {{count}} reintentos",
     "retryStopped": "Detenido tras {{count}} reintentos",
@@ -2410,7 +2421,9 @@
     "viewSession": "Ver sesión",
     "viewLog": "Ver registro",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Reintentar desde este nodo"
+    "retryFromNode": "Reintentar desde este nodo",
+    "layoutPending": "Organizando el gráfico del flujo de trabajo",
+    "layoutFailed": "No se pudo organizar el gráfico del flujo de trabajo"
   },
   "settings": {
     "title": "Configuración",

@@ -350,6 +350,8 @@ export type AcpRuntimeComposerContext = {
   workflowError?: string | null;
   pauseMessage?: string | null;
   runtimeError?: string | null;
+  /** Banner title for `runtimeError`; defaults to the ACP session failure title. */
+  runtimeErrorTitle?: string | null;
   runtimeErrorFallback?: string | null;
   onRepair?: () => void;
   supersededSessionNavigation?: {
@@ -6503,7 +6505,12 @@ export function ACPChatDialog(
         options={systemPromptOptions}
         onOpenChange={setSystemPromptOpen}
       />
-      {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
+      {visibleError ? (
+        <AcpErrorBanner
+          reason={visibleError}
+          title={bannerRuntimeError ? runtimeComposerContext?.runtimeErrorTitle ?? undefined : undefined}
+        />
+      ) : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">

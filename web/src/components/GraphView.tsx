@@ -20,21 +20,17 @@ import {
 import type { GraphNodeVm, GraphVm } from '../types';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import {
-  NODE_WIDTH,
-  NODE_HEIGHT,
   calculateCenteredViewport,
-  runtimeNodeOrder,
-  isBackwardEdge,
-  isRuntimePrimaryEdge,
-  layoutSuccessPath,
-  routeWorkflowBranchEdges,
+  runtimeEdgeId,
   runtimeGraphEdgeClassName,
   runtimeGraphEdgeDisplayLabel,
-  runtimeGraphTopologySignature,
+  runtimeGraphLayoutSpec,
   runtimeEdgeColor,
-  topLeft,
-  type WorkflowGraphBranchRoute,
+  type WorkflowLayout,
+  type WorkflowLayoutRoute,
 } from './workflowGraph';
+import { useWorkflowLayout } from '@/hooks/useWorkflowLayout';
+import { WorkflowLayoutStatus } from '@/components/WorkflowLayoutStatus';
 import { displayStatus } from '../i18n';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -43,8 +39,6 @@ import { cn } from '@/lib/utils';
 import { statusBadgeClass } from '@/lib/status';
 import { GraphControls } from '@/components/GraphControls';
 
-/** Runtime graph nodes use a slightly taller card for status badges. */
-const RUNTIME_NODE_HEIGHT = 138;
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.2;
 const WORKFLOW_FIT_MAX_ZOOM = 0.88;
@@ -83,23 +77,19 @@ interface GraphViewProps {
 
 const nodeTypes = {
   workflowNode: memo(WorkflowNode),
+  workflowGroup: memo(WorkflowGroup),
 };
 
 const edgeTypes = {
   runtimeEdge: memo(RuntimeEdge),
 };
 
-type RuntimeGraphLayout = {
-  layoutPositions: Map<string, { x: number; y: number }>;
-  branchRouteByEdgeIndex: Map<number, WorkflowGraphBranchRoute>;
-  bounds: { x: number; y: number; width: number; height: number } | null;
-};
-
 export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid' }: GraphViewProps) {
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
-  const graphSignature = useMemo(() => runtimeGraphTopologySignature(graph, variant), [graph, variant]);
-  const graphLayout = useMemo(() => createRuntimeGraphLayout(graph), [graphSignature]);
+  const layoutSpec = useMemo(() => runtimeGraphLayoutSpec(graph, (value) => displayStatus(t, value)), [graph, t]);
+  const layoutState = useWorkflowLayout(layoutSpec);
+  const graphLayout = layoutState.layout;
   const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, t), [activeNodeId, graph, graphLayout, mode, selectedNodeId, t]);
   const [menu, setMenu] = useState<{ x: number; y: number; node: GraphNodeVm } | null>(null);
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
@@ -110,7 +100,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   const viewportHorizontalAnchor = variant === 'actual' ? 0.40 : 0.5;
   const viewportVerticalAnchor = variant === 'actual' ? 0.32 : 0.5;
-  const graphBounds = graphLayout.bounds;
+  const graphBounds = graphLayout?.bounds ?? null;
   const centeredViewport = useMemo(() => {
     if (viewportSize.width === 0 || viewportSize.height === 0 || !graphBounds) return null;
     return calculateCenteredViewport(graphBounds, viewportSize, fitViewOptions.padding, fitViewOptions.maxZoom, viewportHorizontalAnchor, viewportVerticalAnchor);
@@ -133,7 +123,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
 
   useEffect(() => {
     if (centeredViewport) setViewport(centeredViewport);
-  }, [centeredViewport, graphSignature]);
+  }, [centeredViewport, graphLayout]);
 
   useEffect(() => {
     if (!menu) return undefined;
@@ -151,6 +141,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   }, []);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node<WorkflowNodeData>) => {
+    if (!isWorkflowNode(node)) return;
     if (mode === 'interactive' && onNodeOpenDetail) {
       onNodeOpenDetail(node.data.node);
       return;
@@ -159,11 +150,12 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   }, [mode, onNodeOpenDetail, onNodeSelect]);
 
   const handleNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node<WorkflowNodeData>) => {
+    if (!isWorkflowNode(node)) return;
     onNodeOpenDetail?.(node.data.node);
   }, [onNodeOpenDetail]);
 
   const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: Node<WorkflowNodeData>) => {
-    if (mode !== 'interactive') return;
+    if (mode !== 'interactive' || !isWorkflowNode(node)) return;
     event.preventDefault();
     if (contextMenuTimerRef.current) window.clearTimeout(contextMenuTimerRef.current);
     const nextMenu = { x: event.clientX, y: event.clientY, node: node.data.node };
@@ -217,6 +209,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
           onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
         />
       </ReactFlow>
+      <WorkflowLayoutStatus state={layoutState} />
       <div className="pointer-events-none absolute left-4 top-4 rounded-full border bg-card/85 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur">
         {mode === 'interactive' ? t('graph.executionGraph') : t('graph.workflowBlueprint')}
       </div>
@@ -238,52 +231,24 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   );
 }
 
-function boundsForPositions(layoutPositions: Map<string, { x: number; y: number }>) {
-  const positions = [...layoutPositions.values()];
-  if (positions.length === 0) return null;
-  const left = Math.min(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).x));
-  const top = Math.min(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).y));
-  const right = Math.max(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).x + NODE_WIDTH));
-  const bottom = Math.max(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).y + RUNTIME_NODE_HEIGHT));
-  return { x: left, y: top, width: right - left, height: bottom - top };
-}
+type WorkflowGroupData = { label: string; width: number; height: number };
 
-function createRuntimeGraphLayout(graph: GraphVm): RuntimeGraphLayout {
-  const nodeOrder = runtimeNodeOrder(graph.nodes);
-  const nodeIds = new Set(graph.nodes.map((n) => n.id));
-  const nodeSpecs = graph.nodes.map((node) => ({ id: node.id, width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT }));
-  const layoutPositions = layoutSuccessPath(
-    nodeSpecs,
-    graph.edges.map((e) => ({ from: e.from, to: e.to, on: isRuntimePrimaryEdge(e, nodeOrder) ? 'success' : e.label?.toLowerCase() ?? '' })),
-    nodeIds,
-    nodeOrder,
-  );
-  const branchRouteByEdgeIndex = routeWorkflowBranchEdges(
-    nodeSpecs,
-    layoutPositions,
-    graph.edges.map((edge, index) => {
-      const label = edge.label?.toLowerCase() ?? '';
-      return {
-        index,
-        sourceId: edge.from,
-        targetId: edge.to,
-        branch: label !== 'success' || isBackwardEdge(edge.from, edge.to, nodeOrder),
-      };
-    }),
-  );
-  return {
-    layoutPositions,
-    branchRouteByEdgeIndex,
-    bounds: boundsForPositions(layoutPositions),
-  };
-}
-
-function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, t: TFunction) {
+function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, t: TFunction) {
   const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));
   const runningActiveNode = activeNode?.runtimeDisplay?.tone === 'running';
   const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
+  const groups: Node<WorkflowGroupData>[] = [...(layout?.groups ?? [])].map(([id, rect]) => ({
+    id: `group:${id}`,
+    type: 'workflowGroup',
+    position: { x: rect.x, y: rect.y },
+    data: { label: id, width: rect.width, height: rect.height },
+    zIndex: -1,
+    draggable: false,
+    selectable: false,
+    focusable: false,
+  }));
   const nodes: Node<WorkflowNodeData>[] = graph.nodes.map((node) => {
-    const pos = layout.layoutPositions.get(node.id) ?? { x: 0, y: 0 };
+    const rect = layout?.nodes.get(node.id);
     const displayStatusValue = node.runtimeDisplay?.code ?? null;
     const displayTone = node.runtimeDisplay?.tone ?? 'neutral';
     const displayIcon = node.runtimeDisplay?.icon ?? 'dot';
@@ -292,7 +257,9 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
     return {
       id: node.id,
       type: 'workflowNode',
-      position: topLeft(pos.x, pos.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT),
+      position: rect ? { x: rect.x, y: rect.y } : { x: 0, y: 0 },
+      // A node added after the last finished layout appears once its position is known.
+      hidden: !rect,
       data: {
         node,
         selected: selectedNodeId === node.id || selectedNodeId === node.nodeId,
@@ -315,14 +282,14 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
   });
 
   const edges: Edge[] = graph.edges.map((edge, index) => {
+    const id = runtimeEdgeId(edge, index);
     const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
     const color = runtimeEdgeColor(edge, activeEdge);
-    const branchRoute = layout.branchRouteByEdgeIndex.get(index);
-    const branch = (edge.label?.toLowerCase() ?? '') !== 'success' || branchRoute?.detour === true;
+    const branch = (edge.label?.toLowerCase() ?? '') !== 'success';
     const label = runtimeGraphEdgeDisplayLabel(edge, (value) => displayStatus(t, value));
     const edgeClassName = runtimeGraphEdgeClassName(activeEdge, branch);
     return {
-      id: `${edge.from}-${edge.to}-${index}`,
+      id,
       source: edge.from,
       target: edge.to,
       label,
@@ -333,17 +300,25 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
       data: {
         color,
         label,
-        route: branchRoute,
+        route: layout?.edges.get(id),
         edgeClassName,
       },
     };
   });
 
-  return { nodes, edges };
+  return { nodes: [...groups, ...nodes] as Node<WorkflowNodeData>[], edges };
+}
+
+function WorkflowGroup({ data }: NodeProps<Node<WorkflowGroupData>>) {
+  return (
+    <div data-theme-role="workflow-group" className="pointer-events-none rounded-2xl border border-dashed border-muted-foreground/60 bg-muted/75" style={{ width: data.width, height: data.height }}>
+      <span className="ml-3 mt-2 inline-block max-w-[calc(100%-1.5rem)] truncate rounded-md bg-muted-foreground/12 px-2 py-0.5 font-mono text-[11px] font-medium text-foreground/80">{data.label}</span>
+    </div>
+  );
 }
 
 function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, data }: EdgeProps) {
-  const route = data?.route as WorkflowGraphBranchRoute | undefined;
+  const route = data?.route as WorkflowLayoutRoute | undefined;
   const color = typeof data?.color === 'string' ? data.color : style?.stroke;
   const label = typeof data?.label === 'string' ? data.label : null;
   const edgeClassName = typeof data?.edgeClassName === 'string' ? data.edgeClassName : null;
@@ -366,6 +341,11 @@ function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
       ) : null}
     </>
   );
+}
+
+/** Group frames share the canvas but carry no runtime node. */
+function isWorkflowNode(node: Node<WorkflowNodeData>) {
+  return node.type === 'workflowNode';
 }
 
 function matchesNodeId(node: GraphNodeVm, id?: string | null) {

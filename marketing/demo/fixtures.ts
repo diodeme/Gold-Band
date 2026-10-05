@@ -83,6 +83,7 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
         nodeType: node.nodeType, status: 'completed', outcome: 'success', runtimeDisplay: node.runtimeDisplay,
         attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0, current: false })),
       edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
+      groups: [],
     };
     run.selectedSession = demoSessionForNode(run, round.roundId, 'accept', language);
     run.sessionTree.selectedSessionKey = `${round.roundId}/accept/${round.nodes[0].attempts[0].attemptId}`;

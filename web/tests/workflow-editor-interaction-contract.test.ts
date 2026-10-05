@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { getSmoothStepPath, Position } from '@xyflow/react';
+import ELK from 'elkjs/lib/elk.bundled.js';
+import { Position } from '@xyflow/react';
 import {
   createAuthoringFlowProjection,
-  createAuthoringGraphLayout,
+  createAuthoringGraph,
   mergeBufferedNodePatches,
   nodeSupportsFailureOutcome,
   recordWorkflowHistory,
@@ -16,10 +17,10 @@ import {
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import {
-  NODE_HEIGHT,
-  NODE_WIDTH,
-  WORKFLOW_EDGE_LABEL_HEIGHT,
-  WORKFLOW_EDGE_LABEL_WIDTH,
+  NEW_ROUND_NODE,
+  layoutWorkflowGraph,
+  workflowLayoutKey,
+  type Rect,
 } from '@/components/workflowGraph';
 
 const editorSource = readFileSync(fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)), 'utf8');
@@ -55,36 +56,20 @@ function workflow(patch: Partial<WorkflowDsl> = {}): WorkflowDsl {
   };
 }
 
-function orthogonalSegmentIntersectsRect(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  rect: { left: number; right: number; top: number; bottom: number },
-) {
-  if (start.x === end.x) {
-    return start.x >= rect.left && start.x <= rect.right
-      && Math.max(Math.min(start.y, end.y), rect.top) <= Math.min(Math.max(start.y, end.y), rect.bottom);
-  }
-  if (start.y === end.y) {
-    return start.y >= rect.top && start.y <= rect.bottom
-      && Math.max(Math.min(start.x, end.x), rect.left) <= Math.min(Math.max(start.x, end.x), rect.right);
-  }
-  return true;
+function segmentCrossesRect(start: { x: number; y: number }, end: { x: number; y: number }, rect: Rect) {
+  const left = rect.x + 1;
+  const right = rect.x + rect.width - 1;
+  const top = rect.y + 1;
+  const bottom = rect.y + rect.height - 1;
+  if (start.y === end.y) return start.y > top && start.y < bottom && Math.max(start.x, end.x) > left && Math.min(start.x, end.x) < right;
+  return start.x > left && start.x < right && Math.max(start.y, end.y) > top && Math.min(start.y, end.y) < bottom;
 }
 
-function labelRect(point: { x: number; y: number }) {
-  return {
-    left: point.x - WORKFLOW_EDGE_LABEL_WIDTH / 2,
-    right: point.x + WORKFLOW_EDGE_LABEL_WIDTH / 2,
-    top: point.y - WORKFLOW_EDGE_LABEL_HEIGHT / 2,
-    bottom: point.y + WORKFLOW_EDGE_LABEL_HEIGHT / 2,
-  };
-}
+const elk = new ELK();
 
-function rectsOverlap(
-  left: { left: number; right: number; top: number; bottom: number },
-  right: { left: number; right: number; top: number; bottom: number },
-) {
-  return left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top;
+async function authoringLayout(value: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set()) {
+  const graph = createAuthoringGraph(value, visibleTerminalIds, t);
+  return { graph, layout: await layoutWorkflowGraph(graph.spec, elk) };
 }
 
 const t = (key: string) => key;
@@ -116,14 +101,10 @@ describe('workflow editor interaction contracts', () => {
       ],
     });
 
-    const beforeLayout = createAuthoringGraphLayout(before);
-    const afterLayout = createAuthoringGraphLayout(after);
-
-    expect([...afterLayout.layoutPositions]).toEqual([...beforeLayout.layoutPositions]);
-    expect([...afterLayout.branchRouteByEdgeIndex]).toEqual([...beforeLayout.branchRouteByEdgeIndex]);
+    expect(workflowLayoutKey(createAuthoringGraph(after, new Set(), t).spec)).toBe(workflowLayoutKey(createAuthoringGraph(before, new Set(), t).spec));
   });
 
-  it('routes a forward failure branch around nodes on the success path', () => {
+  it('routes a forward failure branch around nodes on the success path', async () => {
     const value = workflow({
       entry: 'test',
       nodes: [
@@ -139,54 +120,62 @@ describe('workflow editor interaction contracts', () => {
         { from: 'test', to: '$end', on: 'failure' },
       ],
     });
-    const layout = createAuthoringGraphLayout(value);
-    const route = layout.branchRouteByEdgeIndex.get(2);
-    const test = layout.layoutPositions.get('test');
-    const accept = layout.layoutPositions.get('accept');
+    const { layout } = await authoringLayout(value);
+    const route = layout.edges.get('test:$end:failure:2')!;
+    const accept = layout.nodes.get('accept')!;
 
-    expect(route).toBeDefined();
-    expect(test).toBeDefined();
-    expect(accept).toBeDefined();
-    const acceptRect = {
-      left: accept!.x - NODE_WIDTH / 2,
-      right: accept!.x + NODE_WIDTH / 2,
-      top: accept!.y - NODE_HEIGHT / 2,
-      bottom: accept!.y + NODE_HEIGHT / 2,
-    };
-    const crossesAccept = route!.points.slice(1).some((point, index) => orthogonalSegmentIntersectsRect(route!.points[index], point, acceptRect));
-    expect(crossesAccept).toBe(false);
-    expect(route!.labelX < acceptRect.left || route!.labelX > acceptRect.right || route!.labelY < acceptRect.top || route!.labelY > acceptRect.bottom).toBe(true);
-
-    const [, successLabelX, successLabelY] = getSmoothStepPath({
-      sourceX: test!.x + NODE_WIDTH / 2,
-      sourceY: test!.y + NODE_HEIGHT * (0.34 - 0.5),
-      sourcePosition: Position.Right,
-      targetX: accept!.x - NODE_WIDTH / 2,
-      targetY: accept!.y,
-      targetPosition: Position.Left,
-    });
-    const successLabelRect = labelRect({ x: successLabelX, y: successLabelY });
-    const failureLabelRect = labelRect({ x: route!.labelX, y: route!.labelY });
-    const sourceRect = {
-      left: test!.x - NODE_WIDTH / 2,
-      right: test!.x + NODE_WIDTH / 2,
-      top: test!.y - NODE_HEIGHT / 2,
-      bottom: test!.y + NODE_HEIGHT / 2,
-    };
-    expect(rectsOverlap(failureLabelRect, successLabelRect)).toBe(false);
-    expect(rectsOverlap(failureLabelRect, sourceRect)).toBe(false);
-    expect(route!.points.slice(1).some((point, index) => orthogonalSegmentIntersectsRect(route!.points[index], point, successLabelRect))).toBe(false);
+    expect(route.points.slice(1).some((point, index) => segmentCrossesRect(route.points[index], point, accept))).toBe(false);
+    const labelInsideAccept = route.labelX > accept.x && route.labelX < accept.x + accept.width
+      && route.labelY > accept.y && route.labelY < accept.y + accept.height;
+    expect(labelInsideAccept).toBe(false);
   });
 
-  it('projects every authoring edge through the shared routed renderer and semantic source handle', () => {
+  it('names a single new Round restart node on the target and several restart nodes on their edges', () => {
+    const translate = (key: string, options?: Record<string, unknown>) => (options ? `${key}:${JSON.stringify(options)}` : key);
+    const single = workflow({
+      nodes: [...workflow().nodes, worker('accept', { manual_check: true })],
+      edges: [...workflow().edges, { from: 'accept', to: NEW_ROUND_NODE, on: 'failure', new_round_entry: '$entry' }],
+    });
+    const singleGraph = createAuthoringGraph(single, new Set(), translate);
+    expect(singleGraph.nodeLabels.get(NEW_ROUND_NODE)).toBe('workflowEditor.nodeLabels.newRoundFrom:{"node":"plan"}');
+    expect(singleGraph.edgeLabels.get(`accept:${NEW_ROUND_NODE}:failure:4`)).toBe('workflowEditor.edgeLabels.failure');
+
+    const several = workflow({
+      nodes: single.nodes,
+      edges: [...single.edges, { from: 'review', to: NEW_ROUND_NODE, on: 'failure', new_round_entry: 'build' }],
+    });
+    const severalGraph = createAuthoringGraph(several, new Set(), translate);
+    expect(severalGraph.nodeLabels.get(NEW_ROUND_NODE)).toBe('workflowEditor.nodeLabels.newRound');
+    expect(severalGraph.edgeLabels.get(`review:${NEW_ROUND_NODE}:failure:5`))
+      .toBe('workflowEditor.edgeLabels.newRoundFrom:{"outcome":"workflowEditor.edgeLabels.failure","node":"build"}');
+    expect(severalGraph.spec.nodes.find((node) => node.id === NEW_ROUND_NODE)?.pinBelow).toBe('plan');
+  });
+
+  it('hides nodes until their first layout and accepts restart edges on the right of the pinned target', async () => {
+    const value = workflow({
+      edges: [...workflow().edges, { from: 'review', to: NEW_ROUND_NODE, on: 'failure' }],
+    });
+    const graph = createAuthoringGraph(value, new Set(), t);
+    const pending = createAuthoringFlowProjection(value, graph, null, null, null, new Set(), new Map(), t);
+    expect(pending.nodes.every((node) => node.hidden)).toBe(true);
+
+    const { layout } = await authoringLayout(value);
+    const laidOut = createAuthoringFlowProjection(value, graph, layout, null, null, new Set(), new Map(), t);
+    const newRound = laidOut.nodes.find((node) => node.id === NEW_ROUND_NODE)!;
+    expect(laidOut.nodes.some((node) => node.hidden)).toBe(false);
+    expect(newRound.targetPosition).toBe(Position.Right);
+    expect(newRound.data.targetPosition).toBe(Position.Right);
+  });
+
+  it('projects every authoring edge through the shared routed renderer and semantic source handle', async () => {
     const value = workflow();
-    const projection = createAuthoringFlowProjection(value, createAuthoringGraphLayout(value), null, null, new Set(), new Map(), t);
+    const { graph, layout } = await authoringLayout(value);
+    const projection = createAuthoringFlowProjection(value, graph, layout, null, null, new Set(), new Map(), t);
 
     expect(projection.edges.every((edge) => edge.type === 'workflowRouted')).toBe(true);
     expect(projection.edges.map((edge) => edge.sourceHandle)).toEqual(['success', 'success', 'failure', 'success']);
     expect(projection.edges.every((edge) => edge.className?.includes('workflow-edge-flow'))).toBe(true);
-    expect(projection.edges[0].data?.route).toBeUndefined();
-    expect(projection.edges[2].data?.route).toBeDefined();
+    expect(projection.edges.every((edge) => edge.data?.route?.path)).toBe(true);
     expect(editorSource).toContain('const path = route?.path ?? smoothPath;');
     expect(runtimeGraphSource).toContain('const path = route?.path ?? smoothPath;');
   });
@@ -202,7 +191,7 @@ describe('workflow editor interaction contracts', () => {
         }),
       ],
     });
-    const projection = createAuthoringFlowProjection(value, createAuthoringGraphLayout(value), null, null, new Set(), new Map(), t);
+    const projection = createAuthoringFlowProjection(value, createAuthoringGraph(value, new Set(), t), null, null, null, new Set(), new Map(), t);
 
     expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'plan'))).toBe(true);
     expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'build'))).toBe(false);
@@ -294,8 +283,8 @@ describe('workflow editor interaction contracts', () => {
 
   it('selects terminal projections without a node toolbar and deletes their incoming edges as one domain operation', () => {
     const value = workflow();
-    const layout = createAuthoringGraphLayout(value, new Set(['$end']));
-    const projection = createAuthoringFlowProjection(value, layout, null, null, new Set(), new Map(), t, undefined, undefined, '$end');
+    const graph = createAuthoringGraph(value, new Set(['$end']), t);
+    const projection = createAuthoringFlowProjection(value, graph, null, null, null, new Set(), new Map(), t, undefined, undefined, '$end');
     const terminal = projection.nodes.find((node) => node.id === '$end');
 
     expect(terminal?.selected).toBe(true);
@@ -311,10 +300,10 @@ describe('workflow editor interaction contracts', () => {
 
   it('uses one selection treatment for regular and terminal nodes', () => {
     const value = workflow();
-    const layout = createAuthoringGraphLayout(value, new Set(['$end']));
-    const selectedNode = createAuthoringFlowProjection(value, layout, 'plan', null, new Set(), new Map(), t)
+    const graph = createAuthoringGraph(value, new Set(['$end']), t);
+    const selectedNode = createAuthoringFlowProjection(value, graph, null, 'plan', null, new Set(), new Map(), t)
       .nodes.find((node) => node.id === 'plan');
-    const selectedTerminal = createAuthoringFlowProjection(value, layout, null, null, new Set(), new Map(), t, undefined, undefined, '$end')
+    const selectedTerminal = createAuthoringFlowProjection(value, graph, null, null, null, new Set(), new Map(), t, undefined, undefined, '$end')
       .nodes.find((node) => node.id === '$end');
 
     expect(selectedNode?.className).toContain('workflow-node-selected');
@@ -367,7 +356,7 @@ describe('workflow editor interaction contracts', () => {
     const undoBlock = editorSource.slice(editorSource.indexOf('const undoWorkflow = useCallback'), editorSource.indexOf('const redoWorkflow = useCallback'));
     const redoBlock = editorSource.slice(editorSource.indexOf('const redoWorkflow = useCallback'), editorSource.indexOf('const closeValidationDialog'));
     const value = workflow();
-    const projection = createAuthoringFlowProjection(value, createAuthoringGraphLayout(value), null, null, new Set(), new Map(), t);
+    const projection = createAuthoringFlowProjection(value, createAuthoringGraph(value, new Set(), t), null, null, null, new Set(), new Map(), t);
 
     expect(editorSource).toContain('const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);');
     expect(editorSource).not.toContain('setSelectedNodeId(initialWorkflow.nodes[0]?.id ?? null);');
@@ -379,7 +368,7 @@ describe('workflow editor interaction contracts', () => {
 
   it('preserves the viewport, exposes keyboard/connection affordances, and lazily refreshes JSON', () => {
     expect(editorSource).toContain('viewport?: Viewport');
-    expect(editorSource).toContain('[visibleTerminalSignature, workflowTopologySignature]');
+    expect(editorSource).toContain('[visibleTerminalSignature, workflowTopologySignature, t]');
     expect(editorSource).toContain('onMoveEnd={handleMoveEnd}');
     expect(editorSource).toContain('defaultViewport={viewportRef.current}');
     expect(editorSource).toContain('connectOnClick');

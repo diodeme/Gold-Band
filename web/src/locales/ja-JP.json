@@ -1075,7 +1075,10 @@
       "dynamic-agent-duplicate": "AI-DYNAMIC ノード {{nodeId}} の Agent {{provider}} が重複しています。",
       "dynamic-agent-model-blank": "AI-DYNAMIC ノード {{nodeId}} の Agent {{provider}} のモデルは空にできません。",
       "agent-model-blank": "Agent {{provider}} のモデルは空にできません。",
-      "invalid": "ワークフロー構成が無効です。"
+      "invalid": "ワークフロー構成が無効です。",
+      "output": {
+        "repair-exhausted": "ノードの出力は {{repairAttempts}} 回修復しても出力形式に適合しないため、ワークフローを一時停止しました。"
+      }
     },
     "workspace": {
       "path-invalid-utf8": "選択したワークスペース パスは有効な UTF-8 ではありません。",
@@ -1113,6 +1116,11 @@
       "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
       "workspace-already-bound": "このワークスペースはすでにバインドされています。",
       "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
+    },
+    "dynamic": {
+      "completion": {
+        "repair-exhausted": "ノードの出力は {{repairAttempts}} 回修復してもプロトコルに適合しないため、ワークフローを一時停止しました。"
+      }
     }
   },
   "status": {
@@ -1765,11 +1773,13 @@
       "cleanup": "クリーンアップ",
       "aiDynamic": "AI 動的ノード",
       "end": "終了",
-      "newRound": "新 Round"
+      "newRound": "新 Round",
+      "newRoundFrom": "新 Round · {{node}} から"
     },
     "edgeLabels": {
       "success": "成功",
-      "failure": "失敗"
+      "failure": "失敗",
+      "newRoundFrom": "{{outcome}} · {{node}} から"
     },
     "successPath": "成功フィールドのパス",
     "successEquals": "期待値",
@@ -2328,6 +2338,7 @@
     "sessionElapsed": "セッション {{duration}}",
     "timingSession": "セッション",
     "sessionFailed": "ACPセッションが失敗しました",
+    "workflowPaused": "ワークフローを一時停止しました",
     "retrying": "{{current}}/{{total}} を再試行しています",
     "retryFailed": "{{count}} 回の再試行後に失敗しました",
     "retryStopped": "{{count}} 回の再試行後に停止しました",
@@ -2410,7 +2421,9 @@
     "viewSession": "セッションを見る",
     "viewLog": "ログを表示する",
     "copyNodeId": "node id をコピー",
-    "retryFromNode": "このノードから再試行"
+    "retryFromNode": "このノードから再試行",
+    "layoutPending": "ワークフローグラフを配置中",
+    "layoutFailed": "ワークフローグラフを配置できませんでした"
   },
   "settings": {
     "title": "設定",

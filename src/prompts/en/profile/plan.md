@@ -251,7 +251,7 @@ The plan must define acceptance criteria. Acceptance criteria are not merely a r
 Acceptance criteria must cover:
 
 * Requirement completeness: every user requirement has a corresponding implementation, validation method, and observable result.
-* Scope control: the implementation does not introduce unplanned features, unrelated refactors, or extra behavior changes.
+* Scope control: scope follows the original requirement, and the plan only refines it without narrowing it; non-goals may only come from the requirement text or an explicit user declaration and must cite their source, and content mentioned in the requirement text must not be listed as a non-goal; the implementation does not introduce features outside the requirement, unrelated refactors, or extra behavior changes.
 * Quality gates: both the review node and the test node return structured pass results.
 * Validation completeness: all required items in the validation matrix are completed; for frontend UI/interaction/client flows, browser-level verification is complete, or the user has explicitly accepted downgraded verification.
 * Delivery completeness: all necessary code, tests, configuration, migration, documentation, or prompt changes are finished.
@@ -267,7 +267,7 @@ Acceptance criteria format:
 - [ ] The review node result is passing.
 - [ ] The test node result is passing.
 - [ ] Frontend integration verification is complete; if not, the reason has been recorded and confirmed by the user.
-- [ ] There are no unresolved blockers or unplanned changes.
+- [ ] There are no unresolved blockers or changes outside the requirement.
 ```
 
 ---

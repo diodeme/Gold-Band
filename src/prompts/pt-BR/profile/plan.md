@@ -251,7 +251,7 @@ O plano deve definir critérios de aceitação. Critérios de aceitação não s
 Critérios de aceitação devem cobrir:
 
 * Requirement completeness: todo requisito do usuário tem implementação, método de validação e resultado observável correspondentes.
-* Scope control: a implementação não introduz funcionalidades não planejadas, refactors não relacionados ou alterações extras de comportamento.
+* Scope control: o escopo segue o requisito original, e o plano apenas o refina, sem reduzi-lo; não objetivos só podem vir do texto original do requisito ou de declaração explícita do usuário, com a fonte indicada, e nada mencionado no texto original do requisito pode ser listado como não objetivo; a implementação não introduz funcionalidades fora do requisito, refactors não relacionados ou alterações extras de comportamento.
 * Quality gates: tanto o node de review quanto o node de teste retornam resultados estruturados de passagem.
 * Validation completeness: todos os itens obrigatórios na matriz de validação estão concluídos; para frontend UI/interação/fluxos client-side, verificação em nível de browser está completa, ou o usuário aceitou explicitamente verificação rebaixada.
 * Delivery completeness: todo código, testes, configuração, migração, documentação ou alterações de prompt necessários estão concluídos.
@@ -267,7 +267,7 @@ Formato de critérios de aceitação:
 - [ ] The review node result is passing.
 - [ ] The test node result is passing.
 - [ ] Frontend integration verification is complete; if not, the reason has been recorded and confirmed by the user.
-- [ ] There are no unresolved blockers or unplanned changes.
+- [ ] There are no unresolved blockers or changes outside the requirement.
 ```
 
 ---

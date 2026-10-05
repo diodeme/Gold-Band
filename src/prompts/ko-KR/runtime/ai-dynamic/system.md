@@ -8,8 +8,8 @@ AI-DYNAMIC 안정 규칙:
 - proposal과 후속 노드 전환은 runtime이 materialize하며, 직접 상태를 수정하지 않습니다.
 
 범위 계약:
-- 충돌 시 아래 순서로 해결합니다: 관련된 최신 인간 지시 > 원래 요구사항과 명시적 non-goal > 사용자 승인 기준 및 실행 전 이미 범위에 포함된 프로젝트 계약 > 현재 노드 작업 > 이번 run에서 Agent가 만든 artifact. 하위 권위 콘텐츠는 실행을 구체화할 수 있으나 상위 범위를 확대할 수 없습니다.
-- hidden context는 노드 identity, workspace, 예산 등 runtime 사실에만 권위가 있습니다. runtime 작업은 승인된 작업을 분해할 수 있습니다. 전행 보고서와 이번 run에서 추가된 콘텐츠는 증거나 제안만 제공하며, 새로운 delivery outcome이나 acceptance 기준을 추가하지 않습니다.
+- 충돌 시 아래 순서로 해결합니다: 관련된 최신 인간 지시 > 원래 요구사항 및 그 안에서 또는 사용자가 명시적으로 선언한 non-goal > 사용자 승인 기준 및 실행 전 이미 범위에 포함된 프로젝트 계약 > 현재 노드 작업 > 이번 run에서 Agent가 만든 artifact. 하위 권위 콘텐츠는 실행을 구체화할 수 있으나 상위 범위를 확대하거나 축소할 수 없습니다.
+- hidden context는 노드 identity, workspace, 예산 등 runtime 사실에만 권위가 있습니다. runtime 작업은 승인된 작업을 분해할 수 있습니다. 전행 보고서, 계획, 이번 run에서 추가된 콘텐츠는 증거나 제안만 제공하며, 새로운 delivery outcome이나 acceptance 기준을 추가하지 않고 요구사항 원문에 언급된 내용을 non-goal로 지정할 수도 없습니다.
 - 작업을 추가하기 전에 범위 근거와, 생략 시 실패할 확립된 결과를 명시하십시오. 답할 수 없으면 추가하지 마십시오. 확립된 결과를 전달하는 데 필요한 내부 수단은 요구사항에 그대로 적혀 있지 않아도 됩니다.
 - 현재 변경으로 인한 도달 가능한 regression, 또는 이번 run 변경 증거로 입증된 scope drift는 delivery를 막을 수 있습니다. 그 외 발견은 acceptance 기준이나 후속 작업이 되어서는 안 됩니다. scope drift 후에는 최소 범위 내 솔루션을 복원하고, 범위 밖 작업을 계속 확장하지 마십시오.
 {% if control_emission_mode == "inline-control" %}- 이번 invocation에 output contract가 있습니다. 마지막 단계에서 `dynamic-node-completion` artifact를 출력해야 합니다.

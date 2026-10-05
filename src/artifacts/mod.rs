@@ -46,24 +46,125 @@ fn json_artifact_spans(content: &str) -> Vec<JsonArtifactSpan> {
             .filter(|span| !is_inside_fenced_span(span, &fenced_spans)),
     );
     let existing_spans = spans.clone();
+    let top_level_starts = top_level_object_starts(content);
     spans.extend(
         raw_json_like_spans(content)
             .into_iter()
+            // A `{` nested inside another object is part of that object; selecting
+            // it would replace the model's root output with one of its fields.
+            .filter(|span| top_level_starts.contains(&span.start))
             .filter(|span| !is_inside_fenced_span(span, &fenced_spans))
             .filter(|span| !has_same_display_span(span, &existing_spans)),
     );
     spans
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JsonSyntaxCategory {
+    /// Input ended early, e.g. an unclosed object, array or string.
+    Eof,
+    /// Unexpected character, missing separator or trailing characters.
+    Syntax,
+}
+
+/// Structured syntax failure of the selected JSON artifact candidate.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("JSON artifact syntax error ({category:?}) at line {line} column {column}: {message}")]
+pub struct JsonArtifactSyntaxError {
+    pub category: JsonSyntaxCategory,
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+    /// Text of the failing line that ends at the error position.
+    pub snippet: String,
+}
+
+const JSON_SYNTAX_SNIPPET_CHARS: usize = 40;
+
+impl JsonArtifactSyntaxError {
+    fn from_serde(json: &str, error: &serde_json::Error) -> Option<Self> {
+        let category = match error.classify() {
+            serde_json::error::Category::Eof => JsonSyntaxCategory::Eof,
+            serde_json::error::Category::Syntax => JsonSyntaxCategory::Syntax,
+            serde_json::error::Category::Data | serde_json::error::Category::Io => return None,
+        };
+        Some(Self {
+            category,
+            line: error.line(),
+            column: error.column(),
+            message: error.to_string(),
+            snippet: json_error_snippet(json, error.line(), error.column()),
+        })
+    }
+}
+
+fn json_error_snippet(json: &str, line: usize, column: usize) -> String {
+    let line_text = json
+        .split('\n')
+        .nth(line.saturating_sub(1))
+        .unwrap_or_default();
+    let mut end = column.min(line_text.len());
+    while !line_text.is_char_boundary(end) {
+        end += 1;
+    }
+    let before = &line_text[..end];
+    let skip = before
+        .chars()
+        .count()
+        .saturating_sub(JSON_SYNTAX_SNIPPET_CHARS);
+    before.chars().skip(skip).collect()
+}
+
+/// Parses a JSON artifact, tolerating code fences and surrounding prose.
+///
+/// Only the selected top-level candidate is parsed. Malformed candidates fail
+/// with [`JsonArtifactSyntaxError`]; nested objects are never salvaged.
 pub fn parse_json_artifact<T: DeserializeOwned>(content: &str) -> Result<T> {
-    match serde_json::from_str(content) {
-        Ok(value) => Ok(value),
-        Err(first_error) => {
-            let json = json_object_text(content)
-                .ok_or_else(|| anyhow!("failed to parse JSON artifact: {first_error}"))?;
-            serde_json::from_str(&json).map_err(Into::into)
+    if serde_json::from_str::<serde_json::Value>(content).is_ok() {
+        return serde_json::from_str(content).map_err(Into::into);
+    }
+    let json = json_artifact_display_span(content)
+        .map(|span| span.json_text)
+        .unwrap_or_else(|| content.trim().to_string());
+    serde_json::from_str(&json).map_err(|error| {
+        match JsonArtifactSyntaxError::from_serde(&json, &error) {
+            Some(syntax) => anyhow!(syntax),
+            None => anyhow!(error),
+        }
+    })
+}
+
+/// Byte offsets of `{` that open an object at brace depth 0, skipping strings.
+fn top_level_object_starts(content: &str) -> std::collections::HashSet<usize> {
+    let mut starts = std::collections::HashSet::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in content.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    starts.insert(index);
+                }
+                depth += 1;
+            }
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
         }
     }
+    starts
 }
 
 fn json_object_text(content: &str) -> Option<String> {
@@ -245,7 +346,8 @@ fn has_same_display_span(span: &JsonArtifactSpan, spans: &[JsonArtifactSpan]) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        json_artifact_display_span, json_artifact_span, json_artifact_text, parse_json_artifact,
+        JsonArtifactSyntaxError, JsonSyntaxCategory, json_artifact_display_span,
+        json_artifact_span, json_artifact_text, parse_json_artifact,
     };
 
     #[derive(Debug, serde::Deserialize)]
@@ -367,6 +469,57 @@ mod tests {
         assert_eq!(span.start, 0);
         assert_eq!(span.end, content.len());
         assert_eq!(span.json_text, content);
+    }
+
+    // Model output that forgot one closing brace of a three-level object.
+    const UNCLOSED_NESTED_ROOT: &str = "{\"version\":\"0.1\",\"next\":{\"type\":\"single\",\"node\":{\"id\":\"plan\",\"task\":\"t\"}}";
+
+    #[test]
+    fn display_span_selects_unclosed_root_instead_of_nested_object() {
+        let span = json_artifact_display_span(UNCLOSED_NESTED_ROOT).expect("span should exist");
+        assert_eq!(span.parse_status, "invalid");
+        assert_eq!(span.start, 0);
+        assert_eq!(span.json_text, UNCLOSED_NESTED_ROOT);
+    }
+
+    #[test]
+    fn display_span_ignores_braces_in_prose_before_unclosed_root() {
+        let content = format!("示例 {{\"k\" 写法: 1}} 结束\n{UNCLOSED_NESTED_ROOT}");
+        let span = json_artifact_display_span(&content).expect("span should exist");
+        assert_eq!(span.parse_status, "invalid");
+        assert_eq!(span.json_text, UNCLOSED_NESTED_ROOT);
+    }
+
+    #[test]
+    fn parse_reports_structured_eof_for_unclosed_root_instead_of_nested_object() {
+        let content = format!("说明\n```json\n{UNCLOSED_NESTED_ROOT}\n```");
+        let error = parse_json_artifact::<serde_json::Value>(&content)
+            .expect_err("unclosed root must not be salvaged");
+        let syntax = error
+            .downcast_ref::<JsonArtifactSyntaxError>()
+            .expect("syntax error should be structured");
+        assert_eq!(syntax.category, JsonSyntaxCategory::Eof);
+        assert_eq!(syntax.line, 1);
+        assert_eq!(syntax.column, UNCLOSED_NESTED_ROOT.len());
+        assert!(UNCLOSED_NESTED_ROOT.ends_with(&syntax.snippet));
+    }
+
+    #[test]
+    fn parse_reports_structured_syntax_error_position() {
+        let error = parse_json_artifact::<serde_json::Value>("{\"a\":1,\n\"b\" 2}")
+            .expect_err("missing colon must fail");
+        let syntax = error.downcast_ref::<JsonArtifactSyntaxError>().unwrap();
+        assert_eq!(syntax.category, JsonSyntaxCategory::Syntax);
+        assert_eq!(syntax.line, 2);
+        assert_eq!(syntax.snippet, "\"b\" 2");
+    }
+
+    #[test]
+    fn parse_keeps_data_errors_unstructured() {
+        let error =
+            parse_json_artifact::<WorkerResultArtifact>("{\"result\":\"yes\",\"reason\":\"ok\"}")
+                .expect_err("type mismatch must fail");
+        assert!(error.downcast_ref::<JsonArtifactSyntaxError>().is_none());
     }
 
     #[test]

@@ -18,10 +18,10 @@
 
 전행 artifact 읽기 전제: runtime context, 현재 task, 사용자가 predecessor node, artifact, attachment, path를 명시하면 해당 node 최신 artifact 또는 지정 콘텐츠를 obtain·read합니다. predecessor chain만 있어도 skip하지 마십시오. node artifact/attachment viewing capability로 locate합니다. run 디렉터리 scan 금지. locate 불가 시 missing evidence 또는 missing artifact로 기록합니다.
 
-1. 전행 chain/context에 plan node, `tech-plan.md`, plan artifact/path가 있으면 plan을 obtain·read하여 구현 계획을 이해합니다. 없으면 원래 요구사항과 현재 task로 spec 준수를 review합니다.
+1. 먼저 원래 요구사항에서 spec checkpoint를 항목별로 나열합니다. 요구사항 원문이 spec 준수의 유일한 근거입니다. 전행 chain/context에 plan node, `tech-plan.md`, plan artifact/path가 있으면 그다음 plan을 obtain·read하여 구현 계획을 이해하고 checkpoint를 구체화하는 데만 쓰며, 요구사항 checkpoint를 삭제하거나 좁히지 마십시오.
 2. 전행 chain/context에 dev node, `dev-report.md`, dev artifact/path가 있으면 `dev-report.md`를 obtain·review하고 나열된 file·line을 이번 주 review 범위로 봅니다. 없으면 git working tree diff를 dev Agent 이번 iteration 수정 code로 봅니다.
    전행 dev node가 `dev-report.md`를 만들지 않은 것은 blocking 조건이 아닙니다. git working tree 해당 변경으로 review를 계속합니다.
-3. plan이 있으면 plan 대비 현재 변경을 review하고, 없으면 원래 요구사항·현재 task·실제 diff 대비 review하여 `review-report.md`를 생성합니다
+3. 요구사항 checkpoint 대비 현재 변경을 review하고 plan은 세부 보완에만 씁니다. plan이나 구현이 요구사항 원문에 언급된 내용을 범위에서 제외하면 HIGH 문제로 제기합니다. `review-report.md`를 생성합니다
 4. review 결과로 verdict를 내립니다
 5. 요구된 문서와 최종 결과를 출력합니다
 

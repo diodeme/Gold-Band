@@ -2851,6 +2851,24 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 验收：最小回归在旧实现上因 `workspace.path.is_dir()` 为 false 失败，修复后转绿；`cargo test -p gold-band --lib dynamic_worktree` 13 项、`loading_dynamic_graph` 2 项、`git::tests::remove_worktree` 3 项，共 18 项通过。覆盖首次释放目录保留、Git catalog/branch 移除、重复释放、缺失目录恢复、文件占位导致补目录失败不影响 Released、后来新增文件与复用 Worktree 保留，以及路径与共享锁防护。本次仅修改后端释放逻辑，未启动前端或真实 Agent，不将目录验收视为所有 provider 的会话恢复实测。
 - 性能与过度设计评审：只在既有释放/Closed group 恢复路径操作指定 workspace，保留固定层级 canonical 校验，每项增加一次目录确保，不扫描目录内容或全量历史；空目录数量随历史 fanout workspace 增长。不新增依赖、状态、持久字段、缓存、队列或锁；原 Git 注销判定及锁范围不变，无需专项 benchmark。
 
+## 2026-10-05 AUTO 完成报告长文本落文件与需求优先验收
+
+- [x] 背景：DeepSWE hard 子集评测（`docs/benchmark/2026-10-deepswe-hard/`）中 AUTO 的失败暴露两类设计缺陷。其一，完成报告约 97% 字符是后继任务与总结正文，单行 JSON 可达上万字符，模型连续 4 次漏写根对象闭合符，行列号反馈无法帮助定位。其二，审查、测试以方案为检查基准，方案自行声明的非目标被下游当作红线，没有节点核对解读本身是否符合需求。
+- [x] 协议：completion 分提交态与 canonical 态。提交态用 `summaryPath` / `taskPath`（single、fanout 分支、merge、acceptance 全部）引用本次 attempt attachments 目录中的文件，有效 schema 拒绝内联正文。`resolve_dynamic_completion_handoff_files` 在 schema 校验后解析路径（相对、无 `..`、规范化后不越界、存在、非空、UTF-8、≤256 KiB），错误码 `dynamic.handoff-file.*` 按字段结构化并与 schema 错误合并反馈；通过后把正文冻结进 proposal 的 canonical `summary` / `task`，物化、报告、快照与 UI 均不变。
+- [x] 提示词（七种语言）：输出协议说明文件交接与建议命名，repair 对 handoff 错误只修文件与路径；scope 契约限定非目标只能来自需求原文或用户；plan 不得把需求原文内容列为非目标；review、test 先从需求原文逐条列检查点，方案与验证矩阵只能补充；accept 与 AI-DYNAMIC acceptance 把方案排除需求内容列为 BLOCKER，改动过原有测试时须用原版测试复验。
+- [x] 回归：`dynamic.rs` 新增解析全字段冻结、六类错误逐字段结构化、绝对路径、软链接越界（unix）、有效 schema 接受路径拒绝内联共 5 项；集成测试 fake provider 改为按 Agent 方式写交接文件提交，38 项中 37 项通过，唯一失败为上条已记录的 `ai_dynamic_worktree_fanout_injects_merge_workspace_metadata` 既有问题（HEAD 上同样失败）；scope 契约测试同步为新表述。全量 1840 项通过，其余 6 项失败为既有的 CRLF、agent-catalog 与计时问题。真实环境冒烟：DeepSWE 3 道新题全部通过，19 份完成报告全部使用路径字段，JSON 中位数 329 字符（改进前 4378），校验错误与修复均为 0。
+- 性能与过度设计评审：每次 completion 最多读取 1 + maxFanout + 2 个 KB 级文件，仅发生在节点结束时；未新增状态机、持久字段或 identity，canonical 数据模型不变，只在提交边界增加一层路径解析。
+
+## 2026-10-02 Headless AUTO runner 与会话创建下沉 core
+
+- [x] 背景：为在 DeepSWE 等 Harbor 格式 benchmark 中无人值守运行 AUTO，需要一个可脚本调用、以退出码表达结果的入口；旧 CLI/console 已废弃且未开放，按开发阶段破坏式更新处理。
+- [x] 根因修复：fanout worktree 位于目标仓库 `.gold-band/worktrees/` 下却未被忽略，用户仓库 `git status` 出现未跟踪目录，Agent 可能误提交。属于 worktree 命名空间缺少本地忽略约定的设计缺陷：`GitRepositoryService::ensure_local_exclude` 在 Git runtime 写协调内幂等追加 `info/exclude`，fork 前于 dynamic worktree 锁内调用。最小回归先失败于 status 非空，修复后转绿，并固定重复 fork 只写一行。
+- [x] 会话创建下沉：桌面 VM 中的会话任务准备、工作流构建、Git preflight、元数据/附件写入、run 创建与回滚统一移入 core `App::prepare_conversation_task` / `create_conversation_run`（`ConversationRunLaunch::Background | Foreground`），桌面只做 VM 映射；未知 run mode 改为显式错误。前台模式复用后台驱动的同一 `drive_accepted_run`。
+- [x] CLI：删除旧 `command`、`console`、`inspect` 模块、console 测试与 ratatui/crossterm/figlet-rs 依赖，以及 console 主题配置；新增单一 `gold-band run --requirement-file --auto-config`，输出 `RunState` JSON，退出码 0 成功、1 失败、2 暂停、3 命令失败、4 未结束。
+- [x] 无人值守交互：`InteractionMode` 作为 `RuntimeConfig` 宿主属性（不进入 run 状态），Unattended 时 permission 以 cancelled、elicitation 以 decline 经既有 first-writer-wins 写入结算，不阻塞等待。
+- [x] 回归：core 会话创建 4 项（AUTO 元数据与配置持久化、未接受回滚、无 Git 不建任务、空需求拒绝）、CLI 3 项、无人值守 3 项、exclude 1 项均通过；clippy disallowed-methods 门禁通过。全量 2666 项通过，其余失败为既有问题：`src/prompts` CRLF 检出导致 4 项、agent-catalog 本地版本差异 1 项、doctor 计时 1 项（单独通过），以及 `ai_dynamic_worktree_fanout_injects_merge_workspace_metadata` 仍断言释放后目录不存在，与 2026-09-30「fanout 释放后保留会话工作目录」的有意行为矛盾，需另行更新该测试。
+- 性能与过度设计评审：exclude 每次 fork 读取一个小文件、命中即返回；会话创建为代码搬迁，I/O 与锁范围不变；交互模式为一个配置枚举，无新增状态机、持久字段、缓存或队列。
+
 ## 2026-10-02 Markdown 网络图片受信任域名与 GitHub 提示框统一
 
 - [x] 背景：远程图片由文档作者控制请求地址，Agent 被提示注入后可把数据编码进图片 URL，渲染即外发；Agent 沙箱不覆盖渲染层，因此保留默认拦截，但提供按域名持久信任，避免每次手动确认。
@@ -2868,3 +2886,11 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：协议 URL 路径一一对应绝对路径（`browser_local_files.rs`）；`BrowserNativePage.local_grant` 保存授权根和有界被拒目录。默认授权根取已注册工作空间或托管 worktree，否则用父目录。授权外请求统一 404（页面无法探测路径），文件存在时发 `local-access-denied`，notice 行「允许访问」调用 `browser_allow_local_access`，Rust 只接受该页待确认的目录，然后 reload。远程页 `window.open` 不能再打开本地文档。前端 notice 由 `noticeCode` 改为结构化 `{ pageId, code, params }`。
 - [x] 红绿证据：Rust `local_html_parent_relative_asset_addresses_its_real_path` 修复前稳定失败（请求解析为 `…\tmp\lib\app.js`），修复后转绿。新增工作空间默认授权、允许后可读、导航保留授权、越界与点段拒绝、只服务授权文件且缺失文件不提示、new-window 本地目标限制、被拒目录合并与上限等测试；`browser` 相关 Rust 测试 45 项通过。Web 新增 store notice 生命周期、host 允许与失败回退、面板 notice 行 DOM 用例；浏览器相关 14 个测试文件 113 项通过，`tsc -p web/tsconfig.build.json` 通过。
 - 过度设计与性能评审：没有新增实体或持久字段，只把单个授权目录换成挂在原生页上的授权结构，与页同生命周期。默认根只在打开本地文档时读一次 `state.json` 并做前缀比较，不列目录。被拒目录有界，事件只在新增目录时发送。每个协议请求多一次 canonicalize 和前缀比较，量级为微秒。
+
+## 2026-10-04 工作流画布自动布局切换为 ELK
+
+- [x] 动机与设计判断：原布局由 dagre 节点排布、自研 success 主链布局和 `@tisoap/react-flow-smart-edge` 逐边避障组合而成，三者各自计算，导致长链、回退边和标签互相挤压；这是组合方式的设计缺陷，不再修补，改用 Mermaid 同款 ELK layered 一次性完成分层、交叉最小化、正交路由和内联标签。原型在 task-025 AI-DYNAMIC 会话、默认完整工作流和自设复杂工作流上对比了交叉数、穿节点边、标签碰撞、拐点和总边长后确定方案。
+- [x] 数据与接口：`GraphVm` 新增 `groups: GraphGroupVm { id, parentGroupId }`，由后端从 DynamicGraph 的 group 包含关系投影，前端不再从节点名称反推分组。前端以 `WorkflowLayoutSpec { nodes, edges, groups }` 作为布局唯一输入（拓扑、尺寸、端口、标签宽度、`pinBelow`），spec JSON 即布局 key；作者态 `createAuthoringGraph` 与运行态 `runtimeGraphLayoutSpec` 分别生成 spec。
+- [x] 实现：elkjs 在 Web Worker 中按需加载（`workflowLayoutEngine`），`useWorkflowLayout` 异步 latest-wins，有界 LRU（32）复用已完成布局；新布局完成前保留旧画面，首次布局前节点隐藏并显示加载状态，失败显示错误。`$new-round` 用 `layerConstraint FIRST` + semiInteractive 位置提示固定在入口正下方，入口锚点在右侧；单个重启节点在目标上显示“新 Round · 从 {节点}”，多个时显示在各边标签上。节点入口锚点与 success 出口同高，success 主链保持同一行。首次适配视图基于布局边界，放不下时保持入口一侧可见。运行态绘制 AI-DYNAMIC 嵌套分组框。删除 dagre、`@types/dagre`、smart-edge 依赖与 `web/layout-lab` 原型；新增 7 种语言的 `graph.layoutPending/layoutFailed`、`workflowEditor.nodeLabels.newRoundFrom`、`workflowEditor.edgeLabels.newRoundFrom`。
+- [x] 回归：Rust `dynamic_graph_exposes_group_containment_for_layout`；Web 新增 `workflow-elk-layout.test.ts`（无节点重叠、边不穿节点、标签位于路由上、success 主链同行直连、`$new-round` 位于入口下方且右侧入边、分组框包含成员与嵌套分组、悬空边跳过）、`workflow-layout-hook.test.tsx`（旧画面保留、过期结果丢弃、缓存复用），更新作者态交互契约、拓扑签名与运行态布局 key 测试，删除 smart-edge 路由测试。全量 Web 测试其余 8 项失败（模型思考标签、continue 提交）为既有问题；`web:build` 通过，ELK worker 为独立按需 chunk。
+- 性能与过度设计评审：布局在 Worker 中执行，不阻塞主线程；布局 key 排除运行状态和遍历次数，状态刷新只重投影不重排；LRU 有界。没有新增状态机或持久字段，`GraphVm.groups` 只是已有 canonical group 事实的投影。ELK worker 约 1.4 MB，仅在首次打开画布时加载。

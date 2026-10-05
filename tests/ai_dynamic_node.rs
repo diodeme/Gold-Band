@@ -409,7 +409,7 @@ impl DynamicProvider {
                             .as_ref()
                             .map(|contract| contract.artifact.clone())
                             .unwrap_or_else(|| "dynamic-node-completion".to_string()),
-                        content,
+                        content: submit_handoff_files(&req, &content)?,
                     }),
                     None => None,
                 };
@@ -843,6 +843,50 @@ fn nested_fanout_completion(_profile: &str) -> String {
             }
         }"#
     .to_string()
+}
+
+/// Submits a completion the way an agent does: every `summary` / `task` text
+/// is written to a file in the attempt attachments directory and the JSON
+/// carries its relative path. Fixtures stay readable as inline text; content
+/// that is not a JSON object (parse-repair fixtures) is submitted unchanged.
+fn submit_handoff_files(req: &WorkerInvocation, content: &str) -> anyhow::Result<String> {
+    let Ok(mut completion) = serde_json::from_str::<serde_json::Value>(content) else {
+        return Ok(content.to_string());
+    };
+    if !completion.is_object() {
+        return Ok(content.to_string());
+    }
+    let attachments_dir = &req.runtime_context.attachments_dir;
+    let mut slots = vec![("".to_string(), "summary".to_string())];
+    for stage in ["node", "merge", "acceptance"] {
+        slots.push((format!("/next/{stage}"), stage.to_string()));
+    }
+    let branches = completion["next"]["nodes"].as_array().map_or(0, Vec::len);
+    for index in 0..branches {
+        slots.push((format!("/next/nodes/{index}"), format!("branch-{index}")));
+    }
+    for (pointer, name) in slots {
+        let Some(owner) = completion
+            .pointer_mut(&pointer)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let (text_field, path_field) = if pointer.is_empty() {
+            ("summary", "summaryPath")
+        } else {
+            ("task", "taskPath")
+        };
+        let Some(text) = owner.remove(text_field) else {
+            continue;
+        };
+        let relative = format!("handoff/{name}.md");
+        let path = attachments_dir.join(&relative);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, text.as_str().unwrap_or_default())?;
+        owner.insert(path_field.to_string(), json!(relative));
+    }
+    Ok(completion.to_string())
 }
 
 fn end_completion(summary: &str) -> String {

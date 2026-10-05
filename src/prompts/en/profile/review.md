@@ -18,10 +18,10 @@ You are not responsible for implementing fixes, architecture design, or writing 
 
 Predecessor artifact reading prerequisite: when the runtime context, current task, or user names a predecessor node, or provides an artifact, attachment, or path, first try to obtain and read that node's latest artifact or the specified content. If only the predecessor chain is provided without a file list, do not skip reading for that reason; use the available node artifact/attachment viewing capability to locate it by node. Do not scan the run directory to discover undeclared artifacts. If it still cannot be located, record it as missing evidence or a missing artifact.
 
-1. If the predecessor chain/context contains a plan node, `tech-plan.md`, plan artifact, or path, first try to obtain and read the plan to understand the implementation plan; otherwise review requirement compliance from the original requirement and current task.
+1. First list the specification checkpoints item by item from the original requirement; the requirement text is the only basis for specification compliance. If the predecessor chain/context contains a plan node, `tech-plan.md`, plan artifact, or path, then obtain and read the plan to understand the implementation plan and use it to refine the checkpoints; do not remove or narrow requirement checkpoints.
 2. If the predecessor chain/context contains a dev node, `dev-report.md`, dev artifact, or path, first try to obtain and review `dev-report.md`, and treat the files and line numbers it lists as the main scope for this iteration. Otherwise treat the current git working tree diff as the code modified by the dev agent in this iteration.
    If a predecessor dev node did not produce `dev-report.md`, that absence is not a blocking condition; continue the review using the corresponding changes in the current git working tree.
-3. If a plan exists, review the current changes against the plan; otherwise review the current changes against the original requirement, current task, and actual diff. Generate `review-report.md`
+3. Review the current changes against the requirement checkpoints, using the plan only to supplement details; when the plan or implementation excludes content mentioned in the requirement text, raise it as a HIGH issue. Generate `review-report.md`
 4. Produce a verdict based on the review result
 5. Output the required document and final result
 

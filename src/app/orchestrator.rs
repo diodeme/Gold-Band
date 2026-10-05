@@ -44,8 +44,9 @@ use crate::dynamic::{
     DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
     WorkspaceStatus, dynamic_completion_effective_schema, dynamic_graph_has_active_leaf,
     dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection, refresh_dynamic_current_leaf_ids,
-    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
-    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
+    resolve_dynamic_completion_handoff_files, validate_dynamic_group_state,
+    validate_dynamic_node_state, validate_dynamic_run_state, validate_workspace_state,
+    validate_workspace_topology, write_dynamic_node_state,
 };
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
@@ -210,9 +211,12 @@ fn effective_previous_pause_reason(
 }
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
+const WORKFLOW_OUTPUT_REPAIR_EXHAUSTED: &str = "workflow.output.repair-exhausted";
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 const DYNAMIC_FANOUT_WORKSPACE_DIRTY: &str = "dynamic.fanout.workspace-dirty";
 const DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED: &str = "dynamic.fanout.workspace-check-failed";
+const DYNAMIC_JSON_SYNTAX: &str = "dynamic.json.syntax";
+const DYNAMIC_COMPLETION_REPAIR_EXHAUSTED: &str = "dynamic.completion.repair-exhausted";
 const DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT: usize = 5;
 const DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT: usize = 10;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -1022,69 +1026,76 @@ pub(crate) fn launch_prepared_run_background(
 
     thread::Builder::new()
         .name("gold-band-run".to_string())
-        .spawn(move || {
-            let app = background_app;
-            let PreparedRunData {
-                validated,
-                resolved_profiles,
-                mut run,
-                mut round,
-                node,
-            } = prepared.data;
-            let fallback_node = node.clone();
-            // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
-            // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
-            let drive_result = catch_unwind(AssertUnwindSafe(|| {
-                prepare_run_worktree_background(&app, &task_id, &mut run, &round, &node).and_then(
-                    |ready| {
-                        if !ready {
-                            return Ok(());
-                        }
-                        drive_from_node(
-                            &app,
-                            &task_id,
-                            &validated,
-                            &resolved_profiles,
-                            &mut run,
-                            &mut round,
-                            node,
-                        )
-                    },
-                )
-            }));
-            let err = match drive_result {
-                Ok(Ok(())) => None,
-                Ok(Err(err)) => Some(err),
-                Err(panic_payload) => Some(anyhow::anyhow!(
-                    "background drive panicked: {}",
-                    panic_payload
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
-                        .unwrap_or("<non-string panic payload>")
-                )),
-            };
-            if let Some(err) = err {
-                terminalize_background_drive_error(
-                    &app,
-                    &task_id,
-                    &run,
-                    &round,
-                    &fallback_node,
-                    &err,
-                );
-                let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
-                let _ = std::fs::write(
-                    app.paths
-                        .runs_dir(&task_id)
-                        .join("desktop-start-error.txt")
-                        .as_std_path(),
-                    err.to_string(),
-                );
-            }
-        })?;
+        .spawn(move || drive_accepted_run(&background_app, &task_id, prepared))?;
 
     Ok(initial_run)
+}
+
+/// Drives an accepted run on the calling thread until it reaches a terminal or
+/// paused state, then returns the canonical persisted run state.
+pub(crate) fn run_prepared_run_foreground(
+    app: &App,
+    task_id: &str,
+    prepared: AcceptedRun,
+) -> Result<RunState> {
+    let run_id = prepared.run().id.clone();
+    drive_accepted_run(app, task_id, prepared);
+    app.run_status(task_id, &run_id)
+}
+
+/// Single drive path shared by background and foreground launches. Drive
+/// errors and panics are terminalized into the canonical run state instead of
+/// being returned, so every caller observes the same lifecycle facts.
+fn drive_accepted_run(app: &App, task_id: &str, prepared: AcceptedRun) {
+    let PreparedRunData {
+        validated,
+        resolved_profiles,
+        mut run,
+        mut round,
+        node,
+    } = prepared.data;
+    let fallback_node = node.clone();
+    // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
+    // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
+    let drive_result = catch_unwind(AssertUnwindSafe(|| {
+        prepare_run_worktree_background(app, task_id, &mut run, &round, &node).and_then(|ready| {
+            if !ready {
+                return Ok(());
+            }
+            drive_from_node(
+                app,
+                task_id,
+                &validated,
+                &resolved_profiles,
+                &mut run,
+                &mut round,
+                node,
+            )
+        })
+    }));
+    let err = match drive_result {
+        Ok(Ok(())) => None,
+        Ok(Err(err)) => Some(err),
+        Err(panic_payload) => Some(anyhow::anyhow!(
+            "background drive panicked: {}",
+            panic_payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or("<non-string panic payload>")
+        )),
+    };
+    if let Some(err) = err {
+        terminalize_background_drive_error(app, task_id, &run, &round, &fallback_node, &err);
+        let _ = std::fs::create_dir_all(app.paths.runs_dir(task_id).as_std_path());
+        let _ = std::fs::write(
+            app.paths
+                .runs_dir(task_id)
+                .join("desktop-start-error.txt")
+                .as_std_path(),
+            err.to_string(),
+        );
+    }
 }
 
 pub(crate) fn prepare_run(
@@ -4816,7 +4827,10 @@ fn apply_control_decision(
                 continue_ref: None,
             }))
         }
-        ControlDecision::PauseRun(reason) => {
+        ControlDecision::PauseRun {
+            reason,
+            runtime_error,
+        } => {
             run.status = RunStatus::Paused;
             run.pause_reason = Some(reason);
             run.updated_at = now_rfc3339_like();
@@ -4844,22 +4858,25 @@ fn apply_control_decision(
                 pause_stage,
                 pause_summary.clone(),
             );
+            let mut event_data = run_event_data(
+                &ExecutionContext::for_run(task_id, &run.id)
+                    .with_round(round.id.clone())
+                    .with_node(node.node_id.clone())
+                    .with_attempt(node.attempt_id.clone()),
+                Some(pause_stage),
+                Some(run.status),
+                Some(pause_summary),
+                Some(reason),
+            );
+            event_data.control_failure = runtime_error
+                .map(|runtime_error| serde_json::json!({ "runtimeError": runtime_error }));
             append_run_event_best_effort(
                 &app.paths,
                 task_id,
                 &run.id,
                 "run_paused",
                 run.updated_at.clone(),
-                run_event_data(
-                    &ExecutionContext::for_run(task_id, &run.id)
-                        .with_round(round.id.clone())
-                        .with_node(node.node_id.clone())
-                        .with_attempt(node.attempt_id.clone()),
-                    Some(pause_stage),
-                    Some(run.status),
-                    Some(pause_summary),
-                    Some(reason),
-                ),
+                event_data,
             );
             persist_runtime_state(app, task_id, run, round, node)?;
             emit_pause_side_effects(app, task_id, run, round, node);
@@ -9608,7 +9625,7 @@ fn execute_dynamic_worker(
                     )
                     .try_exists()?;
                 let schema_validation_errors = err
-                    .downcast_ref::<DynamicCompletionSchemaValidationError>()
+                    .downcast_ref::<DynamicCompletionValidationError>()
                     .map(|error| error.errors.clone());
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
@@ -9686,6 +9703,9 @@ fn execute_dynamic_worker(
                 continue;
             }
             Err(err) => {
+                let validation_errors = err
+                    .downcast_ref::<DynamicCompletionValidationError>()
+                    .map(|error| error.errors.clone());
                 append_dynamic_event(
                     ctx,
                     "dynamic_proposal_repair_exhausted",
@@ -9695,9 +9715,26 @@ fn execute_dynamic_worker(
                         "repairAttempts": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "error": err.to_string(),
+                        "validationErrors": validation_errors,
                     }),
                 )?;
-                return Err(err);
+                let Some(validation_errors) = validation_errors else {
+                    return Err(err);
+                };
+                // Invalid output is a workflow pause the user can continue from,
+                // not an unknown internal failure.
+                return Err(runtime_error(manual_runtime_error_info(
+                    RuntimeErrorDomain::Dynamic,
+                    DYNAMIC_COMPLETION_REPAIR_EXHAUSTED,
+                    format!("{err:#}"),
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "repairAttempts": proposal_repair_prompts,
+                        "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "validationErrors": validation_errors,
+                    }),
+                )));
             }
         }
     }
@@ -10536,7 +10573,17 @@ fn build_dynamic_completion_from_raw(
             &ctx.app.paths.repo_root,
         )?
     };
-    let (completion, parsed, schema_errors) = parse_dynamic_completion_artifact(ctx, &graph, raw)?;
+    let attachments_dir = ctx.app.paths.dynamic_node_attachments_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        attempt_id,
+    );
+    let (completion, parsed, schema_errors) =
+        parse_dynamic_completion_artifact(ctx, &graph, raw, &attachments_dir)?;
     let raw_output_path = ctx
         .app
         .paths
@@ -10565,17 +10612,36 @@ fn parse_dynamic_completion_artifact(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     raw: &str,
+    attachments_dir: &Utf8Path,
 ) -> Result<(
     DynamicNodeCompletion,
     serde_json::Value,
     Vec<DynamicProposalValidationError>,
 )> {
-    let parsed: serde_json::Value = parse_json_artifact(raw)?;
-    let schema_errors = validate_dynamic_completion_schema(ctx, graph, &parsed)?;
+    let submission: serde_json::Value =
+        parse_json_artifact(raw).map_err(|error| match error
+            .downcast_ref::<crate::artifacts::JsonArtifactSyntaxError>(
+        ) {
+            Some(syntax) => DynamicCompletionValidationError {
+                errors: vec![dynamic_json_syntax_validation_error(syntax)],
+            }
+            .into(),
+            None => error,
+        })?;
+    let schema_errors = validate_dynamic_completion_schema(ctx, graph, &submission)?;
+    // The proposal stores the frozen canonical text, never the handoff paths,
+    // so later file edits cannot change materialized tasks.
+    let parsed = resolve_dynamic_completion_handoff_files(&submission, attachments_dir).map_err(
+        |file_errors| {
+            let mut errors = schema_errors.clone();
+            errors.extend(file_errors);
+            anyhow::Error::from(DynamicCompletionValidationError { errors })
+        },
+    )?;
     let completion: DynamicNodeCompletion = serde_path_to_error::deserialize(parsed.clone())
         .map_err(|err| {
             if !schema_errors.is_empty() {
-                return DynamicCompletionSchemaValidationError {
+                return DynamicCompletionValidationError {
                     errors: schema_errors.clone(),
                 }
                 .into();
@@ -10652,9 +10718,44 @@ fn missing_field_from_serde_message(message: &str) -> Option<&str> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("dynamic-node-completion schema validation failed")]
-struct DynamicCompletionSchemaValidationError {
+#[error("dynamic-node-completion validation failed")]
+struct DynamicCompletionValidationError {
     errors: Vec<DynamicProposalValidationError>,
+}
+
+fn dynamic_json_syntax_validation_error(
+    syntax: &crate::artifacts::JsonArtifactSyntaxError,
+) -> DynamicProposalValidationError {
+    let (message, expected) = match syntax.category {
+        crate::artifacts::JsonSyntaxCategory::Eof => (
+            "JSON ended before every object, array or string was closed",
+            "complete JSON with every `{`, `[` and `\"` closed",
+        ),
+        crate::artifacts::JsonSyntaxCategory::Syntax => (
+            "JSON has a syntax error at the reported position",
+            "valid JSON syntax at the reported position",
+        ),
+    };
+    let mut error = DynamicProposalValidationError::new(
+        DYNAMIC_JSON_SYNTAX,
+        message,
+        serde_json::json!({
+            "category": syntax.category,
+            "line": syntax.line,
+            "column": syntax.column,
+            "snippet": syntax.snippet,
+            "parser": syntax.message,
+        }),
+    );
+    error.actual = Some(format!(
+        "line {} column {}, text before the error: {}",
+        syntax.line, syntax.column, syntax.snippet
+    ));
+    error.expected = Some(expected.to_string());
+    error.suggestion = Some(
+        "output the whole dynamic-node-completion JSON again; do not change fields that were already correct".to_string(),
+    );
+    error
 }
 
 fn validate_dynamic_completion_schema(
@@ -14885,6 +14986,18 @@ fn dynamic_fanout_head(workspace: &WorkspaceState) -> Result<String> {
         .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))
 }
 
+/// Runtime worktrees live inside the user repository so merge agents can read
+/// them; the namespace must never show up as user changes or be committed.
+fn ensure_repo_gold_band_root_locally_excluded(app: &App) -> Result<()> {
+    let relative = app
+        .paths
+        .repo_gold_band_root
+        .strip_prefix(&app.paths.repo_root)
+        .map_err(|_| anyhow!("repository Gold Band root is outside the repository"))?;
+    GitRepositoryService::default()
+        .ensure_local_exclude(&app.paths.repo_root, &format!("/{relative}/"))
+}
+
 fn fork_dynamic_workspace_from_commit(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
@@ -14904,6 +15017,8 @@ fn fork_dynamic_workspace_from_commit(
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+    ensure_repo_gold_band_root_locally_excluded(ctx.app)
+        .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"))?;
     if let Err(error) = GitWorkspaceManager::default().ensure_worktree(
         &parent.repo_root,
         &path,
@@ -16148,7 +16263,23 @@ fn drive_from_node_with_initial_session(
                         run,
                         round,
                         &node,
-                        ControlDecision::PauseRun(PauseReason::RuntimeAbnormal),
+                        ControlDecision::PauseRun {
+                            reason: PauseReason::RuntimeAbnormal,
+                            runtime_error: Some(Box::new(manual_runtime_error_info(
+                                RuntimeErrorDomain::Workflow,
+                                WORKFLOW_OUTPUT_REPAIR_EXHAUSTED,
+                                format!(
+                                    "invalid output repair exhausted at {}/{}/{}",
+                                    round.id, node.node_id, node.attempt_id
+                                ),
+                                serde_json::json!({
+                                    "nodeId": node.node_id,
+                                    "attemptId": node.attempt_id,
+                                    "repairAttempts": invalid_output_repair_prompts,
+                                    "maxRepairAttempts": MAX_INVALID_OUTPUT_REPAIR_PROMPTS,
+                                }),
+                            ))),
+                        },
                         expected_execution_id.as_deref(),
                     )?;
                     app.finish_runtime_candidate_best_effort(
@@ -16178,7 +16309,10 @@ fn drive_from_node_with_initial_session(
                         run,
                         round,
                         &node,
-                        ControlDecision::PauseRun(PauseReason::ErrorBlocked),
+                        ControlDecision::PauseRun {
+                            reason: PauseReason::ErrorBlocked,
+                            runtime_error: None,
+                        },
                         node.runtime_execution_id.as_deref(),
                     )?;
                     app.finish_runtime_candidate_best_effort(
@@ -16463,7 +16597,10 @@ mod tests {
                 }
                 index if index == self.missing_turns => Some(OutputArtifactPayload {
                     name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                    content: test_end_completion("repaired completion"),
+                    content: test_end_submission_in(
+                        &req.runtime_context.attachments_dir,
+                        "repaired completion",
+                    ),
                 }),
                 _ => panic!("dynamic repair should finish after the second provider turn"),
             };
@@ -19405,6 +19542,35 @@ mod tests {
         )
     }
 
+    /// Raw `end` completion as an agent submits it: the summary text is
+    /// written to the attempt attachments directory and referenced by path.
+    fn test_end_submission_in(attachments_dir: &Utf8Path, summary: &str) -> String {
+        let summary_path = attachments_dir.join("handoff/summary.md");
+        std::fs::create_dir_all(summary_path.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(summary_path.as_std_path(), summary).unwrap();
+        serde_json::json!({
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summaryPath": "handoff/summary.md",
+            "next": { "type": "end" }
+        })
+        .to_string()
+    }
+
+    fn test_end_submission(app: &App, node_id: &str, attempt_id: &str, summary: &str) -> String {
+        let attachments_dir = app.paths.dynamic_node_attachments_dir(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            node_id,
+            attempt_id,
+        );
+        test_end_submission_in(&attachments_dir, summary)
+    }
+
     #[test]
     fn dynamic_inline_control_repair_uses_a_distinct_prompt_identity() {
         let (_temp, repo_root) = init_repo();
@@ -19451,6 +19617,51 @@ mod tests {
             dynamic_proposal_repair_prompt_id(&invocations[0].0, 1)
         );
         assert_ne!(invocations[0].0, invocations[1].0);
+    }
+
+    #[test]
+    fn dynamic_unclosed_completion_repairs_with_syntax_error_and_pauses_with_structured_code() {
+        // The root object misses one closing brace; `next.node` alone is a complete object.
+        let unclosed = r#"{"version":"0.1","kind":"dynamic-node-completion","status":"success","summary":"s","next":{"type":"single","node":{"id":"plan","kind":"worker","title":"t","task":"t"}}"#;
+        let (_temp, repo_root) = init_repo();
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let app = App::with_provider(
+            repo_root.clone(),
+            Box::new(DynamicRepairIdentityProvider {
+                invocations: invocations.clone(),
+                missing_turns: usize::MAX,
+                initial_output: Some(unclosed.to_string()),
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("implementation");
+        node.status = DynamicNodeStatus::Running;
+        node.begin_runtime_execution("execution-implementation", "2026-06-16T00:00:01Z");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let error = execute_dynamic_worker(&ctx, &graph, node).unwrap_err();
+
+        assert_eq!(
+            invocations.lock().unwrap().len(),
+            1 + MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS as usize
+        );
+        let info = normalize_runtime_error(&error);
+        assert_eq!(info.domain, RuntimeErrorDomain::Dynamic);
+        assert_eq!(info.code_str(), DYNAMIC_COMPLETION_REPAIR_EXHAUSTED);
+        assert_eq!(info.recovery, RecoveryMode::Manual);
+        assert_eq!(
+            info.pause_reason_after_retry_boundary(),
+            PauseReason::RuntimeAbnormal
+        );
+        let errors = info.params["validationErrors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["code"], DYNAMIC_JSON_SYNTAX);
+        assert_eq!(errors[0]["params"]["category"], "eof");
+        assert_eq!(errors[0]["params"]["line"], 1);
+        assert_eq!(errors[0]["params"]["column"], unclosed.len());
     }
 
     #[test]
@@ -21843,7 +22054,7 @@ mod tests {
         assert!(
             prompt
                 .system_prompt
-                .contains("人类最新指令 > 原始需求与明确非目标")
+                .contains("人类最新指令 > 原始需求及其中或用户明确声明的非目标")
         );
         assert!(!prompt.user_prompt.contains("continueFromNodeId"));
         assert!(prompt.user_prompt.contains("hello-step"));
@@ -22817,7 +23028,7 @@ mod tests {
             "attempt-001",
             &OutputArtifactPayload {
                 name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                content: test_end_completion("stale"),
+                content: test_end_submission(&app, &node.id, "attempt-001", "stale"),
             },
         )
         .unwrap();
@@ -22855,7 +23066,7 @@ mod tests {
             "attempt-001",
             &OutputArtifactPayload {
                 name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                content: test_end_completion("stale"),
+                content: test_end_submission(&app, &node.id, "attempt-001", "stale"),
             },
         )
         .unwrap();
@@ -23010,6 +23221,31 @@ mod tests {
         assert!(graph.proposals.is_empty());
         assert!(graph.groups.is_empty());
         assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+    }
+
+    #[test]
+    fn fanout_worktree_namespace_stays_out_of_user_repository_status() {
+        let (_temp, repo_root) = init_repo();
+        // Only the colocated test runtime storage is excluded; real user
+        // repositories do not know about Gold Band's in-repo namespace.
+        std::fs::write(repo_root.join(".git/info/exclude"), "gold-band-home/\n").unwrap();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node("source")]);
+        let repository = GitRepositoryService::default();
+        assert!(repository.is_clean(&repo_root).unwrap());
+
+        fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "source").unwrap();
+
+        assert_eq!(repository.status_porcelain(&repo_root).unwrap(), "");
+        assert!(repository.is_clean(&repo_root).unwrap());
+        // Repeated forks keep the local exclude idempotent.
+        fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "sibling").unwrap();
+        let exclude = std::fs::read_to_string(repo_root.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches("/.gold-band/").count(), 1);
     }
 
     #[test]
@@ -25333,7 +25569,7 @@ mod tests {
             result_payload: Some(ProviderResultPayload {
                 output_artifact: Some(OutputArtifactPayload {
                     name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                    content: test_end_completion("already done"),
+                    content: test_end_submission(&app, &node.id, &attempt_id, "already done"),
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
@@ -25610,7 +25846,11 @@ mod tests {
             &graph,
         )
         .unwrap();
-        write_dynamic_completion_artifact(&app, "bootstrap", test_end_completion("already done"));
+        write_dynamic_completion_artifact(
+            &app,
+            "bootstrap",
+            test_end_submission(&app, "bootstrap", "attempt-001", "already done"),
+        );
         let (launch_signal, launch_result) = mpsc::channel();
         let resume = DynamicResumeOverride {
             request_id: "resume-bootstrap".to_string(),
@@ -25677,7 +25917,11 @@ mod tests {
             &graph,
         )
         .unwrap();
-        write_dynamic_completion_artifact(&app, "bootstrap", test_end_completion("already done"));
+        write_dynamic_completion_artifact(
+            &app,
+            "bootstrap",
+            test_end_submission(&app, "bootstrap", "attempt-001", "already done"),
+        );
         let (launch_signal, launch_result) = mpsc::channel();
         let resume = test_dynamic_resume_override(
             "resume-bootstrap-revoked",

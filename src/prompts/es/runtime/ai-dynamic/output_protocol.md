@@ -1,5 +1,10 @@
 Tu paso final debe emitir solo el contenido JSON del artifact `dynamic-node-completion`. No emitas explicaciones, Markdown, bloques de código ni texto adicional.
 
+El texto largo se entrega mediante archivos:
+- El resumen de este nodo y el cuerpo de cada tarea sucesora (incluidas merge / acceptance) no se escriben en el JSON. Escribe primero el cuerpo en el directorio attachments de este attempt y luego indica en el JSON la ruta del archivo relativa al directorio attachments: el resumen en `summaryPath` y el cuerpo de la tarea en `taskPath`.
+- Nombres recomendados: `handoff/summary.md`, `handoff/<id del nodo sucesor>.md`, `handoff/merge.md`, `handoff/acceptance.md`. La ruta debe ser relativa y no puede contener `..`; el archivo debe ser texto UTF-8 no vacío.
+- Runtime lee y fija el contenido de estos archivos al aceptar el artifact; modificar los archivos después de la aceptación no cambia el resumen ni las tareas ya enviados.
+
 {% if agent_strategy_mode == "fixed" %}
 Este nodo AI-DYNAMIC usa la estrategia fixed-agent: excepto `workflow-invocation`, todos los nodos worker, merge y acceptance internos usarán el mismo provider fijo elegido por runtime. No emitas campos provider para ningún nodo.
 {{ model_policy }}
@@ -21,8 +26,8 @@ Recordatorios de restricciones:
 - No emitas `provider` para `workflow-invocation`.
 {% endif %}- {{ model_policy }}
 - Cuando `next.type="end"`, no incluyas `node / groupId / nodes / merge / acceptance`.
-{% if end_summary_is_outer_handoff %}- Si usas `next.type="end"`, `summary` debe ser una entrega de negocio completa para el sucesor fuera de AI-DYNAMIC: indica qué se completó, conclusiones clave, salidas importantes y preocupaciones restantes. No describas solo el enrutamiento ni digas “accepted”.
-{% else %}- Si usas `next.type="end"`, `summary` es un informe interno de progreso o de rama. Indica con precisión qué completó este nodo para el manifiesto de informes de Runtime y el group contenedor.
+{% if end_summary_is_outer_handoff %}- Si usas `next.type="end"`, el resumen al que apunta `summaryPath` debe ser una entrega de negocio completa para el sucesor fuera de AI-DYNAMIC: indica qué se completó, conclusiones clave, salidas importantes y preocupaciones restantes. No describas solo el enrutamiento ni digas “accepted”.
+{% else %}- Si usas `next.type="end"`, el resumen al que apunta `summaryPath` es un informe interno de progreso o de rama. Indica con precisión qué completó este nodo para el manifiesto de informes de Runtime y el group contenedor.
 {% endif %}
 - Cuando `next.type="single"`, debes proporcionar un `next.node` completo, y no debes proporcionar `groupId / nodes / merge / acceptance`.
 - No emitas `workspace`, un modo de workspace, una ruta ni una rama para ningún nodo. Runtime es el único responsable de la asignación de workspace.

@@ -1075,7 +1075,10 @@
       "dynamic-agent-duplicate": "AI-DYNAMIC 노드 {{nodeId}}의 agent {{provider}}가 중복되었습니다.",
       "dynamic-agent-model-blank": "AI-DYNAMIC 노드 {{nodeId}}의 agent {{provider}} 모델은 비울 수 없습니다.",
       "agent-model-blank": "Agent {{provider}}의 모델은 비워 둘 수 없습니다.",
-      "invalid": "워크플로 구성이 유효하지 않습니다."
+      "invalid": "워크플로 구성이 유효하지 않습니다.",
+      "output": {
+        "repair-exhausted": "노드 출력이 {{repairAttempts}}회 수정 후에도 출력 형식에 맞지 않아 워크플로를 일시 정지했습니다."
+      }
     },
     "workspace": {
       "path-invalid-utf8": "선택한 워크스페이스 경로가 유효한 UTF-8이 아닙니다.",
@@ -1113,6 +1116,11 @@
       "session-resume-failed": "세션 재개에 실패했습니다. 새 작업으로 다시 실행됩니다.",
       "workspace-already-bound": "이 워크스페이스는 이미 바인딩되어 있습니다.",
       "workspace-not-found": "이 워크스페이스 바인딩을 찾을 수 없습니다."
+    },
+    "dynamic": {
+      "completion": {
+        "repair-exhausted": "노드 출력이 {{repairAttempts}}회 수정 후에도 프로토콜에 맞지 않아 워크플로를 일시 정지했습니다."
+      }
     }
   },
   "status": {
@@ -1765,11 +1773,13 @@
       "cleanup": "정리",
       "aiDynamic": "AI 동적 노드",
       "end": "종료",
-      "newRound": "새 Round"
+      "newRound": "새 Round",
+      "newRoundFrom": "새 Round · {{node}}부터"
     },
     "edgeLabels": {
       "success": "성공",
-      "failure": "실패"
+      "failure": "실패",
+      "newRoundFrom": "{{outcome}} · {{node}}부터"
     },
     "successPath": "성공 필드 경로",
     "successEquals": "예상 값",
@@ -2328,6 +2338,7 @@
     "sessionElapsed": "세션 누적 {{duration}}",
     "timingSession": "세션 누적",
     "sessionFailed": "ACP 세션 실패",
+    "workflowPaused": "워크플로 일시 정지됨",
     "retrying": "재시도 중 {{current}}/{{total}}회",
     "retryFailed": "{{count}}회 재시도 후 실패",
     "retryStopped": "{{count}}회 재시도 후 중지됨",
@@ -2410,7 +2421,9 @@
     "viewSession": "세션 보기",
     "viewLog": "로그 보기",
     "copyNodeId": "node id 복사",
-    "retryFromNode": "이 노드부터 다시 시도"
+    "retryFromNode": "이 노드부터 다시 시도",
+    "layoutPending": "워크플로 그래프 배치 중",
+    "layoutFailed": "워크플로 그래프를 배치하지 못했습니다"
   },
   "settings": {
     "title": "설정",

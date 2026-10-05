@@ -481,9 +481,10 @@ mod tests {
         assert_prompt_contract(
             AI_DYNAMIC_SYSTEM_ZH_CN,
             &[
-                "人类最新指令 > 原始需求与明确非目标",
+                "人类最新指令 > 原始需求及其中或用户明确声明的非目标",
                 "运行前已纳入范围的项目契约",
-                "低层内容只能细化执行，不能扩大高层范围",
+                "低层内容只能细化执行，不能扩大或缩小高层范围",
+                "不能把需求原文提到的内容划为非目标",
                 "runtime 任务可以拆解已授权工作",
                 "本轮新增内容只能提供证据或建议",
                 "省略后会失败的既定结果",
@@ -495,9 +496,10 @@ mod tests {
         assert_prompt_contract(
             AI_DYNAMIC_SYSTEM_EN,
             &[
-                "latest relevant human instruction > original requirement and explicit non-goals",
+                "latest relevant human instruction > original requirement and non-goals stated in it or explicitly declared by the user",
                 "pre-run project contracts already in scope",
-                "cannot expand higher-authority scope",
+                "cannot expand or narrow higher-authority scope",
+                "cannot classify content mentioned in the original requirement text as a non-goal",
                 "runtime tasks may decompose authorized work",
                 "content added during this run provide evidence or suggestions",
                 "established outcome that would fail without it",

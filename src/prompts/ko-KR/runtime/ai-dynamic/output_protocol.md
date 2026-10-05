@@ -1,5 +1,10 @@
 마지막 단계에서는 `dynamic-node-completion` artifact에 해당하는 JSON 내용만 출력하십시오. 설명, Markdown, 코드 펜스, 추가 텍스트를 출력하지 마십시오.
 
+긴 텍스트는 파일로 인계합니다:
+- 이 노드의 요약과 각 후속 작업(merge / acceptance 포함)의 본문은 JSON에 쓰지 마십시오. 먼저 본문을 이번 attempt의 attachments 디렉터리에 쓰고, JSON에는 attachments 디렉터리 기준 상대 경로를 채우십시오. 요약은 `summaryPath`, 작업 본문은 `taskPath`에 넣습니다.
+- 권장 이름은 `handoff/summary.md`, `handoff/<후속 노드 id>.md`, `handoff/merge.md`, `handoff/acceptance.md`입니다. 경로는 상대 경로여야 하며 `..`를 포함할 수 없습니다. 파일은 비어 있지 않은 UTF-8 텍스트여야 합니다.
+- Runtime은 artifact를 수락할 때 이 파일 내용을 읽어 고정합니다. 수락 후 파일을 수정해도 이미 제출된 요약이나 작업은 바뀌지 않습니다.
+
 {% if agent_strategy_mode == "fixed" %}
 현재 AI-DYNAMIC은 고정 Agent 전략을 사용합니다. `workflow-invocation`을 제외한 모든 internal worker, merge, acceptance 노드는 runtime이 선택한 동일한 고정 provider를 사용합니다. 어떤 노드에도 provider 필드를 출력하지 마십시오.
 {{ model_policy }}
@@ -21,8 +26,8 @@
 - `workflow-invocation`에는 `provider`를 출력하지 마십시오.
 {% endif %}- {{ model_policy }}
 - `next.type="end"`일 때 `next`에 `node / groupId / nodes / merge / acceptance`를 넣지 마십시오.
-{% if end_summary_is_outer_handoff %}- `next.type="end"`를 사용하면 `summary`는 AI-DYNAMIC 외부 후속 노드에 대한 완전한 비즈니스 인계 요약이어야 합니다. 완료 내용, 핵심 결론, 중요 산출물, 남은 우려를 기술하고, 라우팅 동작이나 "acceptance 통과"만 쓰지 마십시오.
-{% else %}- `next.type="end"`를 사용하면 `summary`는 내부 진행/branch 보고입니다. Runtime 보고 manifest와 상위 group을 위해 이 노드가 완료한 내용을 정확히 기술하십시오.
+{% if end_summary_is_outer_handoff %}- `next.type="end"`를 사용하면 `summaryPath`가 가리키는 요약은 AI-DYNAMIC 외부 후속 노드에 대한 완전한 비즈니스 인계 요약이어야 합니다. 완료 내용, 핵심 결론, 중요 산출물, 남은 우려를 기술하고, 라우팅 동작이나 "acceptance 통과"만 쓰지 마십시오.
+{% else %}- `next.type="end"`를 사용하면 `summaryPath`가 가리키는 요약은 내부 진행/branch 보고입니다. Runtime 보고 manifest와 상위 group을 위해 이 노드가 완료한 내용을 정확히 기술하십시오.
 {% endif %}
 - `next.type="single"`이면 완전한 `next.node`를 제공하고 `groupId / nodes / merge / acceptance`는 제공하지 마십시오.
 - 어떤 노드에도 `workspace`, workspace mode, 경로, branch를 출력하지 마십시오. runtime이 workspace 할당을 독점합니다.

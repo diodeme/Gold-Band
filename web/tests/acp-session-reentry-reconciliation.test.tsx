@@ -90,6 +90,7 @@ import {
   resetAcpResourceCache,
   restoreAcpSession,
   storeAcpLoadedEventWindow,
+  storeAcpBranchViewState,
   storeAcpSession,
   updateAcpOptimisticEvents,
 } from '@/components/acp/ACPChatDialog';
@@ -199,7 +200,7 @@ function update(eventUpdate: AcpUiEventVm): AcpSessionUpdatedEventVm {
 }
 
 async function renderDialog(
-  acpSession: AcpSessionVm,
+  acpSession: AcpSessionVm | null,
   branchId = 'root',
   onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
   optimisticEvents?: AcpUiEventVm[],
@@ -439,6 +440,84 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it.each([false, true])('does not paint an obsolete cached head while reentry is awaiting canonical content (replay loss: %s)', async (loseReplay) => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('old-head', 10, 'textDelta', '12:58 cached answer')]);
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    const count = loseReplay ? CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + 1 : 1;
+    for (let index = 0; index < count; index += 1) {
+      applyConversationEventToBranchSnapshots(update(event(
+        `background-${index}`, 20 + index, 'textDelta', `background answer ${index}`,
+      )));
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(loseReplay);
+    let resolveHead!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { resolveHead = resolve; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).not.toContain('12:58 cached answer');
+      expect(container.querySelector('[data-testid="markdown"]')).toBeNull();
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+      await act(async () => resolveHead(session([event('current-head', 100, 'textDelta', '15:46 current answer')])));
+      expect(container.textContent).toContain('15:46 current answer');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('preserves an explicitly detached cached history while the background head advances', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const history = session([event('history-anchor', 10, 'textDelta', 'Reading this history')]);
+    storeAcpSession(cacheKey, history);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: history.sessionId!, timelineGeneration: 1, events: history.events,
+    }, 1_000);
+    storeAcpBranchViewState(cacheKey, {
+      anchorKey: null, anchorOffset: 0, scrollTop: 0, atBottom: false, hasOlder: true, hasNewer: true,
+    });
+    markAcpSessionContentHydrated(cacheKey);
+    applyConversationEventToBranchSnapshots(update(event('background-head', 20, 'textDelta', 'New background head')));
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).toContain('Reading this history');
+      expect(container.textContent).not.toContain('New background head');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('reports a failed reentry read instead of unlocking obsolete hydrated content', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('old-head', 10, 'textDelta', 'Obsolete cached answer')]);
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    applyConversationEventToBranchSnapshots(update(event('new-head', 20, 'textDelta', 'Background answer')));
+    let rejectHead!: (reason: Error) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise((_, reject) => { rejectHead = reject; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      vi.useFakeTimers();
+      vi.mocked(getAcpSession).mockRejectedValue(new Error('Reentry read unavailable'));
+      await act(async () => {
+        rejectHead(new Error('Reentry read unavailable'));
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+      expect(container.textContent).not.toContain('Obsolete cached answer');
+      expect(container.textContent).toContain('Reentry read unavailable');
+    } finally {
+      vi.useRealTimers();
+      await unmount(root);
+    }
+  });
+
   it.each([
     { outcome: 'success', arrival: 'body' },
     { outcome: 'failure', arrival: 'body' },

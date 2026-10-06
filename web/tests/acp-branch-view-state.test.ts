@@ -6,6 +6,7 @@ import {
   applyAcpScrollAnchorCompensation,
   captureAcpBranchScrollState,
   captureAcpBranchViewState,
+  canRestoreAcpSessionContent,
   configureAcpResourceCacheSessionCount,
   hasHydratedAcpSessionContent,
   markAcpSessionContentHydrated,
@@ -19,6 +20,7 @@ import {
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
 import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from '@/lib/acp-chat-resource-cache';
+import { readConversationBranchReplaySnapshot } from '@/lib/conversation-event-router';
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
 
 const state = (scrollTop: number) => ({
@@ -81,6 +83,49 @@ beforeEach(() => {
 });
 
 describe('ACP branch view state cache', () => {
+  it.each([
+    { name: 'unchanged head', generation: 2, head: 10, expected: true },
+    { name: 'new background head', generation: 2, head: 20, expected: false },
+    { name: 'new generation with reset sequence', generation: 3, head: 1, expected: false },
+    { name: 'obsolete Router generation', generation: 1, head: 20, expected: true },
+    { name: 'unknown Router generation', generation: 0, head: 20, expected: false },
+  ])('checks cached timeline freshness before restoring $name', ({ generation, head, expected }) => {
+    const key = 'freshness-window';
+    storeAcpSession(key, session('root'));
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1', timelineGeneration: 2, events: [{ ...event('head'), seq: 10 }],
+    }, 100);
+    const replay = {
+      ...readConversationBranchReplaySnapshot({ projectId: 'p', taskId: 't', runId: 'r', roundId: 'r', nodeId: 'n', attemptId: 'a' }, 'root'),
+      sessionId: 'session-1', timelineGeneration: generation, headSeq: head,
+    };
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(false);
+    markAcpSessionContentHydrated(key);
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(expected);
+    expect(canRestoreAcpSessionContent(key, { ...replay, sessionId: 'different-session' })).toBe(false);
+  });
+
+  it('does not mistake the newest retained event for coverage of a missing revision', () => {
+    const key = 'freshness-loss';
+    const cached = session('root');
+    cached.eventPage.coveredRevision = 10;
+    cached.eventPage.newestSeq = 10;
+    storeAcpSession(key, cached);
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1', timelineGeneration: 1, events: [{ ...event('tail'), seq: 30 }],
+    }, 100);
+    markAcpSessionContentHydrated(key);
+    const replay = {
+      ...readConversationBranchReplaySnapshot({ projectId: 'p', taskId: 't', runId: 'r', roundId: 'r', nodeId: 'n', attemptId: 'a' }, 'root'),
+      sessionId: 'session-1', timelineGeneration: 1, headSeq: 30,
+      requiresCatchUp: true, lossWatermarkGeneration: 1, lossWatermarkRevision: 20,
+    };
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(false);
+    storeAcpSession(key, { ...cached, eventPage: { ...cached.eventPage, coveredRevision: 30, newestSeq: 30 } });
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(false);
+    expect(canRestoreAcpSessionContent(key, { ...replay, requiresCatchUp: false })).toBe(true);
+  });
+
   it('starts a remounted viewport from the cached follow intent', () => {
     expect(shouldInitiallyFollowAcpBranch(state(100))).toBe(false);
     expect(shouldInitiallyFollowAcpBranch({ ...state(100), atBottom: true })).toBe(true);

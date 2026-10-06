@@ -993,6 +993,10 @@
       "invalid-outcome": "手動 check の結果が無効です。"
     },
     "runtime": {
+      "io": {
+        "storage-full": "ディスク容量が不足したため、実行が中断されました。空き容量を確保してから続行してください。",
+        "permission-denied": "セッションデータを書き込めません。ディレクトリの書き込み権限を確認してください。"
+      },
       "conversation-not-available": "ワークフローが実行中であるため、通常のメッセージはまだ送信できません。",
       "continue-not-available": "このノードを継続する必要はなくなりました。すでにアクティブになっているか、再開できなくなっている可能性があります。",
       "continue-already-active": "ワークフローはすでに再開されています。お待ちください。",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "引数",
     "toolReady": "準備完了",
+    "toolResultUnconfirmed": "結果未確認",
     "toolNoOutput": "まだツール出力がありません",
     "activityThinking": "思考中",
     "activityCalling": "{{name}} を呼び出しています",

@@ -311,6 +311,7 @@ import {
 } from "@/lib/acp-return-to-latest-visual-probe";
 import i18n, { displayAppError, displayStatus } from "@/i18n";
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { currentAcpExecutionError } from '@/lib/acp-execution-error';
 import { UNRESOLVED_WORK_LOCATION, workspaceRootRef, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
 import type {
   AcpElicitationRequestVm,
@@ -507,6 +508,7 @@ type AcpTimelineWindowOwner = {
   eventWindowKey: string;
   sessionId: string | null;
   timelineGeneration: number;
+  executionExited?: boolean;
 };
 
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
@@ -2071,13 +2073,14 @@ export function ACPChatDialog(
   const applyCachedLiveControlFacets = useCallback((
     acp: ConversationAttemptLifecycleVm['acp'],
     promptQueue: ConversationAttemptLifecycleVm['promptQueue'],
+    executionError?: ConversationAttemptLifecycleVm['executionError'],
   ) => {
     const current = lifecycleProjectionRef.current;
     if (!current) {
       settlePendingInteractionsForLifecycle({ acp });
       return;
     }
-    const merged = mergeConversationAttemptLiveControlFacets(current, { acp, promptQueue });
+    const merged = mergeConversationAttemptLiveControlFacets(current, { acp, promptQueue, executionError });
     if (merged !== current) {
       lifecycleProjectionRef.current = merged;
       setLocalRuntimeLifecycle(merged);
@@ -2339,9 +2342,10 @@ export function ACPChatDialog(
   }, [canRestoreSessionContent, commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
-    if (branchId !== 'root' || !branchLiveSnapshot.acp) return;
-    applyCachedLiveControlFacets(branchLiveSnapshot.acp, branchLiveSnapshot.promptQueue);
-  }, [applyCachedLiveControlFacets, branchId, branchLiveSnapshot.acp, branchLiveSnapshot.promptQueue]);
+    if (branchId !== 'root') return;
+    const acp = branchLiveSnapshot.acp ?? lifecycleProjectionRef.current?.acp;
+    if (acp) applyCachedLiveControlFacets(acp, branchLiveSnapshot.promptQueue, branchLiveSnapshot.executionError);
+  }, [applyCachedLiveControlFacets, branchId, branchLiveSnapshot.acp, branchLiveSnapshot.promptQueue, branchLiveSnapshot.executionError]);
 
   useEffect(() => {
     if (loadedEventWindow.eventWindowKey !== eventWindowKey) return;
@@ -2631,8 +2635,10 @@ export function ACPChatDialog(
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
   const effectiveTimelineGeneration = acpSessionTimelineGeneration(effective);
+  const executionExited = Boolean(currentAcpExecutionError(projectionLifecycle));
   const timelineWindowOwner = useMemo<AcpTimelineWindowOwner>(() => ({
     eventWindowKey,
+    executionExited,
     sessionId: loadedEventWindow.eventWindowKey === eventWindowKey
       ? loadedEventWindow.sessionId
       : (effective?.sessionId ?? null),
@@ -2640,6 +2646,7 @@ export function ACPChatDialog(
       ? loadedEventWindow.timelineGeneration
       : effectiveTimelineGeneration,
   }), [
+    executionExited,
     effective?.sessionId,
     effectiveTimelineGeneration,
     eventWindowKey,
@@ -2660,7 +2667,7 @@ export function ACPChatDialog(
   );
   const acpSessionActive = isSessionActiveStatus(effective?.status)
     && !sessionSnapshotSettled;
-  const sessionActive = acpSessionActive || runtimeActive || projectionLifecycle?.acp.liveTurnActivity !== "idle" || promptCommandPending;
+  const sessionActive = acpSessionActive || (!executionExited && (runtimeActive || projectionLifecycle?.acp.liveTurnActivity !== "idle")) || promptCommandPending;
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
     () => ({
       projectId,
@@ -4077,6 +4084,9 @@ export function ACPChatDialog(
           ...summarizeAcpStreamingEvent(event),
         }));
         if (!active || !locatorMatches) return;
+        if (event.executionError && lifecycleProjectionRef.current) {
+          applyLifecycleProjection({ ...lifecycleProjectionRef.current, executionError: event.executionError });
+        }
         if (event.lifecycle) {
           applyLifecycleProjection(event.lifecycle);
         }
@@ -6484,7 +6494,8 @@ export function ACPChatDialog(
   const bannerRuntimeErrorFallback = localLifecycleUsesRuntimeErrorFallback
     ? runtimeComposerContext?.runtimeError ?? runtimeComposerContext?.runtimeErrorFallback
     : runtimeComposerContext?.runtimeErrorFallback;
-  const visibleError = runtimeActive
+  const executionError = currentAcpExecutionError(localLifecycle);
+  const visibleError = executionError ? acpRuntimeErrorBannerCopy(t, executionError.error) : runtimeActive
     ? null
     : visibleAcpBannerError(
       bannerRuntimeError,
@@ -9461,9 +9472,11 @@ const ToolBlock = memo(function ToolBlock({
     label: t(block.labelKey),
     value: block.value,
   }));
+  const resultUnconfirmed = timelineWindowOwner?.executionExited
+    && !isTerminalToolStatus(event.status ?? '');
   const toolPart: ToolPart = {
     type: details.name ?? t("acp.toolCall"),
-    state: toolState(event.status),
+    state: resultUnconfirmed ? 'input-available' : toolState(event.status),
     orderedInput: orderedInput.length > 0 ? orderedInput : undefined,
     rawInput: details.rawInput ?? undefined,
     output: details.output ?? undefined,
@@ -9614,7 +9627,7 @@ const ToolBlock = memo(function ToolBlock({
       <div ref={detailContainer} className="min-w-0 max-w-full">
         <Tool
           toolPart={toolPart}
-          labels={toolLabels(t)}
+          labels={resultUnconfirmed ? { ...toolLabels(t), ready: t('acp.toolResultUnconfirmed') } : toolLabels(t)}
           icon={<ToolIcon className="size-4" />}
           open={open}
           onOpenChange={(next) => {

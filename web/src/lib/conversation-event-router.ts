@@ -1,4 +1,5 @@
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
+import { mergeAcpExecutionError } from '@/lib/acp-execution-error';
 import { getRuntimeApi } from '@/api/client';
 import type {
   AcpSessionVm,
@@ -232,6 +233,7 @@ export async function ensureConversationEventRouterStarted() {
 }
 
 export interface ConversationBranchLiveSnapshot {
+  executionError: ConversationAttemptLifecycleVm['executionError'];
   revision: number;
   contentRevision: number;
   acpRevision: number;
@@ -242,6 +244,7 @@ export interface ConversationBranchLiveSnapshot {
 }
 
 const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = {
+  executionError: null,
   revision: 0,
   contentRevision: 0,
   acpRevision: 0,
@@ -384,6 +387,15 @@ function notifyConversationSessionOwnerResets(resetKeys: Iterable<string>) {
 }
 
 export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdatedEventVm) {
+  if (event.executionError) {
+    const key = conversationBranchStoreKey(event, 'root');
+    const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+    const failure = mergeAcpExecutionError(current.acp, event.executionError, current.executionError);
+    if (failure && failure !== current.executionError) {
+      storeBranchSnapshot(key, { ...current, revision: current.revision + 1, executionError: failure, attention: true });
+      notifyBranch(key);
+    }
+  }
   const timelineGeneration = isValidConversationTimelineGeneration(event.timelineGeneration)
     ? event.timelineGeneration
     : null;
@@ -521,7 +533,7 @@ function reconcileConversationBranchLifecycle(
     status,
     rootCurrent.attention,
     false,
-    { acp, promptQueue },
+    { acp, promptQueue, executionError: lifecycle.executionError },
   );
   if (!status || !isTerminalSessionStatus(status)) return;
   for (const [key, current] of branchSnapshots) {
@@ -576,11 +588,13 @@ function updateBranchSnapshot(
   control?: {
     acp: ConversationAttemptLifecycleVm['acp'];
     promptQueue: ConversationAttemptLifecycleVm['promptQueue'];
+    executionError?: ConversationAttemptLifecycleVm['executionError'];
   },
 ) {
   const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
   const nextAcp = control?.acp ?? current.acp;
   const nextPromptQueue = control?.promptQueue ?? current.promptQueue;
+  const executionError = mergeAcpExecutionError(nextAcp, control?.executionError, current.executionError);
   const nextAcpRevision = nextAcp?.revision ?? current.acpRevision;
   if (
     current.status === status
@@ -588,6 +602,7 @@ function updateBranchSnapshot(
     && current.acpRevision === nextAcpRevision
     && current.acp === nextAcp
     && current.promptQueue === nextPromptQueue
+    && current.executionError === executionError
   ) {
     if (contentChanged) {
       storeBranchSnapshot(key, {
@@ -604,6 +619,7 @@ function updateBranchSnapshot(
     status,
     attention,
     acp: nextAcp,
+    executionError,
     promptQueue: nextPromptQueue,
   });
   notifyBranch(key);

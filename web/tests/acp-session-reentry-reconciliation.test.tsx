@@ -6344,3 +6344,28 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 });
+
+
+it('shows a memory-only execution error before persistence and after reentry', async () => {
+  const body = session([event('reply', 2, 'textDelta', 'Preserved reply'),
+    event('unfinished-tool', 3, 'toolCall', null, { title: 'Bash', toolCallId: 'unfinished-tool', status: 'running' })]);
+  const current = terminalLifecycle('disk-turn');
+  current.acp = { ...current.acp, revision: 12, operationId: 'disk-op', latestTurnStatus: 'none', liveTurnActivity: 'running' };
+  current.composer = { ...current.composer, mode: 'runtime-active', submitTarget: 'none', canStop: true, lockInput: true };
+  vi.mocked(getAcpSession).mockResolvedValue(body);
+  const failure = { owner: { turnId: 'disk-turn', operationId: 'disk-op', revision: 12 }, error: { code: { domain: 'runtime-io', code: 'runtime.io.storage-full' }, domain: 'runtime-io', recovery: 'manual', params: {}, diagnostic: 'TEST_DISK_FULL', raw: null } } as const;
+  const first = await renderDialog(body, 'root', undefined, undefined, locator, undefined, current);
+  await act(async () => { runtime.listener?.({ ...locator, executionError: failure, event: null, session: null }); });
+  expect(first.container.textContent).toContain('TEST_DISK_FULL');
+  expect(first.container.textContent).toContain('Preserved reply');
+  await act(async () => first.container.querySelector<HTMLButtonElement>('[data-theme-role="activity"] > button')!.click());
+  expect(first.container.textContent).toContain('结果未确认');
+  expect(first.container.querySelector('[data-prompt-kit-tool]')?.textContent).not.toContain('运行中');
+  expect(body.events.at(-1)?.status).toBe('running');
+  expect(first.container.querySelector('textarea')?.disabled).toBe(false);
+  await unmount(first.root);
+  const second = await renderDialog(body, 'root', undefined, undefined, locator, undefined, { ...current, executionError: failure });
+  expect(second.container.textContent).toContain('TEST_DISK_FULL');
+  expect(second.container.textContent).toContain('Preserved reply');
+  await unmount(second.root);
+});

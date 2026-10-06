@@ -2902,3 +2902,13 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：elkjs 在 Web Worker 中按需加载（`workflowLayoutEngine`），`useWorkflowLayout` 异步 latest-wins，有界 LRU（32）复用已完成布局；新布局完成前保留旧画面，首次布局前节点隐藏并显示加载状态，失败显示错误。`$new-round` 用 `layerConstraint FIRST` + semiInteractive 位置提示固定在入口正下方，入口锚点在右侧；单个重启节点在目标上显示“新 Round · 从 {节点}”，多个时显示在各边标签上。节点入口锚点与 success 出口同高，success 主链保持同一行。首次适配视图基于布局边界，放不下时保持入口一侧可见。运行态绘制 AI-DYNAMIC 嵌套分组框。删除 dagre、`@types/dagre`、smart-edge 依赖与 `web/layout-lab` 原型；新增 7 种语言的 `graph.layoutPending/layoutFailed`、`workflowEditor.nodeLabels.newRoundFrom`、`workflowEditor.edgeLabels.newRoundFrom`。
 - [x] 回归：Rust `dynamic_graph_exposes_group_containment_for_layout`；Web 新增 `workflow-elk-layout.test.ts`（无节点重叠、边不穿节点、标签位于路由上、success 主链同行直连、`$new-round` 位于入口下方且右侧入边、分组框包含成员与嵌套分组、悬空边跳过）、`workflow-layout-hook.test.tsx`（旧画面保留、过期结果丢弃、缓存复用），更新作者态交互契约、拓扑签名与运行态布局 key 测试，删除 smart-edge 路由测试。全量 Web 测试其余 8 项失败（模型思考标签、continue 提交）为既有问题；`web:build` 通过，ELK worker 为独立按需 chunk。
 - 性能与过度设计评审：布局在 Worker 中执行，不阻塞主线程；布局 key 排除运行状态和遍历次数，状态刷新只重投影不重排；LRU 有界。没有新增状态机或持久字段，`GraphVm.groups` 只是已有 canonical group 事实的投影。ELK worker 约 1.4 MB，仅在首次打开画布时加载。
+
+
+## 2026-10-06 ACP 错误先通知、终态尽力保存
+
+- [x] 验证根因：终态写盘失败阻止活跃 turn 释放，错误展示又依赖成功保存，导致实际执行已退出但界面仍等待。沿用现有 owner/CAS 与生命周期模型修复，不增加显式恢复流程。
+- [x] 实现：运行管理保存有界 owner 错误观察；RAII guard 在保存前通知、退出时释放；Tauri 首次错误 envelope 不读磁盘；详情和分支缓存携带观察，旧快照不能抹掉错误，新 owner/已提交终态使其失效。磁盘满、权限不足有结构化错误及七语言文案；工具未返回结果显示“结果未确认”。自动派发暂停，手动恢复复用孤儿协调且不重放工具。
+- [x] 红绿证据：Windows 文件共享锁稳定拒绝原子替换，验证通知先于持久化、原快照 revision/终态不变、执行占用释放，以及恢复后同一错误收敛且重复协调无副作用；新 owner 不受旧任务释放影响。前端覆盖错误条、停止等待、重入、保留回复、未确认工具与旧/新 revision 合并；真实 i18n 回归保证无 diagnostic 时仍有磁盘错误文案。
+- 验收及评审：复用现有组件和事件，不新增依赖、恢复按钮、轮询或无界积压。每 attempt 一条错误、最多 128 条，诊断和参数各限 16 KiB；常规加载不增加正文读取，锁内不执行 I/O。浏览器通过临时测试页面挂载实际 ACPChatDialog 验证，完成后移除测试入口。
+
+- [x] 验证结果：ACP lifecycle 118 项、RuntimeError 11 项、桌面错误 envelope 1 项、Web 相关 229 项测试通过；桌面端 `cargo check --tests`、前端 TypeScript 检查与 Vite 生产构建通过。浏览器在 480px 窄窗验证错误通知、停止处理、未确认工具、回复/草稿保留及切走重入。生产构建保留既有 chunk 大小与混合导入警告。

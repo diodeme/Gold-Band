@@ -747,6 +747,7 @@ pub struct ConversationSessionLeafVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAttemptLifecycleVm {
+    pub execution_error: Option<gold_band::acp::events::AcpExecutionError>,
     pub runtime: ConversationRuntimeFacetVm,
     pub control: ConversationControlFacetVm,
     pub acp: ConversationAcpFacetVm,
@@ -2808,6 +2809,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     };
 
     ConversationAttemptLifecycleVm {
+        execution_error: None,
         runtime: ConversationRuntimeFacetVm {
             status: runtime_status.to_string(),
             outcome: runtime_outcome.map(str::to_string),
@@ -3092,6 +3094,7 @@ fn attach_acp_lifecycle_header(
     attempt_dir: &Utf8Path,
     lifecycle: &mut ConversationAttemptLifecycleVm,
 ) {
+    lifecycle.execution_error = gold_band::acp::events::session_execution_error(attempt_dir);
     let snapshot = attempt_dir.join("acp.snapshot.json");
     let session = attempt_dir.join("acp.session.json");
     let header = [snapshot.as_path(), session.as_path()]
@@ -3132,6 +3135,23 @@ fn attach_acp_lifecycle_header(
     lifecycle.acp.stop_reason = header.stop_reason;
     lifecycle.acp.turn_error = header.turn_error;
     lifecycle.acp.operation_id = header.operation_id;
+    if let Some(failure) = lifecycle.execution_error.as_ref() {
+        if lifecycle.acp.turn_id.as_deref() == Some(&failure.owner.turn_id)
+            && lifecycle.acp.operation_id.as_deref() == Some(&failure.owner.operation_id)
+            && lifecycle.acp.latest_turn_status == "none"
+        {
+            lifecycle.display_status = "interrupted".into();
+            lifecycle.runtime_display =
+                runtime_display_vm(Some("interrupted"), None, true, None, false);
+            lifecycle.composer.mode = "normal".into();
+            lifecycle.composer.submit_target = "acp-prompt".into();
+            lifecycle.composer.can_stop = false;
+            lifecycle.composer.lock_input = false;
+            lifecycle.composer.status_key = None;
+            return;
+        }
+        lifecycle.execution_error = None;
+    }
     // The snapshot header may arrive after the broader runtime facet. Rebuild
     // the derived projection from the merged canonical facets so a terminal
     // header cannot leave the composer locked by an older running projection.

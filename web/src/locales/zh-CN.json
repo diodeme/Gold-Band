@@ -993,6 +993,10 @@
       "invalid-outcome": "人工 check 结果无效。"
     },
     "runtime": {
+      "io": {
+        "storage-full": "磁盘空间不足，本次执行已中断。释放空间后可继续。",
+        "permission-denied": "无法写入会话数据，请检查目录的写入权限。"
+      },
       "conversation-not-available": "工作流正在运行，暂时不能发送普通消息。",
       "continue-not-available": "当前节点不需要继续，可能已经恢复或不再可继续。",
       "continue-already-active": "工作流正在恢复，请稍候。",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "参数",
     "toolReady": "已就绪",
+    "toolResultUnconfirmed": "结果未确认",
     "toolNoOutput": "暂无工具输出",
     "activityThinking": "思考中",
     "activityCalling": "正在调用 {{name}}",

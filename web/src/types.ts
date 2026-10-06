@@ -2845,6 +2845,7 @@ export interface ConversationPromptQueueVm {
 }
 
 export interface ConversationAttemptLifecycleVm {
+  executionError?: AcpExecutionErrorVm | null;
   runtime: ConversationRuntimeFacetVm;
   control: ConversationControlFacetVm;
   acp: ConversationAcpFacetVm;
@@ -2853,6 +2854,11 @@ export interface ConversationAttemptLifecycleVm {
   continueKind?: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   composer: ConversationComposerVm;
   promptQueue?: ConversationPromptQueueVm | null;
+}
+
+export interface AcpExecutionErrorVm {
+  owner: { turnId: string; operationId: string; revision: number };
+  error: RuntimeErrorInfoVm;
 }
 
 export interface ConversationSessionLeafVm {

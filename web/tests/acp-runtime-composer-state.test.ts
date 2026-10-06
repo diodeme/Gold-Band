@@ -1781,3 +1781,32 @@ describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
     expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, parentError)).toBe(false);
   });
 });
+
+
+describe('uncommitted execution failure', () => {
+  const failure = {
+    owner: { turnId: 'disk-turn', operationId: 'disk-op', revision: 3 },
+    error: { code: { domain: 'runtime-io', code: 'runtime.io.storage-full' }, domain: 'runtime-io', recovery: 'manual', retryPolicy: null, params: {}, diagnostic: 'disk full', raw: null },
+  } as const;
+  it('stops waiting without inventing a committed terminal state', () => {
+    const current = lifecycle({ acp: { turnId: 'disk-turn', operationId: 'disk-op', revision: 3, liveTurnActivity: 'running', latestTurnStatus: 'none' }, executionError: failure });
+    const state = deriveAcpRuntimeComposerState(baseInput({ lifecycle: current, acpStatus: 'running', localTurnId: 'disk-turn', awaitingResponse: true }));
+    expect(state.showStatus).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(shouldSettleAcpComposerTransientState(current, 'running', 'disk-turn')).toBe(true);
+    expect(activityProjectionStatus(current, 'running', false)).toBe('interrupted');
+    expect(current.acp.latestTurnStatus).toBe('none');
+    expect(current.acp.revision).toBe(3);
+  });
+  it('retains the failure across old snapshots and removes it for a newer owner', () => {
+    const current = lifecycle({ acp: { turnId: 'disk-turn', operationId: 'disk-op', revision: 3, liveTurnActivity: 'running', latestTurnStatus: 'none' }, executionError: failure });
+    const stale = { ...current, executionError: null };
+    expect(mergeConversationAttemptLifecycle(current, stale).executionError).toEqual(failure);
+    const newer = lifecycle({ acp: { turnId: 'new-turn', operationId: 'new-op', revision: 5, liveTurnActivity: 'running', latestTurnStatus: 'none' } });
+    expect(mergeConversationAttemptLifecycle(current, newer).executionError ?? null).toBeNull();
+    expect(mergeConversationAttemptLifecycle(newer, current).executionError ?? null).toBeNull();
+    const committed = { ...current, executionError: null, acp: { ...current.acp, revision: 4, latestTurnStatus: 'failed', liveTurnActivity: 'idle' } };
+    expect(mergeConversationAttemptLifecycle(current, committed).executionError ?? null).toBeNull();
+    expect(mergeConversationAttemptLifecycle(committed, current).executionError ?? null).toBeNull();
+  });
+});

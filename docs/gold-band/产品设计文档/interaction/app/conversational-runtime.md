@@ -885,3 +885,13 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 现场切换窗口后出现“回到最新”、点击或展开过程列表才露出未渲染正文，根因是把 follow 布尔值、几何底部和历史阅读意图叠成同一个 `onAtBottomChange`。`modeUpdate` / `availableCommands` 触发的自动 canonical recovery 调用 `stopScroll()` 后，包装层把 follow=false 上报为离底，ACP 再把 recovery 的 `hasNewerEvents` 投影成按钮，并把 `paginationDirection="newer"` 当成历史窗口冻结 live。
 - 修复只拆消费端投影：`ChatContainer.onAtBottomChange` 在用户未离底时继续报告几何底部；ACP `viewportAtBottom` 读取真实 scroller 几何；明确历史阅读意图只含用户向上离底、older 分页，以及非 auto-recovery 的 newer 分页；live head 自动 recovery 跳过 `stopScroll()`，live 事件继续合并，“回到最新”保持隐藏。session auto-follow 使用 `follow && 几何底部 && !(hasNewer && 明确历史意图)`。
 - 不新增 timeline/viewport 状态机、持久字段、缓存或热路径扫描。接口回归覆盖 stopScroll 后几何 at-bottom 仍为 true、自动 recovery 飞行中 live 正文可见且按钮不出现，以及 `shouldShowReturnToLatest(..., explicitHistoricalIntent=false)` 在物理底部为 false。
+
+
+### ACP 执行错误与持久化故障边界（2026-10-06）
+
+- ACP 的 durable lifecycle/revision 仍是已提交状态的权威来源；执行退出与终态保存分开处理。现有执行 owner/RAII guard 按 turnId + operationId 释放活跃占用，终态写入失败不能使已退出任务继续占用会话。
+- 执行错误先进入现有运行管理的有界内存观察，再经既有 ACP session update 发布，随后 best-effort 保存原终态。首次错误 envelope 使用执行时已有的 locator/taskUuid，通知不依赖磁盘读写，也不携带伪造的 lifecycle 或 timeline revision。错误统一复用 RuntimeErrorInfo；磁盘满与写权限错误按底层 I/O 类型分类。
+- executionError 只表达对应 owner 已退出且有错误待展示，不是另一套会话终态。每个 attempt 最多保留一条，进程内最多保留 128 条；每条诊断与参数分别限 16 KiB，不保留 raw 事件。新 turn 接纳或对应终态提交后清除，详情查询和前端有界分支缓存复用该观察，使页面重入仍能展示原因。旧 owner 的迟到通知不能影响新 turn。
+- 页面复用错误条，停止 composer 等待、保留消息与草稿；没有确认结果的工具显示“结果未确认”，保持原始工具事件不变。自动队列派发在未保存的错误存在时暂停。
+- 用户释放空间后的手动操作复用既有孤儿 turn 协调与提交校验，只收敛状态，不重放工具；不增加恢复按钮、轮询或事件补存队列。进程重启会丢失未落盘原因，孤儿恢复只能依据已有持久事实报告中断。
+- 设计与性能评审：属于现有生命周期设计的实现缺口，复用 RAII、Tauri event、错误 DTO 与既有 CAS，无新增依赖/持久字段/状态机。内存索引查询不读历史，错误发生时才复制一条有界诊断，注册表锁不覆盖 I/O 或事件发送；正常流式正文路径无新增扫描。

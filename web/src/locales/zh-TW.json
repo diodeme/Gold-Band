@@ -993,6 +993,10 @@
       "invalid-outcome": "人工 check 結果無效。"
     },
     "runtime": {
+      "io": {
+        "storage-full": "磁碟空間不足，本次執行已中斷。釋放空間後可繼續。",
+        "permission-denied": "無法寫入工作階段資料，請檢查目錄的寫入權限。"
+      },
       "conversation-not-available": "工作流正在執行，暫時不能傳送普通訊息。",
       "continue-not-available": "目前節點不需要繼續，可能已經還原或不再可繼續。",
       "continue-already-active": "工作流正在還原，請稍候。",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "參數",
     "toolReady": "已就緒",
+    "toolResultUnconfirmed": "結果未確認",
     "toolNoOutput": "沒有工具輸出",
     "activityThinking": "思考中",
     "activityCalling": "正在呼叫 {{name}}",

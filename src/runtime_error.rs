@@ -175,6 +175,25 @@ pub fn normalize_runtime_error(error: &anyhow::Error) -> RuntimeErrorInfo {
         info.diagnostic = diagnostic.clone();
         return info;
     }
+    if let Some((io, code)) = error
+        .chain()
+        .filter_map(|source| source.downcast_ref::<std::io::Error>())
+        .find_map(|io| {
+            let code = match io.kind() {
+                std::io::ErrorKind::StorageFull => "runtime.io.storage-full",
+                std::io::ErrorKind::PermissionDenied => "runtime.io.permission-denied",
+                _ => return None,
+            };
+            Some((io, code))
+        })
+    {
+        return manual_runtime_error_info(
+            RuntimeErrorDomain::RuntimeIo,
+            code,
+            diagnostic,
+            serde_json::json!({ "osCode": io.raw_os_error() }),
+        );
+    }
     if error.chain().any(|source| {
         source
             .downcast_ref::<std::io::Error>()
@@ -546,10 +565,7 @@ mod tests {
 
     #[test]
     fn unknown_error_preserves_diagnostic_and_allows_manual_continue() {
-        for error in [
-            anyhow!("unrecognized external failure"),
-            std::io::Error::from_raw_os_error(112).into(),
-        ] {
+        for error in [anyhow!("unrecognized external failure")] {
             let diagnostic = format!("{error:#}");
             let info = normalize_runtime_error(&error);
             assert_eq!(info.code_str(), "internal.unknown");
@@ -561,6 +577,17 @@ mod tests {
                 PauseReason::RuntimeAbnormal
             );
         }
+    }
+
+    #[test]
+    fn storage_full_is_a_structured_manual_io_error() {
+        let error = std::io::Error::from(std::io::ErrorKind::StorageFull);
+        let info =
+            normalize_runtime_error(&anyhow::Error::new(error).context("persist ACP terminal"));
+        assert_eq!(info.code_str(), "runtime.io.storage-full");
+        assert_eq!(info.domain, RuntimeErrorDomain::RuntimeIo);
+        assert_eq!(info.recovery, RecoveryMode::Manual);
+        assert!(info.retry_policy.is_none());
     }
 
     #[test]

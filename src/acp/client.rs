@@ -2822,7 +2822,8 @@ pub fn run_prompt(
     let mut lifecycle_terminal_guard = AcpLifecycleTerminalGuard::new(
         attempt_dir.join("acp.snapshot.json"),
         lifecycle_owner.clone(),
-    );
+    )
+    .with_notification(session_update);
     let result = lifecycle_terminal_guard.execute(|| {
         run_prompt_inner(
             provider_id,

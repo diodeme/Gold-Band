@@ -993,6 +993,10 @@
       "invalid-outcome": "Manual check outcome is invalid."
     },
     "runtime": {
+      "io": {
+        "storage-full": "The disk is full and this execution was interrupted. Free up space before continuing.",
+        "permission-denied": "Unable to write session data. Check the directory write permissions."
+      },
       "conversation-not-available": "The workflow is running, so a normal message cannot be sent yet.",
       "continue-not-available": "This node does not need to continue. It may already have resumed, or it may no longer be resumable.",
       "continue-already-active": "The workflow is already resuming. Please wait.",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "Arguments",
     "toolReady": "Ready",
+    "toolResultUnconfirmed": "Result unconfirmed",
     "toolNoOutput": "No tool output yet",
     "activityThinking": "Thinking",
     "activityCalling": "Calling {{name}}",

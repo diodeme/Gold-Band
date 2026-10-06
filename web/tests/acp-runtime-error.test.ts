@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { acpRuntimeErrorBannerCopy, acpRuntimeErrorBannerTitle } from '@/lib/acp-runtime-error';
 import type { RuntimeErrorInfoVm } from '@/types';
+import i18n, { loadI18nLanguage } from '@/i18n';
 
 function runtimeError(overrides: Partial<RuntimeErrorInfoVm> = {}): RuntimeErrorInfoVm {
   return {
@@ -28,6 +29,13 @@ function fakeT(prefix: string) {
 }
 
 describe('acpRuntimeErrorBannerCopy', () => {
+  it('localizes storage failures even without diagnostic text', async () => {
+    await loadI18nLanguage('zh-CN');
+    expect(acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), runtimeError({
+      code: { domain: 'runtime-io', code: 'runtime.io.storage-full' },
+      domain: 'runtime-io',
+    }))).toContain('磁盘空间不足');
+  });
   it('maps a removed thought-level option to unsupported-model copy', () => {
     const copy = acpRuntimeErrorBannerCopy(fakeT('zh'), runtimeError({
       params: {

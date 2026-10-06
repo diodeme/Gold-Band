@@ -993,6 +993,10 @@
       "invalid-outcome": "O resultado do check manual é inválido."
     },
     "runtime": {
+      "io": {
+        "storage-full": "O disco está cheio e esta execução foi interrompida. Libere espaço antes de continuar.",
+        "permission-denied": "Não foi possível gravar os dados da sessão. Verifique as permissões de gravação do diretório."
+      },
       "conversation-not-available": "O fluxo de trabalho está em execução, então uma mensagem normal ainda não pode ser enviada.",
       "continue-not-available": "Este nó não precisa mais ser continuado. Ele pode já estar ativo ou não ser mais retomável.",
       "continue-already-active": "O fluxo de trabalho já está retomando. Aguarde.",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "Argumentos",
     "toolReady": "Pronto",
+    "toolResultUnconfirmed": "Resultado não confirmado",
     "toolNoOutput": "Nenhuma saída de ferramenta ainda",
     "activityThinking": "Pensando",
     "activityCalling": "Chamando {{name}}",

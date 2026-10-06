@@ -993,6 +993,10 @@
       "invalid-outcome": "수동 check 결과가 유효하지 않습니다."
     },
     "runtime": {
+      "io": {
+        "storage-full": "디스크 공간이 부족하여 실행이 중단되었습니다. 공간을 확보한 후 계속하세요.",
+        "permission-denied": "세션 데이터를 쓸 수 없습니다. 디렉터리 쓰기 권한을 확인하세요."
+      },
       "conversation-not-available": "워크플로가 실행 중이어서 지금은 일반 메시지를 보낼 수 없습니다.",
       "continue-not-available": "이 노드는 계속할 필요가 없습니다. 이미 재개되었거나 더 이상 계속할 수 없습니다.",
       "continue-already-active": "워크플로를 재개하는 중입니다. 잠시 기다리세요.",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "인수",
     "toolReady": "준비됨",
+    "toolResultUnconfirmed": "결과 미확인",
     "toolNoOutput": "아직 도구 출력 없음",
     "activityThinking": "사고 중",
     "activityCalling": "{{name}} 호출 중",

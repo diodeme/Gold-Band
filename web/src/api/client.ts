@@ -152,6 +152,7 @@ import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
 
 interface AcpSessionUpdatedEventBaseVm {
+  executionError?: import('../types').AcpExecutionErrorVm | null;
   branchId?: string | null;
   projectId?: string | null;
   taskId: string;

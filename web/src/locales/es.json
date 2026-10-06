@@ -993,6 +993,10 @@
       "invalid-outcome": "El resultado del check manual no es válido."
     },
     "runtime": {
+      "io": {
+        "storage-full": "El disco está lleno y esta ejecución se ha interrumpido. Libera espacio antes de continuar.",
+        "permission-denied": "No se pueden escribir los datos de la sesión. Comprueba los permisos de escritura del directorio."
+      },
       "conversation-not-available": "El flujo de trabajo se está ejecutando, por lo que aún no se puede enviar un mensaje normal.",
       "continue-not-available": "Este nodo ya no necesita continuarse. Puede que ya esté activo o que ya no sea reanudable.",
       "continue-already-active": "El flujo de trabajo ya se está reanudando. Espere.",
@@ -2354,6 +2358,7 @@
     "toolSkill": "Skill",
     "toolArguments": "Argumentos",
     "toolReady": "Listo",
+    "toolResultUnconfirmed": "Resultado sin confirmar",
     "toolNoOutput": "Aún no hay salida de herramienta",
     "activityThinking": "Razonando",
     "activityCalling": "Llamando a {{name}}",

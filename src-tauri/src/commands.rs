@@ -623,6 +623,7 @@ fn settle_failed_prompt_submission(
     turn_id: &str,
     operation_id: Option<&str>,
     expected_revision: u64,
+    task_uuid: Option<String>,
     error: &CommandErrorVm,
 ) -> bool {
     let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
@@ -630,19 +631,41 @@ fn settle_failed_prompt_submission(
     let Some(operation_id) = operation_id else {
         return false;
     };
-    match gold_band::acp::events::persist_session_turn_failure_owned(
+    let owner = gold_band::acp::events::AcpLifecycleOwner {
+        turn_id: turn_id.to_string(),
+        operation_id: operation_id.to_string(),
+        revision: expected_revision,
+    };
+    let info = gold_band::acp::events::session_execution_error(&locator.attempt_dir(app))
+        .filter(|failure| {
+            failure.owner.turn_id == owner.turn_id
+                && failure.owner.operation_id == owner.operation_id
+        })
+        .map(|failure| failure.error)
+        .unwrap_or_else(|| {
+            gold_band::runtime_error::manual_runtime_error_info(
+                gold_band::runtime_error::RuntimeErrorDomain::Internal,
+                &error.code,
+                "",
+                error.params.clone(),
+            )
+        });
+    if gold_band::acp::events::observe_session_execution_error(&lifecycle_path, &owner, &info) {
+        let _ = app.emit_acp_session_update(acp_live_event_context(
+            &locator.task_id,
+            task_uuid,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+        ));
+    }
+    let settled = match gold_band::acp::events::persist_session_turn_failure_owned(
         &lifecycle_path,
-        &gold_band::acp::events::AcpLifecycleOwner {
-            turn_id: turn_id.to_string(),
-            operation_id: operation_id.to_string(),
-            revision: expected_revision,
-        },
-        &gold_band::runtime_error::manual_runtime_error_info(
-            gold_band::runtime_error::RuntimeErrorDomain::Internal,
-            &error.code,
-            "",
-            error.params.clone(),
-        ),
+        &owner,
+        &info,
         &decided_at,
     ) {
         Ok(Some(header)) => {
@@ -666,7 +689,9 @@ fn settle_failed_prompt_submission(
             warn!(%error, %turn_id, "failed to settle rejected background ACP prompt");
             false
         }
-    }
+    };
+    gold_band::acp::events::release_session_execution(&lifecycle_path, &owner);
+    settled
 }
 
 fn conversation_prompt_submission(
@@ -937,6 +962,8 @@ fn emit_deferred_turn_completion(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_error: Option<gold_band::acp::events::AcpExecutionError>,
     branch_id: Option<String>,
     timeline_generation: Option<u64>,
     timeline_revision: Option<u64>,
@@ -1955,7 +1982,10 @@ fn schedule_direct_prompt_queue_drain(
         );
         return;
     }
-    if queue.auto_dispatch_suspended || auto_dispatch_is_suspended(&attempt_dir) {
+    if gold_band::acp::events::session_execution_error(&attempt_dir).is_some()
+        || queue.auto_dispatch_suspended
+        || auto_dispatch_is_suspended(&attempt_dir)
+    {
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
         return;
     }
@@ -6044,12 +6074,59 @@ fn request_scoped_intervention_event_id(
     )
 }
 
+/// Build failure delivery exclusively from the execution's in-memory identity.
+fn execution_error_event(
+    project_id: Option<String>,
+    context: gold_band::app::AcpLiveEventContext,
+    error: gold_band::acp::events::AcpExecutionError,
+) -> AcpSessionUpdatedEventVm {
+    AcpSessionUpdatedEventVm {
+        execution_error: Some(error),
+        branch_id: Some("root".into()),
+        project_id,
+        task_id: context.task_id,
+        task_uuid: context.task_uuid,
+        run_id: context.run_id,
+        round_id: context.round_id,
+        node_id: context.node_id,
+        attempt_id: context.attempt_id,
+        outer_node_id: context.outer_node_id,
+        outer_attempt_id: context.outer_attempt_id,
+        timeline_generation: None,
+        timeline_revision: None,
+        session: None,
+        session_config: None,
+        event: None,
+        lifecycle: None,
+        activity: None,
+        task_activity_at: None,
+    }
+}
+
 pub(crate) fn acp_session_update_emitter(
     app_handle: AppHandle,
     app: gold_band::app::App,
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
+        let attempt_dir = resolve_acp_attempt_dir(
+            &app,
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        );
+        if let Some(error) = gold_band::acp::events::session_execution_error(&attempt_dir) {
+            app_handle.emit(
+                ACP_SESSION_EVENT,
+                execution_error_event(project_id.clone(), context, error),
+            )?;
+            return Ok(());
+        }
+
         // Session lifecycle is a control-plane event. Publishing it must not
         // rebuild or serialize timeline正文; page data is fetched only by the
         // explicit session query/pagination path.
@@ -6232,6 +6309,7 @@ fn emit_acp_update(
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
+            execution_error: None,
             branch_id,
             timeline_generation,
             timeline_revision,
@@ -7926,6 +8004,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &turn_id,
                 Some(&claimed_operation_id),
                 claimed_revision,
+                task_uuid_for_emit.clone(),
                 &error,
             );
             if settled {
@@ -7976,6 +8055,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &turn_id,
                 Some(&claimed_operation_id),
                 claimed_revision,
+                task_uuid_for_emit.clone(),
                 &error,
             );
             if settled {
@@ -12599,10 +12679,59 @@ mod tests {
     }
 
     #[test]
+    fn execution_error_envelope_preserves_owner_without_committed_revision() {
+        let owner = gold_band::acp::events::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 9,
+        };
+        let failure = gold_band::acp::events::AcpExecutionError {
+            owner: owner.clone(),
+            error: gold_band::runtime_error::normalize_runtime_error(
+                &std::io::Error::from(std::io::ErrorKind::StorageFull).into(),
+            ),
+        };
+        let envelope = execution_error_event(
+            Some("project-a".into()),
+            acp_live_event_context(
+                "task-a",
+                Some("task-uuid-a".into()),
+                "run-a",
+                "round-a",
+                "node-a",
+                "attempt-a",
+                None,
+                None,
+            ),
+            failure,
+        );
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(value["taskUuid"], "task-uuid-a");
+        assert_eq!(
+            value["executionError"]["owner"],
+            serde_json::to_value(owner).unwrap()
+        );
+        assert_eq!(
+            value["executionError"]["error"]["code"]["code"],
+            "runtime.io.storage-full"
+        );
+        for key in [
+            "session",
+            "event",
+            "lifecycle",
+            "timelineGeneration",
+            "timelineRevision",
+        ] {
+            assert!(value[key].is_null(), "must not synthesize committed {key}");
+        }
+    }
+
+    #[test]
     fn live_event_envelope_serializes_generation_without_revision() {
         let (timeline_generation, timeline_revision) =
             acp_timeline_position_fields(Some(AcpLiveTimelinePosition::transient(7)));
         let envelope = AcpSessionUpdatedEventVm {
+            execution_error: None,
             branch_id: Some("root".to_string()),
             timeline_generation,
             timeline_revision,
@@ -12647,6 +12776,7 @@ mod tests {
     #[test]
     fn acp_session_update_serializes_lightweight_prompt_activity_and_terminal_clear() {
         let active = AcpSessionUpdatedEventVm {
+            execution_error: None,
             branch_id: None,
             timeline_generation: None,
             timeline_revision: None,
@@ -12678,6 +12808,7 @@ mod tests {
         assert_eq!(active_json["taskActivityAt"], "2026-08-29T12:00:00Z");
 
         let terminal = AcpSessionUpdatedEventVm {
+            execution_error: None,
             branch_id: None,
             timeline_generation: None,
             timeline_revision: None,

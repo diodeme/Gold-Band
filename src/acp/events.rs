@@ -232,11 +232,20 @@ pub enum AcpTurnAdmission {
     ExistingTerminal(AcpLifecycleHeader),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpLifecycleOwner {
     pub turn_id: String,
     pub operation_id: String,
     pub revision: u64,
+}
+
+/// An exited execution observed in this process, not a committed lifecycle revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpExecutionError {
+    pub owner: AcpLifecycleOwner,
+    pub error: RuntimeErrorInfo,
 }
 
 /// Owns the terminal settlement fallback for one claimed provider turn.
@@ -245,19 +254,29 @@ pub struct AcpLifecycleOwner {
 /// a late Drop from an older executor can only become a no-op after a newer
 /// turn has taken over. Keeping this guard at the shared client boundary makes
 /// Direct and provider-orchestrated prompts obey the same failure contract.
-pub(crate) struct AcpLifecycleTerminalGuard {
+pub(crate) struct AcpLifecycleTerminalGuard<'a> {
     path: Utf8PathBuf,
     owner: AcpLifecycleOwner,
     armed: bool,
+    notification: Option<&'a dyn Fn() -> Result<()>>,
 }
 
-impl AcpLifecycleTerminalGuard {
+impl<'a> AcpLifecycleTerminalGuard<'a> {
     pub(crate) fn new(path: Utf8PathBuf, owner: AcpLifecycleOwner) -> Self {
         Self {
             path,
             owner,
             armed: true,
+            notification: None,
         }
+    }
+
+    pub(crate) fn with_notification(
+        mut self,
+        notification: Option<&'a dyn Fn() -> Result<()>>,
+    ) -> Self {
+        self.notification = notification;
+        self
     }
 
     pub(crate) fn disarm(&mut self) {
@@ -268,6 +287,11 @@ impl AcpLifecycleTerminalGuard {
         let result = execute();
         if let Err(error) = &result {
             let mut info = normalize_runtime_error(error);
+            if observe_session_execution_error(&self.path, &self.owner, &info) {
+                if let Some(notify) = self.notification {
+                    let _ = notify();
+                }
+            }
             if let Err(persistence_error) = persist_session_turn_failure_owned(
                 &self.path,
                 &self.owner,
@@ -280,25 +304,34 @@ impl AcpLifecycleTerminalGuard {
                 ));
                 // Do not let Drop retry with an empty, generic replacement error.
                 self.disarm();
+                release_session_execution(&self.path, &self.owner);
                 return Err(crate::runtime_error::runtime_error(info));
             }
         }
         self.disarm();
+        release_session_execution(&self.path, &self.owner);
         result
     }
 }
 
-impl Drop for AcpLifecycleTerminalGuard {
+impl Drop for AcpLifecycleTerminalGuard<'_> {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
+        let error = placeholder_turn_execution_error("");
+        if observe_session_execution_error(&self.path, &self.owner, &error) {
+            if let Some(notify) = self.notification {
+                let _ = notify();
+            }
+        }
         let _ = persist_session_turn_failure_owned(
             &self.path,
             &self.owner,
-            &placeholder_turn_execution_error(""),
+            &error,
             &current_timestamp(),
         );
+        release_session_execution(&self.path, &self.owner);
     }
 }
 
@@ -1892,16 +1925,87 @@ static SESSION_METADATA_LOCKS: LazyLock<Vec<Mutex<()>>> = LazyLock::new(|| {
         .map(|_| Mutex::new(()))
         .collect()
 });
-static ACTIVE_SESSION_TURNS: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+const MAX_EXECUTION_ERRORS: usize = 128;
+const MAX_EXECUTION_ERROR_DETAIL_BYTES: usize = 16 * 1024;
+#[derive(Default)]
+struct SessionExecutions {
+    active: HashMap<String, AcpLifecycleOwner>,
+    errors: indexmap::IndexMap<String, AcpExecutionError>,
+}
+static SESSION_EXECUTIONS: LazyLock<Mutex<SessionExecutions>> =
+    LazyLock::new(|| Mutex::new(SessionExecutions::default()));
 
-fn active_session_turn_key(path: &Utf8Path, turn_id: &str) -> String {
-    // `acp.session.json` is the legacy metadata source while
-    // `acp.snapshot.json` is the current write target.  Both represent the
-    // same attempt lifecycle, so an in-process admission must survive a
-    // metadata-file migration during provider startup.
-    let attempt_dir = path.parent().unwrap_or(path);
-    format!("{attempt_dir}::{turn_id}")
+fn execution_scope(path: &Utf8Path) -> String {
+    path.parent().unwrap_or(path).to_string()
+}
+
+pub fn session_execution_error(attempt_dir: &Utf8Path) -> Option<AcpExecutionError> {
+    SESSION_EXECUTIONS
+        .lock()
+        .ok()?
+        .errors
+        .get(attempt_dir.as_str())
+        .cloned()
+}
+
+/// Publish only for the actual executor owner. No disk access or lifecycle mutation.
+pub fn observe_session_execution_error(
+    path: &Utf8Path,
+    owner: &AcpLifecycleOwner,
+    error: &RuntimeErrorInfo,
+) -> bool {
+    let mut registry = SESSION_EXECUTIONS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let key = execution_scope(path);
+    if !registry.active.get(&key).is_some_and(|active| {
+        active.turn_id == owner.turn_id && active.operation_id == owner.operation_id
+    }) {
+        return false;
+    }
+    if registry
+        .errors
+        .get(&key)
+        .is_some_and(|existing| existing.owner == *owner)
+    {
+        return true;
+    }
+    let mut error = error.clone();
+    error.raw = None;
+    let mut end = error.diagnostic.len().min(MAX_EXECUTION_ERROR_DETAIL_BYTES);
+    while !error.diagnostic.is_char_boundary(end) {
+        end -= 1;
+    }
+    error.diagnostic.truncate(end);
+    if serde_json::to_vec(&error.params)
+        .map_or(true, |bytes| bytes.len() > MAX_EXECUTION_ERROR_DETAIL_BYTES)
+    {
+        error.params = serde_json::json!({});
+    }
+    registry.errors.shift_remove(&key);
+    registry.errors.insert(
+        key,
+        AcpExecutionError {
+            owner: owner.clone(),
+            error,
+        },
+    );
+    while registry.errors.len() > MAX_EXECUTION_ERRORS {
+        registry.errors.shift_remove_index(0);
+    }
+    true
+}
+
+pub fn release_session_execution(path: &Utf8Path, owner: &AcpLifecycleOwner) {
+    let mut registry = SESSION_EXECUTIONS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let key = execution_scope(path);
+    if registry.active.get(&key).is_some_and(|active| {
+        active.turn_id == owner.turn_id && active.operation_id == owner.operation_id
+    }) {
+        registry.active.remove(&key);
+    }
 }
 
 fn admission_metadata_base(path: &Utf8Path) -> Result<Option<Value>> {
@@ -1917,26 +2021,45 @@ fn admission_metadata_base(path: &Utf8Path) -> Result<Option<Value>> {
     Ok(None)
 }
 
-fn mark_session_turn_active(path: &Utf8Path, turn_id: &str) -> Result<()> {
-    ACTIVE_SESSION_TURNS
+fn mark_session_turn_active(path: &Utf8Path, owner: AcpLifecycleOwner) -> Result<()> {
+    let mut registry = SESSION_EXECUTIONS
         .lock()
-        .map_err(|_| anyhow::anyhow!("ACP active session turn registry poisoned"))?
-        .insert(active_session_turn_key(path, turn_id));
+        .map_err(|_| anyhow::anyhow!("ACP active session turn registry poisoned"))?;
+    let key = execution_scope(path);
+    registry.errors.shift_remove(&key);
+    registry.active.insert(key, owner);
     Ok(())
 }
 
 fn clear_session_turn_active(path: &Utf8Path, turn_id: Option<&str>) {
     let Some(turn_id) = turn_id else { return };
-    if let Ok(mut active) = ACTIVE_SESSION_TURNS.lock() {
-        active.remove(&active_session_turn_key(path, turn_id));
+    if let Ok(mut registry) = SESSION_EXECUTIONS.lock() {
+        let key = execution_scope(path);
+        if registry
+            .active
+            .get(&key)
+            .is_some_and(|owner| owner.turn_id == turn_id)
+        {
+            registry.active.remove(&key);
+        }
+        if registry
+            .errors
+            .get(&key)
+            .is_some_and(|error| error.owner.turn_id == turn_id)
+        {
+            registry.errors.shift_remove(&key);
+        }
     }
 }
 
 fn session_turn_is_active(path: &Utf8Path, turn_id: Option<&str>) -> bool {
     let Some(turn_id) = turn_id else { return false };
-    ACTIVE_SESSION_TURNS
-        .lock()
-        .is_ok_and(|active| active.contains(&active_session_turn_key(path, turn_id)))
+    SESSION_EXECUTIONS.lock().is_ok_and(|registry| {
+        registry
+            .active
+            .get(&execution_scope(path))
+            .is_some_and(|owner| owner.turn_id == turn_id)
+    })
 }
 
 fn session_metadata_lock(path: &Utf8Path) -> &Mutex<()> {
@@ -2433,8 +2556,15 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
     if value.get("promptSubmission").is_none() {
         return Ok(None);
     }
-    let persisted_error = persisted_turn_error(&value);
     let current = lifecycle_header_from_value(&value);
+    let persisted_error = persisted_turn_error(&value).or_else(|| {
+        session_execution_error(path.parent().unwrap_or(path))
+            .filter(|failure| {
+                current.turn_id.as_deref() == Some(&failure.owner.turn_id)
+                    && current.operation_id.as_deref() == Some(&failure.owner.operation_id)
+            })
+            .map(|failure| failure.error)
+    });
     if current.live_turn_activity == AcpLiveTurnActivity::Idle
         || session_turn_is_active(path, current.turn_id.as_deref())
     {
@@ -2472,6 +2602,7 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
     apply_lifecycle_header(&mut value, &terminal);
     value["updatedAt"] = Value::String(current_timestamp());
     write_json(path, &value)?;
+    clear_session_turn_active(path, terminal.turn_id.as_deref());
     Ok(Some(terminal))
 }
 
@@ -2683,7 +2814,14 @@ pub fn begin_session_turn(
     value["promptSubmission"] = serde_json::to_value(submission)?;
     value["updatedAt"] = Value::String(submission.admitted_at.clone());
     write_json(path, &value)?;
-    mark_session_turn_active(path, &submission.turn_id)?;
+    mark_session_turn_active(
+        path,
+        AcpLifecycleOwner {
+            turn_id: submission.turn_id.clone(),
+            operation_id: submission.operation_id.clone(),
+            revision: starting.revision,
+        },
+    )?;
     Ok(AcpTurnAdmission::Started(starting))
 }
 
@@ -4066,6 +4204,114 @@ mod tests {
             snapshot["turnError"]["code"]["code"],
             "acp.turn-execution-failed"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_terminal_write_releases_exited_execution() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = prompt_submission("disk-full-turn", "disk-full-operation");
+        super::begin_session_turn(&path, &submission).unwrap();
+        let header = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: submission.turn_id.clone(),
+            operation_id: submission.operation_id.clone(),
+            revision: header.revision,
+        };
+        // Readers remain allowed, but atomic replacement is denied deterministically.
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        let notified = std::cell::Cell::new(false);
+        let notify = || {
+            let failure = super::session_execution_error(path.parent().unwrap()).unwrap();
+            assert_eq!(failure.owner, owner);
+            assert_eq!(failure.error.code_str(), "runtime.io.storage-full");
+            assert_eq!(
+                super::read_lifecycle_header_snapshot(&path)?
+                    .unwrap()
+                    .latest_turn_status,
+                super::AcpLatestTurnStatus::None
+            );
+            notified.set(true);
+            Ok(())
+        };
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path.clone(), owner.clone())
+            .with_notification(Some(&notify));
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(std::io::Error::from(std::io::ErrorKind::StorageFull).into()));
+        assert!(result.is_err());
+        assert!(
+            notified.get(),
+            "memory error notification precedes persistence"
+        );
+        let unchanged = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unchanged.revision, header.revision,
+            "failed commit must not manufacture a durable revision"
+        );
+        assert_eq!(
+            unchanged.latest_turn_status,
+            super::AcpLatestTurnStatus::None
+        );
+        assert!(
+            !super::session_turn_is_active(&path, Some(&submission.turn_id)),
+            "exited execution must be released even when terminal replacement fails"
+        );
+        drop(locked);
+        let recovered = super::reconcile_orphaned_session_turn(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered.turn_error.unwrap().code_str(),
+            "runtime.io.storage-full"
+        );
+        assert!(super::session_execution_error(path.parent().unwrap()).is_none());
+        assert!(
+            super::reconcile_orphaned_session_turn(&path)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn execution_error_observation_is_scoped_and_never_clears_a_new_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let old = super::AcpLifecycleOwner {
+            turn_id: "old".into(),
+            operation_id: "op-old".into(),
+            revision: 1,
+        };
+        let new = super::AcpLifecycleOwner {
+            turn_id: "new".into(),
+            operation_id: "op-new".into(),
+            revision: 4,
+        };
+        super::mark_session_turn_active(&path, old.clone()).unwrap();
+        assert!(super::observe_session_execution_error(
+            &path,
+            &old,
+            &session_config_unavailable_error()
+        ));
+        super::mark_session_turn_active(&path, new.clone()).unwrap();
+        assert!(!super::observe_session_execution_error(
+            &path,
+            &old,
+            &session_config_unavailable_error()
+        ));
+        super::release_session_execution(&path, &old);
+        assert!(super::session_turn_is_active(&path, Some("new")));
+        assert!(super::session_execution_error(path.parent().unwrap()).is_none());
+        super::release_session_execution(&path, &new);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import type { ConversationAttemptLifecycleVm } from '@/types';
+import { currentAcpExecutionError, mergeAcpExecutionError } from '@/lib/acp-execution-error';
 
 export type AcpComposerMode =
   | 'normal'
@@ -96,6 +97,8 @@ export function shouldTreatAcpRuntimeErrorAsFallback(
 export function deriveAcpRuntimeComposerState(
   input: AcpRuntimeComposerStateInput,
 ): AcpRuntimeComposerState {
+  const executionFailed = Boolean(currentAcpExecutionError(input.lifecycle))
+    && (!input.localTurnId || input.localTurnId === input.lifecycle?.executionError?.owner.turnId);
   const backend = input.lifecycle?.composer;
   const backendProcessingKind = normalizeProcessingKind(backend?.processingKind);
   const backendWorkspaceTransition = backend?.mode === 'runtime-active'
@@ -103,8 +106,8 @@ export function deriveAcpRuntimeComposerState(
       backendProcessingKind === 'preparing-workspace'
       || backendProcessingKind === 'processing-workspace'
     );
-  const runtimeActive = Boolean(input.lifecycle?.runtime.active);
-  const lifecycleAcpRunning = ['starting', 'accepted', 'running'].includes(
+  const runtimeActive = !executionFailed && Boolean(input.lifecycle?.runtime.active);
+  const lifecycleAcpRunning = !executionFailed && ['starting', 'accepted', 'running'].includes(
     input.lifecycle?.acp.liveTurnActivity ?? 'idle',
   );
   const lifecycleTerminal = !lifecycleAcpRunning
@@ -114,9 +117,9 @@ export function deriveAcpRuntimeComposerState(
       && input.lifecycle?.acp.turnId
       && input.lifecycle.acp.turnId === input.localTurnId,
   );
-  const acpTerminal = lifecycleTerminal
+  const acpTerminal = executionFailed || (lifecycleTerminal
     ? (!input.localTurnId || lifecycleMatchesLocalTurn)
-    : (!input.lifecycle && !input.localTurnId && isSessionTerminalStatus(input.acpStatus));
+    : (!input.lifecycle && !input.localTurnId && isSessionTerminalStatus(input.acpStatus)));
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
   const stopRequested = input.cancelling || input.stopCommandPending || backendStopping;
   const localTurnInFlight = !acpTerminal && Boolean(input.localTurnId) && (
@@ -126,7 +129,7 @@ export function deriveAcpRuntimeComposerState(
   const acpActive = !acpTerminal && lifecycleAcpRunning;
   // Stop is a control-plane fact. A stale session snapshot must not win over
   // it and keep the composer in interaction-blocked mode.
-  const waitingForUserInteraction = input.waitingForUserInteraction && !stopRequested;
+  const waitingForUserInteraction = !executionFailed && input.waitingForUserInteraction && !stopRequested;
   const initialTimelinePending = Boolean(input.initialTimelinePending);
   const staleTerminalSnapshot = acpTerminal;
   const cancelling = !acpTerminal && input.cancelling;
@@ -139,7 +142,7 @@ export function deriveAcpRuntimeComposerState(
   const runtimeContinueBlockedByWorkflow = false;
   const reportedBackendMode = normalizeComposerMode(backend?.mode);
   const sessionSuperseded = reportedBackendMode === 'session-superseded';
-  const backendMode = acpTerminal && reportedBackendMode === 'stopping'
+  const backendMode = executionFailed || (acpTerminal && reportedBackendMode === 'stopping')
     ? 'normal'
     : reportedBackendMode;
   const mode = sessionSuperseded ? 'session-superseded' : composerModeFromBackend({
@@ -151,7 +154,7 @@ export function deriveAcpRuntimeComposerState(
     runtimeErrorMessage,
   });
   const directQueueFacet = Boolean(input.promptQueueEnabled) || input.lifecycle?.promptQueue != null;
-  const submitTarget = directQueueFacet && shouldRouteDirectSubmissionToQueue({
+  const submitTarget = executionFailed ? 'acp-prompt' : directQueueFacet && shouldRouteDirectSubmissionToQueue({
     input,
     mode,
     runtimeActive,
@@ -328,6 +331,7 @@ export function shouldHidePendingAcpInteractions(
   stopCommandPending: boolean,
   interactionTurnId?: string | null,
 ) {
+  if (currentAcpExecutionError(lifecycle)) return true;
   if (cancelling || stopCommandPending || Boolean(lifecycle?.acp.stopping)) {
     return true;
   }
@@ -350,6 +354,7 @@ export function activityProjectionStatus(
   localPromptAdmissionPending: boolean,
   localTurnId?: string | null,
 ) {
+  if (currentAcpExecutionError(lifecycle) && (!localTurnId || localTurnId === lifecycle?.acp.turnId)) return 'interrupted';
   const terminalLifecycleMatchesTurn = isTerminalAcpLifecycle(lifecycle)
     && (!localTurnId || lifecycle?.acp.turnId === localTurnId);
   if (terminalLifecycleMatchesTurn) return lifecycle!.acp.latestTurnStatus;
@@ -371,6 +376,7 @@ export function shouldSettleAcpComposerTransientState(
   localTurnId: string | null | undefined,
 ) {
   if (!lifecycle) return isSessionTerminalStatus(sessionStatus);
+  if (currentAcpExecutionError(lifecycle)) return !localTurnId || lifecycle.acp.turnId === localTurnId;
   return isTerminalAcpLifecycle(lifecycle)
     && (!localTurnId || lifecycle.acp.turnId === localTurnId);
 }
@@ -412,13 +418,15 @@ export function mergeConversationAttemptLifecycle(
   const localQueue = local?.promptQueue;
   const incomingQueue = incoming.promptQueue;
   const promptQueue = mergeConversationPromptQueue(localQueue, incomingQueue);
-  if (acp !== incoming.acp || runtime !== incoming.runtime || promptQueue !== incomingQueue) {
+  const executionError = mergeAcpExecutionError(acp, incoming.executionError, local?.executionError);
+  if (executionError || executionError !== (incoming.executionError ?? null) || acp !== incoming.acp || runtime !== incoming.runtime || promptQueue !== incomingQueue) {
     const runtimeSource = local && runtime === local.runtime ? local : incoming;
     return deriveMergedLifecycleProjection({
       ...incoming,
       acp,
       runtime,
       promptQueue,
+      executionError,
     }, runtimeSource);
   }
   if (localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)) {
@@ -465,17 +473,20 @@ export function mergeConversationAttemptLiveControlFacets(
   live: {
     acp?: ConversationAttemptLifecycleVm['acp'] | null;
     promptQueue?: ConversationAttemptLifecycleVm['promptQueue'];
+    executionError?: ConversationAttemptLifecycleVm['executionError'];
   },
 ) {
   const acp = live.acp
     ? mergeConversationAcpFacet(canonical.acp, live.acp)
     : canonical.acp;
   const promptQueue = mergeConversationPromptQueue(canonical.promptQueue, live.promptQueue);
-  if (acp === canonical.acp && promptQueue === canonical.promptQueue) return canonical;
+  const executionError = mergeAcpExecutionError(acp, live.executionError, canonical.executionError);
+  if (acp === canonical.acp && promptQueue === canonical.promptQueue && executionError === (canonical.executionError ?? null)) return canonical;
   return deriveMergedLifecycleProjection({
     ...canonical,
     acp,
     promptQueue,
+    executionError,
   }, canonical);
 }
 
@@ -483,6 +494,14 @@ function deriveMergedLifecycleProjection(
   lifecycle: ConversationAttemptLifecycleVm,
   runtimeSource: ConversationAttemptLifecycleVm,
 ): ConversationAttemptLifecycleVm {
+  if (currentAcpExecutionError(lifecycle)) {
+    return {
+      ...lifecycle,
+      displayStatus: 'interrupted',
+      runtimeDisplay: { ...runtimeSource.runtimeDisplay, code: 'runtime-abnormal', tone: 'danger', icon: 'error', terminal: false, blockingError: false },
+      composer: { ...lifecycle.composer, mode: 'normal', submitTarget: 'acp-prompt', statusKey: null, canStop: false, lockInput: false },
+    };
+  }
   const acpStopping = lifecycle.acp.stopping || lifecycle.acp.liveTurnActivity === 'cancel-requested';
   const acpActive = ['starting', 'accepted', 'running'].includes(lifecycle.acp.liveTurnActivity);
   const runtimeActive = lifecycle.runtime.active;

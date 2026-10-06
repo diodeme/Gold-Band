@@ -1,5 +1,13 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-06 ACP 重进旧缓存首帧修复
+
+- 根因：`9babd93b` 已移除 session metadata 中重复的事件缓存，但 `contentHydrated` 仍被直接用作重新进入时的展示资格；离页期间 Router 继续推进，缓存窗口停在旧 head，正文查询返回之前就绘制旧页。task-263 的截图文本在持久化 timeline 中分别对应同一 session 的 seq 50452 和 57899，当前 generation 为 5；这些记录证明内容归属和先后，不包含当时的前端绘制时序。
+- [x] 复用 Router 的 session/generation/head sequence 与丢失水位检查缓存恢复资格，应用到首次 state、identity 重置及查询失败回退。已知落后的 following 窗口先 loading，再经既有查询展示最新正文；明确阅读历史和已覆盖水位的缓存保持即时恢复。revision 缺口不能被更新的可见 sequence 冒充覆盖。
+- [x] 先红后绿：挂起 canonical 查询时，原实现的两项 DOM 测试均显示旧正文（完整 replay / replay 淘汰）；修复后通过。接口回归覆盖 hydration 与 freshness 区别、session 隔离、generation 前进/落后、revision 缺口及 coverage 收敛；DOM 回归覆盖失败不放出旧正文、历史阅读恢复与原 live-window 恢复行为。5 个相关测试文件共 212 项通过，TypeScript 与 Web 生产构建通过。
+- [x] 浏览器：iab 不可用、Chrome 连接缺认证后使用独立 agent-browser。真实 ACP 组件配合可控接口，以截图对应的旧/新文本及长正文验证；700×650 查询等待期间连续 12 个绘制帧均无旧正文，完成后最新消息可见；1400×900、窄后拉宽均无横向溢出，无浏览器错误。此验证为浏览器组件场景，未重放完整生产会话或重新打包验证 EXE。临时入口与测试进程完成后清理。
+- 性能与过度设计评审：复用现有加载状态、canonical locator、Router 与 LRU，不新增状态机、持久字段、依赖、缓存或请求。恢复检查至多线性扫描配置限定的事件窗口（默认 288 项）和现有 Router replay（最多 64 项）；不进入逐帧热路径、不读取全量历史，不需要专项 benchmark。通用约束已由 state-lifecycle、data-loading 和 bug-fix-verification 规则覆盖，不重复沉淀。
+
 ## 2026-09-25 Claude 会话思考流与执行策略按能力协商生效
 
 - 根因：长会话前两分钟无任何输出后一次性出结果。raw 帧与 pipeline 诊断显示客户端排队最长 164ms，瓶颈不在 Gold Band；claude-agent-acp 0.81.2 对新模型默认 `thinking.display=omitted`，只流出无文本签名块，本轮 0 个 `agent_thought_chunk`。同时 `session/new` 参数不含 `_meta`：Claude 私有策略按 provider ID `claude-acp` 判定，用户自建 `my-claude` 实例连 Monitor / 后台任务禁用也未生效。属于设计把 adapter 扩展能力错挂在用户可命名的 provider ID 上，并且缺少思考展示选项。

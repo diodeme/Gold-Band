@@ -844,6 +844,33 @@ export function hasHydratedAcpSessionContent(sessionKey: string) {
   return acpResourceStore.peek(sessionKey)?.contentHydrated === true;
 }
 
+// Hydration records a past successful read, not freshness after time spent off
+// page. Only a following window needs to cover the Router's observed head;
+// an explicitly detached history window must retain its reading position.
+export function canRestoreAcpSessionContent(
+  sessionKey: string,
+  replay: ReturnType<typeof readConversationBranchReplaySnapshot>,
+) {
+  const cached = acpResourceStore.peek(sessionKey);
+  if (!cached?.contentHydrated) return false;
+  if (hasStoredExplicitHistoricalTimelineIntent(cached.viewState)) return true;
+  const window = cached.eventWindow;
+  if (!window || cached.viewState?.hasNewer) return false;
+  if (!replay.sessionId) return true;
+  if (window.sessionId !== replay.sessionId) return false;
+  const generation = replay.timelineGeneration || replay.lossWatermarkGeneration;
+  if (generation > 0 && window.timelineGeneration !== generation) {
+    return window.timelineGeneration > generation;
+  }
+  // Display metadata can include live projection; it cannot prove canonical
+  // coverage of a replay gap. Let the existing query/ACK handshake clear it.
+  if (replay.requiresCatchUp) return false;
+  const newestSeq = window.events.reduce((latest, event) => (
+    Math.max(latest, event.endedSeq ?? event.seq)
+  ), 0);
+  return newestSeq >= replay.headSeq;
+}
+
 export function markAcpSessionContentHydrated(sessionKey: string) {
   storeAcpResourcePart(sessionKey, { contentHydrated: true });
 }
@@ -1469,6 +1496,10 @@ export function ACPChatDialog(
     addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
   }), [addWorkspaceFile, workspaceFileReferenceBridge]);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
+  const canRestoreSessionContent = useCallback(() => canRestoreAcpSessionContent(
+    eventWindowKey,
+    readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId),
+  ), [attemptWorkspaceLocator, branchId, eventWindowKey]);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
   const restoredOptimisticEvents = readStoredOptimisticEvents(
@@ -1554,7 +1585,7 @@ export function ACPChatDialog(
   const [initialSessionQueryState, setInitialSessionQueryState] = useState<
     AcpInitialSessionQueryState
   >(() => (
-    !isTauriRuntime() || hasHydratedAcpSessionContent(eventWindowKey)
+    !isTauriRuntime() || canRestoreSessionContent()
       ? "success"
       : "loading"
   ));
@@ -2249,7 +2280,7 @@ export function ACPChatDialog(
       return next;
     });
     setInitialSessionQueryState(
-      !isTauriRuntime() || hasHydratedAcpSessionContent(eventWindowKey)
+      !isTauriRuntime() || canRestoreSessionContent()
         ? "success"
         : "loading",
     );
@@ -2305,7 +2336,7 @@ export function ACPChatDialog(
       && storedLoadedEventWindow.sessionId != null) {
       requestCanonicalHeadRecoveryRef.current?.(true);
     }
-  }, [commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
+  }, [canRestoreSessionContent, commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
     if (branchId !== 'root' || !branchLiveSnapshot.acp) return;
@@ -3915,7 +3946,7 @@ export function ACPChatDialog(
       setInitialSessionQueryState("success");
       return;
     }
-    const restoredHydratedContent = hasHydratedAcpSessionContent(eventWindowKey);
+    const restoredHydratedContent = canRestoreSessionContent();
     setInitialSessionQueryState(restoredHydratedContent ? "success" : "loading");
     setSessionLoadError(null);
     let active = true;
@@ -4316,7 +4347,7 @@ export function ACPChatDialog(
         if (!initialFetchSucceeded) {
           if (
             restoredHydratedContent
-            || hasHydratedAcpSessionContent(eventWindowKey)
+            || canRestoreSessionContent()
           ) {
             setInitialSessionQueryState("success");
             return;
@@ -4714,6 +4745,7 @@ export function ACPChatDialog(
     attemptId,
     branchId,
     cancelledDirectAttemptShell,
+    canRestoreSessionContent,
     enqueueLiveEventUpdate,
     eventWindowKey,
     effectiveEventPageSize,

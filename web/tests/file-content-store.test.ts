@@ -113,6 +113,22 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('FileContentStore autosave contract', () => {
+  it('keeps image transforms per file without publishing content updates and releases them on close', async () => {
+    const store = createStore();
+    const other = { ...resource, key: 'file:project-1:D:/repo/other.txt', locator: { ...resource.locator, canonicalPath: 'D:/repo/other.txt' } };
+    await store.load(resource);
+    await store.load(other);
+    const entry = store.snapshot(resource.key);
+    const view = { scale: 1.35, positionX: -30, positionY: -20 };
+    store.persistImageViewState(resource.key, view);
+    expect(store.imageViewState(resource.key)).toEqual(view);
+    expect(store.imageViewState(other.key)).toBeNull();
+    expect(store.snapshot(resource.key)).toBe(entry);
+    await store.release(resource.key);
+    expect(store.imageViewState(resource.key)).toBeNull();
+    await store.release(other.key);
+  });
+
   it('coalesces rapid edits for 300ms and writes only the latest content', async () => {
     const store = createStore();
     await store.load(resource);

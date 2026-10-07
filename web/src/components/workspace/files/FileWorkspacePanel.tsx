@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FilePlus2, FileQuestion, FolderOpen, Globe, ImageIcon, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, FilePlus2, FileQuestion, FolderOpen, Globe, ImageIcon, LoaderCircle, Pause, Play, RefreshCw, SearchX, ShieldAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,7 @@ import {
   type RightWorkspaceResource,
 } from '../right-workspace-context';
 import { fileContentStore, useFileContentEntry } from './file-content-store';
+import { WorkspaceImageCanvas } from './WorkspaceImageCanvas';
 import { OpenWithSystemAppButton } from './OpenWithSystemAppButton';
 import { fileExplorerStore, type FileTreeEntryMutation } from './file-explorer-store';
 import { remapWorkspacePath, workspacePathIsWithin } from './workspace-path';
@@ -462,7 +463,7 @@ function FileSnapshotContent({
       </div>
     );
   }
-  if (snapshot.kind === 'image') return <ImagePreview resource={resource} onOpenInBrowser={onOpenInBrowser} />;
+  if (snapshot.kind === 'image') return <ImagePreview key={resource.key} resource={resource} onOpenInBrowser={onOpenInBrowser} />;
   return <UnsupportedFile resource={resource} />;
 }
 
@@ -471,42 +472,21 @@ function ImagePreview({ resource, onOpenInBrowser }: { resource: FileWorkspaceRe
   const entry = useFileContentEntry(resource.key);
   const snapshot = entry.snapshot?.kind === 'image' ? entry.snapshot : null;
   const initialViewState = useMemo(() => fileContentStore.imageViewState(resource.key), [resource.key]);
-  const [zoom, setZoomState] = useState(initialViewState.zoom);
   const [animationPaused, setAnimationPaused] = useState(false);
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number } | null>(null);
   useEffect(() => {
     if (!snapshot?.animated) setAnimationPaused(false);
   }, [snapshot?.animated]);
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || !snapshot) return;
-    viewport.scrollLeft = initialViewState.scrollLeft;
-    viewport.scrollTop = initialViewState.scrollTop;
-  }, [initialViewState.scrollLeft, initialViewState.scrollTop, resource.key, snapshot?.previewGrant.token]);
   if (!snapshot) return null;
-  const persistView = (nextZoom: number, viewport = viewportRef.current) => {
-    fileContentStore.persistImageViewState(resource.key, {
-      zoom: nextZoom,
-      scrollLeft: viewport?.scrollLeft ?? 0,
-      scrollTop: viewport?.scrollTop ?? 0,
-    });
-  };
-  const setZoom = (next: number | ((current: number) => number)) => {
-    setZoomState((current) => {
-      const value = typeof next === 'function' ? next(current) : next;
-      persistView(value);
-      return value;
-    });
-  };
-  const fitImage = () => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    setZoom(Math.max(0.1, Math.min(1, (viewport.clientWidth - 40) / snapshot.width, (viewport.clientHeight - 40) / snapshot.height)));
-  };
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex h-9 shrink-0 items-center justify-end gap-1 border-b border-border/40 px-2">
+    <WorkspaceImageCanvas
+      resourceKey={resource.key}
+      src={workspaceFilePreviewUrl(snapshot.previewGrant.token, animationPaused)}
+      alt={snapshot.name}
+      imageSize={{ width: snapshot.width, height: snapshot.height }}
+      initialViewState={initialViewState}
+      onViewStateChange={(state) => fileContentStore.persistImageViewState(resource.key, state)}
+      onError={() => void fileContentStore.reload(resource.key)}
+      toolbarBefore={<>
         {snapshot.sourceEditable ? <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void fileContentStore.reload(resource.key, true)}>{t('workspace.filesPanel.viewSource')}</Button> : null}
         {snapshot.animated ? (
           <Button
@@ -519,14 +499,8 @@ function ImagePreview({ resource, onOpenInBrowser }: { resource: FileWorkspaceRe
             {animationPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
           </Button>
         ) : null}
-        <Button size="icon" variant="ghost" className="size-7" onClick={() => setZoom((value) => Math.max(0.1, value - 0.15))} aria-label={t('workspace.filesPanel.zoomOut')}><ZoomOut className="size-3.5" /></Button>
-        <Button size="icon" variant="ghost" className="size-7" onClick={fitImage} aria-label={t('workspace.filesPanel.fitImage')}><Maximize2 className="size-3.5" /></Button>
-        <Button size="icon" variant="ghost" className="size-7" onClick={() => {
-          setZoom(1);
-          const viewport = viewportRef.current;
-          if (viewport) viewport.scrollTo({ left: 0, top: 0 });
-        }} aria-label={t('workspace.filesPanel.resetImage')}><RotateCcw className="size-3.5" /></Button>
-        <Button size="icon" variant="ghost" className="size-7" onClick={() => setZoom((value) => Math.min(8, value + 0.15))} aria-label={t('workspace.filesPanel.zoomIn')}><ZoomIn className="size-3.5" /></Button>
+      </>}
+      toolbarAfter={<>
         {onOpenInBrowser ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -536,41 +510,8 @@ function ImagePreview({ resource, onOpenInBrowser }: { resource: FileWorkspaceRe
           </Tooltip>
         ) : null}
         <OpenWithSystemAppButton resource={resource} variant="icon" />
-      </div>
-      <div
-        ref={viewportRef}
-        className="gold-themed-scrollbar flex min-h-0 flex-1 cursor-grab items-center justify-center overflow-auto bg-[linear-gradient(45deg,var(--muted)_25%,transparent_25%),linear-gradient(-45deg,var(--muted)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--muted)_75%),linear-gradient(-45deg,transparent_75%,var(--muted)_75%)] bg-[length:16px_16px] bg-[position:0_0,0_8px,8px_-8px,-8px_0px] p-5 active:cursor-grabbing"
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          const viewport = viewportRef.current;
-          if (!viewport) return;
-          viewport.setPointerCapture(event.pointerId);
-          dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop };
-        }}
-        onPointerMove={(event) => {
-          const drag = dragRef.current;
-          const viewport = viewportRef.current;
-          if (!drag || !viewport || drag.pointerId !== event.pointerId) return;
-          viewport.scrollLeft = drag.left - (event.clientX - drag.x);
-          viewport.scrollTop = drag.top - (event.clientY - drag.y);
-        }}
-        onPointerUp={(event) => {
-          if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
-        }}
-        onPointerCancel={() => { dragRef.current = null; }}
-        onScroll={(event) => persistView(zoom, event.currentTarget)}
-      >
-        <img
-          src={workspaceFilePreviewUrl(snapshot.previewGrant.token, animationPaused)}
-          alt={snapshot.name}
-          draggable={false}
-          onError={() => void fileContentStore.reload(resource.key)}
-          className="max-w-none select-none object-contain shadow-lg"
-          style={{ width: snapshot.width * zoom, height: snapshot.height * zoom }}
-        />
-      </div>
-      <div className="shrink-0 border-t border-border/40 px-3 py-1 text-ui-micro text-muted-foreground">{snapshot.width} × {snapshot.height} · {Math.round(zoom * 100)}%</div>
-    </div>
+      </>}
+    />
   );
 }
 

@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/i18n';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 const imageActionMocks = vi.hoisted(() => ({
   copy: vi.fn(() => Promise.resolve()),
@@ -48,7 +49,7 @@ describe('workspace image context menu DOM interaction', () => {
     try {
       await act(async () => {
         root.render(
-          <WorkspaceImageCanvas src="asset://image" alt="image.png" imageActionAsset={attachment} />,
+          <TooltipProvider><WorkspaceImageCanvas src="asset://image" alt="image.png" imageActionAsset={attachment} /></TooltipProvider>,
         );
       });
 

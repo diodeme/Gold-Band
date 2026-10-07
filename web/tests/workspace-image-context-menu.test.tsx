@@ -2,8 +2,9 @@
 
 import React, { act, forwardRef, useImperativeHandle } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/i18n';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 const imageActionMocks = vi.hoisted(() => ({
   copy: vi.fn(() => Promise.resolve()),
@@ -22,6 +23,7 @@ vi.mock('react-zoom-pan-pinch', () => ({
     ref: React.ForwardedRef<unknown>,
   ) {
     useImperativeHandle(ref, () => ({
+      instance: { contentComponent: null },
       zoomOut: vi.fn(), centerView: vi.fn(), resetTransform: vi.fn(), zoomIn: vi.fn(), setTransform: vi.fn(),
     }));
     return <div>{props.children}</div>;
@@ -43,7 +45,11 @@ import { WorkspaceImageCanvas } from '@/components/workspace/files/WorkspaceImag
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('workspace image context menu', () => {
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  });
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
     imageActionMocks.copy.mockClear();
     imageActionMocks.save.mockClear();
@@ -62,7 +68,7 @@ describe('workspace image context menu', () => {
 
     try {
       await act(async () => root.render(
-        <WorkspaceImageCanvas src="asset://image" alt="image.png" imageActionAsset={attachment} />,
+        <TooltipProvider><WorkspaceImageCanvas src="asset://image" alt="image.png" imageActionAsset={attachment} /></TooltipProvider>,
       ));
 
       const buttons = Array.from(container.querySelectorAll('button'));
@@ -91,7 +97,7 @@ describe('workspace image context menu', () => {
     document.body.append(container);
     const root = createRoot(container);
     try {
-      await act(async () => root.render(<WorkspaceImageCanvas src="asset://image" alt="image.png" />));
+      await act(async () => root.render(<TooltipProvider><WorkspaceImageCanvas src="asset://image" alt="image.png" /></TooltipProvider>));
       expect(container.querySelector('[data-testid="image-context-menu"]')).toBeNull();
     } finally {
       await act(async () => root.unmount());

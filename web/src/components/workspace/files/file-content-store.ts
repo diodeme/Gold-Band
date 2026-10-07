@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { ImageCanvasViewState } from '@/lib/image-zoom-gesture';
 import {
   readFileResource,
   resolveMarkdownImage,
@@ -81,19 +82,13 @@ interface SaveRuntime {
   viewportAnchor: EditorViewportAnchor | null;
   viewportScrollTop: number;
   consumedLocationRevision: number;
-  imageViewState: FileImageViewState;
+  imageViewState: ImageCanvasViewState | null;
   markdownMode: MarkdownEditorMode;
   markdownImages: Map<string, MarkdownImageState>;
   markdownImageSources: Set<string>;
   markdownImageRequestRevision: number;
   markdownImageRefreshPromise: Promise<void> | null;
   approvedMarkdownImageTargets: Set<string>;
-}
-
-export interface FileImageViewState {
-  zoom: number;
-  scrollLeft: number;
-  scrollTop: number;
 }
 
 interface PrimedExternalGrant {
@@ -636,11 +631,11 @@ export class FileContentStore {
     return true;
   }
 
-  imageViewState(resourceKey: string): FileImageViewState {
-    return this.runtimes.get(resourceKey)?.imageViewState ?? { zoom: 1, scrollLeft: 0, scrollTop: 0 };
+  imageViewState(resourceKey: string): ImageCanvasViewState | null {
+    return this.runtimes.get(resourceKey)?.imageViewState ?? null;
   }
 
-  persistImageViewState(resourceKey: string, state: FileImageViewState) {
+  persistImageViewState(resourceKey: string, state: ImageCanvasViewState) {
     const runtime = this.runtimes.get(resourceKey);
     if (runtime) runtime.imageViewState = state;
   }
@@ -823,7 +818,7 @@ export class FileContentStore {
       viewportAnchor: null,
       viewportScrollTop: 0,
       consumedLocationRevision: 0,
-      imageViewState: existing?.imageViewState ?? { zoom: 1, scrollLeft: 0, scrollTop: 0 },
+      imageViewState: existing?.imageViewState ?? null,
       markdownMode: existing?.markdownMode ?? 'live-preview',
       markdownImages: new Map(),
       markdownImageSources: new Set(),

@@ -919,6 +919,7 @@
       "command-required": "Agent 시작 명령을 입력하세요."
     },
     "acp": {
+      "model-config-unavailable": "이 모델의 설정을 가져오지 못했습니다. 현재 설정으로 계속할 수 있습니다.",
       "composer-history-stale": "입력 기록이 변경되었습니다. 입력을 지운 뒤 다시 시도해 주세요.",
       "composer-history-not-found": "이 기록 항목을 더 이상 사용할 수 없습니다.",
       "composer-history-query-failed": "입력 기록을 불러올 수 없습니다. 다시 시도해 주세요.",
@@ -2180,6 +2181,10 @@
     "noChangedFiles": "볼 수 있는 변경 파일이 없습니다"
   },
   "acp": {
+    "modelConfigNotFetched": "아직 이 모델의 설정을 가져오지 않았습니다",
+    "fetchModelConfig": "모델 설정 가져오기",
+    "fetchingModelConfig": "가져오는 중…",
+    "retryModelConfig": "다시 시도",
     "composerHistoryError": "입력 기록을 불러올 수 없습니다. 입력을 지운 후 다시 시도하세요.",
     "restored": "복원됨",
     "sessionSuperseded": "이 세션은 <attempt>{{target}}</attempt>에서 이어졌습니다. 해당 attempt에서 계속하세요.",

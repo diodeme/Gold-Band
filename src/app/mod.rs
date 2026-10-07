@@ -3713,6 +3713,10 @@ impl App {
                 bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
         let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
@@ -3776,6 +3780,10 @@ impl App {
             workflow: persisted_template.workflow.clone(),
             model_bindings: persisted_template.model_bindings.clone(),
         };
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(
             &mut workflow,
             &mut model_bindings,
@@ -3821,6 +3829,10 @@ impl App {
             model_bindings: store.templates[template_index].model_bindings.clone(),
         };
         let mut workflow = persisted.workflow.clone();
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(
             &mut workflow,
             &mut model_bindings,
@@ -4108,6 +4120,10 @@ impl App {
         } else {
             None
         };
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut authoring.model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(
             &mut authoring.workflow,
             &mut authoring.model_bindings,
@@ -4222,6 +4238,18 @@ impl App {
 
     pub fn provider_capabilities(&self, provider: &str) -> Result<ProviderCapabilities> {
         Ok(self.provider_info(provider)?.capabilities)
+    }
+
+    pub fn provider_model_config(&self, provider: &str, model: &str) -> Result<serde_json::Value> {
+        let (agent_id, config) = self.managed_agent(provider)?;
+        acp_client::probe_model_config(
+            &agent_id,
+            &config.adapter,
+            self.paths.repo_root.clone(),
+            self.config.use_local_claude,
+            self.config.require_local_claude_executable,
+            model,
+        )
     }
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {

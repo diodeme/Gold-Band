@@ -919,6 +919,7 @@
       "command-required": "Enter an Agent launch command."
     },
     "acp": {
+      "model-config-unavailable": "Could not fetch this model’s configuration. You can continue with the current settings.",
       "composer-history-stale": "Input history has changed. Clear the input and try again.",
       "composer-history-not-found": "This history entry is no longer available.",
       "composer-history-query-failed": "Could not load input history. Please try again.",
@@ -2180,6 +2181,10 @@
     "noChangedFiles": "No changed files are available"
   },
   "acp": {
+    "modelConfigNotFetched": "Configuration for this model has not been fetched",
+    "fetchModelConfig": "Fetch model configuration",
+    "fetchingModelConfig": "Fetching…",
+    "retryModelConfig": "Retry",
     "composerHistoryError": "Could not load input history. Clear the input to retry.",
     "restored": "Restored",
     "sessionSuperseded": "This session was continued by <attempt>{{target}}</attempt>. Continue in that attempt.",

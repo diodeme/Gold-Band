@@ -3148,6 +3148,36 @@ pub async fn doctor_agent(
     .await
 }
 
+#[tauri::command]
+pub async fn fetch_agent_model_config(
+    app_handle: AppHandle,
+    agent_type: String,
+    model_id: String,
+) -> CommandResult<crate::view_models::ManagedAgentVm> {
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let state = app_handle.state::<DesktopState>();
+        state
+            .fetch_agent_model_config(&agent_id, &model_id)
+            .map_err(command_error)?;
+        let _commit_guard = state
+            .agent_config_diagnostic_commit_guard()
+            .map_err(command_error)?;
+        let app = state.app().map_err(command_error)?;
+        let diagnostics = state.agent_diagnostics().map_err(command_error)?;
+        let config = app
+            .managed_agents()
+            .get(&agent_id)
+            .ok_or_else(|| command_error(gold_band::acp::client::ModelConfigUnavailable.into()))?;
+        Ok(crate::view_models::managed_agent_vm(
+            &agent_id,
+            config,
+            diagnostics.get(&agent_id),
+        ))
+    })
+    .await
+}
+
 fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
     let state = app_handle.state::<DesktopState>();
     match state.queue_agent_diagnostic(&agent_id) {
@@ -9235,6 +9265,9 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if error.downcast_ref::<gold_band::acp::client::ModelConfigUnavailable>().is_some() {
+        return CommandErrorVm::new("acp.model-config-unavailable", serde_json::json!({}));
+    }
     if let Some(error) = error.downcast_ref::<gold_band::npx_cache::CacheError>() {
         return CommandErrorVm::new(error.code, serde_json::json!({}));
     }

@@ -94,15 +94,56 @@ export function isAuthoringConfigOptionValueAllowed(
   modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
   selectedModelId: string | null | undefined,
 ) {
+  const observed = hasObservedAuthoringModel(configOptions, modelBoundCatalogs, selectedModelId);
   const option = authoringConfigOptionsForModel(
     configOptions,
     modelBoundCatalogs,
     selectedModelId,
   ).find((item) => item.id === optionId);
-  if (option) {
-    return option.options.some((item) => item.value === value);
+  if (!option) return !observed || isAuthoringModelBoundConfigOption(optionId, configOptions, modelBoundCatalogs);
+  if (!observed && isAcpModelBoundConfigCategory(option.category)) return true;
+  return option.options.some((item) => item.value === value);
+}
+
+export function hasObservedAuthoringModel(
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+  modelId: string | null | undefined,
+) {
+  const selected = modelId?.trim() || findAcpCatalogModelId(configOptions);
+  return Boolean(selected && (hasAuthoringModelBoundCatalog(modelBoundCatalogs, selected)
+    || findAcpCatalogModelId(configOptions) === selected));
+}
+
+/** Only a catalog observed for this model may rewrite persisted authoring intent. */
+export function normalizeAuthoringConfigOverrides(
+  overrides: Record<string, string> | null | undefined,
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+  modelId: string | null | undefined,
+) {
+  if (!hasObservedAuthoringModel(configOptions, modelBoundCatalogs, modelId)) return { ...overrides };
+  const target = authoringConfigOptionsForModel(configOptions, modelBoundCatalogs, modelId);
+  const source = remapSourceOptions(configOptions, modelBoundCatalogs);
+  const next = remapAcpThoughtLevelOverride(overrides, target, source);
+  for (const id of Object.keys(next)) {
+    if (target.some((option) => option.id === id)) continue;
+    const previous = source.find((option) => option.id === id);
+    if (!previous || isAcpModelBoundConfigCategory(previous.category)) delete next[id];
   }
-  return isAuthoringModelBoundConfigOption(optionId, configOptions, modelBoundCatalogs);
+  return next;
+}
+
+/** Projection used for display and an explicit edit; never persisted merely on observation. */
+export function projectAuthoringConfigOverrides(
+  overrides: Record<string, string> | null | undefined,
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+  modelId: string | null | undefined,
+) {
+  return remapAcpThoughtLevelOverride(overrides,
+    authoringConfigOptionsForModel(configOptions, modelBoundCatalogs, modelId),
+    remapSourceOptions(configOptions, modelBoundCatalogs));
 }
 
 export function acpCompositeConfigSections(
@@ -116,11 +157,7 @@ export function acpCompositeConfigSections(
     modelBoundCatalogs,
     selectedModelId,
   );
-  const remapped = remapAcpThoughtLevelOverride(
-    values,
-    projected,
-    remapSourceOptions(configOptions, modelBoundCatalogs),
-  );
+  const remapped = projectAuthoringConfigOverrides(values, configOptions, modelBoundCatalogs, selectedModelId);
   const bound = projected.filter((option) => (
     isAcpModelBoundConfigCategory(option.category)
     && option.options.length > 0
@@ -204,6 +241,9 @@ export function retainAcpModelBoundOverrides(
   modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
   previousModelId?: string | null,
 ): Record<string, string> {
+  if (selectedModelId?.trim() && !hasObservedAuthoringModel(configOptions, modelBoundCatalogs, selectedModelId)) {
+    return { ...overrides };
+  }
   const projected = authoringConfigOptionsForModel(
     configOptions,
     modelBoundCatalogs,

@@ -1,6 +1,19 @@
 import { expect, it } from 'vitest';
-import { applyAgentDiagnosticUpdate } from '../src/lib/agent-diagnostic-update';
+import { applyAgentDiagnosticUpdate, applyAgentModelConfigUpdate } from '../src/lib/agent-diagnostic-update';
 import { mockAgentRegistry } from '../src/mockData';
+
+it('merges only the probed model and rejects stale configuration or newer live observations', () => {
+  const registry = structuredClone(mockAgentRegistry);
+  const agent = registry.agents[0];
+  agent.modelBoundCatalogs = { existing: [] };
+  const incoming = { ...agent, modelBoundCatalogs: { target: [] } };
+  const update = { agent: incoming, modelId: 'target' };
+  const next = applyAgentModelConfigUpdate(registry, update)!;
+  expect(next.agents[0].modelBoundCatalogs).toEqual({ existing: [], target: [] });
+  expect(next.agents[1]).toBe(registry.agents[1]);
+  expect(applyAgentModelConfigUpdate(next, update)?.agents[0]).toBe(next.agents[0]);
+  expect(applyAgentModelConfigUpdate(registry, { ...update, agent: { ...incoming, command: 'changed' } })?.agents[0]).toBe(agent);
+});
 
 it('updates only the matching agent and rejects diagnostics for an old configuration', () => {
   const registry = structuredClone(mockAgentRegistry);

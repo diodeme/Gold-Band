@@ -84,7 +84,8 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { GraphControls } from '@/components/GraphControls';
-import { normalizeWorkflowModelBindings } from '@/lib/workflow-model-bindings';
+import { normalizeWorkflowModelBindings, reconcileWorkflowModelBindings } from '@/lib/workflow-model-bindings';
+import { normalizeAuthoringConfigOverrides, projectAuthoringConfigOverrides } from '@/lib/acp-composite-config';
 import type { WorkflowProfileCatalogState } from '@/lib/workflow-profile-catalog';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
@@ -725,11 +726,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   };
 
   const updateWorkerBinding = (executionSlotId: string, patch: Partial<WorkerModelBinding>) => {
-    syncModelBindings(upsertWorkerModelBinding(modelBindings, executionSlotId, patch));
+    syncModelBindings(reconcileWorkflowModelBindings(upsertWorkerModelBinding(modelBindings, executionSlotId, patch), doctorReadyAgents));
   };
 
   const syncWorkerBindingToOthers = (executionSlotId: string, overwriteConfigured: boolean) => {
-    syncModelBindings(applyWorkerBindingSync(workflow, modelBindings, executionSlotId, overwriteConfigured));
+    syncModelBindings(applyWorkerBindingSync(workflow, reconcileWorkflowModelBindings(modelBindings, doctorReadyAgents), executionSlotId, overwriteConfigured));
   };
 
   const closeValidationDialog = (open: boolean) => {
@@ -815,7 +816,9 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     try {
-      await onSave?.(validation.sanitizedWorkflow, modelBindings);
+      const nextBindings = reconcileWorkflowModelBindings(modelBindings, doctorReadyAgents);
+      await onSave?.(validation.sanitizedWorkflow, nextBindings);
+      syncModelBindings(nextBindings);
       setWorkflow(validation.sanitizedWorkflow);
       setJsonDraft(JSON.stringify(validation.sanitizedWorkflow, null, 2));
     } catch (error) {
@@ -1581,6 +1584,7 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
           <AcpModelThoughtSelects
             models={modelOptions}
             modelValue={binding?.modelId}
+            agentType={selectedAgent?.agentType}
             configOptions={selectedAgent?.configOptions}
             modelBoundCatalogs={selectedAgent?.modelBoundCatalogs}
             configOptionValues={binding?.configOptions}
@@ -1601,7 +1605,8 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
               });
             }}
             onConfigOptionChange={(optionId, value) => {
-              const next = updateAcpConfigOptionOverride(binding?.configOptions, optionId, value);
+              const current = projectAuthoringConfigOverrides(binding?.configOptions, selectedAgent?.configOptions, selectedAgent?.modelBoundCatalogs, binding?.modelId);
+              const next = updateAcpConfigOptionOverride(current, optionId, value);
               updateBinding({
                 configOptions: optionalWorkerConfigOptions(next),
                 modelBoundOverrides: optionalAcpModelBoundOverrides(
@@ -1900,6 +1905,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                     <AcpModelThoughtSelects
                       models={fixedModels}
                       modelValue={fixedStrategy.model}
+                      agentType={fixedAgent?.agentType}
                       configOptions={fixedAgent?.configOptions}
                       modelBoundCatalogs={fixedAgent?.modelBoundCatalogs}
                       configOptionValues={node.configOptions}
@@ -1984,6 +1990,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                 <AcpModelThoughtSelects
                   models={bootstrapModels}
                   modelValue={dynamicStrategy.bootstrapModel}
+                  agentType={bootstrapAgent?.agentType}
                   configOptions={bootstrapAgent?.configOptions}
                   modelBoundCatalogs={bootstrapAgent?.modelBoundCatalogs}
                   configOptionValues={dynamicStrategy.bootstrapConfigOptions}
@@ -2030,6 +2037,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                 <AcpModelThoughtSelects
                   models={acceptanceModels}
                   modelValue={dynamicStrategy.acceptanceModel}
+                  agentType={acceptanceAgent?.agentType}
                   configOptions={acceptanceAgent?.configOptions}
                   modelBoundCatalogs={acceptanceAgent?.modelBoundCatalogs}
                   configOptionValues={dynamicStrategy.acceptanceConfigOptions}
@@ -2108,6 +2116,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                   <AcpModelThoughtSelects
                     models={agentModels}
                     modelValue={agentRef.model}
+                    agentType={agentObj.agentType}
                     configOptions={agentObj.configOptions}
                     modelBoundCatalogs={agentObj.modelBoundCatalogs}
                     configOptionValues={agentRef.configOptions}
@@ -3475,7 +3484,7 @@ export function validateWorkflowForSave(
       if (binding.permissionModeId?.trim() && !supportedModeIds.has(binding.permissionModeId)) {
         addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
       }
-      Object.entries(binding.configOptions ?? {}).forEach(([optionId, value]) => {
+      Object.entries(normalizeAuthoringConfigOverrides(binding.configOptions, agent?.configOptions, agent?.modelBoundCatalogs, binding.modelId)).forEach(([optionId, value]) => {
         if (!isAuthoringConfigOptionValueAllowed(
           optionId,
           value,

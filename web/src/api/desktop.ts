@@ -291,6 +291,9 @@ export const desktopApi: RuntimeApi = {
   doctorAgent(agentType: string) {
     return invokeCommand('doctor_agent', { agentType });
   },
+  fetchAgentModelConfig(agentType: string, modelId: string) {
+    return invokeCommand('fetch_agent_model_config', { agentType, modelId });
+  },
   getTaskList() {
     return invokeCommand('get_task_list');
   },

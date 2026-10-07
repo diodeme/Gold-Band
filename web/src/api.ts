@@ -1,4 +1,5 @@
 import { getRuntimeApi } from './api/client';
+import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
 import type { CreateWorkspaceEntryInput, ResolvedColorScheme, WorkspaceRootRef } from './types';
 
@@ -81,6 +82,22 @@ export function getAgentBindingUsage(agentType: string) {
 
 export function doctorAgent(agentType: string) {
   return getRuntimeApi().doctorAgent(agentType);
+}
+
+const pendingModelConfig = new Map<string, Promise<import('./types').ManagedAgentVm>>();
+export function fetchAgentModelConfig(agentType: string, modelId: string) {
+  const key = JSON.stringify([agentType, modelId]);
+  const pending = pendingModelConfig.get(key);
+  if (pending) return pending;
+  const request = getRuntimeApi().fetchAgentModelConfig(agentType, modelId).then((agent) => {
+    if (!Object.prototype.hasOwnProperty.call(agent.modelBoundCatalogs ?? {}, modelId)) {
+      throw { code: 'acp.model-config-unavailable', params: {} };
+    }
+    window.dispatchEvent(new CustomEvent(AGENT_MODEL_CONFIG_UPDATED_EVENT, { detail: { agent, modelId } }));
+    return agent;
+  }).finally(() => pendingModelConfig.delete(key));
+  pendingModelConfig.set(key, request);
+  return request;
 }
 
 export function getTaskList() {

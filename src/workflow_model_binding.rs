@@ -207,6 +207,27 @@ pub fn new_execution_slot_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+pub fn normalize_authoring_bindings(
+    bindings: &mut WorkflowModelBindings,
+    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
+) {
+    for binding in &mut bindings.bindings {
+        let capabilities = diagnostics
+            .get(&binding.agent_id)
+            .and_then(|item| item.capabilities.as_ref());
+        crate::acp::session_config::normalize_authoring_config_overrides(
+            &mut binding.config_options,
+            capabilities,
+            binding.model_id.as_deref(),
+        );
+        if let Some(model) = &binding.model_id {
+            binding
+                .model_bound_overrides
+                .insert(model.clone(), binding.config_options.clone());
+        }
+    }
+}
+
 pub fn built_in_execution_slot_id(template_id: &str, node_id: &str) -> String {
     format!("builtin:{template_id}:{node_id}")
 }

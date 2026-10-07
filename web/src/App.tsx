@@ -1,5 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
-import { applyAgentDiagnosticUpdate } from '@/lib/agent-diagnostic-update';
+import { applyAgentDiagnosticUpdate, applyAgentModelConfigUpdate, AGENT_MODEL_CONFIG_UPDATED_EVENT, type AgentModelConfigUpdate } from '@/lib/agent-diagnostic-update';
 import { setChannelAppName } from '@/lib/channel-app-name';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
@@ -1610,6 +1610,15 @@ export function App() {
       }
     };
   }, [applyConversationRunSnapshot, conversationPage, conversationRun?.projectId, conversationRun?.runId, conversationRun?.taskId, conversationRun?.taskUuid, conversationShellReady]);
+
+  useEffect(() => {
+    const apply = (event: Event) => {
+      const update = (event as CustomEvent<AgentModelConfigUpdate>).detail;
+      setAgentRegistry(current => applyAgentModelConfigUpdate(current, update));
+    };
+    window.addEventListener(AGENT_MODEL_CONFIG_UPDATED_EVENT, apply);
+    return () => window.removeEventListener(AGENT_MODEL_CONFIG_UPDATED_EVENT, apply);
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;

@@ -1174,6 +1174,7 @@ export function RunModeManagementPage({
                     <AcpModelThoughtSelects
                       models={fixedModels}
                       modelValue={model}
+                      agentType={selectedAgent?.agentType}
                       configOptions={selectedAgent?.configOptions}
                       modelBoundCatalogs={selectedAgent?.modelBoundCatalogs}
                       configOptionValues={configOptions}
@@ -1226,6 +1227,7 @@ export function RunModeManagementPage({
                   <AcpModelThoughtSelects
                     models={bootstrapModels}
                     modelValue={bootstrapModel}
+                    agentType={selectedBootstrapAgent?.agentType}
                     configOptions={selectedBootstrapAgent?.configOptions}
                     modelBoundCatalogs={selectedBootstrapAgent?.modelBoundCatalogs}
                     configOptionValues={bootstrapConfigOptions}
@@ -1263,6 +1265,7 @@ export function RunModeManagementPage({
                   <AcpModelThoughtSelects
                     models={acceptanceModels}
                     modelValue={acceptanceModel}
+                    agentType={selectedBootstrapAgent?.agentType}
                     configOptions={selectedBootstrapAgent?.configOptions}
                     modelBoundCatalogs={selectedBootstrapAgent?.modelBoundCatalogs}
                     configOptionValues={acceptanceConfigOptions}
@@ -1336,6 +1339,7 @@ export function RunModeManagementPage({
                               <AcpModelThoughtSelects
                                 models={item.supportedModels ?? []}
                                 modelValue={selectedModel}
+                                agentType={item.agentType}
                                 configOptions={item.configOptions}
                                 modelBoundCatalogs={item.modelBoundCatalogs}
                                 configOptionValues={availableAgentMap.get(item.agentType)?.configOptions}

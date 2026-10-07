@@ -2717,6 +2717,60 @@ fn doctor_in_dir(
     doctor_acp_dir: Utf8PathBuf,
     deadline: DoctorDeadline,
 ) -> Result<AcpDoctorProbe> {
+    probe_in_dir(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        doctor_acp_dir,
+        deadline,
+        None,
+    )
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("acp.model-config-unavailable")]
+pub struct ModelConfigUnavailable;
+
+/// Discovers exactly one model without sending session/prompt or borrowing a catalog.
+pub fn probe_model_config(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    model: &str,
+) -> Result<Value> {
+    let dir = GoldBandPaths::new(cwd.clone()).doctor_acp_dir(agent_id);
+    let probe = probe_in_dir(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        dir,
+        DoctorDeadline::default(),
+        Some(model),
+    )?;
+    probe
+        .capabilities
+        .get("configOptions")
+        .cloned()
+        .ok_or_else(|| ModelConfigUnavailable.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn probe_in_dir(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    doctor_acp_dir: Utf8PathBuf,
+    deadline: DoctorDeadline,
+    model: Option<&str>,
+) -> Result<AcpDoctorProbe> {
     deadline.remaining("adapter/start")?;
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
@@ -2748,16 +2802,23 @@ fn doctor_in_dir(
             &[],
             &[],
         )?;
-        runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
+        if let Some(model) = model {
+            runtime.probe_selected_model_config(model)?;
+        } else {
+            runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
+        }
         let commands = runtime.available_commands.clone().unwrap_or_default();
-        runtime.cleanup_diagnostic_session()?;
-        deadline.remaining("session/cleanup")?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(AcpDoctorProbe {
             capabilities,
             commands,
         })
     })();
+    // Cleanup also runs when model selection fails; it must not replace the original error.
+    let cleanup = runtime
+        .cleanup_diagnostic_session()
+        .and_then(|_| deadline.remaining("session/cleanup").map(|_| ()));
+    let result = result.and_then(|probe| cleanup.map(|_| probe));
     let result = result.map_err(|error| enrich_doctor_error(&runtime, error));
     runtime.shutdown();
     if result.is_ok() {
@@ -4930,6 +4991,46 @@ impl<'a> AcpRuntime<'a> {
             self.capture_session_config(&result);
             self.retarget_session_model_catalog(&model, result.get("configOptions").is_some());
         }
+        Ok(())
+    }
+
+    fn probe_selected_model_config(&mut self, model: &str) -> Result<()> {
+        let options = self.config_options.as_ref().ok_or(ModelConfigUnavailable)?;
+        let selector = find_model_config_option(options).ok_or(ModelConfigUnavailable)?;
+        if selector.get("currentValue").and_then(Value::as_str) == Some(model) {
+            return Ok(());
+        }
+        if !selector
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.get("value").and_then(Value::as_str) == Some(model))
+            })
+        {
+            return Err(ModelConfigUnavailable.into());
+        }
+        let config_id = selector
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(ModelConfigUnavailable)?
+            .to_string();
+        let result = self.request(
+            "session/set_config_option",
+            json!({
+                "sessionId": self.session_id, "configId": config_id, "value": model,
+            }),
+        )?;
+        let returned = result.get("configOptions").ok_or(ModelConfigUnavailable)?;
+        if find_model_config_option(returned)
+            .and_then(|option| option.get("currentValue"))
+            .and_then(Value::as_str)
+            != Some(model)
+        {
+            return Err(ModelConfigUnavailable.into());
+        }
+        self.capture_session_config(&result);
         Ok(())
     }
 
@@ -9037,6 +9138,43 @@ mod tests {
     }
 
     #[test]
+    fn model_config_probe_never_prompts_and_cleans_up_on_success_or_missing_catalog() {
+        for mode in ["model-config-ok", "model-config-omit", "model-config-wrong"] {
+            let root = tempfile::tempdir().unwrap();
+            let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+            let attempt = cwd.join("doctor");
+            let result = super::probe_in_dir(
+                &"model-config-fixture".parse().unwrap(),
+                &doctor_fixture_config(mode),
+                cwd.clone(),
+                false,
+                false,
+                attempt.clone(),
+                super::DoctorDeadline::default(),
+                Some("target"),
+            );
+            if mode == "model-config-ok" {
+                let probe = result.unwrap();
+                assert_eq!(
+                    probe.capabilities["configOptions"][0]["currentValue"],
+                    "target"
+                );
+                assert_eq!(probe.capabilities["configOptions"][1]["id"], "effort");
+                assert!(!attempt.exists());
+            } else {
+                assert!(result.is_err());
+                assert!(!attempt.join("provider.pid").exists());
+            }
+            let methods = std::fs::read_to_string(cwd.join("fixture-methods")).unwrap();
+            assert!(methods.contains("session/set_config_option"));
+            assert!(methods.contains("session/delete"));
+            assert!(!methods.contains("session/prompt"));
+            let address = std::fs::read_to_string(cwd.join("fixture-address")).unwrap();
+            assert!(std::net::TcpStream::connect(address).is_err());
+        }
+    }
+
+    #[test]
     fn doctor_diagnostic_error_preserves_session_request_raw() {
         let raw = json!({
             "code": -32000,
@@ -9147,6 +9285,14 @@ mod tests {
             if frame.get("id").is_none() {
                 continue;
             }
+            if stall_method.starts_with("model-config-") {
+                let mut methods = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("fixture-methods")
+                    .unwrap();
+                writeln!(methods, "{}", frame["method"].as_str().unwrap()).unwrap();
+            }
             let response = if frame["method"] == "session/prompt"
                 && stall_method.starts_with("prompt-failure")
             {
@@ -9166,6 +9312,20 @@ mod tests {
                 json!({"error": {"code": -32601, "message": "unsupported"}})
             } else if frame["method"] == "initialize" {
                 json!({"result": {"protocolVersion": 1, "agentCapabilities": {}}})
+            } else if stall_method.starts_with("model-config-") && frame["method"] == "session/new"
+            {
+                json!({"result": {"sessionId": "fixture", "configOptions": [{"id": "model", "category": "model", "currentValue": "initial", "options": [{"value": "initial"}, {"value": "target"}]}]}})
+            } else if stall_method.starts_with("model-config-")
+                && frame["method"] == "session/set_config_option"
+            {
+                if stall_method == "model-config-omit" {
+                    json!({"result": {}})
+                } else {
+                    json!({"result": {"configOptions": [
+                        {"id": "model", "category": "model", "currentValue": if stall_method == "model-config-wrong" { "initial" } else { "target" }, "options": [{"value": "target"}]},
+                        {"id": "effort", "category": "thought_level", "currentValue": "high", "options": [{"value": "high"}]}
+                    ]}})
+                }
             } else {
                 json!({"result": {"sessionId": "doctor-fixture-session", "models": {"currentModelId": "test-model", "availableModels": [{"modelId": "test-model", "name": "Test"}]}}})
             };

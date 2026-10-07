@@ -919,6 +919,7 @@
       "command-required": "請填寫 Agent 啟動命令。"
     },
     "acp": {
+      "model-config-unavailable": "無法取得此模型的設定，可以繼續使用目前設定。",
       "composer-history-stale": "輸入歷史已更新，請清空輸入後重試。",
       "composer-history-not-found": "該條輸入歷史已不可用。",
       "composer-history-query-failed": "輸入歷史載入失敗，請重試。",
@@ -2180,6 +2181,10 @@
     "noChangedFiles": "沒有可查看的變更檔案"
   },
   "acp": {
+    "modelConfigNotFetched": "尚未取得此模型的設定",
+    "fetchModelConfig": "取得模型設定",
+    "fetchingModelConfig": "正在取得…",
+    "retryModelConfig": "重試",
     "composerHistoryError": "輸入歷史載入失敗，清空輸入後可重試。",
     "restored": "已還原",
     "sessionSuperseded": "此工作階段已由 <attempt>{{target}}</attempt> 接續，請前往該 attempt 繼續。",

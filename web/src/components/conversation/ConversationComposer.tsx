@@ -896,40 +896,6 @@ export function ConversationComposer({
     onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) }, projectId);
   };
 
-  useEffect(() => {
-    if (!isDirect || !selectedDirectAgentObj) return;
-    const normalized = normalizeConfigOptionOverrides(
-      selectedDirectAgentObj,
-      selectedDirectConfigOptions,
-      selectedDirectModel,
-    );
-    if (normalized.removedOptionIds.length === 0) return;
-    setSelectedDirectConfigOptions(normalized.configOptions);
-    updateDirectConfig({
-      agentType: selectedDirectAgent,
-      modelId: selectedDirectModel || undefined,
-      permissionMode: selectedDirectPermissionMode || undefined,
-      autoAccept: selectedDirectAutoAccept || undefined,
-      configOptions: normalized.configOptions,
-      modelBoundOverrides: selectedDirectModelBoundOverrides,
-    });
-  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions, selectedDirectModelBoundOverrides]);
-
-  useEffect(() => {
-    if (!isAuto || isDynamicAuto || !selectedAgentObj) return;
-    const normalized = normalizeConfigOptionOverrides(
-      selectedAgentObj,
-      selectedConfigOptions,
-      selectedModel,
-    );
-    if (normalized.removedOptionIds.length === 0) return;
-    setSelectedConfigOptions(normalized.configOptions);
-    updateAutoSession({
-      configOptions: normalized.configOptions,
-      modelBoundOverrides: selectedModelBoundOverrides,
-    });
-  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions, selectedModel, selectedModelBoundOverrides]);
-
   const handleSubmit = async () => {
     if (!canSubmit) return;
     const role = committedRoleSnapshot(committedSlashCommand);
@@ -1307,6 +1273,7 @@ export function ConversationComposer({
                   <AcpModelThoughtSelects
                     models={directModels}
                     modelValue={selectedDirectModel}
+                    agentType={selectedDirectAgentObj?.agentType}
                     configOptions={selectedDirectAgentObj?.configOptions}
                     modelBoundCatalogs={selectedDirectAgentObj?.modelBoundCatalogs}
                     configOptionValues={selectedDirectConfigOptions}
@@ -1526,6 +1493,7 @@ export function ConversationComposer({
                   <AcpModelThoughtSelects
                     models={models}
                     modelValue={selectedModel}
+                    agentType={selectedAgentObj?.agentType}
                     configOptions={selectedAgentObj?.configOptions}
                     modelBoundCatalogs={selectedAgentObj?.modelBoundCatalogs}
                     configOptionValues={selectedConfigOptions}

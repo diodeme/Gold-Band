@@ -9,7 +9,7 @@ import type {
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
-import { authoringConfigOptionsForModel, remapAcpThoughtLevelOverride, retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
+import { authoringConfigOptionsForModel, hasObservedAuthoringModel, remapAcpThoughtLevelOverride, retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
@@ -358,6 +358,9 @@ export function normalizeConfigOptionOverrides(
   overrides: Record<string, string> | null | undefined,
   selectedModelId?: string | null,
 ): { configOptions: Record<string, string>; removedOptionIds: string[] } {
+  if (selectedModelId?.trim() && !hasObservedAuthoringModel(agent.configOptions, agent.modelBoundCatalogs, selectedModelId)) {
+    return { configOptions: { ...overrides }, removedOptionIds: [] };
+  }
   const projected = authoringConfigOptionsForModel(
     agent.configOptions,
     agent.modelBoundCatalogs,

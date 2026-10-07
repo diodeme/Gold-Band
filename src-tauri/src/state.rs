@@ -820,6 +820,58 @@ impl DesktopState {
             .clone())
     }
 
+    pub fn fetch_agent_model_config(&self, agent_id: &ManagedAgentId, model: &str) -> Result<()> {
+        // Reuse Doctor's bounded per-Agent exclusion; no lock is held over the probe I/O.
+        let _run_guard = self.agent_diagnostic_guard(agent_id)?;
+        let expected_config = self.managed_agent_config_revision(agent_id)?;
+        let before = self.agent_diagnostics()?;
+        let cached = before
+            .get(agent_id)
+            .and_then(|item| item.capabilities.as_ref())
+            .and_then(|caps| caps.get("modelBoundCatalogs"))
+            .and_then(|catalogs| catalogs.get(model));
+        if cached.is_some() {
+            return Ok(());
+        }
+        let app = self.app()?;
+        let live = app.provider_model_config(agent_id.as_str(), model)?;
+        let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
+        if self.managed_agent_config_revision(agent_id)? != expected_config {
+            return Err(gold_band::acp::client::ModelConfigUnavailable.into());
+        }
+        let mut diagnostics = self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let current = diagnostics
+            .get(agent_id)
+            .ok_or(gold_band::acp::client::ModelConfigUnavailable)?;
+        // A live session may have observed this model during the probe. Keep that newer fact.
+        if current
+            .capabilities
+            .as_ref()
+            .and_then(|caps| caps.get("modelBoundCatalogs"))
+            .and_then(|catalogs| catalogs.get(model))
+            .is_some()
+        {
+            return Ok(());
+        }
+        let capabilities =
+            upsert_session_authoring_model_bound_catalog(current.capabilities.as_ref(), &live)
+                .ok_or(gold_band::acp::client::ModelConfigUnavailable)?;
+        let mut next = diagnostics.clone();
+        next.insert(
+            agent_id.clone(),
+            ProviderDiagnosticSnapshot {
+                capabilities: Some(capabilities),
+                ..current.clone()
+            },
+        );
+        self.persist_agent_diagnostics(&next)?;
+        *diagnostics = next;
+        Ok(())
+    }
+
     pub fn update_status(&self) -> Result<UpdateStatusVm> {
         Ok(self
             .update_status

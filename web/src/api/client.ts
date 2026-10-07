@@ -451,6 +451,7 @@ export interface RuntimeApi {
   previewAgentCacheRepair(agentType: string): Promise<{ token: string; paths: string[] }>;
   repairAgentCache(agentType: string, token: string): Promise<{ path: string; errorCode: string | null }[]>;
   doctorAgent(agentType: string): Promise<AgentRegistryVm>;
+  fetchAgentModelConfig(agentType: string, modelId: string): Promise<import('../types').ManagedAgentVm>;
   getTaskList(): Promise<TaskListVm>;
   getProfiles(): Promise<ProfileListVm>;
   getProfile(id: string): Promise<ProfileVm>;

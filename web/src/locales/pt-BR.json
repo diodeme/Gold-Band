@@ -919,6 +919,7 @@
       "command-required": "Informe um comando de inicialização do Agent."
     },
     "acp": {
+      "model-config-unavailable": "Não foi possível obter a configuração deste modelo. Você pode continuar com as configurações atuais.",
       "composer-history-stale": "O histórico de entrada mudou. Limpe a entrada e tente novamente.",
       "composer-history-not-found": "Esta entrada do histórico não está mais disponível.",
       "composer-history-query-failed": "Não foi possível carregar o histórico de entrada. Tente novamente.",
@@ -2180,6 +2181,10 @@
     "noChangedFiles": "Nenhum arquivo alterado disponível"
   },
   "acp": {
+    "modelConfigNotFetched": "A configuração deste modelo ainda não foi obtida",
+    "fetchModelConfig": "Obter configuração do modelo",
+    "fetchingModelConfig": "Obtendo…",
+    "retryModelConfig": "Tentar novamente",
     "composerHistoryError": "Não foi possível carregar histórico de entrada. Limpe a entrada para tentar novamente.",
     "restored": "Restaurado",
     "sessionSuperseded": "Esta sessão foi continuada por <attempt>{{target}}</attempt>. Continue nesse attempt.",

@@ -1669,6 +1669,15 @@ export const browserApi: RuntimeApi = {
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
   },
+  async fetchAgentModelConfig(agentType: string, modelId: string) {
+    const agent = mockAgentRegistry.agents.find((item) => item.agentType === agentType);
+    if (!agent || !agent.supportedModels?.some((model) => model.id === modelId)) {
+      throw { code: 'acp.model-config-unavailable', params: {} };
+    }
+    // Browser preview only: the fixture acts as the Agent's returned model catalog.
+    const bound = (agent.configOptions ?? []).filter((option) => option.category === 'thought_level' || option.category === 'model_config');
+    return { ...agent, modelBoundCatalogs: { ...agent.modelBoundCatalogs, [modelId]: bound } };
+  },
   getTaskList() {
     return Promise.resolve(mockTaskList);
   },

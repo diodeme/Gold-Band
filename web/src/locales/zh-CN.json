@@ -919,6 +919,7 @@
       "command-required": "请填写 Agent 启动命令。"
     },
     "acp": {
+      "model-config-unavailable": "未能获取此模型的配置，可以继续使用当前设置。",
       "composer-history-stale": "输入历史已更新，请清空输入后重试。",
       "composer-history-not-found": "该条输入历史已不可用。",
       "composer-history-query-failed": "输入历史加载失败，请重试。",
@@ -2180,6 +2181,10 @@
     "noChangedFiles": "没有可查看的变更文件"
   },
   "acp": {
+    "modelConfigNotFetched": "尚未获取此模型的配置",
+    "fetchModelConfig": "获取模型配置",
+    "fetchingModelConfig": "正在获取…",
+    "retryModelConfig": "重试",
     "composerHistoryError": "输入历史加载失败，清空输入后可重试。",
     "restored": "已恢复",
     "sessionSuperseded": "此会话已由 <attempt>{{target}}</attempt> 接续，请前往该 attempt 继续。",

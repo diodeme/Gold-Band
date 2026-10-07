@@ -4,6 +4,8 @@ import { ChevronDown } from 'lucide-react';
 
 import type { AcpModeVm, AcpSelectConfigOptionVm } from '@/types';
 import { cn } from '@/lib/utils';
+import { AcpModelConfigDiscovery } from './AcpModelConfigDiscovery';
+import { hasObservedAuthoringModel } from '@/lib/acp-composite-config';
 import {
   ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
@@ -94,6 +96,7 @@ type ThoughtLevelProps = Omit<AcpSelectConfigOptionVm, "options"> & {
 };
 
 type Props = {
+  agentType?: string;
   models: Array<AcpModeVm & { available?: boolean }>;
   modelValue?: string | null;
   modelValueLabel?: string | null;
@@ -116,7 +119,20 @@ type Props = {
   disabled?: boolean;
 };
 
-export function AcpModelThoughtSelects({
+export function AcpModelThoughtSelects(props: Props) {
+  const { agentType, modelValue, configOptions, modelBoundCatalogs, disabled } = props;
+  if (!agentType) {
+    return <AcpModelThoughtSelectsControl {...props} />;
+  }
+  return <div className="flex min-w-0 flex-col gap-1">
+    <AcpModelThoughtSelectsControl {...props} />
+    {modelValue && !hasObservedAuthoringModel(configOptions, modelBoundCatalogs, modelValue)
+      ? <AcpModelConfigDiscovery key={JSON.stringify([agentType, modelValue])} agentType={agentType} modelId={modelValue} disabled={disabled} />
+      : null}
+  </div>;
+}
+
+function AcpModelThoughtSelectsControl({
   models,
   modelValue,
   modelValueLabel,

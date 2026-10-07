@@ -83,7 +83,9 @@ fn authoring_config_options_for_model(
     let selected = trimmed_model_id(selected_model)
         .or_else(|| catalog_model_current_value(current_options))?;
     if !catalogs.contains_key(&selected) {
-        return Some(current.clone());
+        return (catalog_model_current_value(current_options).as_deref()
+            == Some(selected.as_str()))
+        .then(|| current.clone());
     }
     let mut next: Vec<Value> = current_options
         .iter()
@@ -116,6 +118,30 @@ fn retain_authoring_model_bound_overrides(
     };
     let current = capabilities.and_then(|value| value.get("configOptions"));
     let _ = strip_unsupported_model_bound_overrides(current, Some(&projected), overrides);
+}
+
+/// Normalize saved authoring values only with an observation of the selected model.
+/// Preserve listed invalid values for validation, instead of silently changing user input.
+pub fn normalize_authoring_config_overrides(
+    overrides: &mut BTreeMap<String, String>,
+    capabilities: Option<&Value>,
+    selected_model: Option<&str>,
+) {
+    let Some(projected) = authoring_config_options_for_model(capabilities, selected_model) else {
+        return;
+    };
+    let mut source = capabilities
+        .and_then(|caps| caps.get("configOptions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for catalog in model_bound_catalogs_from_capabilities_value(capabilities).values() {
+        if let Some(options) = catalog.as_array() {
+            source.extend(options.iter().cloned());
+        }
+    }
+    let _ =
+        align_overrides_to_live_catalog(Some(&Value::Array(source)), Some(&projected), overrides);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2240,6 +2266,25 @@ mod tests {
         let ids = catalog_ids(live.as_ref().and_then(Value::as_array).unwrap());
         assert_eq!(ids, vec!["model", "reasoning", "context"]);
         assert!(session_catalogs.get("gpt-5.6-luna").is_none());
+    }
+
+    #[test]
+    fn unobserved_model_keeps_authoring_options_until_session_new() {
+        let capabilities = json!({"configOptions": catalog("observed", &["high", "xhigh"], true)});
+        let overrides = BTreeMap::from([
+            ("reasoning_effort".into(), "xhigh".into()),
+            ("context".into(), "500k".into()),
+        ]);
+        assert_eq!(
+            invocation_config_option_overrides(
+                false,
+                overrides.clone(),
+                BTreeMap::new(),
+                Some(&capabilities),
+                Some("unobserved")
+            ),
+            overrides
+        );
     }
 
     #[test]

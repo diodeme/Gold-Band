@@ -919,6 +919,7 @@
       "command-required": "Agent の起動コマンドを入力してください。"
     },
     "acp": {
+      "model-config-unavailable": "このモデルの設定を取得できませんでした。現在の設定で続行できます。",
       "composer-history-stale": "入力履歴が変更されました。入力をクリアして、再試行してください。",
       "composer-history-not-found": "この履歴エントリは利用できなくなりました。",
       "composer-history-query-failed": "入力履歴を読み込めませんでした。もう一度試してください。",
@@ -2180,6 +2181,10 @@
     "noChangedFiles": "変更されたファイルは利用できません"
   },
   "acp": {
+    "modelConfigNotFetched": "このモデルの設定は未取得です",
+    "fetchModelConfig": "モデル設定を取得",
+    "fetchingModelConfig": "取得中…",
+    "retryModelConfig": "再試行",
     "composerHistoryError": "入力履歴を読み込めませんでした。入力をクリアして再試行してください。",
     "restored": "復元されました",
     "sessionSuperseded": "このセッションは <attempt>{{target}}</attempt> に引き継がれました。その attempt で続行してください。",

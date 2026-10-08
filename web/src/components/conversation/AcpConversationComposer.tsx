@@ -81,6 +81,7 @@ export interface AcpConversationComposerProps {
   onPickFiles: () => void | Promise<void>;
   canStop: boolean;
   stopInProgress: boolean;
+  stopCommandInFlight: boolean;
   onStop: () => void | Promise<void>;
   canSubmit: boolean;
   canSubmitHistory: boolean;
@@ -166,6 +167,7 @@ function AcpConversationComposerContent({
   onPickFiles,
   canStop,
   stopInProgress,
+  stopCommandInFlight,
   onStop,
   canSubmit,
   canSubmitHistory,
@@ -350,7 +352,7 @@ function AcpConversationComposerContent({
                     className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
-                    disabled={stopInProgress}
+                    disabled={stopCommandInFlight}
                     onClick={() => { void onStop(); }}
                   >
                     {stopInProgress ? (

@@ -68,6 +68,8 @@ export interface AcpRuntimeComposerState {
   canSubmitContent: boolean;
   canStop: boolean;
   stopInProgress: boolean;
+  /** Only a local stop command in flight blocks Stop; a backend-only stopping fact stays retryable. */
+  stopCommandInFlight: boolean;
   sessionActive: boolean;
   acpActive: boolean;
   runtimeActive: boolean;
@@ -231,6 +233,7 @@ export function deriveAcpRuntimeComposerState(
       cancelling
     ),
     stopInProgress,
+    stopCommandInFlight: cancelling || stopCommandPending,
     sessionActive,
     acpActive,
     runtimeActive,

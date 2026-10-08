@@ -8254,10 +8254,16 @@ fn persist_active_session_stop(
             .map_err(command_error)?,
         _ => false,
     };
+    let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+    // UI reads are side-effect free, so Stop is the manual operation that
+    // settles a turn whose executor no longer exists in this process (for
+    // example a stop interrupted by an app restart). A live executor keeps the
+    // turn untouched and the request below stays an idempotent no-op.
+    gold_band::acp::events::reconcile_orphaned_session_turn(&lifecycle_path)
+        .map_err(command_error)?;
     // Persist the user intent before touching runtime-control files. A failure
     // in pause bookkeeping must not leave the provider turn running without a
     // durable cancellation request that recovery can observe.
-    let lifecycle_path = acp_lifecycle_path(&attempt_dir);
     let stop = gold_band::acp::events::request_session_stop_outcome(
         &lifecycle_path,
         operation_id,
@@ -8422,15 +8428,26 @@ where
     {
         return false;
     }
+    // request_session_stop transferred lifecycle ownership away from the
+    // provider runtime, so this controller owns terminal settlement whatever
+    // the dispatch outcome. No target means the provider already exited; a
+    // dispatch error means the adapter transport is gone. The in-process
+    // cancel latch is set before either outcome, so a surviving executor
+    // still stops, and its late writes are fenced by the owner CAS.
     match dispatch_cancel(attempt_dir) {
         Ok(true) => {}
         Ok(false) => {
-            warn!(%attempt_dir, "accepted ACP stop request has no active cancel target");
-            return false;
+            tracing::debug!(%attempt_dir, "accepted ACP stop request has no live cancel target");
         }
         Err(error) => {
             warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
-            return false;
+            let _ = gold_band::acp::events::append_structured_diagnostic(
+                &gold_band::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir.clone())
+                    .diagnostics,
+                "warn",
+                "acp.stop-dispatch-failed",
+                Some(serde_json::json!({ "turnId": turn_id, "error": format!("{error:#}") })),
+            );
         }
     }
     let settled = match gold_band::acp::events::persist_session_turn_terminal_owned(
@@ -9265,7 +9282,10 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
-    if error.downcast_ref::<gold_band::acp::client::ModelConfigUnavailable>().is_some() {
+    if error
+        .downcast_ref::<gold_band::acp::client::ModelConfigUnavailable>()
+        .is_some()
+    {
         return CommandErrorVm::new("acp.model-config-unavailable", serde_json::json!({}));
     }
     if let Some(error) = error.downcast_ref::<gold_band::npx_cache::CacheError>() {
@@ -13168,6 +13188,55 @@ mod tests {
         assert!(timeline_path.is_dir());
     }
 
+    /// UI reads never reconcile, so after a restart a repeated Stop is the
+    /// manual operation that settles an orphaned stopping turn. While the
+    /// executor is still live in this process the stop stays an idempotent
+    /// no-op and must not settle on the executor's behalf.
+    #[test]
+    fn repeated_stop_settles_orphaned_stopping_turn_only_without_live_executor() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, _) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let snapshot = || {
+            gold_band::acp::events::read_lifecycle_header_snapshot(&lifecycle_path)
+                .unwrap()
+                .unwrap()
+        };
+
+        let (_, live_owner, live_accepted) =
+            persist_active_session_stop(&app, &locator, "repeat-stop-live").unwrap();
+        assert!(live_owner.is_none());
+        assert!(!live_accepted);
+        assert_eq!(
+            snapshot().live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+
+        // A process restart drops the process-local execution registry.
+        gold_band::acp::events::release_session_execution(
+            &lifecycle_path,
+            &gold_band::acp::events::AcpLifecycleOwner {
+                turn_id: "turn-1".to_string(),
+                operation_id: "prompt-operation-1".to_string(),
+                revision: 0,
+            },
+        );
+
+        let (_, orphan_owner, orphan_accepted) =
+            persist_active_session_stop(&app, &locator, "repeat-stop-orphan").unwrap();
+        assert!(orphan_owner.is_none());
+        assert!(!orphan_accepted);
+        let settled = snapshot();
+        assert_eq!(
+            settled.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::Idle
+        );
+        assert_eq!(
+            settled.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled
+        );
+    }
+
     #[test]
     fn active_stop_cleanup_dispatches_and_persists_cancelled_terminal_lifecycle() {
         let temp = tempfile::tempdir().unwrap();
@@ -13198,68 +13267,57 @@ mod tests {
         );
     }
 
+    /// The durable stop intent owns terminal settlement. A missing cancel
+    /// target means the provider already exited, and a failed dispatch means
+    /// the adapter transport is gone; neither may leave the turn stopping.
     #[test]
-    fn active_stop_cleanup_dispatch_failure_keeps_cancelling_and_activity_unchanged() {
-        let temp = tempfile::tempdir().unwrap();
-        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+    fn active_stop_cleanup_settles_cancelled_when_dispatch_has_no_live_target() {
+        type Dispatch = fn(&camino::Utf8Path) -> anyhow::Result<bool>;
+        let outcomes: [(&str, Dispatch); 2] = [
+            ("no-target", |_| Ok(false)),
+            ("dispatch-error", |_| {
+                anyhow::bail!("provider cancel transport failed")
+            }),
+        ];
+        for (case, dispatch) in outcomes {
+            let temp = tempfile::tempdir().unwrap();
+            let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+            let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+            let owner = (owner.turn_id, owner.operation_id, owner.revision);
 
-        assert!(!settle_active_session_stop_cleanup_with_dispatch(
-            &app,
-            &locator,
-            &attempt_dir,
-            Some(&owner),
-            |_| anyhow::bail!("provider cancel transport failed"),
-        ));
+            assert!(
+                settle_active_session_stop_cleanup_with_dispatch(
+                    &app,
+                    &locator,
+                    &attempt_dir,
+                    Some(&owner),
+                    dispatch,
+                ),
+                "{case}"
+            );
 
-        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            lifecycle.live_turn_activity,
-            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
-        );
-        assert_eq!(
-            lifecycle.latest_turn_status,
-            gold_band::acp::events::AcpLatestTurnStatus::None
-        );
-        assert_eq!(
-            conversation_last_activity(&app, "task-1"),
-            "2026-08-26T00:00:00Z"
-        );
-    }
-
-    #[test]
-    fn active_stop_cleanup_without_a_cancel_target_keeps_cancelling() {
-        let temp = tempfile::tempdir().unwrap();
-        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        let owner = (owner.turn_id, owner.operation_id, owner.revision);
-
-        assert!(!settle_active_session_stop_cleanup_with_dispatch(
-            &app,
-            &locator,
-            &attempt_dir,
-            Some(&owner),
-            |_| Ok(false),
-        ));
-
-        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            lifecycle.live_turn_activity,
-            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
-        );
-        assert_eq!(
-            lifecycle.latest_turn_status,
-            gold_band::acp::events::AcpLatestTurnStatus::None
-        );
-        assert_eq!(
-            conversation_last_activity(&app, "task-1"),
-            "2026-08-26T00:00:00Z"
-        );
+            let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                lifecycle.live_turn_activity,
+                gold_band::acp::events::AcpLiveTurnActivity::Idle,
+                "{case}"
+            );
+            assert_eq!(
+                lifecycle.latest_turn_status,
+                gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+                "{case}"
+            );
+            assert_eq!(
+                conversation_last_activity(&app, "task-1"),
+                gold_band::acp::events::read_session_metadata_value(&lifecycle_path, None).unwrap()
+                    ["updatedAt"]
+                    .as_str()
+                    .unwrap(),
+                "{case}"
+            );
+        }
     }
 
     #[test]

@@ -2805,6 +2805,7 @@ export function ACPChatDialog(
     timelineProcessingKind: processingKindFromTimeline(composerLatestEvent, false),
   });
   const stopInProgress = composerState.stopInProgress;
+  const stopCommandInFlight = composerState.stopCommandInFlight;
   const composerInputDisabled = composerState.inputDisabled;
   const composerSessionSeconds = useSessionTimingSeconds(
     effective?.timing,
@@ -6052,7 +6053,7 @@ export function ACPChatDialog(
   }, [rightWorkspace, t]);
 
   const stopSession = async () => {
-    if (!canStopSession || stopInProgress) return;
+    if (!canStopSession || stopCommandInFlight) return;
     cancelRequestedRef.current = true;
     setCancelling(true);
     setStopCommandPending(true);
@@ -6804,6 +6805,7 @@ export function ACPChatDialog(
                 onPickFiles={pickFiles}
                 canStop={canStopSession}
                 stopInProgress={stopInProgress}
+                stopCommandInFlight={stopCommandInFlight}
                 onStop={stopSession}
                 canSubmit={canSubmitPrompt}
                 canSubmitHistory={canSubmitHistory}

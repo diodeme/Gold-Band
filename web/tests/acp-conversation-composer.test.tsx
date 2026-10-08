@@ -52,6 +52,7 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     onPickFiles: vi.fn(),
     canStop: false,
     stopInProgress: false,
+    stopCommandInFlight: false,
     onStop: vi.fn(),
     canSubmit: true,
     sendButtonBusy: false,
@@ -123,6 +124,7 @@ describe('AcpConversationComposer', () => {
           prompt: 'try again', queueSubmit: false, onStop, onSubmit,
           inputDisabled: state.inputDisabled, canSubmit: state.canSubmit,
           canStop: state.canStop, stopInProgress: state.stopInProgress,
+          stopCommandInFlight: state.stopCommandInFlight,
           sendButtonBusy: state.statusActive,
         });
       };
@@ -159,6 +161,46 @@ describe('AcpConversationComposer', () => {
       expect(host.textContent).toContain('停止');
     },
   );
+
+  it('keeps a backend-only stopping turn retryable so a repeated Stop can settle it', async () => {
+    // After a restart the persisted lifecycle still says stopping, but no
+    // local stop command is in flight. Stop must stay clickable.
+    const onStop = vi.fn();
+    const lifecycle: ConversationAttemptLifecycleVm = {
+      runtime: { status: 'paused', outcome: null, pauseReason: 'process-interrupted', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
+      control: { mode: 'non-runtime-controlled' },
+      acp: { sessionAvailability: 'established', liveTurnActivity: 'cancel-requested', latestTurnStatus: 'none', stopping: true, turnId: 'turn-1' },
+      displayStatus: 'cancelling',
+      runtimeDisplay: { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: false, reasonCode: null, blockingError: false },
+      continueKind: null,
+      composer: { mode: 'normal', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: false, lockInput: true },
+    };
+    const renderState = async (localStopPending: boolean) => {
+      const state = deriveAcpRuntimeComposerState({
+        lifecycle, workflowValid: true, prompt: '', waitingForUserInteraction: false,
+        sending: false, awaitingResponse: false, waitingForOptimisticPrompt: false,
+        localTurnId: null, cancelling: localStopPending, stopCommandPending: localStopPending,
+        turnAccepted: false, hasResponseAfterTurn: false, hasTimelineItems: true,
+        hasEffectiveEvents: true, timelineProcessingKind: 'tool',
+      });
+      await renderComposer({
+        onStop, inputDisabled: state.inputDisabled, canSubmit: state.canSubmit,
+        canStop: state.canStop, stopInProgress: state.stopInProgress,
+        stopCommandInFlight: state.stopCommandInFlight, sendButtonBusy: state.statusActive,
+      });
+    };
+    const stopButton = () => [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('正在停止'));
+
+    await renderState(false);
+    expect(stopButton()).toBeDefined();
+    expect(stopButton()!.disabled).toBe(false);
+    await act(async () => stopButton()!.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    await renderState(true);
+    expect(stopButton()!.disabled).toBe(true);
+  });
 
   it('keeps the demo composer visible while blocking input, attachments and submission', async () => {
     const props = baseProps({ prompt: 'existing draft', canSubmit: true, canStop: true, showRuntimeContinue: true });

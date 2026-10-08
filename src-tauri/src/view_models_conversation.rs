@@ -2290,12 +2290,14 @@ fn current_run_paused_runtime_error(
     None
 }
 
-fn dynamic_leaf_runtime_error_message(
+/// Reads the structured error owned by the selected AI-DYNAMIC leaf. The leaf
+/// graph node is the canonical owner; the outer run pause does not copy it.
+fn dynamic_leaf_runtime_error(
     app: &App,
     task_id: &str,
     run_id: &str,
     leaf: &ConversationSessionLeafVm,
-) -> Option<String> {
+) -> Option<RuntimeErrorInfo> {
     let (outer_node_id, outer_attempt_id) = leaf
         .outer_node_id
         .as_deref()
@@ -2307,16 +2309,12 @@ fn dynamic_leaf_runtime_error_message(
         outer_node_id,
         outer_attempt_id,
     );
-    let graph = load_dynamic_graph(&graph_path, &app.paths.repo_root).ok()?;
-    let diagnostic = graph
+    load_dynamic_graph(&graph_path, &app.paths.repo_root)
+        .ok()?
         .nodes
-        .iter()
+        .into_iter()
         .find(|node| node.id == leaf.node_id)?
         .runtime_error
-        .as_ref()?
-        .diagnostic
-        .trim();
-    (!diagnostic.is_empty()).then(|| format_runtime_error_reason(diagnostic))
 }
 
 #[cfg(test)]
@@ -4128,10 +4126,15 @@ pub fn conversation_run_vm(
     let run_outcome = run.outcome.map(|o| enum_label(&o));
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
-    let paused_runtime_error = current_run_paused_runtime_error(app, task_id, &run);
-    let runtime_error_message = selected_leaf
+    let leaf_runtime_error = selected_leaf
         .as_ref()
-        .and_then(|leaf| dynamic_leaf_runtime_error_message(app, task_id, run_id, leaf))
+        .and_then(|leaf| dynamic_leaf_runtime_error(app, task_id, run_id, leaf));
+    let paused_runtime_error = current_run_paused_runtime_error(app, task_id, &run);
+    let runtime_error_message = leaf_runtime_error
+        .as_ref()
+        .map(|error| error.diagnostic.trim())
+        .filter(|diagnostic| !diagnostic.is_empty())
+        .map(format_runtime_error_reason)
         .or_else(|| {
             runtime_error_message(
                 app,
@@ -4216,7 +4219,7 @@ pub fn conversation_run_vm(
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
         runtime_error_message,
-        runtime_error: paused_runtime_error,
+        runtime_error: leaf_runtime_error.or(paused_runtime_error),
         scheduled_task_id: conversation_metadata
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
@@ -6185,6 +6188,57 @@ mod tests {
         assert_eq!(
             vm.runtime_error_message.as_deref(),
             Some("provider `codex-acp`: session/set_config_option: failed to persist config.toml")
+        );
+    }
+
+    #[test]
+    fn selected_dynamic_leaf_projects_its_structured_runtime_error() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "paused",
+            Vec::new(),
+        );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["nodes"][0]["pauseReason"] = json!("runtime-abnormal");
+        graph["nodes"][0]["runtimeError"] = json!({
+            "code": { "domain": "dynamic", "code": "dynamic.completion.repair-exhausted" },
+            "domain": "dynamic",
+            "recovery": "manual",
+            "retryPolicy": null,
+            "params": { "repairAttempts": 3, "maxRepairAttempts": 3 },
+            "diagnostic": "dynamic-node-completion validation failed",
+            "raw": null
+        });
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+
+        let runtime_error = vm
+            .runtime_error
+            .expect("selected leaf must project its structured runtime error");
+        assert_eq!(
+            runtime_error.domain,
+            gold_band::runtime_error::RuntimeErrorDomain::Dynamic
+        );
+        assert_eq!(
+            runtime_error.code.code,
+            "dynamic.completion.repair-exhausted"
+        );
+        assert_eq!(runtime_error.params["repairAttempts"], json!(3));
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("dynamic-node-completion validation failed")
         );
     }
 

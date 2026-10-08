@@ -473,6 +473,23 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.stopInProgress).toBe(true);
     expect(state.inputDisabled).toBe(true);
     expect(state.canSubmit).toBe(false);
+    // Backend-only stopping (for example after a restart) stays retryable.
+    expect(state.canStop).toBe(true);
+    expect(state.stopCommandInFlight).toBe(false);
+  });
+
+  it('blocks a repeated Stop only while the local stop command is in flight', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'cancel-requested', latestTurnStatus: 'none', stopping: true },
+        displayStatus: 'cancelling',
+      }),
+      cancelling: true,
+      stopCommandPending: true,
+    }));
+
+    expect(state.stopInProgress).toBe(true);
+    expect(state.stopCommandInFlight).toBe(true);
   });
 
   it('lets a terminal ACP snapshot override a stale cancelling lifecycle', () => {

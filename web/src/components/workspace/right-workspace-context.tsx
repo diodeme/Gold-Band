@@ -174,6 +174,11 @@ export type HiddenPromptSectionWorkspaceResource = RightWorkspaceResourceBase & 
   locator: HiddenPromptSectionWorkspaceLocator;
 };
 
+export type CompactionSummaryWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'compaction-summary';
+  locator: AcpAttemptWorkspaceLocator & { eventId: string };
+};
+
 export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'raw-frames';
   locator: AcpAttemptWorkspaceLocator;
@@ -214,6 +219,7 @@ export type RightWorkspaceResource =
   | AutoConfigWorkspaceResource
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
+  | CompactionSummaryWorkspaceResource
   | RawFramesWorkspaceResource
   | ScheduledTaskConfigWorkspaceResource
   | BrowserWorkspaceResource;
@@ -1016,6 +1022,26 @@ export function hiddenPromptSectionWorkspaceResourceKey(locator: HiddenPromptSec
     locator.eventSeq,
     locator.partIndex,
   ].join(':');
+}
+
+export function createCompactionSummaryWorkspaceResource(input: {
+  scopeKey: string;
+  title: string;
+  locator: AcpAttemptWorkspaceLocator;
+  eventId: string;
+}): CompactionSummaryWorkspaceResource {
+  return {
+    kind: 'compaction-summary',
+    key: JSON.stringify(['compaction-summary', input.locator.projectId,
+      input.locator.taskUuid ?? input.locator.taskId, input.locator.runId,
+      input.locator.roundId, input.locator.nodeId, input.locator.attemptId,
+      input.locator.outerNodeId ?? null, input.locator.outerAttemptId ?? null,
+      input.locator.branchId, input.eventId]),
+    scopeKey: input.scopeKey,
+    title: input.title,
+    attention: false,
+    locator: { ...input.locator, eventId: input.eventId },
+  };
 }
 
 export function createHiddenPromptSectionWorkspaceResource(input: {

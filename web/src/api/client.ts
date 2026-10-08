@@ -493,6 +493,7 @@ export interface RuntimeApi {
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
   getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
+  getAcpCompactionSummary(locator: import('../types').TurnFileLocatorVm, query: import('../types').AcpCompactionSummaryQueryInput): Promise<import('../types').AcpCompactionSummaryVm>;
   getAcpImage(locator: import('../types').TurnFileLocatorVm, image: import('../types').AcpImageRef, thumbnail: boolean): Promise<import('../types').AcpImageContentVm>;
   getAcpActivityImages(input: import('../types').AcpActivityImagesInput): Promise<import('../types').AcpActivityImagesPage>;
   getTurnFileChangeSet(locator: TurnFileLocatorVm, changeSetId: string): Promise<TurnFileChangeSetVm>;

@@ -2648,6 +2648,15 @@ export interface AcpToolDetailVm {
   event?: AcpUiEventVm | null;
 }
 
+export interface AcpCompactionSummaryQueryInput {
+  branchId: string;
+  eventId: string;
+}
+
+export interface AcpCompactionSummaryVm {
+  markdown: string | null;
+}
+
 export interface AcpTimelineProjectionVm {
   agents: AcpAgentExecutionVm[];
   todoEntries: Array<{ content?: string; status?: string; priority?: string }>;

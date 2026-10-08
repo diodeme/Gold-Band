@@ -521,6 +521,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
         raw: {
           sessionUpdate: 'compaction_update',
           compactionId: 'browser-cmp-052',
+          compactionSummaryAvailable: true,
           status: compactionStatus,
           contextCompaction: {
             contextUsedBefore: 128_000,
@@ -1965,6 +1966,11 @@ export const browserApi: RuntimeApi = {
   },
   getAcpToolDetail() {
     return Promise.resolve({ event: null });
+  },
+  getAcpCompactionSummary(_locator, query) {
+    return Promise.resolve({ markdown: query.eventId === 'browser-context-compaction-052'
+      ? '# 会话摘要\n\n## 当前目标\n保留 **ACP 升级** 的验收结论。\n\n- 压缩状态已恢复\n- 工具输出可重读\n\n```ts\nconst status = "completed";\n```\n\n| 项目 | 状态 |\n| --- | --- |\n| 文件变更 | 已验证 |\n\n' + '后续继续验证真实会话，并保留用户已经确认的配置和约束。\n\n'.repeat(30)
+      : null });
   },
   getAcpImage() {
     return Promise.reject({ code: 'acp.image-not-found', params: {} });

@@ -5716,6 +5716,41 @@ fn load_selected_activity_detail_events(
     Ok(events)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpCompactionSummaryQueryInput {
+    pub branch_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpCompactionSummaryVm {
+    pub markdown: Option<String>,
+}
+
+pub fn acp_compaction_summary_vm_for_attempt(
+    attempt_dir: &camino::Utf8Path,
+    query: AcpCompactionSummaryQueryInput,
+) -> Result<AcpCompactionSummaryVm> {
+    gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
+    let path = gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
+    if path.exists() && !fs::canonicalize(&path)?.starts_with(fs::canonicalize(attempt_dir)?) {
+        anyhow::bail!("acp.compaction-summary-query-failed");
+    }
+    let item = gold_band::acp::timeline::read_indexed_timeline_item(&path, &query.event_id)?;
+    let mut summary = item.filter(|item| item.event.kind == "contextCompaction")
+        .and_then(|item| item.event.raw)
+        .and_then(|mut raw| raw.get_mut("summary").map(serde_json::Value::take))
+        .unwrap_or(serde_json::Value::Null);
+    gold_band::acp::timeline::hydrate_timeline_value(&path, &mut summary)?;
+    let markdown = summary.as_array().map(|blocks| blocks.iter()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect::<String>()).filter(|text| !text.trim().is_empty());
+    Ok(AcpCompactionSummaryVm { markdown })
+}
+
 pub fn acp_tool_detail_vm_for_attempt(
     attempt_dir: &camino::Utf8Path,
     query: AcpToolDetailQueryInput,
@@ -6606,6 +6641,17 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
+    if event.kind == "contextCompaction" {
+        if let Some(raw) = event.raw.as_mut().and_then(serde_json::Value::as_object_mut) {
+            let available = raw.get("summary").and_then(serde_json::Value::as_array)
+                .is_some_and(|blocks| blocks.iter().any(|block| {
+                    block["type"] == "text" && (block["text"].as_str().is_some_and(|text| !text.trim().is_empty())
+                        || block["text"].get("$goldBandBlob").is_some())
+                }));
+            raw.remove("summary");
+            raw.insert("compactionSummaryAvailable".into(), serde_json::Value::Bool(available));
+        }
+    }
     let images = event
         .raw
         .as_ref()
@@ -6735,6 +6781,7 @@ fn compact_raw_value(value: serde_json::Value) -> serde_json::Value {
     let mut fallback = serde_json::Map::new();
     for key in [
         "sessionUpdate",
+        "compactionSummaryAvailable",
         "title",
         "status",
         "requestId",
@@ -10228,6 +10275,51 @@ mod tests {
         assert_eq!(activity.items.len(), 1);
         assert_eq!(activity.items[0].session_id.as_deref(), Some("session-a"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn compaction_summary_loads_full_blob_backed_markdown_by_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let markdown = format!("# Summary\n\n{}\nEND", "retained context\n".repeat(5_000));
+        let event = acp_event_at("compaction-1", "contextCompaction", Some("completed"), 1,
+            Some(json!({"summary":[{"type":"text","text":markdown},{"type":"text","text":"\nlast chunk"}]})));
+        let core_event = serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+        gold_band::acp::events::write_timeline_items(&attempt.join("acp.timeline.jsonl"), &[core_event]).unwrap();
+        let detail = acp_compaction_summary_vm_for_attempt(&attempt, AcpCompactionSummaryQueryInput {
+            branch_id: "root".into(), event_id: "compaction-1".into(),
+        }).unwrap();
+        assert_eq!(detail.markdown.as_deref(), Some(format!("{markdown}\nlast chunk").as_str()));
+        let list = compact_event_for_session(event);
+        assert_eq!(list.raw.as_ref().unwrap()["compactionSummaryAvailable"], true);
+        assert!(list.raw.as_ref().unwrap().get("summary").is_none());
+        assert!(serde_json::to_string(&list).unwrap().len() < 2_000);
+        let missing = acp_compaction_summary_vm_for_attempt(&attempt, AcpCompactionSummaryQueryInput {
+            branch_id: "root".into(), event_id: "other-compaction".into(),
+        }).unwrap();
+        assert!(missing.markdown.is_none());
+        assert!(acp_compaction_summary_vm_for_attempt(&attempt, AcpCompactionSummaryQueryInput {
+            branch_id: "../other".into(), event_id: "compaction-1".into(),
+        }).is_err());
+        let other_dir = tempfile::tempdir().unwrap();
+        let other_attempt = Utf8PathBuf::from_path_buf(other_dir.path().to_path_buf()).unwrap();
+        let other = acp_event_at("compaction-1", "contextCompaction", Some("completed"), 1,
+            Some(json!({"summary":[{"type":"text","text":"other session"}]})));
+        write_timeline_file(&other_attempt, "acp.timeline.jsonl", &[other]);
+        assert_eq!(acp_compaction_summary_vm_for_attempt(&other_attempt, AcpCompactionSummaryQueryInput {
+            branch_id: "root".into(), event_id: "compaction-1".into(),
+        }).unwrap().markdown.as_deref(), Some("other session"));
+    }
+
+    #[test]
+    fn compaction_summary_projection_handles_absent_empty_and_blob_content() {
+        for summary in [serde_json::Value::Null, json!([]), json!([{"type":"text","text":"  "}]), json!([{"type":"image","data":"image"}])] {
+            let event = acp_event_at("cmp", "contextCompaction", Some("completed"), 1, Some(json!({"summary":summary})));
+            assert_eq!(compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"], false);
+        }
+        let event = acp_event_at("cmp", "contextCompaction", Some("completed"), 1,
+            Some(json!({"summary":[{"type":"text","text":{"$goldBandBlob":{"id":"blob"}}}]})));
+        assert_eq!(compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"], true);
     }
 
     #[test]

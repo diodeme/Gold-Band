@@ -7942,6 +7942,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
   const { t } = useTranslation();
   const running = event.status === "running";
   const interrupted = event.status === "interrupted";
+  const completed = event.status === "completed";
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!running) return;
@@ -7962,7 +7963,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
     ? t("acp.compactionRunning")
     : interrupted
       ? t("acp.compactionInterrupted")
-      : t("acp.compactionCompleted");
+      : completed ? t("acp.compactionCompleted") : t("acp.unknownStatus");
   const usage = usageBefore
     ? t("acp.compactionUsageBefore", usageBefore)
     : null;
@@ -7981,11 +7982,11 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
             className={cn(
               "flex size-5 shrink-0 items-center justify-center rounded-full text-ui-caption font-semibold",
               running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin",
-              !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+              completed && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
               interrupted && "bg-destructive/10 text-destructive",
             )}
           >
-            {running ? "" : interrupted ? "!" : "✓"}
+            {running ? "" : interrupted ? "!" : completed ? "✓" : "?"}
           </span>
           <span className="min-w-0 truncate font-medium text-foreground">
             {label}

@@ -29,6 +29,19 @@ function fakeT(prefix: string) {
 }
 
 describe('acpRuntimeErrorBannerCopy', () => {
+  it('keeps the ACP AuthRequired reason visible once in the existing error banner', async () => {
+    await loadI18nLanguage('zh-CN');
+    const error = runtimeError({
+      code: { domain: 'provider', code: 'provider.auth-required' },
+      domain: 'provider', recovery: 'manual', retryPolicy: null,
+      diagnostic: 'ACP session/prompt failed: Authentication required',
+      raw: { code: -32000, message: 'Authentication required' },
+    });
+    const copy = acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), error);
+    expect(copy).toContain('Authentication required');
+    expect(copy?.match(/Authentication required/g)).toHaveLength(1);
+    expect(copy).not.toContain('errors.provider.auth-required');
+  });
   it('localizes storage failures even without diagnostic text', async () => {
     await loadI18nLanguage('zh-CN');
     expect(acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), runtimeError({

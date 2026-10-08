@@ -402,6 +402,8 @@ function browserAgentIdentity(agentType: string) {
 }
 
 function browserCompletedConversationRun(): ConversationRunVm {
+  const compactionStatus = new URLSearchParams(window.location.search).get('compactionStatus') ?? 'completed';
+  const compactionRunning = compactionStatus === 'in_progress';
   const run = structuredClone(mockErrorBlockedConversationRun);
   const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
   const worktreeBranch = 'gold-band/conversation/browser-completed-run';
@@ -512,13 +514,17 @@ function browserCompletedConversationRun(): ConversationRunVm {
         id: 'browser-context-compaction-052',
         seq: 3,
         timestamp: '2026-08-04 10:01',
-        startedAt: '2026-08-04 10:01:00',
-        endedAt: '2026-08-04 10:01:02',
+        startedAt: compactionRunning ? new Date(Date.now() - 125_000).toISOString() : '2026-08-04 10:01:00',
+        endedAt: compactionRunning ? null : '2026-08-04 10:01:02',
         kind: 'contextCompaction',
-        status: 'completed',
+        status: compactionRunning ? 'running' : ['failed', 'cancelled'].includes(compactionStatus) ? 'interrupted' : compactionStatus,
         raw: {
+          sessionUpdate: 'compaction_update',
+          compactionId: 'browser-cmp-052',
+          status: compactionStatus,
           contextCompaction: {
-            usageBefore: { used: 128_000, size: 258_400 },
+            contextUsedBefore: 128_000,
+            contextSize: 258_400,
           },
         },
       },

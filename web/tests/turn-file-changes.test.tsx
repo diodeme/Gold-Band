@@ -407,6 +407,27 @@ describe('turn file changes card', () => {
     }
   });
 
+  it('keeps future ACP compaction statuses opaque instead of showing success', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <TooltipProvider><ACPMessageList timeline={[{
+          id: 'context-compaction-id-future', seq: 1, kind: 'contextCompaction',
+          timestamp: '2026-10-08T00:00:00Z', status: '_provider_waiting',
+        }]} sessionStatus="running" sending={false} /></TooltipProvider>,
+      ));
+      const row = container.querySelector('[role="status"]');
+      expect(row?.textContent).not.toContain('✓');
+      expect(row?.textContent).not.toContain('上下文压缩完成');
+      expect(row?.querySelector('.animate-spin')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
   it('uses the shared assistant content rail for compaction and file-change timeline items', async () => {
     const container = document.createElement('div');
     document.body.append(container);

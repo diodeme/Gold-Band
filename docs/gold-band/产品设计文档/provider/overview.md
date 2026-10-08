@@ -32,7 +32,13 @@ Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-v
 
 ### 构建期 Agent 版本策略
 
-`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.81.2`、`codex-acp` 为 `1.13.1`，保留现有压缩事件识别所需的 `_meta.contextCompaction`；后续接入 ACP 预览版压缩协议并验收后再评估解除固定。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.87.0`、`codex-acp` 为 `2.1.1`（2026-10-08 的 npm latest 正式版）。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+
+Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，消费预览版 `compaction_update` / `compaction_summary_chunk`。按 provider 的 `compactionId` 原位更新既有压缩时间线实体，保留首次位置；支持 completed-only 回放、摘要顺序追加及最终替换、缺字段保持和 null 清空。未知状态保留原值并显示通用状态，不推断成功。摘要作为协议数据保存在详情中，当前压缩行仍展示状态、耗时和已确认的压缩前用量；用量以 `usage_update` 为准。其他 Agent 的既有压缩信号继续映射到同一实体模型，不声明 JetBrains AIR 私有客户端能力。
+
+工具更新按字段是否出现合并，省略的状态、输入、输出与 diff 保留，显式空值清除。Codex `terminal_output_delta` 按工具累计进入已有输出详情，最多保留 256,000 字符并标记截断，原始帧留在 raw 日志；沿用工具详情按需读取与流式发布机制。Claude 无 AIR 的 `question_n_custom` 与其选择题配对，桌面和远程提问保持一致。此升级不扩展 goal、原生子 Agent 或后台任务 UI。
+
+`session/prompt` 返回 ACP `AuthRequired`（`-32000`）时，按协议错误码映射到既有 `provider.auth-required`，保留原始错误与诊断，不依赖错误消息语言。失败按现有生命周期结束当前轮次，释放发送状态；认证问题由用户处理后手动再次发送，不自动重发或新增应用内登录流程。
 
 正式 build 继续在线刷新 Registry，再应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略，基于本地 snapshot 应用相同规则。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。
 

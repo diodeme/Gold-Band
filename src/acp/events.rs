@@ -405,12 +405,34 @@ pub struct AcpRawFrame {
 /// commonly send input and diff content before a terminal status-only update;
 /// the terminal revision must not erase fields that it does not replace.
 pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
+    // Codex streams terminal output through metadata and no longer repeats the
+    // complete output at completion. Materialize it in the existing detail field.
+    let terminal_delta = incoming
+        .pointer("/_meta/terminal_output_delta/data")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(delta) = terminal_delta {
+        const MAX_TERMINAL_OUTPUT_CHARS: usize = 256_000;
+        let previous_output = previous
+            .pointer("/rawOutput/formatted_output")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut output: String = previous_output.chars().take(MAX_TERMINAL_OUTPUT_CHARS).collect();
+        let remaining = MAX_TERMINAL_OUTPUT_CHARS.saturating_sub(output.chars().count());
+        output.extend(delta.chars().take(remaining));
+        if previous_output.chars().count() > MAX_TERMINAL_OUTPUT_CHARS
+            || delta.chars().count() > remaining
+        {
+            output.push('…');
+        }
+        incoming["rawOutput"] = serde_json::json!({"formatted_output": output});
+    }
     let (Some(incoming_object), Some(previous_object)) =
         (incoming.as_object_mut(), previous.as_object())
     else {
         return;
     };
-    for key in ["rawInput", "content", "locations"] {
+    for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
         merge_missing_json_field(incoming_object, previous_object, key);
     }
     if let Some(previous_tool_call) = previous_object.get("toolCall").and_then(Value::as_object) {
@@ -418,7 +440,7 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
             .entry("toolCall")
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
         if let Some(incoming_tool_call) = incoming_tool_call.as_object_mut() {
-            for key in ["rawInput", "content", "locations"] {
+            for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
                 merge_missing_json_field(incoming_tool_call, previous_tool_call, key);
             }
         }
@@ -430,25 +452,11 @@ fn merge_missing_json_field(
     previous: &serde_json::Map<String, Value>,
     key: &str,
 ) {
-    let incoming_has_value = incoming.get(key).is_some_and(json_value_has_payload);
-    if incoming_has_value {
+    if incoming.contains_key(key) {
         return;
     }
-    if let Some(previous_value) = previous
-        .get(key)
-        .filter(|value| json_value_has_payload(value))
-    {
+    if let Some(previous_value) = previous.get(key) {
         incoming.insert(key.to_string(), previous_value.clone());
-    }
-}
-
-fn json_value_has_payload(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-        Value::Bool(_) | Value::Number(_) => true,
     }
 }
 
@@ -3211,6 +3219,7 @@ pub fn normalize_session_update(
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let compaction_phase = context_compaction_phase(update);
+    let standard_compaction = matches!(provider_kind, "compaction_update" | "compaction_summary_chunk");
     let mut raw_value = update.clone();
     normalize_agent_transcript_metadata(&mut raw_value);
     if let Some(phase) = compaction_phase
@@ -3230,13 +3239,12 @@ pub fn normalize_session_update(
         id,
         seq,
         timestamp,
-        kind: compaction_phase
-            .map(|_| "contextCompaction")
+        kind: (standard_compaction || compaction_phase.is_some())
+            .then_some("contextCompaction")
             .unwrap_or_else(|| kind_to_ui_kind(provider_kind))
             .to_string(),
         session_id,
-        content: compaction_phase
-            .is_none()
+        content: (!standard_compaction && compaction_phase.is_none())
             .then(|| extract_text(update))
             .flatten(),
         title: extract_title(update),
@@ -3292,10 +3300,18 @@ const PROVIDER_CONTEXT_COMPACTION_META_POINTER: &str = "/_meta/contextCompaction
 
 /// Normalize provider compaction signals at the ACP boundary so consumers only
 /// observe the canonical context-compaction lifecycle. Structured metadata is
-/// preferred; Claude-compatible standalone control messages remain a narrow
-/// compatibility fallback until ACP standardizes compaction updates.
+/// preferred; older adapters' standalone control messages map to the same
+/// lifecycle while current clients negotiate ACP v1 compaction updates.
 pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
     let update_kind = update.get("sessionUpdate").and_then(Value::as_str)?;
+    if update_kind == "compaction_update" {
+        return match update.get("status").and_then(Value::as_str)? {
+            "in_progress" => Some("started"),
+            "completed" => Some("completed"),
+            "failed" | "cancelled" => Some("interrupted"),
+            _ => None,
+        };
+    }
     if matches!(update_kind, "tool_call" | "tool_call_update")
         && update
             .pointer(PROVIDER_CONTEXT_COMPACTION_META_POINTER)
@@ -3383,7 +3399,8 @@ pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTra
 }
 
 pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
-    raw.pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"))
+    raw.pointer("/rawOutput/formatted_output")
+        .or_else(|| raw.pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput")))
         .or_else(|| {
             raw.pointer(&format!(
                 "/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"

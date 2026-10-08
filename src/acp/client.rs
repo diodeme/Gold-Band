@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::v1::{
     AgentCapabilities, ContentBlock as ProtocolContentBlock, EmbeddedResource,
-    EmbeddedResourceResource, ImageContent, PromptCapabilities, TextContent, TextResourceContents,
+    EmbeddedResourceResource, ErrorCode as ProtocolErrorCode, ImageContent, PromptCapabilities,
+    TextContent, TextResourceContents,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -632,6 +633,7 @@ fn initialize_params() -> Value {
     json!({
         "protocolVersion": 1,
         "clientCapabilities": {
+            "session": { "compaction": {} },
             "_meta": {
                 (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true,
                 (PARAMETERIZED_MODEL_PICKER_CAPABILITY): true
@@ -1758,6 +1760,12 @@ fn codex_prompt_failure(error: &Value) -> AcpPromptFailure {
 }
 
 fn acp_prompt_rpc_failure(error: &Value) -> anyhow::Error {
+    let code = match error.get("code").and_then(Value::as_i64) {
+        Some(code) if code == i64::from(i32::from(ProtocolErrorCode::AuthRequired)) => {
+            "provider.auth-required"
+        }
+        _ => "provider.acp-prompt-failed",
+    };
     let diagnostic = error
         .pointer("/data/message")
         .and_then(Value::as_str)
@@ -1766,7 +1774,7 @@ fn acp_prompt_rpc_failure(error: &Value) -> anyhow::Error {
         .unwrap_or("ACP session/prompt returned an error");
     let mut info = manual_runtime_error_info(
         RuntimeErrorDomain::Provider,
-        "provider.acp-prompt-failed",
+        code,
         diagnostic,
         json!({
             "rpcCode": error.get("code"),
@@ -7328,7 +7336,9 @@ impl<'a> AcpRuntime<'a> {
         if event.kind == "contextCompaction" {
             let existing = if let Some(id) = compaction_tool_item_id(event) {
                 let branch_id = event_branch_id(event);
-                if branch_id == ROOT_BRANCH_ID {
+                if let Some(item) = self.timeline_items.get(&id) {
+                    Some(item.clone())
+                } else if branch_id == ROOT_BRANCH_ID {
                     self.timeline_store.read_item(&id)?
                 } else if let Some(store) = self.branch_timeline_stores.get_mut(&branch_id) {
                     store.read_item(&id)?
@@ -7972,7 +7982,9 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "contextCompaction" => {
-                Self::clear_timeline_streams(&mut streams);
+                if item.started_seq.is_none_or(|started| started == seq) {
+                    Self::clear_timeline_streams(&mut streams);
+                }
             }
             "usageUpdate" => {
                 item.id = item
@@ -8035,7 +8047,8 @@ impl<'a> AcpRuntime<'a> {
         // An elicitation request is an intervention inside the current turn,
         // not a transcript boundary. Other kinds close only anonymous
         // contiguous segments; stable provider identities remain resumable.
-        if item.kind != "elicitationRequest" {
+        if item.kind != "elicitationRequest"
+            && !(item.kind == "contextCompaction" && item.started_seq.is_some_and(|started| started != seq)) {
             if item.kind != "textDelta" {
                 streams.text.close_anonymous();
             }
@@ -8153,6 +8166,9 @@ impl Drop for AcpRuntime<'_> {
 }
 
 fn compaction_tool_item_id(event: &AcpUiEvent) -> Option<String> {
+    if let Some(id) = event.raw.as_ref().and_then(|raw| raw.get("compactionId")).and_then(Value::as_str) {
+        return Some(format!("context-compaction-id-{id}"));
+    }
     event
         .tool_call_id
         .as_deref()
@@ -8166,6 +8182,10 @@ fn context_compaction_updates(
     existing: Option<&AcpUiEvent>,
     active: Option<&AcpUiEvent>,
 ) -> Vec<AcpUiEvent> {
+    if event.raw.as_ref().and_then(|raw| raw.get("sessionUpdate")).and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "compaction_update" | "compaction_summary_chunk")) {
+        return standard_compaction_updates(usage, event, existing, active);
+    }
     if let Some(previous) = existing.filter(|item| item.status.as_deref() != Some("running")) {
         // Completion can still receive its confirmed usage, but never restart its lifecycle.
         let confirms_usage = previous.status.as_deref() == Some("completed")
@@ -8216,6 +8236,80 @@ fn context_compaction_updates(
     updates
 }
 
+/// Fold ACP v1 compaction patches into the same durable timeline entity as the
+/// existing usage lifecycle. The provider ID owns placement; usage is separate.
+fn standard_compaction_updates(
+    usage: &mut AcpUsageState,
+    event: &AcpUiEvent,
+    existing: Option<&AcpUiEvent>,
+    active: Option<&AcpUiEvent>,
+) -> Vec<AcpUiEvent> {
+    let Some(raw) = event.raw.as_ref() else { return Vec::new() };
+    let Some(id) = raw.get("compactionId").and_then(Value::as_str) else { return Vec::new() };
+    let is_chunk = raw["sessionUpdate"] == "compaction_summary_chunk";
+    if is_chunk {
+        let Some(previous) = existing.filter(|item| item.status.as_deref() == Some("running")) else { return Vec::new() };
+        let Some(content) = raw.get("content").filter(|value| value.is_object()) else { return Vec::new() };
+        let mut item = previous.clone();
+        item.seq = event.seq;
+        item.timestamp = event.timestamp.clone();
+        let stored = item.raw.as_mut().expect("compaction has raw data");
+        if !stored["summary"].is_array() { stored["summary"] = json!([]); }
+        stored["summary"].as_array_mut().unwrap().push(content.clone());
+        return vec![item];
+    }
+    let Some(status) = raw.get("status").and_then(Value::as_str) else { return Vec::new() };
+    let terminal = |status: Option<&str>| matches!(status, Some("completed" | "interrupted"));
+    if let Some(previous) = existing.filter(|item| terminal(item.status.as_deref())) {
+        // A materialized replay/patch may refresh a terminal entity, never reopen it.
+        if previous.raw.as_ref().and_then(|raw| raw.get("status")).and_then(Value::as_str) != Some(status) {
+            return Vec::new();
+        }
+    }
+    let mut item = event.clone();
+    item.id = format!("context-compaction-id-{id}");
+    let item_raw = item.raw.as_mut().unwrap();
+    if let Some(previous_raw) = existing.and_then(|item| item.raw.as_ref()) {
+        for key in ["summary", "error", "_meta", "contextCompaction"] {
+            if key == "contextCompaction" || !raw.as_object().unwrap().contains_key(key) {
+                if let Some(value) = previous_raw.get(key) { item_raw[key] = value.clone(); }
+            }
+        }
+    }
+    let mut updates = Vec::with_capacity(2);
+    let known = matches!(status, "in_progress" | "completed" | "failed" | "cancelled");
+    let different = usage.compaction.as_ref().is_some_and(|state| state.item_id != item.id);
+    if status == "in_progress" && different {
+        if let Some(previous) = active.filter(|item| item.status.as_deref() == Some("running")) {
+            let mut interrupted = previous.clone();
+            interrupted.status = Some("interrupted".into());
+            interrupted.seq = event.seq;
+            interrupted.timestamp = event.timestamp.clone();
+            interrupted.raw.as_mut().unwrap()["contextCompaction"]["reason"] = json!("superseded");
+            AcpRuntime::apply_context_compaction_event(usage, &mut interrupted, event.seq, &event.timestamp);
+            updates.push(interrupted);
+        }
+    }
+    if known && !existing.is_some_and(|item| terminal(item.status.as_deref())) {
+        if different && status != "in_progress" {
+            // Completed-only history must not settle a different live compaction.
+            let mut detached_usage = AcpUsageState::default();
+            AcpRuntime::apply_context_compaction_event(&mut detached_usage, &mut item, event.seq, &event.timestamp);
+        } else {
+            AcpRuntime::apply_context_compaction_event(usage, &mut item, event.seq, &event.timestamp);
+        }
+    }
+    item.started_seq = Some(existing.and_then(|item| item.started_seq).unwrap_or(event.seq));
+    item.started_at = Some(existing.and_then(|item| item.started_at.clone()).unwrap_or_else(|| event.timestamp.clone()));
+    if let Some(previous) = existing.filter(|item| terminal(item.status.as_deref())) {
+        item.ended_seq = previous.ended_seq;
+        item.ended_at = previous.ended_at.clone();
+    }
+    // Unknown statuses stay opaque: no synthetic completion, reset or spinner.
+    updates.push(item);
+    updates
+}
+
 fn upsert_context_compaction_raw(
     item: &mut crate::acp::events::AcpUiEvent,
     phase: &str,
@@ -8229,7 +8323,7 @@ fn upsert_context_compaction_raw(
     }
     raw["contextCompaction"] = json!({
         "phase": phase,
-        "detectionSource": "providerControlMessage",
+        "detectionSource": if raw.get("compactionId").is_some() { "acpCompaction" } else { "providerControlMessage" },
         "contextUsedBefore": context_used_before,
         "contextSize": context_size,
         "contextUsedAfter": context_used_after,
@@ -8269,6 +8363,9 @@ fn merge_tool_revision(
     if new_item.title.is_none() {
         new_item.title.clone_from(&prev.title);
     }
+    if new_item.status.is_none() {
+        new_item.status.clone_from(&prev.status);
+    }
     let Some(previous_raw) = prev.raw.as_ref() else {
         return;
     };
@@ -8278,6 +8375,7 @@ fn merge_tool_revision(
 
 fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
+        || (event.kind == "contextCompaction" && event.status.as_deref() == Some("running"))
         || (matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate")
             && event.tool_call_id.is_some()
             && !is_terminal_tool_status(event.status.as_deref()))
@@ -8522,6 +8620,9 @@ fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Op
             .get("toolCallId")
             .and_then(Value::as_str)
             .map(|tool_call_id| format!("tool-call-{tool_call_id}")),
+        "compaction_update" | "compaction_summary_chunk" => update
+            .get("compactionId").and_then(Value::as_str)
+            .map(|id| format!("context-compaction-id-{id}")),
         "plan" => session_id.map(|session_id| format!("session-plan-{session_id}")),
         _ => None,
     }
@@ -8530,7 +8631,7 @@ fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Op
 fn is_current_turn_content_update(update: &Value) -> bool {
     matches!(
         update.get("sessionUpdate").and_then(Value::as_str),
-        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")
+        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "compaction_update" | "compaction_summary_chunk")
     )
 }
 
@@ -8606,7 +8707,7 @@ fn should_suppress_attached_session_update(
 /// suppress a legitimate next-turn plan update.
 fn attached_session_stream_identity(session_id: Option<&str>, update: &Value) -> Option<String> {
     match update.get("sessionUpdate").and_then(Value::as_str) {
-        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update") => {
+        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "compaction_update" | "compaction_summary_chunk") => {
             stable_session_update_item_id(session_id, update)
         }
         _ => None,
@@ -9293,7 +9394,16 @@ mod tests {
                     .unwrap();
                 writeln!(methods, "{}", frame["method"].as_str().unwrap()).unwrap();
             }
-            let response = if frame["method"] == "session/prompt"
+            if stall_method == "upgraded-acp" && frame["method"] == "initialize" {
+                assert_eq!(frame["params"]["clientCapabilities"]["session"]["compaction"], json!({}));
+                assert!(frame["params"]["clientCapabilities"]["_meta"].get("jetbrains").is_none());
+            }
+            let response = if stall_method == "upgraded-acp" && frame["method"] == "session/prompt" {
+                for update in upgraded_acp_mock_updates() {
+                    println!("{}", json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":update}}));
+                }
+                json!({"result":{"stopReason":"end_turn"}})
+            } else if frame["method"] == "session/prompt"
                 && stall_method.starts_with("prompt-failure")
             {
                 if stall_method == "prompt-failure-worker-ref" {
@@ -9303,7 +9413,7 @@ mod tests {
                     }
                     std::fs::create_dir(worker_ref).unwrap();
                 }
-                json!({"error": {"code": -32000, "message": "ORIGINAL_PROMPT_FAILURE"}})
+                json!({"error": {"code": -32603, "message": "ORIGINAL_PROMPT_FAILURE"}})
             } else if frame["method"] == stall_method {
                 // Rescue the unfixed implementation without mistaking rescue for a timeout.
                 std::thread::sleep(DOCTOR_FIXTURE_RESCUE_DELAY);
@@ -10434,6 +10544,17 @@ mod tests {
     }
 
     #[test]
+    fn prompt_rpc_auth_required_uses_protocol_code_not_message() {
+        let raw = json!({"code": -32000, "message": "请先完成登录"});
+        let info = normalize_runtime_error(&acp_prompt_rpc_failure(&raw));
+        assert_eq!(info.code_str(), "provider.auth-required");
+        assert_eq!(info.recovery, RecoveryMode::Manual);
+        assert!(info.retry_policy.is_none());
+        assert_eq!(info.params["rpcCode"], -32000);
+        assert_eq!(info.raw, Some(raw));
+    }
+
+    #[test]
     fn prompt_terminal_quiet_drain_observes_frame_after_rpc_response() {
         let (sender, receiver) = std::sync::mpsc::sync_channel(0);
         let sender_keepalive = sender.clone();
@@ -11456,6 +11577,289 @@ mod tests {
         assert_eq!(hot.len(), 2);
         assert!(hot.contains_key("tool-call-pending"));
         assert!(hot.contains_key("permission-1"));
+    }
+
+    #[test]
+    fn upgraded_acp_stdio_mock_persists_compaction_and_tool_output() {
+        use crate::acp::events::{AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution};
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fixture".into(), operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(), adapter_display_name: "Fixture".into(), cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput { display_text: "test".into(), quotes: vec![], role: None, workspace_files: vec![] },
+            attachment_paths: vec![], admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) = admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission).unwrap() else { panic!("turn ownership") };
+        let result = super::run_prompt(
+            "upgraded-acp", &doctor_fixture_config("upgraded-acp"), cwd.clone(), cwd.clone(), attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fixture"), SessionMode::New, None, false, None, Default::default(), None,
+            false, false, false, 1_000_000, 500_000, AcpRuntimePolicy::default(), owner, None, &[], None, None, None,
+        );
+        super::AdapterConnectionManager::shared().close_workspace_connections_bounded(&cwd, Duration::from_secs(2)).unwrap();
+        result.unwrap();
+        let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+        let compactions: Vec<_> = items.iter().filter(|item| item.kind == "contextCompaction").collect();
+        assert_eq!(compactions.len(), 1);
+        let compaction = compactions[0];
+        assert_eq!(compaction.status.as_deref(), Some("completed"));
+        assert_eq!(compaction.raw.as_ref().unwrap()["summary"], json!([{"type":"text","text":"retained summary"}]));
+        let tool = items.iter().find(|item| item.tool_call_id.as_deref() == Some("shell")).unwrap();
+        assert_eq!(tool.status.as_deref(), Some("completed"));
+        assert_eq!(tool.raw.as_ref().unwrap().pointer("/_meta/goldBandConversation/toolOutput"), Some(&json!("hello world")));
+        let answer = items.iter().find(|item| item.content.as_deref() == Some("before after")).unwrap();
+        assert!(compaction.started_seq < answer.started_seq);
+        let store = crate::acp::timeline::TimelineStore::open(attempt.join("acp.timeline.jsonl"), Default::default()).unwrap();
+        assert!(store.contains_provider_history_identity("context-compaction-id-cmp"));
+    }
+
+    fn upgraded_acp_mock_updates() -> Vec<Value> {
+        vec![
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"in_progress"}),
+            json!({"sessionUpdate":"compaction_summary_chunk","compactionId":"cmp","content":{"type":"text","text":"retained summary"}}),
+            json!({"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{"type":"text","text":"before "}}),
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed"}),
+            json!({"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{"type":"text","text":"after"}}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"shell","title":"Run","kind":"execute","status":"in_progress","rawInput":{"command":"echo hello"}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"hello "}}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"world"}}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","status":"completed"}),
+        ]
+    }
+
+    #[test]
+    fn upgraded_acp_auth_failure_settles_and_allows_an_explicit_retry() {
+        assert_upgraded_acp_terminal_recovery("auth");
+    }
+
+    #[test]
+    fn upgraded_acp_cancel_settles_tools_and_allows_a_follow_up() {
+        assert_upgraded_acp_terminal_recovery("cancel");
+    }
+
+    fn assert_upgraded_acp_terminal_recovery(scenario: &str) {
+        use crate::acp::events::{AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution};
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let snapshot = attempt.join("acp.snapshot.json");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let mut config = doctor_fixture_config(scenario);
+        config.args = ["--ignored", "--exact", "acp::client::tests::upgraded_acp_terminal_adapter_fixture", "--nocapture"]
+            .map(str::to_string).to_vec();
+        let assertions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for turn in [1, 2] {
+                let turn_id = format!("upgrade-turn-{turn}");
+                let submission = AcpPromptSubmission {
+                    turn_id: turn_id.clone(), operation_id: format!("upgrade-operation-{turn}"),
+                    adapter_id: "upgrade-terminal".into(), adapter_display_name: "Fixture".into(), cwd: cwd.to_string(),
+                    input: crate::provider::ConversationPromptInput { display_text: "test".into(), quotes: vec![], role: None, workspace_files: vec![] },
+                    attachment_paths: vec![], admitted_at: super::current_timestamp(),
+                };
+                let AcpTurnExecutionClaim::Claimed(owner) = admit_session_turn_for_execution(&snapshot, &submission).unwrap() else { panic!("terminal must release turn ownership") };
+                let cancellation_requested = std::cell::Cell::new(false);
+                let on_live = |event: &AcpUiEvent, _: crate::provider::AcpLiveTimelinePosition| {
+                    if scenario == "cancel" && turn == 1 && event.tool_call_id.as_deref() == Some("pending-tool") && !cancellation_requested.replace(true) {
+                        assert!(super::request_prompt_cancel(&attempt));
+                    }
+                    Ok(())
+                };
+                let published = std::cell::RefCell::new(Vec::<Value>::new());
+                let on_snapshot = || {
+                    published.borrow_mut().push(crate::storage::read_json::<Value>(&snapshot)?);
+                    Ok(())
+                };
+                let result = super::run_prompt(
+                    "upgrade-terminal", &config, cwd.clone(), cwd.clone(), attempt.clone(),
+                    &non_runtime_control_test_prompt(&turn_id),
+                    if turn == 1 { SessionMode::New } else { SessionMode::Continue },
+                    None, false, None, Default::default(),
+                    (turn == 2).then(|| json!({"acpSessionId":"upgrade-session"})),
+                    false, false, false, 1_000_000, 500_000, AcpRuntimePolicy::default(), owner,
+                    Some(&on_live), &[], Some(&on_snapshot), None, None,
+                );
+                let expected_status = if turn == 2 { "completed" } else if scenario == "auth" { "failed" } else { "cancelled" };
+                if turn == 1 && scenario == "auth" {
+                    let error = result.err().expect("AuthRequired must fail the turn");
+                    let info = normalize_runtime_error(&error);
+                    assert_eq!(info.code_str(), "provider.auth-required");
+                    assert_eq!(info.recovery, RecoveryMode::Manual);
+                    assert!(info.retry_policy.is_none(), "must not loop retrying missing credentials");
+                } else {
+                    result.unwrap();
+                }
+                let terminal = crate::storage::read_json::<Value>(&snapshot).unwrap();
+                assert_eq!(terminal["latestTurnStatus"], expected_status);
+                assert_eq!(terminal["liveTurnActivity"], "idle");
+                assert!(published.borrow().iter().any(|value| value["latestTurnStatus"] == expected_status));
+                if turn == 1 && scenario == "auth" {
+                    assert_eq!(terminal["turnError"]["code"]["code"], "provider.auth-required");
+                }
+                if turn == 2 { assert!(terminal["turnError"].is_null()); }
+            }
+            let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            assert!(items.iter().any(|item| item.content.as_deref() == Some("Recovered response")));
+            if scenario == "cancel" {
+                let tool = items.iter().find(|item| item.tool_call_id.as_deref() == Some("pending-tool")).unwrap();
+                assert_eq!(tool.status.as_deref(), Some("failed"));
+                assert!(tool.ended_seq.is_some());
+            }
+            let methods = std::fs::read_to_string(cwd.join("upgrade-methods")).unwrap();
+            assert_eq!(methods.lines().filter(|line| *line == "session/prompt").count(), 2);
+            assert_eq!(methods.lines().filter(|line| *line == "session/cancel").count(), usize::from(scenario == "cancel"));
+        }));
+        super::AdapterConnectionManager::shared().close_workspace_connections_bounded(&cwd, Duration::from_secs(2)).unwrap();
+        if let Err(panic) = assertions { std::panic::resume_unwind(panic); }
+    }
+
+    #[test]
+    #[ignore]
+    fn upgraded_acp_terminal_adapter_fixture() {
+        use std::io::{BufRead, Write};
+        let Ok(scenario) = std::env::var("GOLD_BAND_DOCTOR_FIXTURE") else { return };
+        let mut pending_prompt = None;
+        let update = |value: Value| {
+            println!("{}", json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"upgrade-session","update":value}}));
+        };
+        println!();
+        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lock().lines() {
+            let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let method = frame["method"].as_str().unwrap();
+            let mut trace = std::fs::OpenOptions::new().create(true).append(true).open("upgrade-methods").unwrap();
+            writeln!(trace, "{method}").unwrap();
+            if method == "session/cancel" {
+                // Claude terminates unfinished tools before the cancelled prompt response.
+                update(json!({"sessionUpdate":"tool_call_update","toolCallId":"pending-tool","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Tool execution cancelled"}}]}));
+                println!("{}", json!({"jsonrpc":"2.0","id":pending_prompt.take().expect("cancel follows prompt"),"result":{"stopReason":"cancelled"}}));
+                std::io::stdout().flush().unwrap();
+                continue;
+            }
+            let result = match method {
+                "initialize" => json!({"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}),
+                "session/new" | "session/load" => json!({"result":{"sessionId":"upgrade-session"}}),
+                "session/prompt" if !std::path::Path::new("upgrade-first-done").exists() => {
+                    std::fs::write("upgrade-first-done", "done").unwrap();
+                    if scenario == "auth" {
+                        // ACP AuthRequired emitted by Claude 0.87.0 and Codex 2.1.1.
+                        json!({"error":{"code":-32000,"message":"Authentication required"}})
+                    } else {
+                        pending_prompt = Some(frame["id"].clone());
+                        update(json!({"sessionUpdate":"tool_call","toolCallId":"pending-tool","title":"Run command","kind":"execute","status":"in_progress","rawInput":{"command":"long-command"}}));
+                        std::io::stdout().flush().unwrap();
+                        continue;
+                    }
+                }
+                "session/prompt" => {
+                    update(json!({"sessionUpdate":"agent_message_chunk","messageId":"recovered","content":{"type":"text","text":"Recovered response"}}));
+                    json!({"result":{"stopReason":"end_turn"}})
+                }
+                _ => json!({"result":{}}),
+            };
+            let mut reply = result;
+            reply["jsonrpc"] = json!("2.0");
+            reply["id"] = frame["id"].clone();
+            println!("{reply}");
+            std::io::stdout().flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_tool_patches_preserve_state_and_accumulate_output() {
+        let normalize = |seq, raw: Value| crate::acp::events::normalize_session_update(seq, None, &raw);
+        let initial = normalize(1, json!({"sessionUpdate":"tool_call","toolCallId":"shell", "title":"Run", "kind":"execute", "status":"in_progress", "rawInput":{"command":"echo hello"}, "content":[{"type":"terminal","terminalId":"shell"}]}));
+        let mut first = normalize(2, json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"hello "}}}));
+        merge_tool_revision(&mut first, &initial);
+        let mut second = normalize(3, json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"world"}}}));
+        merge_tool_revision(&mut second, &first);
+        assert_eq!(second.status.as_deref(), Some("in_progress"));
+        assert_eq!(second.raw.as_ref().unwrap()["kind"], "execute");
+        let mut completed = normalize(4, json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","status":"completed"}));
+        merge_tool_revision(&mut completed, &second);
+        assert_eq!(crate::acp::events::agent_transcript_tool_output(completed.raw.as_ref().unwrap()), Some(&json!("hello world")));
+        let mut cleared = normalize(5, json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","content":[],"rawInput":null}));
+        merge_tool_revision(&mut cleared, &completed);
+        assert_eq!(cleared.raw.as_ref().unwrap()["content"], json!([]));
+        assert_eq!(cleared.raw.as_ref().unwrap()["rawInput"], Value::Null);
+    }
+
+    #[test]
+    fn upgraded_acp_compaction_admits_turn_start_and_rejects_old_identity() {
+        let update = json!({"sessionUpdate":"compaction_update","compactionId":"new","status":"in_progress"});
+        let mut phase = SessionUpdatePhase::AwaitingTurnStart;
+        let mut ids = std::collections::HashSet::new();
+        assert!(!super::should_suppress_session_update(&mut phase, |_| false, &mut ids, Some("session"), &update));
+        assert_eq!(super::stable_session_update_item_id(Some("session"), &update).as_deref(), Some("context-compaction-id-new"));
+        assert!(super::should_suppress_session_update(&mut phase, |_| true, &mut ids, Some("session"), &json!({"sessionUpdate":"compaction_update","compactionId":"old","status":"completed"})));
+    }
+
+    #[test]
+    fn upgraded_acp_compaction_preserves_patch_semantics_and_opaque_statuses() {
+        let mut usage = AcpUsageState::default();
+        let mut stored: Option<AcpUiEvent> = None;
+        let mut apply = |raw: Value| {
+            let event = crate::acp::events::normalize_session_update(stored.as_ref().map_or(1, |item| item.seq + 1), None, &raw);
+            let updates = super::context_compaction_updates(&mut usage, &event, stored.as_ref(), stored.as_ref());
+            if let Some(item) = updates.last() { stored = Some(item.clone()); }
+            stored.clone()
+        };
+        let chunk = json!({"sessionUpdate":"compaction_summary_chunk","compactionId":"cmp","content":{"type":"text","text":"partial"}});
+        assert!(apply(chunk.clone()).is_none());
+        apply(json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"in_progress","_meta":{"provider":"test"}}));
+        apply(chunk.clone());
+        let done = apply(json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[{"type":"text","text":"replacement"}]})).unwrap();
+        assert_eq!(done.raw.as_ref().unwrap()["summary"][0]["text"], "replacement");
+        assert_eq!(done.raw.as_ref().unwrap()["_meta"], json!({"provider":"test"}));
+        assert_eq!(apply(chunk).unwrap().seq, done.seq);
+        let cleared = apply(json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[],"_meta":null})).unwrap();
+        assert_eq!(cleared.raw.as_ref().unwrap()["summary"], json!([]));
+        assert!(cleared.raw.as_ref().unwrap()["_meta"].is_null());
+        for status in ["failed", "cancelled", "_future", "future"] {
+            let event = crate::acp::events::normalize_session_update(30, None, &json!({"sessionUpdate":"compaction_update","compactionId":status,"status":status,"error":"details"}));
+            let mut usage = AcpUsageState::default();
+            let item = super::context_compaction_updates(&mut usage, &event, None, None).pop().unwrap();
+            if matches!(status, "failed" | "cancelled") {
+                assert_eq!(item.status.as_deref(), Some("interrupted"));
+                assert_eq!(item.ended_seq, Some(30));
+            } else {
+                assert_eq!(item.status.as_deref(), Some(status));
+                assert!(item.ended_seq.is_none());
+            }
+            assert!(usage.compaction.is_none());
+            assert_eq!(item.raw.as_ref().unwrap()["status"], status);
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_compaction_materializes_chunks_and_replay() {
+        let normalize = |seq, raw: Value| crate::acp::events::normalize_session_update(seq, None, &raw);
+        let mut usage = AcpUsageState::default();
+        let first = normalize(10, json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"in_progress"}));
+        assert_eq!(first.kind, "contextCompaction");
+        let mut item = super::context_compaction_updates(&mut usage, &first, None, None).pop().unwrap();
+        let identity = item.id.clone();
+        for (seq, text) in [(11,"one "),(12,"two")] {
+            let chunk = normalize(seq, json!({"sessionUpdate":"compaction_summary_chunk","compactionId":"cmp","content":{"type":"text","text":text}}));
+            item = super::context_compaction_updates(&mut usage, &chunk, Some(&item), Some(&item)).pop().unwrap();
+            assert_eq!(item.id, identity);
+            assert_eq!(item.started_seq, Some(10));
+            assert_eq!(item.status.as_deref(), Some("running"));
+        }
+        let done = normalize(13, json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed"}));
+        item = super::context_compaction_updates(&mut usage, &done, Some(&item), Some(&item)).pop().unwrap();
+        assert_eq!(item.raw.as_ref().unwrap()["summary"], json!([{"type":"text","text":"one "},{"type":"text","text":"two"}]));
+        assert_eq!(item.started_seq, Some(10));
+        assert_eq!(item.ended_seq, Some(13));
+        let clear = normalize(14, json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":null}));
+        item = super::context_compaction_updates(&mut usage, &clear, Some(&item), None).pop().unwrap();
+        assert!(item.raw.as_ref().unwrap()["summary"].is_null());
+        let replay = normalize(15, json!({"sessionUpdate":"compaction_update","compactionId":"past","status":"completed","summary":[{"type":"text","text":"retained"}]}));
+        let replayed = super::context_compaction_updates(&mut usage, &replay, None, None).pop().unwrap();
+        assert_eq!(replayed.status.as_deref(), Some("completed"));
+        assert_ne!(replayed.id, identity);
+        assert_eq!(super::initialize_params()["clientCapabilities"]["session"]["compaction"], json!({}));
     }
 
     #[test]

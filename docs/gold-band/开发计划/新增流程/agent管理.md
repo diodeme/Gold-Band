@@ -106,6 +106,25 @@ Agent 实例新增两个独立能力配置：
 - 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
 - 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
 
+### 2026-10-08 Claude / Codex ACP 升级
+
+- 将已有精确 pin 更新为 Claude ACP `0.87.0`、Codex ACP `2.1.1`，基于当前 Registry snapshot 重建 Catalog，不覆盖其他 Agent 的配置变更。
+- 根因是协议入口仍假定旧 adapter 输出：补齐 ACP v1 压缩能力协商、稳定 ID、生命周期、摘要 patch、回放及新轮入口；工具增量更新保留省略字段，累计 Codex 命令输出；远程提问识别 Claude 无 AIR 的自定义答案字段。
+- 复用现有 canonical timeline、用量状态、工具详情和组件，不新增独立状态库、依赖或可选功能。过度设计评审：仅迁移现有体验；性能评审：无全量历史加载，身份查找沿用索引，命令输出有上限，详情仍按需获取。
+- 验收包含失败用例复现、Rust 单测与 mock adapter、前端 DOM 测试和浏览器页面验收；真实 provider 的压缩触发、取消与恢复、工具输出及提问交由用户运行后确认。
+- 已验收：新增 7 项协议/入口/回放/stdio mock 回归通过，远程干预 19 项通过，前端 124 项通过，Catalog 7 项通过；TypeScript 检查和 Vite 生产构建通过。ACP 扩展回归 599 项通过、3 项忽略，另有 `path_files_are_listed_in_the_prompt_text_even_with_optional_capabilities` 因未修改的 `runtime/user_files.md` 使用 CRLF 而断言 LF 失败，单独记录，不计为通过。
+- iab 不可用后使用已连接 Chrome，deep link 到 browser mock 会话，确认压缩完成/进行中/中断/未知状态及压缩前用量显示；DOM 回归另验证同一压缩实体跨更新不重挂、终态计时停止。页面 mock 与真实 provider 行为分开验收。
+- 待用户真实验收：更新后的两个 Agent 各触发一次压缩；压缩/工具执行中停止后继续、重开会话；确认 Codex 持续输出命令结束后详情保留、文件 diff 正确；Claude 选择题和自定义答案可提交（使用 IM 时也验证远程选择）。
+
+#### 新版文件变更、认证与停止 mock 补充验收
+
+- 新增 10 项回归：Rust 文件变更 4 项、认证/停止 stdio 子进程 2 项、认证错误码分类 1 项，前端错误提示 1 项及终态按钮 DOM 2 项。
+- 文件样例按 Codex ACP `2.1.1` 的普通 ACP 输出构造，覆盖同一工具同一文件的多个 hunk、Unicode 与无末尾换行、持久化后重读、新增/删除空文件及采集/展示大小限制。纯重命名的空 diff、上游省略的大型 diff 不生成虚构内容；这验证现有边界，不承诺恢复上游未提供的全文或重命名关系。
+- 认证 mock 先复现 `-32000` 被统一包装成 `provider.acp-prompt-failed`，使既有认证分类失效。修复为使用 schema 的 `ErrorCode::AuthRequired` 映射到 `provider.auth-required`；保留原始错误、手动恢复和无自动重试。中文错误消息单测确保分类不依赖英文文案；普通失败 fixture 改用协议规定的 InternalError `-32603`。
+- 子进程验收覆盖认证失败状态落盘与发布、手动第二轮成功、旧错误清除；停止验收覆盖发送一次 `session/cancel`、未完成工具结束、轮次转 cancelled/idle、后续轮次成功。DOM 验收覆盖停止中禁用、终态覆盖迟到的本地 busy 标记、发送按钮与输入恢复、第二次发送后重新进入忙碌态。
+- 本轮结果：Rust 升级相关 13 项及错误/失败回归 4 项全部通过；1 个 ignored 测试仅作为上述父测试启动的 mock adapter 子进程入口。前端 composer、错误提示、状态投影与停止反馈共 102 项全部通过。未运行真实账号会话或新增页面验收；仍需用户验证真实认证恢复及真实工具执行中停止后继续。
+- 完成评审：复用既有 schema、错误类型、会话生命周期、组件与测试工具，无新依赖、持久字段或产品入口；生产代码仅增加常数时间错误码分类，无新增 I/O、扫描、缓存或渲染工作。mock 子进程在测试结束或断言失败时关闭，临时工作目录自动回收。
+
 ### 2026-09-30 固定压缩事件兼容版本
 
 - 通过现有 `versionPins` 固定 Claude ACP `0.81.2`、Codex ACP `1.13.1`；这些正式版仍输出 `_meta.contextCompaction`，供现有压缩生命周期识别使用。

@@ -310,6 +310,9 @@ fn provider_history_item_id(
     placement: &ProviderHistoryPlacement,
     item_index: u64,
 ) -> String {
+    if let Some(id) = update.get("compactionId").and_then(Value::as_str) {
+        return format!("context-compaction-id-{id}");
+    }
     if kind == "user_message_chunk" {
         if let Some(message_id) = update
             .get("messageId")
@@ -384,6 +387,9 @@ fn annotate_provider_history_update(
 }
 
 fn replay_item_key(kind: &str, update: &Value) -> String {
+    if let Some(id) = update.get("compactionId").and_then(Value::as_str) {
+        return format!("compaction:{id}");
+    }
     if let Some(message_id) = update.get("messageId").and_then(Value::as_str) {
         return format!("{kind}:message:{message_id}");
     }
@@ -396,7 +402,7 @@ fn replay_item_key(kind: &str, update: &Value) -> String {
 fn is_replay_content_update(kind: &str) -> bool {
     matches!(
         kind,
-        "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan"
+        "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan" | "compaction_update" | "compaction_summary_chunk"
     )
 }
 
@@ -481,6 +487,17 @@ mod tests {
                 "promptId": format!("prompt-{index}")
             })),
         }
+    }
+
+    #[test]
+    fn upgraded_acp_imports_materialized_compaction_with_provider_identity() {
+        let mut replay = ProviderHistoryReplay::from_timeline(&[]);
+        replay.begin("claude-acp", "session");
+        replay.observe(&json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"external prompt"}}));
+        replay.observe(&json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[{"type":"text","text":"summary"}]}));
+        let ReplayUpdateDecision::Import { items } = replay.finish() else { panic!("expected history") };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].update["providerHistoryItemId"], "context-compaction-id-cmp");
     }
 
     #[test]

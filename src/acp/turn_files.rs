@@ -1398,6 +1398,89 @@ mod tests {
         )
     }
 
+    // Wire shapes from codex-acp v2.1.1 FileChangeReporter (plain ACP, no AIR):
+    // https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/tool-calls/reporters/FileChangeReporter.ts
+    #[test]
+    fn upgraded_acp_multi_hunk_one_tool_keeps_both_fragments_after_reload() {
+        let (_dir, store) = store();
+        std::fs::write(store.attempt_dir.join("example.txt"), "unrelated disk contents").unwrap();
+        let update = serde_json::json!({
+            "sessionUpdate":"tool_call", "toolCallId":"edit", "title":"Editing files",
+            "kind":"edit", "status":"in_progress", "content":[
+                {"type":"diff","path":"example.txt","oldText":"alpha\ncontext\n","newText":"ALPHA\ncontext\n","_meta":{"kind":"update"}},
+                {"type":"diff","path":"example.txt","oldText":"尾行","newText":"新尾行","_meta":{"kind":"update"}}
+            ]
+        });
+        assert_eq!(store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &update).unwrap(), 2);
+        let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap().unwrap();
+        assert_eq!(set.summary.file_count, 1);
+        assert_eq!((set.summary.added_lines, set.summary.deleted_lines), (2, 2));
+        assert_eq!(set.changes.len(), 2);
+        let reopened = TurnFileStore::new(store.attempt_dir.clone(), TurnFileCaptureConfig::default());
+        for (change, (before, after)) in set.changes.iter().zip([
+            ("alpha\ncontext\n", "ALPHA\ncontext\n"), ("尾行", "新尾行"),
+        ]) {
+            let comparison = reopened.comparison(&set.id, &change.id).unwrap();
+            assert_eq!(comparison.before.unwrap().content, before);
+            assert_eq!(comparison.after.unwrap().content, after);
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_add_and_delete_preserve_empty_file_versus_absence() {
+        let (_dir, store) = store();
+        store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &raw(serde_json::json!([
+            {"type":"diff","path":"added.txt","oldText":null,"newText":"","_meta":{"kind":"add"}},
+            {"type":"diff","path":"deleted.txt","oldText":"removed\n","newText":"","_meta":{"kind":"delete"}},
+            {"type":"diff","path":"deleted-empty.txt","oldText":"","newText":"","_meta":{"kind":"delete"}}
+        ]))).unwrap();
+        let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap().unwrap();
+        assert_eq!(set.summary.added_files, 1);
+        assert_eq!(set.summary.deleted_files, 2);
+        for change in &set.changes {
+            let comparison = store.comparison(&set.id, &change.id).unwrap();
+            if change.logical_path == "added.txt" {
+                assert!(comparison.before.is_none());
+                assert_eq!(comparison.after.unwrap().content, "");
+            } else {
+                assert!(comparison.before.is_some());
+                assert!(comparison.after.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_pure_rename_and_provider_omitted_diff_do_not_invent_content() {
+        for content in [serde_json::json!([]), serde_json::json!([
+            {"type":"diff","path":"renamed.txt","oldText":"","newText":"","_meta":{"kind":"update"}}
+        ])] {
+            let (_dir, store) = store();
+            store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &raw(content)).unwrap();
+            let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap();
+            assert!(set.is_none(), "no content evidence must not become a fabricated edit");
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_large_diff_respects_capture_and_display_limits() {
+        for capture_limit in [32, 1024] {
+            let (_dir, mut store) = store();
+            store.config.capture_max_file_bytes = capture_limit;
+            store.config.diff_text_max_bytes = 32;
+            let before = "before\n".repeat(16);
+            let after = "after\n".repeat(16);
+            store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &raw(serde_json::json!([
+                {"type":"diff","path":"large.txt","oldText":before,"newText":after,"_meta":{"kind":"update"}}
+            ]))).unwrap();
+            let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap().unwrap();
+            assert_eq!(set.changes.len(), 1);
+            let comparison = store.comparison(&set.id, &set.changes[0].id).unwrap();
+            assert!(comparison.before.is_none());
+            assert!(comparison.after.is_none());
+            assert_eq!(comparison.limitation_code.as_deref(), Some(if capture_limit == 32 { CAPTURE_LIMIT_EXCEEDED } else { "turn-files.diff-too-large" }));
+        }
+    }
+
     fn raw(content: Value) -> Value {
         serde_json::json!({ "sessionUpdate": "tool_call_update", "content": content })
     }

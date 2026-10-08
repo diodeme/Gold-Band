@@ -445,7 +445,7 @@ describe('ACP session re-entry reconciliation', () => {
     const stale = session([event('old-head', 10, 'textDelta', '12:58 cached answer')]);
     storeAcpSession(cacheKey, stale);
     storeAcpLoadedEventWindow(cacheKey, {
-      sessionId: stale.sessionId!, timelineGeneration: 1, events: stale.events,
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
     }, 1_000);
     markAcpSessionContentHydrated(cacheKey);
     const count = loseReplay ? CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + 1 : 1;
@@ -469,12 +469,43 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it.each([
+    { tail: 'visible content', hidden: [] },
+    { tail: 'chat-hidden metadata', hidden: [
+      event('usage', 12, 'usageUpdate'),
+      event('info', 13, 'sessionInfo', null, { title: 'Renamed' }),
+    ] },
+  ])('reenters a followed session from cache when the live head ends with $tail', async ({ hidden }) => {
+    vi.mocked(getAcpSession).mockResolvedValue(session([event('first', 10, 'textDelta', 'First answer')]));
+    const view = await renderDialog(null);
+    try {
+      await act(async () => {
+        runtime.listener?.(update(event('second', 11, 'textDelta', 'Second answer')));
+        hidden.forEach((item) => runtime.listener?.(update(item)));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+      expect(view.container.textContent).toContain('Second answer');
+    } finally {
+      await unmount(view.root);
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root').headRevision).toBe(11 + hidden.length);
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const states: string[] = [];
+    const reentry = await renderDialog(null, 'root', (state) => states.push(state));
+    try {
+      expect(states).not.toContain('loading');
+      expect(reentry.container.textContent).toContain('Second answer');
+    } finally {
+      await unmount(reentry.root);
+    }
+  });
+
   it('preserves an explicitly detached cached history while the background head advances', async () => {
     const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
     const history = session([event('history-anchor', 10, 'textDelta', 'Reading this history')]);
     storeAcpSession(cacheKey, history);
     storeAcpLoadedEventWindow(cacheKey, {
-      sessionId: history.sessionId!, timelineGeneration: 1, events: history.events,
+      sessionId: history.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: history.events,
     }, 1_000);
     storeAcpBranchViewState(cacheKey, {
       anchorKey: null, anchorOffset: 0, scrollTop: 0, atBottom: false, hasOlder: true, hasNewer: true,
@@ -496,7 +527,7 @@ describe('ACP session re-entry reconciliation', () => {
     const stale = session([event('old-head', 10, 'textDelta', 'Obsolete cached answer')]);
     storeAcpSession(cacheKey, stale);
     storeAcpLoadedEventWindow(cacheKey, {
-      sessionId: stale.sessionId!, timelineGeneration: 1, events: stale.events,
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
     }, 1_000);
     markAcpSessionContentHydrated(cacheKey);
     applyConversationEventToBranchSnapshots(update(event('new-head', 20, 'textDelta', 'Background answer')));
@@ -4613,7 +4644,7 @@ describe('ACP session re-entry reconciliation', () => {
     storeAcpSession(cacheKey, staleSnapshot);
     storeAcpLoadedEventWindow(cacheKey, {
       sessionId: 'session-watermark',
-      timelineGeneration: 2,
+      timelineGeneration: 2, coveredRevision: 30,
       events: [event('live-window-head', 30, 'textDelta', '实时窗口最新内容')],
     }, 1_000);
     markAcpSessionContentHydrated(cacheKey);

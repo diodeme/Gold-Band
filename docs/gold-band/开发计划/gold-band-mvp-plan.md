@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-08 ACP 重进缓存新鲜度改用 revision 覆盖水位
+
+- 根因：`f451da55` 的新鲜度检查用缓存窗口可见事件的最大 sequence 对比 Router `headSeq`。Router head 计入 usage、session info 等聊天隐藏条目，后端分页（`is_session_timeline_event`）不返回它们，Claude 每轮几乎都以这类条目收尾，窗口永远“落后”，已缓存会话每次重进都显示 loading。task-268 时间线末尾为可见 textDelta seq 12794、usageUpdate 12795、sessionInfo 12796，索引 `coveredRevision` 为 12796。
+- [x] 缓存窗口新增 `coveredRevision` 覆盖水位，恢复判断改为与 Router `headRevision` 同口径比较；仅 head 位置 canonical 查询、无缺口应用的实时事件（含隐藏条目）和 canonical head 交接推进水位，订阅快照、旧页分页、恢复中、历史阅读与仍有更早缓冲事件时不推进；Router 无 revision 时沿用 sequence 回退。
+- [x] 先红后绿：DOM 用例在挂载期间推送可见回复及 usage/sessionInfo 后离开再进入，原实现回报 `loading`，可见尾部对照组通过；修复后两组均直接恢复。接口回归覆盖隐藏 head 已覆盖与更新 revision 未覆盖、会话替换取新水位。ACP/会话相关 88 个测试文件中与本改动相关的全部通过；全量 Web 测试余下 17 项失败位于 composer 引用、`browser.ts` node 环境 `window` 及已 mock ACPChatDialog 的渲染器计数，均不经过本改动路径。
+- 性能与过度设计评审：复用 Router 既有 `headRevision`、后端既有 `coveredRevision` 和现有窗口提交路径，只增加一个数字字段，不新增缓存、请求、状态机或依赖；实时路径为 O(1) 取最大值，仅隐藏条目会额外提交一次窗口，与同批 usage 会话更新合并渲染。
+
 ## 2026-10-06 ACP 重进旧缓存首帧修复
 
 - 根因：`9babd93b` 已移除 session metadata 中重复的事件缓存，但 `contentHydrated` 仍被直接用作重新进入时的展示资格；离页期间 Router 继续推进，缓存窗口停在旧 head，正文查询返回之前就绘制旧页。task-263 的截图文本在持久化 timeline 中分别对应同一 session 的 seq 50452 和 57899，当前 generation 为 5；这些记录证明内容归属和先后，不包含当时的前端绘制时序。

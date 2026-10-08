@@ -625,6 +625,10 @@ export interface AcpLoadedEventWindow {
   events: AcpUiEventVm[];
 }
 
+  // Canonical timeline revision this window reflects at the head, including
+  // chat-hidden items that never enter `events`. Router head freshness is
+  // measured against it rather than against the newest visible sequence.
+  coveredRevision: number;
 interface AcpOwnedLoadedEventWindow extends AcpLoadedEventWindow {
   eventWindowKey: string;
 }
@@ -641,8 +645,19 @@ type AcpGenerationScopedLiveEvent = {
 };
 
 type LiveStreamingMarkdownTarget = {
+  timelineRevision: number | null;
   key: string;
   position: number;
+function maxAcpLiveEventRevision(
+  updates: Array<Pick<AcpGenerationScopedLiveEvent, "timelineRevision">>,
+) {
+  return updates.reduce<number | null>((latest, update) => (
+    update.timelineRevision == null
+      ? latest
+      : Math.max(latest ?? 0, update.timelineRevision)
+  ), null);
+}
+
 };
 
 type AcpCanonicalHeadHandoffIntent = "ordinary" | "recovery";
@@ -870,6 +885,9 @@ export function canRestoreAcpSessionContent(
   const newestSeq = window.events.reduce((latest, event) => (
     Math.max(latest, event.endedSeq ?? event.seq)
   ), 0);
+  // Router head counts chat-hidden items (usage, session info) that never
+  // enter the visible window, so only the revision watermark is comparable.
+  if (replay.headRevision > 0) return window.coveredRevision >= replay.headRevision;
   return newestSeq >= replay.headSeq;
 }
 
@@ -904,6 +922,25 @@ function acpSessionTimelineGeneration(session?: AcpSessionVm | null) {
 export function createAcpLoadedEventWindow(
   session: AcpSessionVm | null | undefined,
   events: AcpUiEventVm[] = session?.events ?? [],
+// Only a canonical page ending at the head proves coverage of the head; an
+// older or detached page leaves the window's existing watermark in charge.
+function acpSessionHeadCoveredRevision(session?: AcpSessionVm | null) {
+  if (!session || session.eventPage.hasNewer) return 0;
+  return session.eventPage.coveredRevision
+    ?? session.eventPage.newestRevision
+    ?? 0;
+}
+
+function resolveAcpLoadedEventWindowCoverage(
+  current: Pick<AcpLoadedEventWindow, "coveredRevision">,
+  sameWindowOwner: boolean,
+  incomingCoveredRevision: number,
+) {
+  return sameWindowOwner
+    ? Math.max(current.coveredRevision, incomingCoveredRevision)
+    : incomingCoveredRevision;
+}
+
 ): AcpLoadedEventWindow {
   return {
     sessionId: session?.sessionId ?? null,
@@ -911,6 +948,7 @@ export function createAcpLoadedEventWindow(
     events,
   };
 }
+    coveredRevision: acpSessionHeadCoveredRevision(session),
 
 function compareAcpLoadedEventWindowToSession(
   window: Pick<AcpLoadedEventWindow, "sessionId" | "timelineGeneration">,
@@ -1009,6 +1047,11 @@ export function restoreAcpLoadedEventWindow(
     events: limitAcpEvents(merged, "start", eventPageSize),
   };
 }
+    coveredRevision: resolveAcpLoadedEventWindowCoverage(
+      stored,
+      true,
+      incoming.coveredRevision,
+    ),
 
 export function storeAcpLoadedEventWindow(
   sessionKey: string,
@@ -2247,6 +2290,11 @@ export function ACPChatDialog(
       events: limited,
     });
   }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, resumePendingCanonicalHeadRecoveryForSnapshot, session, settleOptimisticPromptAdmissions]);
+      coveredRevision: resolveAcpLoadedEventWindowCoverage(
+        currentWindow,
+        sameWindowOwner,
+        acpSessionHeadCoveredRevision(session),
+      ),
 
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
@@ -2357,6 +2405,7 @@ export function ACPChatDialog(
         events: loadedEventWindow.events,
       },
       effectiveLoadedEventBufferLimit,
+        coveredRevision: loadedEventWindow.coveredRevision,
     );
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEventWindow]);
 
@@ -3072,9 +3121,17 @@ export function ACPChatDialog(
     commitLoadedEventWindow(eventWindowKey, {
       sessionId: normalized.sessionId ?? null,
       timelineGeneration: acpSessionTimelineGeneration(normalized),
+    // Subscription snapshots project content but are not canonical query
+    // responses, so they cannot prove the window reflects their revision.
+    const provesHeadCoverage = source !== "subscription-session";
       events: limited,
     });
   }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, resumePendingCanonicalHeadRecoveryForSnapshot, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+      coveredRevision: resolveAcpLoadedEventWindowCoverage(
+        currentWindow,
+        sameWindowOwner,
+        provesHeadCoverage ? acpSessionHeadCoveredRevision(normalized) : 0,
+      ),
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -3337,6 +3394,7 @@ export function ACPChatDialog(
   ) => {
     const currentWindow = loadedEventWindowRef.current;
     if (updates.some((event) => (
+    coveredRevision: number | null = null,
       compareAcpLoadedEventWindowToLiveEvent(
         currentWindow,
         event,
@@ -3379,7 +3437,24 @@ export function ACPChatDialog(
       });
     }
     const normalizedUpdates = liveTimelineUpdatesFromEvents(normalizedEvents);
-    if (normalizedUpdates.length === 0) return;
+    // A contiguous live delivery covers its revision even when every item is
+    // chat-hidden; gaps and detached windows leave the watermark untouched.
+    const coverageWindow = loadedEventWindowRef.current;
+    const advancedCoveredRevision = coveredRevision != null
+      && projectTimeline
+      && !canonicalHeadRecoveryPendingRef.current
+      && !hasExplicitHistoricalTimelineIntent()
+      ? Math.max(coverageWindow.coveredRevision, coveredRevision)
+      : coverageWindow.coveredRevision;
+    if (normalizedUpdates.length === 0) {
+      if (advancedCoveredRevision > coverageWindow.coveredRevision) {
+        commitLoadedEventWindow(eventWindowKey, {
+          ...coverageWindow,
+          coveredRevision: advancedCoveredRevision,
+        });
+      }
+      return;
+    }
     if (!projectTimeline) {
       commitHasNewerEvents(true);
       return;
@@ -3417,13 +3492,15 @@ export function ACPChatDialog(
       events: limited,
     });
   }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
+      coveredRevision: advancedCoveredRevision,
 
   const applyEventUpdate = useCallback((
     event: AcpUiEventVm | null | undefined,
     timelineGeneration: number,
   ) => {
     if (!event) return;
-    applyEventUpdates([event], timelineGeneration);
+    applyEventUpdates([event], timelineGeneration, true, timelineRevision);
+    timelineRevision: number | null = null,
   }, [applyEventUpdates]);
 
   const flushPendingLiveEvents = useCallback(() => {
@@ -3447,12 +3524,18 @@ export function ACPChatDialog(
     const timelineGeneration = applicableUpdates[0].timelineGeneration;
     const { timingUpdates, timelineUpdates } = partitionAcpLiveTimingUpdates(updates);
     if (timingUpdates.length > 0) {
-      applyEventUpdates(timingUpdates, timelineGeneration);
+      applyEventUpdates(
+        timingUpdates,
+        timelineGeneration,
+        true,
+        timelineUpdates.length > 0 ? null : coveredRevision,
+      );
+    const coveredRevision = maxAcpLiveEventRevision(applicableUpdates);
     }
     // The timer and latest-wins map are the single flight. Publishing synchronously
     // here prevents React from retaining obsolete cumulative snapshots in transitions.
     if (timelineUpdates.length > 0) {
-      applyEventUpdates(timelineUpdates, timelineGeneration);
+      applyEventUpdates(timelineUpdates, timelineGeneration, true, coveredRevision);
     }
   }, [applyEventUpdates]);
 
@@ -3709,7 +3792,7 @@ export function ACPChatDialog(
   requestCanonicalHeadRecoveryRef.current = requestCanonicalHeadRecovery;
 
   const enqueueLiveEventUpdate = useCallback(
-    (event: AcpUiEventVm, timelineGeneration: number) => {
+    (event: AcpUiEventVm, timelineGeneration: number, timelineRevision: number | null) => {
       const relation = compareAcpLoadedEventWindowToLiveEvent(
         loadedEventWindowRef.current,
         event,
@@ -3775,7 +3858,21 @@ export function ACPChatDialog(
           : event;
         if (bufferedToolKey) pendingLiveEventsRef.current.delete(bufferedToolKey);
         if (decision.flushPendingBeforeApply) flushPendingLiveEvents();
-        applyEventUpdate(eventToApply, timelineGeneration);
+        // Earlier buffered items are not in the window yet, so this revision
+        // only proves coverage once nothing older is still pending.
+        const appliedRevision = maxAcpLiveEventRevision([
+          { timelineRevision },
+          {
+            timelineRevision: pendingToolUpdate?.timelineGeneration === timelineGeneration
+              ? pendingToolUpdate.timelineRevision
+              : null,
+          },
+        ]);
+        applyEventUpdate(
+          eventToApply,
+          timelineGeneration,
+          pendingLiveEventsRef.current.size === 0 ? appliedRevision : null,
+        );
         return true;
       }
 
@@ -3796,6 +3893,14 @@ export function ACPChatDialog(
         },
       );
       if (evictedKey !== null) {
+          timelineRevision: maxAcpLiveEventRevision([
+            { timelineRevision },
+            {
+              timelineRevision: pendingUpdate?.timelineGeneration === timelineGeneration
+                ? pendingUpdate.timelineRevision
+                : null,
+            },
+          ]),
         if (liveEventFlushTimerRef.current !== null) {
           window.clearTimeout(liveEventFlushTimerRef.current);
           liveEventFlushTimerRef.current = null;
@@ -4152,6 +4257,7 @@ export function ACPChatDialog(
           );
           if (
             acceptedForVisibleGeneration
+            event.timelineRevision ?? null,
             && liveTimelineUpdatesFromEvents([event.event]).length > 0
           ) {
             markAcpSessionContentHydrated(eventWindowKey);
@@ -5339,6 +5445,7 @@ export function ACPChatDialog(
       events: latestEvents,
     });
     setHasOlderEvents(hasOlder);
+      coveredRevision: canonicalWatermark.coveredRevision,
     commitHasNewerEvents(hasRemainingReplay);
     canonicalTimelineCoverageRef.current = {
       eventWindowKey,

@@ -319,7 +319,7 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
       ? <PencilLine className="size-3.5 shrink-0" />
       : tab.kind === 'auto-config'
         ? <Settings2 className="size-3.5 shrink-0" />
-      : tab.kind === 'hidden-prompt-section'
+      : tab.kind === 'hidden-prompt-section' || tab.kind === 'compaction-summary'
         ? <FileText className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'
         ? <FileCode2 className="size-3.5 shrink-0" />

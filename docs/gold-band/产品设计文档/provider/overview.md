@@ -34,7 +34,11 @@ Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-v
 
 `configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.87.0`、`codex-acp` 为 `2.1.1`（2026-10-08 的 npm latest 正式版）。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
 
-Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，消费预览版 `compaction_update` / `compaction_summary_chunk`。按 provider 的 `compactionId` 原位更新既有压缩时间线实体，保留首次位置；支持 completed-only 回放、摘要顺序追加及最终替换、缺字段保持和 null 清空。未知状态保留原值并显示通用状态，不推断成功。摘要作为协议数据保存在详情中，当前压缩行仍展示状态、耗时和已确认的压缩前用量；用量以 `usage_update` 为准。其他 Agent 的既有压缩信号继续映射到同一实体模型，不声明 JetBrains AIR 私有客户端能力。
+Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，消费预览版 `compaction_update` / `compaction_summary_chunk`。按 provider 的 `compactionId` 原位更新既有压缩时间线实体，保留首次位置；支持 completed-only 回放、摘要顺序追加及最终替换、缺字段保持和 null 清空。未知状态保留原值并显示通用状态，不推断成功。压缩行展示状态、耗时和已确认的压缩前用量；用量以 `usage_update` 为准。压缩完成且 provider 返回非空文本摘要时显示“查看摘要”，点击在右侧“压缩摘要”Tab 默认渲染 Markdown，支持切换只读源码及复制原文；无摘要时不显示入口。其他 Agent 的既有压缩信号继续映射到同一实体模型，不声明 JetBrains AIR 私有客户端能力。
+
+摘要正文仍以持久化的压缩事件为唯一来源，列表投影只携带 `compactionSummaryAvailable` 标记，避免通用 raw 截断及提前读取 blob。Tab 仅保存完整 attempt/branch locator 和事件 ID，同一压缩重复打开复用 Tab；正文通过 `get_acp_compaction_summary` 在激活时按现有 timeline 索引读取，并仅还原该摘要的文本 blob，保留分段文本拼接顺序。读取在 blocking worker 中执行，校验路径作用域，不扫描全部 raw frames；Tab 展示加载、失败重试和摘要已清除状态，迟到响应不能覆盖其他摘要。当前展示完成后的文本摘要，不新增流式摘要预览或非文本摘要附件 UI。
+
+“查看摘要”作为次要操作放在压缩行第二行、压缩前用量之后；采用普通字重的小号次要文字和右向箭头，悬停加深并显示下划线，无按钮底色。窄宽度允许自然换行；无用量但有摘要时也保留入口，键盘焦点沿用共享 Button。
 
 工具更新按字段是否出现合并，省略的状态、输入、输出与 diff 保留，显式空值清除。Codex `terminal_output_delta` 按工具累计进入已有输出详情，最多保留 256,000 字符并标记截断，原始帧留在 raw 日志；沿用工具详情按需读取与流式发布机制。Claude 无 AIR 的 `question_n_custom` 与其选择题配对，桌面和远程提问保持一致。此升级不扩展 goal、原生子 Agent 或后台任务 UI。
 

@@ -489,6 +489,7 @@ fn run() -> anyhow::Result<()> {
             resolve_turn_attachment_file,
             get_acp_activity_detail,
             get_acp_tool_detail,
+            commands::get_acp_compaction_summary,
             get_acp_image,
             commands::get_acp_activity_images,
             renew_acp_session_lease,

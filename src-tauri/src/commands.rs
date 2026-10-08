@@ -6869,6 +6869,48 @@ pub async fn get_acp_image(
 }
 
 #[tauri::command]
+pub async fn get_acp_compaction_summary(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: crate::view_models::AcpCompactionSummaryQueryInput,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<crate::view_models::AcpCompactionSummaryVm> {
+    for part in [&task_id, &run_id, &round_id, &node_id, &attempt_id]
+        .into_iter().chain(outer_node_id.iter()).chain(outer_attempt_id.iter())
+    {
+        let mut components = Path::new(part).components();
+        if !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some() || part.contains(['/', '\\', ':'])
+        {
+            return Err(CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({})));
+        }
+    }
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app, &task_id, &run_id, &round_id, &node_id, &attempt_id,
+        outer_node_id.as_deref(), outer_attempt_id.as_deref(),
+    );
+    let runtime_root = app.paths.runtime_root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = fs::canonicalize(runtime_root)
+            .map_err(|error| acp_storage_query_error(error.into(), "acp.compaction-summary-query-failed"))?;
+        let canonical = fs::canonicalize(&attempt_dir)
+            .map_err(|error| acp_storage_query_error(error.into(), "acp.compaction-summary-query-failed"))?;
+        if !canonical.starts_with(root) {
+            return Err(CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({})));
+        }
+        crate::view_models::acp_compaction_summary_vm_for_attempt(&attempt_dir, query)
+            .map_err(|error| acp_storage_query_error(error, "acp.compaction-summary-query-failed"))
+    }).await.map_err(|_| CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({})))?
+}
+
+#[tauri::command]
 pub fn get_acp_tool_detail(
     state: State<'_, DesktopState>,
     project_id: Option<String>,

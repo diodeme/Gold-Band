@@ -396,6 +396,10 @@ export function getTurnFileChangeSet(locator: Parameters<ReturnType<typeof getRu
   return getRuntimeApi().getTurnFileChangeSet(locator, changeSetId);
 }
 
+export function getAcpCompactionSummary(locator: Parameters<ReturnType<typeof getRuntimeApi>['getAcpCompactionSummary']>[0], query: import('./types').AcpCompactionSummaryQueryInput) {
+  return getRuntimeApi().getAcpCompactionSummary(locator, query);
+}
+
 export function getFileComparison(locator: Parameters<ReturnType<typeof getRuntimeApi>['getFileComparison']>[0], changeSetId: string, changeId: string) {
   return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
 }

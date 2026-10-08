@@ -20,6 +20,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronRight,
   CircleAlert,
   CircleStop,
   Clock,
@@ -79,6 +80,7 @@ import {
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
+import { compactionSummaryEventId, hasCompactionSummary } from '@/lib/acp-compaction-summary';
 import {
   Message,
   MessageAction,
@@ -98,6 +100,7 @@ import {
   conversationAssetWorkspaceResourceKey,
   createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
+  createCompactionSummaryWorkspaceResource,
   sentAttachmentPreviewAliasKey,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
@@ -7775,7 +7778,7 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
   );
 });
 
-function ReadonlyMarkdownDocument({
+export function ReadonlyMarkdownDocument({
   documentKey,
   content,
   viewMode,
@@ -8049,6 +8052,18 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
   event: AcpTimelineEvent;
 }) {
   const { t } = useTranslation();
+  const branchLocator = useContext(AcpBranchLocatorContext);
+  const workspace = useOptionalRightWorkspaceCommands();
+  const canOpenSummary = Boolean(event.status === 'completed' && branchLocator && workspace?.scopeKey && hasCompactionSummary(event.raw));
+  const openSummary = () => {
+    if (!branchLocator || !workspace?.scopeKey) return;
+    void workspace.openResource(createCompactionSummaryWorkspaceResource({
+      scopeKey: workspace.scopeKey,
+      title: t('acp.compactionSummary'),
+      locator: branchLocator,
+      eventId: compactionSummaryEventId(event),
+    }));
+  };
   const running = event.status === "running";
   const interrupted = event.status === "interrupted";
   const completed = event.status === "completed";
@@ -8106,10 +8121,22 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
             </span>
           ) : null}
         </div>
-        {usage || delayed ? (
+        {usage || delayed || canOpenSummary ? (
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             {usage ? <span className="tabular-nums">{usage}</span> : null}
             {delayed ? <span>{t("acp.compactionDelayed")}</span> : null}
+            {canOpenSummary ? (
+              <Button
+                variant="link"
+                size="xs"
+                className="h-5 gap-0.5 rounded-sm px-0 py-0 text-xs font-normal text-muted-foreground hover:text-foreground has-[>svg]:px-0"
+                onClick={openSummary}
+                data-compaction-summary-link="true"
+              >
+                {t('acp.viewCompactionSummary')}
+                <ChevronRight className="size-3" aria-hidden="true" />
+              </Button>
+            ) : null}
           </div>
         ) : null}
         {running ? (

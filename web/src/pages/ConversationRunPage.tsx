@@ -291,6 +291,7 @@ export function ConversationRunPage({
       resource.kind !== 'auto-config' &&
       resource.kind !== 'system-prompt' &&
       resource.kind !== 'hidden-prompt-section' &&
+      resource.kind !== 'compaction-summary' &&
       resource.kind !== 'raw-frames'
     ) return null;
     return (
@@ -314,6 +315,7 @@ export function ConversationRunPage({
       workspace.registerResourceRenderer('auto-config', renderWorkspaceResource),
       workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
       workspace.registerResourceRenderer('hidden-prompt-section', renderWorkspaceResource),
+      workspace.registerResourceRenderer('compaction-summary', renderWorkspaceResource),
       workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
     ];
     return () => unregister.forEach((dispose) => dispose());

@@ -423,6 +423,9 @@ export const desktopApi: RuntimeApi = {
   getAcpImage(locator, image, thumbnail) {
     return invokeCommand<import('../types').AcpImageContentVm>('get_acp_image', { ...locator, image, thumbnail });
   },
+  getAcpCompactionSummary(locator, query) {
+    return invokeCommand<import('../types').AcpCompactionSummaryVm>('get_acp_compaction_summary', { ...locator, query });
+  },
   getAcpActivityImages(input) {
     return invokeCommand<import('../types').AcpActivityImagesPage>('get_acp_activity_images', { input });
   },

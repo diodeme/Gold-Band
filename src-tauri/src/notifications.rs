@@ -367,6 +367,8 @@ fn send_os_notification(
     {
         if let Err(error) = send_windows_toast(app_handle, auto_dismiss_target_secs, notification) {
             warn!(?error, dedup_key = %notification.dedup_key, "windows toast failed");
+        } else {
+            tracing::info!(dedup_key = %notification.dedup_key, "windows toast submitted");
         }
         return;
     }
@@ -959,6 +961,40 @@ fn should_send_acp_turn_notification(
     batch_progress: AcpTurnBatchProgress,
 ) -> bool {
     outcome != gold_band::app::AcpTurnOutcome::Completed || !batch_progress.continues
+}
+
+pub(crate) fn send_background_message_notification(
+    handle: &AppHandle,
+    app: &gold_band::app::App,
+    context: &gold_band::app::AcpLiveEventContext,
+    event_id: &str,
+) {
+    let state = handle.state::<DesktopState>();
+    let target = crate::state::NotificationAttentionTarget {
+        project_id: &app.paths.project_id, task_id: &context.task_id, run_id: &context.run_id,
+        round_id: &context.round_id, node_id: &context.node_id, attempt_id: &context.attempt_id,
+    };
+    let presence = crate::window_chrome::main_window_presence(handle);
+    if !state.should_send_notification(&target, true, presence) {
+        tracing::info!(code = "acp.background-notification.suppressed", project_id = %app.paths.project_id, task_id = %context.task_id, %event_id, ?presence, reason = "target-visible");
+        return;
+    }
+    // Frontend supplies localized copy through the existing attention bridge.
+    let Some(title) = state.background_message_title() else {
+        tracing::warn!(code = "acp.background-notification.suppressed", project_id = %app.paths.project_id, task_id = %context.task_id, %event_id, reason = "missing-localized-title");
+        return;
+    };
+    let task_title = app.task_show(&context.task_id).ok().and_then(|task| task.title);
+    let notification = InterventionNotification {
+        dedup_key: format!("{}:{}:{event_id}", app.paths.project_id, context.task_id),
+        project_id: app.paths.project_id.clone(), task_id: context.task_id.clone(), task_uuid: context.task_uuid.clone(),
+        body: task_title.clone().unwrap_or_else(|| context.task_id.clone()), title, task_title,
+        run_id: context.run_id.clone(), round_id: context.round_id.clone(), node_id: context.node_id.clone(), attempt_id: context.attempt_id.clone(),
+        outer_node_id: context.outer_node_id.clone(), outer_attempt_id: context.outer_attempt_id.clone(),
+        node_label: context.node_id.clone(), pause_reason: gold_band::domain::PauseReason::WaitingForUserInput,
+        intervention_type: gold_band::app::InterventionType::AgentMessageAvailable,
+    };
+    send_intervention_notification(handle, &state.notification_dedup(), app.config.notification_auto_dismiss_target_secs, notification);
 }
 
 fn should_defer_direct_run_completion_notification(

@@ -23,7 +23,7 @@ use crate::provider::{
     conversation_prompt_has_payload,
 };
 use crate::runtime::RunState;
-use crate::storage::write_json;
+use crate::storage::{read_json, write_json};
 use crate::workflow_model_binding::{
     TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow,
 };
@@ -56,6 +56,9 @@ pub struct ConversationAgentIdentity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMetadata {
+    /// Direct background retention preference; independent of sidebar ordering.
+    #[serde(default)]
+    pub resident: bool,
     pub version: String,
     pub source: String,
     pub run_mode: String,
@@ -75,6 +78,41 @@ pub struct ConversationMetadata {
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
     pub scheduled_content_fingerprint: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{code}: {msg}")]
+pub struct ConversationResidencyError {
+    pub code: &'static str,
+    pub msg: &'static str,
+}
+
+impl App {
+    pub fn set_conversation_resident(&self, task_id: &str, resident: bool) -> Result<()> {
+        self.task_show(task_id)?;
+        let path = self
+            .paths
+            .task_dir(task_id)
+            .join("authoring/conversation.json");
+        crate::storage::with_file_lock(&path, || {
+            let mut metadata: ConversationMetadata = read_json(&path)?;
+            if metadata.run_mode != "direct" {
+                return Err(ConversationResidencyError {
+                    code: "conversation.residency-direct-only",
+                    msg: "residency requires a Direct conversation",
+                }
+                .into());
+            }
+            metadata.resident = resident;
+            write_json(&path, &metadata)?;
+            crate::acp::client::set_direct_session_resident(
+                &self.paths.project_id,
+                task_id,
+                resident,
+            );
+            Ok(())
+        })
+    }
 }
 
 /// Write command for creating a conversation task (and optionally its run).
@@ -259,6 +297,7 @@ impl App {
         fs::create_dir_all(authoring_dir.as_std_path())?;
         let created_at = chrono::Utc::now().to_rfc3339();
         let metadata = ConversationMetadata {
+            resident: false,
             version: CONVERSATION_METADATA_VERSION.to_string(),
             source: command.source.to_string(),
             run_mode: command.run_mode.as_str().to_string(),
@@ -523,6 +562,35 @@ mod tests {
         // Template identity belongs to the authoring surface, not the task.
         assert!(auto.active_template_id.is_none());
         assert!(auto.active_template_name.is_none());
+    }
+
+    #[test]
+    fn residency_is_durable_direct_only_and_does_not_start_a_run() {
+        let (_temp, repo) = git_repo();
+        let app = App::with_config(repo, RuntimeConfig::default());
+        let prepared = app.prepare_conversation_task(&auto_command()).unwrap();
+        let (task_id, _, _) = prepared.accept();
+        assert!(
+            app.set_conversation_resident(&task_id, true)
+                .unwrap_err()
+                .downcast_ref::<super::ConversationResidencyError>()
+                .is_some()
+        );
+        let path = app
+            .paths
+            .task_dir(&task_id)
+            .join("authoring/conversation.json");
+        let mut metadata: ConversationMetadata = read_json(&path).unwrap();
+        metadata.run_mode = "direct".into();
+        crate::storage::write_json(&path, &metadata).unwrap();
+        app.set_conversation_resident(&task_id, true).unwrap();
+        let saved: ConversationMetadata = read_json(&path).unwrap();
+        assert!(saved.resident);
+        assert_eq!(saved.created_at, metadata.created_at);
+        assert!(app.run_list(&task_id).unwrap().is_empty());
+        let reloaded = App::with_config(app.paths.repo_root.clone(), RuntimeConfig::default());
+        reloaded.set_conversation_resident(&task_id, false).unwrap();
+        assert!(!read_json::<ConversationMetadata>(&path).unwrap().resident);
     }
 
     #[test]

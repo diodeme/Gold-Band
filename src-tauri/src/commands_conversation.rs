@@ -1134,6 +1134,29 @@ pub async fn pin_conversation(
 }
 
 #[tauri::command]
+pub async fn set_conversation_resident(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    resident: bool,
+) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app_state = context.app().load_state().map_err(command_error)?;
+        let (workspace_path, project_id) = workspace_entry_for_project(&app_state, &project_id)
+            .ok_or_else(|| CommandErrorVm::new("workspace.not-found", serde_json::json!({})))?;
+        let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        app.set_conversation_resident(&task_id, resident).map_err(|error| {
+            if let Some(error) = error.downcast_ref::<gold_band::app::ConversationResidencyError>() {
+                CommandErrorVm::new(error.code, serde_json::json!({}))
+            } else { command_error(error) }
+        })?;
+        let pin = app_state.conversation_pins.iter().find(|p| p.project_id == project_id && p.task_id == task_id);
+        crate::view_models_conversation::conversation_task_row_vm(&app, &project_id, &task_id, pin.is_some(), pin.map(|p| p.order)).map_err(command_error)
+    }).await
+}
+
+#[tauri::command]
 pub async fn unpin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
@@ -1988,6 +2011,8 @@ pub async fn delete_conversation_task(
             .task_show(&task_id)
             .ok()
             .and_then(|task| task.uuid);
+        gold_band::acp::client::close_direct_conversation(&normalized_project_id, &task_id)
+            .map_err(command_error)?;
         {
             let _memory_guard = gold_band::memory::lock_project(
                 &workspace_app.paths,

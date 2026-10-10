@@ -1,5 +1,17 @@
 # 会话式运行时
 
+## 2026-10-09：Direct 会话后台消息与常驻
+
+- Direct 的 ACP 消费者属于存活会话。prompt 的 end_turn 完成该轮输入，随后仍按 sessionId 持续接收并持久化消息、工具更新、权限和问题。前台 prompt 与后台读取通过现有 attempt prompt lock 有序交接，旧消费者退出并刷新后才恢复下一个消费者；同一 route 不同时拥有两个消费者。
+- Direct 不再执行下述 2026-09-19 的 admission 前消息丢弃策略；显式 session/load 历史重放仍保留原去重。稳定 messageId/toolCallId 在不同输出、用户 prompt 之间可继续更新；需要恢复旧项时仅按索引读取该项，不常驻全量历史。缺少身份的通知按接收顺序展示，不猜测属于哪个 prompt。
+- Direct 的交互请求绑定真实 sessionId 与 request identity；session/update 未提供通用 prompt 归属，因此不把 Direct 权限/问题强行绑定当前或上一轮输入。已完成 prompt 的 lifecycle 不隐藏新的会话级待处理请求；响应复用既有权限/问题接口，不复活 Run/Attempt，也不自动批准。Workflow/AUTO 保留原 prompt 归属和限制。
+- 应用级策略只数存活 Direct 底层会话（connection generation + sessionId 去重，跨项目累计），包括首次运行中与保留的会话。配置真源为 configs/app-config.toml 的 acpDirectSessionRetention：residentThreshold=8、idleTtlSecs=21600、capacityTarget=20、sweepIntervalSecs=60。N≤8 常驻；超过8按6小时空闲淘汰；超过20可按 LRU 提前释放可回收会话。正在执行、正式交互等待、已知未完成工具、前台租约和手动常驻受保护；capacityTarget 是软目标。
+- 有效内容、工具进度、交互及执行完成续期；重复的纯工具状态、usage 心跳、页面租约不刷新空闲时间。注册表维护不扫描历史；消息队列继续有界。ACP 没有通用隐藏定时器清单，长周期定时器可能受回收影响，不能以无消息断言后台无任务。
+- 仅 Direct 右键显示“常驻会话”或“解除常驻”。标题旁倾斜实心图钉及 Tooltip 表示保留偏好，和置顶顺序独立。偏好由 App.set_conversation_resident 更新 authoring/conversation.json 的 resident；元数据活动时间更新共用文件锁。历史会话设置偏好不启动进程，重启不自动启动。删除会话先关闭读取/会话再删除文件。
+- 回收前重查保护、TTL和容量，关闭期间继续排空消息，不持全局锁执行 RPC。已声明 session/close 时等待成功与入站水位；失败保留并记录诊断。没有独立 close 时只允许释放确认为唯一会话、没有其他 scoped user 的整个连接；共享连接保守保留。页面/前端缓存释放与 Agent 关闭独立。
+- 性能与设计评审：复用注册表、generation、timeline index、交互协议与 shadcn ContextMenu；新增字段只表达既有置顶不能表达的资源保留意图。一个维护线程，每个空闲 Direct 一个可停止的同步消费者；流式写入/发布沿用有界缓冲。一次候选排序 O(N log N)，每次关闭前重新检查，整批最坏 O(N² log N)，目标规模8～20；关闭 RPC 位于锁外。20不是 Agent 进程内存硬上限。
+- 方案、复现步骤及验证记录：[Direct 会话后台消息与常驻保活](../../../开发计划/acp接入/Direct会话后台消息与常驻保活.md)。
+
 ## 2026-09-30：系统通知渠道身份
 
 - 通知展示名属于构建渠道配置，读取 `current_channel_config().app_name`；Windows 通知身份属于当前 Tauri 应用，读取合并后的 `AppHandle.config().identifier`。通知模块不独立维护品牌名称或固定 AUMID。
@@ -7,7 +19,7 @@
 - 每个进程首次发送通知时更新当前身份的注册信息。新版本可修正该身份已有的错误 DisplayName；历史通知正文不重写，不按旧显示名删除其他安装的快捷方式。仍运行的旧版 MALING 会继续错误写入 Gold Band 身份，因此两个渠道都需要升级。
 - 验收固定当前构建通知名与渠道一致、两个渠道 AUMID 各自一致；复用既有配置与进程内 Once，不新增持久状态、依赖或扫描，配置读取为常量时间，注册调用次数不增加。
 
-## 2026-09-19：ACP `end_turn` 后迟到事件的 prompt admission 隔离
+## 2026-09-19：ACP `end_turn` 后迟到事件的 prompt admission 隔离（现仅 Workflow/AUTO）
 
 - 根因：`session/prompt` 的 `end_turn` 只结束对应 RPC；同一 ACP session 的 `session/update` 是没有 request id 的异步通知，Provider 可能在 response 后继续发送。复用 session 的 runtime 若直接把路由交给下一轮消费，就会把上一轮尾部 thought/tool/message 误挂到新 prompt。Direct queue 的串行 admission 设计仍然正确，缺陷在 session route 与 prompt 生命周期之间少了一道边界。
 - 设计：复用已完成 session 时先进入 `AwaitingPromptAdmission`。该阶段消费并隔离既有 route backlog，不让它更新新轮次的 canonical Timeline、prompt output、命令元数据或 active lifecycle；只对 `messageId/toolCallId` 等按 prompt 独立的稳定 provider identity 建立 late-event fence。`plan` 是 session 级可复用投影，不加入永久 fence。新 `session/prompt` 发出后，命中 fence 的旧 stream 尾部继续丢弃，未命中 fence 的新 stream 才按既有 `AwaitingTurnStart -> Live` 进入当前轮次。没有稳定 identity 的 admission 前通知只保留 Raw 审计；prompt 已发出后若 Provider 仍不给 identity，协议本身无法可靠区分旧尾部与新流，runtime 不通过固定延时或自然语言猜测归属。
@@ -49,7 +61,7 @@
 
 运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；索引中残留的非 canonical 大小写 ID 不得借用当前 workspace 的名称或运行时入口。查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
 
-Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、用户 Prompt 写入持久队列或新 turn admission 成功、Prompt Turn 写入 completed/failed/cancelled/interrupted terminal 状态成功。用户停止只有取得当前 turn ownership 且 terminal canonical 写入成功时才更新；重复停止和陈旧 owner no-op 不更新。Prompt 校验失败、重复 admission、标题或描述更新、Run 生命周期、stream/tool/token、启动恢复与索引维护不更新。`authoring/conversation.json.lastActivityAt` 先单调落盘，随后更新 SQLite `tasks.updated_at` 投影；canonical 元数据缺失、损坏或写入失败时必须 fail closed，不得单独推进 SQLite。投影失败不得反向改变 canonical Prompt/Turn 结果。
+Task 最近对话活动只在四类 durable 边界推进：Task 创建成功、用户 Prompt 写入持久队列或新 turn admission 成功、Prompt Turn 写入 completed/failed/cancelled/interrupted terminal 状态成功、保留 Direct 会话的一条新后台回复写入未读记录成功（同条消息流式续写不重复推进）。后台回复的活动时间先落盘，再随 terminal-result 事件的 `taskActivityAt` 送达侧栏，侧栏据此推进相对时间并把该会话移到所属 workspace 列表最前；其他边界的活动时间由 ACP session update 送达。用户停止只有取得当前 turn ownership 且 terminal canonical 写入成功时才更新；重复停止和陈旧 owner no-op 不更新。Prompt 校验失败、重复 admission、标题或描述更新、Run 生命周期、stream/tool/token、启动恢复与索引维护不更新。`authoring/conversation.json.lastActivityAt` 先单调落盘，随后更新 SQLite `tasks.updated_at` 投影；canonical 元数据缺失、损坏或写入失败时必须 fail closed，不得单独推进 SQLite。投影失败不得反向改变 canonical Prompt/Turn 结果。
 
 ## 运行时数据与内存边界
 
@@ -881,6 +893,16 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - canonical 快照水位未覆盖的保留 replay（同代际且 sequence 超出快照已覆盖范围）不是历史阅读内容，不得仅凭该快照被 ACK 丢弃：跟随时照常投影，并继续保留供显式“回到最新”重新投影；跨代际的保留 replay 仍走既有 generation 刷新路径。自动 canonical recovery 失败时允许有限次数重试，用户明确阅读历史期间不得自动请求。
 - 该契约沿用现有 event-window identity、generation/revision、prompt-kit 跟随状态和有界窗口，不新增状态机、持久字段、缓存或全量扫描。修复属于消费端投影与状态转换契约完善；性能影响限定为现有 live merge 路径上的常数级判定。
 
+# 2026-10-09：Direct 后台输出的通知、统计与文件结果
+
+- Direct 的 prompt end_turn 和后台会话输出独立。正常 prompt 继续按现有完成/队列规则通知；后台不生成新用户 turn、Finished 或运行终态，不以静默时长判断任务完成。
+- 后台非空 Agent 正文按后台回复的“已读→未读”提醒一次；只有最新未读事件与后台消息游标对应时才合并后续回复，普通 prompt 的未读完成／失败／停止结果不抑制首次后台回复，同条消息的流式续写不重新提醒。前台查看匹配会话继续抑制原生通知。清除后台未读需要该会话已载入、窗口可见且聚焦、消息窗口处于最新底部；仅打开页面或正在阅读历史不算读过。权限与问题提醒仍独立，旧 prompt 终态不能清除 session-owned 待处理交互。
+- 统计沿用 Task UUID 的 Direct 主体：正常结束立即发送累计 ExecutionCompleted；空闲期间新增权限/问题计数时补发更高 revision 的累计快照，下一 prompt 执行中则合并到其正常结束。补报保留最近真实 prompt 的 outcome/timing，不增加 followUpCount。服务端已有终态累计快照替换契约，不新增 API。
+- 通用 ACP 不能可靠识别并发输出属于旧后台任务还是当前 prompt，统计按会话汇总。usage_update 的 used/size 只表示上下文占用；未提供的后台消耗保持未知，现有采集协议未定义 cost 字段，不将费用或上下文占用伪装成 token。
+- completed 会话收到新的实时思考/工具活动后展示活动过程，工具明确完成后收敛为已记录；历史载入不重播过程，不修改 composer 的 prompt 生命周期。
+- 后台文件修改归属最近持久用户回合，复用有界 diff worker 和采集预算。工具确认成功后增量发布累计结果，保留前台修改，反向编辑可清除已发布的旧结果。Direct worker 的恢复 checkpoint 只保存有界变更引用、工具结果和预算；Workflow 保持原采集路径。
+- 过度设计与性能复核：复用现有协议、通知、统计和流式缓冲；新增最近报告快照与采集 checkpoint 分别补足空闲时没有 active turn、文件 journal 缺少工具结果的恢复信息。通知不逐 chunk 写状态，补报不扫历史，文件计算在 worker，输出仅保留最新累计值。
+
 # 2026-09-18：live head 自动 recovery 不得伪造离底
 
 - 现场切换窗口后出现“回到最新”、点击或展开过程列表才露出未渲染正文，根因是把 follow 布尔值、几何底部和历史阅读意图叠成同一个 `onAtBottomChange`。`modeUpdate` / `availableCommands` 触发的自动 canonical recovery 调用 `stopScroll()` 后，包装层把 follow=false 上报为离底，ACP 再把 recovery 的 `hasNewerEvents` 投影成按钮，并把 `paginationDirection="newer"` 当成历史窗口冻结 live。
@@ -896,3 +918,28 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 页面复用错误条，停止 composer 等待、保留消息与草稿；没有确认结果的工具显示“结果未确认”，保持原始工具事件不变。自动队列派发在未保存的错误存在时暂停。
 - 用户释放空间后的手动操作复用既有孤儿 turn 协调与提交校验，只收敛状态，不重放工具；不增加恢复按钮、轮询或事件补存队列。进程重启会丢失未落盘原因，孤儿恢复只能依据已有持久事实报告中断。
 - 设计与性能评审：属于现有生命周期设计的实现缺口，复用 RAII、Tauri event、错误 DTO 与既有 CAS，无新增依赖/持久字段/状态机。内存索引查询不读历史，错误发生时才复制一条有界诊断，注册表锁不覆盖 I/O 或事件发送；正常流式正文路径无新增扫描。
+
+
+### 后台通知可诊断性（2026-10-09）
+
+- 后台新消息通知需记录未读合并、当前 prompt 占用、前台会话抑制及本地化标题缺失等决策原因，并关联会话与事件标识；不记录消息正文、不逐流式片段记录。
+- 已读确认和 Windows Toast 提交结果可关联诊断；OS 接受通知不等于横幅已展示。普通 prompt 完成已读后，下一条后台新回复应重新具备通知资格。
+
+### 后台过程区展示边界（2026-10-09）
+
+- 后台实时活动的末尾过程组在工具间隙保持动态：有未完成工具时显示调用描述，否则显示现有思考中文案。后续回复正文到达后，前面的过程组才显示已记录；历史加载不重播动态。
+- 此边界仅属于展示投影，不表示后台任务完成，不改变会话生命周期、Finished 或通知逻辑。复用后台控制投影，不新增计时器或持久状态。
+
+- Direct 常驻图钉采用 Fluent pin-24-filled 斜放实心造型，以沿钉头到针尖的静态渐变着色（以当前主题 running 蓝为主色：钉头微混 emphasis 成靛蓝，中段一道高光，针尖向 accent-foreground 过渡成青色），保留常驻提示；不使用流动动画，不使用黑白 primary 按钮色。置顶按钮仍用 lucide Pin，两者造型区分。
+
+### Direct 后台执行控制（2026-10-09）
+
+- end_turn 后新启动的后台子 Agent 不因上一用户回合已完成而显示已中断。正式 Agent 结果、失败或取消事实决定终态；后台启动的后代继承同一来源边界。
+- 后台实时过程组的动态状态与后台停止按钮共用同一后台控制投影：投影有效时末尾过程组显示调用或思考中，回复正文到达后收起为已记录。不依赖 Markdown 流式动画目标，重放、滚动或追赶最新不会让后台过程组提前显示已记录。
+- 普通用户回合沿用原停止按钮。后台收到有效正文、思考或工具活动后显示停止；只要有已知未完成工具就保持，否则最后有效活动后 10 秒隐藏，后续活动重新显示。延时由 acpDirectSessionRetention.backgroundStopGraceSecs 配置；usage、配置和心跳不续期。展示窗口不表达后台任务完成，也不阻止发送新消息。
+- 后台停止向仍匹配的保留会话发送 session/cancel，不合成用户回合或完成事件。取消携带会话/连接 generation 与预期 turnId，旧请求不得取消新用户回合。发送期间合并重复点击；发送成功不等于 Agent 确认停止全部任务或删除定时器。
+- 后台停止被接受后立即隐藏停止按钮；取消引起的工具终态和 usage 不会重新显示。Agent 之后出现新的正文、思考或工具启动时重新显示，可再次停止。
+- "后台是否活动"全局只有一个判断：后端只提供事实（未完成工具数、宽限窗口到期时间），前端统一由 isDirectBackgroundActive（及其到期刷新 hook）判断。停止按钮、过程组动态、侧栏呼吸态与侧栏转圈都使用它；"会话是否活动" = 用户回合运行中或后台活动，同样只有一个判断。
+- 侧栏 Direct 会话活动时，Agent 图标呼吸，右侧相对时间替换为与 composer"处理中"相同的转圈（无障碍名称"运行中"）；活动结束后恢复时间。侧栏列表加载与实时事件使用同一个后端任务活动函数：用户回合运行，否则返回 background 及后台事实。
+- 被接受的后台停止作为隐藏的根时间线事实记录（排在停止前已收到的帧之后）。后台启动、无完成证据、且停止后没有新活动的子 Agent 显示已中断，与普通回合停止的语义一致；停止后仍有活动则保持运行中。该事实不表示 Agent 已确认终止，也不改变用户回合终态。
+- 控制数据使用既有 runtime 工具跟踪与有界显示计时器，不持久化旁路忙闲状态，不轮询或加载历史。

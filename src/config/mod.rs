@@ -33,6 +33,12 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .validate()
             .expect("embedded WeCom scan auth config is valid");
         config
+            .acp_direct_session_retention
+            .as_ref()
+            .expect("embedded app-config.toml defines acpDirectSessionRetention")
+            .validate()
+            .expect("invalid Direct session retention config");
+        config
     })
 }
 
@@ -1391,6 +1397,7 @@ pub struct StateConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectAppConfig {
+    pub acp_direct_session_retention: Option<DirectSessionRetentionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_identity: Option<ProjectIdentityConfig>,
     pub acp_session_title_refresh_enabled: Option<bool>,
@@ -1422,6 +1429,52 @@ pub struct ProjectAppConfig {
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_files: Option<TurnFilesConfig>,
+}
+
+/// Application-wide Direct retention policy. Defaults have a single source in TOML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectSessionRetentionConfig {
+    pub resident_threshold: usize,
+    pub idle_ttl_secs: u64,
+    pub capacity_target: usize,
+    pub sweep_interval_secs: u64,
+    pub background_stop_grace_secs: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{code}: {msg}")]
+pub struct InvalidDirectRetentionConfig {
+    pub code: &'static str,
+    pub msg: &'static str,
+}
+
+impl DirectSessionRetentionConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.resident_threshold == 0 || self.resident_threshold >= self.capacity_target {
+            return Err(InvalidDirectRetentionConfig {
+                code: "acp.direct-retention.invalid-capacity",
+                msg: "expected 0 < residentThreshold < capacityTarget",
+            }
+            .into());
+        }
+        if self.idle_ttl_secs == 0 || self.sweep_interval_secs == 0 || self.background_stop_grace_secs == 0 {
+            return Err(InvalidDirectRetentionConfig {
+                code: "acp.direct-retention.invalid-duration",
+                msg: "retention durations must be positive",
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for DirectSessionRetentionConfig {
+    fn default() -> Self {
+        embedded_project_app_config()
+            .acp_direct_session_retention
+            .expect("validated Direct retention configuration")
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1793,6 +1846,7 @@ pub struct ProviderDiagnosticSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
+    pub acp_direct_session_retention: DirectSessionRetentionConfig,
     pub log_level: RuntimeLogLevel,
     #[serde(default)]
     pub interaction_mode: InteractionMode,
@@ -1863,6 +1917,7 @@ impl Default for RuntimeConfig {
                 .expect("Claude is present in the built-in Agent catalog"),
         );
         let base = Self {
+            acp_direct_session_retention: DirectSessionRetentionConfig::default(),
             log_level: RuntimeLogLevel::Info,
             interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
@@ -1995,6 +2050,12 @@ impl RuntimeConfig {
     }
 
     pub fn apply_app_config(mut self, app_config: &ProjectAppConfig) -> Self {
+        if let Some(policy) = app_config.acp_direct_session_retention {
+            policy
+                .validate()
+                .expect("invalid Direct session retention config");
+            self.acp_direct_session_retention = policy;
+        }
         if let Some(acp_session_title_refresh_enabled) =
             app_config.acp_session_title_refresh_enabled
         {

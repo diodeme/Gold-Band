@@ -1820,6 +1820,42 @@ fn has_provider_history_placement(raw: Option<&Value>) -> bool {
         == Some(1)
 }
 
+/// Root-timeline fact: the user stopped background activity of a retained
+/// Direct session at this position. Hidden from chat; not a prompt terminal.
+pub const GOLD_BAND_BACKGROUND_CANCEL_SOURCE: &str = "goldBandBackgroundCancel";
+
+pub fn background_cancel_marker_event(seq: u64, session_id: Option<String>) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("gold-band-background-cancel-{seq}"),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "rawDiagnostic".to_string(),
+        session_id,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("cancelled".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": GOLD_BAND_BACKGROUND_CANCEL_SOURCE,
+            "hiddenFromChat": true,
+        })),
+    }
+}
+
+pub fn is_background_cancel_marker(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(Value::as_str)
+        == Some(GOLD_BAND_BACKGROUND_CANCEL_SOURCE)
+}
+
 fn is_gold_band_prompt_event(event: &AcpUiEvent) -> bool {
     event.kind == "userTextDelta"
         && event

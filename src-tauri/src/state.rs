@@ -170,6 +170,7 @@ pub enum UpdateBadgeSeenTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationAttentionInput {
+    pub background_message_title: Option<String>,
     pub project_id: Option<String>,
     pub task_id: Option<String>,
     pub run_id: Option<String>,
@@ -193,6 +194,7 @@ pub struct NotificationAttentionTarget<'a> {
 /// 前端当前展示的会话；窗口前台状态由后端在发送时向系统读取。
 #[derive(Debug, Clone, Default)]
 pub struct NotificationAttentionState {
+    background_message_title: Option<String>,
     project_id: Option<String>,
     task_id: Option<String>,
     run_id: Option<String>,
@@ -205,6 +207,9 @@ pub struct NotificationAttentionState {
 
 impl NotificationAttentionState {
     fn update(&mut self, input: NotificationAttentionInput) {
+        if input.background_message_title.is_some() {
+            self.background_message_title = input.background_message_title;
+        }
         self.project_id = input.project_id;
         self.task_id = input.task_id;
         self.run_id = input.run_id;
@@ -486,6 +491,14 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("notification attention lock poisoned"))?
             .update(input);
         Ok(())
+    }
+
+    pub fn background_message_title(&self) -> Option<String> {
+        self.notification_attention
+            .lock()
+            .ok()?
+            .background_message_title
+            .clone()
     }
 
     pub fn should_send_notification(
@@ -2381,6 +2394,7 @@ mod tests {
 
     fn input() -> NotificationAttentionInput {
         NotificationAttentionInput {
+            background_message_title: None,
             project_id: Some("project-1".to_string()),
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),

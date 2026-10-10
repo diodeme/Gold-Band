@@ -19,6 +19,14 @@ conversationInlineImageMaxDimension = 2560
 notificationAutoDismissTargetSecs = 20
 requireLocalClaudeExecutable = false
 
+[acpDirectSessionRetention]
+# Direct only. Protected sessions may exceed capacityTarget.
+residentThreshold = 8
+backgroundStopGraceSecs = 10
+idleTtlSecs = 21600
+capacityTarget = 20
+sweepIntervalSecs = 60
+
 [im.wecomScanAuth]
 source = "maling"
 

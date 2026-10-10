@@ -488,8 +488,11 @@ mod tests {
             read_back.identity.kind,
             AcpPromptInteractionKind::Elicitation
         );
-        assert_eq!(read_back.identity.turn_id, "turn-2");
-        assert_eq!(read_back.identity.prompt_event_id, "prompt-turn-2");
+        assert_eq!(read_back.identity.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(
+            read_back.identity.prompt_event_id.as_deref(),
+            Some("prompt-turn-2")
+        );
         assert_eq!(read_back.payload.request.message, "请选择数据库");
         let request = serde_json::to_value(read_back.payload.request).unwrap();
         assert_eq!(request["toolCallId"], "tool-test");

@@ -560,6 +560,7 @@ pub struct ConversationSidebarVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationTaskRowVm {
+    pub resident: bool,
     pub project_id: String,
     pub task_id: String,
     pub task_uuid: Option<String>,
@@ -585,6 +586,9 @@ pub struct ConversationTaskRowVm {
 pub struct ConversationTaskActivityVm {
     pub phase: String,
     pub stopping: bool,
+    /// Facts for phase `background`; the UI's isDirectBackgroundActive judges busy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_control: Option<gold_band::acp::client::DirectBackgroundControl>,
 }
 
 pub struct ConversationWorkspaceSource {
@@ -819,6 +823,7 @@ pub struct ConversationAcpFacetVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationComposerVm {
+    pub background_control: Option<gold_band::acp::client::DirectBackgroundControl>,
     pub mode: String,
     pub submit_target: String,
     pub processing_kind: String,
@@ -1174,6 +1179,7 @@ fn attach_direct_prompt_queue(
     lifecycle: &mut ConversationAttemptLifecycleVm,
 ) {
     lifecycle.prompt_queue = direct_prompt_queue_vm(app, task_id, attempt_dir);
+    lifecycle.composer.background_control = gold_band::acp::client::direct_background_control(attempt_dir);
     if lifecycle.prompt_queue.is_some()
         && lifecycle.composer.mode == "runtime-active"
         && !lifecycle.acp.stopping
@@ -1197,15 +1203,16 @@ pub fn touch_conversation_activity_at(
         .task_dir(task_id)
         .join("authoring")
         .join("conversation.json");
-    let mut metadata: ConversationMetadata = read_json(&metadata_path)?;
-    let should_advance = metadata
-        .last_activity_at
-        .as_deref()
-        .is_none_or(|current| compare_conversation_timestamps(current, activity_at).is_lt());
-    if should_advance {
-        metadata.last_activity_at = Some(activity_at.to_string());
-        write_json(&metadata_path, &metadata)?;
-    }
+    gold_band::storage::with_file_lock(&metadata_path, || {
+        let mut metadata: ConversationMetadata = read_json(&metadata_path)?;
+        let should_advance = metadata.last_activity_at.as_deref()
+            .is_none_or(|current| compare_conversation_timestamps(current, activity_at).is_lt());
+        if should_advance {
+            metadata.last_activity_at = Some(activity_at.to_string());
+            write_json(&metadata_path, &metadata)?;
+        }
+        Ok(())
+    })?;
     app.record_task_activity_index(task_id, activity_at);
     Ok(())
 }
@@ -1253,15 +1260,30 @@ fn conversation_task_activity(
     task_dir: &Utf8Path,
     latest_run: Option<&ConversationRunSummaryVm>,
 ) -> Option<ConversationTaskActivityVm> {
+    conversation_task_live_activity(task_dir).or_else(|| {
+        latest_run
+            .filter(|run| normalize_lifecycle_code(&run.status) == "running")
+            .map(|_| ConversationTaskActivityVm {
+                phase: "runtime-active".to_string(),
+                stopping: false,
+                background_control: None,
+            })
+    })
+}
+
+/// Live task activity shared by the sidebar list and live session events:
+/// a running prompt turn, otherwise retained Direct background facts.
+pub(crate) fn conversation_task_live_activity(task_dir: &Utf8Path) -> Option<ConversationTaskActivityVm> {
     if let Some(activity) = prompt_activity_under(task_dir) {
         return Some(conversation_task_activity_from_prompt(activity));
     }
-    latest_run
-        .filter(|run| normalize_lifecycle_code(&run.status) == "running")
-        .map(|_| ConversationTaskActivityVm {
-            phase: "runtime-active".to_string(),
+    gold_band::acp::client::direct_background_control_under(task_dir).map(|control| {
+        ConversationTaskActivityVm {
+            phase: "background".to_string(),
             stopping: false,
-        })
+            background_control: Some(control),
+        }
+    })
 }
 
 pub(crate) fn conversation_task_activity_from_prompt(
@@ -1276,6 +1298,7 @@ pub(crate) fn conversation_task_activity_from_prompt(
         }
         .to_string(),
         stopping: activity == PromptActivity::CancelRequested,
+        background_control: None,
     }
 }
 
@@ -1311,6 +1334,7 @@ fn conversation_task_row_vm_from_task(
         .flatten();
 
     ConversationTaskRowVm {
+        resident: run_mode == "direct" && metadata.as_ref().is_some_and(|m| m.resident),
         project_id: project_id.to_string(),
         task_id: task_id.clone(),
         task_uuid: task.uuid.clone(),
@@ -1519,6 +1543,7 @@ fn conversation_task_summary_vm_from_task(
         .flatten();
 
     ConversationTaskRowVm {
+        resident: run_mode == "direct" && metadata.as_ref().is_some_and(|m| m.resident),
         project_id: project_id.to_string(),
         task_id: task_id.clone(),
         task_uuid: task.uuid.clone(),
@@ -2629,6 +2654,7 @@ fn composer_for_lifecycle(
     };
 
     ConversationComposerVm {
+        background_control: None,
         mode: mode.to_string(),
         submit_target: submit_target.to_string(),
         processing_kind: processing_kind.to_string(),
@@ -7514,6 +7540,7 @@ mod tests {
             Some(ConversationTaskActivityVm {
                 phase: "runtime-active".to_string(),
                 stopping: false,
+                background_control: None,
             })
         );
         assert_eq!(conversation_task_activity(task_dir, Some(&completed)), None);

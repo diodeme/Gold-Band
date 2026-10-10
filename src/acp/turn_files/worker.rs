@@ -42,6 +42,18 @@ pub(crate) struct TurnFileWorker {
     wake: Option<mpsc::SyncSender<()>>,
     thread: Option<JoinHandle<Result<Vec<TurnFileChangeSet>>>>,
     config: TurnFileCaptureConfig,
+    published: Arc<parking_lot::Mutex<Option<Vec<TurnFileChangeSet>>>>,
+}
+
+/// Bounded derivation checkpoint for the same turn. The journal alone does not
+/// retain tool outcomes, so resuming from it would require replaying the timeline.
+#[derive(Default, Serialize, Deserialize)]
+struct CaptureCheckpoint {
+    mutations: Vec<TurnFileMutation>,
+    outcomes: Vec<((String, String), TurnFileToolTerminalOutcome)>,
+    captured_bytes: usize,
+    captured_entries: usize,
+    limited: bool,
 }
 
 impl TurnFileWorker {
@@ -52,21 +64,52 @@ impl TurnFileWorker {
         prompt: String,
         started_at: String,
     ) -> Result<Self> {
+        Self::start_inner(store, workspace, turn, prompt, started_at, false, false)
+    }
+
+    pub(crate) fn start_retained(
+        store: TurnFileStore, workspace: Utf8PathBuf, turn: String, prompt: String, started_at: String,
+    ) -> Result<Self> {
+        Self::start_inner(store, workspace, turn, prompt, started_at, false, true)
+    }
+
+    pub(crate) fn start_background(
+        store: TurnFileStore, workspace: Utf8PathBuf, turn: String, prompt: String, started_at: String,
+    ) -> Result<Self> {
+        Self::start_inner(store, workspace, turn, prompt, started_at, true, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_inner(
+        store: TurnFileStore, workspace: Utf8PathBuf, turn: String, prompt: String, started_at: String, publish: bool, retain: bool,
+    ) -> Result<Self> {
         let config = store.config;
-        let mailbox = Arc::new(parking_lot::Mutex::new(Mailbox::default()));
+        let checkpoint_path = store.change_set_path(&change_set_id(&turn, ROOT_BRANCH_ID)).with_extension("capture.json");
+        let saved: CaptureCheckpoint = if retain && checkpoint_path.exists() { read_json(&checkpoint_path)? } else { CaptureCheckpoint::default() };
+        let mailbox = Arc::new(parking_lot::Mutex::new(Mailbox {
+            editing_tools: saved.mutations.iter().map(|m| (m.branch_id.clone(), m.tool_call_id.clone())).collect(),
+            ..Default::default()
+        }));
         let (wake, receive) = mpsc::sync_channel(1);
         let shared = mailbox.clone();
+        let published = Arc::new(parking_lot::Mutex::new(None));
+        let output = publish.then(|| published.clone());
         let thread = std::thread::Builder::new()
             .name("turn-file-diff".into())
             .spawn(move || {
-                run_worker(store, workspace, turn, prompt, started_at, shared, receive)
+                run_worker(store, workspace, turn, prompt, started_at, shared, receive, output, retain.then_some(checkpoint_path), saved)
             })?;
         Ok(Self {
             mailbox,
             wake: Some(wake),
             thread: Some(thread),
             config,
+            published,
         })
+    }
+
+    pub(crate) fn take_updates(&self) -> Option<Vec<TurnFileChangeSet>> {
+        self.published.lock().take()
     }
 
     pub(crate) fn submit(
@@ -162,6 +205,7 @@ impl Drop for TurnFileWorker {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     store: TurnFileStore,
     workspace: Utf8PathBuf,
@@ -170,12 +214,15 @@ fn run_worker(
     started_at: String,
     mailbox: Arc<parking_lot::Mutex<Mailbox>>,
     receive: mpsc::Receiver<()>,
+    published: Option<Arc<parking_lot::Mutex<Option<Vec<TurnFileChangeSet>>>>>,
+    checkpoint_path: Option<Utf8PathBuf>,
+    saved: CaptureCheckpoint,
 ) -> Result<Vec<TurnFileChangeSet>> {
-    let mut mutations = HashMap::<(String, String, String, usize), TurnFileMutation>::new();
-    let mut outcomes = HashMap::<(String, String), TurnFileToolTerminalOutcome>::new();
-    let mut captured_bytes = 0usize;
-    let mut captured_entries = 0usize;
-    let mut limited = false;
+    let mut mutations = saved.mutations.into_iter().map(|m| ((m.branch_id.clone(), m.tool_call_id.clone(), m.logical_path.clone(), m.content_index), m)).collect::<HashMap<_, _>>();
+    let mut outcomes = saved.outcomes.into_iter().collect::<HashMap<_, _>>();
+    let mut captured_bytes = saved.captured_bytes;
+    let mut captured_entries = saved.captured_entries;
+    let mut limited = saved.limited;
     // Attachment discovery is also off the ACP event thread. The initial baseline
     // is captured before prompt dispatch by the existing lifecycle owner.
     loop {
@@ -196,6 +243,7 @@ fn run_worker(
         let mut pending = pending.into_values().collect::<Vec<_>>();
         pending.sort_by_key(|event| event.seq);
         let mut dirty = HashSet::<(String, String)>::new();
+        let mut terminal_edit = false;
         for event in pending {
             let tool_key = (event.branch.clone(), event.tool.clone());
             if let Some(outcome) = event.outcome
@@ -204,6 +252,7 @@ fn run_worker(
                         .values()
                         .any(|m| m.branch_id == event.branch && m.tool_call_id == event.tool))
             {
+                terminal_edit = true;
                 if outcomes.len() < store.config.capture_max_entries
                     || outcomes.contains_key(&tool_key)
                 {
@@ -297,6 +346,7 @@ fn run_worker(
                 );
             }
         }
+        let changed = !dirty.is_empty() || terminal_edit;
         for (branch, path) in dirty {
             if mailbox.lock().abort {
                 return Ok(Vec::new());
@@ -317,10 +367,27 @@ fn run_worker(
                 let _ = store.recorded_changes(&path, &chain);
             }
         }
-        if finish {
-            break;
+        if (changed || finish) && let Some(checkpoint_path) = &checkpoint_path {
+            write_json(checkpoint_path, &CaptureCheckpoint {
+                mutations: mutations.values().cloned().collect(),
+                outcomes: outcomes.iter().map(|(key, outcome)| (key.clone(), *outcome)).collect(),
+                captured_bytes, captured_entries, limited,
+            })?;
+        }
+        if finish || (terminal_edit && published.is_some()) {
+            let sets = finalize_capture(&store, &workspace, &turn, &prompt, &started_at, &mutations, &outcomes, limited)?;
+            if finish { return Ok(sets); }
+            if let Some(published) = &published { *published.lock() = Some(sets); }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_capture(
+    store: &TurnFileStore, workspace: &Utf8Path, turn: &str, prompt: &str, started_at: &str,
+    mutations: &HashMap<(String, String, String, usize), TurnFileMutation>,
+    outcomes: &HashMap<(String, String), TurnFileToolTerminalOutcome>, limited: bool,
+) -> Result<Vec<TurnFileChangeSet>> {
     let finished_at = current_timestamp();
     let attachments = store.collect_turn_attachment_delta(&turn)?;
     let mut branches = mutations
@@ -363,11 +430,11 @@ fn run_worker(
             let set = TurnFileChangeSet {
                 schema_version: TURN_FILE_CHANGE_SET_SCHEMA_VERSION,
                 id: change_set_id(&turn, &branch),
-                turn_id: turn.clone(),
-                prompt_event_id: prompt.clone(),
+                turn_id: turn.to_owned(),
+                prompt_event_id: prompt.to_owned(),
                 branch_id: branch,
                 status: TurnFileChangeSetStatus::Partial,
-                started_at: started_at.clone(),
+                started_at: started_at.to_owned(),
                 finished_at: Some(finished_at.clone()),
                 summary: TurnFileChangeSummary::default(),
                 changes: Vec::new(),
@@ -375,6 +442,16 @@ fn run_worker(
                 limitation_codes: vec![CAPTURE_LIMIT_EXCEEDED.into()],
                 workspace_root: workspace_root(Some(&workspace)),
             };
+            write_json(&store.change_set_path(&set.id), &set)?;
+            sets.push(set);
+        } else if !limited && store.change_set_path(&change_set_id(turn, &branch)).exists() {
+            let mut set = store.load_change_set(&change_set_id(turn, &branch))?;
+            set.changes.clear();
+            set.attachments.clear();
+            set.limitation_codes.clear();
+            set.summary = TurnFileChangeSummary::default();
+            set.status = TurnFileChangeSetStatus::Finalized;
+            set.finished_at = Some(finished_at.clone());
             write_json(&store.change_set_path(&set.id), &set)?;
             sets.push(set);
         }
@@ -385,6 +462,33 @@ fn run_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_reversal_clears_an_already_published_change_set() {
+        let (_temp, store, root) = fixture();
+        let worker = TurnFileWorker::start_retained(store.clone(), root.clone(), "turn".into(), "prompt".into(), "start".into()).unwrap();
+        worker.submit("root".into(), "first".into(), 1, "now".into(), &diff("a\n", "b\n"), Some(TurnFileToolTerminalOutcome::Succeeded));
+        assert_eq!(worker.finish().unwrap()[0].changes.len(), 1);
+        let worker = TurnFileWorker::start_background(store.clone(), root, "turn".into(), "prompt".into(), "start".into()).unwrap();
+        worker.submit("root".into(), "second".into(), 2, "now".into(), &diff("b\n", "a\n"), Some(TurnFileToolTerminalOutcome::Succeeded));
+        let updates = worker.finish().unwrap();
+        assert_eq!(updates.len(), 1, "publish an empty replacement for the old set");
+        assert!(updates[0].changes.is_empty());
+        assert!(store.load_change_set(&updates[0].id).unwrap().changes.is_empty());
+    }
+
+    #[test]
+    fn resumed_capture_keeps_prior_turn_changes() {
+        let (_temp, store, root) = fixture();
+        for (tool, before, after) in [("foreground", "a\n", "b\n"), ("background", "b\n", "c\n")] {
+            let worker = TurnFileWorker::start_retained(store.clone(), root.clone(), "turn".into(), "prompt".into(), "start".into()).unwrap();
+            worker.submit("root".into(), tool.into(), if tool == "foreground" { 1 } else { 2 }, "now".into(), &diff(before, after), Some(TurnFileToolTerminalOutcome::Succeeded));
+            let sets = worker.finish().unwrap();
+            let comparison = store.comparison(&sets[0].id, &sets[0].changes[0].id).unwrap();
+            assert_eq!(comparison.before.unwrap().content, "a\n");
+            assert_eq!(comparison.after.unwrap().content, after);
+        }
+    }
 
     #[test]
     fn recorded_write_survives_unreported_disk_changes_and_outside_paths() {
@@ -559,6 +663,7 @@ mod tests {
         };
         let worker = TurnFileWorker {
             mailbox: Default::default(),
+            published: Default::default(),
             wake: None,
             thread: None,
             config,
@@ -605,6 +710,7 @@ mod tests {
     fn unrelated_tool_outcomes_do_not_consume_the_edit_queue_budget() {
         let worker = TurnFileWorker {
             mailbox: Default::default(),
+            published: Default::default(),
             wake: None,
             thread: None,
             config: TurnFileCaptureConfig {

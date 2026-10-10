@@ -500,6 +500,18 @@ pub struct ExecutionObservabilityState {
 }
 
 impl ExecutionObservabilityState {
+    /// Direct reports one task-wide terminal snapshot across multiple prompts.
+    /// The prompt journal is authoritative; replacing avoids counting it twice.
+    pub fn replace_model_usages(&mut self, usages: Vec<ModelUsage>) {
+        self.model_usages.clear();
+        self.model_order.clear();
+        self.provider_cumulative.clear();
+        self.provider_elapsed_cumulative.clear();
+        for usage in usages {
+            self.record_model_usage(usage);
+        }
+    }
+
     pub fn recovered() -> Self {
         Self {
             collection_state_recovered: Some(true),

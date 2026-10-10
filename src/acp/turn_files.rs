@@ -133,7 +133,7 @@ pub enum TurnFileChangeSetStatus {
     Partial,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TurnFileToolTerminalOutcome {
     Succeeded,
     Failed,
@@ -1403,7 +1403,11 @@ mod tests {
     #[test]
     fn upgraded_acp_multi_hunk_one_tool_keeps_both_fragments_after_reload() {
         let (_dir, store) = store();
-        std::fs::write(store.attempt_dir.join("example.txt"), "unrelated disk contents").unwrap();
+        std::fs::write(
+            store.attempt_dir.join("example.txt"),
+            "unrelated disk contents",
+        )
+        .unwrap();
         let update = serde_json::json!({
             "sessionUpdate":"tool_call", "toolCallId":"edit", "title":"Editing files",
             "kind":"edit", "status":"in_progress", "content":[
@@ -1411,15 +1415,33 @@ mod tests {
                 {"type":"diff","path":"example.txt","oldText":"尾行","newText":"新尾行","_meta":{"kind":"update"}}
             ]
         });
-        assert_eq!(store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &update).unwrap(), 2);
-        let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap().unwrap();
+        assert_eq!(
+            store
+                .capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &update)
+                .unwrap(),
+            2
+        );
+        let set = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "start",
+                "end",
+                &succeeded_tools(&["edit"]),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(set.summary.file_count, 1);
         assert_eq!((set.summary.added_lines, set.summary.deleted_lines), (2, 2));
         assert_eq!(set.changes.len(), 2);
-        let reopened = TurnFileStore::new(store.attempt_dir.clone(), TurnFileCaptureConfig::default());
-        for (change, (before, after)) in set.changes.iter().zip([
-            ("alpha\ncontext\n", "ALPHA\ncontext\n"), ("尾行", "新尾行"),
-        ]) {
+        let reopened =
+            TurnFileStore::new(store.attempt_dir.clone(), TurnFileCaptureConfig::default());
+        for (change, (before, after)) in set
+            .changes
+            .iter()
+            .zip([("alpha\ncontext\n", "ALPHA\ncontext\n"), ("尾行", "新尾行")])
+        {
             let comparison = reopened.comparison(&set.id, &change.id).unwrap();
             assert_eq!(comparison.before.unwrap().content, before);
             assert_eq!(comparison.after.unwrap().content, after);
@@ -1434,7 +1456,17 @@ mod tests {
             {"type":"diff","path":"deleted.txt","oldText":"removed\n","newText":"","_meta":{"kind":"delete"}},
             {"type":"diff","path":"deleted-empty.txt","oldText":"","newText":"","_meta":{"kind":"delete"}}
         ]))).unwrap();
-        let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap().unwrap();
+        let set = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "start",
+                "end",
+                &succeeded_tools(&["edit"]),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(set.summary.added_files, 1);
         assert_eq!(set.summary.deleted_files, 2);
         for change in &set.changes {
@@ -1451,13 +1483,30 @@ mod tests {
 
     #[test]
     fn upgraded_acp_pure_rename_and_provider_omitted_diff_do_not_invent_content() {
-        for content in [serde_json::json!([]), serde_json::json!([
-            {"type":"diff","path":"renamed.txt","oldText":"","newText":"","_meta":{"kind":"update"}}
-        ])] {
+        for content in [
+            serde_json::json!([]),
+            serde_json::json!([
+                {"type":"diff","path":"renamed.txt","oldText":"","newText":"","_meta":{"kind":"update"}}
+            ]),
+        ] {
             let (_dir, store) = store();
-            store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &raw(content)).unwrap();
-            let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap();
-            assert!(set.is_none(), "no content evidence must not become a fabricated edit");
+            store
+                .capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &raw(content))
+                .unwrap();
+            let set = store
+                .finalize_turn_branch(
+                    "turn",
+                    "prompt",
+                    "root",
+                    "start",
+                    "end",
+                    &succeeded_tools(&["edit"]),
+                )
+                .unwrap();
+            assert!(
+                set.is_none(),
+                "no content evidence must not become a fabricated edit"
+            );
         }
     }
 
@@ -1472,12 +1521,29 @@ mod tests {
             store.capture_event_diffs("turn", "prompt", "root", "edit", 1, "now", &raw(serde_json::json!([
                 {"type":"diff","path":"large.txt","oldText":before,"newText":after,"_meta":{"kind":"update"}}
             ]))).unwrap();
-            let set = store.finalize_turn_branch("turn", "prompt", "root", "start", "end", &succeeded_tools(&["edit"])).unwrap().unwrap();
+            let set = store
+                .finalize_turn_branch(
+                    "turn",
+                    "prompt",
+                    "root",
+                    "start",
+                    "end",
+                    &succeeded_tools(&["edit"]),
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(set.changes.len(), 1);
             let comparison = store.comparison(&set.id, &set.changes[0].id).unwrap();
             assert!(comparison.before.is_none());
             assert!(comparison.after.is_none());
-            assert_eq!(comparison.limitation_code.as_deref(), Some(if capture_limit == 32 { CAPTURE_LIMIT_EXCEEDED } else { "turn-files.diff-too-large" }));
+            assert_eq!(
+                comparison.limitation_code.as_deref(),
+                Some(if capture_limit == 32 {
+                    CAPTURE_LIMIT_EXCEEDED
+                } else {
+                    "turn-files.diff-too-large"
+                })
+            );
         }
     }
 

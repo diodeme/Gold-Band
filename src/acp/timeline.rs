@@ -158,6 +158,8 @@ struct TimelineItemLocator {
     branch_id: String,
     #[serde(default)]
     gold_band_prompt: bool,
+    #[serde(default)]
+    background_cancel: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     composer_text_bytes: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -550,6 +552,8 @@ pub struct TimelineBranchProjection {
     pub latest_plan_entries: Vec<Value>,
     pub agent_launches: Vec<AcpUiEvent>,
     pub prompt_turns: Vec<TimelinePromptTurnProjection>,
+    /// Latest accepted background stop (seq, timestamp) on this timeline.
+    pub latest_background_cancel: Option<(u64, String)>,
 }
 
 /// Lightweight prompt-turn boundaries derived from the canonical root
@@ -1610,6 +1614,7 @@ fn timeline_item_locator(
             .and_then(|raw| raw.get("source"))
             .and_then(Value::as_str)
             == Some("goldBandPrompt"),
+        background_cancel: crate::acp::events::is_background_cancel_marker(item),
         composer_text_bytes: composer_history::original_user_text(item).map(str::len),
         provider_history_item_id: timeline_provider_history_item_id(item),
         prompt_id: timeline_prompt_id(item),
@@ -2723,6 +2728,12 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
             })
             .collect::<Vec<_>>();
         prompt_turns.sort_by_key(|turn| turn.started_seq);
+        let latest_background_cancel = index
+            .item_locators
+            .values()
+            .filter(|locator| locator.background_cancel)
+            .max_by_key(|locator| locator.seq)
+            .map(|locator| (locator.seq, locator.timestamp.clone()));
         Ok(TimelineBranchProjection {
             generation: index.generation,
             covered_revision: index.covered_revision,
@@ -2744,6 +2755,7 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
             latest_plan_entries,
             agent_launches: index.agent_launches.into_values().collect(),
             prompt_turns,
+            latest_background_cancel,
         })
     })
 }

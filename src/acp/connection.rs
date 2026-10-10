@@ -1358,11 +1358,19 @@ impl AdapterConnection {
     }
 
     pub fn begin_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
-        self.begin_request_with_policy(method, params, false)
+        self.begin_request_with_policy(method, params, false, false)
+    }
+
+    pub(crate) fn begin_direct_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<PendingRequest> {
+        self.begin_request_with_policy(method, params, false, true)
     }
 
     fn begin_shutdown_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
-        self.begin_request_with_policy(method, params, true)
+        self.begin_request_with_policy(method, params, true, false)
     }
 
     fn begin_request_with_policy(
@@ -1370,6 +1378,7 @@ impl AdapterConnection {
         method: &str,
         mut params: Value,
         allow_draining: bool,
+        allow_background: bool,
     ) -> Result<PendingRequest> {
         self.touch();
         if let Err(error) = self.ensure_request_allowed(allow_draining) {
@@ -1385,11 +1394,20 @@ impl AdapterConnection {
             return Err(error);
         }
         if super::adapter::is_session_options_method(method) {
-            super::adapter::apply_session_execution_policy(
-                self.initialized_capabilities().as_ref(),
-                method,
-                &mut params,
-            )?;
+            if allow_background {
+                super::adapter::apply_session_execution_policy_for_surface(
+                    self.initialized_capabilities().as_ref(),
+                    method,
+                    &mut params,
+                    true,
+                )?;
+            } else {
+                super::adapter::apply_session_execution_policy(
+                    self.initialized_capabilities().as_ref(),
+                    method,
+                    &mut params,
+                )?;
+            }
         }
         let id = {
             let mut next_id = self
@@ -1406,9 +1424,9 @@ impl AdapterConnection {
             "method": method,
             "params": params,
         });
-        let route_session_id = (method == "session/prompt")
-            .then(|| frame.pointer("/params/sessionId").and_then(Value::as_str))
-            .flatten()
+        let route_session_id = frame
+            .pointer("/params/sessionId")
+            .and_then(Value::as_str)
             .map(str::to_string);
         let (tx, rx) = mpsc::channel();
         self.pending
@@ -2236,7 +2254,7 @@ fn route_inbound_frame(
 }
 
 impl AdapterConnection {
-    fn session_route_watermark(&self, session_id: &str) -> Option<SessionRouteWatermark> {
+    pub(crate) fn session_route_watermark(&self, session_id: &str) -> Option<SessionRouteWatermark> {
         self.session_routes
             .lock()
             .ok()
@@ -2424,6 +2442,46 @@ pub struct AdapterConnectionManager {
 }
 
 impl AdapterConnectionManager {
+    /// A retained Direct reader is the sole scoped user. Recheck under the
+    /// acquisition lock so a concurrent session/new cannot lose its process.
+    pub(crate) fn release_unshared_retained_connection(
+        &self,
+        binding: &LiveAcpSession,
+        retained_readers: usize,
+    ) -> Result<bool> {
+        let mut connections = self
+            .connections
+            .lock()
+            .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?;
+        let Some(connection) = connections.get(&binding.key).cloned() else {
+            return Ok(false);
+        };
+        if connection.generation() != binding.connection_generation
+            || connection.active_users.load(Ordering::Acquire) != retained_readers
+        {
+            return Ok(false);
+        }
+        let attempts = self
+            .attempt_sessions
+            .lock()
+            .map_err(|_| anyhow!("ACP attempt session lock poisoned"))?;
+        let references: Vec<_> = attempts
+            .values()
+            .filter(|s| {
+                s.key == binding.key && s.connection_generation == binding.connection_generation
+            })
+            .collect();
+        if references.len() != 1 || references[0].session_id != binding.session_id {
+            return Ok(false);
+        }
+        connection.begin_draining()?;
+        connections.remove(&binding.key);
+        drop(attempts);
+        drop(connections);
+        connection.shutdown(AdapterShutdownReason::IdleCapacity);
+        Ok(true)
+    }
+
     pub fn shared() -> &'static Self {
         &ADAPTER_CONNECTION_MANAGER
     }

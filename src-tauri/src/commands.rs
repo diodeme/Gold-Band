@@ -962,6 +962,7 @@ fn emit_deferred_turn_completion(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
+    background_control: Option<client::DirectBackgroundControl>,
     #[serde(skip_serializing_if = "Option::is_none")]
     execution_error: Option<gold_band::acp::events::AcpExecutionError>,
     branch_id: Option<String>,
@@ -1114,6 +1115,9 @@ struct ConversationTerminalResultUpdatedEventVm {
     project_id: String,
     task_id: String,
     unread_terminal_result: ConversationTerminalResultVm,
+    /// Task activity already persisted for this result. Set only on paths whose
+    /// activity time is not delivered by an ACP session update (background replies).
+    task_activity_at: Option<String>,
 }
 
 fn conversation_terminal_result_candidate(
@@ -1236,6 +1240,8 @@ fn create_conversation_terminal_result_subscriber(
                     project_id: candidate.project_id,
                     task_id: candidate.task_id,
                     unread_terminal_result,
+                    // Turn terminal activity reaches the sidebar via the lifecycle session update.
+                    task_activity_at: None,
                 },
             );
         }
@@ -4898,7 +4904,17 @@ pub async fn stop_active_session(
     attempt_id: String,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    background_control: Option<client::DirectBackgroundControl>,
+    expected_turn_id: Option<String>,
 ) -> CommandResult<ActiveSessionStopVm> {
+    if let Some(expected) = background_control {
+        let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+        let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, outer_node_id, outer_attempt_id);
+        let accepted = spawn_blocking_command(move || {
+            client::cancel_retained_direct_session(&locator.attempt_dir(&app), &expected, expected_turn_id.as_deref()).map_err(command_error)
+        }).await?;
+        return Ok(ActiveSessionStopVm { operation_id: Uuid::new_v4().to_string(), status: if accepted { "accepted" } else { "no-op" }.into(), kind: "background-cancel-requested".into(), run: None, session: None, lifecycle: None });
+    }
     let log_project_id = project_id.clone();
     let log_task_id = task_id.clone();
     let log_run_id = run_id.clone();
@@ -5728,15 +5744,35 @@ pub(crate) fn acp_live_update_emitter(
         + Send
         + Sync,
 > {
+    let last_background_message = std::sync::Mutex::new(None::<(Option<String>, String)>);
     Arc::new(move |context, mut event, timeline_position| {
-        let refresh_agent_attention = matches!(
+        if event.kind == "textDelta"
+            && event.content.as_ref().is_some_and(|text| !text.trim().is_empty())
+            && event.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")).and_then(serde_json::Value::as_bool) == Some(true)
+        {
+            let identity = (event.session_id.clone(), event.id.clone());
+            let already_observed = last_background_message.lock().unwrap_or_else(|p| p.into_inner()).as_ref() == Some(&identity);
+            if !already_observed {
+                if let Some(app) = notification_app.as_ref() {
+                    if let Err(error) = record_direct_background_reply(&app_handle, app, &context, &event) {
+                        tracing::warn!(code = "acp.background-notification.failed", %error);
+                    } else {
+                        *last_background_message.lock().unwrap_or_else(|p| p.into_inner()) = Some(identity);
+                    }
+                }
+            }
+        }
+        // Agent projections (attention, background-stop interruption) live in the
+        // session snapshot, so these facts republish it.
+        let refresh_agent_projection = (matches!(
             event.kind.as_str(),
             "permissionRequest" | "elicitationRequest"
         ) && event
             .status
             .as_deref()
             .unwrap_or("pending")
-            .eq_ignore_ascii_case("pending");
+            .eq_ignore_ascii_case("pending"))
+            || gold_band::acp::events::is_background_cancel_marker(&event);
         maybe_record_agent_commands(&app_handle, notification_app.as_ref(), &context, &event);
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
             let notification_project_id = notification_app
@@ -5778,7 +5814,7 @@ pub(crate) fn acp_live_update_emitter(
             event,
             timeline_position,
         );
-        if refresh_agent_attention && let Some(app) = notification_app.as_ref() {
+        if refresh_agent_projection && let Some(app) = notification_app.as_ref() {
             let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
                 context.outer_node_id.as_deref(),
                 context.outer_attempt_id.as_deref(),
@@ -5823,6 +5859,42 @@ pub(crate) fn acp_live_update_emitter(
         }
         Ok(())
     })
+}
+
+fn record_direct_background_reply(
+    app_handle: &AppHandle,
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    event: &AcpUiEvent,
+) -> anyhow::Result<()> {
+    let attempt = app.paths.attempt_dir(&context.task_id, &context.run_id, &context.round_id, &context.node_id, &context.attempt_id);
+    // Recheck at delivery: a newly admitted user prompt owns its own notification.
+    if client::prompt_activity(&attempt).is_some() {
+        tracing::info!(code = "acp.background-notification.decision", project_id = %app.paths.project_id, task_id = %context.task_id, run_id = %context.run_id, message_id = %event.id, reason = "active-prompt");
+        return Ok(());
+    }
+    let state = app_handle.state::<DesktopState>();
+    let guard = state.conversation_attention_write_guard()?;
+    let stream = format!("{}/{}/{}/{}/{}", context.run_id, context.round_id, context.node_id, context.attempt_id, event.session_id.as_deref().unwrap_or_default());
+    let event_id = crate::conversation_attention::background_message_event_id(&stream, event.started_seq.unwrap_or(event.seq));
+    let (record, notify) = crate::conversation_attention::record_background_message(
+        app, &context.task_id, &stream, event.started_seq.unwrap_or(event.seq),
+        ConversationTerminalResultVm { event_id: event_id.clone(), run_id: context.run_id.clone(), kind: ConversationTerminalResultKind::NewMessage, occurred_at: event.timestamp.clone() },
+    )?;
+    drop(guard);
+    tracing::info!(code = "acp.background-notification.decision", project_id = %app.paths.project_id, task_id = %context.task_id, event_id = %event_id, changed = record.changed, notify, reason = if !record.changed { "already-observed" } else if notify { "new-unread-episode" } else { "existing-unread-episode" });
+    if record.changed && let Some(unread_terminal_result) = record.unread_terminal_result {
+        // Persist activity before emitting so the event and any refetch it triggers agree on order.
+        crate::view_models_conversation::touch_conversation_activity_at(app, &context.task_id, &event.timestamp)?;
+        app_handle.emit(CONVERSATION_TERMINAL_RESULT_EVENT, ConversationTerminalResultUpdatedEventVm {
+            project_id: app.paths.project_id.clone(), task_id: context.task_id.clone(), unread_terminal_result,
+            task_activity_at: Some(event.timestamp.clone()),
+        })?;
+    }
+    if notify {
+        crate::notifications::send_background_message_notification(app_handle, app, context, &event_id);
+    }
+    Ok(())
 }
 
 fn maybe_upsert_authoring_model_bound_catalog(
@@ -6111,6 +6183,7 @@ fn execution_error_event(
     error: gold_band::acp::events::AcpExecutionError,
 ) -> AcpSessionUpdatedEventVm {
     AcpSessionUpdatedEventVm {
+        background_control: None,
         execution_error: Some(error),
         branch_id: Some("root".into()),
         project_id,
@@ -6190,13 +6263,14 @@ fn emit_acp_session_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
 ) {
-    let activity = conversation_task_prompt_activity_vm(app, task_id);
+    let activity = conversation_task_live_activity_vm(app, task_id);
     let task_uuid = app
         .run_status(task_id, run_id)
         .ok()
         .and_then(|run| run.task_uuid);
     emit_acp_update(
         app_handle,
+        Some(app),
         Some(app),
         project_id,
         task_uuid,
@@ -6229,10 +6303,11 @@ fn emit_acp_event_update(
     event: AcpUiEvent,
     timeline_position: AcpLiveTimelinePosition,
 ) {
-    let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
+    let activity = activity_app.and_then(|app| conversation_task_live_activity_vm(app, task_id));
     emit_acp_update(
         app_handle,
         None,
+        activity_app,
         project_id,
         task_uuid,
         task_id,
@@ -6249,12 +6324,11 @@ fn emit_acp_event_update(
     );
 }
 
-fn conversation_task_prompt_activity_vm(
+fn conversation_task_live_activity_vm(
     app: &App,
     task_id: &str,
 ) -> Option<ConversationTaskActivityVm> {
-    client::prompt_activity_under(&app.paths.task_dir(task_id))
-        .map(conversation_task_activity_from_prompt)
+    crate::view_models_conversation::conversation_task_live_activity(&app.paths.task_dir(task_id))
 }
 
 fn acp_timeline_position_fields(
@@ -6269,6 +6343,7 @@ fn acp_timeline_position_fields(
 fn emit_acp_update(
     app_handle: &AppHandle,
     app: Option<&App>,
+    control_app: Option<&App>,
     project_id: Option<String>,
     task_uuid: Option<String>,
     task_id: &str,
@@ -6283,6 +6358,10 @@ fn emit_acp_update(
     timeline_position: Option<AcpLiveTimelinePosition>,
     activity: Option<ConversationTaskActivityVm>,
 ) {
+    let activity_app_control = control_app.and_then(|app| {
+        let path = resolve_acp_attempt_dir(app, task_id, run_id, round_id, node_id, attempt_id, outer_node_id.as_deref(), outer_attempt_id.as_deref());
+        client::direct_background_control(&path)
+    });
     let branch_id = event
         .as_ref()
         .map(gold_band::acp::branches::event_branch_id);
@@ -6339,6 +6418,7 @@ fn emit_acp_update(
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
+            background_control: activity_app_control,
             execution_error: None,
             branch_id,
             timeline_generation,
@@ -7979,6 +8059,24 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             project_id_for_spawn.clone(),
             Some(app.clone_for_background()),
             Some(app.lifecycle_bus.clone()),
+        );
+        let direct_context = acp_live_event_context(
+            &task_id_for_live,
+            task_uuid_for_execution.clone(),
+            &run_id_for_live,
+            &round_id_for_live,
+            &node_id_for_live,
+            &attempt_id_for_live,
+            None,
+            None,
+        );
+        let direct_live_update = live_update.clone();
+        let owned_direct_context = direct_context.clone();
+        app.register_acp_direct_session(
+            &direct_context,
+            Some(Arc::new(move |event, position| {
+                direct_live_update(owned_direct_context.clone(), event.clone(), position)
+            })),
         );
         let session_update = app.acp_session_update_for(acp_live_event_context(
             &task_id_for_live,
@@ -11568,6 +11666,27 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    #[test]
+    fn terminal_result_event_carries_task_activity_for_sidebar_ordering() {
+        let event = ConversationTerminalResultUpdatedEventVm {
+            project_id: "project-001".into(),
+            task_id: "task-001".into(),
+            unread_terminal_result: ConversationTerminalResultVm {
+                event_id: "background:1".into(),
+                run_id: "run-001".into(),
+                kind: ConversationTerminalResultKind::NewMessage,
+                occurred_at: "2026-10-10T06:00:00Z".into(),
+            },
+            task_activity_at: Some("2026-10-10T06:00:00Z".into()),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["taskActivityAt"], "2026-10-10T06:00:00Z");
+        assert_eq!(value["unreadTerminalResult"]["kind"], "new-message");
+
+        let without_activity = ConversationTerminalResultUpdatedEventVm { task_activity_at: None, ..event };
+        assert!(serde_json::to_value(&without_activity).unwrap()["taskActivityAt"].is_null());
+    }
+
     fn active_stop_test_fixture(
         root: &std::path::Path,
     ) -> (
@@ -12826,6 +12945,7 @@ mod tests {
         let (timeline_generation, timeline_revision) =
             acp_timeline_position_fields(Some(AcpLiveTimelinePosition::transient(7)));
         let envelope = AcpSessionUpdatedEventVm {
+            background_control: None,
             execution_error: None,
             branch_id: Some("root".to_string()),
             timeline_generation,
@@ -12871,6 +12991,7 @@ mod tests {
     #[test]
     fn acp_session_update_serializes_lightweight_prompt_activity_and_terminal_clear() {
         let active = AcpSessionUpdatedEventVm {
+            background_control: None,
             execution_error: None,
             branch_id: None,
             timeline_generation: None,
@@ -12903,6 +13024,7 @@ mod tests {
         assert_eq!(active_json["taskActivityAt"], "2026-08-29T12:00:00Z");
 
         let terminal = AcpSessionUpdatedEventVm {
+            background_control: None,
             execution_error: None,
             branch_id: None,
             timeline_generation: None,

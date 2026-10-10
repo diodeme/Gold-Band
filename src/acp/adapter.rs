@@ -60,6 +60,15 @@ pub(crate) fn apply_session_execution_policy(
     method: &str,
     params: &mut Value,
 ) -> Result<()> {
+    apply_session_execution_policy_for_surface(agent_capabilities, method, params, false)
+}
+
+pub(crate) fn apply_session_execution_policy_for_surface(
+    agent_capabilities: Option<&Value>,
+    method: &str,
+    params: &mut Value,
+    allow_background: bool,
+) -> Result<()> {
     if !is_session_options_method(method)
         || !agent_capabilities.is_some_and(supports_claude_code_session_options)
     {
@@ -75,6 +84,14 @@ pub(crate) fn apply_session_execution_policy(
     let options = options
         .as_object_mut()
         .ok_or_else(|| InvalidSessionOptions::expected("options", "object"))?;
+    if allow_background {
+        options.entry(THINKING_OPTION).or_insert_with(|| {
+            json!({
+                "type": THINKING_TYPE_ADAPTIVE, "display": THINKING_DISPLAY_SUMMARIZED,
+            })
+        });
+        return Ok(());
+    }
     let tools = options
         .entry("disallowedTools")
         .or_insert_with(|| json!([]));
@@ -400,6 +417,35 @@ mod tests {
 
     fn claude_code_capabilities() -> Value {
         json!({ "_meta": { "claudeCode": { "promptQueueing": true } } })
+    }
+
+    #[test]
+    fn direct_session_policy_allows_background_without_changing_workflow_defaults() {
+        for method in [
+            "session/new",
+            "session/load",
+            "session/resume",
+            "session/fork",
+        ] {
+            let mut params = json!({"cwd":"D:/work"});
+            super::apply_session_execution_policy_for_surface(
+                Some(&claude_code_capabilities()),
+                method,
+                &mut params,
+                true,
+            )
+            .unwrap();
+            let options = params.pointer("/_meta/claudeCode/options").unwrap();
+            assert!(options.get("disallowedTools").is_none());
+            assert!(options.get("env").is_none());
+            assert_eq!(options["thinking"]["type"], "adaptive");
+            apply_session_execution_policy(Some(&claude_code_capabilities()), method, &mut params)
+                .unwrap();
+            assert_eq!(
+                params.pointer("/_meta/claudeCode/options/disallowedTools"),
+                Some(&json!(["Monitor"]))
+            );
+        }
     }
 
     #[test]

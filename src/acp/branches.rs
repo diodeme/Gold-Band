@@ -188,6 +188,48 @@ fn prompt_turn_is_terminal(
         .unwrap_or(!session_active)
 }
 
+fn background_launch_is_live(launch: &AcpUiEvent, launches: &HashMap<String, AcpUiEvent>, session_status: &str) -> bool {
+    if matches!(session_status, "failed" | "stopped" | "cancelled" | "error") {
+        return false;
+    }
+    let mut current = launch;
+    let mut visited = HashSet::new();
+    loop {
+        if current.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")).and_then(Value::as_bool) == Some(true) {
+            return true;
+        }
+        let parent = event_branch_id(current);
+        if !visited.insert(parent.clone()) { return false; }
+        let Some(next) = launches.get(&parent) else { return false; };
+        current = next;
+    }
+}
+
+/// A background-owned execution has no prompt terminal; an accepted background
+/// stop recorded after its launch and its latest activity interrupts it. Later
+/// activity means the Agent ignored the stop and keeps it live.
+fn background_stop_interrupts(
+    background_live: bool,
+    launch: &AcpUiEvent,
+    latest_execution_seq: Option<u64>,
+    latest_background_cancel: Option<&(u64, String)>,
+) -> bool {
+    background_live
+        && latest_background_cancel.is_some_and(|(cancel_seq, _)| {
+            *cancel_seq >= launch.started_seq.unwrap_or(launch.seq)
+                && latest_execution_seq.is_none_or(|seq| *cancel_seq >= seq)
+        })
+}
+
+#[cfg(test)]
+fn latest_background_cancel_from_events(events: &[AcpUiEvent]) -> Option<(u64, String)> {
+    events
+        .iter()
+        .filter(|event| crate::acp::events::is_background_cancel_marker(event))
+        .max_by_key(|event| event.seq)
+        .map(|event| (event.seq, event.timestamp.clone()))
+}
+
 fn prompt_turn_ended_at(
     ownership: Option<(usize, u64)>,
     prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
@@ -1143,6 +1185,7 @@ pub fn rebuild_agent_index(
         merge_agent_launch(&mut launches, event.clone());
     }
     let prompt_turns = prompt_turn_projection_from_events(&all_events);
+    let latest_background_cancel = latest_background_cancel_from_events(&all_events);
     let launches_by_execution_id = launches
         .values()
         .map(|launch| {
@@ -1194,8 +1237,17 @@ pub fn rebuild_agent_index(
             let failed = matches!(launch_status.as_str(), "failed" | "error");
             let owning_turn =
                 owning_prompt_turn_index(&launch, &launches_by_execution_id, &prompt_turns);
-            let owning_turn_terminal =
-                prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
+            let background_live =
+                background_launch_is_live(&launch, &launches_by_execution_id, session_status);
+            let background_stopped = background_stop_interrupts(
+                background_live,
+                &launch,
+                latest_seq,
+                latest_background_cancel.as_ref(),
+            );
+            let owning_turn_terminal = background_stopped
+                || !background_live
+                    && prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
             let has_attention =
                 branch_has_pending_interaction(&branch_events) && !owning_turn_terminal;
             let status = if failed {
@@ -1219,7 +1271,13 @@ pub fn rebuild_agent_index(
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let updated_at = (status == "interrupted")
-                .then(|| prompt_turn_ended_at(owning_turn, &prompt_turns))
+                .then(|| {
+                    if background_stopped {
+                        latest_background_cancel.as_ref().map(|(_, at)| at.clone())
+                    } else {
+                        prompt_turn_ended_at(owning_turn, &prompt_turns)
+                    }
+                })
                 .flatten()
                 .or(latest_timestamp)
                 .unwrap_or_else(|| {
@@ -1339,8 +1397,17 @@ pub fn indexed_agent_index(
             let failed = matches!(launch_status.as_str(), "failed" | "error");
             let owning_turn =
                 owning_prompt_turn_index(&launch, &launches_by_execution_id, &prompt_turns);
-            let owning_turn_terminal =
-                prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
+            let background_live =
+                background_launch_is_live(&launch, &launches_by_execution_id, session_status);
+            let background_stopped = background_stop_interrupts(
+                background_live,
+                &launch,
+                projection.and_then(|projection| projection.latest_seq),
+                root.latest_background_cancel.as_ref(),
+            );
+            let owning_turn_terminal = background_stopped
+                || !background_live
+                    && prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
             let has_attention = projection
                 .is_some_and(|projection| projection.has_pending_interaction)
                 && !owning_turn_terminal;
@@ -1360,7 +1427,13 @@ pub fn indexed_agent_index(
             .to_string();
             let input = launch.raw.as_ref().and_then(tool_raw_input);
             let updated_at = (status == "interrupted")
-                .then(|| prompt_turn_ended_at(owning_turn, &prompt_turns))
+                .then(|| {
+                    if background_stopped {
+                        root.latest_background_cancel.as_ref().map(|(_, at)| at.clone())
+                    } else {
+                        prompt_turn_ended_at(owning_turn, &prompt_turns)
+                    }
+                })
                 .flatten()
                 .or_else(|| projection.and_then(|projection| projection.latest_timestamp.clone()))
                 .unwrap_or_else(|| {
@@ -2449,6 +2522,48 @@ mod tests {
         assert_eq!(records[0].status, "queued");
         assert_eq!(records[0].event_count, 0);
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn agent_launched_after_end_turn_is_not_interrupted_by_that_turn() {
+        let attempt = temp_attempt("after-end-turn");
+        let mut launch = event_at("launch", 10, "toolCall", Some("provider-child"), Some("pending"), json!({"agentLaunch": true}), Some(json!({"prompt":"inspect"})));
+        launch.raw.as_mut().unwrap()["_meta"]["goldBandBackground"] = json!(true);
+        let text = event_at("child", 11, "thoughtDelta", None, None, json!({"parentToolCallId":"provider-child"}), None);
+        persist_partitioned(&attempt, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch, text]);
+        assert_eq!(rebuild_agent_index(&attempt, "completed").unwrap()[0].status, "running");
+        assert_eq!(indexed_agent_index(&attempt, "completed").unwrap()[0].status, "running");
+        assert_eq!(indexed_agent_index(&attempt, "cancelled").unwrap()[0].status, "interrupted");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn accepted_background_stop_interrupts_background_agent_until_it_continues() {
+        let launch = || {
+            let mut launch = event_at("launch", 10, "toolCall", Some("provider-child"), Some("pending"), json!({"agentLaunch": true}), Some(json!({"prompt":"inspect"})));
+            launch.raw.as_mut().unwrap()["_meta"]["goldBandBackground"] = json!(true);
+            launch
+        };
+        let child = |id: &str, seq| event_at(id, seq, "thoughtDelta", None, None, json!({"parentToolCallId":"provider-child"}), None);
+        let stop = crate::acp::events::background_cancel_marker_event(12, Some("session".into()));
+        let status = |attempt: &Utf8Path| {
+            let rebuilt = rebuild_agent_index(attempt, "completed").unwrap()[0].clone();
+            let indexed = indexed_agent_index(attempt, "completed").unwrap()[0].clone();
+            assert_eq!(rebuilt.status, indexed.status, "full rebuild and index projection agree");
+            indexed
+        };
+
+        let stopped = temp_attempt("background-stop");
+        persist_partitioned(&stopped, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch(), child("child", 11), stop.clone()]);
+        let record = status(&stopped);
+        assert_eq!(record.status, "interrupted");
+        assert_eq!(record.ended_at.as_deref(), Some(stop.timestamp.as_str()));
+        std::fs::remove_dir_all(stopped.as_std_path()).unwrap();
+
+        let ignored = temp_attempt("background-stop-ignored");
+        persist_partitioned(&ignored, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch(), child("child", 11), stop, child("child-after-stop", 13)]);
+        assert_eq!(status(&ignored).status, "running");
+        std::fs::remove_dir_all(ignored.as_std_path()).unwrap();
     }
 
     #[test]

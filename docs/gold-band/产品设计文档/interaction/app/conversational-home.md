@@ -223,7 +223,7 @@
 - run 选中态必须使用 `projectId + taskId + runId` 组合身份判断，不能只比较 `runId`；不同会话中同名 run 只允许当前会话对应项显示选中态
 
 ### 排序规则
-- 最近对话活动排序：同一 workspace 内所有 Direct、Workflow、AUTO Task 按 `updatedAt DESC, taskId DESC` 分页。Task 创建成功时初始化活动时间；用户 Prompt 成功写入持久队列或 durable turn admission 后更新一次；Agent Turn 正常结束、失败、异常中断或用户停止并成功写入 terminal canonical 状态后再更新一次。重复提交、校验/持久化失败、仅查看、标题更新、Run 启动/恢复、流式 delta、工具进度、诊断、迁移和启动恢复不得推进活动时间。
+- 最近对话活动排序：同一 workspace 内所有 Direct、Workflow、AUTO Task 按 `updatedAt DESC, taskId DESC` 分页。Task 创建成功时初始化活动时间；用户 Prompt 成功写入持久队列或 durable turn admission 后更新一次；Agent Turn 正常结束、失败、异常中断或用户停止并成功写入 terminal canonical 状态后再更新一次；保留 Direct 会话每条新后台回复写入未读记录后更新一次，并经 terminal-result 事件的 `taskActivityAt` 实时重排侧栏。重复提交、校验/持久化失败、仅查看、标题更新、Run 启动/恢复、流式 delta、工具进度、诊断、迁移和启动恢复不得推进活动时间。
 - `authoring/conversation.json.lastActivityAt` 是 Task 最近对话活动的 canonical 字段，SQLite `tasks.updated_at` 是其可重建排序投影。写入顺序固定为先成功写 canonical，再以单调时间更新 SQLite；迟到事件不得把两者任一时间回退。索引失败只造成排序暂时陈旧，不改变 Prompt/终态操作的成功事实。
 - durable accepted 或 terminal 写入后的轻量 ACP session update 可携带 `taskActivityAt`；前端仅在该时间严格前进时更新 Task 相对时间并把工作空间内该 Task 移到首位，置顶区仍保持手动顺序。普通 timeline/stream event 不读取 Task 元数据且不携带该字段，同值 session update 不重排、不扩大渲染范围。
 - Run 历史继续按稳定递减 `runId` 分页，`latestRun` 指向最新序号 Run；Run `updatedAt` 不参与 Task 排序。时间展示、SQLite 投影合并和 cursor 生成必须先把内部 Unix 秒时间戳（如 `1780000000Z`）、RFC 3339 和历史本地日期时间归一化为时间值，禁止直接比较原始字符串。

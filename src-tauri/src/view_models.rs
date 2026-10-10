@@ -991,6 +991,7 @@ pub struct AcpSessionTimingVm {
 pub enum AcpPromptInteractionVm {
     Permission {
         interaction_id: String,
+        session_id: Option<String>,
         turn_id: Option<String>,
         prompt_event_id: Option<String>,
         title: String,
@@ -1000,6 +1001,7 @@ pub enum AcpPromptInteractionVm {
     },
     Elicitation {
         interaction_id: String,
+        session_id: Option<String>,
         turn_id: Option<String>,
         prompt_event_id: Option<String>,
         message: String,
@@ -7335,6 +7337,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
         .collect::<Vec<_>>();
     AcpPromptInteractionVm::Permission {
         interaction_id: request_id,
+        session_id: raw.pointer("/_meta/goldBandConversation/sessionId").and_then(Value::as_str).map(str::to_string),
         turn_id: raw
             .pointer("/_meta/goldBandConversation/turnId")
             .or_else(|| raw.get("turnId"))
@@ -7394,6 +7397,7 @@ fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
     AcpPromptInteractionVm::Elicitation {
         interaction_id: event.id.clone(),
+        session_id: raw.pointer("/_meta/goldBandConversation/sessionId").and_then(Value::as_str).map(str::to_string),
         turn_id: raw
             .pointer("/_meta/goldBandConversation/turnId")
             .or_else(|| raw.get("turnId"))

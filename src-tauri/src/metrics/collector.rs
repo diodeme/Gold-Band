@@ -1454,6 +1454,36 @@ mod tests {
     }
 
     #[test]
+    fn direct_background_checkpoint_replaces_snapshot_without_new_follow_up() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let mut terminal = workflow_fact(LifecycleEventType::ExecutionCompleted, "run-001", "round-001", "task-uuid");
+        terminal.session_mode = MetricsSessionMode::Direct;
+        terminal.subject = MetricsSubject::DirectTurn { attempt_id: "task-uuid".into(), attempt_index: 1 };
+        terminal.fact_id = "prompt-a:completed".into();
+        terminal.transition = MetricsTransition::FollowUps { action_ids: vec!["prompt-a".into()] };
+        terminal.payload.usage = Some(TokenUsage { total_tokens: Some(30), ..Default::default() });
+        let initial = store.collect(terminal.clone(), "2026-08-20T00:00:01Z".into(), "test", 1).unwrap();
+        let mut permission = terminal.clone();
+        permission.fact_id = "permission-1".into();
+        permission.event_type = LifecycleEventType::InterventionRequested;
+        permission.payload = Default::default();
+        permission.payload.intervention_kind = Some(gold_band::app::observability::MetricsInterventionKind::Permission);
+        permission.transition = MetricsTransition::PermissionRequested { request_id: "permission-1".into() };
+        store.collect(permission, "2026-08-20T00:00:02Z".into(), "test", 2).unwrap();
+        terminal.fact_id = "background:permission-1".into();
+        terminal.transition = MetricsTransition::None;
+        let updated = store.collect(terminal.clone(), "2026-08-20T00:00:03Z".into(), "test", 3).unwrap();
+        let replay = store.collect(terminal, "2026-08-20T00:00:04Z".into(), "test", 4).unwrap();
+        assert!(updated.event_revision > initial.event_revision);
+        assert_eq!(replay.event_revision, updated.event_revision);
+        assert_eq!(updated.usage.unwrap().total_tokens, Some(30));
+        let counters = updated.counters.unwrap();
+        assert_eq!(counters.permission_request_count, 1);
+        assert_eq!(counters.follow_up_count, 1);
+    }
+
+    #[test]
     fn repeated_terminal_follow_up_projection_is_idempotent() {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();

@@ -15,9 +15,9 @@ mod transition_context;
 
 pub use self::conversation_run::{
     CONVERSATION_METADATA_VERSION, CONVERSATION_SOURCE_CLI, CONVERSATION_SOURCE_DESKTOP,
-    ConversationAgentIdentity, ConversationMetadata, ConversationRunLaunch,
-    ConversationWorkLocation, CreateConversationTaskCommand, CreatedConversationRun,
-    PreparedConversationTask, conversation_auto_title,
+    ConversationAgentIdentity, ConversationMetadata, ConversationResidencyError,
+    ConversationRunLaunch, ConversationWorkLocation, CreateConversationTaskCommand,
+    CreatedConversationRun, PreparedConversationTask, conversation_auto_title,
 };
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
@@ -1916,11 +1916,55 @@ impl App {
         self
     }
 
+    /// Register the owned Direct continuation before every prompt, including desktop follow-ups.
+    pub fn register_acp_direct_session(
+        &self,
+        context: &AcpLiveEventContext,
+        live_update: Option<crate::acp::retention::SessionLiveUpdate>,
+    ) {
+        if context.outer_node_id.is_none() {
+            let metadata_path = self
+                .paths
+                .task_dir(&context.task_id)
+                .join("authoring/conversation.json");
+            if let Ok(metadata) =
+                crate::storage::read_json::<conversation_run::ConversationMetadata>(&metadata_path)
+                && metadata.run_mode == "direct"
+            {
+                crate::acp::client::register_direct_session(
+                    &self.paths.attempt_dir(
+                        &context.task_id,
+                        &context.run_id,
+                        &context.round_id,
+                        &context.node_id,
+                        &context.attempt_id,
+                    ),
+                    crate::acp::retention::DirectSessionRegistration {
+                        project_id: self.paths.project_id.clone(),
+                        task_id: context.task_id.clone(),
+                        resident: metadata.resident,
+                        policy: self.config.acp_direct_session_retention,
+                        live_update,
+                    },
+                );
+            }
+        }
+    }
+
     pub fn acp_live_update_for<'a>(
         &'a self,
         context: AcpLiveEventContext,
     ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, AcpLiveTimelinePosition) -> Result<()> + 'a>
     {
+        let owned_callback = self.acp_live_update.clone().map(|callback| {
+            let context = context.clone();
+            Arc::new(
+                move |event: &crate::acp::events::AcpUiEvent, position: AcpLiveTimelinePosition| {
+                    callback(context.clone(), event.clone(), position)
+                },
+            ) as crate::acp::retention::SessionLiveUpdate
+        });
+        self.register_acp_direct_session(&context, owned_callback);
         let live_update = self.acp_live_update.as_ref()?.clone();
         Some(
             move |event: &crate::acp::events::AcpUiEvent,
@@ -2413,23 +2457,25 @@ impl App {
             DirectTurnLifecycleTransition::Started => None,
             DirectTurnLifecycleTransition::Finished { outcome } => Some(outcome),
         };
+        let previous_terminal = scoped_app.direct_terminal_metrics_fact(&event.context, &task_uuid);
         let attempt_state =
             scoped_app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
                 if terminal_outcome.is_none() {
-                    state.record_started_at(event.occurred_at.clone());
+                    state.record_started_at(previous_terminal.as_ref()
+                        .and_then(|fact| fact.payload.timing.as_ref())
+                        .map(|timing| timing.started_at.clone())
+                        .unwrap_or_else(|| event.occurred_at.clone()));
                     return;
                 }
                 let segments = Self::direct_usage_segments_after(
                     Some(attempt_dir.as_path()),
-                    active_turn.usage_baseline_turn_seq,
+                    0,
                 );
-                for usage in Self::direct_model_usages_from_segments(
+                state.replace_model_usages(Self::direct_model_usages_from_segments(
                     &segments,
                     provider.as_deref(),
                     model.as_deref(),
-                ) {
-                    state.record_model_usage(usage);
-                }
+                ));
                 if segments.is_empty()
                     && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
                 {
@@ -2529,6 +2575,10 @@ impl App {
             });
         }
         if terminal_outcome.is_some() {
+            let path = scoped_app.direct_terminal_metrics_path(&event.context, &active_turn.execution_id);
+            if let Err(error) = write_json(&path, &fact) {
+                tracing::warn!(code = "METRICS_DIRECT_SNAPSHOT_WRITE_FAILED", %error);
+            }
             scoped_app.release_observability_state(&active_turn.execution_id);
             scoped_app.end_metrics_turn(&attempt_key);
         }
@@ -2551,18 +2601,9 @@ impl App {
             direct_conversation_agent_label(&scoped_app, &event.context.task_id).is_some();
         let is_auto = !is_direct && event.context.outer_node_id.is_some();
         let subject = if is_direct {
-            let Some(turn) = scoped_app.active_metrics_turn(&format!("direct:{task_uuid}")) else {
-                tracing::warn!(
-                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
-                    task_id = %event.context.task_id,
-                    run_id = %event.context.run_id,
-                    "Direct intervention has no active metrics turn"
-                );
-                return;
-            };
             observability::MetricsSubject::DirectTurn {
-                attempt_id: turn.attempt_id,
-                attempt_index: turn.attempt_index,
+                attempt_id: task_uuid.clone(),
+                attempt_index: 1,
             }
         } else {
             let Some(subject) =
@@ -2587,7 +2628,7 @@ impl App {
         };
         let mut fact = scoped_app.pending_metrics_fact(
             &event.context.task_id,
-            task_uuid,
+            task_uuid.clone(),
             event.context.run_id.clone(),
             event.context.round_id.clone(),
             observability::LifecycleEventType::InterventionRequested,
@@ -2629,6 +2670,31 @@ impl App {
             _ => observability::MetricsTransition::None,
         };
         scoped_app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+        if is_direct {
+            scoped_app.supplement_direct_metrics(&event.context, &task_uuid, &format!("{:?}:{}", event.kind, event.request_id), &event.occurred_at);
+        }
+    }
+
+    fn direct_terminal_metrics_path(&self, context: &AcpLiveEventContext, task_uuid: &str) -> Utf8PathBuf {
+        self.paths.run_dir(&context.task_id, &context.run_id)
+            .join("observability").join(task_uuid).join("direct-terminal-fact.json")
+    }
+
+    fn direct_terminal_metrics_fact(&self, context: &AcpLiveEventContext, task_uuid: &str) -> Option<observability::PendingMetricsFact> {
+        read_json(&self.direct_terminal_metrics_path(context, task_uuid)).ok()
+    }
+
+    /// A reporting checkpoint is not an ACP Finished event. Preserve the last
+    /// actual prompt outcome/timing; the collector adds current task counters.
+    fn supplement_direct_metrics(&self, context: &AcpLiveEventContext, task_uuid: &str, source_id: &str, occurred_at: &str) {
+        if self.active_metrics_turn(&format!("direct:{task_uuid}")).is_some() {
+            return;
+        }
+        let Some(mut fact) = self.direct_terminal_metrics_fact(context, task_uuid) else { return; };
+        fact.fact_id = format!("direct-background:{}:{source_id}", fact.fact_id);
+        fact.occurred_at = occurred_at.to_owned();
+        fact.transition = observability::MetricsTransition::None;
+        self.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
     }
 
     fn intervention_metrics_subject(
@@ -8177,6 +8243,65 @@ mod tests {
                 action_ids: (1..=5).map(|index| format!("prompt-{index}")).collect(),
             }
         );
+    }
+
+    #[test]
+    fn direct_background_intervention_uses_durable_task_identity() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let (app, task) = direct_metrics_test_fixture(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let app = app.with_lifecycle_bus(observability::RuntimeLifecycleBus::new());
+        let facts = direct_metrics_fact_receiver(&app);
+        let mut run = resumability_run(PauseReason::WaitingForUserInput);
+        run.task_id = task.id.clone();
+        run.task_uuid = task.uuid.clone();
+        run.uuid = Some("run-uuid".into());
+        write_json(&app.paths.run_file(&task.id, &run.id), &run).unwrap();
+        let RuntimeLifecycleEvent::DirectTurnLifecycle(source) = direct_metrics_source_event(&app, &task.id, "last-prompt", "2026-08-26T08:00:00Z", DirectTurnLifecycleTransition::Started) else { unreachable!() };
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsInterventionSource(super::MetricsInterventionSourceEvent {
+            context: source.context,
+            request_id: "background-permission".into(),
+            kind: super::RuntimeInterventionKind::PermissionRequested,
+            occurred_at: source.occurred_at,
+            repo_root: source.repo_root,
+        }));
+        let fact = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(fact.event_type, observability::LifecycleEventType::InterventionRequested);
+        assert_eq!(fact.key.execution_id, task.uuid.clone().unwrap());
+        assert_eq!(fact.subject, observability::MetricsSubject::DirectTurn { attempt_id: task.uuid.unwrap(), attempt_index: 1 });
+    }
+
+    #[test]
+    fn direct_metrics_terminal_snapshots_are_cumulative_across_turns() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let (app, task) = direct_metrics_test_fixture(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let app = app.with_lifecycle_bus(observability::RuntimeLifecycleBus::new());
+        let facts = direct_metrics_fact_receiver(&app);
+        let dir = app.paths.attempt_dir(&task.id, "run-001", "round-001", "direct-agent", "attempt-001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join("acp.prompt-usage.jsonl");
+        for (seq, tokens, expected) in [(1, 10, 10), (2, 20, 30)] {
+            let turn = format!("turn-{seq}");
+            app.emit_lifecycle_event(direct_metrics_source_event(&app, &task.id, &turn, "2026-08-26T08:00:00Z", DirectTurnLifecycleTransition::Started));
+            facts.recv_timeout(Duration::from_secs(2)).unwrap();
+            let RuntimeLifecycleEvent::DirectTurnLifecycle(source) = direct_metrics_source_event(&app, &task.id, &turn, "2026-08-26T08:00:00Z", DirectTurnLifecycleTransition::Started) else { unreachable!() };
+            app.supplement_direct_metrics(&source.context, task.uuid.as_deref().unwrap(), "permission:interleaved", "2026-08-26T08:00:00Z");
+            assert!(facts.try_recv().is_err(), "active prompt owns its completion");
+            crate::acp::usage::append_prompt_started(&journal, &turn, seq, "2026-08-26T08:00:00Z", Some("claude-acp"), Some("model-a")).unwrap();
+            crate::acp::usage::append_prompt_completed(&journal, &turn, seq, "2026-08-26T08:00:01Z", None,
+                &crate::acp::usage::AcpPromptTokenUsage { total_tokens: Some(tokens), ..Default::default() }, Some("claude-acp"), Some("model-a")).unwrap();
+            app.emit_lifecycle_event(direct_metrics_source_event(&app, &task.id, &turn, "2026-08-26T08:00:01Z", DirectTurnLifecycleTransition::Finished { outcome: AcpTurnOutcome::Completed }));
+            let finished = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(finished.payload.usage.as_ref().unwrap().total_tokens, Some(expected));
+            app.supplement_direct_metrics(&source.context, task.uuid.as_deref().unwrap(), "permission:background", "2026-08-26T08:00:02Z");
+            let checkpoint = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(checkpoint.payload.usage.unwrap().total_tokens, Some(expected));
+            assert_eq!(checkpoint.transition, observability::MetricsTransition::None);
+            assert_eq!(checkpoint.payload.outcome, finished.payload.outcome);
+            assert_eq!(checkpoint.payload.timing.unwrap().ended_at, finished.payload.timing.unwrap().ended_at);
+            assert_ne!(checkpoint.fact_id, finished.fact_id);
+        }
     }
 
     #[test]

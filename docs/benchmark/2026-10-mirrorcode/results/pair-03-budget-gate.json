@@ -1,0 +1,23 @@
+{
+  "pair": 3,
+  "status": "not_started_budget_gate",
+  "checked_at": "2026-10-08T07:50:46.537454+08:00",
+  "balance_api_status": "ok",
+  "is_available": true,
+  "currency": "CNY",
+  "balance_cny": "104.84",
+  "highest_completed_pair_offpeak_estimated_cny": "44.77948",
+  "offpeak_margin_threshold_cny": "68",
+  "peak_multiplier": "2",
+  "safety_factor": "1.5",
+  "required_cny": "135",
+  "can_start": false,
+  "reason": "A long run beginning now may overlap peak hours. Conservatively budget the entire pair at peak rates and apply the agreed 1.5 margin. This is not a claim of account exhaustion.",
+  "pricing_source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+  "pricing_checked_on": "2026-10-08",
+  "peak_windows_utc_plus_8": ["09:00-12:00", "14:00-18:00"],
+  "peak_applicability": "Monday-Friday except China statutory public holidays; other periods offpeak. Full-peak estimate used as a conservative bound, not as a billing prediction.",
+  "planned_jobs_not_started": ["mailauth-auto-r3", "mailauth-cc-r3"],
+  "next_action": "Wait for user's funding, margin, or scheduling decision. Do not automatically restart; do not launch round 4.",
+  "existing_containers_removed": false
+}

@@ -1,0 +1,233 @@
+{
+  "benchmark": "MirrorCode",
+  "sample": "mailauth_python",
+  "pair": 2,
+  "runs": [
+    {
+      "arm": "auto",
+      "job": "mailauth-auto-r2",
+      "eval_log": "2026-10-07T15-19-16-00-00_MirrorCode-GoldBand_DsqqdQdQsVzSXLtZxaC8Nx.eval",
+      "eval_id": "k39jgeV76rPH96kAScFLa6",
+      "status": "success",
+      "sample_error": null,
+      "sample_limit": null,
+      "agent_exit_code": "0",
+      "task_version": "0.1.193",
+      "model": "anthropic/deepseek-flash",
+      "eval_started_at": "2026-10-07T15:19:16+00:00",
+      "eval_completed_at": "2026-10-07T23:28:21+00:00",
+      "eval_elapsed_seconds": 29345.0,
+      "usage": {
+        "anthropic/deepseek-flash": {
+          "input_tokens": 2497853,
+          "output_tokens": 3566423,
+          "total_tokens": 699523860,
+          "input_tokens_cache_write": 0,
+          "input_tokens_cache_read": 693459584,
+          "reasoning_tokens": 2309411,
+          "total_cost": null
+        }
+      },
+      "estimated_cost_cny_at_user_offpeak_rates": "30.63273668",
+      "scores": {
+        "all": {
+          "passed": 1552,
+          "failed": 1,
+          "total": 1553,
+          "frac_passed": 0.9993560849967804
+        },
+        "visible": {
+          "passed": 851,
+          "failed": 0,
+          "total": 851,
+          "frac_passed": 1.0
+        },
+        "hidden": {
+          "passed": 701,
+          "failed": 1,
+          "total": 702,
+          "frac_passed": 0.9985754985754985
+        }
+      },
+      "failed_cases_by_subcommand": {
+        "dkim-verify": 1
+      },
+      "metrics": {
+        "all": {
+          "mc/solved": 0.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 0.9993560849967804
+        },
+        "visible": {
+          "mc/solved": 1.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 1.0
+        },
+        "hidden": {
+          "mc/solved": 0.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 0.9985754985754985
+        }
+      },
+      "files": [
+        {
+          "file": "mailauth-auto-r2/logs/2026-10-07T15-19-16-00-00_MirrorCode-GoldBand_DsqqdQdQsVzSXLtZxaC8Nx.eval",
+          "sha256": "77e078163e7967ceb795947531d7890f4f799b7cb7405531a038a18231fbedf5",
+          "bytes": 8707119
+        },
+        {
+          "file": "mailauth-auto-r2/artifacts/mailauth_python.tgz",
+          "sha256": "61e5a6e0665f33b41d70755ca25be4c2195cdfe07a9d198b240101889dd794d6",
+          "bytes": 20807611
+        },
+        {
+          "file": "mailauth-auto-r2/console.log",
+          "sha256": "c4b38c00403bb1aae331c7f82f4f68b860815ee2492375b90f16a1296466f410",
+          "bytes": 12031
+        },
+        {
+          "file": "mailauth-auto-r2/logs/artifacts/AJPesftDAQBa2exB4dLzmq/scored_cases_00000.jsonl",
+          "sha256": "43d5b6ec9a6dcefdbe95cb790e947793c26f1dc4f76621ebffe7772e1bbda7e9",
+          "bytes": 4114586
+        },
+        {
+          "file": "mailauth-auto-r2/logs/artifacts/AJPesftDAQBa2exB4dLzmq/workspace_src_00000.tar",
+          "sha256": "f0a67840139434af0760e6111fcf0d86c7fb69aa9e95d3f36486408ea6b3fa0a",
+          "bytes": 778240
+        }
+      ]
+    },
+    {
+      "arm": "cc",
+      "job": "mailauth-cc-r2",
+      "eval_log": "2026-10-07T15-19-16-00-00_MirrorCode-ClaudeCode_LqzN5k6otR5WoZazgboju3.eval",
+      "eval_id": "C754GH5wHhq3N6vep6kZmn",
+      "status": "success",
+      "sample_error": null,
+      "sample_limit": null,
+      "agent_exit_code": "0",
+      "task_version": "0.1.193",
+      "model": "anthropic/deepseek-flash",
+      "eval_started_at": "2026-10-07T15:19:16+00:00",
+      "eval_completed_at": "2026-10-07T17:49:08+00:00",
+      "eval_elapsed_seconds": 8992.0,
+      "usage": {
+        "anthropic/deepseek-flash": {
+          "input_tokens": 899171,
+          "output_tokens": 1334839,
+          "total_tokens": 397644826,
+          "input_tokens_cache_write": 0,
+          "input_tokens_cache_read": 395410816,
+          "reasoning_tokens": 915321,
+          "total_cost": null
+        }
+      },
+      "estimated_cost_cny_at_user_offpeak_rates": "14.14674332",
+      "scores": {
+        "all": {
+          "passed": 1553,
+          "failed": 0,
+          "total": 1553,
+          "frac_passed": 1.0
+        },
+        "visible": {
+          "passed": 851,
+          "failed": 0,
+          "total": 851,
+          "frac_passed": 1.0
+        },
+        "hidden": {
+          "passed": 702,
+          "failed": 0,
+          "total": 702,
+          "frac_passed": 1.0
+        }
+      },
+      "failed_cases_by_subcommand": {},
+      "metrics": {
+        "all": {
+          "mc/solved": 1.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 1.0
+        },
+        "visible": {
+          "mc/solved": 1.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 1.0
+        },
+        "hidden": {
+          "mc/solved": 1.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 1.0
+        }
+      },
+      "files": [
+        {
+          "file": "mailauth-cc-r2/logs/2026-10-07T15-19-16-00-00_MirrorCode-ClaudeCode_LqzN5k6otR5WoZazgboju3.eval",
+          "sha256": "1f99c2478f948ce9a90d370d358c57273b21af92105eff01ed9b2137d1e7efa0",
+          "bytes": 4012411
+        },
+        {
+          "file": "mailauth-cc-r2/artifacts/mailauth_python.tgz",
+          "sha256": "4dab6a5c7f3121749662ac406459c1c08f5ca7b976331f2cba7ebdfd3b24287e",
+          "bytes": 5414328
+        },
+        {
+          "file": "mailauth-cc-r2/console.log",
+          "sha256": "42fca8b4f0d3cbeed99e2ec75e4ca4270280f9cc751c1d2702b8ae6250c875b6",
+          "bytes": 13951
+        },
+        {
+          "file": "mailauth-cc-r2/logs/artifacts/oKnAVxeuCJGtTjEBMHXn6G/scored_cases_00000.jsonl",
+          "sha256": "5c85409eaa639d8ae083bbb36249d5ca390a42e08005d2494bb3e449640c3c3c",
+          "bytes": 4114423
+        },
+        {
+          "file": "mailauth-cc-r2/logs/artifacts/oKnAVxeuCJGtTjEBMHXn6G/workspace_src_00000.tar",
+          "sha256": "c2635ca6d175fcec9d024937f99899e5b01428ee552ce8f7563291049b81fdec",
+          "bytes": 399360
+        }
+      ]
+    }
+  ],
+  "runner_files": [
+    {
+      "file": "runner/gb_mirrorcode.py",
+      "sha256": "551eac13bdae5ad700925afade4c26e530d24e19dec6ddf37daf24b3b5f4d157",
+      "bytes": 16614
+    },
+    {
+      "file": "runner/run.sh",
+      "sha256": "beb68b1584a4d32a78c96994422bb5b2f30ec78bba54832976b34d21be19b9a8",
+      "bytes": 971
+    },
+    {
+      "file": "runner/run-cc.sh",
+      "sha256": "c149fdd2701de36b96b79d5e7ae3e858466d41e8cc0a378c094dd6c647c6a0d9",
+      "bytes": 935
+    },
+    {
+      "file": "runner/prep-bundle.sh",
+      "sha256": "6c9b3605b2a0bd2229bf505b4ff24bd50a22e4216f41f3f6b8ca0ae7cb87652d",
+      "bytes": 1827
+    },
+    {
+      "file": "runner/prep-bundle-cc.sh",
+      "sha256": "309d8b724d93e13a794dc79993ed5bdecb9f2c622b3b617c005df5919eac1384",
+      "bytes": 1677
+    }
+  ],
+  "bundles": {
+    "mc-agent-bundle.tgz": {
+      "sha256": "601e11f777fe3b5ae25772b41a94f8e9efe80d700114a40eceb006c6b062eabe",
+      "bytes": 300513899
+    },
+    "cc-agent-bundle.tgz": {
+      "sha256": "1e17f1a5dcc7b0e6c6d4ab7f0480be5c992e9c2a62f84ff2210d7c8c8212647e",
+      "bytes": 111251440
+    }
+  },
+  "archive_location": "G:\\gb-bench\\archives\\mirrorcode-mailauth\\pair-02",
+  "pair_estimated_cost_cny_at_user_offpeak_rates": "44.77948000",
+  "cost_note": "Estimate using user-supplied offpeak rates: uncached input 1, cache read 0.02, output 4 CNY/million; not a billed amount. Reasoning is included in output."
+}

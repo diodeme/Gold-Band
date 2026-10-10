@@ -206,6 +206,7 @@ export function conversationTerminalResultAcknowledgementTarget(
   sidebar: ConversationSidebarVm,
   page: ConversationPage,
   loadedRun: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid' | 'runId'> | null | undefined,
+  visibility: { foreground: boolean; atBottom: boolean } = { foreground: true, atBottom: true },
 ) {
   if (page.kind !== 'conversation-run'
     || !loadedRun
@@ -214,6 +215,7 @@ export function conversationTerminalResultAcknowledgementTarget(
   }
   const unread = findConversationTask(sidebar, page.projectId, page.taskId)?.unreadTerminalResult;
   if (!unread || unread.runId !== page.runId) return null;
+  if (!visibility.foreground || (unread.eventId.startsWith('background:') && !visibility.atBottom)) return null;
   return {
     projectId: page.projectId,
     taskId: page.taskId,

@@ -2907,6 +2907,7 @@
       "retryRuns": "実行履歴の読み込みに失敗しました。クリックして再試行してください",
       "loadMoreRuns": "実行記録をさらに読み込む",
       "terminalResult": {
+        "new-message": "新しいメッセージ",
         "completed": "完了しましたが、表示されていません",
         "stopped": "停止済み、未表示",
         "failed": "失敗、未表示"
@@ -2937,7 +2938,10 @@
           "noServerWorkspaces": "サーバーには、まだ紐付けできるワークスペースがありません。先に multica Web で作成してください。",
           "allWorkspacesBound": "すべてのリモート ワークスペースはすでにバインドされています。"
         }
-      }
+      },
+      "keepResident": "セッションを常駐させる",
+      "releaseResident": "常駐を解除",
+      "resident": "常駐セッション"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",

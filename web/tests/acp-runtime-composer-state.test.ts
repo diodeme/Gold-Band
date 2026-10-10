@@ -16,7 +16,14 @@ import {
   type AcpRuntimeComposerStateInput,
 } from '@/lib/acp-runtime-composer-state';
 import type { AcpSessionVm, ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
-import { visibleAcpBannerError } from '@/components/acp/ACPChatDialog';
+import { visibleAcpBannerError, settlePendingAcpInteractionsForLifecycle } from '@/components/acp/ACPChatDialog';
+
+it('preserves session-owned background interactions after the previous prompt ended', () => {
+  const background = { requestId: 'background', sessionId: 'session-a', turnId: null };
+  const session = { pendingInteractions: [background, { requestId: 'old', turnId: 'turn-a' }] } as unknown as AcpSessionVm;
+  const lifecycle = { acp: { latestTurnStatus: 'completed', liveTurnActivity: 'idle', stopping: false, turnId: 'turn-a' } } as ConversationAttemptLifecycleVm;
+  expect(settlePendingAcpInteractionsForLifecycle(session, lifecycle)?.pendingInteractions).toEqual([background]);
+});
 
 const pausedDisplay: RuntimeDisplayVm = {
   code: 'paused',
@@ -1454,6 +1461,10 @@ describe('isTerminalAcpLifecycle', () => {
 });
 
 describe('shouldHidePendingAcpInteractions', () => {
+  it('keeps a session-owned background question visible after end_turn', () => {
+    const terminal = lifecycle({ acp: { turnId: 'turn-1', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false } });
+    expect(shouldHidePendingAcpInteractions(terminal, null, false, false, null, 'session-1')).toBe(false);
+  });
   it('hides a stale permission projection as soon as stop is accepted', () => {
     const stopping = lifecycle({ acp: { stopping: true, latestTurnStatus: 'none' } });
 

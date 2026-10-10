@@ -399,8 +399,8 @@ export const desktopApi: RuntimeApi = {
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });
   },
-  stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
-    return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId, backgroundControl, expectedTurnId) {
+    return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, backgroundControl, expectedTurnId });
   },
   submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome) {
     return invokeCommand('submit_manual_check', { projectId, taskId, runId, roundId, nodeId, attemptId, outcome });
@@ -756,6 +756,9 @@ export const desktopApi: RuntimeApi = {
   },
   deleteConversationTask(projectId, taskId) {
     return invokeCommand<ConversationSidebarBootstrapVm>('delete_conversation_task', { projectId, taskId });
+  },
+  setConversationResident(projectId, taskId, resident) {
+    return invokeCommand<ConversationTaskRowVm>("set_conversation_resident", { projectId, taskId, resident });
   },
   pinConversation(projectId, taskId) {
     return invokeCommand<ConversationSidebarBootstrapVm>('pin_conversation', { projectId, taskId });

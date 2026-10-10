@@ -8,6 +8,7 @@ import type {
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
 import { parseTimestamp } from '@/lib/datetime';
 import { findConversationTask } from '@/lib/conversation-task-state';
+import { isDirectBackgroundActive, useDirectBackgroundActive } from '@/lib/acp-background-control';
 
 export type ConversationSidebarRunStateRefreshTarget =
   | { kind: 'workspace-tasks'; projectId: string }
@@ -35,11 +36,17 @@ function isTerminalConversationRunStatus(status: string) {
   return ['completed', 'failed', 'cancelled', 'killed'].includes(status.trim().toLowerCase());
 }
 
+/** Background facts are kept as-is; whether they are still busy is decided at render time. */
+const BACKGROUND_TASK_ACTIVITY_PHASE = 'background';
+
 export function conversationTaskActivityFromLifecycle(
   lifecycle: ConversationAttemptLifecycleVm,
 ): ConversationTaskActivityVm | null {
   if (!lifecycle.runtime.active && lifecycle.acp.liveTurnActivity === 'idle' && !lifecycle.acp.stopping) {
-    return null;
+    const backgroundControl = lifecycle.composer.backgroundControl;
+    return backgroundControl
+      ? { phase: BACKGROUND_TASK_ACTIVITY_PHASE, stopping: false, backgroundControl }
+      : null;
   }
   return {
     phase: lifecycle.acp.stopping
@@ -49,6 +56,34 @@ export function conversationTaskActivityFromLifecycle(
         : lifecycle.runtime.phase ?? lifecycle.composer.processingKind,
     stopping: lifecycle.acp.stopping,
   };
+}
+
+/** A task is active while its prompt turn runs or its retained background is busy. */
+export function isConversationTaskActive(activity: ConversationTaskActivityVm | null | undefined, now: number) {
+  if (!activity) return false;
+  return activity.phase !== BACKGROUND_TASK_ACTIVITY_PHASE
+    || isDirectBackgroundActive(activity.backgroundControl, now);
+}
+
+/** {@link isConversationTaskActive} that re-renders when a background grace window expires. */
+export function useConversationTaskActive(activity: ConversationTaskActivityVm | null | undefined, scope: string) {
+  useDirectBackgroundActive(
+    activity?.phase === BACKGROUND_TASK_ACTIVITY_PHASE ? activity.backgroundControl : null,
+    scope,
+  );
+  return isConversationTaskActive(activity, Date.now());
+}
+
+function sameBackgroundControl(left: ConversationTaskActivityVm, right: ConversationTaskActivityVm) {
+  const a = left.backgroundControl ?? null;
+  const b = right.backgroundControl ?? null;
+  return a === b || Boolean(
+    a && b
+    && a.sessionId === b.sessionId
+    && a.connectionGeneration === b.connectionGeneration
+    && a.activeTools === b.activeTools
+    && a.expiresAtMs === b.expiresAtMs,
+  );
 }
 
 export function conversationTaskActivityFromUpdate(
@@ -77,6 +112,30 @@ export function applyConversationSidebarTaskActivity(
   activity: ConversationTaskActivityVm | null,
   taskActivityAt?: string | null,
 ): ConversationSidebarVm {
+  return projectConversationSidebarTask(sidebar, projectId, taskId, taskActivityAt, (task) => {
+    const currentActivity = task.activity ?? null;
+    const sameActivity = currentActivity === activity
+      || (
+        currentActivity !== null
+        && activity !== null
+        && currentActivity.phase === activity.phase
+        && currentActivity.stopping === activity.stopping
+        && sameBackgroundControl(currentActivity, activity)
+      );
+    return sameActivity ? task : { ...task, activity };
+  });
+}
+
+// Projects one task-row change into pinned and workspace lists. A newer
+// task activity time is the only reorder signal: the row's lastActivityAt
+// advances and it moves to the front of its workspace list.
+function projectConversationSidebarTask(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+  taskId: string,
+  taskActivityAt: string | null | undefined,
+  transform: (task: ConversationTaskRowVm) => ConversationTaskRowVm,
+): ConversationSidebarVm {
   const activityTimeAdvanced = (task: ConversationTaskRowVm) => {
     if (!taskActivityAt || task.projectId !== projectId || task.taskId !== taskId) return false;
     const current = parseTimestamp(task.lastActivityAt)?.getTime() ?? Number.NEGATIVE_INFINITY;
@@ -85,27 +144,8 @@ export function applyConversationSidebarTaskActivity(
   };
   const updateTask = (task: ConversationTaskRowVm) => {
     if (task.projectId !== projectId || task.taskId !== taskId) return task;
-    const currentActivity = task.activity ?? null;
-    const timestampAdvanced = activityTimeAdvanced(task);
-    if (
-      !timestampAdvanced
-      && (
-        currentActivity === activity
-        || (
-          currentActivity !== null
-          && activity !== null
-          && currentActivity.phase === activity.phase
-          && currentActivity.stopping === activity.stopping
-        )
-      )
-    ) {
-      return task;
-    }
-    return {
-      ...task,
-      activity,
-      lastActivityAt: timestampAdvanced ? taskActivityAt : task.lastActivityAt,
-    };
+    const next = transform(task);
+    return activityTimeAdvanced(task) ? { ...next, lastActivityAt: taskActivityAt } : next;
   };
 
   const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
@@ -150,26 +190,13 @@ function applyConversationSidebarTaskTerminalResult(
   projectId: string,
   taskId: string,
   update: (current: ConversationTerminalResultVm | null) => ConversationTerminalResultVm | null,
+  taskActivityAt?: string | null,
 ): ConversationSidebarVm {
-  const updateTask = (task: ConversationTaskRowVm) => {
-    if (task.projectId !== projectId || task.taskId !== taskId) return task;
+  return projectConversationSidebarTask(sidebar, projectId, taskId, taskActivityAt, (task) => {
     const current = task.unreadTerminalResult ?? null;
     const next = update(current);
     return sameTerminalResult(current, next) ? task : { ...task, unreadTerminalResult: next };
-  };
-  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
-  const workspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
-  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
-  const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
-  const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
-  if (!pinnedChanged && !workspaceChanged) return sidebar;
-  return {
-    ...sidebar,
-    pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
-    tasksByWorkspace: workspaceChanged
-      ? { ...sidebar.tasksByWorkspace, [projectId]: nextWorkspaceTasks }
-      : sidebar.tasksByWorkspace,
-  };
+  });
 }
 
 export function applyConversationSidebarTerminalResultUpdate(
@@ -181,6 +208,7 @@ export function applyConversationSidebarTerminalResultUpdate(
     event.projectId,
     event.taskId,
     () => event.unreadTerminalResult,
+    event.taskActivityAt,
   );
 }
 

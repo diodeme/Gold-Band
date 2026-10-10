@@ -2907,6 +2907,7 @@
       "retryRuns": "Falha ao carregar histórico de execuções. Clique para tentar novamente",
       "loadMoreRuns": "Carregar mais execuções",
       "terminalResult": {
+        "new-message": "Nova mensagem",
         "completed": "Concluído, não visualizado",
         "stopped": "Parado, não visualizado",
         "failed": "Falhou, não visualizado"
@@ -2937,7 +2938,10 @@
           "noServerWorkspaces": "Nenhum espaço de trabalho vinculável no servidor ainda. Crie um no multica Web primeiro.",
           "allWorkspacesBound": "Todos os espaços de trabalho remotos já estão vinculados."
         }
-      }
+      },
+      "keepResident": "Manter sessão ativa",
+      "releaseResident": "Permitir liberação da sessão",
+      "resident": "Sessão mantida ativa"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "Adicione um espaço de trabalho local antes de executar um requisito",

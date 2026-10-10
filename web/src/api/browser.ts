@@ -2945,6 +2945,13 @@ export const browserApi: RuntimeApi = {
     browserConversationTasks.delete(_taskId);
     return this.getConversationSidebarBootstrap();
   },
+  setConversationResident(projectId, taskId, resident) {
+    const current = browserConversationTasks.get(taskId);
+    if (!current || current.projectId !== projectId || current.runMode !== "direct") return Promise.reject(new Error("conversation.residency-direct-only"));
+    const task = { ...current, resident };
+    browserConversationTasks.set(taskId, task);
+    return Promise.resolve(task);
+  },
   pinConversation(_projectId, _taskId) {
     const task = browserConversationTasks.get(_taskId);
     if (task) task.pinned = true;

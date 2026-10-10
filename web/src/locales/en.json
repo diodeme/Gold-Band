@@ -2907,6 +2907,7 @@
       "retryRuns": "Run history failed to load. Click to retry",
       "loadMoreRuns": "Load more runs",
       "terminalResult": {
+        "new-message": "New message",
         "completed": "Completed, not viewed",
         "stopped": "Stopped, not viewed",
         "failed": "Execution error, not viewed"
@@ -2937,7 +2938,10 @@
           "noServerWorkspaces": "No bindable workspaces on the server yet. Create one in multica Web first.",
           "allWorkspacesBound": "All remote workspaces are already bound."
         }
-      }
+      },
+      "keepResident": "Keep session running",
+      "releaseResident": "Allow session eviction",
+      "resident": "Kept running"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "Add a local workspace before running a requirement",

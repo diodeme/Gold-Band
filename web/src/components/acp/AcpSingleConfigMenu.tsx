@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -55,6 +56,9 @@ type Props = {
   autoAcceptLabel?: string;
   autoAcceptGroupLabel?: string;
   appName?: string;
+  footer?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 export function resolveAcpSingleConfigMenuValue(value: string) {
@@ -79,6 +83,9 @@ export function AcpSingleConfigMenu({
   autoAcceptLabel,
   autoAcceptGroupLabel,
   appName,
+  footer,
+  open,
+  onOpenChange,
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = formatAcpCompositeSelection(
@@ -96,7 +103,7 @@ export function AcpSingleConfigMenu({
   } = useAcpComposerConfigOverflowTooltip();
 
   return (
-    <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
+    <DropdownMenu open={open} onOpenChange={onOpenChange} modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger
@@ -176,6 +183,7 @@ export function AcpSingleConfigMenu({
             </DropdownMenuCheckboxItem>
           </>
         ) : null}
+        {footer}
       </DropdownMenuContent>
     </DropdownMenu>
   );

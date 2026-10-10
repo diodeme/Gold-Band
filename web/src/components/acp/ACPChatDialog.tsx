@@ -7349,6 +7349,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     availableModels,
     availablePermissionModes,
     modelBoundOptions,
+    selectedModelConfigObserved,
   } = viewModel;
 
   const handlePermissionModeSelect = useCallback(
@@ -7388,6 +7389,8 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         contentSide="top"
         align="start"
         triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
+        agentType={agentType}
+        modelConfigObserved={selectedModelConfigObserved}
         models={availableModels}
         modelValue={modelOverrideId}
         modelValueLabel={modelOverrideName}

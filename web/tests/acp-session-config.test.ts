@@ -1134,3 +1134,33 @@ describe("ACP session config view model", () => {
     expect(viewModel.modelBoundOptions.find((group) => group.id === "effort")?.overrideValue).toBe("high");
   });
 });
+
+describe("ACP session selected model config observation", () => {
+  const live: AcpSessionConfigVm = {
+    modelOverrideId: "grok-4.7",
+    currentModelId: "grok-4.7",
+    configOptions: [{ id: "model", category: "model", currentValue: "grok-4.7", options: [{ value: "grok-4.7", name: "Grok 4.7" }, { value: "grok-4.6", name: "Grok 4.6" }] }],
+  };
+  const observed = (config: AcpSessionConfigVm, agentCatalogs?: Record<string, never[]>) => (
+    createAcpSessionConfigViewModel(config, null, agentCatalogs).selectedModelConfigObserved
+  );
+
+  it("needs no discovery for an unspecified model or the model the live session runs", () => {
+    expect(observed({ ...live, modelOverrideId: null })).toBe(true);
+    expect(observed(live)).toBe(true);
+  });
+
+  it("reports a pending model as unobserved until the session or Agent catalog has it", () => {
+    const pending = { ...live, modelOverrideId: "grok-4.6" };
+    expect(observed(pending)).toBe(false);
+    expect(observed({ ...pending, modelBoundCatalogs: { "grok-4.6": [] } })).toBe(true);
+    expect(observed(pending, { "grok-4.6": [] })).toBe(true);
+    expect(observed(pending, { "grok-4.5": [] })).toBe(false);
+  });
+
+  it("changes the config bar signature when observation changes", () => {
+    const pending = { ...live, modelOverrideId: "grok-4.6" };
+    expect(createAcpSessionConfigViewModel(pending).signature)
+      .not.toBe(createAcpSessionConfigViewModel(pending, null, { "grok-4.6": [] }).signature);
+  });
+});

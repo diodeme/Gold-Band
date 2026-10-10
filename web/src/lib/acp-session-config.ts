@@ -57,6 +57,8 @@ export type AcpSessionConfigViewModel = {
   availablePermissionModes: AcpSessionConfigOption[];
   thoughtLevel: AcpSessionConfigGroup | null;
   modelBoundOptions: AcpSessionConfigGroup[];
+  /** False only when an explicitly selected model has no live, session or Agent-level config observation. */
+  selectedModelConfigObserved: boolean;
   signature: string;
 };
 
@@ -86,10 +88,11 @@ export function createAcpSessionConfigViewModel(
   providerCatalog: AcpProviderConfigCatalog | null | undefined = null,
   authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
 ): AcpSessionConfigViewModel {
+  const agentModelBoundCatalogs = authoringModelBoundCatalogs ?? providerCatalog?.modelBoundCatalogs;
   const projectedCatalog = projectAcpSessionConfigCatalog(
     config,
     providerCatalog,
-    authoringModelBoundCatalogs ?? providerCatalog?.modelBoundCatalogs,
+    agentModelBoundCatalogs,
   );
   const currentModelId = config?.currentModelId ?? null;
   const currentModelName = config?.currentModelName ?? null;
@@ -172,6 +175,7 @@ export function createAcpSessionConfigViewModel(
     availablePermissionModes: projectedAvailablePermissionModes,
     thoughtLevel,
     modelBoundOptions,
+    selectedModelConfigObserved: isSelectedModelConfigObserved(config, agentModelBoundCatalogs),
   };
 
   return {
@@ -326,6 +330,17 @@ function projectBoundConfigOptionsForSelectedModel(
     return spliceBoundOptions(options, bound);
   }
   return options;
+}
+
+function isSelectedModelConfigObserved(
+  config: AcpSessionConfigVm | null | undefined,
+  agentModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+) {
+  const selected = config?.modelOverrideId?.trim();
+  if (!selected) return true;
+  // The live session reports the full config for the model it is running.
+  if (selected === catalogModelCurrentValue(config?.configOptions) || selected === config?.currentModelId) return true;
+  return lookupModelBoundCatalog(selected, config?.modelBoundCatalogs, agentModelBoundCatalogs) !== undefined;
 }
 
 function sessionModelBoundCatalogs(
@@ -557,6 +572,7 @@ function createAcpSessionConfigSignature(
       group.canSelectUnspecified,
       group.options.map(signatureOption),
     ])),
+    selectedModelConfigObserved: viewModel.selectedModelConfigObserved,
   });
 }
 

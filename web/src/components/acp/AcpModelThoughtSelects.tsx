@@ -1,10 +1,10 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown } from 'lucide-react';
 
 import type { AcpModeVm, AcpSelectConfigOptionVm } from '@/types';
 import { cn } from '@/lib/utils';
-import { AcpModelConfigDiscovery } from './AcpModelConfigDiscovery';
+import { AcpModelConfigDiscoveryMenuSection, useAcpModelConfigDiscovery } from './AcpModelConfigDiscovery';
 import { hasObservedAuthoringModel } from '@/lib/acp-composite-config';
 import {
   ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS,
@@ -96,7 +96,10 @@ type ThoughtLevelProps = Omit<AcpSelectConfigOptionVm, "options"> & {
 };
 
 type Props = {
+  /** Enables on-demand model config discovery for this Agent. */
   agentType?: string;
+  /** Callers projecting compositeSections supply this; otherwise derived from configOptions/modelBoundCatalogs. */
+  modelConfigObserved?: boolean;
   models: Array<AcpModeVm & { available?: boolean }>;
   modelValue?: string | null;
   modelValueLabel?: string | null;
@@ -120,17 +123,26 @@ type Props = {
 };
 
 export function AcpModelThoughtSelects(props: Props) {
-  const { agentType, modelValue, configOptions, modelBoundCatalogs, disabled } = props;
-  if (!agentType) {
-    return <AcpModelThoughtSelectsControl {...props} />;
-  }
-  return <div className="flex min-w-0 flex-col gap-1">
-    <AcpModelThoughtSelectsControl {...props} />
-    {modelValue && !hasObservedAuthoringModel(configOptions, modelBoundCatalogs, modelValue)
-      ? <AcpModelConfigDiscovery key={JSON.stringify([agentType, modelValue])} agentType={agentType} modelId={modelValue} disabled={disabled} />
-      : null}
-  </div>;
+  const { agentType, modelValue, configOptions, modelBoundCatalogs, modelConfigObserved } = props;
+  // Owned here so the menu stays open when a fetched catalog switches single -> composite mode.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const discovery = useAcpModelConfigDiscovery(agentType, modelValue);
+  const observed = modelConfigObserved
+    ?? hasObservedAuthoringModel(configOptions, modelBoundCatalogs, modelValue);
+  const showDiscovery = Boolean(agentType && modelValue && !observed);
+  return <AcpModelThoughtSelectsControl
+    {...props}
+    menuOpen={menuOpen}
+    onMenuOpenChange={setMenuOpen}
+    menuFooter={showDiscovery ? <AcpModelConfigDiscoveryMenuSection discovery={discovery} /> : null}
+  />;
 }
+
+type MenuControlProps = {
+  menuOpen: boolean;
+  onMenuOpenChange: (open: boolean) => void;
+  menuFooter: ReactNode;
+};
 
 function AcpModelThoughtSelectsControl({
   models,
@@ -153,9 +165,11 @@ function AcpModelThoughtSelectsControl({
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   triggerClassName,
   disabled = false,
-}: Props) {
+  menuOpen,
+  onMenuOpenChange: setMenuOpen,
+  menuFooter,
+}: Props & MenuControlProps) {
   const { t } = useTranslation();
-  const [menuOpen, setMenuOpen] = useState(false);
   const [openSection, setOpenSection] = useState<string | null>(null);
   const keepMenuOpenRef = useRef(false);
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
@@ -214,6 +228,9 @@ function AcpModelThoughtSelectsControl({
         align={align}
         triggerClassName={triggerClassName}
         disabled={disabled}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        footer={menuFooter}
       />
     ) : null;
   }
@@ -355,6 +372,7 @@ function AcpModelThoughtSelectsControl({
             </DropdownMenuSub>
           );
         })}
+        {menuFooter}
       </DropdownMenuContent>
     </DropdownMenu>
   );

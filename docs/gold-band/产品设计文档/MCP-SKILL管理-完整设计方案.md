@@ -227,6 +227,7 @@ pub fn check_health(&self, id: &str) -> Result<McpServerHealthResult>;
 - stdio：`{ name, command, args, env: [{ name, value }] }`，不带 `type`。
 - HTTP：`{ type: "http", name, url, headers: [{ name, value }] }`。
 - SSE：`{ type: "sse", name, url, headers: [{ name, value }] }`。
+- 内置（managed）MCP 的 ACP `name` 使用定义中的稳定 `id`，不使用可本地化的展示 `name`；代码图谱为 `maling-code-graph`，共享记忆为 `gold-band-memory`。界面保留中文展示名，重命名不改变协议标识。自定义 MCP 保持原有协议名称行为。
 - 不向 ACP `mcpServers` 透传内部 `id`、`transport`、OAuth 配置或对象 map。
 
 ### 2.6 Tauri Commands

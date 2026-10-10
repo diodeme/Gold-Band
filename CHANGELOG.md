@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.19.0](https://github.com/diodeme/Gold-Band/compare/v0.18.0...v0.19.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** the console, command and inspect CLI entry points and the ratatui/crossterm/figlet-rs dependencies are removed.
+
+### Features
+
+* **acp:** add compaction summary workspace viewer ([1c35dcd](https://github.com/diodeme/Gold-Band/commit/1c35dcdac78e47e621dca5ddac05f0e3256ec1cc))
+* **acp:** keep Direct sessions alive for background messages ([7e10214](https://github.com/diodeme/Gold-Band/commit/7e10214b7dcb5f8a5365101eaae5acb95b71e2d4))
+* **ai-dynamic:** hand off long completion text through files ([a0ce333](https://github.com/diodeme/Gold-Band/commit/a0ce333c6cef5bd96dc55ea54a8d3b2dc3434284))
+* **cli:** add headless `gold-band run` and move conversation creation to core ([cc7b1df](https://github.com/diodeme/Gold-Band/commit/cc7b1df1b6a0c6bac0ab0ef85bae7419c49e6210))
+* **cli:** run workflows and continue paused runs headlessly ([d2900c3](https://github.com/diodeme/Gold-Band/commit/d2900c33168ab1ffff0b071b2054fde744e35c23))
+* **markdown:** render Mermaid diagrams with theme-derived colors ([e2e09bc](https://github.com/diodeme/Gold-Band/commit/e2e09bc508d10c79523730c056d811a6caa94228))
+* **markdown:** split chat and document rendering ([d07b2c3](https://github.com/diodeme/Gold-Band/commit/d07b2c333232c8adf441ba5e91348083acd2e016))
+* **markdown:** trust remote image hosts and render GitHub alerts everywhere ([1cbd262](https://github.com/diodeme/Gold-Band/commit/1cbd2628f37ec03021c1bb4090a8c8e41d63f2c8))
+* **updater:** render release notes like GitHub and add Help release notes ([2261d9c](https://github.com/diodeme/Gold-Band/commit/2261d9c7a41eca90fe8e83651d41a012257b0215))
+* **web:** offer model config discovery in the follow-up model menu ([54d89ef](https://github.com/diodeme/Gold-Band/commit/54d89ef3da5f559cc2e6a1d283f6a7766fb45fdb))
+* **web:** show Direct background activity and resident sessions ([3282e47](https://github.com/diodeme/Gold-Band/commit/3282e4769e469625994011bfa52d82b8926f5f18))
+* **workflow-graph:** lay out graphs with ELK and draw dynamic group containers ([2bc69f8](https://github.com/diodeme/Gold-Band/commit/2bc69f8345d5b9f61b60adaa9d1b2ad6f896ee66))
+
+
+### Bug Fixes
+
+* **acp:** keep fetched model configs when Doctor probes fail ([96a3b72](https://github.com/diodeme/Gold-Band/commit/96a3b72a05d7281f8aa5bfe790ccaf5022652c88))
+* **acp:** measure cached reentry freshness by covered revision ([925604b](https://github.com/diodeme/Gold-Band/commit/925604b58f8341bcd181fc9c0497f4efdf2d0980))
+* **acp:** migrate Claude and Codex adapter integrations ([2ac5e60](https://github.com/diodeme/Gold-Band/commit/2ac5e60a21f8bca610e26ed56f730be201cc9bf4))
+* **acp:** notify execution errors before persisting terminal state ([e9cd42a](https://github.com/diodeme/Gold-Band/commit/e9cd42ab79f19d26b0decfcbd9cffaca6b960bd8))
+* **acp:** preserve model settings and add optional config discovery ([e92ff0e](https://github.com/diodeme/Gold-Band/commit/e92ff0ebc9e17c4fc208a75b4b782af5452b5b6e))
+* **acp:** restore live event window instead of stale cached snapshot ([9babd93](https://github.com/diodeme/Gold-Band/commit/9babd93b4e1cf2499c4bbc2a4bed5d23463362b8))
+* **acp:** settle stopped turns and project dynamic leaf errors ([ea4b4eb](https://github.com/diodeme/Gold-Band/commit/ea4b4eb3ddc3b432ad70c2ba7af2d197fe8cfd15))
+* **acp:** validate cached timeline freshness on session reentry ([f451da5](https://github.com/diodeme/Gold-Band/commit/f451da5573db068fe56fe814a3740a0166e46c99))
+* **browser:** resolve local HTML relative assets by real path ([fe71bdf](https://github.com/diodeme/Gold-Band/commit/fe71bdf6b78383b29bc54ed94c2b3d7a272f1b9e))
+* **build:** give each channel its own main binary name ([46e814a](https://github.com/diodeme/Gold-Band/commit/46e814af42b8cee64c93f86be20ea0e8e0e1c4e6))
+* **mcp:** use stable ids as ACP names for managed MCP servers ([c04d134](https://github.com/diodeme/Gold-Band/commit/c04d13464cecf18e14014d141518d2f9d4b2c898))
+* **prompts:** require AI-DYNAMIC acceptance before ending delivery ([affdc43](https://github.com/diodeme/Gold-Band/commit/affdc4351533a256bcc6daddcdaffef6cac0448e))
+* **turn-files:** replay fragment edits and unify recorded file rows ([a44ed7d](https://github.com/diodeme/Gold-Band/commit/a44ed7db7780395db8747f82624d8b2bb4852e83))
+* **turn-files:** strip flattened unified-diff headers from tool texts ([544dcb6](https://github.com/diodeme/Gold-Band/commit/544dcb6e2e8bbc1919f785df407dff4753158595))
+* **workspace:** unify image preview zoom and fit controls ([51968c0](https://github.com/diodeme/Gold-Band/commit/51968c096dbbd78f01f1dfee9a7a68a4b8c4c93b))
+
 ## [0.18.0](https://github.com/diodeme/Gold-Band/compare/v0.17.2...v0.18.0) (2026-09-30)
 
 

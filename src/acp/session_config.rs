@@ -202,58 +202,94 @@ pub fn reconcile_session_config_overrides(
     )
 }
 
-/// Authoring (home / workflow / run-mode) reads last-observed bound catalogs.
-/// `thought_level` / `model_config` belong to `(agent, modelId)`, not to the
-/// Agent. Cursor adapters also keep a process-global current model, so a later
-/// Doctor or live session can observe Luna after an interactive Luna turn.
-/// Remember each model's last bound catalog; never replace Grok's Fast with
-/// Luna's Context, and never hide Luna Fast just because Doctor current is Grok.
-pub fn merge_doctor_authoring_capabilities(previous: Option<&Value>, incoming: Value) -> Value {
-    if !incoming.is_object() {
-        return incoming;
-    }
-    let Some(incoming_options) = incoming.get("configOptions").and_then(Value::as_array) else {
-        return incoming;
-    };
-    let catalogs = collect_model_bound_catalogs(previous, incoming_options, true);
-    let mut merged = incoming;
-    if let Some(object) = merged.as_object_mut() {
-        object.insert(
-            ACP_MODEL_BOUND_CATALOGS_KEY.into(),
-            Value::Object(catalogs.into_iter().collect()),
-        );
-    }
-    merged
+/// Agent-level authoring cache: last observed `thought_level` / `model_config`
+/// rows keyed by model id. These belong to `(agent, modelId)`, not to the
+/// Agent's current Doctor health, so they are stored apart from the diagnostic
+/// snapshot and a failed probe never drops them. Cursor adapters also keep a
+/// process-global current model, so a later Doctor or live session can observe
+/// Luna after an interactive Luna turn: never replace Grok's Fast with Luna's
+/// Context, and never hide Luna Fast just because Doctor current is Grok.
+pub type ModelBoundCatalogs = BTreeMap<String, Value>;
+
+/// Successful Doctor: forget models the Agent no longer lists, then record the
+/// probe's current model. Returns `None` when nothing changed.
+pub fn merge_doctor_model_bound_catalogs(
+    previous: &ModelBoundCatalogs,
+    doctor_capabilities: &Value,
+) -> Option<ModelBoundCatalogs> {
+    let incoming_options = doctor_capabilities
+        .get("configOptions")
+        .and_then(Value::as_array)?;
+    let listed = catalog_model_ids(incoming_options);
+    let mut next: ModelBoundCatalogs = previous
+        .iter()
+        .filter(|(model_id, _)| listed.is_empty() || listed.contains(*model_id))
+        .map(|(model_id, catalog)| (model_id.clone(), catalog.clone()))
+        .collect();
+    observe_session_model_bound_catalog(&mut next, Some(doctor_capabilities));
+    (&next != previous).then_some(next)
 }
 
-/// Session live catalogs feed the authoring cache. They upsert
-/// `modelBoundCatalogs[modelId]` and retarget authoring `configOptions`
-/// currentValue plus bound rows to the live model. Doctor health, model/mode
-/// option lists, and other models' last observations stay; `checked_at` is
-/// owned by the diagnostic snapshot, not this merge.
-pub fn upsert_session_authoring_model_bound_catalog(
-    previous: Option<&Value>,
+/// Session or on-demand observation of one model. Returns `None` when the
+/// fragment has no owner model or the cached rows are unchanged.
+pub fn upsert_session_model_bound_catalog(
+    previous: &ModelBoundCatalogs,
+    live_config_options: &Value,
+) -> Option<ModelBoundCatalogs> {
+    let mut next = previous.clone();
+    observe_session_model_bound_catalog(&mut next, Some(live_config_options)).then_some(next)
+}
+
+/// Session live catalogs retarget the authoring `configOptions` current table:
+/// model currentValue plus bound rows follow the live model. Doctor health and
+/// model/mode option lists stay. Returns `None` when unchanged.
+pub fn retarget_authoring_config_options(
+    previous_capabilities: Option<&Value>,
     live_config_options: &Value,
 ) -> Option<Value> {
-    let previous = previous.filter(|value| value.is_object())?;
+    let previous = previous_capabilities.filter(|value| value.is_object())?;
     let incoming_options = live_config_option_array(live_config_options)?;
-    if catalog_model_current_value(incoming_options).is_none() {
-        return None;
-    }
-    let catalogs = collect_model_bound_catalogs(Some(previous), incoming_options, false);
-    let catalogs = Value::Object(catalogs.into_iter().collect());
+    catalog_model_current_value(incoming_options)?;
     let next_options =
         project_authoring_current_table(previous.get("configOptions"), incoming_options);
-    if previous.get(ACP_MODEL_BOUND_CATALOGS_KEY) == Some(&catalogs)
-        && previous.get("configOptions") == Some(&next_options)
-    {
+    if previous.get("configOptions") == Some(&next_options) {
         return None;
     }
     let mut merged = previous.clone();
-    let object = merged.as_object_mut()?;
-    object.insert(ACP_MODEL_BOUND_CATALOGS_KEY.into(), catalogs);
-    object.insert("configOptions".into(), next_options);
+    merged
+        .as_object_mut()?
+        .insert("configOptions".into(), next_options);
     Some(merged)
+}
+
+/// Read projection for authoring consumers: the health snapshot's capabilities
+/// with the Agent's model catalogs attached. The catalog store is the only
+/// source: a key left in the health snapshot never leaks through. Missing
+/// capabilities stay missing.
+pub fn project_authoring_capabilities(
+    capabilities: Option<Value>,
+    catalogs: Option<&ModelBoundCatalogs>,
+) -> Option<Value> {
+    let mut capabilities = capabilities?;
+    if let Some(object) = capabilities.as_object_mut() {
+        object.remove(ACP_MODEL_BOUND_CATALOGS_KEY);
+        if let Some(catalogs) = catalogs.filter(|catalogs| !catalogs.is_empty()) {
+            object.insert(
+                ACP_MODEL_BOUND_CATALOGS_KEY.into(),
+                Value::Object(catalogs.clone().into_iter().collect()),
+            );
+        }
+    }
+    Some(capabilities)
+}
+
+/// Doctor capabilities as a standalone authoring view (no prior observations).
+pub fn doctor_authoring_capabilities(doctor_capabilities: Value) -> Value {
+    let catalogs =
+        merge_doctor_model_bound_catalogs(&ModelBoundCatalogs::new(), &doctor_capabilities)
+            .unwrap_or_default();
+    project_authoring_capabilities(Some(doctor_capabilities), Some(&catalogs))
+        .unwrap_or(Value::Null)
 }
 
 fn project_authoring_current_table(
@@ -311,53 +347,6 @@ fn live_config_option_array(live_config_options: &Value) -> Option<&[Value]> {
         Value::Object(object) => object.get("configOptions")?.as_array().map(Vec::as_slice),
         _ => None,
     }
-}
-
-fn collect_model_bound_catalogs(
-    previous: Option<&Value>,
-    incoming_options: &[Value],
-    prune_missing_models: bool,
-) -> BTreeMap<String, Value> {
-    let incoming_model = catalog_model_current_value(incoming_options);
-    let incoming_model_ids = catalog_model_ids(incoming_options);
-    let incoming_bound = bound_config_options(incoming_options);
-    let mut catalogs = BTreeMap::<String, Value>::new();
-    if let Some(previous) = previous.filter(|value| value.is_object()) {
-        if let Some(previous_map) = previous
-            .get(ACP_MODEL_BOUND_CATALOGS_KEY)
-            .and_then(Value::as_object)
-        {
-            for (model_id, catalog) in previous_map {
-                let model_id = model_id.trim();
-                if model_id.is_empty() {
-                    continue;
-                }
-                if prune_missing_models
-                    && !incoming_model_ids.is_empty()
-                    && !incoming_model_ids.iter().any(|id| id == model_id)
-                {
-                    continue;
-                }
-                catalogs.insert(model_id.to_string(), catalog.clone());
-            }
-        }
-        if let Some(previous_options) = previous.get("configOptions").and_then(Value::as_array) {
-            if let Some(previous_model) = catalog_model_current_value(previous_options) {
-                let keep_previous = !prune_missing_models
-                    || incoming_model_ids.is_empty()
-                    || incoming_model_ids.iter().any(|id| id == &previous_model);
-                if keep_previous {
-                    catalogs
-                        .entry(previous_model)
-                        .or_insert_with(|| Value::Array(bound_config_options(previous_options)));
-                }
-            }
-        }
-    }
-    if let Some(incoming_model) = incoming_model {
-        catalogs.insert(incoming_model, Value::Array(incoming_bound));
-    }
-    catalogs
 }
 
 fn catalog_model_current_value(options: &[Value]) -> Option<String> {
@@ -1650,48 +1639,43 @@ mod tests {
         json!({ "configOptions": config_options })
     }
 
+    fn observed_catalogs(observations: &[Value]) -> ModelBoundCatalogs {
+        let mut catalogs = ModelBoundCatalogs::new();
+        for observation in observations {
+            observe_session_model_bound_catalog(&mut catalogs, Some(observation));
+        }
+        catalogs
+    }
+
     #[test]
     fn doctor_keeps_previous_and_incoming_model_bound_catalogs() {
-        let previous = capabilities(catalog("grok-4.6", &["low", "high"], true));
+        let previous = observed_catalogs(&[catalog("grok-4.6", &["low", "high"], true)]);
         let incoming = capabilities(luna_catalog(&["none", "low", "medium", "high"], true));
 
-        let merged = merge_doctor_authoring_capabilities(Some(&previous), incoming);
-        let grok = catalog_ids(merged["modelBoundCatalogs"]["grok-4.6"].as_array().unwrap());
-        let luna = catalog_ids(
-            merged["modelBoundCatalogs"]["gpt-5.6-luna"]
-                .as_array()
-                .unwrap(),
-        );
-        let latest = catalog_ids(merged["configOptions"].as_array().unwrap());
+        let merged = merge_doctor_model_bound_catalogs(&previous, &incoming).unwrap();
+        let grok = catalog_ids(merged["grok-4.6"].as_array().unwrap());
+        let luna = catalog_ids(merged["gpt-5.6-luna"].as_array().unwrap());
 
         assert_eq!(grok, vec!["effort", "fast"]);
         assert!(luna.contains(&"reasoning"));
         assert!(luna.contains(&"context"));
         assert!(luna.contains(&"fast"));
-        assert!(latest.contains(&"context"));
-        assert_eq!(
-            catalog_model_current_value(merged["configOptions"].as_array().unwrap()).as_deref(),
-            Some("gpt-5.6-luna")
-        );
     }
 
     #[test]
     fn doctor_stamps_the_incoming_model_bound_catalog_without_previous() {
         let incoming = capabilities(luna_catalog(&["high"], true));
-        let merged = merge_doctor_authoring_capabilities(None, incoming);
-        let luna = catalog_ids(
-            merged["modelBoundCatalogs"]["gpt-5.6-luna"]
-                .as_array()
-                .unwrap(),
-        );
+        let merged =
+            merge_doctor_model_bound_catalogs(&ModelBoundCatalogs::new(), &incoming).unwrap();
+        let luna = catalog_ids(merged["gpt-5.6-luna"].as_array().unwrap());
         assert!(luna.contains(&"context"));
         assert!(luna.contains(&"fast"));
         assert!(luna.contains(&"reasoning"));
     }
 
     #[test]
-    fn doctor_replaces_model_bound_options_when_the_previous_model_is_gone() {
-        let previous = capabilities(catalog("grok-4.6", &["high"], true));
+    fn doctor_forgets_catalogs_of_models_the_agent_no_longer_lists() {
+        let previous = observed_catalogs(&[catalog("grok-4.6", &["high"], true)]);
         let incoming = json!({
             "configOptions": [{
                 "id": "model",
@@ -1704,68 +1688,84 @@ mod tests {
             }]
         });
 
-        let merged = merge_doctor_authoring_capabilities(Some(&previous), incoming);
-        assert!(merged["modelBoundCatalogs"].get("grok-4.6").is_none());
-        assert_eq!(merged["modelBoundCatalogs"]["deepseek-v4-pro"], json!([]));
-        assert_eq!(
-            catalog_model_current_value(merged["configOptions"].as_array().unwrap()).as_deref(),
-            Some("deepseek-v4-pro")
-        );
+        let merged = merge_doctor_model_bound_catalogs(&previous, &incoming).unwrap();
+        assert!(merged.get("grok-4.6").is_none());
+        assert_eq!(merged["deepseek-v4-pro"], json!([]));
     }
 
     #[test]
     fn doctor_refreshes_model_bound_options_when_the_current_model_is_unchanged() {
-        let previous = capabilities(catalog("grok-4.6", &["low"], true));
+        let previous = observed_catalogs(&[catalog("grok-4.6", &["low"], true)]);
         let incoming = capabilities(catalog("grok-4.6", &["low", "high"], true));
 
-        let merged = merge_doctor_authoring_capabilities(Some(&previous), incoming.clone());
+        let merged = merge_doctor_model_bound_catalogs(&previous, &incoming).unwrap();
         assert_eq!(
-            catalog_ids(merged["modelBoundCatalogs"]["grok-4.6"].as_array().unwrap()),
-            vec!["effort", "fast"]
+            merged["grok-4.6"][0]["options"],
+            json!([{ "value": "low" }, { "value": "high" }])
+        );
+        assert!(merge_doctor_model_bound_catalogs(&merged, &incoming).is_none());
+    }
+
+    #[test]
+    fn doctor_without_config_options_leaves_catalogs_untouched() {
+        let previous = observed_catalogs(&[catalog("grok-4.6", &["low"], true)]);
+        assert!(merge_doctor_model_bound_catalogs(&previous, &json!({})).is_none());
+    }
+
+    #[test]
+    fn authoring_projection_attaches_catalogs_only_to_known_capabilities() {
+        let catalogs = observed_catalogs(&[catalog("grok-4.6", &["low"], true)]);
+        assert!(project_authoring_capabilities(None, Some(&catalogs)).is_none());
+
+        let projected =
+            project_authoring_capabilities(Some(json!({ "configOptions": [] })), Some(&catalogs))
+                .unwrap();
+        assert_eq!(
+            projected[ACP_MODEL_BOUND_CATALOGS_KEY]["grok-4.6"],
+            catalogs["grok-4.6"]
         );
         assert_eq!(
-            catalog_ids(incoming["configOptions"].as_array().unwrap())
-                .into_iter()
-                .filter(|id| *id != "model")
-                .collect::<Vec<_>>(),
-            vec!["effort", "fast"]
+            project_authoring_capabilities(Some(json!({ "configOptions": [] })), None),
+            Some(json!({ "configOptions": [] }))
+        );
+        let stale = json!({ "configOptions": [], ACP_MODEL_BOUND_CATALOGS_KEY: { "old": [] } });
+        assert_eq!(
+            project_authoring_capabilities(Some(stale), None),
+            Some(json!({ "configOptions": [] }))
         );
     }
 
-    fn doctor_authoring_capabilities() -> Value {
-        merge_doctor_authoring_capabilities(
-            None,
-            json!({
-                "configOptions": [
-                    {
-                        "id": "model",
-                        "category": "model",
-                        "currentValue": "grok-4.6",
-                        "options": [
-                            { "value": "grok-4.6", "name": "Grok" },
-                            { "value": "gpt-5.6-luna", "name": "Luna" },
-                            { "value": "gpt-5.2", "name": "GPT-5.2" }
-                        ]
-                    },
-                    {
-                        "id": "mode",
-                        "category": "mode",
-                        "currentValue": "agent",
-                        "options": [{ "value": "agent", "name": "Agent" }]
-                    },
-                    {
-                        "id": "effort",
-                        "category": "thought_level",
-                        "options": [{ "value": "low" }, { "value": "high" }]
-                    },
-                    {
-                        "id": "fast",
-                        "category": "model_config",
-                        "options": [{ "value": "false" }, { "value": "true" }]
-                    }
-                ]
-            }),
-        )
+    fn doctor_authoring_capabilities_fixture() -> Value {
+        json!({
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "currentValue": "grok-4.6",
+                    "options": [
+                        { "value": "grok-4.6", "name": "Grok" },
+                        { "value": "gpt-5.6-luna", "name": "Luna" },
+                        { "value": "gpt-5.2", "name": "GPT-5.2" }
+                    ]
+                },
+                {
+                    "id": "mode",
+                    "category": "mode",
+                    "currentValue": "agent",
+                    "options": [{ "value": "agent", "name": "Agent" }]
+                },
+                {
+                    "id": "effort",
+                    "category": "thought_level",
+                    "options": [{ "value": "low" }, { "value": "high" }]
+                },
+                {
+                    "id": "fast",
+                    "category": "model_config",
+                    "options": [{ "value": "false" }, { "value": "true" }]
+                }
+            ]
+        })
     }
 
     fn luna_session_live_catalog() -> Value {
@@ -1805,22 +1805,31 @@ mod tests {
     }
 
     #[test]
-    fn session_live_catalog_upserts_authoring_cache_and_current_table() {
-        let previous = doctor_authoring_capabilities();
+    fn session_live_catalog_upserts_model_cache_and_skips_unchanged() {
+        let doctor = doctor_authoring_capabilities_fixture();
+        let previous =
+            merge_doctor_model_bound_catalogs(&ModelBoundCatalogs::new(), &doctor).unwrap();
         let live = luna_session_live_catalog();
 
-        let merged = upsert_session_authoring_model_bound_catalog(Some(&previous), &live).unwrap();
-        let grok = catalog_ids(merged["modelBoundCatalogs"]["grok-4.6"].as_array().unwrap());
-        let luna = catalog_ids(
-            merged["modelBoundCatalogs"]["gpt-5.6-luna"]
-                .as_array()
-                .unwrap(),
-        );
-        let current = merged["configOptions"].as_array().unwrap();
+        let merged = upsert_session_model_bound_catalog(&previous, &live).unwrap();
+        let grok = catalog_ids(merged["grok-4.6"].as_array().unwrap());
+        let luna = catalog_ids(merged["gpt-5.6-luna"].as_array().unwrap());
 
         assert_eq!(grok, vec!["effort", "fast"]);
         assert!(luna.contains(&"context"));
         assert!(luna.contains(&"reasoning"));
+        assert!(upsert_session_model_bound_catalog(&merged, &live).is_none());
+        assert!(upsert_session_model_bound_catalog(&merged, &json!([{ "id": "fast" }])).is_none());
+    }
+
+    #[test]
+    fn session_live_catalog_retargets_authoring_current_table() {
+        let previous = doctor_authoring_capabilities_fixture();
+        let live = luna_session_live_catalog();
+
+        let merged = retarget_authoring_config_options(Some(&previous), &live).unwrap();
+        let current = merged["configOptions"].as_array().unwrap();
+
         assert_eq!(
             catalog_model_current_value(current).as_deref(),
             Some("gpt-5.6-luna")
@@ -1843,36 +1852,9 @@ mod tests {
                 .and_then(|option| option.get("currentValue").and_then(Value::as_str)),
             Some("agent")
         );
-        assert!(upsert_session_authoring_model_bound_catalog(Some(&merged), &live).is_none());
-        assert!(upsert_session_authoring_model_bound_catalog(None, &live).is_none());
-    }
-
-    #[test]
-    fn session_live_catalog_refreshes_authoring_current_table_when_catalogs_already_cached() {
-        let previous = doctor_authoring_capabilities();
-        let live = luna_session_live_catalog();
-        let mut cached =
-            upsert_session_authoring_model_bound_catalog(Some(&previous), &live).unwrap();
-        cached["configOptions"] = previous["configOptions"].clone();
-
-        let merged = upsert_session_authoring_model_bound_catalog(Some(&cached), &live).unwrap();
-        let current = merged["configOptions"].as_array().unwrap();
-
-        assert_eq!(
-            catalog_model_current_value(current).as_deref(),
-            Some("gpt-5.6-luna")
-        );
-        assert_eq!(
-            catalog_ids(current)
-                .into_iter()
-                .filter(|id| *id != "model")
-                .collect::<Vec<_>>(),
-            vec!["context", "reasoning", "mode"]
-        );
-        assert_eq!(
-            authoring_model_option_values(current),
-            vec!["grok-4.6", "gpt-5.6-luna", "gpt-5.2"]
-        );
+        assert!(merged.get(ACP_MODEL_BOUND_CATALOGS_KEY).is_none());
+        assert!(retarget_authoring_config_options(Some(&merged), &live).is_none());
+        assert!(retarget_authoring_config_options(None, &live).is_none());
     }
 
     #[test]

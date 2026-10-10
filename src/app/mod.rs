@@ -1731,10 +1731,21 @@ impl App {
         {
             return provider_diagnostics;
         }
-        if let Ok(provider_diagnostics) = read_json::<BTreeMap<String, ProviderDiagnosticSnapshot>>(
-            &self.paths.agent_diagnostics_file(),
-        ) && !provider_diagnostics.is_empty()
+        if let Ok(mut provider_diagnostics) = read_json::<
+            BTreeMap<String, ProviderDiagnosticSnapshot>,
+        >(&self.paths.agent_diagnostics_file())
+            && !provider_diagnostics.is_empty()
         {
+            let catalogs = read_json::<
+                BTreeMap<String, crate::acp::session_config::ModelBoundCatalogs>,
+            >(&self.paths.agent_model_catalogs_file())
+            .unwrap_or_default();
+            for (agent_id, diagnostic) in &mut provider_diagnostics {
+                diagnostic.capabilities = crate::acp::session_config::project_authoring_capabilities(
+                    diagnostic.capabilities.take(),
+                    catalogs.get(agent_id),
+                );
+            }
             return provider_diagnostics;
         }
         self.config.provider_diagnostics.clone()
@@ -7298,15 +7309,25 @@ mod tests {
             )]),
         )
         .unwrap();
+        write_json(
+            &app.paths.agent_model_catalogs_file(),
+            &serde_json::json!({
+                "claude-acp": { "sonnet": [{ "id": "effort", "category": "thought_level" }] }
+            }),
+        )
+        .unwrap();
 
         let diagnostics = app.provider_diagnostics();
 
-        let models = crate::provider::supported_models_from_capabilities(
-            diagnostics
-                .get("claude-acp")
-                .and_then(|diagnostic| diagnostic.capabilities.as_ref()),
-        );
+        let capabilities = diagnostics
+            .get("claude-acp")
+            .and_then(|diagnostic| diagnostic.capabilities.as_ref());
+        let models = crate::provider::supported_models_from_capabilities(capabilities);
         assert_eq!(models[0].id, "sonnet");
+        assert_eq!(
+            capabilities.unwrap()["modelBoundCatalogs"]["sonnet"][0]["id"],
+            serde_json::json!("effort")
+        );
     }
 
     #[test]

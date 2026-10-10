@@ -2848,7 +2848,7 @@ pub fn create_agent(
         .update_settings_config(&settings)
         .map_err(command_error)?;
     state
-        .clear_agent_diagnostic(&agent_id)
+        .reset_agent_observations(&agent_id)
         .map_err(command_error)?;
     drop(config_commit_guard);
     schedule_agent_diagnostic(&app_handle, agent_id);
@@ -2894,7 +2894,7 @@ pub fn update_agent(
         .update_settings_config(&settings)
         .map_err(command_error)?;
     state
-        .clear_agent_diagnostic(&agent_id)
+        .reset_agent_observations(&agent_id)
         .map_err(command_error)?;
     drop(config_commit_guard);
     schedule_agent_diagnostic(&app_handle, agent_id);

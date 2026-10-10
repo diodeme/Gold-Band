@@ -5937,6 +5937,11 @@ impl App {
         )
     }
 
+    /// Headless continue of a paused run; returns once the run has settled again.
+    pub fn run_continue_foreground(&self, task_id: &str, run_id: &str) -> Result<RunState> {
+        orchestrator::run_continue_foreground(self, task_id, run_id)
+    }
+
     pub fn submit_manual_check(
         &self,
         task_id: &str,

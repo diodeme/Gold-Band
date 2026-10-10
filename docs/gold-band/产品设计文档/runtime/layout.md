@@ -77,7 +77,8 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
   logs/
     runtime.log
   desktop/
-    agent-diagnostics.json
+    agent-diagnostics.json     # Doctor 健康快照；每次探测整份替换
+    agent-model-catalogs.json  # 各 Agent 已观测的模型绑定配置；Doctor 失败不清除
   doctor/
     acp/                 # 临时 ACP 诊断目录；doctor 成功后删除，失败时只保留有界诊断 bundle
   context/

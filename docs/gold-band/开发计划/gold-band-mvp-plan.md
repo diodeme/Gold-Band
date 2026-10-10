@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-09 已获取的模型配置不再随 Doctor 失败丢失
+
+- 根因：`modelBoundCatalogs` 存在 Doctor 健康快照的 capabilities 里，后台每 60 秒的 Doctor 探测失败时整份替换快照，该 Agent 所有模型的已观测配置被一起清空，菜单重新出现「尚未获取此模型的配置」。本机日志中 claude-acp 当天 3 次 `available=false` 后只剩 haiku / opus 两份目录。属于生命周期不同的两类数据共用同一记录的设计缺陷。
+- [x] 模型配置目录改为独立持久化 `desktop/agent-model-catalogs.json`，由 `DesktopState` 在既有 commit 锁下统一写入：Doctor 成功合并并按模型列表剪枝，Doctor 失败不改动；正式会话观测与「获取模型配置」upsert 对应模型；Agent 新建、修改、删除时清空。`agent-diagnostics.json` 只保存健康快照，读取侧（桌面视图模型、核心 `provider_diagnostics`、ACP 作者态目录）统一投影回 `capabilities.modelBoundCatalogs`，消费方结构不变。删除按旧 `configOptions` 当前模型补种目录的兼容逻辑。
+- [x] 先红后绿：`failed_doctor_keeps_observed_model_catalogs` 在原实现上 Luna 目录为 `Null`，修复后通过；新增独立持久化与重启读回、Agent 配置重置清空、核心文件回退投影，以及 session_config 合并、剪枝、投影单测。桌面 856 个测试全部通过；核心库余下 5 项失败为 `pi-acp` 版本断言与提示文本 CRLF，不经过本改动路径。
+- 性能与过度设计评审：沿用既有锁、写盘方式和读取入口，只多一个按 Agent 分组的 JSON 文件，不新增依赖、队列或状态机；读取投影为每次一份 map clone，规模随模型数线性且很小。
+
 ## 2026-10-08 ACP 重进缓存新鲜度改用 revision 覆盖水位
 
 - 根因：`f451da55` 的新鲜度检查用缓存窗口可见事件的最大 sequence 对比 Router `headSeq`。Router head 计入 usage、session info 等聊天隐藏条目，后端分页（`is_session_timeline_event`）不返回它们，Claude 每轮几乎都以这类条目收尾，窗口永远“落后”，已缓存会话每次重进都显示 loading。task-268 时间线末尾为可见 textDelta seq 12794、usageUpdate 12795、sessionInfo 12796，索引 `coveredRevision` 为 12796。

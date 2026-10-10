@@ -382,7 +382,7 @@ use crate::acp::permission::{
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
     ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, RolledBackSessionConfig,
-    live_catalog_model_id, model_bound_catalogs_from_capabilities_value,
+    ModelBoundCatalogs, live_catalog_model_id,
     observe_session_model_bound_catalog, plan_explicit_session_scalar,
     reconcile_session_config_overrides, retarget_live_model_bound_catalog,
     rolled_back_session_config_params,
@@ -396,7 +396,7 @@ use crate::acp::usage::{
 };
 use crate::config::{
     AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,
-    InteractionMode, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
+    InteractionMode, ManagedAgentId, RuntimeConfig,
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
@@ -8982,14 +8982,10 @@ fn authoring_model_bound_catalogs_for_provider(
     if provider_id.is_empty() {
         return BTreeMap::new();
     }
-    let path = GoldBandPaths::new(workspace_dir).agent_diagnostics_file();
-    let Ok(diagnostics) = read_json::<BTreeMap<String, ProviderDiagnosticSnapshot>>(&path) else {
-        return BTreeMap::new();
-    };
-    diagnostics
-        .get(provider_id)
-        .and_then(|diagnostic| diagnostic.capabilities.as_ref())
-        .map(|capabilities| model_bound_catalogs_from_capabilities_value(Some(capabilities)))
+    let path = GoldBandPaths::new(workspace_dir).agent_model_catalogs_file();
+    read_json::<BTreeMap<String, ModelBoundCatalogs>>(&path)
+        .ok()
+        .and_then(|mut catalogs| catalogs.remove(provider_id))
         .unwrap_or_default()
 }
 

@@ -318,6 +318,12 @@ impl GoldBandPaths {
             .join("desktop/agent-diagnostics.json")
     }
 
+    /// Observed model-bound catalogs per Agent; outlives Doctor health snapshots.
+    pub fn agent_model_catalogs_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_root
+            .join("desktop/agent-model-catalogs.json")
+    }
+
     pub fn agent_command_catalogs_file(&self) -> Utf8PathBuf {
         self.user_gold_band_root
             .join("desktop/agent-command-catalogs.json")

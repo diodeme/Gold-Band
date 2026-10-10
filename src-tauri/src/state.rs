@@ -16,7 +16,8 @@ use gold_band::acp::commands::{
 };
 use gold_band::acp::events::current_timestamp;
 use gold_band::acp::session_config::{
-    merge_doctor_authoring_capabilities, upsert_session_authoring_model_bound_catalog,
+    ModelBoundCatalogs, merge_doctor_model_bound_catalogs, project_authoring_capabilities,
+    retarget_authoring_config_options, upsert_session_model_bound_catalog,
 };
 use gold_band::app::ActiveMetricTurn;
 use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
@@ -305,7 +306,10 @@ pub struct DesktopState {
             crate::scheduled_runtime::power::PlatformSleepInhibitor,
         >,
     >,
+    /// Doctor health snapshots; replaced by every probe.
     agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentId, AgentDiagnosticState>>>,
+    /// Observed model-bound catalogs; owned by the Agent config, not by Doctor health.
+    agent_model_catalogs: Arc<Mutex<BTreeMap<ManagedAgentId, ModelBoundCatalogs>>>,
     agent_diagnostic_runs: AgentDiagnosticRuns,
     agent_config_diagnostic_commit_lock: Mutex<()>,
     scheduled_agent_diagnostics: Mutex<BTreeMap<ManagedAgentId, u64>>,
@@ -333,6 +337,7 @@ pub struct DesktopState {
 impl DesktopState {
     pub fn new(context: DesktopContext) -> Self {
         let persisted_diagnostics = load_persisted_agent_diagnostics(&context);
+        let persisted_model_catalogs = load_persisted_agent_model_catalogs(&context);
         let persisted_command_catalogs = load_persisted_agent_command_catalogs(&context);
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         let runtime_recovery = RuntimeRecoveryCoordinator::new(
@@ -348,6 +353,7 @@ impl DesktopState {
                 ),
             ),
             agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
+            agent_model_catalogs: Arc::new(Mutex::new(persisted_model_catalogs)),
             agent_diagnostic_runs: AgentDiagnosticRuns::default(),
             agent_config_diagnostic_commit_lock: Mutex::new(()),
             scheduled_agent_diagnostics: Mutex::new(BTreeMap::new()),
@@ -511,6 +517,7 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .clone();
         let diagnostics = self.agent_diagnostics.clone();
+        let model_catalogs = self.agent_model_catalogs.clone();
         let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
         Ok(App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
@@ -519,13 +526,9 @@ impl DesktopState {
             .with_runtime_recovery(self.runtime_recovery.clone())
             .with_metrics_collection_enabled(metrics_enabled)
             .with_provider_diagnostics_source(Arc::new(move || {
-                Ok(diagnostics
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-                    .iter()
-                    .map(|(agent_type, diagnostic)| {
-                        (agent_type.as_str().to_string(), diagnostic.clone())
-                    })
+                Ok(project_agent_diagnostics(&diagnostics, &model_catalogs)?
+                    .into_iter()
+                    .map(|(agent_type, diagnostic)| (agent_type.as_str().to_string(), diagnostic))
                     .collect())
             })))
     }
@@ -779,58 +782,83 @@ impl DesktopState {
         Ok(())
     }
 
+    /// Session live catalogs feed the Agent's model catalog cache and retarget
+    /// the authoring current table. Returns whether anything changed.
     pub fn upsert_agent_authoring_model_bound_catalog(
         &self,
         agent_id: &ManagedAgentId,
         live_config_options: &serde_json::Value,
     ) -> Result<bool> {
         let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
-        let snapshot = {
+        self.record_model_bound_observation(agent_id, live_config_options)
+    }
+
+    /// Caller holds the config/diagnostic commit guard.
+    fn record_model_bound_observation(
+        &self,
+        agent_id: &ManagedAgentId,
+        live_config_options: &serde_json::Value,
+    ) -> Result<bool> {
+        let catalogs = {
+            let mut catalogs = self
+                .agent_model_catalogs
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let previous = catalogs.get(agent_id).cloned().unwrap_or_default();
+            upsert_session_model_bound_catalog(&previous, live_config_options).map(|next| {
+                catalogs.insert(agent_id.clone(), next);
+                catalogs.clone()
+            })
+        };
+        if let Some(catalogs) = &catalogs {
+            self.persist_agent_model_catalogs(catalogs)?;
+        }
+        let diagnostics = {
             let mut diagnostics = self
                 .agent_diagnostics
                 .lock()
                 .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-            let Some(current) = diagnostics.get(agent_id).cloned() else {
-                return Ok(false);
-            };
-            let Some(capabilities) = upsert_session_authoring_model_bound_catalog(
-                current.capabilities.as_ref(),
-                live_config_options,
-            ) else {
-                return Ok(false);
-            };
-            diagnostics.insert(
-                agent_id.clone(),
-                ProviderDiagnosticSnapshot {
+            let next = diagnostics.get(agent_id).and_then(|current| {
+                retarget_authoring_config_options(
+                    current.capabilities.as_ref(),
+                    live_config_options,
+                )
+                .map(|capabilities| ProviderDiagnosticSnapshot {
                     capabilities: Some(capabilities),
-                    ..current
-                },
-            );
-            diagnostics.clone()
+                    ..current.clone()
+                })
+            });
+            next.map(|next| {
+                diagnostics.insert(agent_id.clone(), next);
+                diagnostics.clone()
+            })
         };
-        self.persist_agent_diagnostics(&snapshot)?;
-        Ok(true)
+        if let Some(diagnostics) = &diagnostics {
+            self.persist_agent_diagnostics(diagnostics)?;
+        }
+        Ok(catalogs.is_some() || diagnostics.is_some())
     }
 
-    pub fn agent_diagnostics(&self) -> Result<BTreeMap<ManagedAgentId, AgentDiagnosticState>> {
+    fn has_model_bound_catalog(&self, agent_id: &ManagedAgentId, model: &str) -> Result<bool> {
         Ok(self
-            .agent_diagnostics
+            .agent_model_catalogs
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .clone())
+            .get(agent_id)
+            .is_some_and(|catalogs| catalogs.contains_key(model)))
+    }
+
+    /// Health snapshots with the Agent's model catalogs projected into
+    /// `capabilities` for authoring consumers. Never persisted back.
+    pub fn agent_diagnostics(&self) -> Result<BTreeMap<ManagedAgentId, AgentDiagnosticState>> {
+        project_agent_diagnostics(&self.agent_diagnostics, &self.agent_model_catalogs)
     }
 
     pub fn fetch_agent_model_config(&self, agent_id: &ManagedAgentId, model: &str) -> Result<()> {
         // Reuse Doctor's bounded per-Agent exclusion; no lock is held over the probe I/O.
         let _run_guard = self.agent_diagnostic_guard(agent_id)?;
         let expected_config = self.managed_agent_config_revision(agent_id)?;
-        let before = self.agent_diagnostics()?;
-        let cached = before
-            .get(agent_id)
-            .and_then(|item| item.capabilities.as_ref())
-            .and_then(|caps| caps.get("modelBoundCatalogs"))
-            .and_then(|catalogs| catalogs.get(model));
-        if cached.is_some() {
+        if self.has_model_bound_catalog(agent_id, model)? {
             return Ok(());
         }
         let app = self.app()?;
@@ -839,36 +867,14 @@ impl DesktopState {
         if self.managed_agent_config_revision(agent_id)? != expected_config {
             return Err(gold_band::acp::client::ModelConfigUnavailable.into());
         }
-        let mut diagnostics = self
-            .agent_diagnostics
-            .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-        let current = diagnostics
-            .get(agent_id)
-            .ok_or(gold_band::acp::client::ModelConfigUnavailable)?;
         // A live session may have observed this model during the probe. Keep that newer fact.
-        if current
-            .capabilities
-            .as_ref()
-            .and_then(|caps| caps.get("modelBoundCatalogs"))
-            .and_then(|catalogs| catalogs.get(model))
-            .is_some()
-        {
+        if self.has_model_bound_catalog(agent_id, model)? {
             return Ok(());
         }
-        let capabilities =
-            upsert_session_authoring_model_bound_catalog(current.capabilities.as_ref(), &live)
-                .ok_or(gold_band::acp::client::ModelConfigUnavailable)?;
-        let mut next = diagnostics.clone();
-        next.insert(
-            agent_id.clone(),
-            ProviderDiagnosticSnapshot {
-                capabilities: Some(capabilities),
-                ..current.clone()
-            },
-        );
-        self.persist_agent_diagnostics(&next)?;
-        *diagnostics = next;
+        self.record_model_bound_observation(agent_id, &live)?;
+        if !self.has_model_bound_catalog(agent_id, model)? {
+            return Err(gold_band::acp::client::ModelConfigUnavailable.into());
+        }
         Ok(())
     }
 
@@ -972,20 +978,8 @@ impl DesktopState {
         Ok(guard.config.clone())
     }
 
-    #[allow(dead_code)]
-    pub fn clear_agent_diagnostics(&self) -> Result<()> {
-        let snapshot = {
-            let mut diagnostics = self
-                .agent_diagnostics
-                .lock()
-                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-            diagnostics.clear();
-            diagnostics.clone()
-        };
-        self.persist_agent_diagnostics(&snapshot)
-    }
-
-    pub fn clear_agent_diagnostic(&self, agent_id: &ManagedAgentId) -> Result<()> {
+    /// Agent config changed: health and model catalogs both described the old config.
+    pub fn reset_agent_observations(&self, agent_id: &ManagedAgentId) -> Result<()> {
         let snapshot = {
             let mut diagnostics = self
                 .agent_diagnostics
@@ -994,7 +988,16 @@ impl DesktopState {
             diagnostics.remove(agent_id);
             diagnostics.clone()
         };
-        self.persist_agent_diagnostics(&snapshot)
+        self.persist_agent_diagnostics(&snapshot)?;
+        let catalogs = {
+            let mut catalogs = self
+                .agent_model_catalogs
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            catalogs.remove(agent_id);
+            catalogs.clone()
+        };
+        self.persist_agent_model_catalogs(&catalogs)
     }
 
     pub fn prune_agent_diagnostics(&self) -> Result<()> {
@@ -1013,6 +1016,15 @@ impl DesktopState {
             diagnostics.clone()
         };
         self.persist_agent_diagnostics(&snapshot)?;
+        let model_catalogs = {
+            let mut catalogs = self
+                .agent_model_catalogs
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            catalogs.retain(|agent_id, _| managed_agent_ids.contains(agent_id));
+            catalogs.clone()
+        };
+        self.persist_agent_model_catalogs(&model_catalogs)?;
         let catalogs = {
             let mut catalogs = self
                 .agent_command_catalogs
@@ -1151,35 +1163,35 @@ impl DesktopState {
             self.record_agent_commands(agent_id, &app.paths.repo_root, probe.commands.clone())?;
         }
         let diagnostic = diagnostic_state_from_result(probe.doctor);
+        // Only a successful probe can prove a model is gone; failures leave the catalogs alone.
+        let catalogs = match diagnostic.capabilities.as_ref() {
+            Some(capabilities) if diagnostic.available => {
+                let mut catalogs = self
+                    .agent_model_catalogs
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+                let previous = catalogs.get(agent_id).cloned().unwrap_or_default();
+                merge_doctor_model_bound_catalogs(&previous, capabilities).map(|next| {
+                    catalogs.insert(agent_id.clone(), next);
+                    catalogs.clone()
+                })
+            }
+            _ => None,
+        };
+        if let Some(catalogs) = &catalogs {
+            self.persist_agent_model_catalogs(catalogs)?;
+        }
         let snapshot = {
             let mut diagnostics = self
                 .agent_diagnostics
                 .lock()
                 .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-            let diagnostic = if diagnostic.available {
-                let capabilities = merge_doctor_authoring_capabilities(
-                    diagnostics
-                        .get(agent_id)
-                        .and_then(|previous| previous.capabilities.as_ref()),
-                    diagnostic
-                        .capabilities
-                        .clone()
-                        .unwrap_or(serde_json::Value::Null),
-                );
-                ProviderDiagnosticSnapshot {
-                    capabilities: (!capabilities.is_null()).then_some(capabilities),
-                    ..diagnostic
-                }
-            } else {
-                diagnostic
-            };
-            diagnostics.insert(agent_id.clone(), diagnostic.clone());
+            diagnostics.insert(agent_id.clone(), diagnostic);
             diagnostics.clone()
         };
         self.persist_agent_diagnostics(&snapshot)?;
-        snapshot
-            .get(agent_id)
-            .cloned()
+        self.agent_diagnostics()?
+            .remove(agent_id)
             .ok_or_else(|| anyhow::anyhow!("agent diagnostic snapshot missing after persist"))
     }
 
@@ -1481,6 +1493,15 @@ impl DesktopState {
         write_json(&path, diagnostics)
     }
 
+    fn persist_agent_model_catalogs(
+        &self,
+        catalogs: &BTreeMap<ManagedAgentId, ModelBoundCatalogs>,
+    ) -> Result<()> {
+        let repo_root = self.context()?.repo_root;
+        let path = GoldBandPaths::new(repo_root).agent_model_catalogs_file();
+        write_json(&path, catalogs)
+    }
+
     fn persist_agent_command_catalogs(
         &self,
         catalogs: &BTreeMap<String, AcpCommandCatalog>,
@@ -1555,6 +1576,33 @@ fn load_persisted_agent_diagnostics(
 ) -> BTreeMap<ManagedAgentId, AgentDiagnosticState> {
     read_json(&GoldBandPaths::new(context.repo_root.clone()).agent_diagnostics_file())
         .unwrap_or_default()
+}
+
+fn load_persisted_agent_model_catalogs(
+    context: &DesktopContext,
+) -> BTreeMap<ManagedAgentId, ModelBoundCatalogs> {
+    read_json(&GoldBandPaths::new(context.repo_root.clone()).agent_model_catalogs_file())
+        .unwrap_or_default()
+}
+
+fn project_agent_diagnostics(
+    diagnostics: &Mutex<BTreeMap<ManagedAgentId, AgentDiagnosticState>>,
+    model_catalogs: &Mutex<BTreeMap<ManagedAgentId, ModelBoundCatalogs>>,
+) -> Result<BTreeMap<ManagedAgentId, AgentDiagnosticState>> {
+    let mut diagnostics = diagnostics
+        .lock()
+        .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+        .clone();
+    let model_catalogs = model_catalogs
+        .lock()
+        .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+    for (agent_id, diagnostic) in &mut diagnostics {
+        diagnostic.capabilities = project_authoring_capabilities(
+            diagnostic.capabilities.take(),
+            model_catalogs.get(agent_id),
+        );
+    }
+    Ok(diagnostics)
 }
 
 fn load_persisted_agent_command_catalogs(
@@ -2416,6 +2464,17 @@ mod tests {
                     })),
                 },
             );
+            state.agent_model_catalogs.lock().unwrap().insert(
+                agent_id.clone(),
+                ModelBoundCatalogs::from([(
+                    "grok-4.6".to_string(),
+                    serde_json::json!([{
+                        "id": "fast",
+                        "category": "model_config",
+                        "options": [{ "value": "false" }, { "value": "true" }]
+                    }]),
+                )]),
+            );
         }
 
         let luna = serde_json::json!([{
@@ -2469,14 +2528,131 @@ mod tests {
         assert_eq!(options[1]["id"], serde_json::json!("context"));
         assert!(options.iter().all(|option| option["id"] != "fast"));
         assert_eq!(diagnostic.checked_at, "100Z");
+        let codex = ManagedAgentId::from_str("codex-acp").unwrap();
         assert!(
-            !state
-                .upsert_agent_authoring_model_bound_catalog(
-                    &ManagedAgentId::from_str("codex-acp").unwrap(),
-                    &luna
-                )
+            state
+                .upsert_agent_authoring_model_bound_catalog(&codex, &luna)
                 .unwrap()
         );
+        assert!(state.agent_model_catalogs.lock().unwrap()[&codex].contains_key("gpt-5.6-luna"));
+        assert!(!state.agent_diagnostics().unwrap().contains_key(&codex));
+    }
+
+    #[test]
+    fn failed_doctor_keeps_observed_model_catalogs() {
+        let (_root, state) = desktop_state();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        let doctor_caps = serde_json::json!({
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "currentValue": "grok-4.6",
+                "options": [{ "value": "grok-4.6" }, { "value": "gpt-5.6-luna" }]
+            }, {
+                "id": "fast",
+                "category": "model_config",
+                "options": [{ "value": "false" }, { "value": "true" }]
+            }]
+        });
+        let healthy = || {
+            let mut probe = doctor_probe(true, None);
+            probe.doctor.capabilities = Some(doctor_caps.clone());
+            Ok(probe)
+        };
+        state
+            .refresh_agent_diagnostic_with_probe(&agent_id, |_, _| healthy())
+            .unwrap();
+        let luna = serde_json::json!([{
+            "id": "model",
+            "category": "model",
+            "currentValue": "gpt-5.6-luna",
+            "options": [{ "value": "gpt-5.6-luna" }]
+        }, {
+            "id": "context",
+            "category": "model_config",
+            "options": [{ "value": "1m" }]
+        }]);
+        assert!(
+            state
+                .upsert_agent_authoring_model_bound_catalog(&agent_id, &luna)
+                .unwrap()
+        );
+
+        let failed = state
+            .refresh_agent_diagnostic_with_probe(&agent_id, |_, _| {
+                Ok(doctor_probe(false, Some("acp.doctor-timeout")))
+            })
+            .unwrap();
+        assert!(!failed.available);
+        state
+            .refresh_agent_diagnostic_with_probe(&agent_id, |_, _| healthy())
+            .unwrap();
+
+        let diagnostic = state.agent_diagnostics().unwrap()[&agent_id].clone();
+        let catalogs = &diagnostic.capabilities.as_ref().unwrap()["modelBoundCatalogs"];
+        assert_eq!(
+            catalogs["gpt-5.6-luna"][0]["id"],
+            serde_json::json!("context")
+        );
+        assert_eq!(catalogs["grok-4.6"][0]["id"], serde_json::json!("fast"));
+    }
+
+    #[test]
+    fn model_catalogs_persist_apart_from_health_and_reset_with_agent_config() {
+        let (root, state) = desktop_state();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        let luna = serde_json::json!([{
+            "id": "model",
+            "category": "model",
+            "currentValue": "gpt-5.6-luna",
+            "options": [{ "value": "gpt-5.6-luna" }]
+        }, {
+            "id": "context",
+            "category": "model_config",
+            "options": [{ "value": "1m" }]
+        }]);
+        state
+            .refresh_agent_diagnostic_with_probe(&agent_id, |_, _| {
+                let mut probe = doctor_probe(true, None);
+                probe.doctor.capabilities = Some(serde_json::json!({ "configOptions": luna }));
+                Ok(probe)
+            })
+            .unwrap();
+
+        let paths = state.app().unwrap().paths;
+        let health: serde_json::Value = read_json(&paths.agent_diagnostics_file()).unwrap();
+        assert!(
+            health["claude-acp"]["capabilities"]
+                .get("modelBoundCatalogs")
+                .is_none()
+        );
+        let reloaded = DesktopState::new(DesktopContext {
+            repo_root: Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap(),
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        });
+        assert!(
+            reloaded
+                .has_model_bound_catalog(&agent_id, "gpt-5.6-luna")
+                .unwrap()
+        );
+        let projected = reloaded.app().unwrap().provider_diagnostics();
+        assert_eq!(
+            projected["claude-acp"].capabilities.as_ref().unwrap()["modelBoundCatalogs"]["gpt-5.6-luna"]
+                [0]["id"],
+            serde_json::json!("context")
+        );
+
+        reloaded.reset_agent_observations(&agent_id).unwrap();
+        assert!(
+            !reloaded
+                .has_model_bound_catalog(&agent_id, "gpt-5.6-luna")
+                .unwrap()
+        );
+        let persisted: BTreeMap<ManagedAgentId, ModelBoundCatalogs> =
+            read_json(&paths.agent_model_catalogs_file()).unwrap();
+        assert!(!persisted.contains_key(&agent_id));
     }
 
     #[test]

@@ -25,7 +25,7 @@
 {% else %}- 동적 Agent 전략에서는 worker가 이 prompt의 라우팅 가이드를 따르는 유효 provider를 출력해야 합니다. `merge / acceptance`는 provider를 생략하십시오. runtime이 항상 bootstrap Agent를 사용합니다.
 - `workflow-invocation`에는 `provider`를 출력하지 마십시오.
 {% endif %}- {{ model_policy }}
-- `next.type="end"`일 때 `next`에 `node / groupId / nodes / merge / acceptance`를 넣지 마십시오.
+- 요구사항 전체의 개발이 모두 끝나면 반드시 Acceptance 노드에 넘겨 요구사항과 대조해 한 번에 마무리하고, 중간 단계마다 따로 Acceptance를 수행하지 마십시오. Acceptance가 통과하지 못하면 계속 수정 노드를 지정하고 수정 후 다시 Acceptance를 수행하십시오. `next.type="end"`는 Acceptance 통과 후에만 사용하며, 이때 `next`에 `node / groupId / nodes / merge / acceptance`를 넣지 마십시오.
 {% if end_summary_is_outer_handoff %}- `next.type="end"`를 사용하면 `summaryPath`가 가리키는 요약은 AI-DYNAMIC 외부 후속 노드에 대한 완전한 비즈니스 인계 요약이어야 합니다. 완료 내용, 핵심 결론, 중요 산출물, 남은 우려를 기술하고, 라우팅 동작이나 "acceptance 통과"만 쓰지 마십시오.
 {% else %}- `next.type="end"`를 사용하면 `summaryPath`가 가리키는 요약은 내부 진행/branch 보고입니다. Runtime 보고 manifest와 상위 group을 위해 이 노드가 완료한 내용을 정확히 기술하십시오.
 {% endif %}

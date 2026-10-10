@@ -25,7 +25,7 @@ Recordatorios de restricciones:
 {% else %}- Bajo la estrategia dynamic-agent, los workers deben emitir un provider válido que siga la guía de enrutamiento de este prompt; `merge / acceptance` deben omitir provider porque runtime siempre usa el Agent de bootstrap.
 - No emitas `provider` para `workflow-invocation`.
 {% endif %}- {{ model_policy }}
-- Cuando `next.type="end"`, no incluyas `node / groupId / nodes / merge / acceptance`.
+- Cuando el desarrollo del requisito completo esté terminado, entrega a un nodo de Acceptance que contraste el trabajo con el requisito de una sola vez; no hagas Acceptance de etapas intermedias. Si el Acceptance falla, sigue asignando nodos para corregirlo y repite el Acceptance. Usa `next.type="end"` solo después de que el Acceptance pase y, en ese caso, no incluyas `node / groupId / nodes / merge / acceptance`.
 {% if end_summary_is_outer_handoff %}- Si usas `next.type="end"`, el resumen al que apunta `summaryPath` debe ser una entrega de negocio completa para el sucesor fuera de AI-DYNAMIC: indica qué se completó, conclusiones clave, salidas importantes y preocupaciones restantes. No describas solo el enrutamiento ni digas “accepted”.
 {% else %}- Si usas `next.type="end"`, el resumen al que apunta `summaryPath` es un informe interno de progreso o de rama. Indica con precisión qué completó este nodo para el manifiesto de informes de Runtime y el group contenedor.
 {% endif %}

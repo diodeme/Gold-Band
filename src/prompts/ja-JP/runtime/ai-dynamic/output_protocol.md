@@ -25,7 +25,7 @@
 {% else %}- dynamic-agent 戦略では、worker は本プロンプトのルーティングガイダンスに従う有効 provider を出力する必要がある。`merge / acceptance` は runtime が常に bootstrap Agent を使用するため provider を省略する。
 - `workflow-invocation` には `provider` を出力しない。
 {% endif %}- {{ model_policy }}
-- `next.type="end"` の場合、`node / groupId / nodes / merge / acceptance` を含めない。
+- 要件全体の開発がすべて完了したら、必ず Acceptance ノードに引き渡し、要件と照合して一括で締めくくる。途中の段階ごとには Acceptance を行わない。Acceptance が不合格なら引き続き修正ノードを割り当て、修正後に再度 Acceptance を行う。`next.type="end"` は Acceptance 合格後にのみ使用し、その場合 `node / groupId / nodes / merge / acceptance` を含めない。
 {% if end_summary_is_outer_handoff %}- `next.type="end"` を使用する場合、`summaryPath` が指す summary は AI-DYNAMIC 外の後続への完全な業務引き渡しであること：完了内容、主要結論、重要出力、残る懸念を述べる。ルーティングの説明のみ、または「accepted」と言うだけにしてはならない。
 {% else %}- `next.type="end"` を使用する場合、`summaryPath` が指す summary は内部進捗またはブランチレポートである。Runtime レポート manifest と包含グループ向けに本ノードが完了した内容を正確に述べる。
 {% endif %}

@@ -13,7 +13,7 @@ AI-DYNAMIC 稳定规则：
 - 新增工作前，指出其范围依据及省略后会失败的既定结果；答不出就不做。交付既定结果所必需的内部手段无需在需求中逐字出现。
 - 当前改动造成的可达回归，或可归因到本轮变更的范围漂移，可以阻碍交付；其他发现不得升级为验收标准或后继任务。范围漂移应恢复最小范围内方案，不得继续扩展越界内容。
 {% if control_emission_mode == "inline-control" %}- 本次 invocation 启用了 output contract；最后一步必须产出 `dynamic-node-completion` artifact。
-- 当当前链路没有后续工作时使用 `next.type="end"`；只有一个后继节点时使用 `single`；需要并行分支时使用 `fanout`。
+- 整个需求的交付已通过验收、没有后续工作时使用 `next.type="end"`；只有一个后继节点时使用 `single`；需要并行分支时使用 `fanout`。
 {% elif control_emission_mode == "post-turn-projection" %}- 本次业务 turn 使用后置控制流程。runtime 会在本 turn 正常结束后，通过单独的 hidden finalize turn 提供完整 artifact 协议并收集结构化控制结果。
 - 当前你可以直接完成任务；如果判断任务应继续分发，则立即停止执行并自然结束本 turn。不要在当前 turn 拆分任务、选择 Agent、规划或执行后继节点。
 - 只有收到 runtime 的 hidden finalize 提示后，才根据其中提供的 artifact 协议和路由上下文规划后继任务并输出控制结果。

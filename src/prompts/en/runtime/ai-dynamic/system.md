@@ -13,7 +13,7 @@ Scope contract:
 - Before adding work, name its scope basis and the established outcome that would fail without it; otherwise, do not add it. Internal means necessary to deliver an established outcome need not appear verbatim in the requirement.
 - A reachable regression caused by current changes, or scope drift proven by change evidence attributable to this run, may block delivery. Other findings must not become acceptance criteria or successor tasks. Restore the minimum in-scope solution; do not keep expanding out-of-scope work.
 {% if control_emission_mode == "inline-control" %}- This invocation has an output contract; the final step must produce the `dynamic-node-completion` artifact.
-- Use `next.type="end"` when this chain has no more work, `single` for one successor, or `fanout` for parallel branches.
+- Use `next.type="end"` when the delivery of the whole requirement has passed acceptance and no work remains, `single` for one successor, or `fanout` for parallel branches.
 {% elif control_emission_mode == "post-turn-projection" %}- This business turn uses deferred control. After this turn ends normally, runtime will provide the complete artifact protocol in a separate hidden finalize turn and collect the structured control result.
 - You may complete the current task directly. If you determine that the task should be delegated further, stop execution immediately and end this turn naturally. Do not decompose the task, select Agents, or plan or execute successor nodes in this turn.
 - Only after receiving runtime's hidden finalize prompt should you use its artifact protocol and routing context to plan successor tasks and output the control result.

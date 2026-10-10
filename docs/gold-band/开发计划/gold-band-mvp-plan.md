@@ -2873,6 +2873,13 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 验收：最小回归在旧实现上因 `workspace.path.is_dir()` 为 false 失败，修复后转绿；`cargo test -p gold-band --lib dynamic_worktree` 13 项、`loading_dynamic_graph` 2 项、`git::tests::remove_worktree` 3 项，共 18 项通过。覆盖首次释放目录保留、Git catalog/branch 移除、重复释放、缺失目录恢复、文件占位导致补目录失败不影响 Released、后来新增文件与复用 Worktree 保留，以及路径与共享锁防护。本次仅修改后端释放逻辑，未启动前端或真实 Agent，不将目录验收视为所有 provider 的会话恢复实测。
 - 性能与过度设计评审：只在既有释放/Closed group 恢复路径操作指定 workspace，保留固定层级 canonical 校验，每项增加一次目录确保，不扫描目录内容或全量历史；空目录数量随历史 fanout workspace 增长。不新增依赖、状态、持久字段、缓存、队列或锁；原 Git 注销判定及锁范围不变，无需专项 benchmark。
 
+## 2026-10-06 AI-DYNAMIC 交付必须经验收后结束
+
+- [x] 背景：SWE-Marathon kubernetes-rust-rewrite 的 AUTO 试跑全程 11 个 single 节点，未用 fanout，因此没有 group acceptance；最后一个开发节点直接 `end`，其报告中声明的"有意修改 `Cargo.toml`"违反需求原文却无人复核，评测时编译失败记 0 分。零费用诊断显示该违规修正后受保护测试 1406/1407 通过。
+- [x] 修复（提示词，七种语言）：`output_protocol.md` 的 `end` 规则改为"整个需求的开发全部完成后必须交给验收节点对照需求统一收尾，中间阶段不单独验收；验收不通过继续指派节点修复并再次验收；只有验收通过后才使用 end"，`system.md` 的路由定义同步限定为整个需求的交付已通过验收时使用 end。AUTO 配置的"Agent 决策指南"只在动态 Agent 策略下注入且用于选择 Agent，不承载该流程约束。
+- [x] 回归：`routing_prompts_end_only_after_acceptance` 固定中英文路由规则；AI-DYNAMIC 与提示词相关 142 项单元测试通过。
+- 性能与过度设计评审：只改提示词，不新增状态、schema 或 Runtime 结构门禁；是否需要 Runtime 强制"顶层 end 前必须有验收"待评测结果再评估。
+
 ## 2026-10-05 AUTO 完成报告长文本落文件与需求优先验收
 
 - [x] 背景：DeepSWE hard 子集评测（`docs/benchmark/2026-10-deepswe-hard/`）中 AUTO 的失败暴露两类设计缺陷。其一，完成报告约 97% 字符是后继任务与总结正文，单行 JSON 可达上万字符，模型连续 4 次漏写根对象闭合符，行列号反馈无法帮助定位。其二，审查、测试以方案为检查基准，方案自行声明的非目标被下游当作红线，没有节点核对解读本身是否符合需求。

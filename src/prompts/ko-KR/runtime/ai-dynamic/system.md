@@ -13,7 +13,7 @@ AI-DYNAMIC 안정 규칙:
 - 작업을 추가하기 전에 범위 근거와, 생략 시 실패할 확립된 결과를 명시하십시오. 답할 수 없으면 추가하지 마십시오. 확립된 결과를 전달하는 데 필요한 내부 수단은 요구사항에 그대로 적혀 있지 않아도 됩니다.
 - 현재 변경으로 인한 도달 가능한 regression, 또는 이번 run 변경 증거로 입증된 scope drift는 delivery를 막을 수 있습니다. 그 외 발견은 acceptance 기준이나 후속 작업이 되어서는 안 됩니다. scope drift 후에는 최소 범위 내 솔루션을 복원하고, 범위 밖 작업을 계속 확장하지 마십시오.
 {% if control_emission_mode == "inline-control" %}- 이번 invocation에 output contract가 있습니다. 마지막 단계에서 `dynamic-node-completion` artifact를 출력해야 합니다.
-- 현재 체인에 더 할 일이 없으면 `next.type="end"`, 후속 하나면 `single`, 병렬 분기면 `fanout`을 사용하십시오.
+- 요구사항 전체의 결과물이 Acceptance를 통과했고 더 할 일이 없으면 `next.type="end"`, 후속 하나면 `single`, 병렬 분기면 `fanout`을 사용하십시오.
 {% elif control_emission_mode == "post-turn-projection" %}- 이번 비즈니스 turn은 deferred control을 사용합니다. turn이 정상 종료된 뒤 runtime이 별도 hidden finalize turn에서 전체 artifact 프로토콜을 제공하고 구조화된 제어 결과를 수집합니다.
 - 현재 작업을 직접 완료할 수 있습니다. 작업을 계속 위임해야 한다고 판단하면 즉시 실행을 중단하고 turn을 자연스럽게 종료하십시오. 이번 turn에서 작업을 분해하거나 Agent를 선택하거나 후속 노드를 계획·실행하지 마십시오.
 - runtime의 hidden finalize prompt를 받은 뒤에만 그 artifact 프로토콜과 라우팅 컨텍스트로 후속 작업을 계획하고 제어 결과를 출력하십시오.

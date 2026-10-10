@@ -152,6 +152,7 @@ import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
 
 interface AcpSessionUpdatedEventBaseVm {
+  backgroundControl?: import("../types").DirectBackgroundControl | null;
   executionError?: import('../types').AcpExecutionErrorVm | null;
   branchId?: string | null;
   projectId?: string | null;
@@ -202,6 +203,8 @@ export interface ConversationTerminalResultUpdatedEventVm {
   projectId: string;
   taskId: string;
   unreadTerminalResult: import('../types').ConversationTerminalResultVm;
+  /** 本次结果同时推进的会话活动时间；仅在后台回复等不经会话状态更新送达时间的路径上提供。 */
+  taskActivityAt?: string | null;
 }
 
 export type ImageActionSourceInput =
@@ -486,7 +489,7 @@ export interface RuntimeApi {
   continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('../types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number): Promise<ConversationPromptSubmitVm>;
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
-  stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
+  stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("../types").DirectBackgroundControl | null, expectedTurnId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
@@ -609,6 +612,7 @@ export interface RuntimeApi {
   updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
   deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
   pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
+  setConversationResident(projectId: string, taskId: string, resident: boolean): Promise<ConversationTaskRowVm>;
   unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
   reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarBootstrapVm>;
   searchConversationTasks(query: string, limit?: number): Promise<ConversationSearchResultVm[]>;

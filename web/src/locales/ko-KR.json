@@ -2907,6 +2907,7 @@
       "retryRuns": "실행 기록 불러오기 실패. 클릭하여 재시도",
       "loadMoreRuns": "실행 기록 더 불러오기",
       "terminalResult": {
+        "new-message": "새 메시지",
         "completed": "완료됨, 아직 보지 않음",
         "stopped": "중지됨, 아직 보지 않음",
         "failed": "실행 이상, 아직 보지 않음"
@@ -2937,7 +2938,10 @@
           "noServerWorkspaces": "서버에 아직 바인딩할 워크스페이스가 없습니다. 먼저 multica Web에서 워크스페이스를 만드세요.",
           "allWorkspacesBound": "모든 원격 워크스페이스가 이미 바인딩되어 있습니다."
         }
-      }
+      },
+      "keepResident": "세션 계속 유지",
+      "releaseResident": "상주 해제",
+      "resident": "상주 세션"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "요구사항을 실행하기 전에 로컬 워크스페이스를 추가해 주세요",

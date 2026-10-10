@@ -1,6 +1,7 @@
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
 import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -15,6 +16,8 @@ import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/conversation-run-identity';
 import { formatCompactRelativeTime } from '@/lib/datetime';
+import { useConversationTaskActive } from '@/lib/conversation-sidebar-activity';
+import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
@@ -22,6 +25,7 @@ export function conversationSidebarTerminalResultDotClass(
   kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
 ) {
   if (kind === 'completed') return 'bg-gold-success';
+  if (kind === 'new-message') return 'bg-gold-attention';
   if (kind === 'stopped') return 'bg-gold-warning';
   return 'bg-gold-danger';
 }
@@ -69,6 +73,7 @@ interface ConversationSidebarProps {
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
+  onSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
@@ -93,6 +98,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onSelect,
   onNewConversation,
   onSearch,
+  onSetResident,
   onPinTask,
   onUnpinTask,
   onRenameTask,
@@ -426,6 +432,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                               onExpandRuns={() => expandTaskRuns('pinned', task)}
                               onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                              onSetResident={onSetResident ? (resident) => onSetResident(task.projectId, task.taskId, resident) : undefined}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
                               onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
                               onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
@@ -549,6 +556,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
                         onPin={() => onPinTask(task.projectId, task.taskId)}
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                              onSetResident={onSetResident ? (resident) => onSetResident(task.projectId, task.taskId, resident) : undefined}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
                         onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
                         onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
@@ -694,10 +702,12 @@ export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm
   return task.runMode === 'direct' && task.agentIdentity ? 'agent-icon' : 'runtime-status';
 }
 
+/** Direct Agent rows show activity (breathing icon + spinner) while the task is active. */
 export function shouldShowConversationSidebarActivity(
-  task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity' | 'activity'>,
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity'>,
+  taskActive: boolean,
 ) {
-  return task.runMode === 'direct' && Boolean(task.agentIdentity && task.activity);
+  return task.runMode === 'direct' && Boolean(task.agentIdentity) && taskActive;
 }
 
 export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
@@ -760,6 +770,32 @@ function RunStopMenu({
   );
 }
 
+// 以主题蓝（running）为主色：钉头微混 emphasis 成靛蓝，中段一道高光形成金属反光，针尖向 accent-foreground 过渡成青色；各主题自动适配。
+export const RESIDENT_PIN_GRADIENT_STOPS = [
+  { offset: 0, color: 'color-mix(in oklab, var(--gold-running), var(--gold-emphasis) 25%)' },
+  { offset: 0.35, color: 'var(--gold-running)' },
+  { offset: 0.55, color: 'color-mix(in oklab, var(--gold-running), white 40%)' },
+  { offset: 0.72, color: 'var(--gold-running)' },
+  { offset: 1, color: 'color-mix(in oklab, var(--gold-running), var(--accent-foreground) 60%)' },
+] as const;
+
+// 造型取自 Fluent UI System Icons 的 pin-24-filled（MIT）；渐变沿钉头到针尖方向。
+function ResidentPin() {
+  const gradientId = `resident-pin-${useId().replace(/[^\w-]/g, '')}`;
+  return (
+    <svg data-resident-pin viewBox="0 0 24 24" className="size-3 shrink-0" aria-hidden="true">
+      <defs>
+        <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1="21" y1="3" x2="4" y2="20">
+          {RESIDENT_PIN_GRADIENT_STOPS.map(({ offset, color }) => (
+            <stop key={offset} offset={offset} style={{ stopColor: color }} />
+          ))}
+        </linearGradient>
+      </defs>
+      <path fill={`url(#${gradientId})`} d="m21.068 7.758l-4.826-4.826a2.75 2.75 0 0 0-4.404.715l-2.435 4.87a.75.75 0 0 1-.426.374l-4.166 1.44a1.25 1.25 0 0 0-.476 2.065L7.439 15.5L3 19.94V21h1.06l4.44-4.44l3.105 3.105a1.25 1.25 0 0 0 2.065-.476l1.44-4.166a.75.75 0 0 1 .373-.426l4.87-2.435a2.75 2.75 0 0 0 .715-4.404" />
+    </svg>
+  );
+}
+
 function TaskRow({
   task,
   pinned,
@@ -773,6 +809,7 @@ function TaskRow({
   onLoadMoreRuns,
   onPin,
   onUnpin,
+  onSetResident,
   onRename,
   onDelete,
   onPauseRun,
@@ -790,12 +827,14 @@ function TaskRow({
   onLoadMoreRuns: () => void;
   onPin?: () => void;
   onUnpin?: () => void;
+  onSetResident?: (resident: boolean) => Promise<void>;
   onRename?: (title: string) => void;
   onDelete?: () => void;
   onPauseRun?: (runId: string) => void | Promise<void>;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [editing, setEditing] = useState(false);
+  const [residencyPending, setResidencyPending] = useState(false);
   const readOnly = useReadOnlyExperience();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
@@ -806,7 +845,8 @@ function TaskRow({
   const latestRun = task.latestRun;
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
-  const showActivity = shouldShowConversationSidebarActivity(task);
+  const taskActive = useConversationTaskActive(task.activity, `${task.projectId}:${task.taskId}`);
+  const showActivity = shouldShowConversationSidebarActivity(task, taskActive);
   const unreadTerminalResult = isDirect ? task.unreadTerminalResult ?? null : null;
   const unreadTerminalResultLabel = unreadTerminalResult
     ? t(`conversation.sidebar.terminalResult.${unreadTerminalResult.kind}`)
@@ -920,9 +960,15 @@ function TaskRow({
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-sm">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
+            {residencyPending ? <Loader2 className="size-3 shrink-0 animate-spin" aria-label={t("common.loading")} /> : null}
+            {task.runMode === "direct" && task.resident ? <Tooltip><TooltipTrigger asChild><span className="inline-flex shrink-0" aria-label={t("conversation.sidebar.resident")}><ResidentPin /></span></TooltipTrigger><TooltipContent>{t("conversation.sidebar.resident")}</TooltipContent></Tooltip> : null}
           </span>
         )}
-        {relativeTime ? (
+        {showActivity ? (
+          <span className="inline-flex h-4 shrink-0 items-center" role="status" aria-label={t('status.running')}>
+            <AcpProcessingSpinner className="size-3" />
+          </span>
+        ) : relativeTime ? (
           <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
@@ -981,7 +1027,17 @@ function TaskRow({
   return (
     <>
     <div className={cn(expanded && hasRuns && 'space-y-1')}>
-      {taskRow}
+      {task.runMode === "direct" && onSetResident ? (
+        <ContextMenu><ContextMenuTrigger asChild>{taskRow}</ContextMenuTrigger>
+          <ContextMenuContent><ContextMenuItem disabled={readOnly || residencyPending} onSelect={() => {
+            setResidencyPending(true);
+            void onSetResident(!task.resident).finally(() => setResidencyPending(false));
+          }}>
+            {residencyPending ? <Loader2 className="size-4 animate-spin" /> : task.resident ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+            {t(task.resident ? "conversation.sidebar.releaseResident" : "conversation.sidebar.keepResident")}
+          </ContextMenuItem></ContextMenuContent>
+        </ContextMenu>
+      ) : taskRow}
       {expanded && hasRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {

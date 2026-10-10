@@ -76,6 +76,7 @@ interface WorkspaceShellProps {
   onNewConversation: () => void;
   onSearch: () => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
+  onSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
@@ -320,6 +321,7 @@ function WorkspaceShellLayout({
   onNewConversation,
   onSearch,
   onPauseRun,
+  onSetResident,
   onPinTask,
   onUnpinTask,
   onRenameTask,
@@ -778,6 +780,7 @@ function WorkspaceShellLayout({
               onNewConversation={onNewConversation}
               onSearch={onSearch}
               onPauseRun={onPauseRun}
+              onSetResident={onSetResident}
               onPinTask={onPinTask}
               onUnpinTask={onUnpinTask}
               onRenameTask={onRenameTask}

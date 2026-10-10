@@ -31,6 +31,7 @@ import {
   importDesktopWallpaper,
   pauseRun,
   pinConversation,
+  setConversationResident,
   rerunConversationTask,
   removeRecentWorkspace,
   saveDesktopPreferences,
@@ -490,6 +491,26 @@ export function App() {
   const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
   const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [conversationReadViewport, setConversationReadViewport] = useState<{ key: string; atBottom: boolean } | null>(null);
+  const [notificationForeground, setNotificationForeground] = useState(() => !document.hidden && document.hasFocus());
+  const conversationReadKey = conversationRun
+    ? JSON.stringify([conversationRun.projectId, conversationRun.taskUuid, conversationRun.runId, conversationRun.sessionTree.selectedSessionKey])
+    : '';
+  const handleConversationAtBottomChange = useCallback((atBottom: boolean) => {
+    setConversationReadViewport((current) => current?.key === conversationReadKey && current.atBottom === atBottom
+      ? current : { key: conversationReadKey, atBottom });
+  }, [conversationReadKey]);
+  useEffect(() => {
+    const update = () => setNotificationForeground(!document.hidden && document.hasFocus());
+    window.addEventListener('focus', update);
+    window.addEventListener('blur', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.removeEventListener('focus', update);
+      window.removeEventListener('blur', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const scheduledTriggerOpenRef = useRef<(payload: ScheduledTriggerPayloadVm) => void>(() => {});
 
@@ -1062,6 +1083,7 @@ export function App() {
     const convPage = conversationPage.kind === 'conversation-run' ? conversationPage : null;
     const leaf = convPage ? selectedConversationLeaf(conversationRun?.sessionTree) : null;
     void updateNotificationAttention({
+      backgroundMessageTitle: t('conversation.sidebar.terminalResult.new-message'),
       projectId: convPage?.projectId ?? null,
       taskId: convPage?.taskId ?? null,
       runId: convPage?.runId ?? null,
@@ -1072,7 +1094,7 @@ export function App() {
       outerAttemptId: leaf?.outerAttemptId ?? null,
     }).catch(() => {});
     return undefined;
-  }, [conversationPage, conversationRun]);
+  }, [conversationPage, conversationRun, t]);
 
   useEffect(() => {
     replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
@@ -1191,6 +1213,7 @@ export function App() {
       conversationSidebar,
       conversationPage,
       conversationRun,
+      { foreground: notificationForeground, atBottom: conversationReadViewport?.key === conversationReadKey && conversationReadViewport.atBottom },
     );
     if (!acknowledgementTarget) return;
     const acknowledgementKey = `${acknowledgementTarget.projectId}:${acknowledgementTarget.taskId}:${acknowledgementTarget.eventId}`;
@@ -1215,7 +1238,7 @@ export function App() {
     }).catch(() => {}).finally(() => {
       conversationTerminalAcknowledgementsInFlightRef.current.delete(acknowledgementKey);
     });
-  }, [conversationPage, conversationRun, conversationSidebar, uiMode]);
+  }, [conversationPage, conversationRun, conversationSidebar, uiMode, notificationForeground, conversationReadViewport, conversationReadKey]);
 
   useEffect(() => {
     if (!conversationShellReady) return undefined;
@@ -2418,6 +2441,11 @@ export function App() {
             setError(displayAppError(t, err));
           });
       }}
+      onConversationSetResident={async (projectId, taskId, resident) => {
+        setError(null);
+        try { applyConversationTask(await setConversationResident(projectId, taskId, resident)); }
+        catch (err) { setError(displayAppError(t, err)); }
+      }}
       onConversationPinTask={(projectId, taskId) => {
         invalidateConversationSidebarLoad('pinned');
         invalidateConversationSidebarLoad('bootstrap');
@@ -2817,6 +2845,7 @@ export function App() {
       return (
         <ConversationRunPage
           run={conversationRun}
+          onAtBottomChange={handleConversationAtBottomChange}
           taskTitle={taskTitle}
           workspaceName={runWorkspaceName}
           appConfig={appConfig}

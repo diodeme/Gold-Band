@@ -1947,6 +1947,7 @@ export interface AcpSessionTimingVm {
 
 export interface AcpPromptInteractionIdentityVm {
   interactionId: string;
+  sessionId?: string | null;
   turnId?: string | null;
   promptEventId?: string | null;
 }
@@ -2222,6 +2223,7 @@ export interface WeComScanAuthorizationVm {
 }
 
 export interface NotificationAttentionInput {
+  backgroundMessageTitle?: string;
   projectId?: string | null;
   taskId?: string | null;
   runId?: string | null;
@@ -2618,6 +2620,7 @@ export interface ConversationTaskRowVm {
   runHistoryStatus: ConversationLoadStatus;
   runsNextCursor?: string | null;
   pinned: boolean;
+  resident?: boolean;
   pinnedOrder?: number | null;
   scheduledTaskId?: string | null;
 }
@@ -2680,12 +2683,14 @@ export interface AcpAgentExecutionVm {
 export interface ConversationTaskActivityVm {
   phase: string;
   stopping: boolean;
+  /** Present for phase `background`; judged by isDirectBackgroundActive. */
+  backgroundControl?: DirectBackgroundControl | null;
 }
 
 export interface ConversationTerminalResultVm {
   eventId: string;
   runId: string;
-  kind: 'completed' | 'stopped' | 'failed';
+  kind: 'completed' | 'stopped' | 'failed' | 'new-message';
   occurredAt: string;
 }
 
@@ -2774,7 +2779,15 @@ export interface ConversationAcpFacetVm {
   operationId?: string | null;
 }
 
+export interface DirectBackgroundControl {
+  sessionId: string;
+  connectionGeneration: number;
+  activeTools: number;
+  expiresAtMs: number;
+}
+
 export interface ConversationComposerVm {
+  backgroundControl?: DirectBackgroundControl | null;
   mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'interaction-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;

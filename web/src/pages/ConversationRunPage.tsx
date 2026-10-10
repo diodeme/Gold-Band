@@ -108,6 +108,7 @@ interface ConversationRunPageProps {
   initialSessionTreeExpansion: ConversationSessionTreeExpansion;
   onSessionTreeExpansionChange: (expansion: ConversationSessionTreeExpansion) => void;
   onTitleChange?: (title: string) => void;
+  onAtBottomChange?: (atBottom: boolean) => void;
 }
 
 export function ConversationRunPage({
@@ -128,6 +129,7 @@ export function ConversationRunPage({
   initialSessionTreeExpansion,
   onSessionTreeExpansionChange,
   onTitleChange,
+  onAtBottomChange,
 }: ConversationRunPageProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
@@ -429,6 +431,7 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    onAtBottomChange?.(atBottom);
     const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     if (!atBottom) {
       if (!manualAutoFollowDisabledRef.current) {
@@ -480,7 +483,7 @@ export function ConversationRunPage({
     if (!manualAutoFollowDisabledRef.current) {
       onAutoFollowChange?.(true);
     }
-  }, [isAutoFollowRestorableLeaf, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
+  }, [isAutoFollowRestorableLeaf, onAutoFollowChange, onAtBottomChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
     manualCheckNavigationVersionRef.current += 1;

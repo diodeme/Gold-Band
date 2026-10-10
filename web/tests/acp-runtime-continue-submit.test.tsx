@@ -639,6 +639,31 @@ describe('ACP runtime continue submission', () => {
     }
   });
 
+  it.each([
+    ['accepted', false],
+    ['no-op', true],
+  ] as const)('background Stop %s leaves the Stop button visible: %s', async (status, visibleAfter) => {
+    apiMocks.stopActiveSession.mockResolvedValue({
+      operationId: 'background-stop', status, kind: 'background-cancel-requested',
+      run: null, session: null, lifecycle: null,
+    });
+    const completed = pausedLifecycle();
+    completed.acp = { ...completed.acp, turnId: 'turn-a', latestTurnStatus: 'completed' };
+    const backgroundControl = { sessionId: 'session', connectionGeneration: 1, activeTools: 1, expiresAtMs: Date.now() + 10_000 };
+    completed.composer = { ...completed.composer, backgroundControl };
+    const { container, root } = await renderPausedDialog({ initialLifecycle: completed, isOrchestrated: false, sessionStatus: 'completed' });
+    const stopButton = () => container.querySelector('svg.lucide-circle-stop')?.closest('button') ?? null;
+    try {
+      expect(stopButton()).toBeTruthy();
+      await flushInteraction(() => stopButton()!.click());
+      expect(apiMocks.stopActiveSession).toHaveBeenCalledTimes(1);
+      expect(apiMocks.stopActiveSession.mock.calls[0][9]).toEqual(backgroundControl);
+      expect(Boolean(stopButton())).toBe(visibleAfter);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps an accepted draft consumed when its turn completes', async () => {
     const optimistic: AcpUiEventVm[] = [];
     const revoke = vi.fn();

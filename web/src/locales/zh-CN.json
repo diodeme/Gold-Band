@@ -2907,6 +2907,7 @@
       "retryRuns": "运行历史加载失败，点击重试",
       "loadMoreRuns": "加载更多运行记录",
       "terminalResult": {
+        "new-message": "有新消息",
         "completed": "已完成，尚未查看",
         "stopped": "已停止，尚未查看",
         "failed": "执行异常，尚未查看"
@@ -2937,7 +2938,10 @@
           "noServerWorkspaces": "服务端暂无可绑定的工作空间，请先在 multica Web 创建工作空间。",
           "allWorkspacesBound": "所有远程工作空间均已绑定。"
         }
-      }
+      },
+      "keepResident": "常驻会话",
+      "releaseResident": "解除常驻",
+      "resident": "常驻会话"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",

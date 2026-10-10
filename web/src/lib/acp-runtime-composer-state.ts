@@ -333,7 +333,11 @@ export function shouldHidePendingAcpInteractions(
   cancelling: boolean,
   stopCommandPending: boolean,
   interactionTurnId?: string | null,
+  interactionSessionId?: string | null,
 ) {
+  // A session-owned request was emitted after/beside a prompt. Its pending
+  // status is settled by the request itself, never by a previous turn terminal.
+  if (interactionSessionId && !interactionTurnId) return false;
   if (currentAcpExecutionError(lifecycle)) return true;
   if (cancelling || stopCommandPending || Boolean(lifecycle?.acp.stopping)) {
     return true;

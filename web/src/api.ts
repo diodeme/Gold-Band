@@ -232,8 +232,8 @@ export function pauseRun(taskId: string, runId: string, projectId?: string | nul
   return getRuntimeApi().pauseRun(taskId, runId, projectId);
 }
 
-export function stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
+export function stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("./types").DirectBackgroundControl | null, expectedTurnId?: string | null) {
+  return getRuntimeApi().stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId, backgroundControl, expectedTurnId);
 }
 
 export function submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
@@ -803,6 +803,10 @@ export function deleteConversationTask(projectId: string, taskId: string) {
 
 export function pinConversation(projectId: string, taskId: string) {
   return getRuntimeApi().pinConversation(projectId, taskId);
+}
+
+export function setConversationResident(projectId: string, taskId: string, resident: boolean) {
+  return getRuntimeApi().setConversationResident(projectId, taskId, resident);
 }
 
 export function unpinConversation(projectId: string, taskId: string) {

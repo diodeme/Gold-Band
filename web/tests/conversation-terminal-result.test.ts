@@ -56,6 +56,13 @@ function sidebar(unreadTerminalResult: ConversationTerminalResultVm | null): Con
 }
 
 describe('Direct unread terminal result', () => {
+  it('keeps background replies unread while hidden or reading history', () => {
+    const current = sidebar(terminalResult('background:1', 'new-message'));
+    const page = { kind: 'conversation-run', projectId: 'project-001', taskId: 'task-001', taskUuid: 'task-uuid-001', runId: 'run-001' } as const;
+    expect(conversationTerminalResultAcknowledgementTarget(current, page, page, { foreground: false, atBottom: true })).toBeNull();
+    expect(conversationTerminalResultAcknowledgementTarget(current, page, page, { foreground: true, atBottom: false })).toBeNull();
+    expect(conversationTerminalResultAcknowledgementTarget(current, page, page, { foreground: true, atBottom: true })?.eventId).toBe('background:1');
+  });
   it('projects a terminal update into pinned and workspace task rows', () => {
     const result = terminalResult('event-001', 'failed');
     const next = applyConversationSidebarTerminalResultUpdate(sidebar(null), {
@@ -66,6 +73,37 @@ describe('Direct unread terminal result', () => {
 
     expect(next.pinnedTasks[0]?.unreadTerminalResult).toEqual(result);
     expect(next.tasksByWorkspace['project-001']?.[0]?.unreadTerminalResult).toEqual(result);
+  });
+
+  it('advances activity time and moves the row to the front when a background reply carries task activity', () => {
+    const background = { ...task(null), taskId: 'task-002', taskUuid: 'task-uuid-002', pinned: false, pinnedOrder: null, lastActivityAt: '2026-08-18T09:59:00Z' };
+    const latest = { ...task(null), pinned: false, pinnedOrder: null, lastActivityAt: '2026-08-18T10:00:00Z' };
+    const current: ConversationSidebarVm = { ...sidebar(null), pinnedTasks: [], tasksByWorkspace: { 'project-001': [latest, background] } };
+    const result = terminalResult('background:2', 'new-message');
+
+    const next = applyConversationSidebarTerminalResultUpdate(current, {
+      projectId: 'project-001',
+      taskId: 'task-002',
+      unreadTerminalResult: result,
+      taskActivityAt: '2026-08-18T10:01:00Z',
+    });
+
+    expect(next.tasksByWorkspace['project-001']?.map((row) => row.taskId)).toEqual(['task-002', 'task-001']);
+    expect(next.tasksByWorkspace['project-001']?.[0]).toMatchObject({ lastActivityAt: '2026-08-18T10:01:00Z', unreadTerminalResult: result });
+  });
+
+  it('keeps order when a terminal update carries no newer task activity', () => {
+    const background = { ...task(null), taskId: 'task-002', taskUuid: 'task-uuid-002', pinned: false, pinnedOrder: null, lastActivityAt: '2026-08-18T09:59:00Z' };
+    const latest = { ...task(null), pinned: false, pinnedOrder: null, lastActivityAt: '2026-08-18T10:00:00Z' };
+    const current: ConversationSidebarVm = { ...sidebar(null), pinnedTasks: [], tasksByWorkspace: { 'project-001': [latest, background] } };
+
+    for (const taskActivityAt of [undefined, null, '2026-08-18T09:58:00Z']) {
+      const next = applyConversationSidebarTerminalResultUpdate(current, {
+        projectId: 'project-001', taskId: 'task-002', unreadTerminalResult: terminalResult('event-003', 'failed'), taskActivityAt,
+      });
+      expect(next.tasksByWorkspace['project-001']?.map((row) => row.taskId)).toEqual(['task-001', 'task-002']);
+      expect(next.tasksByWorkspace['project-001']?.[1]?.lastActivityAt).toBe('2026-08-18T09:59:00Z');
+    }
   });
 
   it('clears only the matching event and preserves a newer result against a stale acknowledgement', () => {

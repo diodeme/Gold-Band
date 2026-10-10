@@ -179,6 +179,7 @@ import { composerWorkspaceFileRefFromEntry, openWorkspaceFileReference } from "@
 import type { ConversationPromptInput, ProfileVm } from "@/types";
 import { readAgentMessageQuote } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
+import { useDirectBackgroundActive } from "@/lib/acp-background-control";
 import { SelectionQuoteButton } from "@/components/conversation/SelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
@@ -625,13 +626,13 @@ type AcpPaginationRequestToken = {
 export interface AcpLoadedEventWindow {
   sessionId: string | null;
   timelineGeneration: number;
-  events: AcpUiEventVm[];
-}
-
   // Canonical timeline revision this window reflects at the head, including
   // chat-hidden items that never enter `events`. Router head freshness is
   // measured against it rather than against the newest visible sequence.
   coveredRevision: number;
+  events: AcpUiEventVm[];
+}
+
 interface AcpOwnedLoadedEventWindow extends AcpLoadedEventWindow {
   eventWindowKey: string;
 }
@@ -645,12 +646,9 @@ type AcpLoadedEventWindowRelation =
 type AcpGenerationScopedLiveEvent = {
   event: AcpUiEventVm;
   timelineGeneration: number;
+  timelineRevision: number | null;
 };
 
-type LiveStreamingMarkdownTarget = {
-  timelineRevision: number | null;
-  key: string;
-  position: number;
 function maxAcpLiveEventRevision(
   updates: Array<Pick<AcpGenerationScopedLiveEvent, "timelineRevision">>,
 ) {
@@ -661,6 +659,9 @@ function maxAcpLiveEventRevision(
   ), null);
 }
 
+type LiveStreamingMarkdownTarget = {
+  key: string;
+  position: number;
 };
 
 type AcpCanonicalHeadHandoffIntent = "ordinary" | "recovery";
@@ -885,12 +886,12 @@ export function canRestoreAcpSessionContent(
   // Display metadata can include live projection; it cannot prove canonical
   // coverage of a replay gap. Let the existing query/ACK handshake clear it.
   if (replay.requiresCatchUp) return false;
-  const newestSeq = window.events.reduce((latest, event) => (
-    Math.max(latest, event.endedSeq ?? event.seq)
-  ), 0);
   // Router head counts chat-hidden items (usage, session info) that never
   // enter the visible window, so only the revision watermark is comparable.
   if (replay.headRevision > 0) return window.coveredRevision >= replay.headRevision;
+  const newestSeq = window.events.reduce((latest, event) => (
+    Math.max(latest, event.endedSeq ?? event.seq)
+  ), 0);
   return newestSeq >= replay.headSeq;
 }
 
@@ -922,9 +923,6 @@ function acpSessionTimelineGeneration(session?: AcpSessionVm | null) {
   return session?.eventPage.generation ?? 0;
 }
 
-export function createAcpLoadedEventWindow(
-  session: AcpSessionVm | null | undefined,
-  events: AcpUiEventVm[] = session?.events ?? [],
 // Only a canonical page ending at the head proves coverage of the head; an
 // older or detached page leaves the window's existing watermark in charge.
 function acpSessionHeadCoveredRevision(session?: AcpSessionVm | null) {
@@ -944,14 +942,17 @@ function resolveAcpLoadedEventWindowCoverage(
     : incomingCoveredRevision;
 }
 
+export function createAcpLoadedEventWindow(
+  session: AcpSessionVm | null | undefined,
+  events: AcpUiEventVm[] = session?.events ?? [],
 ): AcpLoadedEventWindow {
   return {
     sessionId: session?.sessionId ?? null,
     timelineGeneration: acpSessionTimelineGeneration(session),
+    coveredRevision: acpSessionHeadCoveredRevision(session),
     events,
   };
 }
-    coveredRevision: acpSessionHeadCoveredRevision(session),
 
 function compareAcpLoadedEventWindowToSession(
   window: Pick<AcpLoadedEventWindow, "sessionId" | "timelineGeneration">,
@@ -1047,14 +1048,14 @@ export function restoreAcpLoadedEventWindow(
   );
   return {
     ...incoming,
-    events: limitAcpEvents(merged, "start", eventPageSize),
-  };
-}
     coveredRevision: resolveAcpLoadedEventWindowCoverage(
       stored,
       true,
       incoming.coveredRevision,
     ),
+    events: limitAcpEvents(merged, "start", eventPageSize),
+  };
+}
 
 export function storeAcpLoadedEventWindow(
   sessionKey: string,
@@ -2290,14 +2291,14 @@ export function ACPChatDialog(
     commitLoadedEventWindow(eventWindowKey, {
       sessionId: session.sessionId ?? null,
       timelineGeneration: acpSessionTimelineGeneration(session),
-      events: limited,
-    });
-  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, resumePendingCanonicalHeadRecoveryForSnapshot, session, settleOptimisticPromptAdmissions]);
       coveredRevision: resolveAcpLoadedEventWindowCoverage(
         currentWindow,
         sameWindowOwner,
         acpSessionHeadCoveredRevision(session),
       ),
+      events: limited,
+    });
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, resumePendingCanonicalHeadRecoveryForSnapshot, session, settleOptimisticPromptAdmissions]);
 
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
@@ -2405,10 +2406,10 @@ export function ACPChatDialog(
       {
         sessionId: loadedEventWindow.sessionId,
         timelineGeneration: loadedEventWindow.timelineGeneration,
+        coveredRevision: loadedEventWindow.coveredRevision,
         events: loadedEventWindow.events,
       },
       effectiveLoadedEventBufferLimit,
-        coveredRevision: loadedEventWindow.coveredRevision,
     );
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEventWindow]);
 
@@ -2643,6 +2644,7 @@ export function ACPChatDialog(
     cancelling,
     stopCommandPending,
     pendingPermissionCandidate?.turnId,
+    pendingPermissionCandidate?.sessionId,
   );
   const pendingPermission =
     hidePendingPermission
@@ -2656,6 +2658,7 @@ export function ACPChatDialog(
     effective?.pendingInteractions.find(
       (request) => request.kind === "elicitation",
     )?.turnId,
+    effective?.pendingInteractions.find((request) => request.kind === "elicitation")?.sessionId,
   );
   const pendingElicitationRequest = hidePendingElicitation
     ? null
@@ -2676,13 +2679,21 @@ export function ACPChatDialog(
     localSubmissionPending,
     activeTurnPromptId,
   );
+  const [backgroundControlUpdate, setBackgroundControlUpdate] = useState<{scope: string; control: import('@/types').DirectBackgroundControl | null} | null>(null);
+  const [backgroundCancelPending, setBackgroundCancelPending] = useState(false);
+  const backgroundControl = backgroundControlUpdate?.scope === eventWindowKey
+    ? backgroundControlUpdate.control
+    : projectionLifecycle?.composer.backgroundControl;
+  // One projection drives both the background Stop control and the open activity group.
+  const backgroundActive = useDirectBackgroundActive(backgroundControl, eventWindowKey);
   const timelineProjection = useMemo(
     () => buildAcpTimelineProjection(
       effectiveEvents,
       projectedSessionStatus,
       effective?.timelineProjection,
+      backgroundActive,
     ),
-    [effective?.timelineProjection, effectiveEvents, projectedSessionStatus],
+    [backgroundActive, effective?.timelineProjection, effectiveEvents, projectedSessionStatus],
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
@@ -2914,7 +2925,7 @@ export function ACPChatDialog(
           : !readOnly
             ? "composer"
             : null;
-  const canStopSession = composerState.canStop;
+  const canStopSession = composerState.canStop || backgroundActive;
   const sendButtonBusy = sending || waitingForOptimisticPrompt;
   const lastEvent = effectiveEvents.at(-1);
 
@@ -3121,20 +3132,20 @@ export function ACPChatDialog(
       merged.length,
       limited.length,
     ));
-    commitLoadedEventWindow(eventWindowKey, {
-      sessionId: normalized.sessionId ?? null,
-      timelineGeneration: acpSessionTimelineGeneration(normalized),
     // Subscription snapshots project content but are not canonical query
     // responses, so they cannot prove the window reflects their revision.
     const provesHeadCoverage = source !== "subscription-session";
-      events: limited,
-    });
-  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, resumePendingCanonicalHeadRecoveryForSnapshot, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+    commitLoadedEventWindow(eventWindowKey, {
+      sessionId: normalized.sessionId ?? null,
+      timelineGeneration: acpSessionTimelineGeneration(normalized),
       coveredRevision: resolveAcpLoadedEventWindowCoverage(
         currentWindow,
         sameWindowOwner,
         provesHeadCoverage ? acpSessionHeadCoveredRevision(normalized) : 0,
       ),
+      events: limited,
+    });
+  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, resumePendingCanonicalHeadRecoveryForSnapshot, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -3394,10 +3405,10 @@ export function ACPChatDialog(
     updates: AcpUiEventVm[],
     timelineGeneration: number,
     projectTimeline = true,
+    coveredRevision: number | null = null,
   ) => {
     const currentWindow = loadedEventWindowRef.current;
     if (updates.some((event) => (
-    coveredRevision: number | null = null,
       compareAcpLoadedEventWindowToLiveEvent(
         currentWindow,
         event,
@@ -3492,18 +3503,18 @@ export function ACPChatDialog(
     ));
     commitLoadedEventWindow(eventWindowKey, {
       ...activeWindow,
+      coveredRevision: advancedCoveredRevision,
       events: limited,
     });
   }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
-      coveredRevision: advancedCoveredRevision,
 
   const applyEventUpdate = useCallback((
     event: AcpUiEventVm | null | undefined,
     timelineGeneration: number,
+    timelineRevision: number | null = null,
   ) => {
     if (!event) return;
     applyEventUpdates([event], timelineGeneration, true, timelineRevision);
-    timelineRevision: number | null = null,
   }, [applyEventUpdates]);
 
   const flushPendingLiveEvents = useCallback(() => {
@@ -3525,6 +3536,7 @@ export function ACPChatDialog(
     if (applicableUpdates.length === 0) return;
     const updates = applicableUpdates.map((update) => update.event);
     const timelineGeneration = applicableUpdates[0].timelineGeneration;
+    const coveredRevision = maxAcpLiveEventRevision(applicableUpdates);
     const { timingUpdates, timelineUpdates } = partitionAcpLiveTimingUpdates(updates);
     if (timingUpdates.length > 0) {
       applyEventUpdates(
@@ -3533,7 +3545,6 @@ export function ACPChatDialog(
         true,
         timelineUpdates.length > 0 ? null : coveredRevision,
       );
-    const coveredRevision = maxAcpLiveEventRevision(applicableUpdates);
     }
     // The timer and latest-wins map are the single flight. Publishing synchronously
     // here prevents React from retaining obsolete cumulative snapshots in transitions.
@@ -3893,9 +3904,6 @@ export function ACPChatDialog(
             ? mergeBufferedLiveEvent(pendingUpdate.event, event)
             : event,
           timelineGeneration,
-        },
-      );
-      if (evictedKey !== null) {
           timelineRevision: maxAcpLiveEventRevision([
             { timelineRevision },
             {
@@ -3904,6 +3912,9 @@ export function ACPChatDialog(
                 : null,
             },
           ]),
+        },
+      );
+      if (evictedKey !== null) {
         if (liveEventFlushTimerRef.current !== null) {
           window.clearTimeout(liveEventFlushTimerRef.current);
           liveEventFlushTimerRef.current = null;
@@ -4193,6 +4204,9 @@ export function ACPChatDialog(
           ...summarizeAcpStreamingEvent(event),
         }));
         if (!active || !locatorMatches) return;
+        if ('backgroundControl' in event) {
+          setBackgroundControlUpdate({scope: eventWindowKey, control: event.backgroundControl ?? null});
+        }
         if (event.executionError && lifecycleProjectionRef.current) {
           applyLifecycleProjection({ ...lifecycleProjectionRef.current, executionError: event.executionError });
         }
@@ -4257,10 +4271,10 @@ export function ACPChatDialog(
           const acceptedForVisibleGeneration = enqueueLiveEventUpdate(
             event.event,
             event.timelineGeneration,
+            event.timelineRevision ?? null,
           );
           if (
             acceptedForVisibleGeneration
-            event.timelineRevision ?? null,
             && liveTimelineUpdatesFromEvents([event.event]).length > 0
           ) {
             markAcpSessionContentHydrated(eventWindowKey);
@@ -4344,7 +4358,7 @@ export function ACPChatDialog(
               };
             }
           }
-          if (isSessionTerminalStatus(incoming.status)) {
+          if (shouldSettleLiveActivityForSessionUpdate(latestSessionRef.current?.status, incoming.status)) {
             settleLiveStreamingMarkdown();
           }
           const current = latestSessionRef.current;
@@ -5445,10 +5459,10 @@ export function ACPChatDialog(
     commitLoadedEventWindow(eventWindowKey, {
       sessionId: committedSession.sessionId ?? null,
       timelineGeneration: candidateGeneration,
+      coveredRevision: canonicalWatermark.coveredRevision,
       events: latestEvents,
     });
     setHasOlderEvents(hasOlder);
-      coveredRevision: canonicalWatermark.coveredRevision,
     commitHasNewerEvents(hasRemainingReplay);
     canonicalTimelineCoverageRef.current = {
       eventWindowKey,
@@ -6163,7 +6177,26 @@ export function ACPChatDialog(
   }, [rightWorkspace, t]);
 
   const stopSession = async () => {
-    if (!canStopSession || stopCommandInFlight) return;
+    if (!canStopSession || stopCommandInFlight || backgroundCancelPending) return;
+    if (!composerState.canStop && backgroundControl) {
+      const scope = eventWindowKey;
+      setBackgroundCancelPending(true);
+      setCancelError(null);
+      try {
+        const result = await stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, effective ?? null,
+          outerNodeId, outerAttemptId, backgroundControl, projectionLifecycle?.acp.turnId);
+        // Accepted cancel ends the backend background episode; later events carry no control
+        // until the Agent starts new activity.
+        if (result.status === 'accepted' && sessionIdentityRef.current === scope) {
+          setBackgroundControlUpdate({scope, control: null});
+        }
+      } catch (error) {
+        if (sessionIdentityRef.current === scope) setCancelError(displayAppError(t, error));
+      } finally {
+        setBackgroundCancelPending(false);
+      }
+      return;
+    }
     cancelRequestedRef.current = true;
     setCancelling(true);
     setStopCommandPending(true);
@@ -6915,7 +6948,7 @@ export function ACPChatDialog(
                 onPickFiles={pickFiles}
                 canStop={canStopSession}
                 stopInProgress={stopInProgress}
-                stopCommandInFlight={stopCommandInFlight}
+                stopCommandInFlight={stopCommandInFlight || backgroundCancelPending}
                 onStop={stopSession}
                 canSubmit={canSubmitPrompt}
                 canSubmitHistory={canSubmitHistory}
@@ -6927,6 +6960,7 @@ export function ACPChatDialog(
                 configBar={(
                   <AcpSessionConfigBar
                     scopeKey={sessionIdentity}
+                    agentType={effective?.provider}
                     viewModel={sessionConfigViewModel}
                     onModelChange={handleAcpSessionModelChange}
                     onConfigOptionChange={handleAcpSessionConfigOptionChange}
@@ -7321,6 +7355,7 @@ function AcpErrorBanner({ reason, title }: { reason: string; title?: string }) {
 
 type AcpSessionConfigBarProps = {
   scopeKey: string;
+  agentType?: string;
   viewModel: AcpSessionConfigViewModel;
   onModelChange?: (modelId: string | null) => void;
   onPermissionModeChange?: (permissionModeId: string | null) => void;
@@ -7329,6 +7364,7 @@ type AcpSessionConfigBarProps = {
 };
 
 const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
+  agentType,
   viewModel,
   onModelChange,
   onConfigOptionChange,
@@ -7427,6 +7463,7 @@ function areAcpSessionConfigBarPropsEqual(
 ) {
   return (
     previous.scopeKey === next.scopeKey &&
+    previous.agentType === next.agentType &&
     previous.viewModel.signature === next.viewModel.signature &&
     previous.onModelChange === next.onModelChange &&
     previous.onConfigOptionChange === next.onConfigOptionChange &&
@@ -8947,7 +8984,17 @@ function activityBatchSummary(
   batch: AcpActivityBatch,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
-  if (batch.live) return objectiveActivityLabel(batch.events.at(-1), t);
+  if (batch.live) {
+    // A completed tool does not close the activity group. Between tools the
+    // agent is still composing its reply; don't label a finished tool running.
+    for (let index = batch.events.length - 1; index >= 0; index -= 1) {
+      const event = batch.events[index];
+      if ((event.kind === "toolCall" || event.kind === "toolCallUpdate") && !isTerminalToolStatus(event.status)) {
+        return objectiveActivityLabel(event, t);
+      }
+    }
+    return objectiveActivityLabel(undefined, t);
+  }
   const parts: string[] = [];
   if (batch.totalEventCount > 0) {
     parts.push(t("acp.activityRecordedCount", { count: batch.totalEventCount }));
@@ -10556,6 +10603,7 @@ export function permissionRequestFromEvent(
   return {
     kind: "permission",
     interactionId: requestId,
+    sessionId: stringValue(conversation?.sessionId) ?? null,
     turnId: stringValue(conversation?.turnId) ?? stringValue(raw.turnId) ?? null,
     promptEventId:
       stringValue(conversation?.promptEventId) ?? stringValue(raw.promptEventId) ?? null,
@@ -10606,6 +10654,7 @@ function elicitationRequestFromEvent(
   return {
     kind: "elicitation",
     interactionId: event.id,
+    sessionId: stringValue(rawObject(rawObject(raw._meta)?.goldBandConversation)?.sessionId) ?? null,
     turnId:
       stringValue(rawObject(rawObject(raw._meta)?.goldBandConversation)?.turnId)
       ?? stringValue(raw.turnId)
@@ -10987,9 +11036,12 @@ function nextLiveStreamingMarkdownTarget(
   event: AcpUiEventVm,
   latestPromptPosition: number | null,
 ): LiveStreamingMarkdownTarget | null {
-  if (event.kind === "timingUpdate") return current;
+  if (hiddenEventKinds.has(event.kind) && event.kind !== "runtimeError") return current;
   const position = timelineEventPosition(event);
   if (event.kind === "userTextDelta") return null;
+  if (event.kind === "toolCall" || event.kind === "toolCallUpdate") {
+    return { key: timelineEventKey(event), position };
+  }
   if (event.kind === "textDelta" || event.kind === "thoughtDelta") {
     if (!hasVisibleAcpTextContent(event.content)) return current;
     if (latestPromptPosition != null && position <= latestPromptPosition) return null;
@@ -10998,10 +11050,15 @@ function nextLiveStreamingMarkdownTarget(
   return current && position < current.position ? current : null;
 }
 
+export function shouldSettleLiveActivityForSessionUpdate(previous?: string | null, incoming?: string | null) {
+  return isSessionTerminalStatus(incoming) && (!isSessionTerminalStatus(previous) || previous !== incoming);
+}
+
 function buildAcpTimelineProjection(
   events: AcpUiEventVm[],
   sessionStatus?: string | null,
   persistedProjection?: AcpTimelineProjectionVm | null,
+  backgroundActive = false,
 ): AcpTimelineProjection {
   const persistedAgents = new Map(
     (persistedProjection?.agents ?? []).flatMap((agent) => [
@@ -11020,7 +11077,7 @@ function buildAcpTimelineProjection(
   return {
     timeline: batchAcpActivities(
       linkedTimeline,
-      isSessionActiveStatus(sessionStatus),
+      isSessionActiveStatus(sessionStatus) || backgroundActive,
     ),
     todoEntries: persistedProjection
       ? persistedProjection.todoEntries
@@ -11260,6 +11317,9 @@ function batchAcpActivities(
     flush(false);
     result.push(item);
   }
+  // The prompt turn or the Direct background control owns the open activity
+  // group until a following message flushes it above. Individual tool
+  // completion is not a reply boundary.
   flush(sessionActive);
   return result;
 }
@@ -11830,6 +11890,7 @@ export function settlePendingAcpInteractionsForLifecycle(
   if (!session || !isTerminalAcpLifecycle(lifecycle)) return session ?? null;
   const terminalTurnId = lifecycle?.acp.turnId ?? null;
   const pendingInteractions = session.pendingInteractions.filter((interaction) => {
+    if (!interaction.turnId && interaction.sessionId) return true;
     if (!terminalTurnId || !interaction.turnId) return false;
     return interaction.turnId !== terminalTurnId;
   });

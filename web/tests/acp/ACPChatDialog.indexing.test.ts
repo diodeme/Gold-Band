@@ -94,7 +94,7 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(target).toEqual({ key: 'textDelta-new-answer', position: 11 });
 
     const tool = event({ id: 'tool-1', seq: 12, timestamp: '12Z', kind: 'toolCall', toolCallId: 'tool-1' });
-    expect(nextLiveStreamingMarkdownTarget(target, tool, 10)).toBeNull();
+    expect(nextLiveStreamingMarkdownTarget(target, tool, 10)).toEqual({ key: 'tool-tool-1', position: 12 });
   });
 
   it('does not start Markdown playback for semantically empty Agent chunks', () => {

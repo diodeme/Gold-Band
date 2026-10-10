@@ -1,0 +1,47 @@
+{
+  "benchmark": "MirrorCode",
+  "sample": "mailauth_python",
+  "pair": 2,
+  "record_type": "launch_verification_not_final_result",
+  "systemd_started_at": "2026-10-07T23:19:02+08:00",
+  "eval_started_at": "2026-10-07T23:19:16+08:00",
+  "launch_status": "both_active_with_agent_activity",
+  "model": "anthropic/deepseek-flash",
+  "bridge_model": "inspect[1m]",
+  "effort": "high",
+  "token_limit": null,
+  "agent_exec_timeout_seconds": 604800,
+  "workspace_memory_limit": "8g",
+  "sandbox_cleanup": false,
+  "requirement_sha256_both_arms": "0733b825340ca45288626b9a6cb8eb80e2bf9149b9c6ff6eb33efd2ac211d9c9",
+  "runtime_bundles_and_runner_match_pair_01_archive": true,
+  "scored_hidden_cases_or_previous_solutions_supplied": false,
+  "parallel_pair": true,
+  "shared_host_memory_at_launch": "23Gi total; 22Gi available; 8Gi swap",
+  "runs": [
+    {
+      "arm": "auto",
+      "job": "mailauth-auto-r2",
+      "systemd_unit": "mc-mailauth-auto-r2",
+      "systemd_invocation": "05d617746b464a16888f8da6cd18cd5d",
+      "workspace_container": "inspect-mirrorcode-g-itfkppr-default-1",
+      "eval_log": "2026-10-07T15-19-16-00-00_MirrorCode-GoldBand_DsqqdQdQsVzSXLtZxaC8Nx.eval",
+      "initial_git_commit_short": "07e90c0",
+      "agent_started_at": "2026-10-07T23:19:42.410+08:00"
+    },
+    {
+      "arm": "cc",
+      "job": "mailauth-cc-r2",
+      "systemd_unit": "mc-mailauth-cc-r2",
+      "systemd_invocation": "337ab708f8be4648968078c7f6440579",
+      "workspace_container": "inspect-mirrorcode-c-immufd8-default-1",
+      "eval_log": "2026-10-07T15-19-16-00-00_MirrorCode-ClaudeCode_LqzN5k6otR5WoZazgboju3.eval",
+      "initial_git_commit_short": "11f0ab2",
+      "claude_session_id": "772995e2-d4bc-4264-8b96-13254c8dda34",
+      "claude_version": "2.1.280"
+    }
+  ],
+  "log_root": "/root/gb-bench/mc-jobs",
+  "first_pair_archive": "G:\\gb-bench\\archives\\mirrorcode-mailauth\\pair-01",
+  "retention_note": "Existing CC first-run containers left untouched; no cleanup performed."
+}

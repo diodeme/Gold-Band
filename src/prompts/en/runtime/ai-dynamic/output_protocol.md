@@ -25,7 +25,7 @@ Constraint reminders:
 {% else %}- Under the dynamic-agent strategy, workers must output a valid provider that follows the routing guidance in this prompt; `merge / acceptance` must omit provider because runtime always uses the bootstrap Agent.
 - Do not output `provider` for `workflow-invocation`.
 {% endif %}- {{ model_policy }}
-- When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
+- Once development of the whole requirement is complete, hand off to an acceptance node that checks the work against the requirement in one pass; do not run acceptance for intermediate stages. If acceptance fails, keep assigning nodes to fix it and run acceptance again. Use `next.type="end"` only after acceptance passes, and then do not include `node / groupId / nodes / merge / acceptance`.
 {% if end_summary_is_outer_handoff %}- If you use `next.type="end"`, the summary referenced by `summaryPath` must be a complete business handoff for the successor outside AI-DYNAMIC: state what was completed, key conclusions, important outputs, and any remaining concerns. Do not merely describe routing or say “accepted.”
 {% else %}- If you use `next.type="end"`, the summary referenced by `summaryPath` is an internal progress or branch report. Accurately state what this node completed for the Runtime report manifest and the enclosing group.
 {% endif %}

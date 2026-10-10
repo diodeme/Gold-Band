@@ -25,7 +25,7 @@
 {% else %}- 動態 agent 策略下，worker 必須輸出合法 provider，且必須符合目前 prompt 給出的節點 agent 選擇說明；`merge / acceptance` 不要輸出 provider，runtime 會固定使用初始分發 Agent。
 - `workflow-invocation` 不要輸出 `provider`。
 {% endif %}- {{ model_policy }}
-- `next.type="end"` 時，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
+- 整個需求的開發全部完成後，必須交給驗收節點對照需求統一收尾，中間階段完成時不單獨驗收；驗收不通過繼續指派節點修復，修復後再次驗收。只有驗收通過後才使用 `next.type="end"`，此時 `next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
 {% if end_summary_is_outer_handoff %}- 如果本次使用 `next.type="end"`，`summaryPath` 指向的總結必須是交給 AI-DYNAMIC 外層後繼節點的完整業務交接摘要：說明已完成內容、關鍵結論、重要產物及仍需關注事項；不要只寫路由動作或「驗收通過」。
 {% else %}- 如果本次使用 `next.type="end"`，`summaryPath` 指向的總結是內部進度/分支報告，準確說明本節點完成內容，供 Runtime 報告清單和上層 group 使用。
 {% endif %}

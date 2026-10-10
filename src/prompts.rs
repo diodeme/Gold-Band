@@ -641,6 +641,36 @@ mod tests {
     }
 
     #[test]
+    fn routing_prompts_end_only_after_acceptance() {
+        assert_prompt_contract(
+            AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
+            &[
+                "整个需求的开发全部完成后，必须交给验收节点对照需求统一收尾",
+                "中间阶段完成时不单独验收",
+                "验收不通过继续指派节点修复，修复后再次验收",
+                "只有验收通过后才使用 `next.type=\"end\"`",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
+            &[
+                "Once development of the whole requirement is complete, hand off to an acceptance node",
+                "do not run acceptance for intermediate stages",
+                "keep assigning nodes to fix it and run acceptance again",
+                "Use `next.type=\"end\"` only after acceptance passes",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_SYSTEM_ZH_CN,
+            &["整个需求的交付已通过验收、没有后续工作"],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_SYSTEM_EN,
+            &["the delivery of the whole requirement has passed acceptance and no work remains"],
+        );
+    }
+
+    #[test]
     fn workflow_resume_optimizes_for_established_scope_not_reviewer_approval() {
         assert_prompt_contract(
             RUNTIME_WORKFLOW_RESUME_ZH_CN,

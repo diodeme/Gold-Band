@@ -2880,6 +2880,22 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 回归：`routing_prompts_end_only_after_acceptance` 固定中英文路由规则；AI-DYNAMIC 与提示词相关 142 项单元测试通过。
 - 性能与过度设计评审：只改提示词，不新增状态、schema 或 Runtime 结构门禁；是否需要 Runtime 强制"顶层 end 前必须有验收"待评测结果再评估。
 
+## 2026-10-09 Headless runner 继续暂停的 run
+
+- [x] 背景：无人值守的 AUTO run 因 provider 错误以 `runtime-abnormal` 暂停后，CLI 只能结束，无法像桌面那样在原会话中继续。
+- [x] 设计：新增 `gold-band continue --task-id --run-id`，前台跑到 run 再次结束或暂停，输出与退出码同 `run`。语义沿用桌面：当前节点为 AI-DYNAMIC 且恰有一个可显式继续的暂停内部节点时，该节点在自己的 ACP 会话中 runtime resume；否则走 run 级 runtime continue；多个内部节点同时暂停时命令失败，由桌面逐个继续。不修改任何持久状态，暂停原因本身已决定能否继续。
+- [x] 实现：把桌面动态内部节点继续的后台线程主体抽为 `drive_accepted_dynamic_inner_continue`，后台与新增的前台 `run_continue_foreground` 共用同一驱动与失败收敛（失败时叶子或外层 attempt 回到暂停），不复制状态转换。
+- [x] 回归：CLI 新增 2 项（参数解析、缺少 run 身份报错）；`ai_dynamic_node` 新增 2 项接口测试，固定前台继续在原会话以 `RuntimeResume` 恢复暂停的 merge 节点并跑到 run 成功结束，以及已结束 run 拒绝继续。
+- 性能与过度设计评审：只新增一个入口和一个按 identity 聚合的参数结构，无新状态、持久字段、队列或依赖；继续前一次读取 dynamic graph，复杂度与桌面路径相同。
+
+## 2026-10-05 Headless runner 支持工作流
+
+- [x] 背景：SWE-Marathon 等长程单文件任务适合固定的串行工作流（如跳过 grill 的默认轻量工作流），CLI 只能运行 AUTO。
+- [x] 设计：`gold-band run` 的 `--auto-config` 与新增的 `--workflow <file>` 二选一（clap ArgGroup）。工作流文件沿用桌面工作流的 JSON 格式（`TaskAuthoringWorkflowCompat`）：`{ workflow, modelBindings }`，或者 worker 节点直接写 agent 设置的裸 `WorkflowDsl`。读取后经既有 `migrate_authoring_workflow` 物化为按 execution slot 标识的绑定，放入 `command.workflow_authoring`，与定时任务同一路径创建 run。可选入口由文件本身决定，不新增参数。
+- [x] 诊断：绑定校验依赖 Agent 诊断，而诊断缓存只由桌面写入。CLI 对绑定涉及的每个 Agent 运行一次既有 doctor 探测，经 `merge_doctor_authoring_capabilities` 生成快照，通过 `with_provider_diagnostics_source` 只注入内存。不写桌面缓存，也不绕过 `validate_and_inject` 的 Agent、模型、权限与选项校验。
+- [x] 回归：CLI 7 项，覆盖两种模式解析、模式必须且只能选一、裸工作流节点设置迁移为绑定、显式绑定保留且丢弃无效 slot、不可解析文件报命令错误。
+- 性能与过度设计评审：只在启动时为每个绑定 Agent 做一次 doctor 探测（秒级），不进入运行热路径；不新增配置结构、状态、持久字段或默认值体系，复用桌面工作流格式与绑定校验。
+
 ## 2026-10-05 AUTO 完成报告长文本落文件与需求优先验收
 
 - [x] 背景：DeepSWE hard 子集评测（`docs/benchmark/2026-10-deepswe-hard/`）中 AUTO 的失败暴露两类设计缺陷。其一，完成报告约 97% 字符是后继任务与总结正文，单行 JSON 可达上万字符，模型连续 4 次漏写根对象闭合符，行列号反馈无法帮助定位。其二，审查、测试以方案为检查基准，方案自行声明的非目标被下游当作红线，没有节点核对解读本身是否符合需求。

@@ -2536,168 +2536,37 @@ pub(crate) fn run_continue_dynamic_inner_background(
             && initial_run.current_attempt.as_deref() == Some(outer_attempt_id),
         "dynamic inner attempt is not in the current AI-DYNAMIC node"
     );
-    let background_app = app.clone_for_background();
-    let background_task_id = task_id.to_string();
-    let background_task_uuid = initial_run.task_uuid.clone();
-    let background_run_id = run_id.to_string();
-    let background_round_id = round_id.to_string();
-    let background_outer_node_id = outer_node_id.to_string();
-    let background_outer_attempt_id = outer_attempt_id.to_string();
-    let background_dynamic_node_id = dynamic_node_id.to_string();
-    let background_dynamic_attempt_id = dynamic_attempt_id.to_string();
-    let background_request_id = request_id.clone();
-    let background_execution_id = execution_id.clone();
-    let background_outer_execution_id = outer_execution_id.clone();
+    let target = DynamicInnerContinueTarget {
+        task_id: task_id.to_string(),
+        task_uuid: initial_run.task_uuid.clone(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        outer_node_id: outer_node_id.to_string(),
+        outer_attempt_id: outer_attempt_id.to_string(),
+        dynamic_node_id: dynamic_node_id.to_string(),
+        dynamic_attempt_id: dynamic_attempt_id.to_string(),
+        request_id: request_id.clone(),
+        execution_id: execution_id.clone(),
+        outer_execution_id: outer_execution_id.clone(),
+    };
     let (launch_sender, launch_receiver) = mpsc::channel();
     let launch_failure_sender = launch_sender.clone();
-    let resume_key = reserve_dynamic_resume_request(
-        &app.paths.repo_root,
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        DynamicResumeLease {
-            request_id: request_id.clone(),
-            execution_id: execution_id.clone(),
-            node_id: dynamic_node_id.to_string(),
-            attempt_id: dynamic_attempt_id.to_string(),
-            launch_signal: Some(launch_sender.clone()),
-        },
-    )?;
+    let resume_key = target.reserve(app, Some(launch_sender.clone()))?;
+    let background_app = app.clone_for_background();
     let spawn_result = thread::Builder::new()
         .name("gold-band-dynamic-runtime-continue".to_string())
         .spawn(move || {
-            let app = background_app;
-            if let Err(err) = run_continue_dynamic_inner(
-                &app,
-                &background_task_id,
-                &background_run_id,
-                &background_round_id,
-                &background_outer_node_id,
-                &background_outer_attempt_id,
-                &background_dynamic_node_id,
-                &background_dynamic_attempt_id,
+            let _ = drive_accepted_dynamic_inner_continue(
+                &background_app,
+                &target,
                 prompt_id,
                 input,
                 attachment_paths,
                 model_override,
                 permission_mode_override,
                 Some(launch_sender),
-                background_request_id.clone(),
-                background_execution_id.clone(),
-                background_outer_execution_id.clone(),
-            ) {
-                if dynamic_runtime_continue_was_cancelled(&err) {
-                    tracing::info!(
-                        project_id = %app.paths.project_id,
-                        task_id = %background_task_id,
-                        run_id = %background_run_id,
-                        round_id = %background_round_id,
-                        node_id = %background_dynamic_node_id,
-                        attempt_id = %background_dynamic_attempt_id,
-                        outer_node_id = %background_outer_node_id,
-                        outer_attempt_id = %background_outer_attempt_id,
-                        request_id = %background_request_id,
-                        execution_id = %background_execution_id,
-                        "revoked dynamic conversation runtime continue exited before leaf launch"
-                    );
-                    return;
-                }
-                let info = runtime_continue_launch_error(&err);
-                tracing::warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %background_task_id,
-                    run_id = %background_run_id,
-                    round_id = %background_round_id,
-                    node_id = %background_dynamic_node_id,
-                    attempt_id = %background_dynamic_attempt_id,
-                    outer_node_id = %background_outer_node_id,
-                    outer_attempt_id = %background_outer_attempt_id,
-                    request_id = %background_request_id,
-                    execution_id = %background_execution_id,
-                    error_code = %info.code.code,
-                    error_domain = ?info.domain,
-                    error = %err,
-                    "accepted dynamic conversation runtime continue failed in background"
-                );
-                let resume_key = dynamic_state_lock_key(
-                    &app.paths.repo_root,
-                    &background_task_id,
-                    &background_run_id,
-                    &background_round_id,
-                    &background_outer_node_id,
-                    &background_outer_attempt_id,
-                );
-                let failed_resumes =
-                    fail_dynamic_resume_requests(&resume_key, |_| true, info.clone())
-                        .unwrap_or_default();
-                for mut resume in failed_resumes {
-                    let _ = app.pause_dynamic_attempt_runtime_state_if_active_execution(
-                        &background_task_id,
-                        &background_run_id,
-                        &background_round_id,
-                        &background_outer_node_id,
-                        &background_outer_attempt_id,
-                        &resume.node_id,
-                        &resume.execution_id,
-                        PauseReason::RuntimeAbnormal,
-                    );
-                    if let Some(sender) = resume.launch_signal.take() {
-                        let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
-                    }
-                }
-                let converged = app
-                    .pause_dynamic_attempt_runtime_state_if_active_execution(
-                        &background_task_id,
-                        &background_run_id,
-                        &background_round_id,
-                        &background_outer_node_id,
-                        &background_outer_attempt_id,
-                        &background_dynamic_node_id,
-                        &background_execution_id,
-                        PauseReason::RuntimeAbnormal,
-                    )
-                    .unwrap_or(false);
-                let outer_converged = if converged {
-                    false
-                } else {
-                    matches!(
-                        app.pause_attempt_runtime_state_if_active_execution(
-                            &background_task_id,
-                            &background_run_id,
-                            &background_round_id,
-                            &background_outer_node_id,
-                            &background_outer_attempt_id,
-                            &background_outer_execution_id,
-                            PauseReason::RuntimeAbnormal,
-                        ),
-                        Ok(AttemptRuntimePauseResult::Converged)
-                    )
-                };
-                if converged || outer_converged {
-                    let _ = app.emit_acp_session_update(AcpLiveEventContext {
-                        task_id: background_task_id.clone(),
-                        task_uuid: background_task_uuid.clone(),
-                        run_id: background_run_id.clone(),
-                        round_id: background_round_id.clone(),
-                        node_id: background_dynamic_node_id.clone(),
-                        attempt_id: background_dynamic_attempt_id.clone(),
-                        outer_node_id: Some(background_outer_node_id.clone()),
-                        outer_attempt_id: Some(background_outer_attempt_id.clone()),
-                    });
-                }
-                let _ = launch_failure_sender.send(RuntimeContinueLaunch::Failed(info.clone()));
-                let _ =
-                    std::fs::create_dir_all(app.paths.runs_dir(&background_task_id).as_std_path());
-                let _ = std::fs::write(
-                    app.paths
-                        .runs_dir(&background_task_id)
-                        .join("desktop-dynamic-continue-error.txt")
-                        .as_std_path(),
-                    err.to_string(),
-                );
-            }
+                Some(launch_failure_sender),
+            );
         });
     if let Err(error) = spawn_result {
         let error: anyhow::Error = error.into();
@@ -2767,6 +2636,276 @@ pub(crate) fn run_continue_dynamic_inner_background(
         }
     }
     launch_result
+}
+
+/// Identity of one accepted continue of a paused AI-DYNAMIC leaf and the ids of
+/// the execution it starts.
+struct DynamicInnerContinueTarget {
+    task_id: String,
+    task_uuid: Option<String>,
+    run_id: String,
+    round_id: String,
+    outer_node_id: String,
+    outer_attempt_id: String,
+    dynamic_node_id: String,
+    dynamic_attempt_id: String,
+    request_id: String,
+    execution_id: String,
+    outer_execution_id: String,
+}
+
+impl DynamicInnerContinueTarget {
+    fn reserve(
+        &self,
+        app: &App,
+        launch_signal: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+    ) -> Result<String> {
+        reserve_dynamic_resume_request(
+            &app.paths.repo_root,
+            &self.task_id,
+            &self.run_id,
+            &self.round_id,
+            &self.outer_node_id,
+            &self.outer_attempt_id,
+            DynamicResumeLease {
+                request_id: self.request_id.clone(),
+                execution_id: self.execution_id.clone(),
+                node_id: self.dynamic_node_id.clone(),
+                attempt_id: self.dynamic_attempt_id.clone(),
+                launch_signal,
+            },
+        )
+    }
+}
+
+/// Drives a reserved leaf continue, and the rest of its AI-DYNAMIC graph, on the
+/// calling thread. A failure converges the leaf, or else the outer attempt, back
+/// to a paused state before it is returned.
+#[allow(clippy::too_many_arguments)]
+fn drive_accepted_dynamic_inner_continue(
+    app: &App,
+    target: &DynamicInnerContinueTarget,
+    prompt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+    launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+    launch_failure: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+) -> Result<RunState> {
+    let err = match run_continue_dynamic_inner(
+        app,
+        &target.task_id,
+        &target.run_id,
+        &target.round_id,
+        &target.outer_node_id,
+        &target.outer_attempt_id,
+        &target.dynamic_node_id,
+        &target.dynamic_attempt_id,
+        prompt_id,
+        input,
+        attachment_paths,
+        model_override,
+        permission_mode_override,
+        launch,
+        target.request_id.clone(),
+        target.execution_id.clone(),
+        target.outer_execution_id.clone(),
+    ) {
+        Ok(run) => return Ok(run),
+        Err(err) => err,
+    };
+    if dynamic_runtime_continue_was_cancelled(&err) {
+        tracing::info!(
+            project_id = %app.paths.project_id,
+            task_id = %target.task_id,
+            run_id = %target.run_id,
+            round_id = %target.round_id,
+            node_id = %target.dynamic_node_id,
+            attempt_id = %target.dynamic_attempt_id,
+            outer_node_id = %target.outer_node_id,
+            outer_attempt_id = %target.outer_attempt_id,
+            request_id = %target.request_id,
+            execution_id = %target.execution_id,
+            "revoked dynamic conversation runtime continue exited before leaf launch"
+        );
+        return Err(err);
+    }
+    let info = runtime_continue_launch_error(&err);
+    tracing::warn!(
+        project_id = %app.paths.project_id,
+        task_id = %target.task_id,
+        run_id = %target.run_id,
+        round_id = %target.round_id,
+        node_id = %target.dynamic_node_id,
+        attempt_id = %target.dynamic_attempt_id,
+        outer_node_id = %target.outer_node_id,
+        outer_attempt_id = %target.outer_attempt_id,
+        request_id = %target.request_id,
+        execution_id = %target.execution_id,
+        error_code = %info.code.code,
+        error_domain = ?info.domain,
+        error = %err,
+        "accepted dynamic conversation runtime continue failed"
+    );
+    let resume_key = dynamic_state_lock_key(
+        &app.paths.repo_root,
+        &target.task_id,
+        &target.run_id,
+        &target.round_id,
+        &target.outer_node_id,
+        &target.outer_attempt_id,
+    );
+    let failed_resumes =
+        fail_dynamic_resume_requests(&resume_key, |_| true, info.clone()).unwrap_or_default();
+    for mut resume in failed_resumes {
+        let _ = app.pause_dynamic_attempt_runtime_state_if_active_execution(
+            &target.task_id,
+            &target.run_id,
+            &target.round_id,
+            &target.outer_node_id,
+            &target.outer_attempt_id,
+            &resume.node_id,
+            &resume.execution_id,
+            PauseReason::RuntimeAbnormal,
+        );
+        if let Some(sender) = resume.launch_signal.take() {
+            let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
+        }
+    }
+    let converged = app
+        .pause_dynamic_attempt_runtime_state_if_active_execution(
+            &target.task_id,
+            &target.run_id,
+            &target.round_id,
+            &target.outer_node_id,
+            &target.outer_attempt_id,
+            &target.dynamic_node_id,
+            &target.execution_id,
+            PauseReason::RuntimeAbnormal,
+        )
+        .unwrap_or(false);
+    let outer_converged = if converged {
+        false
+    } else {
+        matches!(
+            app.pause_attempt_runtime_state_if_active_execution(
+                &target.task_id,
+                &target.run_id,
+                &target.round_id,
+                &target.outer_node_id,
+                &target.outer_attempt_id,
+                &target.outer_execution_id,
+                PauseReason::RuntimeAbnormal,
+            ),
+            Ok(AttemptRuntimePauseResult::Converged)
+        )
+    };
+    if converged || outer_converged {
+        let _ = app.emit_acp_session_update(AcpLiveEventContext {
+            task_id: target.task_id.clone(),
+            task_uuid: target.task_uuid.clone(),
+            run_id: target.run_id.clone(),
+            round_id: target.round_id.clone(),
+            node_id: target.dynamic_node_id.clone(),
+            attempt_id: target.dynamic_attempt_id.clone(),
+            outer_node_id: Some(target.outer_node_id.clone()),
+            outer_attempt_id: Some(target.outer_attempt_id.clone()),
+        });
+    }
+    if let Some(sender) = &launch_failure {
+        let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
+    }
+    let _ = std::fs::create_dir_all(app.paths.runs_dir(&target.task_id).as_std_path());
+    let _ = std::fs::write(
+        app.paths
+            .runs_dir(&target.task_id)
+            .join("desktop-dynamic-continue-error.txt")
+            .as_std_path(),
+        err.to_string(),
+    );
+    Err(err)
+}
+
+/// Headless continue of a paused run, driven on the calling thread until the
+/// run settles again. Under an AI-DYNAMIC node the single paused leaf session
+/// resumes in place, as the desktop continues it; otherwise the regular runtime
+/// continue applies.
+pub(crate) fn run_continue_foreground(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
+    let run = app.run_status(task_id, run_id)?;
+    ensure!(
+        is_run_continuable(&run),
+        "current run is not resumable by continue"
+    );
+    let (Some(round_id), Some(outer_node_id), Some(outer_attempt_id)) = (
+        run.current_round.clone(),
+        run.current_node.clone(),
+        run.current_attempt.clone(),
+    ) else {
+        bail!("current run has no current attempt");
+    };
+    let graph_path = app.paths.dynamic_graph_file(
+        task_id,
+        run_id,
+        &round_id,
+        &outer_node_id,
+        &outer_attempt_id,
+    );
+    if !graph_path.exists() {
+        return run_continue(app, task_id, run_id, None, None, Vec::new(), None, None);
+    }
+    let graph = load_dynamic_graph(&graph_path, &app.paths.repo_root)?;
+    let paused = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind != DynamicNodeKind::WorkflowInvocation
+                && node.status == DynamicNodeStatus::Paused
+                && node
+                    .pause_reason
+                    .is_some_and(PauseReason::allows_explicit_runtime_continue)
+        })
+        .collect::<Vec<_>>();
+    let leaf = match paused.as_slice() {
+        // Paused workflow invocations are re-armed by the parent continue.
+        [] => return run_continue(app, task_id, run_id, None, None, Vec::new(), None, None),
+        [leaf] => leaf,
+        _ => bail!(
+            "{} dynamic nodes are paused; continue them individually",
+            paused.len()
+        ),
+    };
+    let target = DynamicInnerContinueTarget {
+        task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
+        run_id: run_id.to_string(),
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        dynamic_node_id: leaf.id.clone(),
+        dynamic_attempt_id: dynamic_attempt_id(leaf),
+        request_id: next_dynamic_resume_request_id(),
+        execution_id: next_runtime_execution_id(),
+        outer_execution_id: next_runtime_execution_id(),
+    };
+    target.reserve(app, None)?;
+    let driven = drive_accepted_dynamic_inner_continue(
+        app,
+        &target,
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+    );
+    let run = app.run_status(task_id, run_id)?;
+    // A failed drive has converged the run back to paused; that state is the result.
+    if run.status == RunStatus::Running {
+        driven?;
+    }
+    Ok(run)
 }
 
 pub(crate) fn run_continue_background(

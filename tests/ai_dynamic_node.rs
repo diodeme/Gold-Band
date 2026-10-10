@@ -2433,6 +2433,62 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
 }
 
 #[test]
+fn ai_dynamic_foreground_continue_resumes_paused_leaf_until_run_settles() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-merge-foreground-continue";
+    let provider = DynamicProvider::merge_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+
+    let run = app.run_continue_foreground(task_id, "run-001").unwrap();
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    let graph = dynamic_graph(&app, task_id);
+    let merge = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "group-core-merge")
+        .unwrap();
+    assert_eq!(merge.status, DynamicNodeStatus::Completed);
+    let invocations = provider.invocations.lock().unwrap();
+    let merge_continue = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.node_id == "group-core-merge"
+                && invocation.session_mode == SessionMode::Continue
+        })
+        .expect("merge resumed in its own session");
+    assert_eq!(
+        merge_continue.user_prompt_render_mode,
+        UserPromptRenderMode::RuntimeResume
+    );
+}
+
+#[test]
+fn ai_dynamic_foreground_continue_rejects_settled_run() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-foreground-continue-settled";
+    let provider = DynamicProvider::merge_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+    app.run_start(task_id, None).unwrap();
+    app.run_continue_foreground(task_id, "run-001").unwrap();
+
+    let error = app.run_continue_foreground(task_id, "run-001").unwrap_err();
+
+    assert!(error.to_string().contains("not resumable"));
+}
+
+#[test]
 fn ai_dynamic_run_rejects_non_git_workspace_before_provider() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();

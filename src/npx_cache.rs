@@ -1,24 +1,32 @@
-//! User-confirmed repair of explicitly reported npx installation directories.
+//! npx cache access: direct launch of exact-version packages npx already installed, and
+//! user-confirmed repair of explicitly reported npx installation directories.
 use crate::{
     config::AcpAdapterConfig,
     process::{ManagedProcessGroup, background_command},
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
+use serde_json::Value;
+use sha2::{Digest, Sha512};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 
 const MAX_TARGETS: usize = 16;
 const CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT: u64 = 64 * 1024;
+/// Distinct (npx, cwd, env) combinations whose npm cache location is remembered.
+const MAX_REMEMBERED_CACHES: usize = 32;
 static REPAIR_ACTIVE: Mutex<bool> = Mutex::new(false);
+type CacheKey = (PathBuf, PathBuf, BTreeMap<String, String>);
+static RESOLVED_CACHES: LazyLock<Mutex<HashMap<CacheKey, PathBuf>>> =
+    LazyLock::new(Default::default);
 
 #[derive(Debug, thiserror::Error)]
 #[error("{code}: {msg}")]
@@ -263,6 +271,144 @@ pub fn resolve_cache(config: &AcpAdapterConfig, cwd: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// `node <bin> <args>` equivalent of an `npx -y <name>@<exact version> <args>` launch.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CachedNpxLaunch {
+    pub node: PathBuf,
+    pub script: PathBuf,
+    pub args: Vec<String>,
+}
+
+/// Resolves an npx adapter launch to the package npx already installed, so the adapter runs
+/// without the long-lived npx/cmd wrapper processes. Returns `None` whenever the launch is not
+/// a plain exact-version npx invocation or the cache entry cannot be fully verified; callers
+/// then launch through npx, which also (re)populates the cache.
+pub fn cached_launch(
+    config: &AcpAdapterConfig,
+    args: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Option<CachedNpxLaunch> {
+    let (spec, rest) = exact_npx_spec(&config.command, args)?;
+    let npx = PathBuf::from(crate::acp::adapter::resolve_command_with_path(
+        &crate::acp::adapter::platform_adapter_command(&config.command),
+        env.get("PATH").map(String::as_str),
+    ));
+    let node = npx
+        .parent()?
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    if !node.is_file() {
+        return None;
+    }
+    let cache = remembered_cache(config, &npx, cwd, env)?;
+    let script = installed_bin(&cache, &spec)?;
+    Some(CachedNpxLaunch {
+        node,
+        script,
+        args: rest.to_vec(),
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NpxSpec {
+    raw: String,
+    name: String,
+    version: semver::Version,
+}
+
+/// Accepts only `npx [-y|--yes]... <name>@<exact semver> [args]`: other launcher options or
+/// version ranges could make npx resolve something other than what is cached.
+fn exact_npx_spec<'a>(command: &str, args: &'a [String]) -> Option<(NpxSpec, &'a [String])> {
+    let file = Path::new(command)
+        .file_name()?
+        .to_str()?
+        .to_ascii_lowercase();
+    if !matches!(file.as_str(), "npx" | "npx.cmd" | "npx.exe") {
+        return None;
+    }
+    let start = args.iter().position(|a| a != "-y" && a != "--yes")?;
+    let raw = &args[start];
+    if raw.starts_with('-') {
+        return None;
+    }
+    let at = raw.rfind('@').filter(|&i| i > 0)?;
+    let version = semver::Version::parse(&raw[at + 1..]).ok()?;
+    Some((
+        NpxSpec {
+            raw: raw.clone(),
+            name: raw[..at].to_owned(),
+            version,
+        },
+        &args[start + 1..],
+    ))
+}
+
+fn remembered_cache(
+    config: &AcpAdapterConfig,
+    npx: &Path,
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Option<PathBuf> {
+    let key = (npx.to_path_buf(), cwd.to_path_buf(), env.clone());
+    if let Some(cache) = RESOLVED_CACHES.lock().ok()?.get(&key) {
+        return Some(cache.clone());
+    }
+    let cache = resolve_cache(config, cwd).ok()?;
+    let mut caches = RESOLVED_CACHES.lock().ok()?;
+    if caches.len() >= MAX_REMEMBERED_CACHES {
+        caches.clear();
+    }
+    caches.insert(key, cache.clone());
+    Some(cache)
+}
+
+/// Locates the entry script of `spec` in the npx directory npx itself would use, verifying the
+/// directory was installed for exactly this spec and finished installing.
+fn installed_bin(cache: &Path, spec: &NpxSpec) -> Option<PathBuf> {
+    // npx keys single-package installs by the first 16 hex chars of sha512(spec).
+    let digest = Sha512::digest(spec.raw.as_bytes());
+    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let root = cache.join("_npx").join(hash);
+    let manifest = read_json(&root.join("package.json"))?;
+    if manifest.pointer("/_npx/packages")? != &Value::from(vec![spec.raw.clone()]) {
+        return None;
+    }
+    // Written by npm only after the install tree was fully reified.
+    if !root.join("node_modules/.package-lock.json").is_file() {
+        return None;
+    }
+    let package = root.join("node_modules").join(&spec.name);
+    let manifest = read_json(&package.join("package.json"))?;
+    if semver::Version::parse(manifest.get("version")?.as_str()?).ok()? != spec.version {
+        return None;
+    }
+    let bin = match manifest.get("bin")? {
+        Value::String(bin) => bin.as_str(),
+        Value::Object(bins) => {
+            let short = spec.name.rsplit('/').next().unwrap_or(&spec.name);
+            match bins.get(short) {
+                Some(bin) => bin.as_str()?,
+                None if bins.len() == 1 => bins.values().next()?.as_str()?,
+                None => return None,
+            }
+        }
+        _ => return None,
+    };
+    let relative = Path::new(bin);
+    if !relative
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return None;
+    }
+    let script = package.join(relative);
+    script.is_file().then_some(script)
+}
+
+fn read_json(path: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepairItem {
@@ -294,6 +440,176 @@ pub fn remove_targets(cache: &Path, approved: &[PathBuf], _guard: &RepairGuard) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SPEC: &str = "@scope/fixture-acp@1.2.3";
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    fn spec() -> NpxSpec {
+        exact_npx_spec("npx", &args(&["-y", SPEC])).unwrap().0
+    }
+
+    /// Lays out an npx install of `SPEC` the way npm 11 does and returns its root directory.
+    fn install(cache: &Path, bin: Value) -> PathBuf {
+        let hash: String = Sha512::digest(SPEC.as_bytes())[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let root = cache.join("_npx").join(hash);
+        let package = root.join("node_modules/@scope/fixture-acp");
+        fs::create_dir_all(package.join("dist")).unwrap();
+        fs::write(
+            root.join("package.json"),
+            serde_json::json!({"dependencies": {"@scope/fixture-acp": "^1.2.3"}, "_npx": {"packages": [SPEC]}}).to_string(),
+        )
+        .unwrap();
+        fs::write(root.join("node_modules/.package-lock.json"), "{}").unwrap();
+        fs::write(
+            package.join("package.json"),
+            serde_json::json!({"name": "@scope/fixture-acp", "version": "1.2.3", "bin": bin})
+                .to_string(),
+        )
+        .unwrap();
+        fs::write(package.join("dist/index.js"), "").unwrap();
+        root
+    }
+
+    #[test]
+    fn only_plain_exact_version_npx_launches_are_eligible() {
+        let launch = args(&["-y", SPEC, "--acp"]);
+        let (spec, rest) = exact_npx_spec("C:/node/npx.cmd", &launch).unwrap();
+        assert_eq!(spec.name, "@scope/fixture-acp");
+        assert_eq!(spec.version, semver::Version::new(1, 2, 3));
+        assert_eq!(rest, ["--acp"]);
+        assert_eq!(
+            exact_npx_spec("npx", &args(&["unscoped@0.1.0"]))
+                .unwrap()
+                .0
+                .name,
+            "unscoped"
+        );
+
+        for (command, values) in [
+            ("npx", &["-y", "@scope/fixture-acp@^1.2.3"][..]),
+            ("npx", &["-y", "@scope/fixture-acp@latest"]),
+            ("npx", &["-y", "@scope/fixture-acp"]),
+            ("npx", &["--registry", "https://example.invalid", SPEC]),
+            ("npx", &["-y"]),
+            ("npm", &["exec", "-y", SPEC]),
+            ("node", &[SPEC]),
+        ] {
+            assert!(
+                exact_npx_spec(command, &args(values)).is_none(),
+                "{command} {values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn locates_the_bin_of_the_npx_install_for_exactly_this_spec() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = install(
+            temp.path(),
+            serde_json::json!({"fixture-acp": "dist/index.js", "other": "x.js"}),
+        );
+        let script = root.join("node_modules/@scope/fixture-acp/dist/index.js");
+        assert_eq!(installed_bin(temp.path(), &spec()), Some(script.clone()));
+
+        install(temp.path(), Value::from("dist/index.js"));
+        assert_eq!(installed_bin(temp.path(), &spec()), Some(script.clone()));
+        install(temp.path(), serde_json::json!({"renamed": "dist/index.js"}));
+        assert_eq!(installed_bin(temp.path(), &spec()), Some(script));
+    }
+
+    #[test]
+    fn unverifiable_installs_fall_back_to_npx() {
+        let temp = tempfile::tempdir().unwrap();
+        type BreakInstall = fn(&Path);
+        let cases: [(&str, BreakInstall); 6] = [
+            ("dependency of another npx install", |root| {
+                fs::write(
+                    root.join("package.json"),
+                    r#"{"_npx":{"packages":["other@1.0.0"]}}"#,
+                )
+                .unwrap();
+            }),
+            ("install not finished", |root| {
+                fs::remove_file(root.join("node_modules/.package-lock.json")).unwrap();
+            }),
+            ("different installed version", |root| {
+                fs::write(
+                    root.join("node_modules/@scope/fixture-acp/package.json"),
+                    r#"{"version":"1.2.4","bin":"dist/index.js"}"#,
+                )
+                .unwrap();
+            }),
+            ("missing entry script", |root| {
+                fs::remove_file(root.join("node_modules/@scope/fixture-acp/dist/index.js"))
+                    .unwrap();
+            }),
+            ("ambiguous bin map", |root| {
+                fs::write(
+                    root.join("node_modules/@scope/fixture-acp/package.json"),
+                    r#"{"version":"1.2.3","bin":{"a":"dist/index.js","b":"dist/index.js"}}"#,
+                )
+                .unwrap();
+            }),
+            ("bin escaping the package", |root| {
+                fs::write(
+                    root.join("node_modules/@scope/fixture-acp/package.json"),
+                    r#"{"version":"1.2.3","bin":"../../../package.json"}"#,
+                )
+                .unwrap();
+            }),
+        ];
+        for (name, break_install) in cases {
+            let root = install(temp.path(), Value::from("dist/index.js"));
+            break_install(&root);
+            assert_eq!(installed_bin(temp.path(), &spec()), None, "{name}");
+        }
+        assert_eq!(installed_bin(&temp.path().join("absent"), &spec()), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cached_launch_runs_node_next_to_npx_with_the_remaining_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let root = install(&cache, Value::from("dist/index.js"));
+        fs::write(temp.path().join("node.exe"), "").unwrap();
+        fs::write(
+            temp.path().join("npm.cmd"),
+            "@echo off\r\necho %npm_config_cache%\r\n",
+        )
+        .unwrap();
+        let config = AcpAdapterConfig {
+            command: temp.path().join("npx.cmd").to_string_lossy().into_owned(),
+            args: args(&["-y", SPEC, "--acp"]),
+            display_name: "fixture".into(),
+            env: [(
+                "npm_config_cache".into(),
+                cache.to_string_lossy().into_owned(),
+            )]
+            .into(),
+        };
+        let env = crate::acp::adapter::resolved_adapter_env(&config.env);
+        assert_eq!(
+            cached_launch(&config, &config.args, temp.path(), &env),
+            Some(CachedNpxLaunch {
+                node: temp.path().join("node.exe"),
+                script: root.join("node_modules/@scope/fixture-acp/dist/index.js"),
+                args: args(&["--acp"]),
+            })
+        );
+        fs::remove_file(temp.path().join("node.exe")).unwrap();
+        assert_eq!(
+            cached_launch(&config, &config.args, temp.path(), &env),
+            None
+        );
+    }
+
     #[test]
     fn running_npx_adapter_does_not_block_user_confirmed_repair() {
         let temp = tempfile::tempdir().unwrap();

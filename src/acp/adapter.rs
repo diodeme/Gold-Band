@@ -159,11 +159,28 @@ pub fn spawn_adapter(
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
     let resolved_env = resolved_adapter_env(&config.env);
-    let resolved_command =
-        resolve_command_with_path(&executable, resolved_env.get("PATH").map(String::as_str));
-    let mut command = background_command(&resolved_command);
+    let mut command = match crate::npx_cache::cached_launch(
+        config,
+        &adapter.args,
+        cwd,
+        &resolved_env,
+    ) {
+        Some(launch) => {
+            tracing::debug!(script = %launch.script.display(), "launching cached npx adapter directly");
+            let mut command = background_command(&launch.node);
+            command.arg(&launch.script).args(&launch.args);
+            command
+        }
+        None => {
+            let mut command = background_command(resolve_command_with_path(
+                &executable,
+                resolved_env.get("PATH").map(String::as_str),
+            ));
+            command.args(&adapter.args);
+            command
+        }
+    };
     command
-        .args(&adapter.args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

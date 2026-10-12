@@ -30,6 +30,8 @@ Gold Band 核心 runtime 不应直接了解：
 
 Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-version>` 启动；Windows 桌面运行时仅在进程启动边界把 bare `npx` 解析为 `npx.cmd`，其他平台不做命令改写。
 
+npx 直启（2026-10-11）：npx 在适配器整个生命周期内保留 `cmd → node(npx) → cmd` 三层包装进程（每个适配器约 55～90 MB）。对形如 `npx [-y|--yes] <包>@<精确 semver> [参数]` 的配置，启动边界先在 npm 实际缓存中定位 npx 已安装的同一规格：按 npx 自身规则（规格的 sha512 前 16 位十六进制）直接定位 `_npx/<hash>`，并校验其 `package.json` 的 `_npx.packages` 恰为该规格、`node_modules/.package-lock.json` 存在（安装已完成）、包版本一致、`bin` 入口位于包内且存在；全部满足时用与 npx 同一安装目录下的 node 直接执行入口。任一条件不满足（首次使用、版本范围/latest、其他 npx 选项、npm exec 形式、缓存被清理或 npm 布局变化）均原样走 npx，后者同时补齐缓存。缓存根目录沿用修复功能的 `npm config get cache` 查询（同一启动环境与工作目录），按 npx 路径、工作目录和环境在进程内记忆，最多 32 项。适配器自身按模块路径定位 `claude.exe`/`codex`，不依赖 npx 注入的环境变量。
+
 ### 构建期 Agent 版本策略
 
 `configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.87.0`、`codex-acp` 为 `2.1.1`（2026-10-08 的 npm latest 正式版）。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。

@@ -568,12 +568,12 @@ const markdownComponents = {
   ),
   table: ({ children }: { children?: React.ReactNode }) => (
     <div className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60">
-      <table className="w-full min-w-max border-collapse text-left text-xs leading-5">{children}</table>
+      <table className="w-full table-auto border-collapse text-left text-xs leading-5">{children}</table>
     </div>
   ),
   thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-muted/50 text-foreground">{children}</thead>,
-  th: ({ children }: { children?: React.ReactNode }) => <th className="border-b border-border/60 px-3 py-2 font-semibold">{children}</th>,
-  td: ({ children }: { children?: React.ReactNode }) => <td className="border-t border-border/40 px-3 py-2 text-muted-foreground">{children}</td>,
+  th: ({ children }: { children?: React.ReactNode }) => <th className="border-b border-border/60 px-3 py-2 align-top whitespace-normal font-semibold [overflow-wrap:anywhere]">{children}</th>,
+  td: ({ children }: { children?: React.ReactNode }) => <td className="border-t border-border/40 px-3 py-2 align-top whitespace-normal text-muted-foreground [overflow-wrap:anywhere]">{children}</td>,
   hr: () => <hr className="my-3 border-border/70" />,
 } as NonNullable<StreamdownProps['components']>;
 

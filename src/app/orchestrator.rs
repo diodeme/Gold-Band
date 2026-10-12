@@ -2828,11 +2828,31 @@ fn drive_accepted_dynamic_inner_continue(
 }
 
 /// Headless continue of a paused run, driven on the calling thread until the
-/// run settles again. Under an AI-DYNAMIC node the single paused leaf session
-/// resumes in place, as the desktop continues it; otherwise the regular runtime
-/// continue applies.
-pub(crate) fn run_continue_foreground(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
-    let run = app.run_status(task_id, run_id)?;
+/// run settles again. Under an AI-DYNAMIC node every paused leaf session
+/// resumes in place, as continuing each of them in the desktop does; otherwise
+/// the regular runtime continue applies.
+///
+/// `recover_interrupted` is the caller's assertion that the host that left the
+/// run `Running` is gone: the run is first paused as `ProcessInterrupted`, the
+/// same recovery the desktop applies to its runs at startup.
+pub(crate) fn run_continue_foreground(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    recover_interrupted: bool,
+) -> Result<RunState> {
+    let mut run = app.run_status(task_id, run_id)?;
+    if run.status == RunStatus::Running {
+        if !recover_interrupted {
+            return Err(runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Workflow,
+                "runtime.continue-run-still-running",
+                "run is still running; continue an interrupted run with recovery",
+                serde_json::json!({ "taskId": task_id, "runId": run_id }),
+            )));
+        }
+        run = app.run_pause(task_id, run_id, PauseReason::ProcessInterrupted)?;
+    }
     ensure!(
         is_run_continuable(&run),
         "current run is not resumable by continue"
@@ -2866,44 +2886,64 @@ pub(crate) fn run_continue_foreground(app: &App, task_id: &str, run_id: &str) ->
                     .is_some_and(PauseReason::allows_explicit_runtime_continue)
         })
         .collect::<Vec<_>>();
-    let leaf = match paused.as_slice() {
-        // Paused workflow invocations are re-armed by the parent continue.
-        [] => return run_continue(app, task_id, run_id, None, None, Vec::new(), None, None),
-        [leaf] => leaf,
-        _ => bail!(
-            "{} dynamic nodes are paused; continue them individually",
-            paused.len()
-        ),
-    };
-    let target = DynamicInnerContinueTarget {
-        task_id: task_id.to_string(),
-        task_uuid: run.task_uuid.clone(),
-        run_id: run_id.to_string(),
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        dynamic_node_id: leaf.id.clone(),
-        dynamic_attempt_id: dynamic_attempt_id(leaf),
-        request_id: next_dynamic_resume_request_id(),
-        execution_id: next_runtime_execution_id(),
-        outer_execution_id: next_runtime_execution_id(),
-    };
-    target.reserve(app, None)?;
-    let driven = drive_accepted_dynamic_inner_continue(
-        app,
-        &target,
-        None,
-        None,
-        Vec::new(),
-        None,
-        None,
-        None,
-        None,
-    );
+    // Paused workflow invocations are re-armed by the parent continue.
+    if paused.is_empty() {
+        return run_continue(app, task_id, run_id, None, None, Vec::new(), None, None);
+    }
+    let outer_execution_id = next_runtime_execution_id();
+    let targets = paused
+        .iter()
+        .map(|leaf| DynamicInnerContinueTarget {
+            task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run_id.to_string(),
+            round_id: round_id.clone(),
+            outer_node_id: outer_node_id.clone(),
+            outer_attempt_id: outer_attempt_id.clone(),
+            dynamic_node_id: leaf.id.clone(),
+            dynamic_attempt_id: dynamic_attempt_id(leaf),
+            request_id: next_dynamic_resume_request_id(),
+            execution_id: next_runtime_execution_id(),
+            outer_execution_id: outer_execution_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    for target in &targets {
+        target.reserve(app, None)?;
+    }
+    // One continue drives the AI-DYNAMIC graph; the dynamic resume coordinator
+    // hands the other leaves to that driver, and their calls return at once.
+    let driven = thread::scope(|scope| {
+        let workers = targets
+            .iter()
+            .map(|target| {
+                scope.spawn(move || {
+                    drive_accepted_dynamic_inner_continue(
+                        app,
+                        target,
+                        None,
+                        None,
+                        Vec::new(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err(anyhow!("dynamic continue worker panicked")))
+            })
+            .collect::<Vec<_>>()
+    });
     let run = app.run_status(task_id, run_id)?;
     // A failed drive has converged the run back to paused; that state is the result.
     if run.status == RunStatus::Running {
-        driven?;
+        driven.into_iter().collect::<Result<Vec<_>>>()?;
     }
     Ok(run)
 }

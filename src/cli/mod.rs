@@ -57,6 +57,10 @@ struct ContinueArgs {
     /// `id` of the printed `RunState`.
     #[arg(long)]
     run_id: String,
+    /// Asserts that the host which left the run `Running` is gone, e.g. it was
+    /// killed: the run is paused as process-interrupted, then continued.
+    #[arg(long)]
+    recover_interrupted: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -124,12 +128,77 @@ impl From<CliExitStatus> for ExitCode {
 
 pub async fn run() -> ExitCode {
     let cli = Cli::parse();
-    match execute(cli) {
+    let executed = tokio::task::spawn_blocking(move || execute(cli))
+        .await
+        .unwrap_or_else(|error| Err(anyhow::anyhow!("headless runner panicked: {error}")));
+    match executed {
         Ok(status) => status.into(),
         Err(error) => {
             eprintln!("{error:#}");
             CliExitStatus::CommandFailed.into()
         }
+    }
+}
+
+/// A host terminating the runner (SIGINT / SIGTERM, Ctrl+C) gets the desktop
+/// exit semantics: running sessions are paused as process-interrupted and the
+/// agent connections are closed, after which the foreground drive returns the
+/// paused run as its result. A second signal exits at once.
+async fn pause_on_termination(app: App) {
+    let Ok(mut signals) = TerminationSignals::listen() else {
+        tracing::warn!("failed to listen for termination signals");
+        return;
+    };
+    signals.recv().await;
+    tracing::warn!("termination requested; pausing running sessions");
+    tokio::spawn(async move {
+        signals.recv().await;
+        std::process::exit(CliExitStatus::CommandFailed.code().into());
+    });
+    match tokio::task::spawn_blocking(move || app.stop_all_running_sessions()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "failed to pause running sessions on termination")
+        }
+        Err(error) => tracing::warn!(%error, "termination pause worker failed"),
+    }
+}
+
+struct TerminationSignals {
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+impl TerminationSignals {
+    fn listen() -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Self {
+                interrupt: signal(SignalKind::interrupt())?,
+                terminate: signal(SignalKind::terminate())?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                ctrl_c: tokio::signal::windows::ctrl_c()?,
+            })
+        }
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+        }
+        #[cfg(windows)]
+        self.ctrl_c.recv().await;
     }
 }
 
@@ -149,6 +218,7 @@ fn execute(cli: Cli) -> Result<CliExitStatus> {
     let app = App::with_config(repo_root, config);
     let _runtime_log_guard = init_tracing(&app.paths, &app.config, true);
     touch_log_file_best_effort(&app.paths);
+    tokio::runtime::Handle::current().spawn(pause_on_termination(app.clone_for_background()));
 
     let run = match cli.command {
         Commands::Run(args) => {
@@ -160,7 +230,9 @@ fn execute(cli: Cli) -> Result<CliExitStatus> {
                 (None, None) => unreachable!("clap requires one run mode"),
             }
         }
-        Commands::Continue(args) => app.run_continue_foreground(&args.task_id, &args.run_id)?,
+        Commands::Continue(args) => {
+            app.run_continue_foreground(&args.task_id, &args.run_id, args.recover_interrupted)?
+        }
     };
     println!("{}", serde_json::to_string_pretty(&run)?);
     Ok(CliExitStatus::from_run(&run))
@@ -295,6 +367,21 @@ mod tests {
             (args.task_id.as_str(), args.run_id.as_str()),
             ("task-001", "run-001")
         );
+        assert!(!args.recover_interrupted);
+        let cli = Cli::try_parse_from([
+            "gold-band",
+            "continue",
+            "--task-id",
+            "task-001",
+            "--run-id",
+            "run-001",
+            "--recover-interrupted",
+        ])
+        .unwrap();
+        let Commands::Continue(args) = cli.command else {
+            panic!("expected continue");
+        };
+        assert!(args.recover_interrupted);
     }
 
     #[test]

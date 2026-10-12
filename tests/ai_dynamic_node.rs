@@ -48,6 +48,7 @@ enum DynamicScenario {
     InvalidSessionContinue,
     ProviderRuntimeError,
     MergePauseThenContinue,
+    FanoutPauseThenContinue,
     WorkflowInvocation {
         workflow_id: Arc<Mutex<String>>,
     },
@@ -132,6 +133,10 @@ impl DynamicProvider {
 
     fn merge_pause_then_continue() -> Self {
         Self::new(DynamicScenario::MergePauseThenContinue)
+    }
+
+    fn fanout_pause_then_continue() -> Self {
+        Self::new(DynamicScenario::FanoutPauseThenContinue)
     }
 
     fn workflow_invocation(workflow_id: Arc<Mutex<String>>) -> Self {
@@ -401,6 +406,12 @@ impl DynamicProvider {
             (DynamicScenario::MergePauseThenContinue, _, "group-core-merge", SessionMode::New) => {
                 (ProviderRunStatus::Interrupted, None)
             }
+            (
+                DynamicScenario::FanoutPauseThenContinue,
+                _,
+                "branch-a" | "branch-b",
+                SessionMode::New,
+            ) => (ProviderRunStatus::Interrupted, None),
             _ => {
                 let output_artifact = match self.dynamic_artifact_for(&req) {
                     Some(content) => Some(OutputArtifactPayload {
@@ -707,12 +718,14 @@ impl DynamicProvider {
             (DynamicScenario::InvalidSessionContinue, "bootstrap") => {
                 Some(invalid_session_continue_completion())
             }
-            (DynamicScenario::MergePauseThenContinue, "bootstrap") => {
-                Some(fanout_completion(profile))
-            }
-            (DynamicScenario::MergePauseThenContinue, "branch-a" | "branch-b") => {
-                Some(end_completion("branch done"))
-            }
+            (
+                DynamicScenario::MergePauseThenContinue | DynamicScenario::FanoutPauseThenContinue,
+                "bootstrap",
+            ) => Some(fanout_completion(profile)),
+            (
+                DynamicScenario::MergePauseThenContinue | DynamicScenario::FanoutPauseThenContinue,
+                "branch-a" | "branch-b",
+            ) => Some(end_completion("branch done")),
             (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap")
             | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") =>
             {
@@ -2445,7 +2458,7 @@ fn ai_dynamic_foreground_continue_resumes_paused_leaf_until_run_settles() {
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.status, RunStatus::Paused);
 
-    let run = app.run_continue_foreground(task_id, "run-001").unwrap();
+    let run = app.run_continue_foreground(task_id, "run-001", false).unwrap();
 
     assert_eq!(run.status, RunStatus::Completed);
     assert_eq!(run.outcome, Some(RunOutcome::Success));
@@ -2481,11 +2494,56 @@ fn ai_dynamic_foreground_continue_rejects_settled_run() {
     write_task_file(&app, task_id);
     write_dynamic_workflow(&app, task_id, &profile, "[]");
     app.run_start(task_id, None).unwrap();
-    app.run_continue_foreground(task_id, "run-001").unwrap();
+    app.run_continue_foreground(task_id, "run-001", false).unwrap();
 
-    let error = app.run_continue_foreground(task_id, "run-001").unwrap_err();
+    let error = app
+        .run_continue_foreground(task_id, "run-001", false)
+        .unwrap_err();
 
     assert!(error.to_string().contains("not resumable"));
+}
+
+#[test]
+fn ai_dynamic_foreground_continue_resumes_every_paused_leaf_until_run_settles() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-fanout-foreground-continue";
+    let provider = DynamicProvider::fanout_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    let paused = dynamic_graph(&app, task_id)
+        .nodes
+        .iter()
+        .filter(|node| node.status == DynamicNodeStatus::Paused)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(paused, ["branch-a", "branch-b"]);
+
+    let run = app.run_continue_foreground(task_id, "run-001", false).unwrap();
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    let graph = dynamic_graph(&app, task_id);
+    let invocations = provider.invocations.lock().unwrap();
+    for branch in ["branch-a", "branch-b"] {
+        let node = graph.nodes.iter().find(|node| node.id == branch).unwrap();
+        assert_eq!(node.status, DynamicNodeStatus::Completed);
+        let resumed = invocations
+            .iter()
+            .find(|invocation| {
+                invocation.runtime_context.node_id == branch
+                    && invocation.session_mode == SessionMode::Continue
+            })
+            .unwrap_or_else(|| panic!("{branch} resumed in its own session"));
+        assert_eq!(
+            resumed.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+        );
+    }
 }
 
 #[test]

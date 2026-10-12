@@ -50,7 +50,7 @@ minijinja = "2"
 parking_lot = "0.12"
 pulldown-cmark = "0.13"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util", "signal"] }
 tokio-util = { version = "0.7", features = ["time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4", "v5"] }

@@ -2880,6 +2880,21 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 回归：`routing_prompts_end_only_after_acceptance` 固定中英文路由规则；AI-DYNAMIC 与提示词相关 142 项单元测试通过。
 - 性能与过度设计评审：只改提示词，不新增状态、schema 或 Runtime 结构门禁；是否需要 Runtime 强制"顶层 end 前必须有验收"待评测结果再评估。
 
+## 2026-10-11 Headless runner 反复暂停与继续
+
+- [x] 背景：长程无人值守 run 需要按外部条件（如订阅额度）多次暂停、继续。CLI 被终止时不处理信号，run 留在 `running`，无法与仍在运行的 run 区分；并发 fan-out 中断后多个内部节点同时暂停，`continue` 只支持一个。
+- [x] 设计：
+  - CLI 宿主处理终止信号（tokio `signal`）：首个 SIGINT / SIGTERM 调用桌面退出同一个 `stop_all_running_sessions`，把运行中的会话暂停为 `process-interrupted` 并关闭连接，前台驱动随即返回被暂停的 run（退出码 2）；第二个信号立即退出。
+  - 进程组存活判定排除僵尸进程（Linux）：`kill(-pgid, 0)` 也会命中僵尸。容器 PID 1 不是 init（如 `sleep infinity`）时，被杀的 Agent 后代成为孤儿后永远不会被回收，`ManagedProcessGroup::force_kill` 因此无限等待：终止时连接关闭卡住，进程退出时 tokio 又等待这个阻塞任务，CLI 无法退出。现在只把非 Z/X 状态的成员计为存活，先查组长，组长不在时才扫描 `/proc`。僵尸不持有 stdio 等资源，原有"后代不能留着 stdio"的约束不变。
+  - `continue` 继续所有可显式继续的暂停内部节点：每个节点一个 scoped 线程，复用既有 dynamic resume coordinator（每个 AI-DYNAMIC attempt 只有一个 driver，其余请求交给它），共享同一个外层 execution id，等全部返回、run 稳定后输出。
+  - 宿主崩溃或被 SIGKILL 时没有机会暂停，由 `continue --recover-interrupted` 显式担保原宿主已不在，先 `run_pause(ProcessInterrupted)`（与桌面启动恢复同语义，含内部节点），再继续；不带参数时以 `runtime.continue-run-still-running` 拒绝 `running` 的 run。不做跨进程锁或租约。
+- [x] 回归：
+  - `app` 2 项：`running` 的 run 不带恢复参数被拒绝，带参数恢复为 `process-interrupted`；
+  - `ai_dynamic_node` 1 项：两个并发暂停的 fan-out 节点各自在原会话以 `RuntimeResume` 继续，run 成功结束（连续 15 次通过）；
+  - CLI 参数解析覆盖 `--recover-interrupted`；
+  - `process` 2 项（Linux）：组内只剩未被回收的僵尸时 `terminate` 返回（修复前超时失败；同一非 init 的 PID 1 环境下，既有的 `kills_descendants` 测试修复前也会挂住）；`/proc/<pid>/stat` 解析能处理命令名中的括号。
+- 性能与过度设计评审：没有新增状态、持久字段或依赖（只开启 tokio 既有的 `signal` 特性）；线程数等于暂停节点数，受 fan-out 宽度限制；信号处理只在终止时执行一次。存活判定只在等待进程组时调用，组长存活时只多读一个 `stat` 文件，组长退出后才扫描 `/proc`。
+
 ## 2026-10-09 Headless runner 继续暂停的 run
 
 - [x] 背景：无人值守的 AUTO run 因 provider 错误以 `runtime-abnormal` 暂停后，CLI 只能结束，无法像桌面那样在原会话中继续。

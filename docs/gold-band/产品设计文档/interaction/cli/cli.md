@@ -29,11 +29,15 @@ gold-band [--log-level <error|warn|info|debug|trace>] run \
 
 ```bash
 gold-band [--log-level <error|warn|info|debug|trace>] continue \
-  --task-id <task_id> --run-id <run_id>
+  --task-id <task_id> --run-id <run_id> [--recover-interrupted]
 ```
 
 - 继续当前仓库中一个可显式继续的暂停 run（`process-interrupted` / `runtime-abnormal`），参数取自上次输出的 `RunState` 的 `task_id` 与 `id`；同样前台跑到 run 结束或再次暂停，输出与退出码同 `run`。
-- 继续语义与桌面一致：当前节点是 AI-DYNAMIC 且有一个暂停的内部节点时，该节点在自己的 ACP 会话中以 runtime resume 继续，完成后 runtime 照常收集 artifact 并继续调度动态图；否则走 run 级 runtime continue。多个内部节点同时暂停时以命令失败返回（退出码 3），需在桌面中逐个继续。
+- 继续语义与桌面一致：当前节点是 AI-DYNAMIC 时，每个暂停的内部节点都在自己的 ACP 会话中以 runtime resume 继续，等同于在桌面中逐个点继续：同一 AI-DYNAMIC attempt 只有一个调度 driver，其余节点交给它；完成后 runtime 照常收集 artifact 并继续调度动态图。没有暂停的内部节点时走 run 级 runtime continue。
+- `--recover-interrupted`：调用方担保把 run 留在 `running` 的宿主进程已经不在（例如被强制杀掉），CLI 先按桌面启动恢复的语义把 run 及其内部节点暂停为 `process-interrupted`，再继续。不带该参数时，`running` 的 run 以结构化错误 `runtime.continue-run-still-running` 拒绝（退出码 3）。
+
+### 终止信号
+`run` 与 `continue` 执行期间收到 SIGINT / SIGTERM（Windows 为 Ctrl+C）时，按桌面退出语义处理：把运行中的会话暂停为 `process-interrupted`，关闭 Agent 连接并终止其进程组。前台流程随即返回被暂停 run 的 `RunState`，以退出码 2 退出，之后可用 `continue` 继续。再次收到信号时立即退出（退出码 3）。
 
 ## 4. 无人值守交互
 没有应答者时，runtime 在等待前直接结算待处理交互，first-writer-wins，不阻塞 run：

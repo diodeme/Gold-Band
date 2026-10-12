@@ -1943,7 +1943,9 @@ impl App {
                         project_id: self.paths.project_id.clone(),
                         task_id: context.task_id.clone(),
                         resident: metadata.resident,
-                        policy: self.config.acp_direct_session_retention,
+                        background_stop_grace: std::time::Duration::from_secs(
+                            self.config.acp_direct_background_stop_grace_secs,
+                        ),
                         live_update,
                     },
                 );
@@ -6004,8 +6006,14 @@ impl App {
     }
 
     /// Headless continue of a paused run; returns once the run has settled again.
-    pub fn run_continue_foreground(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        orchestrator::run_continue_foreground(self, task_id, run_id)
+    /// `recover_interrupted` first pauses a run left `Running` by a host that is gone.
+    pub fn run_continue_foreground(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        recover_interrupted: bool,
+    ) -> Result<RunState> {
+        orchestrator::run_continue_foreground(self, task_id, run_id, recover_interrupted)
     }
 
     pub fn submit_manual_check(
@@ -6928,6 +6936,39 @@ mod tests {
         assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
         assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
         assert_eq!(run.execution.revision, 2);
+    }
+
+    #[test]
+    fn headless_continue_rejects_running_run_without_recovery() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        let error = app
+            .run_continue_foreground("task-001", "run-001", false)
+            .unwrap_err();
+
+        assert_eq!(
+            crate::runtime_error::normalize_runtime_error(&error).code_str(),
+            "runtime.continue-run-still-running"
+        );
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn headless_continue_recovers_interrupted_run_as_process_interrupted() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        // The fixture has no workflow to drive; recovery is what is under test.
+        let _ = app.run_continue_foreground("task-001", "run-001", true);
+
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
     }
 
     #[test]

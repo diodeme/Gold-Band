@@ -1,6 +1,9 @@
-//! Direct retention decisions operate on live, deduplicated provider sessions.
+//! One idle-retention decision for every attached ACP session runtime.
+//!
+//! Direct and Workflow sessions share the idle TTL and idle cap. Mode-specific
+//! facts (a running turn, a foreground lease, a resident Direct conversation,
+//! in-flight Direct tools) only decide whether a session is protected.
 use super::events::AcpUiEvent;
-use crate::config::DirectSessionRetentionConfig;
 use crate::provider::AcpLiveTimelinePosition;
 use anyhow::Result;
 use std::{
@@ -16,7 +19,7 @@ pub struct DirectSessionRegistration {
     pub project_id: String,
     pub task_id: String,
     pub resident: bool,
-    pub policy: DirectSessionRetentionConfig,
+    pub background_stop_grace: Duration,
     pub live_update: Option<SessionLiveUpdate>,
 }
 
@@ -26,90 +29,104 @@ pub(crate) struct RetentionCandidate<K> {
     pub protected: bool,
 }
 
-pub(crate) fn eviction_candidates<K: Clone>(
-    policy: DirectSessionRetentionConfig,
+/// Unprotected sessions are idle. An idle session is evicted once it has been
+/// idle for `idle_ttl`, and the oldest idle sessions are evicted while more
+/// than `max_idle` remain. Protected sessions never count toward the cap.
+pub(crate) fn eviction_candidates<K>(
+    idle_ttl: Duration,
+    max_idle: usize,
     now: Instant,
-    mut sessions: Vec<RetentionCandidate<K>>,
+    sessions: Vec<RetentionCandidate<K>>,
 ) -> Vec<K> {
-    let mut count = sessions.len();
-    sessions.sort_by_key(|entry| entry.last_activity);
-    let mut evicted = Vec::new();
-    for entry in sessions {
-        if entry.protected || count <= policy.resident_threshold {
-            continue;
-        }
-        if count > policy.capacity_target
-            || now.saturating_duration_since(entry.last_activity)
-                >= Duration::from_secs(policy.idle_ttl_secs)
-        {
-            evicted.push(entry.key);
-            count -= 1;
-        }
-    }
-    evicted
+    let mut idle = sessions
+        .into_iter()
+        .filter(|entry| !entry.protected)
+        .collect::<Vec<_>>();
+    idle.sort_by_key(|entry| entry.last_activity);
+    let overflow = idle.len().saturating_sub(max_idle);
+    idle.into_iter()
+        .enumerate()
+        .filter(|(index, entry)| {
+            *index < overflow || now.saturating_duration_since(entry.last_activity) >= idle_ttl
+        })
+        .map(|(_, entry)| entry.key)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TTL: Duration = Duration::from_secs(600);
+    const MAX_IDLE: usize = 8;
+
     fn candidates(count: usize, age: Duration, protected: bool) -> Vec<RetentionCandidate<usize>> {
+        let now = Instant::now();
         (0..count)
             .map(|key| RetentionCandidate {
                 key,
-                last_activity: Instant::now() - age,
+                last_activity: now - age,
                 protected,
             })
             .collect()
     }
+
     #[test]
-    fn direct_capacity_and_ttl_boundaries() {
-        let policy = DirectSessionRetentionConfig::default();
+    fn idle_ttl_and_cap_boundaries() {
         for (count, age, expected) in [
-            (8, 21601, 0),
-            (9, 21599, 0),
-            (9, 21601, 1),
-            (20, 10, 0),
-            (21, 10, 1),
-            (21, 21601, 13),
+            (1, 599, 0),
+            (1, 601, 1),
+            (8, 10, 0),
+            (9, 10, 1),
+            (12, 10, 4),
+            (12, 601, 12),
         ] {
             let entries = candidates(count, Duration::from_secs(age), false);
             assert_eq!(
-                eviction_candidates(policy, Instant::now(), entries).len(),
-                expected
+                eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries).len(),
+                expected,
+                "count={count} age={age}"
             );
         }
     }
+
     #[test]
-    fn protected_sessions_can_exceed_capacity() {
-        let entries = candidates(25, Duration::from_secs(30000), true);
-        assert!(
-            eviction_candidates(
-                DirectSessionRetentionConfig::default(),
-                Instant::now(),
-                entries
-            )
-            .is_empty()
+    fn protected_sessions_neither_expire_nor_count_toward_the_cap() {
+        let mut entries = candidates(20, Duration::from_secs(30_000), true);
+        assert!(eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries).is_empty());
+        entries = candidates(20, Duration::from_secs(10), true);
+        entries.extend(
+            candidates(8, Duration::from_secs(10), false)
+                .into_iter()
+                .map(|mut entry| {
+                    entry.key += 100;
+                    entry
+                }),
         );
+        assert!(eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries).is_empty());
     }
+
+    #[test]
+    fn cap_overflow_evicts_the_least_recently_active_sessions() {
+        let now = Instant::now();
+        let entries = (0..10)
+            .map(|key| RetentionCandidate {
+                key,
+                last_activity: now - Duration::from_secs(100 - key as u64),
+                protected: false,
+            })
+            .collect();
+        let mut evicted = eviction_candidates(TTL, MAX_IDLE, now, entries);
+        evicted.sort_unstable();
+        assert_eq!(evicted, vec![0, 1]);
+    }
+
     #[test]
     fn fresh_activity_renews_the_idle_window() {
-        let mut entries = candidates(9, Duration::from_secs(21601), false);
+        let mut entries = candidates(3, Duration::from_secs(601), false);
         entries[0].last_activity = Instant::now();
-        let evicted = eviction_candidates(
-            DirectSessionRetentionConfig::default(),
-            Instant::now(),
-            entries,
-        );
-        assert_eq!(evicted.len(), 1);
-        assert_ne!(evicted[0], 0);
-    }
-    #[test]
-    fn invalid_configuration_is_rejected() {
-        let mut policy = DirectSessionRetentionConfig::default();
-        policy.capacity_target = policy.resident_threshold;
-        assert!(policy.validate().is_err());
-        policy = DirectSessionRetentionConfig::default();
-        policy.idle_ttl_secs = 0;
-        assert!(policy.validate().is_err());
+        let evicted = eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries);
+        assert_eq!(evicted.len(), 2);
+        assert!(!evicted.contains(&0));
     }
 }

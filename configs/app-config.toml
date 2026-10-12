@@ -2,6 +2,8 @@ acpSessionTitleRefreshEnabled = false
 acpChatEventPageSize = 96
 acpChatEventWindowPageCount = 3
 acpChatResourceCacheSessionCount = 8
+# Built-in browser pages hidden this long are released and reloaded from their URL on return.
+browserHiddenReleaseSecs = 3600
 acpRawMaxSizeBytes = 2097152
 acpRawTargetSizeBytes = 1048576
 acpSessionForegroundLeaseTtlSecs = 90
@@ -10,6 +12,9 @@ acpSessionIdleTtlSecs = 600
 acpAdapterConnectionIdleTtlSecs = 600
 acpMaxIdleSessionRuntimes = 8
 acpMaxIdleAdapterConnections = 4
+# Direct and Workflow sessions share one idle TTL / idle cap; this sweep enforces them.
+acpSessionSweepIntervalSecs = 60
+acpDirectBackgroundStopGraceSecs = 10
 acpTimelineCompactMaxSizeBytes = 8388608
 acpTimelineCompactPatchRatio = 4
 conversationAutoTitleMaxChars = 48
@@ -18,14 +23,6 @@ conversationInlineImageMaxBytes = 4194304
 conversationInlineImageMaxDimension = 2560
 notificationAutoDismissTargetSecs = 20
 requireLocalClaudeExecutable = false
-
-[acpDirectSessionRetention]
-# Direct only. Protected sessions may exceed capacityTarget.
-residentThreshold = 8
-backgroundStopGraceSecs = 10
-idleTtlSecs = 21600
-capacityTarget = 20
-sweepIntervalSecs = 60
 
 [im.wecomScanAuth]
 source = "maling"

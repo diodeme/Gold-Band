@@ -1797,6 +1797,7 @@ pub struct AcpRuntimePolicy {
     pub adapter_connection_idle_ttl: Duration,
     pub max_idle_session_runtimes: usize,
     pub max_idle_adapter_connections: usize,
+    pub session_sweep_interval: Duration,
     pub timeline_compaction: TimelineCompactionPolicy,
     pub external_session_sync_enabled: bool,
     pub supports_system_prompt: bool,
@@ -1817,6 +1818,7 @@ impl Default for AcpRuntimePolicy {
             adapter_connection_idle_ttl: Duration::from_secs(600),
             max_idle_session_runtimes: 8,
             max_idle_adapter_connections: 4,
+            session_sweep_interval: Duration::from_secs(60),
             timeline_compaction: TimelineCompactionPolicy::default(),
             external_session_sync_enabled: false,
             supports_system_prompt: false,
@@ -1843,6 +1845,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
             ),
             max_idle_session_runtimes: config.acp_max_idle_session_runtimes,
             max_idle_adapter_connections: config.acp_max_idle_adapter_connections,
+            session_sweep_interval: Duration::from_secs(config.acp_session_sweep_interval_secs),
             timeline_compaction: TimelineCompactionPolicy {
                 max_size_bytes: config.acp_timeline_compact_max_size_bytes,
                 patch_ratio: config.acp_timeline_compact_patch_ratio,
@@ -2095,6 +2098,7 @@ impl AcpSessionRuntimeRegistry {
             sessions.insert(entry.attempt_dir.to_string(), entry);
         }
         self.prune(policy);
+        ensure_retention_sweep(policy);
     }
 
     fn invalidate(&self, attempt_dir: &Utf8Path) -> bool {
@@ -2252,41 +2256,27 @@ impl AcpSessionRuntimeRegistry {
         true
     }
 
+    /// Applies the shared retention selection to sessions without a Direct
+    /// consumer. Direct sessions must drain their consumer before closing, so
+    /// only the background sweep evicts them (see [`Self::sweep`]).
     fn prune(&self, policy: AcpRuntimePolicy) {
-        let now = Instant::now();
-        let mut evicted = Vec::new();
-        if let Ok(mut sessions) = self.sessions.lock() {
-            let expired = sessions
-                .iter()
-                .filter(|(_, entry)| {
-                    entry.direct.is_none()
-                        && !entry.active
-                        && now >= entry.foreground_lease_until
-                        && now.duration_since(entry.last_activity_at) >= policy.session_idle_ttl
-                })
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<_>>();
-            for key in expired {
-                if let Some(entry) = sessions.remove(&key) {
-                    evicted.push(entry);
-                }
+        let evicted = match self.sessions.lock() {
+            Ok(mut sessions) => {
+                let selected = retention_selection(&sessions, policy, Instant::now())
+                    .into_iter()
+                    .filter(|key| {
+                        sessions
+                            .get(key)
+                            .is_some_and(|entry| entry.direct.is_none())
+                    })
+                    .collect::<Vec<_>>();
+                selected
+                    .into_iter()
+                    .filter_map(|key| sessions.remove(&key))
+                    .collect::<Vec<_>>()
             }
-
-            let mut idle = sessions
-                .iter()
-                .filter(|(_, entry)| {
-                    entry.direct.is_none() && !entry.active && now >= entry.foreground_lease_until
-                })
-                .map(|(key, entry)| (key.clone(), entry.last_activity_at))
-                .collect::<Vec<_>>();
-            idle.sort_by_key(|(_, last_activity_at)| *last_activity_at);
-            let overflow = idle.len().saturating_sub(policy.max_idle_session_runtimes);
-            for (key, _) in idle.into_iter().take(overflow) {
-                if let Some(entry) = sessions.remove(&key) {
-                    evicted.push(entry);
-                }
-            }
-        }
+            Err(_) => Vec::new(),
+        };
         for entry in evicted {
             evict_attached_session(entry);
         }
@@ -2295,6 +2285,95 @@ impl AcpSessionRuntimeRegistry {
             policy.max_idle_adapter_connections,
         );
     }
+
+    fn sweep(&self, policy: AcpRuntimePolicy) {
+        self.prune(policy);
+        direct::evict_selected(policy);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sessions
+            .lock()
+            .map_or(true, |sessions| sessions.is_empty())
+    }
+}
+
+/// Sessions to close now: idle ones past the shared TTL or over the shared
+/// idle cap, plus Direct sessions whose consumer already aborted. Executors
+/// re-run this under the registry lock before closing anything.
+fn retention_selection(
+    sessions: &HashMap<String, AttachedSessionRuntime>,
+    policy: AcpRuntimePolicy,
+    now: Instant,
+) -> Vec<String> {
+    let mut references = HashMap::<(u64, &str), usize>::new();
+    for entry in sessions.values() {
+        *references
+            .entry((entry.connection_generation, entry.session_id.as_str()))
+            .or_default() += 1;
+    }
+    let candidates = sessions
+        .iter()
+        .map(|(key, entry)| crate::acp::retention::RetentionCandidate {
+            key: key.clone(),
+            last_activity: entry
+                .direct
+                .as_ref()
+                .map_or(entry.last_activity_at, |direct| direct.last_activity()),
+            protected: entry.active
+                || now < entry.foreground_lease_until
+                || entry.direct.as_ref().is_some_and(|direct| {
+                    // Direct closes by sessionId, so a shared alias is never closed.
+                    direct.protected()
+                        || references[&(entry.connection_generation, entry.session_id.as_str())] > 1
+                }),
+        })
+        .collect();
+    let mut selected = sessions
+        .iter()
+        .filter(|(_, entry)| {
+            !entry.active && entry.direct.as_ref().is_some_and(|direct| direct.aborted())
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in crate::acp::retention::eviction_candidates(
+        policy.session_idle_ttl,
+        policy.max_idle_session_runtimes,
+        now,
+        candidates,
+    ) {
+        if !selected.contains(&key) {
+            selected.push(key);
+        }
+    }
+    selected
+}
+
+static RETENTION_SWEEP_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Runs the retention sweep while any session runtime is retained, so idle
+/// sessions close on time even when no other prompt activity happens.
+fn ensure_retention_sweep(policy: AcpRuntimePolicy) {
+    use std::sync::atomic::Ordering;
+    if RETENTION_SWEEP_RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let registry = AcpSessionRuntimeRegistry::shared();
+        loop {
+            std::thread::sleep(policy.session_sweep_interval);
+            registry.sweep(policy);
+            if !registry.is_empty() {
+                continue;
+            }
+            RETENTION_SWEEP_RUNNING.store(false, Ordering::Release);
+            // A release racing the store above must not be left without a sweep.
+            if registry.is_empty() || RETENTION_SWEEP_RUNNING.swap(true, Ordering::AcqRel) {
+                break;
+            }
+        }
+    });
 }
 
 pub fn renew_session_foreground_lease(attempt_dir: &Utf8Path, ttl: Duration) -> bool {
@@ -12045,7 +12124,7 @@ mod tests {
                 project_id: "test".into(),
                 task_id: "direct".into(),
                 resident: false,
-                policy: Default::default(),
+                background_stop_grace: Duration::from_secs(10),
                 live_update: None,
             },
         );
@@ -12341,7 +12420,7 @@ mod tests {
                 project_id: "real-timer-acceptance".into(),
                 task_id: "direct".into(),
                 resident: true,
-                policy: Default::default(),
+                background_stop_grace: Duration::from_secs(10),
                 live_update: Some(std::sync::Arc::new(move |event, _| {
                     if event.kind == "textDelta" {
                         let _ = tx.send(event.content.clone().unwrap_or_default());
@@ -12442,7 +12521,7 @@ mod tests {
                     project_id: format!("resource-{index}"),
                     task_id: "direct".into(),
                     resident: true,
-                    policy: Default::default(),
+                    background_stop_grace: Duration::from_secs(10),
                     live_update: None,
                 },
             );
@@ -12558,7 +12637,7 @@ do {
                     project_id: mode.into(),
                     task_id: "direct".into(),
                     resident: false,
-                    policy: Default::default(),
+                    background_stop_grace: Duration::from_secs(10),
                     live_update: None,
                 },
             );

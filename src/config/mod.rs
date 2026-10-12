@@ -33,12 +33,6 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .validate()
             .expect("embedded WeCom scan auth config is valid");
         config
-            .acp_direct_session_retention
-            .as_ref()
-            .expect("embedded app-config.toml defines acpDirectSessionRetention")
-            .validate()
-            .expect("invalid Direct session retention config");
-        config
     })
 }
 
@@ -799,6 +793,7 @@ pub const DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE: usize = 96;
 pub const DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT: usize = 3;
 pub const DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT: usize = 8;
+pub const DEFAULT_BROWSER_HIDDEN_RELEASE_SECS: u64 = 3600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1397,13 +1392,13 @@ pub struct StateConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectAppConfig {
-    pub acp_direct_session_retention: Option<DirectSessionRetentionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_identity: Option<ProjectIdentityConfig>,
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
     pub acp_chat_event_window_page_count: Option<usize>,
     pub acp_chat_resource_cache_session_count: Option<usize>,
+    pub browser_hidden_release_secs: Option<u64>,
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
     pub acp_session_foreground_lease_ttl_secs: Option<u64>,
@@ -1413,6 +1408,8 @@ pub struct ProjectAppConfig {
     pub acp_adapter_connection_idle_ttl_secs: Option<u64>,
     pub acp_max_idle_session_runtimes: Option<usize>,
     pub acp_max_idle_adapter_connections: Option<usize>,
+    pub acp_session_sweep_interval_secs: Option<u64>,
+    pub acp_direct_background_stop_grace_secs: Option<u64>,
     pub acp_timeline_compact_max_size_bytes: Option<u64>,
     pub acp_timeline_compact_patch_ratio: Option<usize>,
     pub conversation_auto_title_max_chars: Option<usize>,
@@ -1429,52 +1426,6 @@ pub struct ProjectAppConfig {
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_files: Option<TurnFilesConfig>,
-}
-
-/// Application-wide Direct retention policy. Defaults have a single source in TOML.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DirectSessionRetentionConfig {
-    pub resident_threshold: usize,
-    pub idle_ttl_secs: u64,
-    pub capacity_target: usize,
-    pub sweep_interval_secs: u64,
-    pub background_stop_grace_secs: u64,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{code}: {msg}")]
-pub struct InvalidDirectRetentionConfig {
-    pub code: &'static str,
-    pub msg: &'static str,
-}
-
-impl DirectSessionRetentionConfig {
-    pub fn validate(&self) -> Result<()> {
-        if self.resident_threshold == 0 || self.resident_threshold >= self.capacity_target {
-            return Err(InvalidDirectRetentionConfig {
-                code: "acp.direct-retention.invalid-capacity",
-                msg: "expected 0 < residentThreshold < capacityTarget",
-            }
-            .into());
-        }
-        if self.idle_ttl_secs == 0 || self.sweep_interval_secs == 0 || self.background_stop_grace_secs == 0 {
-            return Err(InvalidDirectRetentionConfig {
-                code: "acp.direct-retention.invalid-duration",
-                msg: "retention durations must be positive",
-            }
-            .into());
-        }
-        Ok(())
-    }
-}
-
-impl Default for DirectSessionRetentionConfig {
-    fn default() -> Self {
-        embedded_project_app_config()
-            .acp_direct_session_retention
-            .expect("validated Direct retention configuration")
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1846,7 +1797,6 @@ pub struct ProviderDiagnosticSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    pub acp_direct_session_retention: DirectSessionRetentionConfig,
     pub log_level: RuntimeLogLevel,
     #[serde(default)]
     pub interaction_mode: InteractionMode,
@@ -1870,6 +1820,7 @@ pub struct RuntimeConfig {
     pub acp_chat_event_page_size: usize,
     pub acp_chat_event_window_page_count: usize,
     pub acp_chat_resource_cache_session_count: usize,
+    pub browser_hidden_release_secs: u64,
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
     pub acp_session_foreground_lease_ttl_secs: u64,
@@ -1879,6 +1830,10 @@ pub struct RuntimeConfig {
     pub acp_adapter_connection_idle_ttl_secs: u64,
     pub acp_max_idle_session_runtimes: usize,
     pub acp_max_idle_adapter_connections: usize,
+    /// Retention sweep cadence shared by Direct and Workflow sessions.
+    pub acp_session_sweep_interval_secs: u64,
+    /// How long a background Direct episode keeps its Stop control after activity.
+    pub acp_direct_background_stop_grace_secs: u64,
     pub acp_timeline_compact_max_size_bytes: u64,
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
@@ -1917,7 +1872,6 @@ impl Default for RuntimeConfig {
                 .expect("Claude is present in the built-in Agent catalog"),
         );
         let base = Self {
-            acp_direct_session_retention: DirectSessionRetentionConfig::default(),
             log_level: RuntimeLogLevel::Info,
             interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
@@ -1940,6 +1894,7 @@ impl Default for RuntimeConfig {
             acp_chat_event_page_size: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
             acp_chat_event_window_page_count: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
             acp_chat_resource_cache_session_count: DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT,
+            browser_hidden_release_secs: DEFAULT_BROWSER_HIDDEN_RELEASE_SECS,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
@@ -1949,6 +1904,8 @@ impl Default for RuntimeConfig {
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
             acp_max_idle_adapter_connections: 4,
+            acp_session_sweep_interval_secs: 60,
+            acp_direct_background_stop_grace_secs: 10,
             acp_timeline_compact_max_size_bytes: 8 * 1024 * 1024,
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
@@ -2050,12 +2007,6 @@ impl RuntimeConfig {
     }
 
     pub fn apply_app_config(mut self, app_config: &ProjectAppConfig) -> Self {
-        if let Some(policy) = app_config.acp_direct_session_retention {
-            policy
-                .validate()
-                .expect("invalid Direct session retention config");
-            self.acp_direct_session_retention = policy;
-        }
         if let Some(acp_session_title_refresh_enabled) =
             app_config.acp_session_title_refresh_enabled
         {
@@ -2078,6 +2029,12 @@ impl RuntimeConfig {
             .filter(|value| *value > 0)
         {
             self.acp_chat_resource_cache_session_count = acp_chat_resource_cache_session_count;
+        }
+        if let Some(secs) = app_config
+            .browser_hidden_release_secs
+            .filter(|value| *value > 0)
+        {
+            self.browser_hidden_release_secs = secs;
         }
         if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
             self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
@@ -2132,6 +2089,18 @@ impl RuntimeConfig {
             .filter(|value| *value > 0)
         {
             self.acp_max_idle_adapter_connections = value;
+        }
+        if let Some(value) = app_config
+            .acp_session_sweep_interval_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_session_sweep_interval_secs = value;
+        }
+        if let Some(value) = app_config
+            .acp_direct_background_stop_grace_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_direct_background_stop_grace_secs = value;
         }
         if let Some(value) = app_config
             .acp_timeline_compact_max_size_bytes
@@ -2325,6 +2294,7 @@ mod tests {
         assert_eq!(config.acp_chat_event_page_size, 96);
         assert_eq!(config.acp_chat_event_window_page_count, 3);
         assert_eq!(config.acp_chat_resource_cache_session_count, 8);
+        assert_eq!(config.browser_hidden_release_secs, 3600);
     }
 
     #[test]
@@ -2738,6 +2708,7 @@ mod tests {
             acp_chat_event_page_size: Some(240),
             acp_chat_event_window_page_count: Some(4),
             acp_chat_resource_cache_session_count: Some(6),
+            browser_hidden_release_secs: Some(60),
             conversation_auto_title_max_chars: Some(20),
             conversation_inline_content_max_bytes: Some(32_000),
             conversation_inline_image_max_bytes: Some(1024 * 1024),
@@ -2750,6 +2721,7 @@ mod tests {
         assert_eq!(config.acp_chat_event_page_size, 240);
         assert_eq!(config.acp_chat_event_window_page_count, 4);
         assert_eq!(config.acp_chat_resource_cache_session_count, 6);
+        assert_eq!(config.browser_hidden_release_secs, 60);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
         assert_eq!(config.conversation_inline_content_max_bytes, 32_000);
         assert_eq!(config.conversation_inline_image_max_bytes, 1024 * 1024);
@@ -2764,12 +2736,14 @@ mod tests {
             acp_chat_event_page_size: Some(0),
             acp_chat_event_window_page_count: Some(0),
             acp_chat_resource_cache_session_count: Some(0),
+            browser_hidden_release_secs: Some(0),
             ..Default::default()
         });
 
         assert_eq!(config.acp_chat_event_page_size, 96);
         assert_eq!(config.acp_chat_event_window_page_count, 3);
         assert_eq!(config.acp_chat_resource_cache_session_count, 8);
+        assert_eq!(config.browser_hidden_release_secs, 3600);
     }
 
     #[test]

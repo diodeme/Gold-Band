@@ -1,12 +1,11 @@
 //! Exclusive ownership of a retained Direct session's consumer between prompts.
 use super::*;
-use crate::acp::retention::{DirectSessionRegistration, RetentionCandidate, eviction_candidates};
+use crate::acp::retention::DirectSessionRegistration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 static PENDING: LazyLock<Mutex<HashMap<String, DirectSessionRegistration>>> =
     LazyLock::new(Mutex::default);
-static MAINTENANCE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,9 +22,20 @@ pub fn direct_background_control(attempt: &Utf8Path) -> Option<DirectBackgroundC
     if entry.active || direct.abort_requested() || entry.connection.is_transport_closed() { return None; }
     let last = direct.background_activity_window()?;
     let active_tools = direct.active_tools.lock().ok()?.len();
-    let remaining = Duration::from_secs(direct.registration.policy.background_stop_grace_secs).saturating_sub(last.elapsed());
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
-    Some(DirectBackgroundControl { session_id: entry.session_id.clone(), connection_generation: entry.connection_generation, active_tools, expires_at_ms: now + remaining.as_millis() as u64 })
+    let remaining = direct
+        .registration
+        .background_stop_grace
+        .saturating_sub(last.elapsed());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some(DirectBackgroundControl {
+        session_id: entry.session_id.clone(),
+        connection_generation: entry.connection_generation,
+        active_tools,
+        expires_at_ms: now + remaining.as_millis() as u64,
+    })
 }
 
 /// Background facts for any retained Direct session under `root` (a task dir).
@@ -239,6 +249,16 @@ impl DirectRuntime {
         self.abort.load(Ordering::Acquire) || self.closing.load(Ordering::Acquire)
     }
 
+    /// The consumer failed or was aborted; the retained session is unusable.
+    pub(super) fn aborted(&self) -> bool {
+        self.abort.load(Ordering::Acquire)
+    }
+
+    /// Latest accepted Live activity; replay and foreground leases never renew it.
+    pub(super) fn last_activity(&self) -> Instant {
+        *self.last_activity.lock().expect("Direct activity lock")
+    }
+
     pub(super) fn protected(&self) -> bool {
         self.resident.load(Ordering::Acquire)
             || self.busy.load(Ordering::Acquire)
@@ -409,7 +429,7 @@ pub(super) fn start_consumer(
         }
     }));
     drop(handle);
-    start_maintenance(policy, direct.registration.policy.sweep_interval_secs);
+    ensure_retention_sweep(policy);
 }
 
 fn consume(
@@ -539,65 +559,6 @@ fn record_due_cancel_marker(
     runtime.persist_background_cancel_marker()
 }
 
-fn start_maintenance(policy: AcpRuntimePolicy, interval_secs: u64) {
-    if MAINTENANCE_RUNNING.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(interval_secs));
-            prune_direct(policy);
-            let sessions = AcpSessionRuntimeRegistry::shared()
-                .sessions
-                .lock()
-                .expect("ACP registry lock");
-            if !sessions.values().any(|entry| entry.direct.is_some()) {
-                MAINTENANCE_RUNNING.store(false, Ordering::Release);
-                break;
-            }
-        }
-    });
-}
-
-fn selected_candidates(
-    sessions: &HashMap<String, AttachedSessionRuntime>,
-    now: Instant,
-) -> Vec<String> {
-    let Some(config) = sessions
-        .values()
-        .find_map(|entry| entry.direct.as_ref().map(|d| d.registration.policy))
-    else {
-        return Vec::new();
-    };
-    let mut unique = HashMap::<(u64, String), RetentionCandidate<String>>::new();
-    let mut references = HashMap::<(u64, String), usize>::new();
-    for entry in sessions.values() {
-        *references
-            .entry((entry.connection_generation, entry.session_id.clone()))
-            .or_default() += 1;
-    }
-    for (key, entry) in sessions {
-        let Some(direct) = &entry.direct else {
-            continue;
-        };
-        let candidate = RetentionCandidate {
-            key: key.clone(),
-            last_activity: *direct.last_activity.lock().expect("Direct activity lock"),
-            protected: entry.active
-                || now < entry.foreground_lease_until
-                || direct.protected()
-                || references[&(entry.connection_generation, entry.session_id.clone())] > 1,
-        };
-        unique
-            .entry((entry.connection_generation, entry.session_id.clone()))
-            .and_modify(|existing| {
-                existing.protected = true;
-            }) // Never close a shared alias.
-            .or_insert(candidate);
-    }
-    eviction_candidates(config, now, unique.into_values().collect())
-}
-
 fn close_retained(entry: &AttachedSessionRuntime) -> Result<bool> {
     if entry.connection.is_transport_closed() {
         return Ok(true);
@@ -655,25 +616,20 @@ fn close_retained(entry: &AttachedSessionRuntime) -> Result<bool> {
     Ok(true)
 }
 
-pub(super) fn prune_direct(policy: AcpRuntimePolicy) {
+/// Closes the Direct sessions chosen by the shared retention selection. The
+/// close drains the retained consumer first, so it never runs on a prompt path.
+pub(super) fn evict_selected(policy: AcpRuntimePolicy) {
     let registry = AcpSessionRuntimeRegistry::shared();
     let candidates = {
         let sessions = registry.sessions.lock().expect("ACP registry lock");
-        let mut selected = selected_candidates(&sessions, Instant::now());
-        selected.extend(
-            sessions
-                .iter()
-                .filter(|(_, e)| {
-                    !e.active
-                        && e.direct
-                            .as_ref()
-                            .is_some_and(|d| d.abort.load(Ordering::Acquire))
-                })
-                .map(|(k, _)| k.clone()),
-        );
-        let mut seen = HashSet::new();
-        selected.retain(|key| seen.insert(key.clone()));
-        selected
+        retention_selection(&sessions, policy, Instant::now())
+            .into_iter()
+            .filter(|key| {
+                sessions
+                    .get(key)
+                    .is_some_and(|entry| entry.direct.is_some())
+            })
+            .collect::<Vec<_>>()
     };
     for key in candidates {
         let prompt_lock = registry.prompt_lock(Utf8Path::new(&key));
@@ -691,8 +647,7 @@ pub(super) fn prune_direct(policy: AcpRuntimePolicy) {
                 continue;
             };
             if entry.active
-                || (!direct.abort.load(Ordering::Acquire)
-                    && !selected_candidates(&sessions, Instant::now()).contains(&key))
+                || !retention_selection(&sessions, policy, Instant::now()).contains(&key)
             {
                 continue;
             }
@@ -735,43 +690,102 @@ pub(super) fn prune_direct(policy: AcpRuntimePolicy) {
 
 #[cfg(test)]
 pub(super) fn assert_registry_retention_scope(prototype: &AttachedSessionRuntime) {
+    let policy = AcpRuntimePolicy::default();
     let now = Instant::now();
-    let mut entries = HashMap::new();
+    let expired = now - policy.session_idle_ttl - Duration::from_secs(1);
+    let fresh = now - Duration::from_secs(1);
+    // Every clone shares the prototype's DirectRuntime, so its activity and
+    // residency apply to all Direct entries below.
     let direct = prototype.direct.as_ref().unwrap();
-    let before = *direct.last_activity.lock().unwrap();
-    *direct.last_activity.lock().unwrap() =
-        now - Duration::from_secs(direct.registration.policy.idle_ttl_secs + 1);
-    for index in 0..8 {
+    let before = direct.last_activity();
+    let idle = |key: &str, session: &str, direct: bool, at: Instant| {
         let mut entry = prototype.clone();
         entry.active = false;
         entry.foreground_lease_until = now;
-        entry.session_id = format!("session-{index}");
-        entries.insert(format!("project-{index}/attempt"), entry);
-    }
-    let mut alias = entries.values().next().unwrap().clone();
-    entries.insert("alias".into(), alias.clone());
-    assert!(
-        selected_candidates(&entries, now).is_empty(),
-        "aliases count once across projects"
-    );
-    alias.direct = None;
-    for index in 0..20 {
-        entries.insert(format!("workflow-{index}"), alias.clone());
-    }
-    assert!(
-        selected_candidates(&entries, now).is_empty(),
-        "Workflow sessions do not raise Direct pressure"
-    );
-    let mut ninth = prototype.clone();
-    ninth.active = false;
-    ninth.foreground_lease_until = now;
-    ninth.session_id = "ninth".into();
-    entries.insert("other-project/attempt".into(), ninth);
+        entry.last_activity_at = at;
+        entry.session_id = session.into();
+        if !direct {
+            entry.direct = None;
+        }
+        (key.to_string(), entry)
+    };
+    let sorted = |mut keys: Vec<String>| {
+        keys.sort();
+        keys
+    };
+
+    *direct.last_activity.lock().unwrap() = expired;
+    let entries = (0..3)
+        .map(|index| {
+            idle(
+                &format!("project-{index}/direct"),
+                &format!("d-{index}"),
+                true,
+                expired,
+            )
+        })
+        .chain([idle("workflow/expired", "w-0", false, expired)])
+        .collect::<HashMap<_, _>>();
     assert_eq!(
-        selected_candidates(&entries, now).len(),
-        1,
-        "the ninth distinct Direct session creates TTL pressure"
+        sorted(retention_selection(&entries, policy, now)),
+        sorted(entries.keys().cloned().collect()),
+        "Direct and Workflow sessions share one idle TTL with no resident floor"
     );
+
+    direct.resident.store(true, Ordering::Release);
+    assert_eq!(
+        retention_selection(&entries, policy, now),
+        vec!["workflow/expired".to_string()],
+        "a resident Direct conversation is protected; Workflow is not"
+    );
+    direct.resident.store(false, Ordering::Release);
+
+    let mut aliased = entries.clone();
+    aliased.extend([idle("alias/direct", "d-0", true, expired)]);
+    let selected = retention_selection(&aliased, policy, now);
+    assert!(
+        !selected.contains(&"alias/direct".to_string())
+            && !selected.contains(&"project-0/direct".to_string()),
+        "a shared Direct alias is never closed"
+    );
+
+    let mut leased = entries.clone();
+    leased
+        .get_mut("workflow/expired")
+        .unwrap()
+        .foreground_lease_until = now + Duration::from_secs(5);
+    assert!(
+        !retention_selection(&leased, policy, now).contains(&"workflow/expired".to_string()),
+        "a foreground lease protects the session"
+    );
+
+    *direct.last_activity.lock().unwrap() = fresh;
+    let workflow_oldest = now - Duration::from_secs(30);
+    let mixed = (0..5)
+        .map(|index| {
+            idle(
+                &format!("project-{index}/direct"),
+                &format!("d-{index}"),
+                true,
+                fresh,
+            )
+        })
+        .chain((0..3).map(|index| {
+            idle(
+                &format!("workflow/{index}"),
+                &format!("w-{index}"),
+                false,
+                fresh,
+            )
+        }))
+        .chain([idle("workflow/oldest", "w-old", false, workflow_oldest)])
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        retention_selection(&mixed, policy, now),
+        vec!["workflow/oldest".to_string()],
+        "Direct and Workflow idle sessions share one idle cap"
+    );
+
     *direct.last_activity.lock().unwrap() = before;
 }
 
@@ -839,7 +853,7 @@ mod tests {
                 project_id: "retention-test".into(),
                 task_id: "direct".into(),
                 resident: false,
-                policy: Default::default(),
+                background_stop_grace: Duration::from_secs(10),
                 live_update: None,
             },
         );

@@ -45,31 +45,29 @@
 唯一默认值来源为 `configs/app-config.toml`：
 
 ```toml
-[acpDirectSessionRetention]
-residentThreshold = 8
-idleTtlSecs = 21600
-capacityTarget = 20
-sweepIntervalSecs = 60
+acpSessionIdleTtlSecs = 600
+acpMaxIdleSessionRuntimes = 8
+acpSessionSweepIntervalSecs = 60
+acpDirectBackgroundStopGraceSecs = 10
 ```
 
-四项为正数，且 residentThreshold < capacityTarget。配置经现有编译内嵌链路加载；修改后重新构建，不增加热加载。旧会话空闲配置继续用于非 Direct；Direct 不叠加旧 600 秒 / 8 个空闲运行时限制。无人使用的适配器连接仍沿用现有回收。
+2026-10-10 起 Direct 与 Workflow/AUTO 共用 acpSessionIdleTtlSecs / acpMaxIdleSessionRuntimes，原 `[acpDirectSessionRetention]`（residentThreshold=8、6 小时 TTL、capacityTarget=20）删除，不保留兼容读取。sweep 间隔与后台停止宽限为正数时生效，否则使用默认值。配置经现有编译内嵌链路加载；修改后重新构建，不增加热加载。无人使用的适配器连接仍沿用现有回收。
 
 ## 生命周期与回收
 
-- N 为应用进程内跨项目的存活 Direct 底层会话数；相同连接代次及 sessionId 去重，历史记录不计数，不主动补足数量。
-- N ≤ 8：不因空闲回收。
-- 8 < N ≤ 20：按最后有效活动时间淘汰超过 6 小时的可回收会话，降到 8 后停止。
-- N > 20：允许提前淘汰最久未活动的可回收会话，目标降到 20；随后仍可按 TTL 清理。
-- 手动常驻、正在执行/已接纳输入、等待正式权限或问题响应、可信的未完成工作、有效前台租约均保护。普通文本提问后 end_turn 不等于待交互状态。
+- Direct 与 Workflow/AUTO 存活会话进入同一候选集合：受保护会话既不过期也不占空闲名额；其余空闲会话超过 600 秒回收，空闲会话合计超过 8 个时按最后有效活动时间从最久的开始回收。
+- 手动常驻、正在执行/已接纳输入、等待正式权限或问题响应、可信的未完成工作、关闭中、共享连接别名（同一 connection generation + sessionId 被多个注册项引用）、有效前台租约均保护；其中前台租约与正在执行对两类会话通用，其余为 Direct 独有。普通文本提问后 end_turn 不等于待交互状态。
 - 有效用户/Agent 内容、工具进展和交互续期；历史重放、重复的纯工具状态、usage/页面心跳不续期；协议没有去重身份的相同正文 chunk 不能猜测为重复。已知执行结束重新开始完整空闲期。
-- 一个应用级维护循环，仅扫描存活注册表；不为每个会话创建回收定时器，不扫描历史。
-- 20 是回收目标；所有会话受保护时允许超出，不强停用户任务，也不承诺内存硬上限。
+- 一个应用级 sweep 线程（间隔 60 秒，注册表清空即退出，下次 release / 启动 Direct 消费者时按需重启），release 时也立即检查一次；仅扫描存活注册表，不为每个会话创建回收定时器，不扫描历史。
+- 8 是空闲上限；所有会话受保护时允许超出，不强停用户任务，也不承诺内存硬上限。
 - 回收前在同一生命周期同步边界重查代次、活动、常驻和执行状态；不长时间持全局锁等待关闭。关闭失败不得伪装资源已释放。
 - 按 capability 使用 session/close，保留关闭期间消息处理。共享连接不得因某个 Direct 会话回收而关闭。无独立 close 能力时仅能在整个连接安全可释放时关闭进程，否则保留并记录原因。
 
 ## 常驻交互
 
 仅 Direct 右键显示一个状态相关操作：未常驻为“常驻会话”，已常驻为“解除常驻”。标题旁小图钉与共享 Tooltip 表示已常驻；不改变排序，和现有置顶独立。
+
+Direct 会话头部“原始帧”左侧提供同效图钉切换按钮（`ResidentPinToggle`）：未常驻为描边图钉，已常驻为与侧栏一致的渐变实心图钉；`aria-pressed` 表达状态，Tooltip 提示“有定时任务等长时间工作时开启常驻 / 已常驻，点击解除”。状态取自侧边栏会话行，回调复用 App 的 set_conversation_resident 处理（错误由 App 统一展示）；请求中禁用并显示加载态；只读体验或会话行未加载时不显示。
 
 常驻偏好绑定现有 project_id + task_id，持久化于现有 authoring/conversation.json 的 resident 字段，通过 App.set_conversation_resident 写入，并与活动时间更新共用文件锁。该偏好表达现有置顶顺序无法表达的资源保留意图，不新增会话 identity。重命名不丢失；删除清理；复制默认不常驻。给历史会话设置偏好不启动 Agent，应用重启不自动启动常驻会话。解除后参与正常检查，不直接关闭；执行/等待交互仍保护。
 
@@ -173,7 +171,7 @@ Windows debug 测试进程树（包含测试宿主与模拟适配器，排除采
 
 - task-050 的 end_turn 后出现 Agent launch 与持续子工具事件；旧索引用父 prompt 的 completed 推断新子 Agent interrupted。现在后台启动及其后代沿用现有 goldBandBackground 来源标记，忽略旧 prompt 终态，正式 Agent 结果及失败/取消事实仍优先；全文重建与索引投影使用一致判断。
 - task-051 的实时工具标识被 sessionInfo 等元数据或重复 completed 快照清除。元数据保留实时目标；重复旧终态不结束后台过程组，新的终态转换仍收敛。单工具完成不等于过程组结束，正文到达关闭前面的过程组。
-- 停止按钮投影由保留 Direct runtime 提供 sessionId、connectionGeneration、activeTools、expiresAtMs；复用 active_tools，只新增最近后台活动时间。正文/思考/工具有效活动刷新窗口，usage/配置不刷新。activeTools>0 时持续显示；否则按 configs/app-config.toml 的 acpDirectSessionRetention.backgroundStopGraceSecs（10 秒）隐藏。普通用户 prompt 不受此展示窗口约束。
+- 停止按钮投影由保留 Direct runtime 提供 sessionId、connectionGeneration、activeTools、expiresAtMs；复用 active_tools，只新增最近后台活动时间。正文/思考/工具有效活动刷新窗口，usage/配置不刷新。activeTools>0 时持续显示；否则按 configs/app-config.toml 的 acpDirectBackgroundStopGraceSecs（10 秒）隐藏。普通用户 prompt 不受此展示窗口约束。
 - 前端单一可清理计时器只负责可见性，切换会话释放；控制数据随现有事件和摘要传递，不轮询、不扫描历史。后台取消不设置用户 turn 为取消中，不伪造 Finished/已结束，也不改变排队、通知及累计上报。
 - 后台停止携带当前会话连接 generation 和预期上一 turnId；后端持有既有 prompt 调度锁并检查活跃/接纳状态和身份后发送 session/cancel。新 prompt 已接管、旧连接或旧 turn 时无操作；前端请求期间合并重复点击，响应不清空用户新输入或新 turn 状态。协议不保证 session/cancel 删除定时器。
 - RED：后台 Agent 被判 interrupted；metadata 将 live tool target 清为 null。GREEN：分支测试 33 项、Direct 相关测试 58 项（2 项真实 Agent/资源实验忽略）、前端活动/停止/状态测试 112 项及索引测试 26 项通过。模拟适配器验证无 prompt 时可发送取消、旧后台取消不能取消新 prompt；浏览器实际组件验证工具保护、10 秒隐藏、发送仍可用、正文关闭过程组和窄窗口。
@@ -197,3 +195,12 @@ Windows debug 测试进程树（包含测试宿主与模拟适配器，排除采
 - 通知诊断：task-061/062 在后台出现回复正文前即停止，按"后台回复正文才通知"规则不通知；task-063 后台回复正文后通知正常提交并出现"有新消息"蓝点。通知规则不变。
 - RED：空闲 lifecycle 带后台事实时活动为 null；侧栏行活动时无转圈。GREEN：前端相关 8 个文件 152 项、Rust Direct/后台 73 项、桌面端侧栏/活动 30 项通过，构建类型检查仅余他人进行中改动的 useId 未导入错误。
 - 自评审：仅为既有活动 VM 增加可选事实字段，复用后台控制、计时 hook 与推送链路；计时器只为活动中的后台行创建，后端查询为常数规模内存遍历。未做浏览器实测。
+
+### 2026-10-10：Direct / Workflow 统一回收与会话头部常驻图钉
+
+- 根因：新版 Direct 仅在超过 8 个存活会话后才按 6 小时空闲淘汰，日常使用中空闲 Direct 实际从不回收；每个 Claude 会话独占一个 claude.exe（提交内存约 400～500 MB），累积导致应用进程树内存持续增长。Workflow 早已按 600 秒 / 8 个空闲回收，两套策略并存且 Direct 缺少可达的回收路径。
+- 修复：Direct 与 Workflow/AUTO 共用 retention_selection（同一 TTL、同一空闲上限、LRU 溢出），Direct 仅额外声明自身保护条件；删除 acpDirectSessionRetention 及其校验，原维护线程合并为按需启动的单一 sweep。长期存活需求由用户显式常驻表达，不再用“数量阈值内一律常驻”隐式兜底。
+- 会话头部新增 ResidentPinToggle，与侧栏右键共用 App.set_conversation_resident 与侧栏会话行状态；图钉组件抽到 ResidentPin.tsx 供侧栏与头部共用。
+- asyncTasks 不接入：claude-agent-acp 仅在 _meta.jetbrains.air 客户端模式下上报后台任务，该模式整体切换适配器行为（跟踪 claude-agent-acp#1285），在其进入标准 ACP 前由手动常驻覆盖定时任务场景。
+- 验证：cargo test retention / direct / config::tests 168 项通过；前端 resident-pin-toggle（关/开图标与点击方向、请求中禁用防重入）与侧栏常驻、活动指示共 9 项通过；web 全量测试失败集合与 HEAD 一致（均为既有失败）；tsc 与生产构建通过。浏览器（web:dev 浏览器 API，Direct 夹具）实测浅色/深色、640px 窄宽：描边→加载→渐变实心，侧栏同步出现图钉，解除后两处同步消失，Tooltip 文案正确。
+- 自评审：未新增状态或持久字段，只删除 Direct 专属配置和第二条维护线程；选择函数单次 O(N log N)，N 为存活会话数；前端仅在已加载的侧栏行上派生 props，不新增请求。

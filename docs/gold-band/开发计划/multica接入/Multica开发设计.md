@@ -2544,6 +2544,22 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 2. 自评审发现两处实现缺陷并同日修复：①「同 turn 双事件并发完成」竞态（见风险与对策）→ 完成路径认领集；② run 收尾 Complete 臂无条件读 acp.timeline 提块（非 issue 任务/issue 为空路径上的大文件无谓 IO，旧实现只在 issue 非空时读）→ 提取收敛回 issue 非空守卫内（门控判定 ⊆ issue 非空，语义不变）。
 3. **内网验证根因修复（2026-09-30）**：M5-bp 部署后实测——扣留行为正确，但 agent 按指示输出块后任务仍保持 running。导出该会话 `acp.timeline.jsonl` 取证还原全程四轮：前三轮 agent 按协议正确拒绝输出块（正常扣留），第四轮用户明确要求「直接输出 completion-output」后 agent 首次真实输出块——**info 串被写到裸围栏的下一行**（非合法 GFM 形态，info 串必须与 ``` 同行），提取器按 GFM 语义正确拒绝（fail-closed 不动），但该结果与「完全未输出块」不可区分，任务静默卡在进行中（UI 渲染成普通代码块，肉眼不可辨）。定性：**好设计（围栏块协议 + 严格 GFM 提取）、实现不完整**——协议把精确语法当作完成判据，提示词却从未展示完整围栏示例（仅行内代码提及 info 串），agent 首次输出只能靠想象排版；且近似形态无任何诊断（M5-bl「静默 return 让触发缺失不可见」教训在提取层的同款复现）。修复两处：① 提示词（zh-CN/en）补精确的单行开栏示例 + 同行规则文案（契约测试锁锚点）；② `handoff.rs` 新增 `CompletionBlockProbe`（`block` + `near_miss_reason`：`info_on_own_line_after_fence` / `fence_info_contains_target`，纯函数、只识别**结构化**围栏滑落——prose 提及 info 串不误报，正常扣留轮次不告警），`completion_output_for_issue_done` 改回 probe（仍一次 timeline 读，探测复用已读文本零额外 IO），bridge 两处门控与迟到补发的未命中日志按近似原因升级 WARN（内网日志一眼定位，不再需要导出 timeline）。**不放宽提取器**：容忍近似形态有真实歧义（普通围栏内容首行恰为该串会误命中），违背 fail-closed 原则（宁保持进行中、不可误完成）。测试先行：4 个 handoff 纯函数测试 + bridge 接口层近似形态测试 + 契约测试锚点，先红（`near_miss_reason` None ≠ Some / 模板无 ```` ```completion-output ````）后转绿；提示词遵从性无法本地单测（模型行为），记录局限、内网打包 E2E 验证。另发现**独立**健壮性缺陷（不属本次根因，另立处理）：`complete_with_issue_done` 中 `complete_task` HTTP 失败仅 warn 且 `finalize_terminal` 无条件执行——完成请求失败时本地映射已清、任务在远端永久搁浅（心跳是 runtime 级持续，不触发 sweeper 重开，且无重试/对账通道）。
 
+### 12.56 改动五十四：StateConfig 远程词汇改名的前置键 serde alias——升级不丢「最近完成」历史（M5-bq，2026-10-12）
+
+**背景（用户内网实测）**：升级（重装安装包）码灵客户端后，需求管理页已完成的 multica 任务全部消失，对应本地会话仍在。
+
+**根因追溯**：P1a（7085a5a7，2026-09-17）词汇中立化把持久化 JSON 键改名（`multicaCompletedTasks`→`remoteCompletedTasks`、`multicaTaskConversations`→`remoteTaskConversations`，条目内 `issueId`→`issueRef`、`issueKind`→`kind`），当时按「旧 state.json 可载入、旧索引数据破坏式丢弃」处理——`#[serde(default)]` 保证解析不失败，旧键作为未知字段被 serde 忽略。该决策把两个字段都当作「可重建索引」，但 §12.54（M5-bo）已确证**终态行（completed/failed）的唯一数据源是本地 `remote_completed_tasks` 历史（服务端不回传终态）**——它是用户业务历史的唯一副本，不是可丢弃缓存。升级后果链：新版读新键得空列表（历史「消失」）→ 任意一次 state.json RMW（如更新检查时间戳 `set_user_desktop_updater_last_checked_at`；wb 渠道 silentUpdate 常驻检查）整体重写文件 → 旧键被物理删除（此后不可恢复）。会话在主目录 `~/.maling/projects/`（`user_gold_band_root`），与 state.json（`%LOCALAPPDATA%\maling\`，`user_state_file`）异位，故不受影响——「已完成任务消失、会话还在」即这对存储位置不对称的直接投影。NSIS 配置未设 `deleteAppDataOnUninstall`（默认 false），排除卸载器删数据目录链路。定性：**好设计（存储无方言）+ 实现不完整（对唯一副本数据未做读兼容）**。
+
+**设计**：对改名的 4 个键补 `#[serde(alias)]` 反序列化兼容（`src/config/mod.rs`）：`remote_completed_tasks` alias `multicaCompletedTasks`、`remote_task_conversations` alias `multicaTaskConversations`、`RemoteCompletedTask.issue_ref` alias `issueId`、`RemoteCompletedTask.kind` alias `issueKind`。alias 只作用于反序列化，序列化仍写新键：旧 state.json 直接可读，首次 RMW 重写即自动迁移为新键，无需版本号机制或启动迁移逻辑。`RemoteTaskConversation` 条目内字段未改名（仅容器键改名），无需 alias。
+
+**边界（重要）**：alias 只能救回「旧键还在文件里」的数据。若升级后新版已运行过（任意 RMW 已重写 state.json），旧键已被物理删除，数据不可恢复。内网验收以 `%LOCALAPPDATA%\maling\state.json` 是否仍含 `multicaCompletedTasks` 键作为可恢复性判据。
+
+**最小失败测试先行**：`state_config_deserializes_pre_rename_multica_keys`（lib config tests）——构造旧键 + 旧条目字段名（`issueId`/`issueKind`）的 state.json 片段，断言完成历史与续跑索引读出、且重写后落为新键/不再含旧键。修复前红（`len()==0`，与根因一致：旧键被 serde 忽略），加 alias 后转绿；回归 lib config 105 + storage 41 + app 64 + desktop multica 164 全过。
+
+**过度设计评审**：仅 4 个 serde 属性，无新抽象/状态/迁移框架；不为「已物理删除」场景造恢复机制（无法实现）。遗留风险另行评估、不混入本次：① 终态历史唯一副本存 `%LOCALAPPDATA%`（易失位）与会话（主目录）的持久性不对称；② disconnect/换号/改 server 地址三条静默清空路径（`clear_multica_state_indices`）；③ `load_state` 失败静默降级空列表（仅 warn）。
+
+**性能评审**：alias 仅反序列化时多一次键匹配；state.json 为小文件、读写频率不变，零运行时影响。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

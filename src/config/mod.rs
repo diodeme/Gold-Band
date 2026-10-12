@@ -1401,10 +1401,20 @@ pub struct StateConfig {
     //    其余为中立模型（远程来源解耦设计 §4.6，写入时即翻译，存储内无方言）——
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multica_runtime_ids: Option<std::collections::HashMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // alias = 改名前（7085a5a7 词汇中立化）旧版落盘的 multica* 键：旧 state.json 仍可读，
+    // 首次 RMW 重写即迁移为新键；无 alias 则升级后历史被静默清空（终态行唯一回看来源）。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "multicaTaskConversations"
+    )]
     pub remote_task_conversations:
         Option<std::collections::HashMap<String, RemoteTaskConversation>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "multicaCompletedTasks"
+    )]
     pub remote_completed_tasks: Vec<RemoteCompletedTask>,
 }
 
@@ -3840,6 +3850,63 @@ mod tests {
         let empty_json = serde_json::to_string(&StateConfig::default()).unwrap();
         assert!(!empty_json.contains("remoteCompletedTasks"));
     }
+
+    #[test]
+    fn state_config_deserializes_pre_rename_multica_keys() {
+        // 7085a5a7 词汇中立化把持久化键 multicaCompletedTasks/multicaTaskConversations 改名为
+        // remoteCompletedTasks/remoteTaskConversations（条目内 issueId→issueRef、issueKind→kind）。
+        // 旧版落盘的 state.json 只含旧键；升级后新版必须仍能读出旧键的历史（含条目内旧字段），
+        // 且首次 RMW 重写后自动迁移为新键——否则升级即静默丢光「最近完成」历史（终态行唯一回看来源）。
+        let legacy_json = r#"{
+  "stateSchemaVersion": 1,
+  "multicaTaskConversations": {
+    "remote-task-1": {
+      "localTaskId": "task-1",
+      "localRunId": "run-1",
+      "sessionId": "acp-session-1",
+      "workDir": "E:\\ws"
+    }
+  },
+  "multicaCompletedTasks": [
+    {
+      "remoteTaskId": "remote-1",
+      "localTaskId": "task-1",
+      "localRunId": "run-1",
+      "workspaceId": "ws-1",
+      "localProjectId": "proj-1",
+      "issueId": "iss-1",
+      "issueKind": "dev",
+      "status": "completed",
+      "title": "Fix bug",
+      "completedAt": "2026-08-06T01:00:00Z"
+    }
+  ]
+}"#;
+        let state: StateConfig = serde_json::from_str(legacy_json).unwrap();
+        // 旧键的完成历史读入新字段（含条目内旧字段名 issueId/issueKind → issueRef/kind）。
+        assert_eq!(state.remote_completed_tasks.len(), 1);
+        let entry = &state.remote_completed_tasks[0];
+        assert_eq!(entry.remote_task_id, "remote-1");
+        assert_eq!(entry.issue_ref.as_deref(), Some("iss-1"));
+        assert_eq!(entry.kind.as_deref(), Some("dev"));
+        assert_eq!(entry.status, "completed");
+        // 旧键的续跑索引同理读入新字段。
+        let conv = state
+            .remote_task_conversations
+            .as_ref()
+            .and_then(|m| m.get("remote-task-1"))
+            .expect("legacy multicaTaskConversations entry should load");
+        assert_eq!(conv.session_id.as_deref(), Some("acp-session-1"));
+
+        // 首次 RMW 重写即迁移为新键：写出新键、不再写出旧键。
+        let rewritten = serde_json::to_string_pretty(&state).unwrap();
+        assert!(rewritten.contains("\"remoteCompletedTasks\""));
+        assert!(rewritten.contains("\"remoteTaskConversations\""));
+        assert!(rewritten.contains("\"issueRef\": \"iss-1\""));
+        assert!(rewritten.contains("\"kind\": \"dev\""));
+        assert!(!rewritten.contains("multicaCompletedTasks"));
+        assert!(!rewritten.contains("multicaTaskConversations"));
+    }
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -3941,11 +4008,14 @@ pub struct RemoteCompletedTask {
     /// 该任务执行时选定的本地工作区 project_id（finalize 时从 `ActiveRemoteRun` 快照，
     /// terminal 行本地深链用）。
     pub local_project_id: String,
+    /// alias = 改名前的 `issueId`（7085a5a7 词汇中立化改名 `issueRef`）：旧历史条目仍可读。
+    #[serde(default, alias = "issueId")]
     pub issue_ref: Option<String>,
     /// 工作项类型快照（中立词汇 `kind`，写入时翻译自 wire `issue_kind`，story dev/test 拆分）——
     /// 终态行类型徽标不丢。旧历史条目无此字段 → serde 缺省 None，徽标不渲染。
+    /// alias = 改名前的 `issueKind`：旧历史条目仍可读。
     /// `readiness` 不持久化：终态无「就绪」语义。
-    #[serde(default)]
+    #[serde(default, alias = "issueKind")]
     pub kind: Option<String>,
     /// `completed` | `failed`（由 finalize 的 PendingUpdate 决定）。
     pub status: String,

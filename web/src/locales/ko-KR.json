@@ -2941,6 +2941,8 @@
       },
       "keepResident": "세션 계속 유지",
       "releaseResident": "상주 해제",
+      "keepResidentHint": "Agent에 예약 작업 등 오래 실행되는 작업이 있으면 유휴 상태에서 회수되지 않도록 세션을 상주시키세요",
+      "releaseResidentHint": "상주 중이므로 유휴 상태에서도 회수되지 않습니다. 클릭하여 상주 해제",
       "resident": "상주 세션"
     },
     "composer": {

@@ -17,7 +17,8 @@ vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-import { ConversationSidebar, RESIDENT_PIN_GRADIENT_STOPS } from '@/components/conversation/ConversationSidebar';
+import { ConversationSidebar } from '@/components/conversation/ConversationSidebar';
+import { RESIDENT_PIN_GRADIENT_STOPS } from '@/components/conversation/ResidentPin';
 import type { ConversationSidebarVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;

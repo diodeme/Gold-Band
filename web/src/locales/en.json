@@ -2941,6 +2941,8 @@
       },
       "keepResident": "Keep session running",
       "releaseResident": "Allow session eviction",
+      "keepResidentHint": "Keep this session running when the Agent has scheduled tasks or other long-running work, so it is not closed while idle",
+      "releaseResidentHint": "Session is kept running and will not be closed while idle. Click to allow eviction",
       "resident": "Kept running"
     },
     "composer": {

@@ -2941,6 +2941,8 @@
       },
       "keepResident": "セッションを常駐させる",
       "releaseResident": "常駐を解除",
+      "keepResidentHint": "Agent にスケジュールタスクなど長時間実行される処理がある場合は、アイドル時に回収されないよう常駐させてください",
+      "releaseResidentHint": "常駐中のため、アイドル時も回収されません。クリックで常駐を解除",
       "resident": "常駐セッション"
     },
     "composer": {

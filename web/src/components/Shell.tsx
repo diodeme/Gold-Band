@@ -12,7 +12,7 @@ import { DesktopWindowFrame } from './DesktopWindowFrame';
 import { cn } from '@/lib/utils';
 import { ThemeIcon, useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 
-interface ShellProps {
+export interface ShellProps {
   uiMode: DesktopUiMode;
   active: PrimaryModule;
   conversationPage: ConversationPage;

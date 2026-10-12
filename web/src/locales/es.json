@@ -2941,6 +2941,8 @@
       },
       "keepResident": "Mantener sesión activa",
       "releaseResident": "Permitir liberar la sesión",
+      "keepResidentHint": "Mantén la sesión activa cuando el Agent tenga tareas programadas u otros trabajos largos, para que no se cierre al quedar inactiva",
+      "releaseResidentHint": "La sesión se mantiene activa y no se cerrará al quedar inactiva. Haz clic para permitir liberarla",
       "resident": "Sesión mantenida activa"
     },
     "composer": {

@@ -89,6 +89,16 @@ describe('conversation sidebar activity indicator', () => {
     expect(conversationTaskActivityFromUpdate({ lifecycle: idleLifecycle(null), activity } as never)).toBeNull();
   });
 
+  it('never lets a stale prompt-phase sample outlive an idle prompt lifecycle', () => {
+    // task-150: a fragment after the cancel result left background facts while the
+    // task-wide sample was captured before the prompt control was released.
+    const stale: ConversationTaskActivityVm = { phase: 'running', stopping: false };
+    const busy = control(0, 10_000);
+    expect(conversationTaskActivityFromUpdate({ lifecycle: idleLifecycle(busy), activity: stale } as never))
+      .toEqual({ phase: 'background', stopping: false, backgroundControl: busy });
+    expect(conversationTaskActivityFromUpdate({ lifecycle: idleLifecycle(null), activity: stale } as never)).toBeNull();
+  });
+
   it('replaces the relative time with a running spinner while active and restores it afterwards', async () => {
     vi.useFakeTimers();
     const container = document.createElement('div'); document.body.append(container);

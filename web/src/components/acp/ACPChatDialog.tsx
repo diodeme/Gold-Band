@@ -38,6 +38,7 @@ import { Badge } from "@/components/ui/badge";
 import { BrandLoadingState } from "@/components/BrandLoadingState";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ResidentPinToggle, type ResidentPinToggleProps } from "@/components/conversation/ResidentPin";
 import {
   Collapsible,
   CollapsibleContent,
@@ -368,6 +369,8 @@ export type AcpRuntimeComposerContext = {
 export interface AcpDirectSessionHeaderProps {
   title: string;
   onTitleChange?: (title: string) => void;
+  /** Absent while the conversation's residency is unknown or not editable. */
+  resident?: ResidentPinToggleProps;
 }
 
 export type AcpInitialSessionQueryState = "loading" | "success" | "error";
@@ -7624,6 +7627,7 @@ export function ACPSessionHeader({
           ) : null}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {directSessionHeader?.resident ? <ResidentPinToggle {...directSessionHeader.resident} /> : null}
           {showSystemPromptAction ? (
             <Button
               size="sm"

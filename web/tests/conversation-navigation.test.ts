@@ -412,7 +412,7 @@ describe('conversation navigation presentation transaction', () => {
 describe('conversation sidebar navigation wiring', () => {
   it('invalidates the active run request before deleting its task from disk', () => {
     const source = readAppSource();
-    const deletion = source.match(/onConversationDeleteTask=\{[\s\S]*?onConversationPinTask=/)?.[0] ?? '';
+    const deletion = source.match(/onConversationDeleteTask: [\s\S]*?onConversationPinTask: /)?.[0] ?? '';
     const deleteRequest = deletion.indexOf('deleteConversationTask(projectId, taskId)');
     const requestInvalidation = deletion.indexOf('conversationNavigationRequestRef.current += 1;');
 
@@ -424,8 +424,8 @@ describe('conversation sidebar navigation wiring', () => {
   it('routes run exits plus sidebar task and run selections through the cache-aware conversation navigation entry', () => {
     const source = readAppSource();
     const sidebarSource = readAppSource('web/src/components/conversation/ConversationSidebar.tsx');
-    const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
-    const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace=\{[\s\S]*?onConversationAddWorkspace=/)?.[0] ?? '';
+    const quickChatSelection = source.match(/onConversationNew: [\s\S]*?onConversationSearch: /)?.[0] ?? '';
+    const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace: [\s\S]*?onConversationAddWorkspace: /)?.[0] ?? '';
     const sidebarRunSelection = sidebarSource.match(/const selectTaskRun[\s\S]*?const selectTask =/)?.[0] ?? '';
     const searchSelection = source.match(/<ConversationSearchDialog[\s\S]*?\/>/)?.[0] ?? '';
     const interventionNavigation = source.match(/const handleInterventionNavigate[\s\S]*?useInterventionNotifications/)?.[0] ?? '';

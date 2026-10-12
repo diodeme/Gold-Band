@@ -2941,6 +2941,8 @@
       },
       "keepResident": "常駐對話",
       "releaseResident": "解除常駐",
+      "keepResidentHint": "Agent 有排程任務等需要長時間執行的工作時，請開啟常駐，避免對話閒置後被回收",
+      "releaseResidentHint": "已常駐，閒置時不會被回收。點擊解除常駐",
       "resident": "常駐對話"
     },
     "composer": {

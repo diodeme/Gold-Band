@@ -1,7 +1,8 @@
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
 import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -18,6 +19,7 @@ import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/c
 import { formatCompactRelativeTime } from '@/lib/datetime';
 import { useConversationTaskActive } from '@/lib/conversation-sidebar-activity';
 import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
+import { ResidentPin } from '@/components/conversation/ResidentPin';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
@@ -271,6 +273,21 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     ));
   };
 
+  // One identity for every row: memoized TaskRows re-render only when their own data changes.
+  const rowCommands = useStableCallbacks<TaskRowCommands>({
+    select: selectTask,
+    selectRun: selectTaskRun,
+    toggleRuns: toggleTaskRuns,
+    expandRuns: expandTaskRuns,
+    loadMoreRuns: (task) => onRequestTaskRuns(task, task.runsNextCursor),
+    pin: (task) => onPinTask(task.projectId, task.taskId),
+    unpin: (task) => onUnpinTask(task.projectId, task.taskId),
+    setResident: async (task, resident) => { await onSetResident?.(task.projectId, task.taskId, resident); },
+    rename: (task, title) => onRenameTask(task.projectId, task.taskId, title),
+    remove: (task) => onDeleteTask(task.projectId, task.taskId, task.taskUuid),
+    pauseRun: (task, runId) => onPauseRun?.(task.projectId, task.taskId, runId),
+  });
+
   const confirmWorkspaceRemoval = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     if (!workspaceToRemove || !onRemoveWorkspace || workspaceRemovalPending) return;
@@ -424,18 +441,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                               isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                               activeRunKey={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) ? activeRunKey : null}
                               expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
-                              onSelect={() => selectTask('pinned', task)}
-                              onSelectRun={(runId) => {
-                                selectTaskRun('pinned', task, runId);
-                              }}
-                              onToggleRuns={() => toggleTaskRuns('pinned', task)}
-                              onExpandRuns={() => expandTaskRuns('pinned', task)}
-                              onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
-                              onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                              onSetResident={onSetResident ? (resident) => onSetResident(task.projectId, task.taskId, resident) : undefined}
-                              onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                              onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
-                              onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
+                              scope="pinned"
+                              commands={rowCommands}
+                              residencyEditable={Boolean(onSetResident)}
                               t={t}
                             />
                           ))}
@@ -547,19 +555,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
                         expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
-                        onSelect={() => selectTask('workspace', task)}
-                        onSelectRun={(runId) => {
-                          selectTaskRun('workspace', task, runId);
-                        }}
-                        onToggleRuns={() => toggleTaskRuns('workspace', task)}
-                        onExpandRuns={() => expandTaskRuns('workspace', task)}
-                        onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
-                        onPin={() => onPinTask(task.projectId, task.taskId)}
-                        onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                              onSetResident={onSetResident ? (resident) => onSetResident(task.projectId, task.taskId, resident) : undefined}
-                        onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                        onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
-                        onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
+                        scope="workspace"
+                        commands={rowCommands}
+                        residencyEditable={Boolean(onSetResident)}
                         t={t}
                       />
                     ))}
@@ -770,69 +768,54 @@ function RunStopMenu({
   );
 }
 
-// 以主题蓝（running）为主色：钉头微混 emphasis 成靛蓝，中段一道高光形成金属反光，针尖向 accent-foreground 过渡成青色；各主题自动适配。
-export const RESIDENT_PIN_GRADIENT_STOPS = [
-  { offset: 0, color: 'color-mix(in oklab, var(--gold-running), var(--gold-emphasis) 25%)' },
-  { offset: 0.35, color: 'var(--gold-running)' },
-  { offset: 0.55, color: 'color-mix(in oklab, var(--gold-running), white 40%)' },
-  { offset: 0.72, color: 'var(--gold-running)' },
-  { offset: 1, color: 'color-mix(in oklab, var(--gold-running), var(--accent-foreground) 60%)' },
-] as const;
-
-// 造型取自 Fluent UI System Icons 的 pin-24-filled（MIT）；渐变沿钉头到针尖方向。
-function ResidentPin() {
-  const gradientId = `resident-pin-${useId().replace(/[^\w-]/g, '')}`;
-  return (
-    <svg data-resident-pin viewBox="0 0 24 24" className="size-3 shrink-0" aria-hidden="true">
-      <defs>
-        <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1="21" y1="3" x2="4" y2="20">
-          {RESIDENT_PIN_GRADIENT_STOPS.map(({ offset, color }) => (
-            <stop key={offset} offset={offset} style={{ stopColor: color }} />
-          ))}
-        </linearGradient>
-      </defs>
-      <path fill={`url(#${gradientId})`} d="m21.068 7.758l-4.826-4.826a2.75 2.75 0 0 0-4.404.715l-2.435 4.87a.75.75 0 0 1-.426.374l-4.166 1.44a1.25 1.25 0 0 0-.476 2.065L7.439 15.5L3 19.94V21h1.06l4.44-4.44l3.105 3.105a1.25 1.25 0 0 0 2.065-.476l1.44-4.166a.75.75 0 0 1 .373-.426l4.87-2.435a2.75 2.75 0 0 0 .715-4.404" />
-    </svg>
-  );
+/** Row actions shared by every TaskRow; identity-stable so the memoized rows can skip renders. */
+interface TaskRowCommands {
+  select: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => void;
+  selectRun: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm, runId: string) => void;
+  toggleRuns: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => void;
+  expandRuns: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => void;
+  loadMoreRuns: (task: ConversationTaskRowVm) => void;
+  pin: (task: ConversationTaskRowVm) => void;
+  unpin: (task: ConversationTaskRowVm) => void;
+  setResident: (task: ConversationTaskRowVm, resident: boolean) => Promise<void>;
+  rename: (task: ConversationTaskRowVm, title: string) => void;
+  remove: (task: ConversationTaskRowVm) => void;
+  pauseRun: (task: ConversationTaskRowVm, runId: string) => void | Promise<void>;
 }
 
-function TaskRow({
+const TaskRow = memo(function TaskRow({
   task,
+  scope,
   pinned,
   isActive,
   activeRunKey,
   expanded,
-  onSelect,
-  onSelectRun,
-  onToggleRuns,
-  onExpandRuns,
-  onLoadMoreRuns,
-  onPin,
-  onUnpin,
-  onSetResident,
-  onRename,
-  onDelete,
-  onPauseRun,
+  commands,
+  residencyEditable,
   t,
 }: {
   task: ConversationTaskRowVm;
+  scope: ConversationSidebarRunListScope;
   pinned: boolean;
   isActive: boolean;
   activeRunKey?: string | null;
   expanded: boolean;
-  onSelect: () => void;
-  onSelectRun?: (runId: string) => void;
-  onToggleRuns: () => void;
-  onExpandRuns: () => void;
-  onLoadMoreRuns: () => void;
-  onPin?: () => void;
-  onUnpin?: () => void;
-  onSetResident?: (resident: boolean) => Promise<void>;
-  onRename?: (title: string) => void;
-  onDelete?: () => void;
-  onPauseRun?: (runId: string) => void | Promise<void>;
+  commands: TaskRowCommands;
+  residencyEditable: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
+  const onSelect = () => commands.select(scope, task);
+  const onSelectRun = (runId: string) => commands.selectRun(scope, task, runId);
+  const onToggleRuns = () => commands.toggleRuns(scope, task);
+  const onExpandRuns = () => commands.expandRuns(scope, task);
+  const onLoadMoreRuns = () => commands.loadMoreRuns(task);
+  // Pinned-section rows only offer unpin; workspace rows choose by the pinned flag.
+  const onPin = scope === 'workspace' ? () => commands.pin(task) : undefined;
+  const onUnpin = () => commands.unpin(task);
+  const onSetResident = residencyEditable ? (resident: boolean) => commands.setResident(task, resident) : undefined;
+  const onRename = (title: string) => commands.rename(task, title);
+  const onDelete = () => commands.remove(task);
+  const onPauseRun = (runId: string) => commands.pauseRun(task, runId);
   const [editing, setEditing] = useState(false);
   const [residencyPending, setResidencyPending] = useState(false);
   const readOnly = useReadOnlyExperience();
@@ -973,7 +956,7 @@ function TaskRow({
         ) : null}
       </div>
       <span data-demo-task-actions={readOnly || undefined} className="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
-        {onRename ? (
+        {(
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="inline-flex">
@@ -984,7 +967,7 @@ function TaskRow({
             </TooltipTrigger>
             <TooltipContent>{t('conversation.sidebar.rename')}</TooltipContent>
           </Tooltip>
-        ) : null}
+        )}
         {pinned && onUnpin ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1008,7 +991,7 @@ function TaskRow({
             <TooltipContent>{t('conversation.sidebar.pinToTop')}</TooltipContent>
           </Tooltip>
         ) : null}
-        {onDelete ? (
+        {(
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="inline-flex">
@@ -1019,7 +1002,7 @@ function TaskRow({
             </TooltipTrigger>
             <TooltipContent>{t('common.delete')}</TooltipContent>
           </Tooltip>
-        ) : null}
+        )}
       </span>
     </div>
   );
@@ -1117,7 +1100,7 @@ function TaskRow({
     </AlertDialog>
     </>
   );
-}
+});
 
 // ── Sidebar Button ──
 

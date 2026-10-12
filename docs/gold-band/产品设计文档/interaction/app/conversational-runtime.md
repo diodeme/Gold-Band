@@ -5,11 +5,11 @@
 - Direct 的 ACP 消费者属于存活会话。prompt 的 end_turn 完成该轮输入，随后仍按 sessionId 持续接收并持久化消息、工具更新、权限和问题。前台 prompt 与后台读取通过现有 attempt prompt lock 有序交接，旧消费者退出并刷新后才恢复下一个消费者；同一 route 不同时拥有两个消费者。
 - Direct 不再执行下述 2026-09-19 的 admission 前消息丢弃策略；显式 session/load 历史重放仍保留原去重。稳定 messageId/toolCallId 在不同输出、用户 prompt 之间可继续更新；需要恢复旧项时仅按索引读取该项，不常驻全量历史。缺少身份的通知按接收顺序展示，不猜测属于哪个 prompt。
 - Direct 的交互请求绑定真实 sessionId 与 request identity；session/update 未提供通用 prompt 归属，因此不把 Direct 权限/问题强行绑定当前或上一轮输入。已完成 prompt 的 lifecycle 不隐藏新的会话级待处理请求；响应复用既有权限/问题接口，不复活 Run/Attempt，也不自动批准。Workflow/AUTO 保留原 prompt 归属和限制。
-- 应用级策略只数存活 Direct 底层会话（connection generation + sessionId 去重，跨项目累计），包括首次运行中与保留的会话。配置真源为 configs/app-config.toml 的 acpDirectSessionRetention：residentThreshold=8、idleTtlSecs=21600、capacityTarget=20、sweepIntervalSecs=60。N≤8 常驻；超过8按6小时空闲淘汰；超过20可按 LRU 提前释放可回收会话。正在执行、正式交互等待、已知未完成工具、前台租约和手动常驻受保护；capacityTarget 是软目标。
-- 有效内容、工具进度、交互及执行完成续期；重复的纯工具状态、usage 心跳、页面租约不刷新空闲时间。注册表维护不扫描历史；消息队列继续有界。ACP 没有通用隐藏定时器清单，长周期定时器可能受回收影响，不能以无消息断言后台无任务。
-- 仅 Direct 右键显示“常驻会话”或“解除常驻”。标题旁倾斜实心图钉及 Tooltip 表示保留偏好，和置顶顺序独立。偏好由 App.set_conversation_resident 更新 authoring/conversation.json 的 resident；元数据活动时间更新共用文件锁。历史会话设置偏好不启动进程，重启不自动启动。删除会话先关闭读取/会话再删除文件。
+- 2026-10-10 起 Direct 与 Workflow/AUTO 共用一套空闲回收：acpSessionIdleTtlSecs=600 空闲 TTL、acpMaxIdleSessionRuntimes=8 空闲上限（两类会话合计），由 acpSessionSweepIntervalSecs=60 的周期 sweep 与每次 release 执行；超过上限按最近活动 LRU 先回收。原 acpDirectSessionRetention（residentThreshold/6 小时 TTL/capacityTarget）删除。受保护会话既不过期也不占空闲上限：正在执行、前台租约，以及 Direct 独有的手动常驻、正式交互等待、已知未完成工具、关闭中和共享别名。
+- 有效内容、工具进度、交互及执行完成续期；重复的纯工具状态、usage 心跳、页面租约不刷新空闲时间。注册表维护不扫描历史；消息队列继续有界。ACP 没有通用隐藏定时器清单（claude-agent-acp 的 asyncTasks 仅在 JetBrains AIR 客户端模式下提供，且会整体切换适配器行为，暂不接入），长周期定时器可能受回收影响，不能以无消息断言后台无任务；需要长期存活的 Direct 会话由用户手动常驻。
+- 仅 Direct 提供常驻开关：侧边栏右键“常驻会话/解除常驻”，以及会话头部“原始帧”左侧的图钉切换按钮，两者调用同一 App.set_conversation_resident 并以侧边栏会话行为唯一状态源。头部未常驻显示 Fluent pin-24-regular 描边图钉，常驻显示与侧边栏相同的渐变实心图钉；Tooltip 提示有定时任务等长时间工作时开启常驻，请求中显示加载态并禁用，只读体验或会话行未加载时不显示。标题旁倾斜实心图钉及 Tooltip 表示保留偏好，和置顶顺序独立。偏好更新 authoring/conversation.json 的 resident；元数据活动时间更新共用文件锁。历史会话设置偏好不启动进程，重启不自动启动。删除会话先关闭读取/会话再删除文件。
 - 回收前重查保护、TTL和容量，关闭期间继续排空消息，不持全局锁执行 RPC。已声明 session/close 时等待成功与入站水位；失败保留并记录诊断。没有独立 close 时只允许释放确认为唯一会话、没有其他 scoped user 的整个连接；共享连接保守保留。页面/前端缓存释放与 Agent 关闭独立。
-- 性能与设计评审：复用注册表、generation、timeline index、交互协议与 shadcn ContextMenu；新增字段只表达既有置顶不能表达的资源保留意图。一个维护线程，每个空闲 Direct 一个可停止的同步消费者；流式写入/发布沿用有界缓冲。一次候选排序 O(N log N)，每次关闭前重新检查，整批最坏 O(N² log N)，目标规模8～20；关闭 RPC 位于锁外。20不是 Agent 进程内存硬上限。
+- 性能与设计评审：复用注册表、generation、timeline index、交互协议与 shadcn ContextMenu；新增字段只表达既有置顶不能表达的资源保留意图。Direct 与 Workflow 共用一个选择函数和一个按需启动、注册表清空即退出的 sweep 线程，每个空闲 Direct 一个可停止的同步消费者；流式写入/发布沿用有界缓冲。一次候选排序 O(N log N)，每次关闭前重新检查，整批最坏 O(N² log N)，N 为存活会话数（空闲部分受上限 8 约束）；关闭 RPC 位于锁外。上限按空闲会话计，受保护会话不计入，不是 Agent 进程内存硬上限。
 - 方案、复现步骤及验证记录：[Direct 会话后台消息与常驻保活](../../../开发计划/acp接入/Direct会话后台消息与常驻保活.md)。
 
 ## 2026-09-30：系统通知渠道身份
@@ -130,6 +130,7 @@ Task 最近对话活动只在四类 durable 边界推进：Task 创建成功、�
 ### 流式重渲染下的组件稳定性
 
 - 会话消息的实时 flush 可以触发父级连续重渲染；顶部标题、Tooltip、菜单和按钮等静态交互组件必须在父级高频更新时保持 ref identity 与内部状态收敛，不能由 ref detach/attach 反向驱动无限状态更新。
+- 运行时快照会让 App 连续重渲染，侧栏与页面壳不能跟着重渲染。App 传给 `Shell` 的命令统一经 `useStableCallbacks` 收成同一身份的对象，内部始终调用最新闭包。`ConversationSidebar` 用同样方式把行命令收成一份 `TaskRowCommands`，`TaskRow` 以 `memo` 隔离，只接收 `task`、作用域、激活态、展开态等数据和这份稳定命令。行级回调在行内由 `task` 派生，不在列表循环里为每行新建闭包。可用性用独立布尔量表达（例如 `residencyEditable`），不能靠判断回调是否存在。验收标准是父级在数据不变时重渲染，侧栏零提交；某一行的 `task` 变化只重渲染这一行，其他行保持挂载。
 - shadcn copy-in 组件统一从项目选定的 `radix-ui` 聚合包消费 primitive；不得同时保留没有源码消费者的 `@radix-ui/react-*` 直依赖，也不得让同一种 Slot/Tooltip primitive 在 lockfile 中由多套直依赖版本共同拥有。
 - Radix 升级必须保留 shadcn copy-in 层的可定制代码、键盘交互、ARIA 和 focus 管理，不通过删除 Tooltip、移除 `asChild` 或增加特定流式条件分支规避组件生命周期问题。
 - 回归验收必须使用真实 DOM 挂载 Tooltip trigger，在 trigger 打开后连续更新父级输入，确认触发器仍挂载且不会产生 `Maximum update depth exceeded`。
@@ -287,6 +288,7 @@ Task 最近对话活动只在四类 durable 边界推进：Task 创建成功、�
 - **行内语义标签**：Streamdown 渲染的反引号行内内容与所在正文使用相同的 UI 字体、字号、字重和行高，只通过主题 `surfaceHigh` 语义底色、圆角与水平内边距表达标签边界；可点击本地文件标签复用同一层级的底色。标签底色必须直接消费主题的高层 surface，不得再叠加 `muted` 透明度而与会话背景二次混合。不得因行内代码切换到更小的等宽字体，也不得靠额外强边框补偿对比度。
 - **围栏代码块**：共享 prompt-kit Markdown 渲染器使用 Streamdown 官方代码块与 `@streamdown/code` Shiki 插件。带语言标记的 fenced code block 在顶部展示声明语言并按该语言高亮，右上角始终提供该代码块自己的复制按钮；复制内容只包含代码正文，不包含围栏或语言标记。一条消息的多个代码块相互独立；未声明语言时保持纯文本，不进行自动语言探测。代码正文保留源码换行与缩进，单行超过消息宽度时在代码块内部自动折行，不产生横向撑宽或横向滚动。代码块复制与消息级 Markdown 原文复制并存，分别满足局部代码和整条回复的复制需求；Tooltip 组合不得覆盖 Streamdown 复制按钮自身的点击处理。
 - **网络图片**：共享 prompt-kit Markdown 渲染器按[受信任的图片域名](settings.md#14-受信任的图片域名)加载网络图片。图片 URL 由 Agent 输出控制，被注入的 Agent 可以把敏感数据拼进图片地址，渲染即发出请求，Agent 侧的 sandbox 与工具权限都不覆盖这条路径，因此渲染层负责拦截：host 未受信任时不创建 `<img>`，显示 alt（或文件名）、host 与“加载”按钮的占位；点击后信任该 host 并持久化，同一 host 的图片随即全部显示，失败时保留占位并提示重试。图片外层有链接时，点击按钮不会触发外层链接。已加载图片的点击与链接点击共用 `MarkdownResourceLinkHandler`：外层有链接时执行外层链接；存在 `MarkdownImagePreviewProvider`（如更新弹窗）时原位放大；否则网络图片用内置浏览器打开（无工作区 handler 时交给系统浏览器），本地路径用文件工作区打开。我们发布的更新说明使用 `github-release` 渲染模式，网络图片直接加载，不经过信任列表。
+- **Markdown 表格**：共享 prompt-kit Markdown 表格填满当前正文可用宽度，使用浏览器原生自动列宽分配，不以内容的单行宽度撑开表格。表头与正文单元格顶对齐、自然换行；长链接、路径和行内代码允许安全断行，不截断或省略正文。静态与流式正文使用同一布局，窗口或工作区宽度变化时由 CSS 自适应，不引入测宽状态或逐列计算。
 - **GitHub 提示框**：所有 Markdown 渲染模式都支持 GitHub 五种提示框（`NOTE / TIP / IMPORTANT / WARNING / CAUTION`），使用 `remark-github-blockquote-alert` 解析，显示为带图标、本地化标题和类型主题色的 shadcn `Alert`；类型、图标与主题 token 和文件预览共用 `web/src/lib/markdown-alerts.ts`。安全过滤只额外放行提示框标记类；其他 `[!…]` 保持普通引用。单个换行即换行只属于 `github-release` 模式，对话与文件仍按 CommonMark 合并软换行。
 - **Mermaid 图表**：所有 Markdown 渲染模式把语言为 `mermaid` 的围栏代码块渲染为图表（Mermaid 12，`securityLevel: strict`，flowchart 等支持的图默认使用内置 ELK 布局）；PlantUML 暂不支持。
   - **流式与回退**：只有渲染器报告围栏已闭合后才渲染，流式期间保持普通代码块；图表就绪前继续显示源码，因此块高度最多变化一次。语法错误时保留源码，下方显示本地化错误标题和最多 3 行 Mermaid 原始报错。
@@ -936,7 +938,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - end_turn 后新启动的后台子 Agent 不因上一用户回合已完成而显示已中断。正式 Agent 结果、失败或取消事实决定终态；后台启动的后代继承同一来源边界。
 - 后台实时过程组的动态状态与后台停止按钮共用同一后台控制投影：投影有效时末尾过程组显示调用或思考中，回复正文到达后收起为已记录。不依赖 Markdown 流式动画目标，重放、滚动或追赶最新不会让后台过程组提前显示已记录。
-- 普通用户回合沿用原停止按钮。后台收到有效正文、思考或工具活动后显示停止；只要有已知未完成工具就保持，否则最后有效活动后 10 秒隐藏，后续活动重新显示。延时由 acpDirectSessionRetention.backgroundStopGraceSecs 配置；usage、配置和心跳不续期。展示窗口不表达后台任务完成，也不阻止发送新消息。
+- 普通用户回合沿用原停止按钮。后台收到有效正文、思考或工具活动后显示停止；只要有已知未完成工具就保持，否则最后有效活动后 10 秒隐藏，后续活动重新显示。延时由 acpDirectBackgroundStopGraceSecs 配置；usage、配置和心跳不续期。展示窗口不表达后台任务完成，也不阻止发送新消息。
 - 后台停止向仍匹配的保留会话发送 session/cancel，不合成用户回合或完成事件。取消携带会话/连接 generation 与预期 turnId，旧请求不得取消新用户回合。发送期间合并重复点击；发送成功不等于 Agent 确认停止全部任务或删除定时器。
 - 后台停止被接受后立即隐藏停止按钮；取消引起的工具终态和 usage 不会重新显示。Agent 之后出现新的正文、思考或工具启动时重新显示，可再次停止。
 - "后台是否活动"全局只有一个判断：后端只提供事实（未完成工具数、宽限窗口到期时间），前端统一由 isDirectBackgroundActive（及其到期刷新 hook）判断。停止按钮、过程组动态、侧栏呼吸态与侧栏转圈都使用它；"会话是否活动" = 用户回合运行中或后台活动，同样只有一个判断。

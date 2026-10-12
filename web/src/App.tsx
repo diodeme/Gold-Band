@@ -71,6 +71,8 @@ import {
 import {
   DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
 } from './lib/acp-chat-resource-cache';
+import { useStableCallbacks } from './hooks/use-stable-callbacks';
+import { DEFAULT_BROWSER_HIDDEN_RELEASE_SECS } from './components/workspace/browser/browser-config';
 import { configureAcpResourceCacheSessionCount } from '@/components/acp/ACPChatDialog';
 import { seedRemoteImageTrust } from '@/lib/remote-image-trust-store';
 import { subscribeConversationEvents } from './lib/conversation-event-router';
@@ -95,7 +97,7 @@ import { ReleaseNotesDialog } from '@/components/update/ReleaseNotesDialog';
 import { UpdateDialog } from '@/components/update/UpdateDialog';
 import { TitleBarUpdateButton } from '@/components/update/TitleBarUpdateButton';
 import { setUpdateDownloadProgress } from '@/components/update/update-progress-store';
-import { Shell } from './components/Shell';
+import { Shell, type ShellProps } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, loadI18nLanguage } from './i18n';
 import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
@@ -364,6 +366,7 @@ const defaultAppConfig: AppConfigVm = {
   acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
   acpChatEventWindowPageCount: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
   acpChatResourceCacheSessionCount: DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+  browserHiddenReleaseSecs: DEFAULT_BROWSER_HIDDEN_RELEASE_SECS,
   conversationInlineContentMaxBytes: 20_000,
   conversationInlineImageMaxBytes: 4 * 1024 * 1024,
   conversationInlineImageMaxDimension: 2_560,
@@ -445,6 +448,9 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
   }
   return null;
 }
+
+/** Shell callbacks App keeps identity-stable across renders. */
+type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
 
 export function App() {
   const { t } = useTranslation();
@@ -743,6 +749,12 @@ export function App() {
       return next;
     });
   }, []);
+
+  const handleConversationSetResident = useCallback(async (projectId: string, taskId: string, resident: boolean) => {
+    setError(null);
+    try { applyConversationTask(await setConversationResident(projectId, taskId, resident)); }
+    catch (err) { setError(displayAppError(t, err)); }
+  }, [applyConversationTask, t]);
 
   const applyConversationTaskActivity = useCallback((
     projectId: string,
@@ -2313,6 +2325,165 @@ export function App() {
           ? <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />
           : renderTaskContent();
 
+  // Stable identities keep the memoized sidebar out of App re-renders driven by session events.
+  const shellCommands = useStableCallbacks<ShellCommands>({
+    onSelect: (module) => {
+      const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
+      setWorkspacePickerOpen(false);
+      setPrimaryModule(module);
+      setTaskPage(nextTaskPage);
+      pushRoute(module, nextTaskPage);
+    },
+    onSelectConversation: onSelectConversation,
+    onToggleSidebar: () => setSidebarCollapsed((value) => !value),
+    onOpenPersonalAnalytics: () => {
+      const page: ConversationPage = { kind: 'personal-analytics' };
+      setWorkspacePickerOpen(false);
+      setUiMode('conversation');
+      setPrimaryModule('task-orchestration');
+      setConversationPage(page);
+      pushRoute('task-orchestration', taskListPage, page);
+    },
+    onOpenReleaseNotes: () => setReleaseNotesOpen(true),
+    onChooseWorkspace: () => setWorkspacePickerOpen(true),
+    onConversationNew: () => {
+      const targetPid = resolveConversationHomeWorkspaceId(
+        conversationPage,
+        draftConversationWorkspaceId,
+        effectiveWorkspaceId,
+      );
+      if (targetPid) selectDraftConversationWorkspace(targetPid);
+      onSelectConversation({ kind: 'conversation-home' });
+    },
+    onConversationSearch: () => setConversationSearchOpen(true),
+    onConversationRetrySidebar: () => { void loadConversationSidebarBootstrap().catch(() => {}); },
+    onConversationRequestWorkspaceTasks: (projectId, cursor) => {
+      void loadConversationWorkspaceTasks(projectId, cursor).catch(() => {});
+    },
+    onConversationRequestPinnedTasks: (cursor) => {
+      void loadConversationPinnedTasks(cursor).catch(() => {});
+    },
+    onConversationRequestTaskRuns: (task, cursor) => {
+      void loadConversationRunHistory(task, cursor).catch(() => {});
+    },
+    onConversationPauseRun: onConversationPauseRun,
+    onConversationRenameTask: (projectId, taskId, title) => {
+      setError(null);
+      updateTaskMetadata(projectId, taskId, title)
+        .then(applyConversationTask)
+        .catch((err) => setError(displayAppError(t, err)));
+    },
+    onConversationDeleteTask: (projectId, taskId, taskUuid) => {
+      const deletionTarget = { projectId, taskId, taskUuid };
+      invalidateConversationSidebarLoad(`workspace:${projectId}`);
+      invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
+      invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('bootstrap');
+      if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+        conversationNavigationRequestRef.current += 1;
+      }
+      setError(null);
+      deleteConversationTask(projectId, taskId)
+        .then((sidebarBootstrap) => {
+          conversationWorkspaceStore.deleteConversation(projectId, taskId);
+          if (taskUuid) {
+            conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
+          }
+          setConversationSidebar((current) => {
+            const next = removeConversationSidebarTask(current, projectId, taskId);
+            conversationSidebarRef.current = next;
+            return next;
+          });
+          applyConversationSidebarBootstrap(sidebarBootstrap);
+          if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+            conversationNavigationRequestRef.current += 1;
+            conversationRunRef.current = null;
+            conversationSelectedSessionKeyRef.current = null;
+            conversationSessionFollowRef.current = {
+              runKey: null,
+              mode: 'auto',
+              selectedSessionKey: null,
+              version: conversationSessionFollowRef.current.version + 1,
+            };
+            setConversationRun(null);
+            const homePage: ConversationPage = { kind: 'conversation-home' };
+            conversationPageRef.current = homePage;
+            setConversationPage(homePage);
+            pushRoute(primaryModule, taskPage, homePage);
+          }
+        })
+        .catch((err) => {
+          const currentPage = conversationPageRef.current;
+          if (conversationPageTargetsTask(currentPage, deletionTarget)) {
+            setConversationPage({ ...currentPage });
+          }
+          setError(displayAppError(t, err));
+        });
+    },
+    onConversationSetResident: handleConversationSetResident,
+    onConversationPinTask: (projectId, taskId) => {
+      invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('bootstrap');
+      pinConversation(projectId, taskId).then((sidebarBootstrap) => {
+        applyConversationSidebarBootstrap(sidebarBootstrap);
+        void loadConversationPinnedTasks().catch(() => {});
+      }).catch(() => {});
+    },
+    onConversationUnpinTask: (projectId, taskId) => {
+      invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('bootstrap');
+      unpinConversation(projectId, taskId).then((sidebarBootstrap) => {
+        applyConversationSidebarBootstrap(sidebarBootstrap);
+        if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
+      }).catch(() => {});
+    },
+    onConversationNewInWorkspace: (projectId) => {
+      selectDraftConversationWorkspace(projectId);
+      onSelectConversation({ kind: 'conversation-home' });
+    },
+    onConversationAddWorkspace: () => {
+      invalidateConversationSidebarLoad('bootstrap');
+      addConversationWorkspace().then((sidebarBootstrap) => {
+        applyConversationSidebarBootstrap(sidebarBootstrap);
+        const projectId = sidebarBootstrap.lastActiveWorkspaceId ?? sidebarBootstrap.workspaces[0]?.projectId;
+        if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
+      }).catch(() => {});
+    },
+    onConversationRemoveWorkspace: (projectId) => {
+      invalidateConversationSidebarLoad(`workspace:${projectId}`);
+      invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('bootstrap');
+      setError(null);
+      return removeConversationWorkspace(projectId)
+        .then((sidebarBootstrap) => {
+          conversationWorkspaceStore.deleteProject(projectId);
+          const transition = resolveConversationWorkspaceRemovalTransition({
+            removedProjectId: projectId,
+            lastActiveWorkspaceId: sidebarBootstrap.lastActiveWorkspaceId,
+            activeWorkspaceId: activeWorkspaceIdRef.current,
+            draftWorkspaceId: draftConversationWorkspaceId,
+            page: conversationPage,
+          });
+          activeWorkspaceIdRef.current = transition.activeWorkspaceId;
+          setActiveWorkspaceId(transition.activeWorkspaceId);
+          selectDraftConversationWorkspace(transition.draftWorkspaceId);
+          if (transition.navigateHome) {
+            conversationRunRef.current = null;
+            setConversationRun(null);
+            setConversationPage({ kind: 'conversation-home' });
+          }
+          applyConversationSidebarBootstrap(sidebarBootstrap, transition.activeWorkspaceId);
+          if (transition.activeWorkspaceId) {
+            void loadConversationWorkspaceTasks(transition.activeWorkspaceId).catch(() => {});
+          }
+        })
+        .catch((err) => {
+          setError(displayAppError(t, err));
+          throw err;
+        });
+    },
+  });
+
   return (
     <AvatarPreferencesProvider preferences={preferences.avatars}>
     <GitBranchPickerSnapshotProvider>
@@ -2347,166 +2518,28 @@ export function App() {
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
       sidebarCollapsed={sidebarCollapsed}
-      onSelect={(module) => {
-        const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
-        setWorkspacePickerOpen(false);
-        setPrimaryModule(module);
-        setTaskPage(nextTaskPage);
-        pushRoute(module, nextTaskPage);
-      }}
-      onSelectConversation={onSelectConversation}
-      onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-      onOpenPersonalAnalytics={() => {
-        const page: ConversationPage = { kind: 'personal-analytics' };
-        setWorkspacePickerOpen(false);
-        setUiMode('conversation');
-        setPrimaryModule('task-orchestration');
-        setConversationPage(page);
-        pushRoute('task-orchestration', taskListPage, page);
-      }}
-      onOpenReleaseNotes={() => setReleaseNotesOpen(true)}
+      onSelect={shellCommands.onSelect}
+      onSelectConversation={shellCommands.onSelectConversation}
+      onToggleSidebar={shellCommands.onToggleSidebar}
+      onOpenPersonalAnalytics={shellCommands.onOpenPersonalAnalytics}
+      onOpenReleaseNotes={shellCommands.onOpenReleaseNotes}
       titleBarUpdateAction={<TitleBarUpdateButton status={updateStatus} onOpen={() => setUpdateDialogOpen(true)} />}
-      onChooseWorkspace={() => setWorkspacePickerOpen(true)}
-      onConversationNew={() => {
-        const targetPid = resolveConversationHomeWorkspaceId(
-          conversationPage,
-          draftConversationWorkspaceId,
-          effectiveWorkspaceId,
-        );
-        if (targetPid) selectDraftConversationWorkspace(targetPid);
-        onSelectConversation({ kind: 'conversation-home' });
-      }}
-      onConversationSearch={() => setConversationSearchOpen(true)}
-      onConversationRetrySidebar={() => { void loadConversationSidebarBootstrap().catch(() => {}); }}
-      onConversationRequestWorkspaceTasks={(projectId, cursor) => {
-        void loadConversationWorkspaceTasks(projectId, cursor).catch(() => {});
-      }}
-      onConversationRequestPinnedTasks={(cursor) => {
-        void loadConversationPinnedTasks(cursor).catch(() => {});
-      }}
-      onConversationRequestTaskRuns={(task, cursor) => {
-        void loadConversationRunHistory(task, cursor).catch(() => {});
-      }}
-      onConversationPauseRun={onConversationPauseRun}
-      onConversationRenameTask={(projectId, taskId, title) => {
-        setError(null);
-        updateTaskMetadata(projectId, taskId, title)
-          .then(applyConversationTask)
-          .catch((err) => setError(displayAppError(t, err)));
-      }}
-      onConversationDeleteTask={(projectId, taskId, taskUuid) => {
-        const deletionTarget = { projectId, taskId, taskUuid };
-        invalidateConversationSidebarLoad(`workspace:${projectId}`);
-        invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
-        invalidateConversationSidebarLoad('pinned');
-        invalidateConversationSidebarLoad('bootstrap');
-        if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
-          conversationNavigationRequestRef.current += 1;
-        }
-        setError(null);
-        deleteConversationTask(projectId, taskId)
-          .then((sidebarBootstrap) => {
-            conversationWorkspaceStore.deleteConversation(projectId, taskId);
-            if (taskUuid) {
-              conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
-            }
-            setConversationSidebar((current) => {
-              const next = removeConversationSidebarTask(current, projectId, taskId);
-              conversationSidebarRef.current = next;
-              return next;
-            });
-            applyConversationSidebarBootstrap(sidebarBootstrap);
-            if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
-              conversationNavigationRequestRef.current += 1;
-              conversationRunRef.current = null;
-              conversationSelectedSessionKeyRef.current = null;
-              conversationSessionFollowRef.current = {
-                runKey: null,
-                mode: 'auto',
-                selectedSessionKey: null,
-                version: conversationSessionFollowRef.current.version + 1,
-              };
-              setConversationRun(null);
-              const homePage: ConversationPage = { kind: 'conversation-home' };
-              conversationPageRef.current = homePage;
-              setConversationPage(homePage);
-              pushRoute(primaryModule, taskPage, homePage);
-            }
-          })
-          .catch((err) => {
-            const currentPage = conversationPageRef.current;
-            if (conversationPageTargetsTask(currentPage, deletionTarget)) {
-              setConversationPage({ ...currentPage });
-            }
-            setError(displayAppError(t, err));
-          });
-      }}
-      onConversationSetResident={async (projectId, taskId, resident) => {
-        setError(null);
-        try { applyConversationTask(await setConversationResident(projectId, taskId, resident)); }
-        catch (err) { setError(displayAppError(t, err)); }
-      }}
-      onConversationPinTask={(projectId, taskId) => {
-        invalidateConversationSidebarLoad('pinned');
-        invalidateConversationSidebarLoad('bootstrap');
-        pinConversation(projectId, taskId).then((sidebarBootstrap) => {
-          applyConversationSidebarBootstrap(sidebarBootstrap);
-          void loadConversationPinnedTasks().catch(() => {});
-        }).catch(() => {});
-      }}
-      onConversationUnpinTask={(projectId, taskId) => {
-        invalidateConversationSidebarLoad('pinned');
-        invalidateConversationSidebarLoad('bootstrap');
-        unpinConversation(projectId, taskId).then((sidebarBootstrap) => {
-          applyConversationSidebarBootstrap(sidebarBootstrap);
-          if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
-        }).catch(() => {});
-      }}
-      onConversationNewInWorkspace={(projectId) => {
-        selectDraftConversationWorkspace(projectId);
-        onSelectConversation({ kind: 'conversation-home' });
-      }}
-      onConversationAddWorkspace={() => {
-        invalidateConversationSidebarLoad('bootstrap');
-        addConversationWorkspace().then((sidebarBootstrap) => {
-          applyConversationSidebarBootstrap(sidebarBootstrap);
-          const projectId = sidebarBootstrap.lastActiveWorkspaceId ?? sidebarBootstrap.workspaces[0]?.projectId;
-          if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
-        }).catch(() => {});
-      }}
-      onConversationRemoveWorkspace={(projectId) => {
-        invalidateConversationSidebarLoad(`workspace:${projectId}`);
-        invalidateConversationSidebarLoad('pinned');
-        invalidateConversationSidebarLoad('bootstrap');
-        setError(null);
-        return removeConversationWorkspace(projectId)
-          .then((sidebarBootstrap) => {
-            conversationWorkspaceStore.deleteProject(projectId);
-            const transition = resolveConversationWorkspaceRemovalTransition({
-              removedProjectId: projectId,
-              lastActiveWorkspaceId: sidebarBootstrap.lastActiveWorkspaceId,
-              activeWorkspaceId: activeWorkspaceIdRef.current,
-              draftWorkspaceId: draftConversationWorkspaceId,
-              page: conversationPage,
-            });
-            activeWorkspaceIdRef.current = transition.activeWorkspaceId;
-            setActiveWorkspaceId(transition.activeWorkspaceId);
-            selectDraftConversationWorkspace(transition.draftWorkspaceId);
-            if (transition.navigateHome) {
-              conversationRunRef.current = null;
-              setConversationRun(null);
-              setConversationPage({ kind: 'conversation-home' });
-            }
-            applyConversationSidebarBootstrap(sidebarBootstrap, transition.activeWorkspaceId);
-            if (transition.activeWorkspaceId) {
-              void loadConversationWorkspaceTasks(transition.activeWorkspaceId).catch(() => {});
-            }
-          })
-          .catch((err) => {
-            setError(displayAppError(t, err));
-            throw err;
-          });
-      }}
+      onChooseWorkspace={shellCommands.onChooseWorkspace}
+      onConversationNew={shellCommands.onConversationNew}
+      onConversationSearch={shellCommands.onConversationSearch}
+      onConversationRetrySidebar={shellCommands.onConversationRetrySidebar}
+      onConversationRequestWorkspaceTasks={shellCommands.onConversationRequestWorkspaceTasks}
+      onConversationRequestPinnedTasks={shellCommands.onConversationRequestPinnedTasks}
+      onConversationRequestTaskRuns={shellCommands.onConversationRequestTaskRuns}
+      onConversationPauseRun={shellCommands.onConversationPauseRun}
+      onConversationRenameTask={shellCommands.onConversationRenameTask}
+      onConversationDeleteTask={shellCommands.onConversationDeleteTask}
+      onConversationSetResident={shellCommands.onConversationSetResident}
+      onConversationPinTask={shellCommands.onConversationPinTask}
+      onConversationUnpinTask={shellCommands.onConversationUnpinTask}
+      onConversationNewInWorkspace={shellCommands.onConversationNewInWorkspace}
+      onConversationAddWorkspace={shellCommands.onConversationAddWorkspace}
+      onConversationRemoveWorkspace={shellCommands.onConversationRemoveWorkspace}
     >
       <WindowCloseCoordinator platform={bootstrap?.platform} />
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
@@ -2834,11 +2867,12 @@ export function App() {
           <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
-      const taskTitle = findConversationTask(
+      const sidebarTask = findConversationTask(
         conversationSidebar,
         conversationPage.projectId,
         conversationPage.taskId,
-      )?.title ?? conversationPage.taskId;
+      );
+      const taskTitle = sidebarTask?.title ?? conversationPage.taskId;
       const runWorkspaceName = conversationSidebar.workspaces.find(
         (workspace) => workspace.projectId === conversationRun.projectId,
       )?.name ?? null;
@@ -2847,6 +2881,10 @@ export function App() {
           run={conversationRun}
           onAtBottomChange={handleConversationAtBottomChange}
           taskTitle={taskTitle}
+          resident={sidebarTask?.runMode === 'direct' ? {
+            pinned: sidebarTask.resident === true,
+            onChange: (resident) => handleConversationSetResident(sidebarTask.projectId, sidebarTask.taskId, resident),
+          } : undefined}
           workspaceName={runWorkspaceName}
           appConfig={appConfig}
           agentRegistry={agentRegistry}

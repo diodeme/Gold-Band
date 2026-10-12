@@ -2941,6 +2941,8 @@
       },
       "keepResident": "常驻会话",
       "releaseResident": "解除常驻",
+      "keepResidentHint": "Agent 有定时任务等需要长时间运行的工作时，请开启常驻，避免会话空闲后被回收",
+      "releaseResidentHint": "已常驻，空闲时不会被回收。点击解除常驻",
       "resident": "常驻会话"
     },
     "composer": {

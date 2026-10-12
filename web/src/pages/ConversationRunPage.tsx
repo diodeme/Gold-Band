@@ -37,6 +37,7 @@ import {
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
+import type { ResidentPinToggleProps } from '@/components/conversation/ResidentPin';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
 
 function activeSessionKey(session: {
@@ -93,6 +94,8 @@ function normalizeSessionPath(path: string) {
 interface ConversationRunPageProps {
   run: ConversationRunVm;
   taskTitle: string;
+  /** Residency toggle for Direct conversations whose sidebar row is known. */
+  resident?: ResidentPinToggleProps;
   workspaceName?: string | null;
   appConfig: AppConfigVm;
   agentRegistry: AgentRegistryVm | null;
@@ -114,6 +117,7 @@ interface ConversationRunPageProps {
 export function ConversationRunPage({
   run,
   taskTitle,
+  resident,
   workspaceName,
   appConfig,
   agentRegistry,
@@ -702,6 +706,7 @@ export function ConversationRunPage({
             directSessionHeader={isDirect ? {
               title: taskTitle,
               onTitleChange,
+              resident: readOnly ? undefined : resident,
             } : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}

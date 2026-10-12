@@ -1031,6 +1031,19 @@
     },
     "remote": {
       "source-not-configured": "尚未配置任务来源，请先完成连接。"
+    },
+    "multica": {
+      "auth-failed": "Multica 鉴权失败：{{message}}",
+      "claim-conflict": "该任务已被其他 Daemon 领取。",
+      "connect-cancelled": "已取消连接。",
+      "invalid-address": "连接地址无效：必须是合法的 http(s) 地址。",
+      "network-failed": "Multica 网络请求失败：{{message}}",
+      "register-failed": "Daemon 注册失败：{{message}}",
+      "runtime-offline": "运行时未就绪，请稍后重试。",
+      "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
+      "task-not-found": "找不到该 Multica 任务。",
+      "workspace-already-bound": "该工作空间已绑定。",
+      "workspace-not-found": "找不到该工作空间绑定。"
     }
   },
   "status": {

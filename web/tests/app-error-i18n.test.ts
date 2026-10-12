@@ -38,6 +38,16 @@ describe('app error i18n', () => {
     expect(message).toBe('找不到该工作空间。');
   });
 
+  // multica.* 错误码文案表（M5-br 恢复）：后端命名空间分层保留 multica. 协议域前缀
+  // （error.rs），前端不得因词汇中立化删掉这些码的译文——否则领取冲突等场景只剩通用兜底。
+  it('renders multica claim conflicts with the specific localized reason', () => {
+    const error = { code: 'multica.claim-conflict', params: {} };
+    expect(displayAppError(i18n.getFixedT('zh-CN'), error)).toBe('该任务已被其他 Daemon 领取。');
+    expect(displayAppError(i18n.getFixedT('en'), error)).toBe(
+      'This task has already been claimed by another daemon.',
+    );
+  });
+
   it('localizes runtime workspace admission failures', () => {
     const workspacePath = 'D:\\Projects\\missing';
     for (const [code, zh, en] of [

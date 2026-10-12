@@ -999,6 +999,22 @@
       "install-failed": "업데이트 설치에 실패했습니다: {{message}}",
       "context-unavailable": "워크스페이스를 선택하지 않으면 업데이트를 확인할 수 없습니다.",
       "no-update": "사용 가능한 업데이트가 없습니다."
+    },
+    "multica": {
+      "auth-failed": "Multica 인증에 실패했습니다: {{message}}",
+      "claim-conflict": "이 작업은 이미 다른 데몬에서 가져갔습니다.",
+      "connect-cancelled": "연결이 취소되었습니다.",
+      "invalid-address": "연결 주소가 유효하지 않습니다. 유효한 http(s) URL이어야 합니다.",
+      "network-failed": "Multica 네트워크 요청에 실패했습니다: {{message}}",
+      "register-failed": "데몬 등록에 실패했습니다: {{message}}",
+      "runtime-offline": "runtime이 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.",
+      "session-resume-failed": "세션 재개에 실패했습니다. 새 실행이 시작됩니다.",
+      "task-not-found": "이 multica 작업을 찾을 수 없습니다.",
+      "workspace-already-bound": "이 워크스페이스는 이미 바인딩되어 있습니다.",
+      "workspace-not-found": "이 워크스페이스 바인딩을 찾을 수 없습니다."
+    },
+    "remote": {
+      "source-not-configured": "작업 소스가 구성되어 있지 않습니다. 먼저 연결해 주세요."
     }
   },
   "status": {
@@ -1277,7 +1293,35 @@
       "globalHint": "모든 프로젝트에서 사용 가능. ~/.gold-band/skills/<name>/SKILL.md에 저장",
       "projectHint": "이 프로젝트를 열었을 때만 사용 가능. <project>/.gold-band/skills/<name>/SKILL.md에 저장",
       "storageGlobal": "모든 프로젝트에서 사용 가능. {{path}}에 저장",
-      "storageProject": "프로젝트 수준. {{path}}에 저장"
+      "storageProject": "프로젝트 수준. {{path}}에 저장",
+      "remoteSync": {
+        "action": "원격 SKILL 동기화",
+        "confirm": "동기화",
+        "confirmWithOverwrite": "동기화({{count}}개 덮어쓰기)",
+        "connect": "{{source}} 연결",
+        "empty": "이 워크스페이스에 SKILL이 없습니다",
+        "existsBadge": "이미 있음, 덮어씁니다",
+        "loadFailed": "원격 SKILL을 불러오지 못했습니다",
+        "newBadge": "신규",
+        "notConnected": "{{source}}에 연결되어 있지 않습니다",
+        "outcomeCreated": "생성됨",
+        "outcomeFailed": "실패",
+        "outcomeOverwritten": "덮어쓰기",
+        "outcomeSkipped": "건너뜀",
+        "reason": {
+          "multica.not-connected": "원격 소스에 연결되어 있지 않습니다",
+          "multica.remote-error": "서버 오류",
+          "multica.skill.name-collision": "이 배치 내에서 이름이 충돌합니다",
+          "multica.skill.not-found": "원격에서 이미 삭제되었습니다"
+        },
+        "reload": "다시 불러오기",
+        "reportSummary": "생성 {{created}} · 덮어쓰기 {{overwritten}} · 건너뜀 {{skipped}} · 실패 {{failed}}",
+        "reportTitle": "동기화 결과",
+        "selectAll": "모두 선택",
+        "selectedCount": "{{selected}} / {{total}} 선택됨",
+        "title": "원격에서 SKILL 동기화",
+        "workspace": "워크스페이스"
+      }
     },
     "importProfile": "역할 가져오기",
     "importSettingsDescription": "폴더에서 역할 Markdown 파일을 일괄 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
@@ -2241,7 +2285,8 @@
       "cacheRead": "캐시 읽기",
       "cacheWrite": "캐시 쓰기",
       "total": "합계"
-    }
+    },
+    "hiddenRemoteTaskContext": "숨겨진 원격 작업 컨텍스트"
   },
   "graph": {
     "emptyGraph": "작업 그래프 없음",
@@ -2654,9 +2699,43 @@
         "stopped": "중지됨, 아직 보지 않음",
         "failed": "실패함, 아직 보지 않음"
       },
-      "settings": "설정"
+      "settings": "설정",
+      "remoteTaskManagement": "요구사항",
+      "remoteTasks": {
+        "addWorkspace": "워크스페이스 추가",
+        "cancelTask": "작업 취소",
+        "connectionSettings": "연결 주소 설정",
+        "dialog": {
+          "add": "추가",
+          "allWorkspacesBound": "모든 원격 워크스페이스가 이미 바인딩되어 있습니다.",
+          "needWorkspace": "원격 워크스페이스를 선택해 주세요",
+          "noServerWorkspaces": "서버에 아직 바인딩 가능한 워크스페이스가 없습니다. 먼저 multica 웹에서 워크스페이스를 만드세요.",
+          "provider": "제공자",
+          "remoteWorkspace": "원격 워크스페이스",
+          "title": "워크스페이스 추가"
+        },
+        "executeTask": "실행",
+        "noWorkspacesBound": "바인딩된 워크스페이스 없음",
+        "sectionTitle": "요구사항",
+        "status": {
+          "completed": "완료",
+          "failed": "실패",
+          "queued": "할 일",
+          "running": "실행 중"
+        },
+        "connectButton": "{{source}} 연결",
+        "emptyDescription": "연결하면 {{source}} 요구사항을 보고 가져올 수 있습니다.",
+        "emptyTitle": "{{source}}에 연결되지 않음",
+        "removeTask": "목록에서 제거",
+        "removeTaskHint": "이 쪽 목록에서만 제거되며, 새로 고치면 다시 나타납니다",
+        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다"
+      }
     },
-    "composer": {},
+    "composer": {
+      "remoteNeedLocalWorkspace": "요구사항을 실행하기 전에 로컬 워크스페이스를 추가해 주세요",
+      "removeRemoteBinding": "작업 바인딩 해제",
+      "remoteBindingTag": "{{source}} · {{title}}"
+    },
     "branchPicker": {
       "label": "브랜치",
       "search": "{{workspace}} 브랜치 검색",
@@ -2837,5 +2916,55 @@
     "validationPositiveNumber": "{{field}}은(는) 0보다 커야 합니다",
     "validationTemplateNameRequired": "템플릿 이름이 필요합니다",
     "validationTemplateNameDuplicated": "템플릿 이름 {{name}}이(가) 이미 존재합니다"
+  },
+  "remote": {
+    "connect": {
+      "body": "다음에 연결합니다:",
+      "cancelConnect": "연결 취소",
+      "confirm": "연결",
+      "connecting": "연결 중…",
+      "title": "{{source}} 연결"
+    },
+    "connection": {
+      "addressLabel": "연결 주소",
+      "invalidUrl": "올바른 http(s) 주소를 입력하세요",
+      "restoreDefault": "기본 주소 복원",
+      "restoring": "복원 중…",
+      "save": "저장",
+      "title": "연결 주소"
+    },
+    "taskManagement": {
+      "account": {
+        "connected": "연결됨"
+      },
+      "column": {
+        "empty": "작업 없음"
+      },
+      "source": {
+        "label": "작업 소스",
+        "multica": "Multica"
+      },
+      "title": "요구사항",
+      "workspace": {
+        "label": "워크스페이스",
+        "remove": "워크스페이스 제거",
+        "removeConfirm": "이 워크스페이스를 제거할까요? 해당 요구사항은 더 이상 표시되지 않습니다."
+      },
+      "issueKind": {
+        "bug": "버그",
+        "dev": "개발",
+        "test": "테스트"
+      },
+      "issueKindFilter": {
+        "all": "전체",
+        "dev": "개발",
+        "label": "유형",
+        "test": "테스트"
+      },
+      "readiness": {
+        "notReady": "준비되지 않음",
+        "notReadyHint": "해당 개발 작업이 아직 완료되지 않았습니다. 완료될 때까지 기다려 보세요"
+      }
+    }
   }
 }

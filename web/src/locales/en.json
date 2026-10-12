@@ -1031,6 +1031,19 @@
     },
     "remote": {
       "source-not-configured": "Task source is not configured. Connect first."
+    },
+    "multica": {
+      "auth-failed": "Multica authentication failed: {{message}}",
+      "claim-conflict": "This task has already been claimed by another daemon.",
+      "connect-cancelled": "Connection cancelled.",
+      "invalid-address": "Invalid connection address: must be a valid http(s) URL.",
+      "network-failed": "Multica network request failed: {{message}}",
+      "register-failed": "Daemon registration failed: {{message}}",
+      "runtime-offline": "Runtime is not ready. Please try again shortly.",
+      "session-resume-failed": "Session resume failed. A fresh run will be started.",
+      "task-not-found": "This multica task could not be found.",
+      "workspace-already-bound": "This workspace is already bound.",
+      "workspace-not-found": "This workspace binding could not be found."
     }
   },
   "status": {

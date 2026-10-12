@@ -1203,5 +1203,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **实现**：4 个 `#[serde(alias)]`（`StateConfig` 两字段 + `RemoteCompletedTask` 两内字段，`src/config/mod.rs`），旧 state.json 直接可读、首次 RMW 自动迁移新键，无迁移框架。**边界**：仅救回「旧键仍在文件」的数据；升级后新版运行过一次（RMW 已重写）则旧键已物理删除不可恢复——内网验收以 `%LOCALAPPDATA%\maling\state.json` 是否仍含 `multicaCompletedTasks` 键为可恢复性判据。
   - **验证**：最小失败测试先行（`state_config_deserializes_pre_rename_multica_keys`，修复前红 `len()==0` 与根因一致）后转绿；lib config 105 + storage 41 + app 64 + desktop multica 164 全过。
 
+- [x] **M5-br**（2026-10-12）locale 词汇迁移七语言对等修复——multica 错误码文案表恢复 + 五语言 remote 域补齐（开发设计 §12.57 改动五十五）：
+  - **问题（M5-bq 修复的 review 产出）**：① 7 个 locale 的 `errors.multica.*` 文案被整块删除，而后端命名空间分层设计仍发射其中 11 个码（仅 `NotConfigured` 迁 `remote.source-not-configured`）——领取冲突、鉴权失败、工作区已绑定等错误全部降级为通用「意外错误」（含 zh-CN）；② ja-JP/es/ko-KR/pt-BR/zh-TW 删旧 multica 文案未补新 remote 键，`fallbackLng: en` 下需求管理页整页英文。
+  - **根因**：词汇中立化迁移只改写了 en/zh-CN 两个语言文件，其余五语言只删不增；前端删码表越过后端「保留 `multica.` 协议域前缀」的设计。现有 i18n 测试只断言 en/zh-CN，缺口随 CI 放行。定性：正确设计（命名空间分层）+ 实现不完整。
+  - **实现**：纯 locale 数据修复：7 语言恢复 `errors.multica` 11 键（merge-base 原译，`not-configured` 不复活）；5 语言补 81 键（38 改名搬运 + 5 值变更（"Multica"→`{{source}}`）定稿 + 38 新键人工翻译）；`account.disconnect`/`switchAccount` 为死键不恢复。merge-base 后 main 已修复的键（executionPlan 等）留给 main 合并。
+  - **验证**：新增 `web/tests/locale-remote-parity.test.ts`（en 为基准直读资源文件断言 91 键对等、占位符一致、错误码表在位——不经 `i18n.t` 防英文兜底掩盖）；`app-error-i18n.test.ts` 增 `claim-conflict` zh/en 精确断言；4 文件 22 例全绿 + tsc 零错误 + python 对账 7 语言 missing=0。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

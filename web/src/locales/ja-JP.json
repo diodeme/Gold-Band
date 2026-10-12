@@ -999,6 +999,22 @@
       "install-failed": "アップデートのインストールに失敗しました: {{message}}",
       "context-unavailable": "ワークスペースが選択されていないと更新を確認できません。",
       "no-update": "利用可能なアップデートはありません。"
+    },
+    "multica": {
+      "auth-failed": "Multica 認証が失敗しました: {{message}}",
+      "claim-conflict": "このタスクはすでに別のデーモンによって要求されています。",
+      "connect-cancelled": "接続がキャンセルされました。",
+      "invalid-address": "無効な接続アドレス: 有効な http(s) URL である必要があります。",
+      "network-failed": "Multica ネットワーク要求が失敗しました: {{message}}",
+      "register-failed": "デーモンの登録に失敗しました: {{message}}",
+      "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
+      "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
+      "task-not-found": "この multica タスクが見つかりませんでした。",
+      "workspace-already-bound": "このワークスペースはすでにバインドされています。",
+      "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
+    },
+    "remote": {
+      "source-not-configured": "タスクソースが構成されていません。先に接続してください。"
     }
   },
   "status": {
@@ -1277,7 +1293,35 @@
       "globalHint": "すべてのプロジェクトで利用可能です。 ~/.gold-band/skills/<name>/SKILL.md に保存されました",
       "projectHint": "このプロジェクトが開いている場合にのみ使用できます。 <project>/.gold-band/skills/<name>/SKILL.md に保存されました",
       "storageGlobal": "すべてのプロジェクトで利用可能です。 {{path}} に保存されました",
-      "storageProject": "プロジェクトレベル。 {{path}} に保存されました"
+      "storageProject": "プロジェクトレベル。 {{path}} に保存されました",
+      "remoteSync": {
+        "action": "リモート SKILL を同期",
+        "confirm": "同期",
+        "confirmWithOverwrite": "同期（{{count}}件を上書き）",
+        "connect": "{{source}}に接続",
+        "empty": "このワークスペースに SKILL はありません",
+        "existsBadge": "既存、上書きされます",
+        "loadFailed": "リモート SKILL の読み込みに失敗しました",
+        "newBadge": "新規",
+        "notConnected": "{{source}}に接続されていません",
+        "outcomeCreated": "作成",
+        "outcomeFailed": "失敗",
+        "outcomeOverwritten": "上書き",
+        "outcomeSkipped": "スキップ",
+        "reason": {
+          "multica.not-connected": "リモートソースに接続されていません",
+          "multica.remote-error": "サーバーエラー",
+          "multica.skill.name-collision": "このバッチ内で名前が重複しています",
+          "multica.skill.not-found": "リモート側で既に削除されています"
+        },
+        "reload": "再読み込み",
+        "reportSummary": "作成 {{created}} · 上書き {{overwritten}} · スキップ {{skipped}} · 失敗 {{failed}}",
+        "reportTitle": "同期結果",
+        "selectAll": "すべて選択",
+        "selectedCount": "{{selected}} / {{total}} 件を選択中",
+        "title": "リモートから SKILL を同期",
+        "workspace": "ワークスペース"
+      }
     },
     "importProfile": "役割のインポート",
     "importSettingsDescription": "ロール Markdown ファイルをフォルダーからバッチインポートします。不足している名前と概要は自動的に入力されます。",
@@ -2241,7 +2285,8 @@
       "cacheRead": "キャッシュ読み取り",
       "cacheWrite": "キャッシュ書き込み",
       "total": "合計"
-    }
+    },
+    "hiddenRemoteTaskContext": "非表示のリモートタスクコンテキスト"
   },
   "graph": {
     "emptyGraph": "作業グラフがありません",
@@ -2654,9 +2699,43 @@
         "stopped": "停止している、見られていない",
         "failed": "失敗、表示されませんでした"
       },
-      "settings": "設定"
+      "settings": "設定",
+      "remoteTaskManagement": "要件",
+      "remoteTasks": {
+        "addWorkspace": "ワークスペースの追加",
+        "cancelTask": "タスクをキャンセルする",
+        "connectionSettings": "接続アドレスの設定",
+        "dialog": {
+          "add": "追加",
+          "allWorkspacesBound": "すべてのリモート ワークスペースはすでにバインドされています。",
+          "needWorkspace": "リモート ワークスペースを選択してください",
+          "noServerWorkspaces": "サーバー上にはバインド可能なワークスペースがまだありません。まず multica Web で作成します。",
+          "provider": "プロバイダー",
+          "remoteWorkspace": "リモートワークスペース",
+          "title": "ワークスペースの追加"
+        },
+        "executeTask": "走る",
+        "noWorkspacesBound": "バインドされたワークスペースはありません",
+        "sectionTitle": "要件",
+        "status": {
+          "completed": "終わり",
+          "failed": "失敗した",
+          "queued": "藤堂",
+          "running": "ランニング"
+        },
+        "connectButton": "{{source}}に接続",
+        "emptyDescription": "接続して {{source}} 要件を表示し、要求します。",
+        "emptyTitle": "{{source}}に接続されていません",
+        "removeTask": "リストから削除",
+        "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
+        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
+      }
     },
-    "composer": {},
+    "composer": {
+      "remoteNeedLocalWorkspace": "要件を実行する前にローカル ワークスペースを追加する",
+      "removeRemoteBinding": "タスクのバインド解除",
+      "remoteBindingTag": "{{source}} · {{title}}"
+    },
     "branchPicker": {
       "label": "支店",
       "search": "{{workspace}}支店を検索",
@@ -2837,5 +2916,55 @@
     "validationPositiveNumber": "{{field}} は 0 より大きい必要があります",
     "validationTemplateNameRequired": "テンプレート名は必須です",
     "validationTemplateNameDuplicated": "テンプレート名 {{name}} は既に存在します"
+  },
+  "remote": {
+    "connect": {
+      "body": "接続しようとしています:",
+      "cancelConnect": "接続をキャンセルする",
+      "confirm": "接続する",
+      "connecting": "接続中…",
+      "title": "{{source}}に接続"
+    },
+    "connection": {
+      "addressLabel": "接続アドレス",
+      "invalidUrl": "有効な http アドレスを入力してください",
+      "restoreDefault": "デフォルトのアドレスを復元する",
+      "restoring": "復元中…",
+      "save": "保存",
+      "title": "接続アドレス"
+    },
+    "taskManagement": {
+      "account": {
+        "connected": "接続済み"
+      },
+      "column": {
+        "empty": "タスクがありません"
+      },
+      "source": {
+        "label": "タスクソース",
+        "multica": "マルチカ"
+      },
+      "title": "要件",
+      "workspace": {
+        "label": "ワークスペース",
+        "remove": "ワークスペースを削除する",
+        "removeConfirm": "このワークスペースを削除しますか?その要件は表示されなくなります。"
+      },
+      "issueKind": {
+        "bug": "バグ",
+        "dev": "開発",
+        "test": "テスト"
+      },
+      "issueKindFilter": {
+        "all": "すべて",
+        "dev": "開発",
+        "label": "種類",
+        "test": "テスト"
+      },
+      "readiness": {
+        "notReady": "準備未完了",
+        "notReadyHint": "対応する開発タスクがまだ完了していません。完了を待ってからの実行をご検討ください"
+      }
+    }
   }
 }

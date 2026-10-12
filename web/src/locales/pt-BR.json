@@ -999,6 +999,22 @@
       "install-failed": "Falha ao instalar atualização: {{message}}",
       "context-unavailable": "Não é possível verificar atualizações sem um workspace selecionado.",
       "no-update": "Nenhuma atualização disponível."
+    },
+    "multica": {
+      "auth-failed": "Falha na autenticação Multica: {{message}}",
+      "claim-conflict": "Esta tarefa já foi reivindicada por outro daemon.",
+      "connect-cancelled": "Conexão cancelada.",
+      "invalid-address": "Endereço de conexão inválido: deve ser uma URL http(s) válida.",
+      "network-failed": "Falha na solicitação de rede Multica: {{message}}",
+      "register-failed": "Falha no registro do daemon: {{message}}",
+      "runtime-offline": "Runtime não está pronto. Tente novamente em breve.",
+      "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
+      "task-not-found": "Esta tarefa multica não foi encontrada.",
+      "workspace-already-bound": "Este workspace já está vinculado.",
+      "workspace-not-found": "Esta vinculação de workspace não foi encontrada."
+    },
+    "remote": {
+      "source-not-configured": "A origem das tarefas não está configurada. Conecte-se primeiro."
     }
   },
   "status": {
@@ -1277,7 +1293,35 @@
       "globalHint": "Disponível em todos os projetos. Salvo em ~/.gold-band/skills/<name>/SKILL.md",
       "projectHint": "Disponível somente quando este projeto está aberto. Salvo em <project>/.gold-band/skills/<name>/SKILL.md",
       "storageGlobal": "Disponível em todos os projetos. Salvo em {{path}}",
-      "storageProject": "Nível de projeto. Salvo em {{path}}"
+      "storageProject": "Nível de projeto. Salvo em {{path}}",
+      "remoteSync": {
+        "action": "Sincronizar SKILLs remotos",
+        "confirm": "Sincronizar",
+        "confirmWithOverwrite": "Sincronizar (sobrescrever {{count}})",
+        "connect": "Conectar {{source}}",
+        "empty": "Nenhum SKILL neste workspace",
+        "existsBadge": "Já existe, será sobrescrito",
+        "loadFailed": "Falha ao carregar SKILLs remotos",
+        "newBadge": "Novo",
+        "notConnected": "Não conectado a {{source}}",
+        "outcomeCreated": "Criado",
+        "outcomeFailed": "Falha",
+        "outcomeOverwritten": "Sobrescrito",
+        "outcomeSkipped": "Ignorado",
+        "reason": {
+          "multica.not-connected": "Origem remota não conectada",
+          "multica.remote-error": "Erro do servidor",
+          "multica.skill.name-collision": "Conflito de nomes neste lote",
+          "multica.skill.not-found": "Já foi excluído no remoto"
+        },
+        "reload": "Recarregar",
+        "reportSummary": "Criados {{created}} · Sobrescritos {{overwritten}} · Ignorados {{skipped}} · Com falha {{failed}}",
+        "reportTitle": "Resultados da sincronização",
+        "selectAll": "Selecionar tudo",
+        "selectedCount": "{{selected}} / {{total}} selecionados",
+        "title": "Sincronizar SKILLs do remoto",
+        "workspace": "Workspace"
+      }
     },
     "importProfile": "Importar papéis",
     "importSettingsDescription": "Importação em lote de arquivos Markdown de papéis de uma pasta. Nomes e resumos ausentes são preenchidos automaticamente.",
@@ -2241,7 +2285,8 @@
       "cacheRead": "Leitura de cache",
       "cacheWrite": "Gravação de cache",
       "total": "Total"
-    }
+    },
+    "hiddenRemoteTaskContext": "Contexto de tarefa remota oculto"
   },
   "graph": {
     "emptyGraph": "Nenhum grafo de trabalho",
@@ -2654,9 +2699,43 @@
         "stopped": "Parado, não visualizado",
         "failed": "Falhou, não visualizado"
       },
-      "settings": "Configurações"
+      "settings": "Configurações",
+      "remoteTaskManagement": "Requisitos",
+      "remoteTasks": {
+        "addWorkspace": "Adicionar workspace",
+        "cancelTask": "Cancelar tarefa",
+        "connectionSettings": "Configurações de endereço de conexão",
+        "dialog": {
+          "add": "Adicionar",
+          "allWorkspacesBound": "Todos os workspaces remotos já estão vinculados.",
+          "needWorkspace": "Selecione um workspace remoto",
+          "noServerWorkspaces": "Nenhum workspace vinculável no servidor ainda. Crie um no multica Web primeiro.",
+          "provider": "Provider",
+          "remoteWorkspace": "Workspace remoto",
+          "title": "Adicionar workspace"
+        },
+        "executeTask": "Executar",
+        "noWorkspacesBound": "Nenhum workspace vinculado",
+        "sectionTitle": "Requisitos",
+        "status": {
+          "completed": "Concluído",
+          "failed": "Falhou",
+          "queued": "A fazer",
+          "running": "Em execução"
+        },
+        "connectButton": "Conectar {{source}}",
+        "emptyDescription": "Conecte para ver e reivindicar requisitos de {{source}}.",
+        "emptyTitle": "Não conectado a {{source}}",
+        "removeTask": "Remover da lista",
+        "removeTaskHint": "Removido apenas da lista deste lado; ao atualizar, ele volta a aparecer",
+        "removeTaskTerminalHint": "Remove o registro local de conclusão; ele não volta a aparecer ao atualizar"
+      }
     },
-    "composer": {},
+    "composer": {
+      "remoteNeedLocalWorkspace": "Adicione um workspace local antes de executar um requisito",
+      "removeRemoteBinding": "Desvincular tarefa",
+      "remoteBindingTag": "{{source}} · {{title}}"
+    },
     "branchPicker": {
       "label": "Branch",
       "search": "Pesquisar branches de {{workspace}}",
@@ -2837,5 +2916,55 @@
     "validationPositiveNumber": "{{field}} deve ser maior que 0",
     "validationTemplateNameRequired": "Nome do template é obrigatório",
     "validationTemplateNameDuplicated": "Nome do template {{name}} já existe"
+  },
+  "remote": {
+    "connect": {
+      "body": "Prestes a conectar a:",
+      "cancelConnect": "Cancelar conexão",
+      "confirm": "Conectar",
+      "connecting": "Conectando…",
+      "title": "Conectar {{source}}"
+    },
+    "connection": {
+      "addressLabel": "Endereço de conexão",
+      "invalidUrl": "Informe um endereço http(s) válido",
+      "restoreDefault": "Restaurar endereço padrão",
+      "restoring": "Restaurando…",
+      "save": "Salvar",
+      "title": "Endereço de conexão"
+    },
+    "taskManagement": {
+      "account": {
+        "connected": "Conectado"
+      },
+      "column": {
+        "empty": "Nenhuma tarefa"
+      },
+      "source": {
+        "label": "Origem da tarefa",
+        "multica": "Multica"
+      },
+      "title": "Requisitos",
+      "workspace": {
+        "label": "Workspace",
+        "remove": "Remover workspace",
+        "removeConfirm": "Remover este workspace? Seus requisitos não serão mais exibidos."
+      },
+      "issueKind": {
+        "bug": "Bug",
+        "dev": "Desenvolvimento",
+        "test": "Teste"
+      },
+      "issueKindFilter": {
+        "all": "Todos",
+        "dev": "Desenvolvimento",
+        "label": "Tipo",
+        "test": "Teste"
+      },
+      "readiness": {
+        "notReady": "Não pronto",
+        "notReadyHint": "A tarefa de desenvolvimento correspondente ainda não foi concluída; considere aguardá-la"
+      }
+    }
   }
 }

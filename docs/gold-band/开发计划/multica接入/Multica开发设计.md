@@ -2562,6 +2562,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.57 改动五十五：locale 词汇迁移的七语言对等修复——错误码文案表恢复 + 五语言 remote 域补齐（M5-br，2026-10-12）
+
+**背景（M5-bq 修复的 review 产出）**：对分支整体 diff 的评审发现两组 locale 回归（非 M5-bq 引入，同源于 P1a 词汇中立化）。
+
+**根因追溯**：以 merge-base（0a9c0c51）对账，分支对 7 个 locale 各删除 57 个 multica 域键，但只给 en/zh-CN 补了 81 个 remote 域新键：① `errors.multica.*` 12 键全删——后端命名空间分层设计（error.rs `code()`：仅 NotConfigured 迁 `remote.source-not-configured`，协议/连接域错误**保留** `multica.` 前缀）仍发射其中 11 个码，删除后 `displayAppError` 全部落通用「意外错误」兜底（7 语言含 zh-CN 均受影响）；② 5 个语言（ja-JP/es/ko-KR/pt-BR/zh-TW）删旧未补新，`fallbackLng: en` 下需求管理页整页英文。现有 i18n 测试只断言 en/zh-CN，缺口随 CI 放行。定性：**正确设计（命名空间分层）+ 实现不完整（前端 locale 迁移越界删码表 + 五语言迁移半途而废）**。
+
+**设计**：纯 locale 数据修复，不动代码。① 7 语言恢复 `errors.multica` 11 键（译文取 merge-base 各语言原文；`not-configured` 已迁移不复活；`session-resume-failed` 虽为 dead-code 码表项，为与码表对齐一并恢复）；② 5 语言补齐 81 键 = 38 纯改名键搬运 merge-base 译文 + 5 值变更键（"Multica"→`{{source}}` 插值）逐语言定稿 + 38 全新键（remoteSync 技能同步块、需求管理空态/移出列表、issueKind/过滤、readiness、`errors.remote.source-not-configured` 等）人工翻译；③ `account.disconnect`/`switchAccount` 为分支已删功能的死键（代码零引用），不恢复。
+
+**边界**：merge-base 之后 origin/main 上已修复的键（executionPlan 25 键、`keepAwakeState.effective_other`、acp.* 新增）不在本分支补——下次合并 main 自然到位，现在补会与 main 撞车。
+
+**回归固化（接口层验收）**：新增 `web/tests/locale-remote-parity.test.ts`——以 en 为基准直读 7 个 locale 资源文件（不能经 `i18n.t` 判断存在性，`fallbackLng` 会用英文兜底掩盖缺失），断言 remote 域 91 叶子键全语言对等、`{{占位符}}` 集合与 en 一致、multica 错误码表 11 键在位且 `not-configured` 未复活；`app-error-i18n.test.ts` 增补 `multica.claim-conflict` 经 `displayAppError` 的 zh/en 精确文案断言。4 个 i18n 测试文件 22 例全绿；新测试 tsc 零错误；python 对账脚本复核 7 语言域内 missing=0、占位符差异=0。
+
+**过度设计评审**：无新增抽象/状态/依赖；翻译复用 merge-base 既有译文（同一概念换键名），仅 38 新键为净新增文案；不建 locale 自动同步框架（parity 测试已把该类缺陷变成回归门禁，成本一行测试）。
+
+**性能评审**：locale JSON 每文件净增 ~5KB、加载为启动单次 import，无运行时路径变化。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

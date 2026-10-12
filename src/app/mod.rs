@@ -1,3 +1,5 @@
+mod conversation_run;
+mod execution_plan_service;
 mod ids;
 pub mod intervention;
 mod node_executor;
@@ -11,6 +13,12 @@ mod state_access;
 mod state_factory;
 mod transition_context;
 
+pub use self::conversation_run::{
+    CONVERSATION_METADATA_VERSION, CONVERSATION_SOURCE_CLI, CONVERSATION_SOURCE_DESKTOP,
+    ConversationAgentIdentity, ConversationMetadata, ConversationResidencyError,
+    ConversationRunLaunch, ConversationWorkLocation, CreateConversationTaskCommand,
+    CreatedConversationRun, PreparedConversationTask, conversation_auto_title,
+};
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
     direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
@@ -24,8 +32,8 @@ pub use self::runtime_recovery::{
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
 use crate::config::{
-    AppearancePreference, ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate,
-    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    AppearancePreference, ConversationAutoConfig, DesktopAvailableUpdate, DesktopLanguage,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
     McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
     RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
@@ -81,6 +89,9 @@ use self::orchestrator::{
     dynamic_resume_target_is_active, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
+    prepare_auto_run as orchestrator_prepare_auto_run,
+    prepare_auto_run_in_worktree as orchestrator_prepare_auto_run_in_worktree,
+    prepare_auto_run_in_worktree_at as orchestrator_prepare_auto_run_in_worktree_at,
     prepare_dynamic_acp_prompt, prepare_run as orchestrator_prepare_run,
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
     prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
@@ -206,6 +217,19 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
         .unwrap_or_default();
     paths.sort();
     paths
+}
+
+/// Loaded alongside [`task_input_attachment_paths`] for every new session that
+/// renders the requirement.
+pub(crate) fn task_prompt_input(app: &App, task_id: &str) -> crate::provider::TaskPromptInput {
+    let path = app.paths.task_prompt_input_file(task_id);
+    if !path.exists() {
+        return Default::default();
+    }
+    read_json(&path).unwrap_or_else(|error| {
+        tracing::warn!(task_id, %error, "failed to read task prompt input");
+        Default::default()
+    })
 }
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
@@ -1707,17 +1731,29 @@ impl App {
         {
             return provider_diagnostics;
         }
-        if let Ok(provider_diagnostics) = read_json::<BTreeMap<String, ProviderDiagnosticSnapshot>>(
-            &self.paths.agent_diagnostics_file(),
-        ) && !provider_diagnostics.is_empty()
+        if let Ok(mut provider_diagnostics) = read_json::<
+            BTreeMap<String, ProviderDiagnosticSnapshot>,
+        >(&self.paths.agent_diagnostics_file())
+            && !provider_diagnostics.is_empty()
         {
+            let catalogs = read_json::<
+                BTreeMap<String, crate::acp::session_config::ModelBoundCatalogs>,
+            >(&self.paths.agent_model_catalogs_file())
+            .unwrap_or_default();
+            for (agent_id, diagnostic) in &mut provider_diagnostics {
+                diagnostic.capabilities = crate::acp::session_config::project_authoring_capabilities(
+                    diagnostic.capabilities.take(),
+                    catalogs.get(agent_id),
+                );
+            }
             return provider_diagnostics;
         }
         self.config.provider_diagnostics.clone()
     }
 
     pub fn with_repo_root(&self, repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
-        let paths = GoldBandPaths::new(repo_root);
+        let paths =
+            GoldBandPaths::new_with_path_config(repo_root, self.paths.storage_path_config());
         let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,
@@ -1880,11 +1916,57 @@ impl App {
         self
     }
 
+    /// Register the owned Direct continuation before every prompt, including desktop follow-ups.
+    pub fn register_acp_direct_session(
+        &self,
+        context: &AcpLiveEventContext,
+        live_update: Option<crate::acp::retention::SessionLiveUpdate>,
+    ) {
+        if context.outer_node_id.is_none() {
+            let metadata_path = self
+                .paths
+                .task_dir(&context.task_id)
+                .join("authoring/conversation.json");
+            if let Ok(metadata) =
+                crate::storage::read_json::<conversation_run::ConversationMetadata>(&metadata_path)
+                && metadata.run_mode == "direct"
+            {
+                crate::acp::client::register_direct_session(
+                    &self.paths.attempt_dir(
+                        &context.task_id,
+                        &context.run_id,
+                        &context.round_id,
+                        &context.node_id,
+                        &context.attempt_id,
+                    ),
+                    crate::acp::retention::DirectSessionRegistration {
+                        project_id: self.paths.project_id.clone(),
+                        task_id: context.task_id.clone(),
+                        resident: metadata.resident,
+                        background_stop_grace: std::time::Duration::from_secs(
+                            self.config.acp_direct_background_stop_grace_secs,
+                        ),
+                        live_update,
+                    },
+                );
+            }
+        }
+    }
+
     pub fn acp_live_update_for<'a>(
         &'a self,
         context: AcpLiveEventContext,
     ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, AcpLiveTimelinePosition) -> Result<()> + 'a>
     {
+        let owned_callback = self.acp_live_update.clone().map(|callback| {
+            let context = context.clone();
+            Arc::new(
+                move |event: &crate::acp::events::AcpUiEvent, position: AcpLiveTimelinePosition| {
+                    callback(context.clone(), event.clone(), position)
+                },
+            ) as crate::acp::retention::SessionLiveUpdate
+        });
+        self.register_acp_direct_session(&context, owned_callback);
         let live_update = self.acp_live_update.as_ref()?.clone();
         Some(
             move |event: &crate::acp::events::AcpUiEvent,
@@ -2377,23 +2459,25 @@ impl App {
             DirectTurnLifecycleTransition::Started => None,
             DirectTurnLifecycleTransition::Finished { outcome } => Some(outcome),
         };
+        let previous_terminal = scoped_app.direct_terminal_metrics_fact(&event.context, &task_uuid);
         let attempt_state =
             scoped_app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
                 if terminal_outcome.is_none() {
-                    state.record_started_at(event.occurred_at.clone());
+                    state.record_started_at(previous_terminal.as_ref()
+                        .and_then(|fact| fact.payload.timing.as_ref())
+                        .map(|timing| timing.started_at.clone())
+                        .unwrap_or_else(|| event.occurred_at.clone()));
                     return;
                 }
                 let segments = Self::direct_usage_segments_after(
                     Some(attempt_dir.as_path()),
-                    active_turn.usage_baseline_turn_seq,
+                    0,
                 );
-                for usage in Self::direct_model_usages_from_segments(
+                state.replace_model_usages(Self::direct_model_usages_from_segments(
                     &segments,
                     provider.as_deref(),
                     model.as_deref(),
-                ) {
-                    state.record_model_usage(usage);
-                }
+                ));
                 if segments.is_empty()
                     && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
                 {
@@ -2493,6 +2577,10 @@ impl App {
             });
         }
         if terminal_outcome.is_some() {
+            let path = scoped_app.direct_terminal_metrics_path(&event.context, &active_turn.execution_id);
+            if let Err(error) = write_json(&path, &fact) {
+                tracing::warn!(code = "METRICS_DIRECT_SNAPSHOT_WRITE_FAILED", %error);
+            }
             scoped_app.release_observability_state(&active_turn.execution_id);
             scoped_app.end_metrics_turn(&attempt_key);
         }
@@ -2515,18 +2603,9 @@ impl App {
             direct_conversation_agent_label(&scoped_app, &event.context.task_id).is_some();
         let is_auto = !is_direct && event.context.outer_node_id.is_some();
         let subject = if is_direct {
-            let Some(turn) = scoped_app.active_metrics_turn(&format!("direct:{task_uuid}")) else {
-                tracing::warn!(
-                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
-                    task_id = %event.context.task_id,
-                    run_id = %event.context.run_id,
-                    "Direct intervention has no active metrics turn"
-                );
-                return;
-            };
             observability::MetricsSubject::DirectTurn {
-                attempt_id: turn.attempt_id,
-                attempt_index: turn.attempt_index,
+                attempt_id: task_uuid.clone(),
+                attempt_index: 1,
             }
         } else {
             let Some(subject) =
@@ -2551,7 +2630,7 @@ impl App {
         };
         let mut fact = scoped_app.pending_metrics_fact(
             &event.context.task_id,
-            task_uuid,
+            task_uuid.clone(),
             event.context.run_id.clone(),
             event.context.round_id.clone(),
             observability::LifecycleEventType::InterventionRequested,
@@ -2593,6 +2672,31 @@ impl App {
             _ => observability::MetricsTransition::None,
         };
         scoped_app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+        if is_direct {
+            scoped_app.supplement_direct_metrics(&event.context, &task_uuid, &format!("{:?}:{}", event.kind, event.request_id), &event.occurred_at);
+        }
+    }
+
+    fn direct_terminal_metrics_path(&self, context: &AcpLiveEventContext, task_uuid: &str) -> Utf8PathBuf {
+        self.paths.run_dir(&context.task_id, &context.run_id)
+            .join("observability").join(task_uuid).join("direct-terminal-fact.json")
+    }
+
+    fn direct_terminal_metrics_fact(&self, context: &AcpLiveEventContext, task_uuid: &str) -> Option<observability::PendingMetricsFact> {
+        read_json(&self.direct_terminal_metrics_path(context, task_uuid)).ok()
+    }
+
+    /// A reporting checkpoint is not an ACP Finished event. Preserve the last
+    /// actual prompt outcome/timing; the collector adds current task counters.
+    fn supplement_direct_metrics(&self, context: &AcpLiveEventContext, task_uuid: &str, source_id: &str, occurred_at: &str) {
+        if self.active_metrics_turn(&format!("direct:{task_uuid}")).is_some() {
+            return;
+        }
+        let Some(mut fact) = self.direct_terminal_metrics_fact(context, task_uuid) else { return; };
+        fact.fact_id = format!("direct-background:{}:{source_id}", fact.fact_id);
+        fact.occurred_at = occurred_at.to_owned();
+        fact.transition = observability::MetricsTransition::None;
+        self.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
     }
 
     fn intervention_metrics_subject(
@@ -3247,6 +3351,47 @@ impl App {
         read_json(&path)
     }
 
+    /// Roots that can back a workspace file reference. The current project uses
+    /// this app's repo root. Other registered conversation workspaces come from
+    /// global state. Missing or unreadable state still leaves the current root.
+    /// Workspace-file roots for a prompt. The current project resolves
+    /// against `session_root`, the directory the receiving session works in.
+    pub fn prompt_workspace_roots(
+        &self,
+        session_root: &Utf8Path,
+    ) -> Vec<crate::provider::PromptWorkspaceRoot> {
+        let registered = self
+            .load_state()
+            .map(|state| {
+                state
+                    .conversation_workspaces
+                    .into_iter()
+                    .map(|workspace| {
+                        (
+                            workspace.project_id,
+                            std::path::PathBuf::from(workspace.workspace_path),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        crate::provider::prompt_workspace_roots(
+            &self.paths.project_id,
+            session_root.as_std_path(),
+            &registered,
+        )
+    }
+
+    pub fn attempt_session_workspace_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        dynamic: Option<(&str, &str, &str)>,
+    ) -> Result<Utf8PathBuf> {
+        self::orchestrator::attempt_session_workspace_dir(self, task_id, run_id, round_id, dynamic)
+    }
+
     /// 落盘 `state.json`（底层单次原子写入，临时文件替换）。
     ///
     /// `pub(crate)`：仅供 [`Self::with_state`] 事务边界与 crate 内测试 seeding 使用；
@@ -3294,13 +3439,6 @@ impl App {
             self.save_state(&state)?;
         }
         Ok(value)
-    }
-
-    pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
-        settings.console_theme = Some(theme);
-        self.save_settings(&settings)?;
-        Ok(settings)
     }
 
     pub fn set_user_desktop_appearance(
@@ -3654,6 +3792,10 @@ impl App {
                 bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
         let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
@@ -3717,6 +3859,10 @@ impl App {
             workflow: persisted_template.workflow.clone(),
             model_bindings: persisted_template.model_bindings.clone(),
         };
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(
             &mut workflow,
             &mut model_bindings,
@@ -3762,6 +3908,10 @@ impl App {
             model_bindings: store.templates[template_index].model_bindings.clone(),
         };
         let mut workflow = persisted.workflow.clone();
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(
             &mut workflow,
             &mut model_bindings,
@@ -4026,7 +4176,18 @@ impl App {
         )?)
     }
 
-    fn save_task_authoring_workflow(
+    pub(crate) fn save_task_authoring_workflow(
+        &self,
+        task_id: &str,
+        authoring: TaskAuthoringWorkflow,
+    ) -> Result<()> {
+        let key = crate::execution_plan::authoring_lock_key(&self.paths.project_id, task_id);
+        let _lock =
+            crate::execution_plan::try_acquire_plan_write(&key).map_err(|error| anyhow!(error))?;
+        self.save_task_authoring_workflow_unlocked(task_id, authoring)
+    }
+
+    pub(crate) fn save_task_authoring_workflow_unlocked(
         &self,
         task_id: &str,
         mut authoring: TaskAuthoringWorkflow,
@@ -4038,13 +4199,20 @@ impl App {
         } else {
             None
         };
+        crate::workflow_model_binding::normalize_authoring_bindings(
+            &mut authoring.model_bindings,
+            &self.provider_diagnostics(),
+        );
         reconcile_authoring_workflow_for_save(
             &mut authoring.workflow,
             &mut authoring.model_bindings,
             persisted.as_ref(),
             None,
         )?;
-        write_json(&path, &authoring)
+        write_json(&path, &authoring)?;
+        crate::execution_plan::bump_authoring_revision(&self.paths, task_id)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
     }
 
     fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
@@ -4149,6 +4317,18 @@ impl App {
 
     pub fn provider_capabilities(&self, provider: &str) -> Result<ProviderCapabilities> {
         Ok(self.provider_info(provider)?.capabilities)
+    }
+
+    pub fn provider_model_config(&self, provider: &str, model: &str) -> Result<serde_json::Value> {
+        let (agent_id, config) = self.managed_agent(provider)?;
+        acp_client::probe_model_config(
+            &agent_id,
+            &config.adapter,
+            self.paths.repo_root.clone(),
+            self.config.use_local_claude,
+            self.config.require_local_claude_executable,
+            model,
+        )
     }
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
@@ -4554,7 +4734,12 @@ impl App {
     }
 
     pub fn workflow_snapshot_show(&self, task_id: &str, run_id: &str) -> Result<Option<String>> {
-        self.read_optional_text(&self.paths.workflow_snapshot_file(task_id, run_id))
+        if !self.paths.run_file(task_id, run_id).exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::to_string_pretty(
+            &self.current_run_workflow(task_id, run_id)?,
+        )?))
     }
 
     pub fn worker_ref_show(
@@ -5820,6 +6005,17 @@ impl App {
         )
     }
 
+    /// Headless continue of a paused run; returns once the run has settled again.
+    /// `recover_interrupted` first pauses a run left `Running` by a host that is gone.
+    pub fn run_continue_foreground(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        recover_interrupted: bool,
+    ) -> Result<RunState> {
+        orchestrator::run_continue_foreground(self, task_id, run_id, recover_interrupted)
+    }
+
     pub fn submit_manual_check(
         &self,
         task_id: &str,
@@ -5926,6 +6122,39 @@ impl App {
         authoring: &TaskAuthoringWorkflow,
     ) -> Result<PreparedRun> {
         orchestrator_prepare_run_with_authoring(self, task_id, authoring)
+    }
+
+    pub fn prepare_auto_run(
+        &self,
+        task_id: &str,
+        auto_config: crate::config::ConversationAutoConfig,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_auto_run(self, task_id, auto_config)
+    }
+
+    pub fn prepare_auto_run_in_worktree(
+        &self,
+        task_id: &str,
+        auto_config: crate::config::ConversationAutoConfig,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_auto_run_in_worktree(self, task_id, auto_config)
+    }
+
+    pub fn prepare_auto_run_in_worktree_at(
+        &self,
+        task_id: &str,
+        auto_config: crate::config::ConversationAutoConfig,
+        fork_commit: String,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_auto_run_in_worktree_at(self, task_id, auto_config, fork_commit)
+    }
+
+    pub fn current_run_workflow(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<crate::dsl::WorkflowDsl> {
+        state_access::load_run_workflow(self, task_id, run_id)
     }
 
     pub fn launch_prepared_run_background(
@@ -6065,15 +6294,14 @@ impl App {
                     continue;
                 };
                 let run_file = self.paths.run_file(task_id, run_id);
-                let snapshot_file = self.paths.workflow_snapshot_file(task_id, run_id);
-                if !run_file.exists() || !snapshot_file.exists() {
+                if !run_file.exists() {
                     continue;
                 }
                 let run = read_json::<RunState>(&run_file)?;
                 if !self.run_snapshot_is_actionable(task_id, &run)? {
                     continue;
                 }
-                let workflow = read_json::<WorkflowDsl>(&snapshot_file)?;
+                let workflow = self.current_run_workflow(task_id, run_id)?;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.run_count += 1;
                 }
@@ -6302,10 +6530,10 @@ mod tests {
     };
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
-        AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, MulticaCompletedTask,
-        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
-        StateConfig, catalog_agent_default_config,
+        AppearancePreference, ColorSchemePreference, DesktopLanguage, DesktopUpdateBadgeState,
+        FontSizePreference, FontStackPreference, MulticaCompletedTask, PersonalizationPreference,
+        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, StateConfig,
+        catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -6332,7 +6560,7 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
         ENV_LOCK
             .get_or_init(|| std::sync::Mutex::new(()))
@@ -6711,6 +6939,39 @@ mod tests {
     }
 
     #[test]
+    fn headless_continue_rejects_running_run_without_recovery() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        let error = app
+            .run_continue_foreground("task-001", "run-001", false)
+            .unwrap_err();
+
+        assert_eq!(
+            crate::runtime_error::normalize_runtime_error(&error).code_str(),
+            "runtime.continue-run-still-running"
+        );
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn headless_continue_recovers_interrupted_run_as_process_interrupted() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        // The fixture has no workflow to drive; recovery is what is under test.
+        let _ = app.run_continue_foreground("task-001", "run-001", true);
+
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+    }
+
+    #[test]
     fn active_or_resumable_run_selection_does_not_depend_on_progress_files() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
@@ -6852,7 +7113,7 @@ mod tests {
         test_app_with_named_provider_capabilities(repo_root, "claude-acp", capabilities)
     }
 
-    fn test_app_with_named_provider_capabilities(
+    pub(super) fn test_app_with_named_provider_capabilities(
         repo_root: Utf8PathBuf,
         provider: &str,
         capabilities: serde_json::Value,
@@ -6879,7 +7140,10 @@ mod tests {
         )
     }
 
-    fn worker_workflow(model: Option<&str>, permission_mode: Option<&str>) -> WorkflowDsl {
+    pub(super) fn worker_workflow(
+        model: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> WorkflowDsl {
         WorkflowDsl {
             version: "0.1".to_string(),
             id: "workflow-test".to_string(),
@@ -7157,15 +7421,25 @@ mod tests {
             )]),
         )
         .unwrap();
+        write_json(
+            &app.paths.agent_model_catalogs_file(),
+            &serde_json::json!({
+                "claude-acp": { "sonnet": [{ "id": "effort", "category": "thought_level" }] }
+            }),
+        )
+        .unwrap();
 
         let diagnostics = app.provider_diagnostics();
 
-        let models = crate::provider::supported_models_from_capabilities(
-            diagnostics
-                .get("claude-acp")
-                .and_then(|diagnostic| diagnostic.capabilities.as_ref()),
-        );
+        let capabilities = diagnostics
+            .get("claude-acp")
+            .and_then(|diagnostic| diagnostic.capabilities.as_ref());
+        let models = crate::provider::supported_models_from_capabilities(capabilities);
         assert_eq!(models[0].id, "sonnet");
+        assert_eq!(
+            capabilities.unwrap()["modelBoundCatalogs"]["sonnet"][0]["id"],
+            serde_json::json!("effort")
+        );
     }
 
     #[test]
@@ -8010,6 +8284,65 @@ mod tests {
                 action_ids: (1..=5).map(|index| format!("prompt-{index}")).collect(),
             }
         );
+    }
+
+    #[test]
+    fn direct_background_intervention_uses_durable_task_identity() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let (app, task) = direct_metrics_test_fixture(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let app = app.with_lifecycle_bus(observability::RuntimeLifecycleBus::new());
+        let facts = direct_metrics_fact_receiver(&app);
+        let mut run = resumability_run(PauseReason::WaitingForUserInput);
+        run.task_id = task.id.clone();
+        run.task_uuid = task.uuid.clone();
+        run.uuid = Some("run-uuid".into());
+        write_json(&app.paths.run_file(&task.id, &run.id), &run).unwrap();
+        let RuntimeLifecycleEvent::DirectTurnLifecycle(source) = direct_metrics_source_event(&app, &task.id, "last-prompt", "2026-08-26T08:00:00Z", DirectTurnLifecycleTransition::Started) else { unreachable!() };
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsInterventionSource(super::MetricsInterventionSourceEvent {
+            context: source.context,
+            request_id: "background-permission".into(),
+            kind: super::RuntimeInterventionKind::PermissionRequested,
+            occurred_at: source.occurred_at,
+            repo_root: source.repo_root,
+        }));
+        let fact = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(fact.event_type, observability::LifecycleEventType::InterventionRequested);
+        assert_eq!(fact.key.execution_id, task.uuid.clone().unwrap());
+        assert_eq!(fact.subject, observability::MetricsSubject::DirectTurn { attempt_id: task.uuid.unwrap(), attempt_index: 1 });
+    }
+
+    #[test]
+    fn direct_metrics_terminal_snapshots_are_cumulative_across_turns() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let (app, task) = direct_metrics_test_fixture(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let app = app.with_lifecycle_bus(observability::RuntimeLifecycleBus::new());
+        let facts = direct_metrics_fact_receiver(&app);
+        let dir = app.paths.attempt_dir(&task.id, "run-001", "round-001", "direct-agent", "attempt-001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join("acp.prompt-usage.jsonl");
+        for (seq, tokens, expected) in [(1, 10, 10), (2, 20, 30)] {
+            let turn = format!("turn-{seq}");
+            app.emit_lifecycle_event(direct_metrics_source_event(&app, &task.id, &turn, "2026-08-26T08:00:00Z", DirectTurnLifecycleTransition::Started));
+            facts.recv_timeout(Duration::from_secs(2)).unwrap();
+            let RuntimeLifecycleEvent::DirectTurnLifecycle(source) = direct_metrics_source_event(&app, &task.id, &turn, "2026-08-26T08:00:00Z", DirectTurnLifecycleTransition::Started) else { unreachable!() };
+            app.supplement_direct_metrics(&source.context, task.uuid.as_deref().unwrap(), "permission:interleaved", "2026-08-26T08:00:00Z");
+            assert!(facts.try_recv().is_err(), "active prompt owns its completion");
+            crate::acp::usage::append_prompt_started(&journal, &turn, seq, "2026-08-26T08:00:00Z", Some("claude-acp"), Some("model-a")).unwrap();
+            crate::acp::usage::append_prompt_completed(&journal, &turn, seq, "2026-08-26T08:00:01Z", None,
+                &crate::acp::usage::AcpPromptTokenUsage { total_tokens: Some(tokens), ..Default::default() }, Some("claude-acp"), Some("model-a")).unwrap();
+            app.emit_lifecycle_event(direct_metrics_source_event(&app, &task.id, &turn, "2026-08-26T08:00:01Z", DirectTurnLifecycleTransition::Finished { outcome: AcpTurnOutcome::Completed }));
+            let finished = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(finished.payload.usage.as_ref().unwrap().total_tokens, Some(expected));
+            app.supplement_direct_metrics(&source.context, task.uuid.as_deref().unwrap(), "permission:background", "2026-08-26T08:00:02Z");
+            let checkpoint = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(checkpoint.payload.usage.unwrap().total_tokens, Some(expected));
+            assert_eq!(checkpoint.transition, observability::MetricsTransition::None);
+            assert_eq!(checkpoint.payload.outcome, finished.payload.outcome);
+            assert_eq!(checkpoint.payload.timing.unwrap().ended_at, finished.payload.timing.unwrap().ended_at);
+            assert_ne!(checkpoint.fact_id, finished.fact_id);
+        }
     }
 
     #[test]
@@ -9293,18 +9626,6 @@ mod tests {
     }
 
     #[test]
-    fn user_console_theme_is_persisted_to_settings() {
-        let _guard = env_guard();
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app(repo_root.clone());
-        app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();
-
-        let settings = app.load_settings().unwrap();
-        assert_eq!(settings.console_theme, Some(ConsoleThemeName::Nord));
-    }
-
-    #[test]
     fn desktop_preferences_persisted_to_settings() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -9360,7 +9681,6 @@ mod tests {
         let badges = DesktopUpdateBadgeState {
             settings_entry_seen_version: Some("0.3.1".to_string()),
             settings_advanced_seen_version: None,
-            announcement_closed_version: Some("0.3.0".to_string()),
         };
         app.set_user_desktop_update_badges(badges).unwrap();
 
@@ -9376,16 +9696,6 @@ mod tests {
                 .as_deref(),
             Some("0.3.1")
         );
-        assert_eq!(
-            state
-                .desktop_update_badges
-                .announcement_closed_version
-                .as_deref(),
-            Some("0.3.0")
-        );
-
-        let settings = app.load_settings().unwrap();
-        assert!(settings.console_theme.is_none());
     }
 
     #[test]

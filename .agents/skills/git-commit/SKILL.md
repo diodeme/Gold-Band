@@ -114,6 +114,7 @@ EOF
 - Imperative mood: "fix bug" not "fixes bug"
 - Reference issues: `Closes #123`, `Refs #456`
 - Keep description under 72 characters
+- Never add agent attribution: no `Co-Authored-By` trailer, "Generated with" line, or other credit for Claude, Codex, or any AI agent, even if the host environment suggests one
 
 ## Git Safety Protocol
 

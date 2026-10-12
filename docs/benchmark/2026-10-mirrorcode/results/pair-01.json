@@ -1,0 +1,236 @@
+{
+  "benchmark": "MirrorCode",
+  "sample": "mailauth_python",
+  "pair": 1,
+  "runs": [
+    {
+      "arm": "auto",
+      "job": "auto-mailauth-v2",
+      "eval_log": "2026-10-07T05-15-02-00-00_MirrorCode-GoldBand_C669NiR6GTogR4iu5e7DFr.eval",
+      "eval_id": "UFVjMiJt2ePbwFbqRQX29J",
+      "status": "success",
+      "sample_error": null,
+      "sample_limit": null,
+      "agent_exit_code": "0",
+      "task_version": "0.1.193",
+      "model": "anthropic/deepseek-flash",
+      "eval_started_at": "2026-10-07T05:15:02+00:00",
+      "eval_completed_at": "2026-10-07T09:09:39+00:00",
+      "sample_started_at": "2026-10-07T05:15:05.936221+00:00",
+      "sample_completed_at": "2026-10-07T09:09:32.534207+00:00",
+      "first_model_event_at": "2026-10-07T05:15:25.747569+00:00",
+      "last_model_event_at": "2026-10-07T09:07:14.166382+00:00",
+      "model_events": 1768,
+      "usage": {
+        "anthropic/deepseek-flash": {
+          "input_tokens": 1873102,
+          "output_tokens": 2295056,
+          "total_tokens": 407925598,
+          "input_tokens_cache_write": 0,
+          "input_tokens_cache_read": 403757440,
+          "reasoning_tokens": 1462431,
+          "total_cost": null
+        }
+      },
+      "scores": {
+        "all": {
+          "passed": 1545,
+          "failed": 8,
+          "total": 1553,
+          "frac_passed": 0.9948486799742434
+        },
+        "visible": {
+          "passed": 851,
+          "failed": 0,
+          "total": 851,
+          "frac_passed": 1.0
+        },
+        "hidden": {
+          "passed": 694,
+          "failed": 8,
+          "total": 702,
+          "frac_passed": 0.9886039886039886
+        }
+      },
+      "failed_cases_by_subcommand": {
+        "dkim-verify": 1,
+        "arc-verify": 7
+      },
+      "metrics": {
+        "all": {
+          "mc/solved": 0.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 0.9948486799742434
+        },
+        "visible": {
+          "mc/solved": 1.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 1.0
+        },
+        "hidden": {
+          "mc/solved": 0.0,
+          "mc/solved_99": 0.0,
+          "mc/test_cases": 0.9886039886039886
+        }
+      },
+      "artifacts": {
+        "has_git_bundle": true,
+        "archive_members": 2518
+      },
+      "files": [
+        {
+          "file": "auto-mailauth-v2/logs/2026-10-07T05-15-02-00-00_MirrorCode-GoldBand_C669NiR6GTogR4iu5e7DFr.eval",
+          "sha256": "426a92590a3af31e7adcdc62b80f69b21bab3c1ce474dee889fc8e3667810dc6",
+          "bytes": 5769428
+        },
+        {
+          "file": "auto-mailauth-v2/artifacts/mailauth_python.tgz",
+          "sha256": "03e88b4f0c1148e4cb7d8a27c703d8a4ca3eec1d1328ede6a763d0d9b7aa4409",
+          "bytes": 10399721
+        },
+        {
+          "file": "auto-mailauth-v2/console.log",
+          "sha256": "175d45a8ebca9078c5f24ad3b1dd7133f1d55c3b4ef9322c38190f0bba70dfec",
+          "bytes": 13617
+        }
+      ]
+    },
+    {
+      "arm": "cc",
+      "job": "auto-mailauth-cc",
+      "eval_log": "2026-10-07T11-27-21-00-00_MirrorCode-ClaudeCode_8FMRAmEHEFf23nHQG3WuxB.eval",
+      "eval_id": "DCMAVEmhwWLSBiFedChkA3",
+      "status": "success",
+      "sample_error": null,
+      "sample_limit": null,
+      "agent_exit_code": "0",
+      "task_version": "0.1.193",
+      "model": "anthropic/deepseek-flash",
+      "eval_started_at": "2026-10-07T11:27:21+00:00",
+      "eval_completed_at": "2026-10-07T14:09:27+00:00",
+      "sample_started_at": "2026-10-07T11:27:24.701194+00:00",
+      "sample_completed_at": "2026-10-07T14:09:21.051076+00:00",
+      "first_model_event_at": "2026-10-07T11:27:36.756333+00:00",
+      "last_model_event_at": "2026-10-07T14:06:44.961893+00:00",
+      "model_events": 711,
+      "usage": {
+        "anthropic/deepseek-flash": {
+          "input_tokens": 717931,
+          "output_tokens": 863311,
+          "total_tokens": 336549690,
+          "input_tokens_cache_write": 0,
+          "input_tokens_cache_read": 334968448,
+          "reasoning_tokens": 573139,
+          "total_cost": null
+        }
+      },
+      "scores": {
+        "all": {
+          "passed": 1535,
+          "failed": 18,
+          "total": 1553,
+          "frac_passed": 0.9884095299420477
+        },
+        "visible": {
+          "passed": 851,
+          "failed": 0,
+          "total": 851,
+          "frac_passed": 1.0
+        },
+        "hidden": {
+          "passed": 684,
+          "failed": 18,
+          "total": 702,
+          "frac_passed": 0.9743589743589743
+        }
+      },
+      "failed_cases_by_subcommand": {
+        "dkim-verify": 11,
+        "arc-verify": 7
+      },
+      "metrics": {
+        "all": {
+          "mc/solved": 0.0,
+          "mc/solved_99": 0.0,
+          "mc/test_cases": 0.9884095299420477
+        },
+        "visible": {
+          "mc/solved": 1.0,
+          "mc/solved_99": 1.0,
+          "mc/test_cases": 1.0
+        },
+        "hidden": {
+          "mc/solved": 0.0,
+          "mc/solved_99": 0.0,
+          "mc/test_cases": 0.9743589743589743
+        }
+      },
+      "artifacts": {
+        "has_git_bundle": true,
+        "archive_members": 27
+      },
+      "files": [
+        {
+          "file": "auto-mailauth-cc/logs/2026-10-07T11-27-21-00-00_MirrorCode-ClaudeCode_8FMRAmEHEFf23nHQG3WuxB.eval",
+          "sha256": "5f9ede0f6c53819d28e05d9a54a9b06447ce02df1a812f6f2139c8042612d3bf",
+          "bytes": 3451727
+        },
+        {
+          "file": "auto-mailauth-cc/artifacts/mailauth_python.tgz",
+          "sha256": "8fea94377c56bdbc4730b417d2b6b2e80f9ae86c40c35feb0b7a04f5f7b8b294",
+          "bytes": 4196773
+        },
+        {
+          "file": "auto-mailauth-cc/console.log",
+          "sha256": "f7d3fbe26d3be00fa63c1d59082583f036bb5cb84a2f31245991468684c06933",
+          "bytes": 15868
+        }
+      ]
+    }
+  ],
+  "runner_snapshot_note": "Snapshot taken after pair 1, before pair 2. Contains CC support added after the first AUTO run; not an attested AUTO launch-time adapter snapshot.",
+  "runner_files": [
+    {
+      "file": "runner/gb_mirrorcode.py",
+      "sha256": "551eac13bdae5ad700925afade4c26e530d24e19dec6ddf37daf24b3b5f4d157",
+      "bytes": 16614
+    },
+    {
+      "file": "runner/run.sh",
+      "sha256": "beb68b1584a4d32a78c96994422bb5b2f30ec78bba54832976b34d21be19b9a8",
+      "bytes": 971
+    },
+    {
+      "file": "runner/run-cc.sh",
+      "sha256": "c149fdd2701de36b96b79d5e7ae3e858466d41e8cc0a378c094dd6c647c6a0d9",
+      "bytes": 935
+    },
+    {
+      "file": "runner/prep-bundle.sh",
+      "sha256": "6c9b3605b2a0bd2229bf505b4ff24bd50a22e4216f41f3f6b8ca0ae7cb87652d",
+      "bytes": 1827
+    },
+    {
+      "file": "runner/prep-bundle-cc.sh",
+      "sha256": "309d8b724d93e13a794dc79993ed5bdecb9f2c622b3b617c005df5919eac1384",
+      "bytes": 1677
+    }
+  ],
+  "bundles": {
+    "mc-agent-bundle.tgz": {
+      "sha256": "601e11f777fe3b5ae25772b41a94f8e9efe80d700114a40eceb006c6b062eabe",
+      "bytes": 300513899
+    },
+    "cc-agent-bundle.tgz": {
+      "sha256": "1e17f1a5dcc7b0e6c6d4ab7f0480be5c992e9c2a62f84ff2210d7c8c8212647e",
+      "bytes": 111251440
+    }
+  },
+  "installed_versions_at_archival": {
+    "inspect-ai": "0.3.276",
+    "anthropic": "1.11.0",
+    "anyio": "4.15.1"
+  },
+  "mirrorcode_commit_at_archival": "5c9d7b00b0c6d7609003e33896cd41d28f092fcb",
+  "archive_location": "G:\\gb-bench\\archives\\mirrorcode-mailauth\\pair-01"
+}

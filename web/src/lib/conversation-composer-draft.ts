@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
 import type { ScheduledTaskConfig } from '@/types';
+import type { ComposerQuote, ComposerWorkspaceFileRef } from './composer-context';
 
 /**
  * 首页会话发起 composer 的未提交草稿。
@@ -31,6 +32,8 @@ export interface ConversationComposerMulticaBinding {
 export interface ConversationComposerDraftState {
   content: string;
   attachments: AttachmentItem[];
+  workspaceFiles: ComposerWorkspaceFileRef[];
+  quotes: ComposerQuote[];
   /// 当前 prepare 中的 multica 远程任务绑定（null = 普通本地新建会话，走 create_conversation_run）。
   multica: ConversationComposerMulticaBinding | null;
   /// 提交意图：普通发送，或从 composer 直接创建 scheduled task。与 multica 绑定互斥（见 prefill / enterScheduledTask）。
@@ -40,7 +43,14 @@ export interface ConversationComposerDraftState {
 }
 
 export function createInitialConversationComposerDraft(): ConversationComposerDraftState {
-  return { content: '', attachments: [], multica: null, submission: { kind: 'send' } };
+    return {
+        content: '',
+        attachments: [],
+        workspaceFiles: [],
+        quotes: [],
+        multica: null,
+        submission: { kind: 'send' },
+      };
 }
 
 /**
@@ -50,6 +60,9 @@ export function createInitialConversationComposerDraft(): ConversationComposerDr
 export type ConversationComposerDraftAction =
   | { type: 'setContent'; content: string }
   | { type: 'setAttachments'; attachments: AttachmentItem[] }
+  | { type: 'setWorkspaceFiles'; workspaceFiles: ComposerWorkspaceFileRef[] }
+  | { type: 'setQuotes'; quotes: ComposerQuote[] }
+  | { type: 'changeWorkspace'; projectId: string | null }
   | { type: 'prefill'; content: string; multica: ConversationComposerMulticaBinding }
   | { type: 'clearMultica' }
   | { type: 'enterScheduledTask' }
@@ -66,10 +79,27 @@ export function conversationComposerDraftReducer(
       return state.content === action.content ? state : { ...state, content: action.content };
     case 'setAttachments':
       return { ...state, attachments: action.attachments };
+    case 'setWorkspaceFiles':
+      return state.workspaceFiles === action.workspaceFiles
+        ? state
+        : { ...state, workspaceFiles: action.workspaceFiles };
+    case 'setQuotes':
+      return state.quotes === action.quotes ? state : { ...state, quotes: action.quotes };
+    case 'changeWorkspace':
+      // Each reference keeps its own projectId and resolves to that workspace's
+      // absolute path, so switching the composer workspace must not drop them.
+      return state;
     case 'prefill':
       // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 multica + 清空附件，并回到 send 提交意图
       // （scheduled-task 与 multica 绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿）。
-      return { content: action.content, attachments: [], multica: action.multica, submission: { kind: 'send' } };
+      return {
+          content: action.content,
+          attachments: [],
+          workspaceFiles: [],
+          quotes: [],
+          multica: action.multica,
+          submission: { kind: 'send' },
+        };
     case 'clearMultica':
       // 解除 multica 绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
       return state.multica === null ? state : { ...state, multica: null };
@@ -97,6 +127,9 @@ export interface ConversationComposerDraftContextValue {
   setAttachments: (
     next: AttachmentItem[] | ((prev: AttachmentItem[]) => AttachmentItem[]),
   ) => void;
+  setWorkspaceFiles: (next: ComposerWorkspaceFileRef[] | ((prev: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])) => void;
+  setQuotes: (next: ComposerQuote[] | ((prev: ComposerQuote[]) => ComposerQuote[])) => void;
+  changeWorkspace: (projectId: string | null) => void;
   /// 远程任务点击执行后预填：写正文 + 绑定 multica，清空既有附件。仅在 draft boundary 内可用。
   prefill: (content: string, multica: ConversationComposerMulticaBinding) => void;
   /// 解除 multica 绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
@@ -109,6 +142,7 @@ export interface ConversationComposerDraftContextValue {
 
 export interface ConversationComposerDraftBoundaryHandle {
   reset: () => void;
+  changeWorkspace: (projectId: string | null) => void;
 }
 
 const ConversationComposerDraftContext = createContext<ConversationComposerDraftContextValue | null>(null);
@@ -126,7 +160,7 @@ export const ConversationComposerDraftProvider = ConversationComposerDraftContex
 export function createConversationComposerDraftBoundaryHandle(
   owner: ConversationComposerDraftContextValue,
 ): ConversationComposerDraftBoundaryHandle {
-  return { reset: owner.reset };
+  return { reset: owner.reset, changeWorkspace: owner.changeWorkspace };
 }
 
 export function resetConversationComposerDraft(
@@ -171,6 +205,38 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     [],
   );
 
+  const setWorkspaceFiles = useCallback(
+    (next: ComposerWorkspaceFileRef[] | ((prev: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])) => {
+      setDraft((prev) =>
+        conversationComposerDraftReducer(prev, {
+          type: 'setWorkspaceFiles',
+          workspaceFiles:
+                        typeof next === 'function'
+                          ? (next as (p: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])(prev.workspaceFiles)
+                          : next,
+        }),
+      );
+    },
+    [],
+  );
+
+  const setQuotes = useCallback(
+    (next: ComposerQuote[] | ((prev: ComposerQuote[]) => ComposerQuote[])) => {
+      setDraft((prev) => conversationComposerDraftReducer(prev, {
+        type: 'setQuotes',
+        quotes: typeof next === 'function' ? next(prev.quotes) : next,
+      }));
+    },
+    [],
+  );
+
+  const changeWorkspace = useCallback((projectId: string | null) => {
+    setDraft(prev => conversationComposerDraftReducer(prev, {
+      type: 'changeWorkspace',
+      projectId,
+    }));
+  }, []);
+
   const prefill = useCallback(
     (content: string, multica: ConversationComposerMulticaBinding) => {
       setDraft((prev) => {
@@ -210,6 +276,9 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
       draft,
       setContent,
       setAttachments,
+      setWorkspaceFiles,
+      setQuotes,
+      changeWorkspace,
       prefill,
       clearMultica,
       enterScheduledTask,
@@ -217,6 +286,6 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
       exitScheduledTask,
       reset,
     }),
-    [draft, setContent, setAttachments, prefill, clearMultica, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
+    [draft, setContent, setAttachments, setWorkspaceFiles, setQuotes, changeWorkspace, prefill, clearMultica, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
   );
 }

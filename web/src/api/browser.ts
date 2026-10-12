@@ -402,6 +402,8 @@ function browserAgentIdentity(agentType: string) {
 }
 
 function browserCompletedConversationRun(): ConversationRunVm {
+  const compactionStatus = new URLSearchParams(window.location.search).get('compactionStatus') ?? 'completed';
+  const compactionRunning = compactionStatus === 'in_progress';
   const run = structuredClone(mockErrorBlockedConversationRun);
   const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
   const worktreeBranch = 'gold-band/conversation/browser-completed-run';
@@ -421,8 +423,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
   };
   const selectedLeaf = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
   if (selectedLeaf) {
-    selectedLeaf.worktreePath = worktreePath;
-    selectedLeaf.worktreeBranch = worktreeBranch;
+    selectedLeaf.workLocation = { kind: 'worktree', path: worktreePath, branch: worktreeBranch };
   }
   run.selectedSession = {
     ...mockErrorBlockedConversationSession,
@@ -430,8 +431,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
     roundId: 'round-001',
     nodeId: 'dev',
     attemptId: 'attempt-001',
-    worktreePath,
-    worktreeBranch,
+    workLocation: { kind: 'worktree', path: worktreePath, branch: worktreeBranch },
     providerCwd: worktreePath,
     cwd: worktreePath,
     status: 'completed',
@@ -479,7 +479,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
           promptId: 'browser-prompt-052',
           quotes: Array.from({ length: 8 }, (_, index) => ({
             id: `browser-quote-052-${index + 1}`,
-            sourceMessageKey: `textDelta-browser-agent-message-${index + 1}`,
+            source: { kind: 'agentMessage', messageKey: `textDelta-browser-agent-message-${index + 1}` },
             text: index === 0
               ? `请优先检查工作区配置中的权限边界。\n${'这是一段用于验证长引用内部换行与滚动边界的内容。'.repeat(16)}`
               : `第 ${index + 1} 条引用：补充核对配置项、权限范围和对应说明。`,
@@ -489,6 +489,14 @@ function browserCompletedConversationRun(): ConversationRunVm {
             path: 'task-inputs/browser-zoom-fixture.png',
             type: 'image/png',
             size: 68,
+          }],
+          workspaceFiles: [{
+            projectId: 'default',
+            relativePath: 'src/config.json',
+            canonicalPath: '/default/src/config.json',
+            name: 'config.json',
+            mimeType: 'application/json',
+            size: 42,
           }],
         },
       },
@@ -506,13 +514,18 @@ function browserCompletedConversationRun(): ConversationRunVm {
         id: 'browser-context-compaction-052',
         seq: 3,
         timestamp: '2026-08-04 10:01',
-        startedAt: '2026-08-04 10:01:00',
-        endedAt: '2026-08-04 10:01:02',
+        startedAt: compactionRunning ? new Date(Date.now() - 125_000).toISOString() : '2026-08-04 10:01:00',
+        endedAt: compactionRunning ? null : '2026-08-04 10:01:02',
         kind: 'contextCompaction',
-        status: 'completed',
+        status: compactionRunning ? 'running' : ['failed', 'cancelled'].includes(compactionStatus) ? 'interrupted' : compactionStatus,
         raw: {
+          sessionUpdate: 'compaction_update',
+          compactionId: 'browser-cmp-052',
+          compactionSummaryAvailable: true,
+          status: compactionStatus,
           contextCompaction: {
-            usageBefore: { used: 128_000, size: 258_400 },
+            contextUsedBefore: 128_000,
+            contextSize: 258_400,
           },
         },
       },
@@ -634,8 +647,8 @@ const browserQueuedPromptDrafts = [
     id: 'browser-queued-2',
     content: '检查深色主题下的输入区层级。',
     quotes: [
-      { id: 'browser-quote-1', sourceMessageKey: 'browser-message-1', text: '第一段引用' },
-      { id: 'browser-quote-2', sourceMessageKey: 'browser-message-2', text: '第二段引用' },
+      { id: 'browser-quote-1', source: { kind: 'agentMessage' as const, messageKey: 'browser-message-1' }, text: '第一段引用' },
+      { id: 'browser-quote-2', source: { kind: 'agentMessage' as const, messageKey: 'browser-message-2' }, text: '第二段引用' },
     ],
     attachmentPaths: [],
     createdAt: '2026-08-07T08:00:01Z',
@@ -646,6 +659,7 @@ const browserQueuedPromptDrafts = [
     content: '把关键设计决策同步到产品文档。',
     quotes: [],
     attachmentPaths: [],
+    workspaceFiles: [{ projectId: 'default', relativePath: 'docs/design.md' }],
     createdAt: '2026-08-07T08:00:02Z',
   },
   {
@@ -715,6 +729,7 @@ function browserQueuedConversationRun(): ConversationRunVm {
           content: item.content,
           attachmentCount: item.attachmentPaths.length,
           quoteCount: item.quotes.length,
+          workspaceFileCount: item.workspaceFiles?.length ?? 0,
           ...('role' in item && item.role ? { roleName: item.role.name } : {}),
           createdAt: item.createdAt,
         })),
@@ -733,18 +748,18 @@ const browserTurnFileChangeSet = {
   startedAt: '2026-08-04 10:00',
   finishedAt: '2026-08-04 10:01',
   summary: {
-    fileCount: 3,
-    addedFiles: 1,
-    modifiedFiles: 1,
+    fileCount: 5,
+    addedFiles: 2,
+    modifiedFiles: 2,
     deletedFiles: 1,
-    addedLines: 8,
-    deletedLines: 3,
+    addedLines: 18,
+    deletedLines: 5,
   },
   changes: [
     {
       id: 'browser-added-readme',
       changeKind: 'added' as const,
-      logicalPath: 'docs/workspace-notes.md',
+      logicalPath: '/default/docs/workspace-notes.md',
       text: true,
       addedLines: 4,
       deletedLines: 0,
@@ -752,15 +767,39 @@ const browserTurnFileChangeSet = {
     {
       id: 'browser-modified-config',
       changeKind: 'modified' as const,
-      logicalPath: 'src/config.json',
+      logicalPath: '/default/src/config.json',
       text: true,
       addedLines: 4,
       deletedLines: 2,
     },
     {
+      id: 'browser-modified-settings-1',
+      changeKind: 'modified' as const,
+      logicalPath: '/default/src/settings/workspace.ts',
+      text: true,
+      addedLines: 2,
+      deletedLines: 1,
+    },
+    {
+      id: 'browser-modified-settings-2',
+      changeKind: 'modified' as const,
+      logicalPath: '/default/src/settings/workspace.ts',
+      text: true,
+      addedLines: 5,
+      deletedLines: 1,
+    },
+    {
+      id: 'browser-added-outside',
+      changeKind: 'added' as const,
+      logicalPath: '/tmp/gold-band-scratch/generated/fixtures/outside-notes.txt',
+      text: true,
+      addedLines: 3,
+      deletedLines: 0,
+    },
+    {
       id: 'browser-deleted-legacy',
       changeKind: 'deleted' as const,
-      logicalPath: 'src/legacy-config.json',
+      logicalPath: '/default/src/legacy-config.json',
       text: true,
       addedLines: 0,
       deletedLines: 1,
@@ -781,6 +820,7 @@ const browserTurnFileChangeSet = {
     },
   ],
   limitationCodes: [],
+  workspaceRoot: '/default',
 };
 
 const browserWorkspaceRoot = '/default';
@@ -835,11 +875,68 @@ function browserRelativePath(path: string) {
   return path.startsWith(`${browserWorkspaceRoot}/`) ? path.slice(browserWorkspaceRoot.length + 1) : null;
 }
 
+// Empty folders cannot be derived from file paths, so they are tracked
+// explicitly; folders that contain files stay implied by those paths.
+const browserWorkspaceDirectories = new Set<string>();
+const browserWorkspaceTrash = new Map<string, { path: string; files: [string, string][]; directories: string[] }>();
+
+function browserWorkspacePath(relativePath: string) {
+  return relativePath ? `${browserWorkspaceRoot}/${relativePath}` : browserWorkspaceRoot;
+}
+
+function browserWorkspaceEntryExists(path: string) {
+  const prefix = `${path}/`;
+  return browserWorkspaceFiles.has(path)
+    || browserWorkspaceDirectories.has(path)
+    || [...browserWorkspaceFiles.keys(), ...browserWorkspaceDirectories].some((candidate) => candidate.startsWith(prefix));
+}
+
+function browserWorkspaceEntry(path: string): import('../types').WorkspaceDirectoryEntryVm {
+  const parent = path.slice(0, path.lastIndexOf('/'));
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  const entry = browserDirectoryEntries(browserRelativePath(parent) ?? '').find((candidate) => candidate.name === name);
+  if (!entry) throw { code: 'workspace-file.not-found', params: { path } };
+  return entry;
+}
+
+function browserEntryNameError(name: string) {
+  if (!name.trim()) return 'empty';
+  if (name !== name.trim()) return 'surrounding-whitespace';
+  if (name === '.' || name === '..') return 'reserved';
+  return /[/\\]/u.test(name) || name.includes('\u0000') ? 'invalid-character' : null;
+}
+
+function browserTakeEntry(path: string) {
+  const prefix = `${path}/`;
+  const files = [...browserWorkspaceFiles.entries()].filter(([candidate]) => candidate === path || candidate.startsWith(prefix));
+  const directories = [...browserWorkspaceDirectories].filter((candidate) => candidate === path || candidate.startsWith(prefix));
+  for (const [candidate] of files) browserWorkspaceFiles.delete(candidate);
+  for (const candidate of directories) browserWorkspaceDirectories.delete(candidate);
+  return { files, directories };
+}
+
 function browserDirectoryEntries(relativePath: string) {
   const directory = relativePath ? `${browserWorkspaceRoot}/${relativePath}` : browserWorkspaceRoot;
   const prefix = `${directory}/`;
   const seen = new Set<string>();
   const entries: import('../types').WorkspaceDirectoryEntryVm[] = [];
+  for (const path of browserWorkspaceDirectories) {
+    if (!path.startsWith(prefix)) continue;
+    const [name, ...rest] = path.slice(prefix.length).split('/');
+    if (rest.length > 0 || seen.has(name)) continue;
+    const hasChildren = [...browserWorkspaceFiles.keys(), ...browserWorkspaceDirectories].some((candidate) => candidate.startsWith(`${path}/`));
+    if (hasChildren) continue;
+    seen.add(name);
+    entries.push({
+      name,
+      relativePath: browserRelativePath(path) ?? name,
+      canonicalPath: path,
+      kind: 'directory',
+      hasChildren: false,
+      byteLength: null,
+      modifiedAtNs: null,
+    });
+  }
   for (const [path, content] of browserWorkspaceFiles) {
     if (!path.startsWith(prefix)) continue;
     const remainder = path.slice(prefix.length);
@@ -866,7 +963,50 @@ function browserSvgDataUrl(content: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
 }
 
+function browserExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string): import('../types').ExecutionPlanViewVm {
+  const workflow = {
+    version: '0.1',
+    id: 'preview',
+    entry: 'worker',
+    control: {},
+    nodes: [{ id: 'worker', type: 'worker' as const, provider: 'claude-acp', profile: null, goal: 'preview' }],
+    edges: [{ from: 'worker', to: '$end', on: 'success' as const }],
+  };
+  return {
+    projectId,
+    taskId,
+    taskUuid,
+    runId,
+    runMode: 'auto',
+    runStatus: 'running',
+    planRevision: 1,
+    authoringRevision: 1,
+    executionRevision: 1,
+    currentEditable: true,
+    diverged: false,
+    currentRound: 'round-001',
+    currentNode: 'worker',
+    currentAttempt: 'attempt-001',
+    currentWorkflow: workflow,
+    currentModelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [] },
+    currentAutoConfig: {
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: false,
+    },
+    nextWorkflow: workflow,
+    nextModelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [] },
+    nextAutoConfig: {
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: false,
+    },
+  };
+}
+
 export const browserApi: RuntimeApi = {
+  reportSourceControlLoad: async () => {},
+  reportSourceControlWatch: async () => {},
   readProjectMemory: readBrowserMemory,
   writeProjectMemory: writeBrowserMemory,
   async subscribeScheduledNotifications() {
@@ -1029,9 +1169,31 @@ export const browserApi: RuntimeApi = {
   initializeGitRepository() {
     return Promise.resolve({ status: 'head-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
+  async getSourceControlBootstrap(projectId, workspacePath) {
+    const capability = await browserApi.getGitCapability(projectId);
+    const workspaceScopePath = workspacePath && workspacePath !== '/preview/gold-band'
+      ? workspacePath
+      : null;
+    if (capability.status !== 'ready' && capability.status !== 'head-required') {
+      return { capability, overview: null, workspaceScopePath };
+    }
+    const overview = await browserApi.getSourceControlOverview(projectId, workspacePath);
+    return { capability, overview, workspaceScopePath };
+  },
+  async getSourceControlOverview(projectId, workspacePath) {
+    const { repository, status } = await browserApi.getSourceControlSnapshot(projectId, workspacePath);
+    return { repository, status };
+  },
+  async getSourceControlStatistics(projectId, workspacePath) {
+    return (await browserApi.getSourceControlSnapshot(projectId, workspacePath)).status;
+  },
+  async getSourceControlRemotes(projectId, workspacePath) {
+    return (await browserApi.getSourceControlSnapshot(projectId, workspacePath)).repository.remotes;
+  },
   getSourceControlSnapshot(projectId, workspacePath) {
     const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
     return Promise.resolve({
+      catalogRevision: "browser-preview-catalog",
       repository: {
         projectId,
         repoRoot: '/preview/gold-band',
@@ -1048,6 +1210,7 @@ export const browserApi: RuntimeApi = {
         ],
         lock: { locked: false, owner: null, operation: null },
         revision: 'browser-preview-revision',
+        syncRevision: 'browser-preview-sync-revision',
       },
       status: {
         snapshotRevision: 'browser-preview-revision',
@@ -1153,9 +1316,9 @@ export const browserApi: RuntimeApi = {
       ...entry,
       oldPath: null,
       kind: 'modified' as const,
-      binary: false,
-      addedLines: 24,
-      deletedLines: 6,
+      binary: null,
+      addedLines: null,
+      deletedLines: null,
     }])).values());
     return Promise.resolve({
       selectedOids: [...query.selectedOids],
@@ -1166,6 +1329,9 @@ export const browserApi: RuntimeApi = {
         fileCount: files.length,
       },
     });
+  },
+  getGitCommitReviewStatistics(_projectId, _workspacePath, review) {
+    return Promise.resolve({ ...review, files: review.files.map(file => ({ ...file, binary: false, addedLines: 4, deletedLines: 2 })) });
   },
   getGitCommitReachability(_projectId, _workspacePath, query) {
     const commit = browserGitCommits.find((candidate) => candidate.oid === query.oid) ?? browserGitCommits[0];
@@ -1505,8 +1671,19 @@ export const browserApi: RuntimeApi = {
       unknownScheduledTaskCount: 0,
     });
   },
+  previewAgentCacheRepair(_agentType: string): Promise<{ token: string; paths: string[] }> { return Promise.reject({ code: 'npx-cache.unavailable', params: {} }); },
+  repairAgentCache(_agentType: string, _token: string): Promise<{ path: string; errorCode: string | null }[]> { return Promise.reject({ code: 'npx-cache.unavailable', params: {} }); },
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
+  },
+  async fetchAgentModelConfig(agentType: string, modelId: string) {
+    const agent = mockAgentRegistry.agents.find((item) => item.agentType === agentType);
+    if (!agent || !agent.supportedModels?.some((model) => model.id === modelId)) {
+      throw { code: 'acp.model-config-unavailable', params: {} };
+    }
+    // Browser preview only: the fixture acts as the Agent's returned model catalog.
+    const bound = (agent.configOptions ?? []).filter((option) => option.category === 'thought_level' || option.category === 'model_config');
+    return { ...agent, modelBoundCatalogs: { ...agent.modelBoundCatalogs, [modelId]: bound } };
   },
   getTaskList() {
     return Promise.resolve(mockTaskList);
@@ -1570,6 +1747,65 @@ export const browserApi: RuntimeApi = {
   },
   getWorkflow(taskId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task });
+  },
+  getConversationExecutionPlan(projectId: string, taskId: string, taskUuid: string, runId: string) {
+    return Promise.resolve(browserExecutionPlan(projectId, taskId, taskUuid, runId));
+  },
+  preflightConversationExecutionPlanSave(command: import('@/types').ExecutionPlanSaveCommandVm) {
+    const locatorMatches = command.expectedRunStatus === 'running'
+      && command.expectedCurrentRound === 'round-001'
+      && command.expectedCurrentNode === 'worker'
+      && command.expectedCurrentAttempt === 'attempt-001';
+    if (!locatorMatches) {
+      return Promise.reject({ code: 'conversation.execution-plan.current-locator-conflict' });
+    }
+    return Promise.resolve({
+      planRevision: command.expectedPlanRevision,
+      authoringRevision: command.expectedAuthoringRevision,
+      executionRevision: 1,
+      runStatus: command.expectedRunStatus,
+      currentRound: 'round-001',
+      currentNode: 'worker',
+      currentAttempt: 'attempt-001',
+      currentEditable: true,
+      diverged: false,
+      blocking: [],
+      affectedNodeIds: [],
+      resumeIdentityRisks: [],
+    });
+  },
+  saveConversationExecutionPlan(command: import('@/types').ExecutionPlanSaveCommandVm) {
+    const planRevision = command.target === 'next' ? command.expectedPlanRevision : command.expectedPlanRevision + 1;
+    const authoringRevision = command.target === 'current' ? command.expectedAuthoringRevision : command.expectedAuthoringRevision + 1;
+    return Promise.resolve({
+      operationId: command.operationId ?? null,
+      complete: true,
+      planRevision,
+      authoringRevision,
+      executionRevision: 1,
+      diverged: false,
+      targets: command.target === 'current-and-next'
+        ? [
+          { target: 'current' as const, committed: true, planRevision },
+          { target: 'next' as const, committed: true, authoringRevision },
+        ]
+        : [{ target: command.target, committed: true, planRevision, authoringRevision }],
+    });
+  },
+  recoverConversationExecutionPlanOperation(projectId: string, taskId: string, taskUuid: string, runId: string, operationId: string) {
+    return Promise.resolve({
+      operationId,
+      complete: true,
+      planRevision: 1,
+      authoringRevision: 1,
+      executionRevision: 1,
+      diverged: false,
+      targets: [{ target: 'current' as const, committed: true }, { target: 'next' as const, committed: true }],
+      projectId,
+      taskId,
+      taskUuid,
+      runId,
+    });
   },
   createTask(input: CreateTaskInput) {
     const task = {
@@ -1731,6 +1967,11 @@ export const browserApi: RuntimeApi = {
   getAcpToolDetail() {
     return Promise.resolve({ event: null });
   },
+  getAcpCompactionSummary(_locator, query) {
+    return Promise.resolve({ markdown: query.eventId === 'browser-context-compaction-052'
+      ? '# 会话摘要\n\n## 当前目标\n保留 **ACP 升级** 的验收结论。\n\n- 压缩状态已恢复\n- 工具输出可重读\n\n```ts\nconst status = "completed";\n```\n\n| 项目 | 状态 |\n| --- | --- |\n| 文件变更 | 已验证 |\n\n' + '后续继续验证真实会话，并保留用户已经确认的配置和约束。\n\n'.repeat(30)
+      : null });
+  },
   getAcpImage() {
     return Promise.reject({ code: 'acp.image-not-found', params: {} });
   },
@@ -1841,6 +2082,7 @@ export const browserApi: RuntimeApi = {
         content: item.content,
         quotes: item.quotes.map((quote) => ({ ...quote })),
         attachmentPaths: [...item.attachmentPaths],
+        ...(item.workspaceFiles?.length ? { workspaceFiles: [...item.workspaceFiles] } : {}),
         ...('role' in item && item.role ? { role: { ...item.role } } : {}),
       },
       lifecycle: null,
@@ -2230,10 +2472,6 @@ export const browserApi: RuntimeApi = {
     const current = browserPreviewState.getUpdateBadges();
     return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, settingsAdvancedSeenVersion: version }));
   },
-  dismissUpdateAnnouncement(version: string) {
-    const current = browserPreviewState.getUpdateBadges();
-    return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, announcementClosedVersion: version }));
-  },
   checkUpdateManual() {
     return Promise.resolve(browserPreviewState.setUpdateStatus({
       status: 'error',
@@ -2243,12 +2481,18 @@ export const browserApi: RuntimeApi = {
       background: false,
     }));
   },
-  downloadAndInstallUpdate() {
-    return Promise.resolve();
+  startUpdateInstall() {
+    return Promise.resolve(browserPreviewState.getUpdateStatus());
   },
   // ── Conversation UI mocks ──
   saveDesktopUiMode(_mode) {
     return Promise.resolve();
+  },
+  trustRemoteImageHosts(hosts) {
+    return Promise.resolve(browserPreviewState.trustRemoteImageHosts(hosts));
+  },
+  revokeRemoteImageHost(host) {
+    return Promise.resolve(browserPreviewState.revokeRemoteImageHost(host));
   },
   getConversationSidebarBootstrap() {
     return Promise.resolve({
@@ -2269,7 +2513,7 @@ export const browserApi: RuntimeApi = {
       runMode: 'workflow',
       lastActivityAt: '2026-05-02T16:08:00Z',
       runs: [],
-      runHistoryStatus: 'ready-empty',
+      runHistoryStatus: 'ready',
       runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
@@ -2345,6 +2589,7 @@ export const browserApi: RuntimeApi = {
       scheduledTaskId: id,
       projectId: input.projectId,
       content: input.content,
+      quotes: structuredClone(input.quotes ?? []),
       attachmentNames: [],
       runMode: input.runMode,
       workflowTemplateId: input.workflowTemplateId,
@@ -2387,6 +2632,9 @@ export const browserApi: RuntimeApi = {
         input.includeOptionalEntry,
       ),
       schedule,
+      quotes: input.quotes
+        ? definition.quotes.filter((quote) => input.quotes?.some((kept) => kept.id === quote.id))
+        : definition.quotes,
       expectedUpdatedAt: now,
       directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
     };
@@ -2567,7 +2815,7 @@ export const browserApi: RuntimeApi = {
       inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
-      workflowGraph: { nodes: [], edges: [] },
+      workflowGraph: { nodes: [], edges: [], groups: [] },
       resumable: false,
       runtimeErrorMessage: null,
       worktree: null,
@@ -2603,7 +2851,7 @@ export const browserApi: RuntimeApi = {
       inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
-      workflowGraph: { nodes: [], edges: [] },
+      workflowGraph: { nodes: [], edges: [], groups: [] },
       resumable: false,
       runtimeErrorMessage: null,
       worktree: null,
@@ -2630,7 +2878,7 @@ export const browserApi: RuntimeApi = {
       inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
-      workflowGraph: { nodes: [], edges: [] },
+      workflowGraph: { nodes: [], edges: [], groups: [] },
       resumable: false,
       runtimeErrorMessage: null,
       worktree: input.workLocation === 'worktree'
@@ -2684,7 +2932,7 @@ export const browserApi: RuntimeApi = {
       autoTitle: false,
       runMode: 'workflow' as const,
       runs: [],
-      runHistoryStatus: 'ready-empty' as const,
+      runHistoryStatus: 'ready' as const,
       runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
@@ -2696,6 +2944,13 @@ export const browserApi: RuntimeApi = {
   deleteConversationTask(_projectId, _taskId) {
     browserConversationTasks.delete(_taskId);
     return this.getConversationSidebarBootstrap();
+  },
+  setConversationResident(projectId, taskId, resident) {
+    const current = browserConversationTasks.get(taskId);
+    if (!current || current.projectId !== projectId || current.runMode !== "direct") return Promise.reject(new Error("conversation.residency-direct-only"));
+    const task = { ...current, resident };
+    browserConversationTasks.set(taskId, task);
+    return Promise.resolve(task);
   },
   pinConversation(_projectId, _taskId) {
     const task = browserConversationTasks.get(_taskId);
@@ -2746,6 +3001,47 @@ export const browserApi: RuntimeApi = {
   openWorkspacePathInFileManager(_projectId, _relativePath = '') {
     return Promise.resolve();
   },
+  createWorkspaceEntry(input) {
+    const reason = browserEntryNameError(input.name);
+    if (reason) return Promise.reject({ code: 'workspace-file.name-invalid', params: { name: input.name, reason } });
+    const path = `${browserWorkspacePath(input.parentRelativePath)}/${input.name}`;
+    if (browserWorkspaceEntryExists(path)) return Promise.reject({ code: 'workspace-file.already-exists', params: { path } });
+    if (input.kind === 'file') browserWorkspaceFiles.set(path, '');
+    else browserWorkspaceDirectories.add(path);
+    return Promise.resolve(browserWorkspaceEntry(path));
+  },
+  renameWorkspaceEntry(_projectId, relativePath, newName) {
+    const reason = browserEntryNameError(newName);
+    if (reason) return Promise.reject({ code: 'workspace-file.name-invalid', params: { name: newName, reason } });
+    const source = browserWorkspacePath(relativePath);
+    if (!browserWorkspaceEntryExists(source)) return Promise.reject({ code: 'workspace-file.not-found', params: { path: source } });
+    const target = `${source.slice(0, source.lastIndexOf('/'))}/${newName}`;
+    if (target === source) return Promise.resolve(browserWorkspaceEntry(source));
+    if (target.toLocaleLowerCase() !== source.toLocaleLowerCase() && browserWorkspaceEntryExists(target)) {
+      return Promise.reject({ code: 'workspace-file.already-exists', params: { path: target } });
+    }
+    const { files, directories } = browserTakeEntry(source);
+    for (const [path, content] of files) browserWorkspaceFiles.set(`${target}${path.slice(source.length)}`, content);
+    for (const path of directories) browserWorkspaceDirectories.add(`${target}${path.slice(source.length)}`);
+    return Promise.resolve(browserWorkspaceEntry(target));
+  },
+  deleteWorkspaceEntry(_projectId, relativePath) {
+    const path = browserWorkspacePath(relativePath);
+    if (!relativePath || !browserWorkspaceEntryExists(path)) return Promise.reject({ code: 'workspace-file.not-found', params: { path } });
+    const entry = browserWorkspaceEntry(path);
+    const receiptId = `browser-trash-${browserWorkspaceTrash.size + 1}-${Date.now()}`;
+    browserWorkspaceTrash.set(receiptId, { path, ...browserTakeEntry(path) });
+    return Promise.resolve({ receiptId, entry });
+  },
+  restoreWorkspaceEntry(_projectId, receiptId) {
+    const trashed = browserWorkspaceTrash.get(receiptId);
+    if (!trashed) return Promise.reject({ code: 'workspace-file.restore-unavailable', params: { reason: 'receipt-not-found' } });
+    if (browserWorkspaceEntryExists(trashed.path)) return Promise.reject({ code: 'workspace-file.already-exists', params: { path: trashed.path } });
+    for (const [path, content] of trashed.files) browserWorkspaceFiles.set(path, content);
+    for (const path of trashed.directories) browserWorkspaceDirectories.add(path);
+    browserWorkspaceTrash.delete(receiptId);
+    return Promise.resolve(browserWorkspaceEntry(trashed.path));
+  },
   listConversationDirectory(_input) { return Promise.resolve([]); },
   openConversationDirectoryPathInFileManager(_input) { return Promise.resolve(); },
   readConversationDirectoryFile(_input) { return Promise.reject(new Error('conversation-directory.unavailable')); },
@@ -2765,7 +3061,7 @@ export const browserApi: RuntimeApi = {
       }));
     return Promise.resolve({ requestId, entries: matches, truncated: matches.length >= limit });
   },
-  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
+  resolveWorkspaceFileLink({ projectId }, rawHref, baseCanonicalPath = null) {
     let href = decodeURIComponent(rawHref.replace(/^file:\/\//u, ''));
     let line: number | null = null;
     let column: number | null = null;
@@ -2800,7 +3096,7 @@ export const browserApi: RuntimeApi = {
       externalAccessGrant,
     });
   },
-  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
+  readFileResource({ projectId }, canonicalPath, externalAccessToken = null, preferSource = false) {
     const content = browserWorkspaceFiles.get(canonicalPath);
     if (content == null) return Promise.reject({ code: 'workspace-file.not-found', params: { path: canonicalPath } });
     const relativePath = browserRelativePath(canonicalPath);
@@ -2886,7 +3182,7 @@ export const browserApi: RuntimeApi = {
     browserFileRevisions.set(input.canonicalPath, (browserFileRevisions.get(input.canonicalPath) ?? 0) + 1);
     const revision = browserFileRevision(input.canonicalPath, input.content);
     for (const listener of browserWorkspaceFileListeners) {
-      listener({ projectId: input.projectId, canonicalPath: input.canonicalPath, kind: 'modified', revision, operationId: input.operationId });
+      listener({ projectId: input.projectId, workspacePath: input.workspacePath, canonicalPath: input.canonicalPath, kind: 'modified', revision, operationId: input.operationId });
     }
     return Promise.resolve(revision);
   },
@@ -2935,6 +3231,10 @@ export const browserApi: RuntimeApi = {
   browserResolveLocalHtml() {
     return Promise.reject(browserCommandError('browser.webview.unavailable'));
   },
+  browserOpenInSystemBrowser(url) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return Promise.resolve();
+  },
   browserSetBounds() {
     return Promise.resolve();
   },
@@ -2954,6 +3254,9 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve();
   },
   browserNavigate() {
+    return Promise.reject(browserCommandError('browser.webview.unavailable'));
+  },
+  browserAllowLocalAccess() {
     return Promise.reject(browserCommandError('browser.webview.unavailable'));
   },
   browserGoBack() {
@@ -3001,7 +3304,7 @@ export const browserApi: RuntimeApi = {
   subscribeBrowserAddressSuggestionActions() {
     return Promise.resolve(() => {});
   },
-  openFileWithSystemApp(_path) {
+  openFileWithSystemApp(_input) {
     return Promise.resolve();
   },
   async copyImageToClipboard(input) {
@@ -3042,15 +3345,6 @@ export const browserApi: RuntimeApi = {
       name: file.name,
       size: atob(file.dataBase64).length,
     })));
-  },
-  getSupportedAttachmentExtensions() {
-    return Promise.resolve([
-      "png", "jpg", "jpeg", "webp", "gif", "bmp",
-      "txt", "md", "json", "jsonl", "csv",
-      "html", "htm", "css", "js", "ts", "tsx", "jsx",
-      "rs", "py", "go", "java", "c", "h", "cpp", "hpp",
-      "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
-    ]);
   },
   openInFileManager(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();

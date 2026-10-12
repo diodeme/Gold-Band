@@ -318,6 +318,12 @@ impl GoldBandPaths {
             .join("desktop/agent-diagnostics.json")
     }
 
+    /// Observed model-bound catalogs per Agent; outlives Doctor health snapshots.
+    pub fn agent_model_catalogs_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_root
+            .join("desktop/agent-model-catalogs.json")
+    }
+
     pub fn agent_command_catalogs_file(&self) -> Utf8PathBuf {
         self.user_gold_band_root
             .join("desktop/agent-command-catalogs.json")
@@ -417,13 +423,17 @@ impl GoldBandPaths {
         self.task_dir(task_id).join("authoring/requirement.md")
     }
 
-    pub fn initial_prompt_role_file(&self, task_id: &str) -> Utf8PathBuf {
+    pub fn task_prompt_input_file(&self, task_id: &str) -> Utf8PathBuf {
         self.task_dir(task_id)
-            .join("authoring/initial-prompt-role.json")
+            .join("authoring/task-prompt-input.json")
     }
 
     pub fn workflow_file(&self, task_id: &str) -> Utf8PathBuf {
         self.task_dir(task_id).join("authoring/workflow.json")
+    }
+
+    pub fn task_auto_config_file(&self, task_id: &str) -> Utf8PathBuf {
+        self.task_dir(task_id).join("authoring/auto.json")
     }
 
     pub fn task_workflow_resolved_file(&self, task_id: &str) -> Utf8PathBuf {
@@ -449,6 +459,44 @@ impl GoldBandPaths {
 
     pub fn workflow_snapshot_file(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {
         self.run_dir(task_id, run_id).join("workflow.snapshot.json")
+    }
+
+    pub fn execution_plan_dir(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {
+        self.run_dir(task_id, run_id).join("execution-plan")
+    }
+
+    pub fn execution_plan_manifest_file(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {
+        self.execution_plan_dir(task_id, run_id)
+            .join("manifest.json")
+    }
+
+    pub fn execution_plan_revisions_dir(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {
+        self.execution_plan_dir(task_id, run_id).join("revisions")
+    }
+
+    pub fn execution_plan_revision_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        revision: u64,
+    ) -> Utf8PathBuf {
+        self.execution_plan_revisions_dir(task_id, run_id)
+            .join(format!("plan-{revision:06}.json"))
+    }
+
+    pub fn execution_plan_operation_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        operation_id: &str,
+    ) -> Utf8PathBuf {
+        self.execution_plan_dir(task_id, run_id)
+            .join("operations")
+            .join(operation_id)
+    }
+
+    pub fn task_authoring_revision_file(&self, task_id: &str) -> Utf8PathBuf {
+        self.task_dir(task_id).join("authoring/revision.json")
     }
 
     pub fn run_progress_file(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {

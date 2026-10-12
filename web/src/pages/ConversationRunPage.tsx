@@ -22,8 +22,9 @@ import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
 import { submitManualCheck } from '@/api';
-import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
-import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { conversationSessionKeyFromParts, findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import { UNRESOLVED_WORK_LOCATION, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
+import { acpRuntimeErrorBannerCopy, acpRuntimeErrorBannerTitle } from '@/lib/acp-runtime-error';
 import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
   conversationRunCacheKey,
@@ -36,7 +37,8 @@ import {
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, WorkflowModelBindings, WorkflowVm } from '../types';
+import type { ResidentPinToggleProps } from '@/components/conversation/ResidentPin';
+import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -92,12 +94,16 @@ function normalizeSessionPath(path: string) {
 interface ConversationRunPageProps {
   run: ConversationRunVm;
   taskTitle: string;
+  /** Residency toggle for Direct conversations whose sidebar row is known. */
+  resident?: ResidentPinToggleProps;
   workspaceName?: string | null;
   appConfig: AppConfigVm;
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
-  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
+  workflowTemplates?: WorkflowTemplateStore | null;
+  onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
+  onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
   onSelectSession: (leaf: ConversationSessionLocator, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
@@ -105,17 +111,21 @@ interface ConversationRunPageProps {
   initialSessionTreeExpansion: ConversationSessionTreeExpansion;
   onSessionTreeExpansionChange: (expansion: ConversationSessionTreeExpansion) => void;
   onTitleChange?: (title: string) => void;
+  onAtBottomChange?: (atBottom: boolean) => void;
 }
 
 export function ConversationRunPage({
   run,
   taskTitle,
+  resident,
   workspaceName,
   appConfig,
   agentRegistry,
   onRerun,
   onEditWorkflow,
-  onSaveWorkflow,
+  workflowTemplates = null,
+  onWorkflowTemplatesChange,
+  onExecutionPlanSaved,
   onSelectSession,
   onLifecycleSnapshot,
   onAutoFollowChange,
@@ -123,6 +133,7 @@ export function ConversationRunPage({
   initialSessionTreeExpansion,
   onSessionTreeExpansionChange,
   onTitleChange,
+  onAtBottomChange,
 }: ConversationRunPageProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
@@ -221,6 +232,18 @@ export function ConversationRunPage({
     openWorkflowEditor('repair');
   }, [openWorkflowEditor]);
 
+  const handleConfigureAuto = useCallback(() => {
+    if (!workspace.scopeKey) return;
+    workspace.openResource({
+      kind: 'auto-config',
+      key: conversationRunWorkspaceResourceKey('auto-config', workflowLocator),
+      scopeKey: workspace.scopeKey,
+      title: t('executionPlan.configureAuto'),
+      attention: false,
+      locator: workflowLocator,
+    });
+  }, [t, workflowLocator, workspace.openResource, workspace.scopeKey]);
+
   const handleViewWorkflow = useCallback(() => {
     if (!workspace.scopeKey) return;
     workspace.openResource({
@@ -243,32 +266,62 @@ export function ConversationRunPage({
     onSelectSession(leaf);
   }, [run.sessionTree, onAutoFollowChange, onSelectSession]);
 
+  // The workspace renderer is a registry entry, not a projection of the live
+  // run. Keeping its identity stable prevents RightWorkspaceProvider from
+  // unregistering the renderer (and briefly rendering null) on every live run
+  // update. The refs preserve the latest canonical run and callbacks without
+  // coupling registry lifetime to the stream frequency.
+  const runRef = useRef(run);
+  const agentRegistryRef = useRef(agentRegistry);
+  const onExecutionPlanSavedRef = useRef(onExecutionPlanSaved);
+  const workflowTemplatesRef = useRef(workflowTemplates);
+  const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
+  const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
+  runRef.current = run;
+  agentRegistryRef.current = agentRegistry;
+  onExecutionPlanSavedRef.current = onExecutionPlanSaved;
+  workflowTemplatesRef.current = workflowTemplates;
+  onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
+  handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
+  const onExecutionPlanSavedStable = useCallback((saved: ExecutionPlanSaveResultVm) => {
+    return onExecutionPlanSavedRef.current?.(saved);
+  }, []);
+  const onNodeOpenSessionStable = useCallback((node: GraphNodeVm) => {
+    handleWorkflowNodeOpenSessionRef.current(node);
+  }, []);
+
   const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
     if (
       resource.kind !== 'workflow-view' &&
       resource.kind !== 'workflow-edit' &&
+      resource.kind !== 'auto-config' &&
       resource.kind !== 'system-prompt' &&
       resource.kind !== 'hidden-prompt-section' &&
+      resource.kind !== 'compaction-summary' &&
       resource.kind !== 'raw-frames'
     ) return null;
     return (
       <ConversationRunWorkspaceResourcePanel
         key={resource.key}
         resource={resource}
-        run={run}
-        agentRegistry={agentRegistry}
-        onSaveWorkflow={onSaveWorkflow}
-        onNodeOpenSession={handleWorkflowNodeOpenSession}
+        run={runRef.current}
+        agentRegistry={agentRegistryRef.current}
+        workflowTemplates={workflowTemplatesRef.current}
+        onWorkflowTemplatesChange={(store) => onWorkflowTemplatesChangeRef.current?.(store)}
+        onExecutionPlanSaved={onExecutionPlanSavedStable}
+        onNodeOpenSession={onNodeOpenSessionStable}
       />
     );
-  }, [agentRegistry, handleWorkflowNodeOpenSession, onSaveWorkflow, run]);
+  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable]);
 
   useEffect(() => {
     const unregister = [
       workspace.registerResourceRenderer('workflow-view', renderWorkspaceResource),
       workspace.registerResourceRenderer('workflow-edit', renderWorkspaceResource),
+      workspace.registerResourceRenderer('auto-config', renderWorkspaceResource),
       workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
       workspace.registerResourceRenderer('hidden-prompt-section', renderWorkspaceResource),
+      workspace.registerResourceRenderer('compaction-summary', renderWorkspaceResource),
       workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
     ];
     return () => unregister.forEach((dispose) => dispose());
@@ -382,6 +435,7 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    onAtBottomChange?.(atBottom);
     const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     if (!atBottom) {
       if (!manualAutoFollowDisabledRef.current) {
@@ -433,7 +487,7 @@ export function ConversationRunPage({
     if (!manualAutoFollowDisabledRef.current) {
       onAutoFollowChange?.(true);
     }
-  }, [isAutoFollowRestorableLeaf, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
+  }, [isAutoFollowRestorableLeaf, onAutoFollowChange, onAtBottomChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
     manualCheckNavigationVersionRef.current += 1;
@@ -490,6 +544,10 @@ export function ConversationRunPage({
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedSessionRuntimeError = selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionErrorBlocked;
+  // The title follows the structured run error only while the banner shows that error.
+  const selectedRuntimeErrorTitle = selectedSessionRuntimeControlError && localizedRuntimeErrorMessage
+    ? acpRuntimeErrorBannerTitle(t, run.runtimeError)
+    : null;
   const selectedRuntimeErrorMessage = selectedSessionRuntimeControlError
     ?? (selectedSessionRuntimeError
       ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
@@ -513,6 +571,7 @@ export function ConversationRunPage({
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
+        runtimeErrorTitle: selectedRuntimeErrorTitle,
         runtimeErrorFallback: selectedSessionRuntimeErrorFallback,
         onRepair: handleRepairWorkflow,
         supersededSessionNavigation: supersedingHref
@@ -544,6 +603,8 @@ export function ConversationRunPage({
             onRerun={handleRerun}
             readOnly={readOnly}
             onEditWorkflow={handleEditWorkflow}
+            onConfigureAuto={readOnly ? undefined : handleConfigureAuto}
+            readOnly={readOnly}
             onViewWorkflow={handleViewWorkflow}
             onSessionSwitcherOpenChange={setSessionSwitcherOpen}
             sessionSwitcherOpen={sessionSwitcherOpen}
@@ -589,6 +650,7 @@ export function ConversationRunPage({
                   manualCheckPending: session.manualCheckPending,
                   sessionId: session.sessionId,
                   sessionEstablished: session.sessionEstablished,
+                  workLocation: activeSessionWorkLocation(run.sessionTree, session),
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -634,16 +696,18 @@ export function ConversationRunPage({
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             wallpaperSurface
-            worktreePath={selectedLeaf.worktreePath}
+            worktreePath={worktreePathOfLocation(selectedLeaf.workLocation)}
             showBranchControl={!readOnly}
-            managedWorktreeBranch={selectedLeaf.worktreeBranch}
+            managedWorktreeBranch={worktreeBranchOfLocation(selectedLeaf.workLocation)}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             onSubmitManualCheck={handleSubmitManualCheck}
             showSystemPromptAction={!isDirect}
+            roleSelectionEnabled={isDirect}
             directSessionHeader={isDirect ? {
               title: taskTitle,
               onTitleChange,
+              resident: readOnly ? undefined : resident,
             } : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
@@ -704,7 +768,7 @@ function leafKey(leaf: ConversationSessionLeafVm): string {
 
 function findSelectedLeaf(run: ConversationRunVm): ConversationSessionLeafVm | null {
   return findSelectedLeafFromTree(run.sessionTree)
-    ?? activeSessionToLeaf(run.activeSessions[0]);
+    ?? activeSessionToLeaf(run.sessionTree, run.activeSessions[0]);
 }
 
 function findSelectedLeafFromTree(tree: ConversationRunVm['sessionTree']): ConversationSessionLeafVm | null {
@@ -767,7 +831,16 @@ function leafSortKey(leaf: ConversationSessionLeafVm): string {
   ].join('\u0000');
 }
 
+function activeSessionWorkLocation(
+  tree: ConversationRunVm['sessionTree'],
+  session: ConversationRunVm['activeSessions'][number],
+) {
+  return findConversationLeafByKey(tree, conversationSessionKeyFromParts(session))?.workLocation
+    ?? UNRESOLVED_WORK_LOCATION;
+}
+
 function activeSessionToLeaf(
+  tree: ConversationRunVm['sessionTree'],
   session: ConversationRunVm['activeSessions'][number] | undefined,
 ): ConversationSessionLeafVm | null {
   if (!session) return null;
@@ -787,6 +860,7 @@ function activeSessionToLeaf(
     startedAt: session.startedAt,
     finishedAt: null,
     sessionId: session.sessionId,
+    workLocation: activeSessionWorkLocation(tree, session),
     artifactCount: 0,
     attachmentCount: 0,
   };

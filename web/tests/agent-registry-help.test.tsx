@@ -151,7 +151,7 @@ describe('Agent registry help', () => {
     expect(browser.openWebTarget).toHaveBeenCalledWith(
       ACP_REGISTRY_URL,
       expect.objectContaining({
-        projectId: 'project-1',
+        root: null,
         scopeKey: 'draft:project-1',
       }),
     );

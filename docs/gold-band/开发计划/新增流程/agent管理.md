@@ -5,8 +5,8 @@
 - 2026-09-19：复合菜单一条 `thought_level` 标「思考强度」；多条时 `thinking`/`effort` 中文为「深度思考」「思考强度」，`context` 为「上下文」。英文保持协议名。
 - 2026-09-19：正式会话活目录回写作者态当前表：更新诊断 `configOptions` 的 `model.currentValue` 与绑定行，保留模型/权限 options 列表和 `checked_at`。未观测模型复用最后一次观测（Doctor 或会话），已观测模型仍只画自己的 `modelBoundCatalogs`。
 - 2026-09-19：发起会话不再用 Doctor 当前表拦截 `thought_level` / `model_config`；不支持的项由 `session/new` 回滚为不指定。若仍出现非绑定类 `option-unsupported`，显示「当前模型不支持这项配置」，不再落到「操作失败，请重试」。
-- 2026-09-19：会话与作者态统一按 `modelBoundCatalogs[modelId]` 缓存。已观测只画自己的表；未观测复用当前配置发起，返回后更新该模型缓存。会话栏读本会话 snapshot 的 map，不得把省略表时的上一模型目录写成当前模型。分割线为「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」
-- 2026-09-18：作者态按 `modelBoundCatalogs[modelId]` 缓存每个模型的 `thought_level` / `model_config`；Doctor 与正式会话活目录都可写入。发起会话时 `session/new` 活目录若已不含作者态 option id，或值不在可选列表中，按切模型同一规则 remap 思考强度或回滚为不指定；分割线写出「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」。已观测模型不得把另一模型的 `model_config` 画进所选模型。
+- 2026-09-19：会话与作者态统一按 `modelBoundCatalogs[modelId]` 缓存。已观测只画自己的表；未观测复用当前配置发起，返回后更新该模型缓存。会话栏读本会话 snapshot 的 map，不得把省略表时的上一模型目录写成当前模型。分割线为「当前Agent暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」
+- 2026-09-18：作者态按 `modelBoundCatalogs[modelId]` 缓存每个模型的 `thought_level` / `model_config`；Doctor 与正式会话活目录都可写入。发起会话时 `session/new` 活目录若已不含作者态 option id，或值不在可选列表中，按切模型同一规则 remap 思考强度或回滚为不指定；分割线写出「当前Agent暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」。已观测模型不得把另一模型的 `model_config` 画进所选模型。
 - 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name；Select 身份槽按 SVG viewBox 原样绘制，会话栏继续保留 Codex 等视觉重量缩放。选择器禁用原因与 Agent 管理横幅使用同一条 compact raw 首行，不再把 `session-request-failed` 显示成没有具体原因的「请重试」。
 - 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name，与 Direct 药丸、侧栏和画布共用 `AgentIdentityLabel`；不得只显示名称或改用通用 Bot 图标。
 - 2026-09-18：切到 Luna 等 option id 不同的模型时，思考强度按档位 value remap，不得把 High 当成不支持清空；复合菜单固定思考强度在 Context/Fast 之前。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
@@ -35,7 +35,7 @@ Catalog 与实例必须分域管理：
 - 新建时复制模板用户字段；内置 Agent 的命令和参数始终由当前 Catalog 提供，既有实例随客户端升级更新启动配置，其余用户字段不受影响。自定义 Agent 全部配置由用户维护。
 - 构建/发版前拉取 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，校验精选十一项齐全后生成 Registry 快照、Catalog JSON 和官方 SVG 图标并打包
 - 提供显式离线脚本，允许基于已提交 Registry 快照重建 Catalog；常规发版刷新失败时必须失败退出，不发布残缺 Catalog
-- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "0.72.0"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot；已有内置实例在新客户端中使用覆盖后的启动配置。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
+- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "<exact-version>"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot；已有内置实例在新客户端中使用覆盖后的启动配置。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
 - Kimi 的主/兼容 Skills 目录为 `.kimi-code` / `.agents`；Amp 为 `.agents` / `.claude`；Pi 的全局主目录为 `.pi/agent`、项目主目录为 `.pi`、两端兼容目录均为 `.agents`
 
 主 Skills 目录默认由全局与项目作用域共用。编辑 Sheet 在标题右侧提供带 Tooltip 的分裂图标按钮；开启后按钮呈选中态，单输入框拆为“全局主目录 / 项目主目录”，关闭后恢复共用主目录。数据层以可选项目主目录字段表达拆分状态，不维护独立布尔值。目录策略按作用域生成：全局写入全局主目录，项目写入项目主目录；两端读取时都在各自主目录后追加共用兼容目录，兼容目录始终只读。Catalog、设置实例、Tauri 输入/VM、SkillManager、原生命令扫描和同步状态必须消费同一目录策略接口，禁止在 Pi 调用点判断 Agent ID。
@@ -106,6 +106,47 @@ Agent 实例新增两个独立能力配置：
 - 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
 - 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
 
+### 2026-10-08 Claude / Codex ACP 升级
+
+- 将已有精确 pin 更新为 Claude ACP `0.87.0`、Codex ACP `2.1.1`，基于当前 Registry snapshot 重建 Catalog，不覆盖其他 Agent 的配置变更。
+- 根因是协议入口仍假定旧 adapter 输出：补齐 ACP v1 压缩能力协商、稳定 ID、生命周期、摘要 patch、回放及新轮入口；工具增量更新保留省略字段，累计 Codex 命令输出；远程提问识别 Claude 无 AIR 的自定义答案字段。
+- 复用现有 canonical timeline、用量状态、工具详情和组件，不新增独立状态库、依赖或可选功能。过度设计评审：仅迁移现有体验；性能评审：无全量历史加载，身份查找沿用索引，命令输出有上限，详情仍按需获取。
+- 验收包含失败用例复现、Rust 单测与 mock adapter、前端 DOM 测试和浏览器页面验收；真实 provider 的压缩触发、取消与恢复、工具输出及提问交由用户运行后确认。
+- 已验收：新增 7 项协议/入口/回放/stdio mock 回归通过，远程干预 19 项通过，前端 124 项通过，Catalog 7 项通过；TypeScript 检查和 Vite 生产构建通过。ACP 扩展回归 599 项通过、3 项忽略，另有 `path_files_are_listed_in_the_prompt_text_even_with_optional_capabilities` 因未修改的 `runtime/user_files.md` 使用 CRLF 而断言 LF 失败，单独记录，不计为通过。
+- iab 不可用后使用已连接 Chrome，deep link 到 browser mock 会话，确认压缩完成/进行中/中断/未知状态及压缩前用量显示；DOM 回归另验证同一压缩实体跨更新不重挂、终态计时停止。页面 mock 与真实 provider 行为分开验收。
+- 待用户真实验收：更新后的两个 Agent 各触发一次压缩；压缩/工具执行中停止后继续、重开会话；确认 Codex 持续输出命令结束后详情保留、文件 diff 正确；Claude 选择题和自定义答案可提交（使用 IM 时也验证远程选择）。
+
+#### 新版文件变更、认证与停止 mock 补充验收
+
+- 新增 10 项回归：Rust 文件变更 4 项、认证/停止 stdio 子进程 2 项、认证错误码分类 1 项，前端错误提示 1 项及终态按钮 DOM 2 项。
+- 文件样例按 Codex ACP `2.1.1` 的普通 ACP 输出构造，覆盖同一工具同一文件的多个 hunk、Unicode 与无末尾换行、持久化后重读、新增/删除空文件及采集/展示大小限制。纯重命名的空 diff、上游省略的大型 diff 不生成虚构内容；这验证现有边界，不承诺恢复上游未提供的全文或重命名关系。
+- 认证 mock 先复现 `-32000` 被统一包装成 `provider.acp-prompt-failed`，使既有认证分类失效。修复为使用 schema 的 `ErrorCode::AuthRequired` 映射到 `provider.auth-required`；保留原始错误、手动恢复和无自动重试。中文错误消息单测确保分类不依赖英文文案；普通失败 fixture 改用协议规定的 InternalError `-32603`。
+- 子进程验收覆盖认证失败状态落盘与发布、手动第二轮成功、旧错误清除；停止验收覆盖发送一次 `session/cancel`、未完成工具结束、轮次转 cancelled/idle、后续轮次成功。DOM 验收覆盖停止中禁用、终态覆盖迟到的本地 busy 标记、发送按钮与输入恢复、第二次发送后重新进入忙碌态。
+- 本轮结果：Rust 升级相关 13 项及错误/失败回归 4 项全部通过；1 个 ignored 测试仅作为上述父测试启动的 mock adapter 子进程入口。前端 composer、错误提示、状态投影与停止反馈共 102 项全部通过。未运行真实账号会话或新增页面验收；仍需用户验证真实认证恢复及真实工具执行中停止后继续。
+- 完成评审：复用既有 schema、错误类型、会话生命周期、组件与测试工具，无新依赖、持久字段或产品入口；生产代码仅增加常数时间错误码分类，无新增 I/O、扫描、缓存或渲染工作。mock 子进程在测试结束或断言失败时关闭，临时工作目录自动回收。
+
+#### 压缩摘要右侧阅读（2026-10-08）
+
+- 视觉调整：“查看摘要”移至用量所在的第二行，复用 Button link 变体，普通字重、次要文字色和轻量箭头；悬停加深并显示下划线，窄窗口可换行。仅调整既有组件的展示层级，无新增状态、依赖、数据读取或渲染订阅。
+- 视觉调整验收：摘要相关 5 项 DOM 回归、TypeScript 检查和生产构建通过；独立浏览器确认浅/深色主题下为 12px 次要文字与透明背景，hover 下划线及右侧 Tab 打开正常，窄窗口无横向溢出。继续复用既有布局，不增加运行时开销。
+
+- 完成且包含非空文本摘要的压缩行新增“查看摘要”，按完整会话 locator 和压缩事件 ID 打开/复用右侧 Tab；默认渲染 Markdown，复用现有只读 Markdown/源码组件，支持源码切换与复制。
+- 列表只投影摘要可用性；正文按需读取 canonical timeline 单项及摘要 blob，避免长摘要被通用 raw 截断。新增异步 IPC、加载/失败重试/清空提示和七语言文案，Tab 状态不保存正文，不增加依赖或独立摘要存储。
+- 过度设计与性能评审：复用现有身份、索引、工作区与 Markdown 组件；仅用户打开时读取选中事件，冷索引加载沿用有界索引机制，无首屏逐项详情请求或 raw 日志全量读取。长文本成本限于激活摘要的读取和渲染；不做假设性缓存或全局订阅。
+- 验收：2 项 Rust 接口测试覆盖长摘要 blob 完整读取、文本顺序、空摘要及跨 attempt 隔离；新增 5 项前端回归覆盖有无摘要、重复打开、locator 状态、加载、渲染/源码、错误重试、清空和迟到响应。相关前端共 14 项通过，TypeScript 与 Vite 生产构建通过。iab 不可用、Chrome 连接策略失败后，用独立 agent-browser 会话 deep link 验证右侧打开、源码切换、长文、窄窗口与重新拉宽。真实 provider 摘要需用户在更新后的桌面客户端触发 compact 后确认。
+- 页面补充验收：浅色与深色主题的摘要正文、按钮和 hover 正常；重复点击仍为单个 Tab，页面无横向溢出。跨 attempt 展示前缀通过现有 `goldBandScope.originalId` 还原为 canonical 事件 ID，导航回归固定此契约。验收后关闭专用浏览器、前端进程并清理临时截图。
+
+### 2026-09-30 固定压缩事件兼容版本
+
+- 通过现有 `versionPins` 固定 Claude ACP `0.81.2`、Codex ACP `1.13.1`；这些正式版仍输出 `_meta.contextCompaction`，供现有压缩生命周期识别使用。
+- 基于现有 Registry snapshot 离线重建 Catalog，版本元数据与 npx 启动参数同步固定；上游 snapshot 保留原值。
+- 回归测试同时模拟两个 Agent 的 Registry 版本变化，验证本地固定版本仍优先。后续接入 ACP 预览版 `compaction_update` 并完成验收后再评估解除固定。
+- 过度设计与性能评审：复用现有配置和生成接口，无新增依赖、状态或运行时开销。
+
+### 2026-09-25 解除 Claude / Codex 版本固定
+
+- 删除 `claude-acp` `0.72.0` 与 `codex-acp` `1.12.0` 两项 pin，`versionPins` 为空对象；在线刷新后 Catalog 为 claude-agent-acp `0.81.2`、codex-acp `1.13.1`，其余模板随 Registry 小版本更新。原 `0.72.0` 用于规避 SDK `0.3.257` 的 macOS 12 启动回归，解除后需要在 macOS 12 回归验证。
+
 ### 2026-09-08 构建期本地版本覆盖
 
 - 原设计以在线 Registry 提供模板，发布方缺少固定版本能力；补齐生成期策略覆盖，保留每次 build 在线刷新的行为。当前 Claude 固定 `0.72.0`，删除配置项即可解除固定，不使用 `-1`。
@@ -134,3 +175,28 @@ Agent 实例新增两个独立能力配置：
 - 2026-08-08：新增 Agent 下拉收敛 cmdk active 态的视觉语义。`Command + Popover` 继续保留键盘 active 与回车确认能力，但下拉刚展开时不把第一项渲染为选中态；只有鼠标悬停项显示 hover 背景，避免“自定义 Agent”被误判为默认选中。前端测试固化该样式契约。
 - 已将 macOS / Linux ACP 子进程 PATH 从“常见目录猜测”升级为通用登录 Shell 环境发现：从 Unix 账户默认 Shell 读取 `-ilc` 环境，使用 2 秒总超时、输出边界、进程回收和进程生命周期缓存；移除 `~/.opencode/bin` Agent 特判，并让通用可执行文件查找与 ACP adapter 共用同一解析入口
 - PATH 接口验收：Windows `process` 测试 9 项、ACP adapter 测试 11 项全部通过，覆盖原生 binary、npm `.cmd`、无扩展名 Unix shim 与显式扩展名；Unix 专属 `process.rs` 最小工程在 `x86_64-unknown-linux-gnu` target 交叉编译通过；`cargo check --workspace --all-targets -j 1` 通过，仅保留本轮范围外的既有桌面端 warning
+
+
+## npx 安装缓存修复
+
+- npm/npx Agent 诊断失败且当前诊断原始原因包含 npm ENOENT 与明确的 `_npx/<安装目录>/package.json` 缺失路径时，异常状态旁提供“修复缓存”。这是候选入口，实际可操作性由后端预览核实；不解析共享 npm 日志、不处理任意内部文件缺失。
+- 点击后立即显示检查中状态，使用同一启动环境、工作目录及 npm 安装查询实际缓存根目录。支持常用 cache/userconfig/globalconfig 参数；无法确认配置或路径时拒绝修复。
+- 后端只接受 Agent ID，预览返回已校验目录与诊断/配置/目录集合指纹；确认提交 ID 与指纹，重新核实后执行。支持本次错误中的多个明确目录，去重，上限 16 个；不清空整个 _npx，不清理 _cacache，不增加独立应用缓存。
+- 确认弹窗说明共享影响、重新下载可能性，并允许展开查看目标目录。按钮为“清理并重新检测”；取消不修改磁盘。
+- 只删除实际缓存 _npx 下的直接安装子目录。拒绝越界、父级跳转、安装目录软链接/junction，以及已恢复的 package.json。目录删除使用标准库且不跟随内部链接。
+- 用户确认后直接尝试清理校验通过的目录，不要求退出 Agent，不主动关闭连接、杀进程或强制解锁。确认弹窗提示“正在使用这些缓存的 Agent 可能中断，建议先停止相关任务。”修复持有当前 Agent 的诊断互斥，等待已开始的诊断结束并暂缓后续诊断，结束后自动释放；修复操作本身禁止并发重复执行。占用或权限错误逐项返回，允许部分清理失败。
+- 清理结果逐项返回；全部成功后重新诊断当前 Agent，明确区分清理失败、清理成功但诊断失败、诊断通过。操作期间禁用重复及当前卡片冲突操作。正常列表只做有界错误文本解析，无 npm 查询或缓存扫描；查询限时 10 秒，目录操作放后台线程。
+- 实现复用 npm、现有进程组、shadcn/ui AlertDialog 与诊断接口。仅保留修复操作互斥及现有当前 Agent 诊断互斥，无持久缓存或任务队列。删除 I/O 与目标目录规模相关，不做全缓存扫描或预计算体积。
+
+### npx 缓存修复验收（2026-09-29）
+
+- 后端 4 项测试通过：多个安装目录定向清理与正常缓存保留、ENOENT/越界/已恢复文件拒绝、链接拒绝、同一 npm 安装和 Agent 环境解析；并覆盖重复修复拒绝；进程占用限制后续由下述回归修正。
+- 前端相关 25 项测试通过，包含确认前不清理、即时 loading、取消、重复提交阻止、逐项失败和清理后诊断。TypeScript、前端生产构建、桌面 cargo check 通过；保留既有构建告警。
+- iab 与已连接 Chrome 不可用后，使用独立 agent-browser 会话完成真实页面模拟接口验证：普通/窄窗口/重新拉宽、明暗主题、长路径和清理后诊断失败反馈。没有对用户真实缓存执行清理。测试资源已关闭。
+- 完成评审：复用现有 UI、诊断和进程管理，无新增依赖或持久状态；正常列表无额外 I/O，目标清理在后台执行。外部程序占用仍可能导致部分清理失败，由逐项结果明确反馈。
+
+### 修复入口被常驻进程阻塞的回归修正
+
+- 根因：全局 npm/npx 进程计数把其他 Agent 的常驻连接当作清理前置条件。删除该计数及 Adapter/ManagedProcessGroup 接入，只保留修复操作互斥和当前 Agent 现有诊断互斥，不新增进程归属或关闭机制。
+- 回归先在原实现观察到 running_npx_adapter_does_not_block_user_confirmed_repair 因 npx-cache.busy 失败；修改后同一测试通过，确认运行中的测试 Adapter 不阻止修复且不会被终止，重复修复仍被拒绝。后端缓存模块 5 项、前端修复交互 4 项测试通过，类型检查和生产构建通过；浏览器确认七语言中的简体中文风险提示呈现。
+- 用户确认后可能中断共享缓存使用者；路径校验和逐项失败返回保持不变。修复期间等待当前已开始的诊断完成并暂缓同 Agent 后续诊断，不要求所有 Agent 退出。性能影响为减少启动链路锁与计数，无新扫描、缓存或持久状态。

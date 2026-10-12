@@ -1,7 +1,9 @@
 mod models;
+mod mutations;
 mod paths;
 mod runtime;
 mod service;
+mod trash_bin;
 mod watcher;
 
 use std::path::{Path, PathBuf};
@@ -22,10 +24,12 @@ pub const WORKSPACE_FILE_PREVIEW_PROTOCOL: &str = "gold-band-preview";
 
 pub(crate) async fn resolve_file_link_locator(
     state: &DesktopState,
+    runtime: &WorkspaceFileRuntime,
     project_id: &str,
+    workspace_path: Option<&str>,
     raw_href: &str,
 ) -> CommandResult<WorkspaceFileLocatorVm> {
-    let root = resolve_workspace_root(state, project_id)?;
+    let root = resolve_workspace_root(state, runtime, project_id, workspace_path).await?;
     let parse_root = root.clone();
     let raw_href = raw_href.to_string();
     let (path, _) =
@@ -39,15 +43,23 @@ pub(crate) fn revision_for_preview(path: &Path) -> CommandResult<FileRevisionVm>
 
 use paths::{
     canonicalize_file, locator_for_path, parse_file_link_from, path_is_within,
-    resolve_workspace_relative_path, resolve_workspace_root,
+    resolve_workspace_directory, resolve_workspace_entry_path, resolve_workspace_relative_path,
+    resolve_workspace_root, workspace_watch_root,
 };
 
 #[tauri::command]
 pub async fn list_workspace_directory(
     state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
     input: ListWorkspaceDirectoryInput,
 ) -> CommandResult<Vec<WorkspaceDirectoryEntryVm>> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     let directory = resolve_workspace_relative_path(&root, &input.relative_path)?;
     spawn_blocking_command(move || service::list_directory(&root, &directory)).await
 }
@@ -59,9 +71,16 @@ pub async fn list_workspace_directory(
 pub async fn open_workspace_path_in_file_manager(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
     input: OpenWorkspacePathInFileManagerInput,
 ) -> CommandResult<()> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     let path = resolve_workspace_relative_path(&root, &input.relative_path)?;
     app_handle.opener().reveal_item_in_dir(&path).map_err(|error| {
         paths::error(
@@ -93,6 +112,7 @@ pub(crate) fn read_file_from_directory_root(
     let root = paths::ResolvedWorkspaceRoot {
         project_id,
         path: root_path,
+        workspace_scope_path: None,
         config: gold_band::config::WorkspaceFilesConfig::default(),
     };
     service::read_file(&root, &runtime, &path, None, false)
@@ -101,9 +121,16 @@ pub(crate) fn read_file_from_directory_root(
 #[tauri::command]
 pub async fn search_workspace_files(
     state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
     input: SearchWorkspaceFilesInput,
 ) -> CommandResult<WorkspaceFileSearchVm> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     spawn_blocking_command(move || {
         service::search_files(&root, &input.query, input.request_id, input.limit)
     })
@@ -118,7 +145,13 @@ pub async fn resolve_workspace_file_link(
     watch_runtime: State<'_, WorkspaceFileWatchRuntime>,
     input: ResolveWorkspaceFileLinkInput,
 ) -> CommandResult<ResolvedWorkspaceFileLinkVm> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     let parse_root = root.clone();
     let raw_href = input.raw_href;
     let base_canonical_path = input.base_canonical_path;
@@ -159,7 +192,7 @@ pub async fn resolve_workspace_file_link(
     })
 }
 
-pub(crate) fn resolve_trusted_file(
+pub(crate) async fn resolve_trusted_file(
     app_handle: AppHandle,
     state: &DesktopState,
     runtime: &WorkspaceFileRuntime,
@@ -167,7 +200,7 @@ pub(crate) fn resolve_trusted_file(
     project_id: &str,
     path: PathBuf,
 ) -> CommandResult<ResolvedWorkspaceFileLinkVm> {
-    let root = resolve_workspace_root(state, project_id)?;
+    let root = resolve_workspace_root(state, runtime, project_id, None).await?;
     let path = canonicalize_file(&path, "read")?;
     let locator = locator_for_path(&root, &path);
     let external_access_grant = if locator.scope == "external" {
@@ -206,7 +239,13 @@ pub async fn read_file_resource(
     watch_runtime: State<'_, WorkspaceFileWatchRuntime>,
     input: ReadFileResourceInput,
 ) -> CommandResult<WorkspaceFileSnapshotVm> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     let path = canonicalize_file(Path::new(&input.canonical_path), "read")?;
     let external_access_grant = authorize_external_if_needed(
         runtime.inner(),
@@ -249,7 +288,13 @@ pub async fn resolve_markdown_image(
     runtime: State<'_, WorkspaceFileRuntime>,
     input: ResolveMarkdownImageInput,
 ) -> CommandResult<MarkdownImagePreviewVm> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     let markdown_path = canonicalize_file(Path::new(&input.markdown_canonical_path), "read")?;
     authorize_external_if_needed(
         runtime.inner(),
@@ -380,7 +425,13 @@ pub async fn write_file_resource(
     runtime: State<'_, WorkspaceFileRuntime>,
     input: WriteFileResourceInput,
 ) -> CommandResult<FileRevisionVm> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     let path = canonicalize_file(Path::new(&input.canonical_path), "write")?;
     authorize_external_if_needed(
         runtime.inner(),
@@ -392,6 +443,84 @@ pub async fn write_file_resource(
     )?;
     let runtime = runtime.inner().clone();
     spawn_blocking_command(move || service::write_file(&runtime, &path, &input)).await
+}
+
+#[tauri::command]
+pub async fn create_workspace_entry(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: CreateWorkspaceEntryInput,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
+    let parent = resolve_workspace_directory(&root, &input.parent_relative_path)?;
+    spawn_blocking_command(move || mutations::create_entry(&root, &parent, &input.name, input.kind))
+        .await
+}
+
+#[tauri::command]
+pub async fn rename_workspace_entry(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: RenameWorkspaceEntryInput,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
+    let source = resolve_workspace_entry_path(&root, &input.relative_path)?;
+    spawn_blocking_command(move || mutations::rename_entry(&root, &source, &input.new_name)).await
+}
+
+/// Move a workspace entry to the system trash. The returned receipt backs a
+/// later `restore_workspace_entry` for undo within this app session.
+#[tauri::command]
+pub async fn delete_workspace_entry(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: DeleteWorkspaceEntryInput,
+) -> CommandResult<WorkspaceEntryDeletionVm> {
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
+    let path = resolve_workspace_entry_path(&root, &input.relative_path)?;
+    let project_id = root.project_id.clone();
+    let (entry, trashed) =
+        spawn_blocking_command(move || mutations::delete_entry(&root, &path)).await?;
+    let receipt_id = runtime.record_trash_receipt(project_id, trashed)?;
+    Ok(WorkspaceEntryDeletionVm { receipt_id, entry })
+}
+
+#[tauri::command]
+pub async fn restore_workspace_entry(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: RestoreWorkspaceEntryInput,
+) -> CommandResult<WorkspaceDirectoryEntryVm> {
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
+    let receipt = runtime.trash_receipt(&root.project_id, &input.receipt_id)?;
+    let entry =
+        spawn_blocking_command(move || mutations::restore_entry(&root, &receipt.entry)).await?;
+    runtime.forget_trash_receipt(&input.receipt_id)?;
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -424,19 +553,26 @@ pub fn release_external_file_access(
 }
 
 #[tauri::command]
-pub fn start_workspace_file_watch(
+pub async fn start_workspace_file_watch(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     runtime: State<'_, WorkspaceFileRuntime>,
     watch_runtime: State<'_, WorkspaceFileWatchRuntime>,
     input: WorkspaceFileWatchInput,
 ) -> CommandResult<()> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
     watch_runtime.start_workspace(
         app_handle,
         runtime.inner().clone(),
         root.project_id,
         root.path,
+        root.workspace_scope_path,
         root.config.watch_debounce_ms,
     )
 }
@@ -447,8 +583,65 @@ pub fn stop_workspace_file_watch(
     watch_runtime: State<'_, WorkspaceFileWatchRuntime>,
     input: WorkspaceFileWatchInput,
 ) -> CommandResult<()> {
-    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
-    watch_runtime.stop_workspace(&root.project_id, &root.path)
+    let (project_id, root) = workspace_watch_root(
+        state.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )?;
+    watch_runtime.stop_workspace(&project_id, &root)
+}
+
+/// The main WebView's opener scope does not grant `open_path`; the file must pass the
+/// same workspace / external-grant authorization as a read before the OS launches it.
+#[tauri::command]
+pub async fn open_file_with_system_app(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    runtime: State<'_, WorkspaceFileRuntime>,
+    input: OpenFileWithSystemAppInput,
+) -> CommandResult<()> {
+    let root = resolve_workspace_root(
+        state.inner(),
+        runtime.inner(),
+        &input.project_id,
+        input.workspace_path.as_deref(),
+    )
+    .await?;
+    let path = system_open_target(
+        runtime.inner(),
+        &root.project_id,
+        &root.path,
+        Path::new(&input.canonical_path),
+        input.external_access_token.as_deref(),
+    )?;
+    app_handle
+        .opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|error| {
+            paths::error(
+                "workspace-file.system-open-failed",
+                serde_json::json!({ "path": paths::display_path(&path), "reason": error.to_string() }),
+            )
+        })
+}
+
+fn system_open_target(
+    runtime: &WorkspaceFileRuntime,
+    project_id: &str,
+    root: &Path,
+    raw_path: &Path,
+    external_access_token: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let path = canonicalize_file(raw_path, "open")?;
+    authorize_external_if_needed(
+        runtime,
+        project_id,
+        root,
+        &path,
+        external_access_token,
+        "open",
+    )?;
+    Ok(path)
 }
 
 fn authorize_external_if_needed(
@@ -510,6 +703,92 @@ mod tests {
             runtime
                 .validate_external_grant(Some(&grant.token), "project-b", &first, "write")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn system_open_accepts_workspace_files_and_granted_external_files() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let inside = root.join("pelican.svg");
+        let external = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("report.pdf");
+        std::fs::write(&inside, "<svg/>").unwrap();
+        std::fs::write(&external, "pdf").unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let grant = runtime
+            .issue_external_grant("project-a".to_string(), external.clone(), 30)
+            .unwrap();
+
+        assert_eq!(
+            system_open_target(&runtime, "project-a", &root, &inside, None).unwrap(),
+            inside
+        );
+        assert_eq!(
+            system_open_target(&runtime, "project-a", &root, &external, Some(&grant.token))
+                .unwrap(),
+            external
+        );
+    }
+
+    #[test]
+    fn system_open_rejects_ungranted_missing_and_directory_targets() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let external = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("setup.exe");
+        std::fs::write(&external, "MZ").unwrap();
+        let other = root.join("other.txt");
+        std::fs::write(&other, "other").unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let other_grant = runtime
+            .issue_external_grant("project-a".to_string(), other, 30)
+            .unwrap();
+
+        let code = |result: CommandResult<PathBuf>| result.unwrap_err().code;
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &external,
+                None
+            )),
+            "workspace-file.external-access-denied"
+        );
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &external,
+                Some(&other_grant.token)
+            )),
+            "workspace-file.external-access-denied"
+        );
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &root.join("missing.svg"),
+                None
+            )),
+            "workspace-file.not-found"
+        );
+        assert_eq!(
+            code(system_open_target(
+                &runtime,
+                "project-a",
+                &root,
+                &root,
+                None
+            )),
+            "workspace-file.not-a-file"
         );
     }
 
@@ -613,6 +892,7 @@ mod tests {
             &path,
             &WriteFileResourceInput {
                 project_id: "project-a".to_string(),
+                workspace_path: None,
                 canonical_path: path.to_string_lossy().into_owned(),
                 external_access_token: Some(grant.token),
                 content: "after".to_string(),

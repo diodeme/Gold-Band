@@ -48,6 +48,7 @@ enum DynamicScenario {
     InvalidSessionContinue,
     ProviderRuntimeError,
     MergePauseThenContinue,
+    FanoutPauseThenContinue,
     WorkflowInvocation {
         workflow_id: Arc<Mutex<String>>,
     },
@@ -132,6 +133,10 @@ impl DynamicProvider {
 
     fn merge_pause_then_continue() -> Self {
         Self::new(DynamicScenario::MergePauseThenContinue)
+    }
+
+    fn fanout_pause_then_continue() -> Self {
+        Self::new(DynamicScenario::FanoutPauseThenContinue)
     }
 
     fn workflow_invocation(workflow_id: Arc<Mutex<String>>) -> Self {
@@ -401,6 +406,12 @@ impl DynamicProvider {
             (DynamicScenario::MergePauseThenContinue, _, "group-core-merge", SessionMode::New) => {
                 (ProviderRunStatus::Interrupted, None)
             }
+            (
+                DynamicScenario::FanoutPauseThenContinue,
+                _,
+                "branch-a" | "branch-b",
+                SessionMode::New,
+            ) => (ProviderRunStatus::Interrupted, None),
             _ => {
                 let output_artifact = match self.dynamic_artifact_for(&req) {
                     Some(content) => Some(OutputArtifactPayload {
@@ -409,7 +420,7 @@ impl DynamicProvider {
                             .as_ref()
                             .map(|contract| contract.artifact.clone())
                             .unwrap_or_else(|| "dynamic-node-completion".to_string()),
-                        content,
+                        content: submit_handoff_files(&req, &content)?,
                     }),
                     None => None,
                 };
@@ -707,12 +718,14 @@ impl DynamicProvider {
             (DynamicScenario::InvalidSessionContinue, "bootstrap") => {
                 Some(invalid_session_continue_completion())
             }
-            (DynamicScenario::MergePauseThenContinue, "bootstrap") => {
-                Some(fanout_completion(profile))
-            }
-            (DynamicScenario::MergePauseThenContinue, "branch-a" | "branch-b") => {
-                Some(end_completion("branch done"))
-            }
+            (
+                DynamicScenario::MergePauseThenContinue | DynamicScenario::FanoutPauseThenContinue,
+                "bootstrap",
+            ) => Some(fanout_completion(profile)),
+            (
+                DynamicScenario::MergePauseThenContinue | DynamicScenario::FanoutPauseThenContinue,
+                "branch-a" | "branch-b",
+            ) => Some(end_completion("branch done")),
             (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap")
             | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") =>
             {
@@ -843,6 +856,50 @@ fn nested_fanout_completion(_profile: &str) -> String {
             }
         }"#
     .to_string()
+}
+
+/// Submits a completion the way an agent does: every `summary` / `task` text
+/// is written to a file in the attempt attachments directory and the JSON
+/// carries its relative path. Fixtures stay readable as inline text; content
+/// that is not a JSON object (parse-repair fixtures) is submitted unchanged.
+fn submit_handoff_files(req: &WorkerInvocation, content: &str) -> anyhow::Result<String> {
+    let Ok(mut completion) = serde_json::from_str::<serde_json::Value>(content) else {
+        return Ok(content.to_string());
+    };
+    if !completion.is_object() {
+        return Ok(content.to_string());
+    }
+    let attachments_dir = &req.runtime_context.attachments_dir;
+    let mut slots = vec![("".to_string(), "summary".to_string())];
+    for stage in ["node", "merge", "acceptance"] {
+        slots.push((format!("/next/{stage}"), stage.to_string()));
+    }
+    let branches = completion["next"]["nodes"].as_array().map_or(0, Vec::len);
+    for index in 0..branches {
+        slots.push((format!("/next/nodes/{index}"), format!("branch-{index}")));
+    }
+    for (pointer, name) in slots {
+        let Some(owner) = completion
+            .pointer_mut(&pointer)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let (text_field, path_field) = if pointer.is_empty() {
+            ("summary", "summaryPath")
+        } else {
+            ("task", "taskPath")
+        };
+        let Some(text) = owner.remove(text_field) else {
+            continue;
+        };
+        let relative = format!("handoff/{name}.md");
+        let path = attachments_dir.join(&relative);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, text.as_str().unwrap_or_default())?;
+        owner.insert(path_field.to_string(), json!(relative));
+    }
+    Ok(completion.to_string())
 }
 
 fn end_completion(summary: &str) -> String {
@@ -2389,6 +2446,107 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
 }
 
 #[test]
+fn ai_dynamic_foreground_continue_resumes_paused_leaf_until_run_settles() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-merge-foreground-continue";
+    let provider = DynamicProvider::merge_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+
+    let run = app.run_continue_foreground(task_id, "run-001", false).unwrap();
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    let graph = dynamic_graph(&app, task_id);
+    let merge = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "group-core-merge")
+        .unwrap();
+    assert_eq!(merge.status, DynamicNodeStatus::Completed);
+    let invocations = provider.invocations.lock().unwrap();
+    let merge_continue = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.node_id == "group-core-merge"
+                && invocation.session_mode == SessionMode::Continue
+        })
+        .expect("merge resumed in its own session");
+    assert_eq!(
+        merge_continue.user_prompt_render_mode,
+        UserPromptRenderMode::RuntimeResume
+    );
+}
+
+#[test]
+fn ai_dynamic_foreground_continue_rejects_settled_run() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-foreground-continue-settled";
+    let provider = DynamicProvider::merge_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+    app.run_start(task_id, None).unwrap();
+    app.run_continue_foreground(task_id, "run-001", false).unwrap();
+
+    let error = app
+        .run_continue_foreground(task_id, "run-001", false)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("not resumable"));
+}
+
+#[test]
+fn ai_dynamic_foreground_continue_resumes_every_paused_leaf_until_run_settles() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-fanout-foreground-continue";
+    let provider = DynamicProvider::fanout_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    let paused = dynamic_graph(&app, task_id)
+        .nodes
+        .iter()
+        .filter(|node| node.status == DynamicNodeStatus::Paused)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(paused, ["branch-a", "branch-b"]);
+
+    let run = app.run_continue_foreground(task_id, "run-001", false).unwrap();
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    let graph = dynamic_graph(&app, task_id);
+    let invocations = provider.invocations.lock().unwrap();
+    for branch in ["branch-a", "branch-b"] {
+        let node = graph.nodes.iter().find(|node| node.id == branch).unwrap();
+        assert_eq!(node.status, DynamicNodeStatus::Completed);
+        let resumed = invocations
+            .iter()
+            .find(|invocation| {
+                invocation.runtime_context.node_id == branch
+                    && invocation.session_mode == SessionMode::Continue
+            })
+            .unwrap_or_else(|| panic!("{branch} resumed in its own session"));
+        assert_eq!(
+            resumed.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+        );
+    }
+}
+
+#[test]
 fn ai_dynamic_run_rejects_non_git_workspace_before_provider() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -2592,9 +2750,8 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
     assert_eq!(prompt.attachment_metas[0].path, "task-inputs/image.png");
     match prompt.content_blocks.first() {
         Some(AcpContentBlock::Image(block)) => {
-            let expected_uri = format!("file://{}", image_path_string.replace('\\', "/"));
             assert_eq!(block.mime_type, "image/png");
-            assert_eq!(block.link.uri, expected_uri);
+            assert_eq!(block.file.path, image_path_string);
         }
         _ => panic!("expected image content block"),
     }

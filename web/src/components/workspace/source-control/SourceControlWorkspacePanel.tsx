@@ -30,7 +30,7 @@ import type {
   GitMutationRequestVm,
   GitOperationErrorVm,
   GitOperationRequestVm,
-  GitSourceControlSnapshotVm,
+  GitSourceControlOverviewVm,
 } from '@/types';
 import {
   gitDiffReviewWorkspaceResourceKey,
@@ -39,21 +39,36 @@ import {
   type SourceControlWorkspaceResource,
 } from '../right-workspace-context';
 import { SourceControlRepositoryView } from './SourceControlRepositoryView';
+import { SourceControlDiscardMenu } from './SourceControlDiscardMenu';
 import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
 import { SourceControlChangesToolbar, SourceControlSyncActions } from './SourceControlChangesToolbar';
 import { SourceControlGitHubView } from './SourceControlGitHubView';
 import { SourceControlHistoryView } from './SourceControlHistoryView';
-import { githubDataStore, githubRepositorySessionKey } from './github-data-store';
+import { WorkspaceRootUnavailable } from '../WorkspaceRootUnavailable';
+import { workspaceRootRef } from '@/lib/workspace-root';
 import { diffReviewStore, workspaceReviewItems } from './diff-review-store';
 import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
 
 export { workspaceReviewItems } from './diff-review-store';
 
 export function SourceControlWorkspacePanel({ resource }: { resource: SourceControlWorkspaceResource }) {
+  const workspace = useRightWorkspace();
+  if (resource.root.kind === 'unavailable') {
+    return (
+      <WorkspaceRootUnavailable
+        root={resource.root}
+        onBrowseMain={() => void workspace.openResource({ ...resource, browseMain: true })}
+      />
+    );
+  }
+  return <SourceControlRootPanel resource={resource} workspacePath={resource.root.workspacePath} />;
+}
+
+function SourceControlRootPanel({ resource, workspacePath }: { resource: SourceControlWorkspaceResource; workspacePath: string | null }) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
-  const session = useSourceControlSession(resource.projectId, resource.workspacePath);
+  const session = useSourceControlSession(resource.projectId, workspacePath);
   const {
     activeOperation,
     activeTab,
@@ -67,67 +82,60 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
   } = session;
 
   const load = useCallback(async () => {
-    await sourceControlStore.refresh(resource.projectId, resource.workspacePath);
-  }, [resource.projectId, resource.workspacePath]);
+    await sourceControlStore.refresh(resource.projectId, workspacePath);
+  }, [resource.projectId, workspacePath]);
 
   useEffect(() => {
-    void sourceControlStore.ensureLoaded(resource.projectId, resource.workspacePath);
-  }, [resource.projectId, resource.workspacePath]);
-
-  useEffect(() => {
-    const repository = snapshot?.repository;
-    if (!repository) return;
-    const sessionKey = githubRepositorySessionKey(resource.projectId, repository.commonDir, repository.workspacePath);
-    void githubDataStore.getCapability(
-      sessionKey,
-      resource.projectId,
-      repository.workspacePath,
-    ).catch(() => undefined);
-  }, [resource.projectId, snapshot?.repository]);
+    void sourceControlStore.ensureLoaded(resource.projectId, workspacePath);
+  }, [resource.projectId, workspacePath]);
 
   const changeTab = useCallback((value: SourceControlTab) => {
-    sourceControlStore.setActiveTab(resource.projectId, resource.workspacePath, value);
-  }, [resource.projectId, resource.workspacePath]);
+    sourceControlStore.setActiveTab(resource.projectId, workspacePath, value);
+  }, [resource.projectId, workspacePath]);
 
   const changeRepositoryTab = useCallback((value: import('./source-control-store').SourceControlRepositoryTab) => {
-    sourceControlStore.setRepositoryTab(resource.projectId, resource.workspacePath, value);
-  }, [resource.projectId, resource.workspacePath]);
+    sourceControlStore.setRepositoryTab(resource.projectId, workspacePath, value);
+  }, [resource.projectId, workspacePath]);
 
   const mutate = useCallback((input: GitMutationRequestVm) => {
-    void sourceControlStore.mutate(resource.projectId, resource.workspacePath, input);
-  }, [resource.projectId, resource.workspacePath]);
+    void sourceControlStore.mutate(resource.projectId, workspacePath, input);
+  }, [resource.projectId, workspacePath]);
 
   const startOperation = useCallback((input: GitOperationRequestVm) => {
-    void sourceControlStore.startOperation(resource.projectId, resource.workspacePath, input);
-  }, [resource.projectId, resource.workspacePath]);
+    void sourceControlStore.startOperation(resource.projectId, workspacePath, input);
+  }, [resource.projectId, workspacePath]);
 
   const cancelOperation = useCallback(() => {
-    void sourceControlStore.cancelOperation(resource.projectId, resource.workspacePath);
-  }, [resource.projectId, resource.workspacePath]);
+    void sourceControlStore.cancelOperation(resource.projectId, workspacePath);
+  }, [resource.projectId, workspacePath]);
 
   const dismissOperation = useCallback(() => {
-    sourceControlStore.dismissOperationResult(resource.projectId, resource.workspacePath);
-  }, [resource.projectId, resource.workspacePath]);
+    sourceControlStore.dismissOperationResult(resource.projectId, workspacePath);
+  }, [resource.projectId, workspacePath]);
 
   const initializeRepository = useCallback(() => {
-    void sourceControlStore.initializeRepository(resource.projectId, resource.workspacePath);
-  }, [resource.projectId, resource.workspacePath]);
+    void sourceControlStore.initializeRepository(resource.projectId, workspacePath);
+  }, [resource.projectId, workspacePath]);
+
+  const retryRemotes = useCallback(() => {
+    void sourceControlStore.retryRemotes(resource.projectId, workspacePath);
+  }, [resource.projectId, workspacePath]);
 
   const openDiff = useCallback((change: GitFileChangeVm, area: 'staged' | 'unstaged') => {
     if (!workspace.scopeKey || !snapshot) return;
     const changes = area === 'staged'
       ? snapshot.status.staged
       : [...snapshot.status.unstaged, ...snapshot.status.untracked];
-    const items = workspaceReviewItems(resource.workspacePath, area, changes);
+    const items = workspaceReviewItems(workspacePath, area, changes);
     const item = items.find((candidate) => candidate.path === change.path);
     if (!item) return;
-    const reviewSessionId = `${resource.projectId}:workspace:${resource.workspacePath ?? 'main'}:${area}:${snapshot.repository.revision}`;
+    const reviewSessionId = `${resource.projectId}:workspace:${workspacePath ?? 'main'}:${area}:${snapshot.repository.revision}`;
     diffReviewStore.save({
       id: reviewSessionId,
       projectId: resource.projectId,
       revision: snapshot.repository.revision,
       items,
-      workspace: { workspacePath: resource.workspacePath ?? null, area },
+      workspace: { workspacePath: workspacePath ?? null, area },
     });
     void workspace.openResource({
       kind: 'file-diff',
@@ -142,16 +150,17 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
       reviewItemId: item.id,
       reviewLanding: 'top',
     });
-  }, [resource.projectId, resource.workspacePath, snapshot, workspace]);
+  }, [resource.projectId, workspacePath, snapshot, workspace]);
 
   const openConflictFile = useCallback(async (change: GitFileChangeVm) => {
     if (!workspace.scopeKey) return;
-    const resolved = await resolveWorkspaceFileLink(resource.projectId, change.path, snapshot?.repository.workspacePath ?? null);
+    const resolved = await resolveWorkspaceFileLink(workspaceRootRef(resource.projectId, workspacePath), change.path, snapshot?.repository.workspacePath ?? null);
     workspace.openResource({
       kind: 'file',
       key: fileWorkspaceResourceKey(resource.projectId, resolved.locator.canonicalPath),
       scopeKey: workspace.scopeKey,
       projectId: resource.projectId,
+      workspacePath,
       title: change.path.split('/').at(-1) ?? change.path,
       description: change.path,
       attention: false,
@@ -159,7 +168,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
       target: null,
       targetRevision: 0,
     });
-  }, [resource.projectId, snapshot?.repository.workspacePath, workspace]);
+  }, [resource.projectId, snapshot?.repository.workspacePath, workspace, workspacePath]);
 
   if (!snapshot && !error) {
     if (session.status === 'unavailable' && capability) {
@@ -195,14 +204,22 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
     <section
       className="flex min-h-0 flex-1 flex-col"
       data-source-control-workspace="true"
-      data-source-control-workspace-path={resource.workspacePath ?? 'main'}
+      data-source-control-workspace-path={workspacePath ?? 'main'}
       data-theme-role="diff"
     >
       <header className="shrink-0 border-b border-border/60 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <GitBranch className="size-4 shrink-0 text-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
-          <SourceControlSyncActions snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onOperation={startOperation} />
+          <SourceControlSyncActions
+            snapshot={snapshot}
+            busyActionKind={busyActionKind}
+            locked={writeLocked}
+            remotesLoading={session.remotesLoading}
+            remotesError={session.remotesError !== null}
+            onRetryRemotes={retryRemotes}
+            onOperation={startOperation}
+          />
         </div>
         {locked ? <div className="mt-1 text-ui-caption text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
         {activeOperation ? <SourceControlOperationStatus operation={activeOperation} onCancel={cancelOperation} onDismiss={dismissOperation} /> : null}
@@ -219,6 +236,13 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
           <TabsTrigger value="repository" className="text-xs">{t('sourceControl.repository')}</TabsTrigger>
           <TabsTrigger value="github" className="text-xs">GitHub</TabsTrigger>
         </TabsList>
+
+        {session.catalog && (activeTab === 'repository' || activeTab === 'github') && session.catalogError ? (
+          <div role="alert" className="flex shrink-0 items-center justify-between gap-2 px-3 py-1 text-xs">
+            <SourceControlError error={session.catalogError} />
+            <Button size="sm" variant="ghost" onClick={() => changeTab(activeTab)}>{t('sourceControl.checkAgain')}</Button>
+          </div>
+        ) : null}
 
         <TabsContent value="changes" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
           <SourceControlChangesToolbar snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onMutation={mutate} onOperation={startOperation} />
@@ -237,6 +261,9 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                   title={t('sourceControl.staged')}
                   changes={snapshot.status.staged}
                   tone="staged"
+                  key={`staged:${resource.projectId}:${workspacePath}`}
+                  onDiscard={(change) => mutate({ kind: 'discard-path', path: change.path })}
+                  discardPendingPath={pendingAction?.kind === 'discard-path' ? pendingAction.path : null}
                   onOpen={(change) => openDiff(change, 'staged')}
                   actionLabel={t('sourceControl.unstage')}
                   actionIcon={<Undo2 className="size-3" />}
@@ -248,6 +275,9 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                   title={t('sourceControl.unstaged')}
                   changes={snapshot.status.unstaged}
                   tone="unstaged"
+                  key={`unstaged:${resource.projectId}:${workspacePath}`}
+                  onDiscard={(change) => mutate({ kind: 'discard-path', path: change.path })}
+                  discardPendingPath={pendingAction?.kind === 'discard-path' ? pendingAction.path : null}
                   onOpen={(change) => openDiff(change, 'unstaged')}
                   actionLabel={t('sourceControl.stage')}
                   actionIcon={<Check className="size-3" />}
@@ -259,6 +289,9 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                   title={t('sourceControl.untracked')}
                   changes={snapshot.status.untracked}
                   tone="untracked"
+                  key={`untracked:${resource.projectId}:${workspacePath}`}
+                  onDiscard={(change) => mutate({ kind: 'discard-path', path: change.path })}
+                  discardPendingPath={pendingAction?.kind === 'discard-path' ? pendingAction.path : null}
                   onOpen={(change) => openDiff(change, 'unstaged')}
                   actionLabel={t('sourceControl.stage')}
                   actionIcon={<Check className="size-3" />}
@@ -272,14 +305,14 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
           <div className="shrink-0 border-t border-border/60 p-2.5">
             <Input
               value={subject}
-              onChange={(event) => sourceControlStore.setSubject(resource.projectId, resource.workspacePath, event.target.value)}
+              onChange={(event) => sourceControlStore.setSubject(resource.projectId, workspacePath, event.target.value)}
               placeholder={t('sourceControl.commitSubject')}
               disabled={writeLocked || busy}
               className="h-8 text-xs"
             />
             <Textarea
               value={body}
-              onChange={(event) => sourceControlStore.setBody(resource.projectId, resource.workspacePath, event.target.value)}
+              onChange={(event) => sourceControlStore.setBody(resource.projectId, workspacePath, event.target.value)}
               placeholder={t('sourceControl.commitBody')}
               disabled={writeLocked || busy}
               className="mt-2 min-h-16 resize-y text-xs"
@@ -299,18 +332,18 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         </TabsContent>
 
         <TabsContent value="history" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          <SourceControlHistoryView resource={resource} session={session} snapshot={snapshot} busy={busy} />
+          <SourceControlHistoryView resource={resource} workspacePath={workspacePath} session={session} snapshot={snapshot} busy={busy} />
         </TabsContent>
 
         <TabsContent value="repository" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          <SourceControlRepositoryView snapshot={snapshot} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} />
+          {session.catalog ? <SourceControlRepositoryView snapshot={{ ...session.catalog, ...snapshot }} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked || session.catalogLoading || Boolean(session.catalogError) || Boolean(session.refreshing)} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('repository')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
         </TabsContent>
 
         <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          <SourceControlGitHubView
+          {session.catalog ? <SourceControlGitHubView
             projectId={resource.projectId}
-            workspacePath={resource.workspacePath}
-            snapshot={snapshot}
+            workspacePath={workspacePath}
+            snapshot={{ ...session.catalog, ...snapshot }}
             busy={busy}
             onPush={(remote, branch) => startOperation({
               kind: 'push',
@@ -318,7 +351,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
               branch,
               setUpstream: branch === snapshot.repository.currentBranch && !snapshot.repository.upstream,
             })}
-          />
+          /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('github')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
         </TabsContent>
       </Tabs>
     </section>
@@ -387,7 +420,7 @@ function SourceControlOperationStatus({ operation, onCancel, onDismiss }: {
 }
 
 function SourceControlConflictWorkflow({ operation, busy, onOperation }: {
-  operation: NonNullable<GitSourceControlSnapshotVm['status']['operationInProgress']>;
+  operation: NonNullable<GitSourceControlOverviewVm['status']['operationInProgress']>;
   busy: boolean;
   onOperation: (input: GitOperationRequestVm) => void;
 }) {
@@ -449,6 +482,8 @@ function ChangeGroup({
   pendingPath,
   disabled,
   onAction,
+  onDiscard,
+  discardPendingPath,
 }: {
   title: string;
   changes: GitFileChangeVm[];
@@ -459,7 +494,10 @@ function ChangeGroup({
   pendingPath?: string | null;
   disabled?: boolean;
   onAction?: (change: GitFileChangeVm) => void;
+  onDiscard?: (change: GitFileChangeVm) => void;
+  discardPendingPath?: string | null;
 }) {
+  const { t } = useTranslation();
   if (changes.length === 0) return null;
   return (
     <TooltipProvider>
@@ -469,7 +507,7 @@ function ChangeGroup({
       </div>
       {changes.map((change) => {
         const actionPending = pendingPath === change.path;
-        return (
+        const row = (
           <SourceControlDiffFileRow
             key={`${change.path}:${change.indexStatus ?? ''}:${change.worktreeStatus ?? ''}`}
             path={change.path}
@@ -478,7 +516,11 @@ function ChangeGroup({
             addedLines={change.addedLines}
             deletedLines={change.deletedLines}
             onClick={() => onOpen(change)}
-            trailing={onAction && (!disabled || actionPending) ? (
+            trailing={discardPendingPath === change.path ? (
+              <span className="flex size-6 shrink-0 items-center justify-center" data-source-control-row-progress="true">
+                <LoaderCircle className="size-3 animate-spin" aria-label={t('sourceControl.discarding')} />
+              </span>
+            ) : onAction && (!disabled || actionPending) ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button type="button" size="icon-xs" variant="ghost" className={cn('opacity-0 group-hover:opacity-100 focus-visible:opacity-100', actionPending && 'opacity-100 disabled:opacity-100')} disabled={disabled} aria-busy={actionPending} aria-label={`${actionLabel}: ${change.path}`} onClick={() => onAction(change)}>
@@ -490,6 +532,7 @@ function ChangeGroup({
             ) : null}
           />
         );
+        return onDiscard ? <SourceControlDiscardMenu key={change.path} change={change} disabled={Boolean(disabled)} pending={discardPendingPath === change.path} onDiscard={() => onDiscard(change)}>{row}</SourceControlDiscardMenu> : row;
       })}
     </section>
     </TooltipProvider>

@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-19T17:57:06.127Z"
+    "fetchedAt": "2026-10-11T16:25:08.211Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.72.0",
+      "version": "0.87.0",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.72.0"
+        "@agentclientprotocol/claude-agent-acp@0.87.0"
       ],
       "env": {},
       "primaryAgentDir": ".claude",
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.12.0",
+      "version": "2.1.1",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.12.0"
+        "@agentclientprotocol/codex-acp@2.1.1"
       ],
       "env": {},
       "primaryAgentDir": ".codex",
@@ -53,7 +53,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.09.15",
+      "version": "2026.10.01",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -75,7 +75,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.60.0",
+      "version": "0.63.0",
       "description": "Google's official CLI for Gemini",
       "repository": "https://github.com/google-gemini/gemini-cli",
       "website": "https://geminicli.com",
@@ -84,7 +84,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.60.0",
+        "@google/gemini-cli@0.63.0",
         "--acp"
       ],
       "env": {},
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.155.0",
+      "version": "2.164.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.155.0",
+        "@tencent-ai/codebuddy-code@2.164.0",
         "--acp"
       ],
       "env": {},
@@ -121,7 +121,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.51.0",
+      "version": "1.54.0",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",
@@ -141,7 +141,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.24.1",
+      "version": "0.25.1",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -150,7 +150,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.24.1",
+        "@qwen-code/qwen-code@0.25.1",
         "--acp",
         "--experimental-skills"
       ],
@@ -164,7 +164,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.18.31",
+      "version": "1.19.0",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",
@@ -186,7 +186,7 @@
     {
       "id": "kimi",
       "label": "Kimi Code",
-      "version": "1.50.0",
+      "version": "1.52.0",
       "description": "Moonshot AI's coding assistant",
       "repository": "https://github.com/MoonshotAI/kimi-cli",
       "website": "https://moonshotai.github.io/kimi-cli/",
@@ -208,7 +208,7 @@
     {
       "id": "amp-acp",
       "label": "Amp",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "description": "ACP wrapper for Amp - the frontier coding agent",
       "repository": "https://github.com/tao12345666333/amp-acp",
       "website": null,
@@ -228,7 +228,7 @@
     {
       "id": "pi-acp",
       "label": "Pi",
-      "version": "0.0.33",
+      "version": "0.0.34",
       "description": "ACP adapter for pi coding agent",
       "repository": "https://github.com/svkozak/pi-acp",
       "website": null,
@@ -237,7 +237,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "pi-acp@0.0.33"
+        "pi-acp@0.0.34"
       ],
       "env": {},
       "primaryAgentDir": ".pi/agent",

@@ -947,7 +947,7 @@ describe('ACP composite model selector', () => {
       i18n.t('acp.thoughtLevel', { lng: 'en' }),
       1,
       (key, options) => i18n.t(key, { ...options, lng: 'en' }),
-    )).toBe('Reasoning (effort)');
+    )).toBe('Thinking effort (effort)');
   });
 
   it('forwards disabled state to model-only and composite triggers', () => {

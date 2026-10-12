@@ -11,12 +11,14 @@ import {
   createHiddenPromptSectionWorkspaceResource,
   createDraftAttachmentWorkspaceResource,
   createConversationWorkspaceScope,
+  sentAttachmentPreviewAliasKey,
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
   hiddenPromptSectionWorkspaceResourceKey,
-  projectSourceControlWorkspaceState,
+  projectWorkspaceTabRoots,
+  fileWorkspaceResourceKey,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
   sourceControlWorkspaceResourceKey,
@@ -26,6 +28,7 @@ import {
   type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
+import { MAIN_WORKSPACE_TAB_ROOT } from '@/lib/workspace-root';
 
 const locator = (branchId: string): AgentTranscriptLocator => ({
   projectId: 'project-1',
@@ -55,23 +58,60 @@ describe('right workspace resource model', () => {
       key: sourceControlWorkspaceResourceKey('project-1'),
       scopeKey: 'conversation:project-1:task-1:run-1',
       projectId: 'project-1',
-      workspacePath: null,
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: false,
       title: 'Source control',
       attention: false,
     };
     const main = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
 
     expect(sourceControlWorkspaceResourceKey('project-1')).toBe('source-control:project-1');
-    expect(projectSourceControlWorkspaceState(main, null)).toBe(main);
+    expect(projectWorkspaceTabRoots(main, MAIN_WORKSPACE_TAB_ROOT)).toBe(main);
 
-    const worktree = projectSourceControlWorkspaceState(main, 'D:/repo/worktrees/worker-a');
+    const worktreeRoot = { kind: 'available', workspacePath: 'D:/repo/worktrees/worker-a' } as const;
+    const worktree = projectWorkspaceTabRoots(main, worktreeRoot);
     expect(worktree.tabs).toHaveLength(1);
     expect(worktree.activeTabKey).toBe(resource.key);
-    expect(worktree.tabs[0]).toMatchObject({
-      key: resource.key,
-      workspacePath: 'D:/repo/worktrees/worker-a',
+    expect(worktree.tabs[0]).toMatchObject({ key: resource.key, root: worktreeRoot });
+    expect(projectWorkspaceTabRoots(worktree, { kind: 'available', workspacePath: 'd:\\REPO\\worktrees\\worker-a\\' })).toBe(worktree);
+  });
+
+  it('never shows project-root files for a reclaimed worktree unless the user chooses to', () => {
+    const worktreePath = 'D:/repo/worktrees/worker-a';
+    const selectedFile = {
+      kind: 'file' as const,
+      key: fileWorkspaceResourceKey('project-1', `${worktreePath}/a.ts`),
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      projectId: 'project-1',
+      workspacePath: worktreePath,
+      title: 'a.ts',
+      attention: false,
+      locator: { projectId: 'project-1', canonicalPath: `${worktreePath}/a.ts`, relativePath: 'a.ts', scope: 'workspace' as const },
+      target: null,
+      targetRevision: 0,
+    };
+    const state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: selectedFile });
+    const worktree = { kind: 'available', workspacePath: worktreePath } as const;
+    const released = { kind: 'unavailable', reason: 'released', workspacePath: worktreePath } as const;
+    expect(state.tabs[0]).toMatchObject({ kind: 'file-browser', root: worktree, browseMain: false });
+
+    // Reclaimed: the tab reports the unavailable root and keeps the file for a return.
+    const unavailable = projectWorkspaceTabRoots(state, released);
+    expect(unavailable.tabs[0]).toMatchObject({ root: released, selectedFile: { key: selectedFile.key } });
+
+    // Browsing main is explicit and drops the worktree file, which does not exist in main.
+    const browsing = rightWorkspaceReducer(state, {
+      type: 'open',
+      resource: { ...(unavailable.tabs[0] as Extract<RightWorkspaceResource, { kind: 'file-browser' }>), browseMain: true },
     });
-    expect(projectSourceControlWorkspaceState(worktree, 'd:\\REPO\\worktrees\\worker-a\\')).toBe(worktree);
+    expect(projectWorkspaceTabRoots(browsing, released).tabs[0]).toMatchObject({
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: true,
+      selectedFile: null,
+    });
+
+    // Once the session works in a worktree again, the explicit choice no longer applies.
+    expect(projectWorkspaceTabRoots(browsing, worktree).tabs[0]).toMatchObject({ root: worktree, browseMain: false });
   });
 
   it('uses stable locator-only keys for conversation and ACP resources', () => {
@@ -405,16 +445,11 @@ describe('right workspace resource model', () => {
       previewUrl: 'blob:preview',
       source: 'paste' as const,
     };
-    const persistedKey = conversationAssetWorkspaceResourceKey('input-attachment', {
-      projectId: 'project-1',
-      taskId: 'task-1',
-      taskUuid: 'task-uuid-1',
-      runId: 'run-1',
-      roundId: 'round-later',
-      nodeId: 'node-later',
-      attemptId: 'attempt-later',
-      branchId: 'branch-later',
-    }, attachment.name, 'task-inputs/preview.png');
+    const sameName = {
+      ...attachment,
+      id: 'attachment-2',
+      previewUrl: 'blob:preview-2',
+    };
     const draftAttachment: RightWorkspaceResource = {
       kind: 'draft-attachment',
       key: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
@@ -426,7 +461,15 @@ describe('right workspace resource model', () => {
     };
     store.save(draft, {
       ...createInitialRightWorkspaceState(),
-      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }, draftAttachment],
+      tabs: [
+        { ...agent('draft-agent'), scopeKey: draft.key },
+        draftAttachment,
+        createDraftAttachmentWorkspaceResource({
+          scopeKey: draft.key,
+          projectId: draft.projectId,
+          attachment: sameName,
+        }),
+      ],
       activeTabKey: draftAttachment.key,
     });
     store.openWorkspace(draft, { explicit: true });
@@ -434,29 +477,77 @@ describe('right workspace resource model', () => {
 
     expect(store.has(draft)).toBe(false);
     const promoted = store.restore(conversation);
-    expect(promoted).toMatchObject({
-      tabs: [
-        { key: agent('draft-agent').key, scopeKey: conversation.key },
-        {
-          kind: 'conversation-asset',
-          key: persistedKey,
-          scopeKey: conversation.key,
-          assetKind: 'input-attachment',
-          name: attachment.name,
-          path: 'task-inputs/preview.png',
-          locator: {
-            projectId: 'project-1',
-            taskId: 'task-1',
-            taskUuid: 'task-uuid-1',
-            runId: 'run-1',
-          },
-        },
-      ],
-      activeTabKey: persistedKey,
-    });
-    expect(promoted.tabs.some((tab) => tab.kind === 'draft-attachment')).toBe(false);
-    expect(JSON.stringify(promoted)).not.toContain('blob:preview');
+    expect(promoted.tabs.filter((tab) => tab.kind === 'draft-attachment')).toEqual([
+      expect.objectContaining({
+        key: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+        scopeKey: conversation.key,
+        attachment: expect.objectContaining({ id: attachment.id, name: 'preview.png', previewUrl: 'blob:preview' }),
+      }),
+      expect.objectContaining({
+        key: draftAttachmentWorkspaceResourceKey(conversation.key, sameName.id),
+        scopeKey: conversation.key,
+        attachment: expect.objectContaining({ id: sameName.id, name: 'preview.png', previewUrl: 'blob:preview-2' }),
+      }),
+    ]);
+    expect(promoted.activeTabKey).toBe(draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id));
+    expect(promoted.tabs.some((tab) => tab.kind === 'conversation-asset')).toBe(false);
     expect(store.peekShellState(conversation).requestedOpen).toBe(true);
+  });
+
+  it('reuses an open draft preview when a sent message uses the same attachment id', () => {
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
+      runId: 'run-1',
+    });
+    const attempt = {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      branchId: 'root',
+    };
+    const attachment = {
+      id: 'attachment-1',
+      name: 'image.png',
+      size: 4,
+      mime: 'image/png',
+      previewUrl: 'blob:open-preview',
+      source: 'paste' as const,
+    };
+    const other = { ...attachment, id: 'attachment-2', previewUrl: 'blob:other-preview' };
+    store.save(draft, {
+      tabs: [
+        createDraftAttachmentWorkspaceResource({ scopeKey: draft.key, projectId: 'project-1', attachment }),
+        createDraftAttachmentWorkspaceResource({ scopeKey: draft.key, projectId: 'project-1', attachment: other }),
+      ],
+      activeTabKey: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
+    });
+    store.promoteDraft(draft, conversation);
+    const aliasKey = sentAttachmentPreviewAliasKey({
+      assetKind: 'input-attachment',
+      locator: attempt,
+      name: attachment.name,
+    });
+
+    expect(store.aliasDraftAttachmentPreview(conversation.key, attachment.id, aliasKey)).toBe(true);
+    expect(store.aliasDraftAttachmentPreview(conversation.key, 'missing', aliasKey)).toBe(false);
+
+    const reused = store.draftAttachmentForPreviewAlias(conversation.key, aliasKey);
+    expect(reused?.attachment).toMatchObject({ id: attachment.id, previewUrl: 'blob:open-preview' });
+    expect(reused?.kind).toBe('draft-attachment');
+    expect(store.draftAttachmentForPreviewAlias(conversation.key, sentAttachmentPreviewAliasKey({
+      assetKind: 'message-attachment',
+      locator: { ...attempt, attemptId: 'attempt-2' },
+      name: attachment.name,
+    }))).toBeNull();
+    expect(store.restore(conversation).tabs.filter((tab) => tab.kind === 'draft-attachment')).toHaveLength(2);
   });
 
   it('keeps draft promotion isolated to the same project and idempotent after success', () => {

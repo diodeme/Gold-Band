@@ -232,11 +232,20 @@ pub enum AcpTurnAdmission {
     ExistingTerminal(AcpLifecycleHeader),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpLifecycleOwner {
     pub turn_id: String,
     pub operation_id: String,
     pub revision: u64,
+}
+
+/// An exited execution observed in this process, not a committed lifecycle revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpExecutionError {
+    pub owner: AcpLifecycleOwner,
+    pub error: RuntimeErrorInfo,
 }
 
 /// Owns the terminal settlement fallback for one claimed provider turn.
@@ -245,19 +254,29 @@ pub struct AcpLifecycleOwner {
 /// a late Drop from an older executor can only become a no-op after a newer
 /// turn has taken over. Keeping this guard at the shared client boundary makes
 /// Direct and provider-orchestrated prompts obey the same failure contract.
-pub(crate) struct AcpLifecycleTerminalGuard {
+pub(crate) struct AcpLifecycleTerminalGuard<'a> {
     path: Utf8PathBuf,
     owner: AcpLifecycleOwner,
     armed: bool,
+    notification: Option<&'a dyn Fn() -> Result<()>>,
 }
 
-impl AcpLifecycleTerminalGuard {
+impl<'a> AcpLifecycleTerminalGuard<'a> {
     pub(crate) fn new(path: Utf8PathBuf, owner: AcpLifecycleOwner) -> Self {
         Self {
             path,
             owner,
             armed: true,
+            notification: None,
         }
+    }
+
+    pub(crate) fn with_notification(
+        mut self,
+        notification: Option<&'a dyn Fn() -> Result<()>>,
+    ) -> Self {
+        self.notification = notification;
+        self
     }
 
     pub(crate) fn disarm(&mut self) {
@@ -268,6 +287,11 @@ impl AcpLifecycleTerminalGuard {
         let result = execute();
         if let Err(error) = &result {
             let mut info = normalize_runtime_error(error);
+            if observe_session_execution_error(&self.path, &self.owner, &info) {
+                if let Some(notify) = self.notification {
+                    let _ = notify();
+                }
+            }
             if let Err(persistence_error) = persist_session_turn_failure_owned(
                 &self.path,
                 &self.owner,
@@ -280,25 +304,34 @@ impl AcpLifecycleTerminalGuard {
                 ));
                 // Do not let Drop retry with an empty, generic replacement error.
                 self.disarm();
+                release_session_execution(&self.path, &self.owner);
                 return Err(crate::runtime_error::runtime_error(info));
             }
         }
         self.disarm();
+        release_session_execution(&self.path, &self.owner);
         result
     }
 }
 
-impl Drop for AcpLifecycleTerminalGuard {
+impl Drop for AcpLifecycleTerminalGuard<'_> {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
+        let error = placeholder_turn_execution_error("");
+        if observe_session_execution_error(&self.path, &self.owner, &error) {
+            if let Some(notify) = self.notification {
+                let _ = notify();
+            }
+        }
         let _ = persist_session_turn_failure_owned(
             &self.path,
             &self.owner,
-            &placeholder_turn_execution_error(""),
+            &error,
             &current_timestamp(),
         );
+        release_session_execution(&self.path, &self.owner);
     }
 }
 
@@ -372,12 +405,34 @@ pub struct AcpRawFrame {
 /// commonly send input and diff content before a terminal status-only update;
 /// the terminal revision must not erase fields that it does not replace.
 pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
+    // Codex streams terminal output through metadata and no longer repeats the
+    // complete output at completion. Materialize it in the existing detail field.
+    let terminal_delta = incoming
+        .pointer("/_meta/terminal_output_delta/data")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(delta) = terminal_delta {
+        const MAX_TERMINAL_OUTPUT_CHARS: usize = 256_000;
+        let previous_output = previous
+            .pointer("/rawOutput/formatted_output")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut output: String = previous_output.chars().take(MAX_TERMINAL_OUTPUT_CHARS).collect();
+        let remaining = MAX_TERMINAL_OUTPUT_CHARS.saturating_sub(output.chars().count());
+        output.extend(delta.chars().take(remaining));
+        if previous_output.chars().count() > MAX_TERMINAL_OUTPUT_CHARS
+            || delta.chars().count() > remaining
+        {
+            output.push('…');
+        }
+        incoming["rawOutput"] = serde_json::json!({"formatted_output": output});
+    }
     let (Some(incoming_object), Some(previous_object)) =
         (incoming.as_object_mut(), previous.as_object())
     else {
         return;
     };
-    for key in ["rawInput", "content", "locations"] {
+    for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
         merge_missing_json_field(incoming_object, previous_object, key);
     }
     if let Some(previous_tool_call) = previous_object.get("toolCall").and_then(Value::as_object) {
@@ -385,7 +440,7 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
             .entry("toolCall")
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
         if let Some(incoming_tool_call) = incoming_tool_call.as_object_mut() {
-            for key in ["rawInput", "content", "locations"] {
+            for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
                 merge_missing_json_field(incoming_tool_call, previous_tool_call, key);
             }
         }
@@ -397,25 +452,11 @@ fn merge_missing_json_field(
     previous: &serde_json::Map<String, Value>,
     key: &str,
 ) {
-    let incoming_has_value = incoming.get(key).is_some_and(json_value_has_payload);
-    if incoming_has_value {
+    if incoming.contains_key(key) {
         return;
     }
-    if let Some(previous_value) = previous
-        .get(key)
-        .filter(|value| json_value_has_payload(value))
-    {
+    if let Some(previous_value) = previous.get(key) {
         incoming.insert(key.to_string(), previous_value.clone());
-    }
-}
-
-fn json_value_has_payload(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-        Value::Bool(_) | Value::Number(_) => true,
     }
 }
 
@@ -1779,6 +1820,42 @@ fn has_provider_history_placement(raw: Option<&Value>) -> bool {
         == Some(1)
 }
 
+/// Root-timeline fact: the user stopped background activity of a retained
+/// Direct session at this position. Hidden from chat; not a prompt terminal.
+pub const GOLD_BAND_BACKGROUND_CANCEL_SOURCE: &str = "goldBandBackgroundCancel";
+
+pub fn background_cancel_marker_event(seq: u64, session_id: Option<String>) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("gold-band-background-cancel-{seq}"),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "rawDiagnostic".to_string(),
+        session_id,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("cancelled".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": GOLD_BAND_BACKGROUND_CANCEL_SOURCE,
+            "hiddenFromChat": true,
+        })),
+    }
+}
+
+pub fn is_background_cancel_marker(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(Value::as_str)
+        == Some(GOLD_BAND_BACKGROUND_CANCEL_SOURCE)
+}
+
 fn is_gold_band_prompt_event(event: &AcpUiEvent) -> bool {
     event.kind == "userTextDelta"
         && event
@@ -1892,16 +1969,87 @@ static SESSION_METADATA_LOCKS: LazyLock<Vec<Mutex<()>>> = LazyLock::new(|| {
         .map(|_| Mutex::new(()))
         .collect()
 });
-static ACTIVE_SESSION_TURNS: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+const MAX_EXECUTION_ERRORS: usize = 128;
+const MAX_EXECUTION_ERROR_DETAIL_BYTES: usize = 16 * 1024;
+#[derive(Default)]
+struct SessionExecutions {
+    active: HashMap<String, AcpLifecycleOwner>,
+    errors: indexmap::IndexMap<String, AcpExecutionError>,
+}
+static SESSION_EXECUTIONS: LazyLock<Mutex<SessionExecutions>> =
+    LazyLock::new(|| Mutex::new(SessionExecutions::default()));
 
-fn active_session_turn_key(path: &Utf8Path, turn_id: &str) -> String {
-    // `acp.session.json` is the legacy metadata source while
-    // `acp.snapshot.json` is the current write target.  Both represent the
-    // same attempt lifecycle, so an in-process admission must survive a
-    // metadata-file migration during provider startup.
-    let attempt_dir = path.parent().unwrap_or(path);
-    format!("{attempt_dir}::{turn_id}")
+fn execution_scope(path: &Utf8Path) -> String {
+    path.parent().unwrap_or(path).to_string()
+}
+
+pub fn session_execution_error(attempt_dir: &Utf8Path) -> Option<AcpExecutionError> {
+    SESSION_EXECUTIONS
+        .lock()
+        .ok()?
+        .errors
+        .get(attempt_dir.as_str())
+        .cloned()
+}
+
+/// Publish only for the actual executor owner. No disk access or lifecycle mutation.
+pub fn observe_session_execution_error(
+    path: &Utf8Path,
+    owner: &AcpLifecycleOwner,
+    error: &RuntimeErrorInfo,
+) -> bool {
+    let mut registry = SESSION_EXECUTIONS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let key = execution_scope(path);
+    if !registry.active.get(&key).is_some_and(|active| {
+        active.turn_id == owner.turn_id && active.operation_id == owner.operation_id
+    }) {
+        return false;
+    }
+    if registry
+        .errors
+        .get(&key)
+        .is_some_and(|existing| existing.owner == *owner)
+    {
+        return true;
+    }
+    let mut error = error.clone();
+    error.raw = None;
+    let mut end = error.diagnostic.len().min(MAX_EXECUTION_ERROR_DETAIL_BYTES);
+    while !error.diagnostic.is_char_boundary(end) {
+        end -= 1;
+    }
+    error.diagnostic.truncate(end);
+    if serde_json::to_vec(&error.params)
+        .map_or(true, |bytes| bytes.len() > MAX_EXECUTION_ERROR_DETAIL_BYTES)
+    {
+        error.params = serde_json::json!({});
+    }
+    registry.errors.shift_remove(&key);
+    registry.errors.insert(
+        key,
+        AcpExecutionError {
+            owner: owner.clone(),
+            error,
+        },
+    );
+    while registry.errors.len() > MAX_EXECUTION_ERRORS {
+        registry.errors.shift_remove_index(0);
+    }
+    true
+}
+
+pub fn release_session_execution(path: &Utf8Path, owner: &AcpLifecycleOwner) {
+    let mut registry = SESSION_EXECUTIONS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let key = execution_scope(path);
+    if registry.active.get(&key).is_some_and(|active| {
+        active.turn_id == owner.turn_id && active.operation_id == owner.operation_id
+    }) {
+        registry.active.remove(&key);
+    }
 }
 
 fn admission_metadata_base(path: &Utf8Path) -> Result<Option<Value>> {
@@ -1917,26 +2065,45 @@ fn admission_metadata_base(path: &Utf8Path) -> Result<Option<Value>> {
     Ok(None)
 }
 
-fn mark_session_turn_active(path: &Utf8Path, turn_id: &str) -> Result<()> {
-    ACTIVE_SESSION_TURNS
+fn mark_session_turn_active(path: &Utf8Path, owner: AcpLifecycleOwner) -> Result<()> {
+    let mut registry = SESSION_EXECUTIONS
         .lock()
-        .map_err(|_| anyhow::anyhow!("ACP active session turn registry poisoned"))?
-        .insert(active_session_turn_key(path, turn_id));
+        .map_err(|_| anyhow::anyhow!("ACP active session turn registry poisoned"))?;
+    let key = execution_scope(path);
+    registry.errors.shift_remove(&key);
+    registry.active.insert(key, owner);
     Ok(())
 }
 
 fn clear_session_turn_active(path: &Utf8Path, turn_id: Option<&str>) {
     let Some(turn_id) = turn_id else { return };
-    if let Ok(mut active) = ACTIVE_SESSION_TURNS.lock() {
-        active.remove(&active_session_turn_key(path, turn_id));
+    if let Ok(mut registry) = SESSION_EXECUTIONS.lock() {
+        let key = execution_scope(path);
+        if registry
+            .active
+            .get(&key)
+            .is_some_and(|owner| owner.turn_id == turn_id)
+        {
+            registry.active.remove(&key);
+        }
+        if registry
+            .errors
+            .get(&key)
+            .is_some_and(|error| error.owner.turn_id == turn_id)
+        {
+            registry.errors.shift_remove(&key);
+        }
     }
 }
 
 fn session_turn_is_active(path: &Utf8Path, turn_id: Option<&str>) -> bool {
     let Some(turn_id) = turn_id else { return false };
-    ACTIVE_SESSION_TURNS
-        .lock()
-        .is_ok_and(|active| active.contains(&active_session_turn_key(path, turn_id)))
+    SESSION_EXECUTIONS.lock().is_ok_and(|registry| {
+        registry
+            .active
+            .get(&execution_scope(path))
+            .is_some_and(|owner| owner.turn_id == turn_id)
+    })
 }
 
 fn session_metadata_lock(path: &Utf8Path) -> &Mutex<()> {
@@ -2433,8 +2600,15 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
     if value.get("promptSubmission").is_none() {
         return Ok(None);
     }
-    let persisted_error = persisted_turn_error(&value);
     let current = lifecycle_header_from_value(&value);
+    let persisted_error = persisted_turn_error(&value).or_else(|| {
+        session_execution_error(path.parent().unwrap_or(path))
+            .filter(|failure| {
+                current.turn_id.as_deref() == Some(&failure.owner.turn_id)
+                    && current.operation_id.as_deref() == Some(&failure.owner.operation_id)
+            })
+            .map(|failure| failure.error)
+    });
     if current.live_turn_activity == AcpLiveTurnActivity::Idle
         || session_turn_is_active(path, current.turn_id.as_deref())
     {
@@ -2472,6 +2646,7 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
     apply_lifecycle_header(&mut value, &terminal);
     value["updatedAt"] = Value::String(current_timestamp());
     write_json(path, &value)?;
+    clear_session_turn_active(path, terminal.turn_id.as_deref());
     Ok(Some(terminal))
 }
 
@@ -2683,7 +2858,14 @@ pub fn begin_session_turn(
     value["promptSubmission"] = serde_json::to_value(submission)?;
     value["updatedAt"] = Value::String(submission.admitted_at.clone());
     write_json(path, &value)?;
-    mark_session_turn_active(path, &submission.turn_id)?;
+    mark_session_turn_active(
+        path,
+        AcpLifecycleOwner {
+            turn_id: submission.turn_id.clone(),
+            operation_id: submission.operation_id.clone(),
+            revision: starting.revision,
+        },
+    )?;
     Ok(AcpTurnAdmission::Started(starting))
 }
 
@@ -3073,6 +3255,7 @@ pub fn normalize_session_update(
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let compaction_phase = context_compaction_phase(update);
+    let standard_compaction = matches!(provider_kind, "compaction_update" | "compaction_summary_chunk");
     let mut raw_value = update.clone();
     normalize_agent_transcript_metadata(&mut raw_value);
     if let Some(phase) = compaction_phase
@@ -3092,13 +3275,12 @@ pub fn normalize_session_update(
         id,
         seq,
         timestamp,
-        kind: compaction_phase
-            .map(|_| "contextCompaction")
+        kind: (standard_compaction || compaction_phase.is_some())
+            .then_some("contextCompaction")
             .unwrap_or_else(|| kind_to_ui_kind(provider_kind))
             .to_string(),
         session_id,
-        content: compaction_phase
-            .is_none()
+        content: (!standard_compaction && compaction_phase.is_none())
             .then(|| extract_text(update))
             .flatten(),
         title: extract_title(update),
@@ -3154,10 +3336,18 @@ const PROVIDER_CONTEXT_COMPACTION_META_POINTER: &str = "/_meta/contextCompaction
 
 /// Normalize provider compaction signals at the ACP boundary so consumers only
 /// observe the canonical context-compaction lifecycle. Structured metadata is
-/// preferred; Claude-compatible standalone control messages remain a narrow
-/// compatibility fallback until ACP standardizes compaction updates.
+/// preferred; older adapters' standalone control messages map to the same
+/// lifecycle while current clients negotiate ACP v1 compaction updates.
 pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
     let update_kind = update.get("sessionUpdate").and_then(Value::as_str)?;
+    if update_kind == "compaction_update" {
+        return match update.get("status").and_then(Value::as_str)? {
+            "in_progress" => Some("started"),
+            "completed" => Some("completed"),
+            "failed" | "cancelled" => Some("interrupted"),
+            _ => None,
+        };
+    }
     if matches!(update_kind, "tool_call" | "tool_call_update")
         && update
             .pointer(PROVIDER_CONTEXT_COMPACTION_META_POINTER)
@@ -3245,7 +3435,8 @@ pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTra
 }
 
 pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
-    raw.pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"))
+    raw.pointer("/rawOutput/formatted_output")
+        .or_else(|| raw.pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput")))
         .or_else(|| {
             raw.pointer(&format!(
                 "/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
@@ -3553,6 +3744,24 @@ pub fn system_notice_event(seq: u64, code: &str, params: Value) -> AcpUiEvent {
     }
 }
 
+/// Whole-file diffs can reach the diff budget per prompt; the timeline keeps only
+/// their source so paged history stays light. The Agent already received the text.
+fn timeline_quotes(quotes: Vec<UserPromptQuote>) -> Vec<UserPromptQuote> {
+    quotes
+        .into_iter()
+        .map(|quote| {
+            if quote.is_whole_file_diff() {
+                UserPromptQuote {
+                    text: String::new(),
+                    ..quote
+                }
+            } else {
+                quote
+            }
+        })
+        .collect()
+}
+
 pub fn user_prompt_event_with_quotes(
     seq: u64,
     session_id: String,
@@ -3577,7 +3786,7 @@ pub fn user_prompt_event_with_quotes(
         raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
     }
     if !quotes.is_empty() {
-        raw["quotes"] = serde_json::to_value(&quotes).unwrap_or_default();
+        raw["quotes"] = serde_json::to_value(timeline_quotes(quotes)).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -4014,6 +4223,7 @@ mod tests {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-09-17T00:00:00Z".to_string(),
@@ -4047,6 +4257,114 @@ mod tests {
             snapshot["turnError"]["code"]["code"],
             "acp.turn-execution-failed"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_terminal_write_releases_exited_execution() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = prompt_submission("disk-full-turn", "disk-full-operation");
+        super::begin_session_turn(&path, &submission).unwrap();
+        let header = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: submission.turn_id.clone(),
+            operation_id: submission.operation_id.clone(),
+            revision: header.revision,
+        };
+        // Readers remain allowed, but atomic replacement is denied deterministically.
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        let notified = std::cell::Cell::new(false);
+        let notify = || {
+            let failure = super::session_execution_error(path.parent().unwrap()).unwrap();
+            assert_eq!(failure.owner, owner);
+            assert_eq!(failure.error.code_str(), "runtime.io.storage-full");
+            assert_eq!(
+                super::read_lifecycle_header_snapshot(&path)?
+                    .unwrap()
+                    .latest_turn_status,
+                super::AcpLatestTurnStatus::None
+            );
+            notified.set(true);
+            Ok(())
+        };
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path.clone(), owner.clone())
+            .with_notification(Some(&notify));
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(std::io::Error::from(std::io::ErrorKind::StorageFull).into()));
+        assert!(result.is_err());
+        assert!(
+            notified.get(),
+            "memory error notification precedes persistence"
+        );
+        let unchanged = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unchanged.revision, header.revision,
+            "failed commit must not manufacture a durable revision"
+        );
+        assert_eq!(
+            unchanged.latest_turn_status,
+            super::AcpLatestTurnStatus::None
+        );
+        assert!(
+            !super::session_turn_is_active(&path, Some(&submission.turn_id)),
+            "exited execution must be released even when terminal replacement fails"
+        );
+        drop(locked);
+        let recovered = super::reconcile_orphaned_session_turn(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered.turn_error.unwrap().code_str(),
+            "runtime.io.storage-full"
+        );
+        assert!(super::session_execution_error(path.parent().unwrap()).is_none());
+        assert!(
+            super::reconcile_orphaned_session_turn(&path)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn execution_error_observation_is_scoped_and_never_clears_a_new_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let old = super::AcpLifecycleOwner {
+            turn_id: "old".into(),
+            operation_id: "op-old".into(),
+            revision: 1,
+        };
+        let new = super::AcpLifecycleOwner {
+            turn_id: "new".into(),
+            operation_id: "op-new".into(),
+            revision: 4,
+        };
+        super::mark_session_turn_active(&path, old.clone()).unwrap();
+        assert!(super::observe_session_execution_error(
+            &path,
+            &old,
+            &session_config_unavailable_error()
+        ));
+        super::mark_session_turn_active(&path, new.clone()).unwrap();
+        assert!(!super::observe_session_execution_error(
+            &path,
+            &old,
+            &session_config_unavailable_error()
+        ));
+        super::release_session_execution(&path, &old);
+        assert!(super::session_turn_is_active(&path, Some("new")));
+        assert!(super::session_execution_error(path.parent().unwrap()).is_none());
+        super::release_session_execution(&path, &new);
     }
 
     #[test]
@@ -4218,6 +4536,7 @@ mod tests {
                 display_text: "retry".into(),
                 quotes: vec![],
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: vec![],
             admitted_at: "4Z".into(),
@@ -4274,6 +4593,7 @@ mod tests {
                     display_text: format!("message for {turn_id}"),
                     quotes: Vec::new(),
                     role: None,
+                    workspace_files: Vec::new(),
                 },
                 attachment_paths: vec![format!("{turn_id}.txt")],
                 admitted_at: admitted_at.to_string(),
@@ -4398,6 +4718,7 @@ mod tests {
                 display_text: "survive restart".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: vec!["evidence.txt".to_string()],
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4449,6 +4770,7 @@ mod tests {
                 display_text: "stop before provider startup".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4525,6 +4847,7 @@ mod tests {
                 display_text: "first".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4548,6 +4871,7 @@ mod tests {
                 display_text: "second".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             admitted_at: "2026-08-19T10:00:03Z".to_string(),
             ..first
@@ -4619,6 +4943,7 @@ mod tests {
                 display_text: "continue legacy session".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4666,6 +4991,7 @@ mod tests {
                 display_text: "shared lifecycle".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4706,6 +5032,7 @@ mod tests {
                 display_text: "claim me".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4795,6 +5122,7 @@ mod tests {
                 display_text: "run owned".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4857,6 +5185,7 @@ mod tests {
                 display_text: "stop me".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4983,6 +5312,7 @@ mod tests {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -5035,6 +5365,7 @@ mod tests {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -5095,6 +5426,7 @@ mod tests {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -5929,14 +6261,34 @@ mod tests {
             Some("prompt-123".to_string()),
             false,
             Vec::new(),
-            vec![UserPromptQuote {
-                id: "quote-1".to_string(),
-                source_message_key: "message-1".to_string(),
-                text: "Agent 原文".to_string(),
-            }],
+            vec![
+                UserPromptQuote {
+                    id: "quote-1".to_string(),
+                    text: "Agent 原文".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                        message_key: "message-1".to_string(),
+                    },
+                },
+                UserPromptQuote {
+                    id: "quote-2".to_string(),
+                    text: "@@ -1 +1 @@\n-a\n+b".to_string(),
+                    source: crate::provider::UserPromptQuoteSource::Diff {
+                        path: "src/lib.rs".to_string(),
+                        origin: crate::provider::DiffQuoteOrigin::AgentTurn,
+                        revision: None,
+                        scope: crate::provider::DiffQuoteScope::File,
+                    },
+                },
+            ],
         );
 
         assert_eq!(event.content.as_deref(), Some("> 用户自己输入的正文"));
+        let raw = event.raw.as_ref().unwrap();
+        assert_eq!(raw.pointer("/quotes/1/text"), Some(&Value::from("")));
+        assert_eq!(
+            raw.pointer("/quotes/1/source/path"),
+            Some(&Value::from("src/lib.rs"))
+        );
         assert_eq!(
             event
                 .raw

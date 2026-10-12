@@ -20,6 +20,7 @@ import {
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import {
   applyConversationEventToBranchSnapshots,
   resetConversationEventRouterSnapshots,
@@ -28,6 +29,14 @@ import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import type { AcpSessionVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
 
 beforeEach(() => {
   resetConversationEventRouterSnapshots();
@@ -98,7 +107,7 @@ async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           session={acpSession}
           projectId="project-1"
@@ -113,7 +122,7 @@ async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
           showRawFramesAction={false}
           usageCompact
         />
-      </TooltipProvider>,
+      </TestProviders>,
     );
   });
   return { container, root };
@@ -342,7 +351,7 @@ describe('read-only Agent conversation boundary', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={null}
               projectId="project-1"
@@ -359,7 +368,7 @@ describe('read-only Agent conversation boundary', () => {
               usageCompact
               cacheNamespace="right-workspace-agent"
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 

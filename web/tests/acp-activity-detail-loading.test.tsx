@@ -10,7 +10,7 @@ vi.mock('@/api', async () => {
 });
 
 import { getAcpActivityDetail, getAcpToolDetail, getAcpImage } from '@/api';
-import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import { ACPMessageList, buildAcpTimelineProjection, nextLiveStreamingMarkdownTarget, shouldSettleLiveActivityForSessionUpdate } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ConversationViewport, ConversationViewportFooter } from '@/components/conversation/ConversationViewport';
 import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
@@ -103,6 +103,42 @@ afterEach(() => {
 });
 
 describe('ACP activity detail loading', () => {
+  it('preserves a background tool activity across metadata updates', () => {
+    const tool = activityToolEvent(101);
+    const target = nextLiveStreamingMarkdownTarget(null, tool, 1);
+    expect(nextLiveStreamingMarkdownTarget(target, { ...tool, id: 'info', seq: 102, kind: 'sessionInfo', toolCallId: null }, 1)).toEqual(target);
+    expect(shouldSettleLiveActivityForSessionUpdate('completed', 'completed')).toBe(false);
+    expect(shouldSettleLiveActivityForSessionUpdate('running', 'completed')).toBe(true);
+    expect(shouldSettleLiveActivityForSessionUpdate('completed', 'cancelled')).toBe(true);
+  });
+  it('shows background tools as live from the Direct background control, not the transient streaming target', async () => {
+    const tool = { ...activityToolEvent(101), status: 'pending' };
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      // The fourth argument is the authoritative background-activity projection; the markdown
+      // streaming target can be settled by replay, scroll or head handoff at any time.
+      const projection = buildAcpTimelineProjection([tool], 'completed', null, true);
+      expect(projection.timeline[0]).toMatchObject({ kind: 'activityBatch', live: true });
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={projection.timeline} sessionStatus="completed" sending={false} /></TooltipProvider>));
+      expect(container.textContent).not.toContain('已记录');
+      expect(buildAcpTimelineProjection([tool], 'completed').timeline[0]).toMatchObject({ live: false });
+      const finished = { ...tool, status: 'completed' };
+      const betweenTools = buildAcpTimelineProjection([finished], 'completed', null, true);
+      expect(betweenTools.timeline[0]).toMatchObject({ live: true });
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={betweenTools.timeline} sessionStatus="completed" sending={false} /></TooltipProvider>));
+      expect(container.textContent).toContain('思考中');
+      expect(container.textContent).not.toContain('已记录');
+      const reply: AcpUiEventVm = { ...finished, id: 'reply', seq: 103, kind: 'textDelta', toolCallId: null, status: null, content: '后台分析完成' };
+      const answered = buildAcpTimelineProjection([finished, reply], 'completed', null, true);
+      expect(answered.timeline[0]).toMatchObject({ live: false });
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={answered.timeline} sessionStatus="completed" sending={false} /></TooltipProvider>));
+      expect(container.textContent).toContain('已记录');
+      expect(container.textContent).toContain('后台分析完成');
+      // Background control expired or its stop was accepted: the open group settles.
+      expect(buildAcpTimelineProjection([finished], 'completed', null, false).timeline[0]).toMatchObject({ live: false });
+    } finally { await act(async () => root.unmount()); }
+  });
   it.each(['generation', 'session', 'range'])('rejects an activity page outside its %s ownership', async (change) => {
     let resolveOld!: (value: AcpActivityDetailVm) => void;
     vi.mocked(getAcpActivityDetail)

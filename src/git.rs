@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::process::{background_command, find_executable_in_path, resolved_child_path};
 use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info, runtime_error};
 
+pub mod diagnostics;
 mod github;
 mod source_control;
 
@@ -165,6 +166,7 @@ fn minimum_supported_git_version() -> Version {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCommandOutput {
     pub success: bool,
+    pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
 }
@@ -173,6 +175,7 @@ impl From<Output> for GitCommandOutput {
     fn from(output: Output) -> Self {
         Self {
             success: output.status.success(),
+            exit_code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         }
@@ -204,7 +207,7 @@ pub struct GitCapability {
 }
 
 impl GitCapability {
-    fn new(status: GitCapabilityStatus, installed_version: Option<String>) -> Self {
+    pub(crate) fn new(status: GitCapabilityStatus, installed_version: Option<String>) -> Self {
         Self {
             status,
             installed_version,
@@ -253,8 +256,8 @@ impl GitPreflightError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InstalledGitVersion {
-    display: String,
+pub(crate) struct InstalledGitVersion {
+    pub(crate) display: String,
     semantic: Version,
 }
 
@@ -266,10 +269,12 @@ enum GitVersionProbe {
 }
 
 fn probe_git_version() -> GitVersionProbe {
-    let Some(mut command) = git_command_from_executable(refresh_resolved_git_executable()) else {
-        return GitVersionProbe::NotInstalled;
-    };
-    let output = match command.arg("--version").env("LC_ALL", "C").output() {
+    let output = match diagnostics::command_output(&["--version"], || {
+        let mut command = git_command_from_executable(refresh_resolved_git_executable())
+            .ok_or_else(|| anyhow!("Git executable was not found"))?;
+        command.arg("--version").env("LC_ALL", "C");
+        Ok(command)
+    }) {
         Ok(output) => output,
         Err(_) => {
             clear_resolved_git_executable();
@@ -378,7 +383,7 @@ fn parse_version_component(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
     })?
 }
 
-fn supported_git_version() -> std::result::Result<InstalledGitVersion, GitCapability> {
+pub(crate) fn supported_git_version() -> std::result::Result<InstalledGitVersion, GitCapability> {
     match probe_git_version() {
         GitVersionProbe::NotInstalled => {
             Err(GitCapability::new(GitCapabilityStatus::NotInstalled, None))
@@ -426,14 +431,14 @@ pub struct GitCommandRunner;
 
 impl GitCommandRunner {
     pub fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
-        git_background_command()
-            .ok_or_else(|| anyhow!("Git executable was not found"))?
-            .arg("-C")
-            .arg(cwd.as_str())
-            .args(args)
-            .output()
-            .map(GitCommandOutput::from)
-            .with_context(|| format!("failed to execute Git in `{cwd}`"))
+        diagnostics::command_output(args, || {
+            let mut command =
+                git_background_command().ok_or_else(|| anyhow!("Git executable was not found"))?;
+            command.arg("-C").arg(cwd.as_str()).args(args);
+            Ok(command)
+        })
+        .map(GitCommandOutput::from)
+        .with_context(|| format!("failed to execute Git in `{cwd}`"))
     }
 
     fn capture(&self, cwd: &Utf8Path, args: &[&str]) -> Option<String> {
@@ -464,27 +469,28 @@ impl GitRepositoryService {
         };
         let installed_version = Some(version.display);
 
-        let Some(inside) = self
-            .runner
-            .capture(cwd, &["rev-parse", "--is-inside-work-tree"])
-        else {
+        let Some(paths) = self.runner.capture(
+            cwd,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--is-inside-work-tree",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+        ) else {
             return GitCapability::new(GitCapabilityStatus::RepositoryRequired, installed_version);
         };
-        if inside != "true" {
+        let paths: Vec<&str> = paths.lines().collect();
+        if paths.first() != Some(&"true") {
             return GitCapability::new(GitCapabilityStatus::RepositoryRequired, installed_version);
         }
-
-        let repo_root = self
-            .runner
-            .capture(cwd, &["rev-parse", "--show-toplevel"])
-            .and_then(|path| canonical_git_path(&path));
-        let common_dir = self
-            .runner
-            .capture(
-                cwd,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            )
-            .and_then(|path| canonical_git_path(&path));
+        let repo_root = (paths.len() == 3)
+            .then(|| canonical_git_path(paths[1]))
+            .flatten();
+        let common_dir = (paths.len() == 3)
+            .then(|| canonical_git_path(paths[2]))
+            .flatten();
         if repo_root.is_none() || common_dir.is_none() {
             let mut capability = GitCapability::new(
                 GitCapabilityStatus::RepositoryUnavailable,
@@ -528,6 +534,43 @@ impl GitRepositoryService {
             return Err(GitPreflightError { code, capability }.into());
         }
         Ok(capability)
+    }
+
+    /// Declares a repository-relative pattern in the shared local exclude file
+    /// (`<common-dir>/info/exclude`). Unlike `.gitignore`, this never changes
+    /// tracked user files, and linked worktrees inherit it. Idempotent.
+    pub fn ensure_local_exclude(&self, repository_root: &Utf8Path, pattern: &str) -> Result<()> {
+        let identity = GitSourceControlService::default().repository_identity(repository_root)?;
+        let exclude_file = identity.common_dir.join("info").join("exclude");
+        GitCoordinationService.with_runtime_write(
+            &identity.common_dir,
+            None,
+            "runtime-local-exclude",
+            || {
+                let existing = match std::fs::read_to_string(exclude_file.as_std_path()) {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("failed to read `{exclude_file}`"));
+                    }
+                };
+                if existing.lines().any(|line| line.trim() == pattern) {
+                    return Ok(());
+                }
+                let mut content = existing;
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push_str(pattern);
+                content.push('\n');
+                crate::storage::ensure_parent_dir(&exclude_file)?;
+                crate::storage::atomic_write_file(exclude_file.as_std_path(), |file| {
+                    std::io::Write::write_all(file, content.as_bytes())
+                })
+                .with_context(|| format!("failed to write `{exclude_file}`"))
+            },
+        )
     }
 
     pub fn head(&self, cwd: &Utf8Path) -> Result<String> {
@@ -717,12 +760,41 @@ impl GitWorkspaceManager {
         workspace_id: &str,
         group_id: Option<&str>,
     ) -> Result<Option<String>> {
-        if self.repository.status_porcelain(workspace)?.is_empty() {
+        if self.checkpoint_is_clean(workspace)? {
             return Ok(None);
         }
         self.ensure_no_in_progress_operation(workspace)?;
-        let add = self.runner.run(workspace, &["add", "-A"])?;
-        ensure!(add.success, "git add -A failed: {}", details(&add));
+        let add = self
+            .runner
+            .run(workspace, &["add", "-A"])
+            .map_err(|error| {
+                checkpoint_error(
+                    workspace,
+                    "add",
+                    format!("failed to execute git add -A: {error:#}"),
+                    None,
+                )
+            })?;
+        if !add.success {
+            return Err(checkpoint_error(
+                workspace,
+                "add",
+                format!("git add -A failed: {}", details(&add)),
+                add.exit_code,
+            ));
+        }
+
+        if !self.checkpoint_has_staged_changes(workspace)? {
+            if self.checkpoint_is_clean(workspace)? {
+                return Ok(None);
+            }
+            return Err(checkpoint_error(
+                workspace,
+                "post-stage",
+                "workspace remained dirty after staging, but the index has no changes to commit",
+                None,
+            ));
+        }
 
         let mut message = format!(
             "Gold Band checkpoint: {workspace_id}\n\nGold-Band-Internal: checkpoint\nGold-Band-Workspace: {workspace_id}"
@@ -730,32 +802,99 @@ impl GitWorkspaceManager {
         if let Some(group_id) = group_id {
             message.push_str(&format!("\nGold-Band-Group: {group_id}"));
         }
-        let commit = self.runner.run(
-            workspace,
-            &[
-                "-c",
-                &format!("user.name={CHECKPOINT_AUTHOR_NAME}"),
-                "-c",
-                &format!("user.email={CHECKPOINT_AUTHOR_EMAIL}"),
-                "-c",
-                "commit.gpgSign=false",
+        let commit = self
+            .runner
+            .run(
+                workspace,
+                &[
+                    "-c",
+                    &format!("user.name={CHECKPOINT_AUTHOR_NAME}"),
+                    "-c",
+                    &format!("user.email={CHECKPOINT_AUTHOR_EMAIL}"),
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "--no-verify",
+                    "--no-gpg-sign",
+                    "-m",
+                    &message,
+                ],
+            )
+            .map_err(|error| {
+                checkpoint_error(
+                    workspace,
+                    "commit",
+                    format!("failed to execute checkpoint commit: {error:#}"),
+                    None,
+                )
+            })?;
+        if !commit.success {
+            if !self.checkpoint_has_staged_changes(workspace)?
+                && self.checkpoint_is_clean(workspace)?
+            {
+                return Ok(None);
+            }
+            return Err(checkpoint_error(
+                workspace,
                 "commit",
-                "--no-verify",
-                "--no-gpg-sign",
-                "-m",
-                &message,
-            ],
-        )?;
-        ensure!(
-            commit.success,
-            "checkpoint commit failed: {}",
-            details(&commit)
-        );
-        ensure!(
-            self.repository.status_porcelain(workspace)?.is_empty(),
-            "workspace remained dirty after checkpoint"
-        );
-        self.repository.head(workspace).map(Some)
+                format!("checkpoint commit failed: {}", details(&commit)),
+                commit.exit_code,
+            ));
+        }
+        if !self.checkpoint_is_clean(workspace)? {
+            return Err(checkpoint_error(
+                workspace,
+                "post-commit",
+                "workspace remained dirty after checkpoint",
+                None,
+            ));
+        }
+        self.repository.head(workspace).map(Some).map_err(|error| {
+            checkpoint_error(
+                workspace,
+                "head",
+                format!("failed to resolve checkpoint HEAD: {error:#}"),
+                None,
+            )
+        })
+    }
+
+    fn checkpoint_is_clean(&self, workspace: &Utf8Path) -> Result<bool> {
+        self.repository.is_clean(workspace).map_err(|error| {
+            checkpoint_error(
+                workspace,
+                "status",
+                format!("failed to inspect checkpoint workspace status: {error:#}"),
+                None,
+            )
+        })
+    }
+
+    fn checkpoint_has_staged_changes(&self, workspace: &Utf8Path) -> Result<bool> {
+        let diff = self
+            .runner
+            .run(
+                workspace,
+                &["diff", "--cached", "--quiet", "--exit-code", "--"],
+            )
+            .map_err(|error| {
+                checkpoint_error(
+                    workspace,
+                    "staged-diff",
+                    format!("failed to inspect staged checkpoint changes: {error:#}"),
+                    None,
+                )
+            })?;
+        match diff.exit_code {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            exit_code => Err(checkpoint_error(
+                workspace,
+                "staged-diff",
+                format!("git diff --cached failed: {}", details(&diff)),
+                exit_code,
+            )),
+        }
     }
 
     pub fn create_worktree(
@@ -976,6 +1115,24 @@ impl GitWorkspaceManager {
         }
         Ok(())
     }
+}
+
+fn checkpoint_error(
+    workspace: &Utf8Path,
+    phase: &'static str,
+    diagnostic: impl Into<String>,
+    exit_code: Option<i32>,
+) -> anyhow::Error {
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workspace,
+        "workspace.checkpoint-failed",
+        diagnostic,
+        serde_json::json!({
+            "workspacePath": workspace.as_str(),
+            "phase": phase,
+            "exitCode": exit_code,
+        }),
+    ))
 }
 
 fn canonical_git_path(path: &str) -> Option<Utf8PathBuf> {
@@ -1200,6 +1357,93 @@ mod tests {
             .unwrap();
         assert!(message.stdout.contains("Gold-Band-Internal: checkpoint"));
         assert!(message.stdout.contains("Gold-Band-Group: group-1"));
+    }
+
+    #[test]
+    fn runtime_worktree_checkpoint_skips_autocrlf_only_status_change() {
+        let (_dir, root) = initialized_repository();
+        let runner = GitCommandRunner::default();
+        assert!(
+            runner
+                .run(&root, &["config", "core.autocrlf", "true"])
+                .unwrap()
+                .success
+        );
+
+        std::fs::write(root.join("print_a.py"), b"print(\"this is A\")\n").unwrap();
+        assert!(
+            runner
+                .run(&root, &["add", "--", "print_a.py"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &[
+                        "-c",
+                        "user.name=Gold Band Tests",
+                        "-c",
+                        "user.email=gold-band-tests@example.com",
+                        "commit",
+                        "-m",
+                        "add print fixture",
+                    ],
+                )
+                .unwrap()
+                .success
+        );
+
+        let manager = GitWorkspaceManager::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let worktree = root.join("runtime-worktrees").join("autocrlf-noop");
+        manager
+            .create_worktree(&root, &worktree, "gb-test-autocrlf-noop", &head)
+            .unwrap();
+
+        std::fs::write(worktree.join("print_a.py"), b"print(\"this is A\")\n").unwrap();
+        let status = manager.repository.status_porcelain(&worktree).unwrap();
+        assert!(
+            status.contains("print_a.py"),
+            "fixture must be reported dirty before Git refreshes the index"
+        );
+        let diff = runner
+            .run(&worktree, &["diff", "--numstat", "--", "print_a.py"])
+            .unwrap();
+        assert!(diff.success, "{}", details(&diff));
+        assert!(
+            diff.stdout.is_empty(),
+            "fixture must not contain a content diff: {}",
+            details(&diff)
+        );
+
+        let checkpoint = manager
+            .checkpoint(&worktree, "workspace-autocrlf-noop", Some("group-1"))
+            .unwrap();
+        assert_eq!(checkpoint, None);
+        assert_eq!(
+            GitRepositoryService::default().head(&worktree).unwrap(),
+            head
+        );
+        assert!(GitRepositoryService::default().is_clean(&worktree).unwrap());
+    }
+
+    #[test]
+    fn runtime_worktree_checkpoint_reports_git_write_failure_as_workspace_error() {
+        let (_dir, root) = initialized_repository();
+        std::fs::write(root.join("README.md"), "changed\n").unwrap();
+        std::fs::write(root.join(".git").join("index.lock"), "locked\n").unwrap();
+
+        let error = GitWorkspaceManager::default()
+            .checkpoint(&root, "workspace-locked", Some("group-1"))
+            .unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+
+        assert_eq!(info.domain, RuntimeErrorDomain::Workspace);
+        assert_eq!(info.code_str(), "workspace.checkpoint-failed");
+        assert_eq!(info.params["phase"], "add");
+        assert!(info.params["exitCode"].is_number());
     }
 
     #[test]

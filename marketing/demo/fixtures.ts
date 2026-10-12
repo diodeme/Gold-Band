@@ -83,6 +83,7 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
         nodeType: node.nodeType, status: 'completed', outcome: 'success', runtimeDisplay: node.runtimeDisplay,
         attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0, current: false })),
       edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
+      groups: [],
     };
     run.selectedSession = demoSessionForNode(run, round.roundId, 'accept', language);
     run.sessionTree.selectedSessionKey = `${round.roundId}/accept/${round.nodes[0].attempts[0].attemptId}`;
@@ -148,11 +149,11 @@ export function demoSidebar(language: DesktopLanguage): ConversationSidebarVm {
     })() : null,
     latestRun: taskId === 'demo-review' ? workflowRuns[0] : { runId: DEMO_RUN_ID, status: 'completed', outcome: 'success', resumable: false, startedAt: '2026-09-01T08:00:00Z', updatedAt: '2026-09-01T08:01:00Z' },
     runs: taskId === 'demo-review' ? workflowRuns : [],
-    runHistoryStatus: taskId === 'demo-review' ? 'ready' : 'ready-empty', runsNextCursor: null, pinned: false,
+    runHistoryStatus: 'ready', runsNextCursor: null, pinned: false,
   }));
   return {
     loadStatus: 'ready', workspaces: [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }],
-    pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready-empty' },
+    pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' },
     tasksByWorkspace: { [DEMO_PROJECT_ID]: tasks }, workspaceTaskPages: { [DEMO_PROJECT_ID]: { status: 'ready' } },
     lastActiveWorkspaceId: DEMO_PROJECT_ID, preferences: {},
   };

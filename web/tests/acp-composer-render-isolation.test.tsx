@@ -17,7 +17,6 @@ vi.mock('@/api/client', async () => {
     ...actual,
     getRuntimeApi: () => ({
       subscribeAcpSessionUpdates: async () => () => undefined,
-      getSupportedAttachmentExtensions: async () => [],
     }),
   };
 });
@@ -30,7 +29,9 @@ const { getAgentCommandCatalog, mergeAcpEventWindowsCounter, streamdownRender } 
   streamdownRender: vi.fn(),
 }));
 
-vi.mock('streamdown', () => ({
+vi.mock('streamdown', async (importOriginal) => ({
+  defaultRemarkPlugins: (await importOriginal<typeof import('streamdown')>()).defaultRemarkPlugins,
+  defaultRehypePlugins: (await importOriginal<typeof import('streamdown')>()).defaultRehypePlugins,
   defaultUrlTransform: (url: string) => url,
   parseMarkdownIntoBlocks: (markdown: string) => [markdown],
   Streamdown: ({ children }: { children: React.ReactNode }) => {
@@ -72,11 +73,20 @@ import {
   storeAcpLoadedEventWindow,
 } from '@/components/acp/ACPChatDialog';
 import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { getAcpSession } from '@/api';
 import type { AcpSessionVm, AgentRegistryVm, ConversationAttemptLifecycleVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
 
 function completedSession(): AcpSessionVm {
   return {
@@ -147,6 +157,88 @@ function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
       tone: 'success',
       icon: 'check',
       terminal: true,
+      resumable: false,
+      reasonCode: null,
+      blockingError: false,
+    },
+    continueKind: null,
+    composer: {
+      mode: 'normal',
+      submitTarget: 'acp-prompt',
+      processingKind: 'processing',
+      statusKey: null,
+      canStop: false,
+      lockInput: false,
+    },
+  };
+}
+
+function activeRuntimeLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'running',
+      outcome: null,
+      pauseReason: null,
+      resumable: false,
+      current: true,
+      active: true,
+      continuable: false,
+      phase: 'running-node',
+    },
+    control: { mode: 'runtime-controlled' },
+    acp: {
+      sessionAvailability: 'unavailable',
+      liveTurnActivity: 'starting',
+      latestTurnStatus: 'none',
+      stopping: false,
+    },
+    displayStatus: 'running',
+    runtimeDisplay: {
+      code: 'running',
+      tone: 'running',
+      icon: 'loader',
+      terminal: false,
+      resumable: false,
+      reasonCode: null,
+      blockingError: false,
+    },
+    continueKind: null,
+    composer: {
+      mode: 'runtime-active',
+      submitTarget: 'none',
+      processingKind: 'processing',
+      statusKey: 'conversation.runtime.runtimeActive',
+      canStop: true,
+      lockInput: true,
+    },
+  };
+}
+
+function inactiveWithoutFailureLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'paused',
+      outcome: null,
+      pauseReason: null,
+      resumable: false,
+      current: true,
+      active: false,
+      continuable: false,
+      phase: 'paused',
+    },
+    control: { mode: 'runtime-controlled' },
+    acp: {
+      sessionAvailability: 'unavailable',
+      liveTurnActivity: 'idle',
+      latestTurnStatus: 'none',
+      stopping: false,
+    },
+    displayStatus: 'paused',
+    runtimeDisplay: {
+      code: 'paused',
+      tone: 'warning',
+      icon: 'pause',
+      terminal: false,
       resumable: false,
       reasonCode: null,
       blockingError: false,
@@ -236,7 +328,7 @@ describe('ACP composer render isolation', () => {
     document.body.append(container);
     const root = createRoot(container);
     const view = (agentRegistry: AgentRegistryVm | null, taskId = 'task-render') => (
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           key={taskId}
           session={null}
@@ -252,7 +344,7 @@ describe('ACP composer render isolation', () => {
           showRawFramesAction={false}
           usageCompact
         />
-      </TooltipProvider>
+      </TestProviders>
     );
     try {
       await act(async () => root.render(view(lateRegistry ? null : registry)));
@@ -308,7 +400,7 @@ describe('ACP composer render isolation', () => {
     );
     const view = (marker: string) => (
       <div data-marker={marker}>
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={session}
             projectId="project-render"
@@ -321,7 +413,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>
+        </TestProviders>
       </div>
     );
 
@@ -355,7 +447,7 @@ describe('ACP composer render isolation', () => {
 
     try {
       await act(async () => root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={null}
             projectId="project-render"
@@ -369,7 +461,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       ));
 
       expect(container.textContent).toContain('historical');
@@ -424,7 +516,7 @@ describe('ACP composer render isolation', () => {
         });
       }, [eventWindowKey]);
       return (
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={selectedSession}
             projectId="project-render"
@@ -437,7 +529,7 @@ describe('ACP composer render isolation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>
+        </TestProviders>
       );
     }
 
@@ -471,7 +563,7 @@ describe('ACP composer render isolation', () => {
       await act(async () => {
         root.render(
           <GitBranchPickerSnapshotProvider>
-            <TooltipProvider>
+            <TestProviders>
               <ACPChatDialog
                 session={completedSession()}
                 projectId="project-render"
@@ -485,7 +577,7 @@ describe('ACP composer render isolation', () => {
                 showRawFramesAction={false}
                 usageCompact
               />
-            </TooltipProvider>
+            </TestProviders>
           </GitBranchPickerSnapshotProvider>,
         );
       });
@@ -517,7 +609,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={null}
               sessionEstablished
@@ -532,7 +624,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 
@@ -552,7 +644,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={completedSession()}
               projectId="project-render"
@@ -565,7 +657,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
       const initialMarkdownRenders = streamdownRender.mock.calls.length;
@@ -602,7 +694,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={session}
               projectId="project-render"
@@ -620,7 +712,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await Promise.resolve();
       });
@@ -645,4 +737,93 @@ describe('ACP composer render isolation', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('uses the latest runtime active state when initial session retries are exhausted', async () => {
+    vi.useFakeTimers();
+    runtime.tauri = true;
+    vi.mocked(getAcpSession).mockResolvedValue(null);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    const view = (active: boolean) => (
+      <TestProviders>
+          <ACPChatDialog
+            session={null}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId="node-render"
+            attemptId="attempt-render"
+            runtimeComposerContext={{
+              isOrchestrated: true,
+              lifecycle: active ? activeRuntimeLifecycle() : inactiveWithoutFailureLifecycle(),
+              runtimeStatus: active ? 'running' : 'paused',
+              workflowValid: true,
+            }}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>
+    );
+
+    try {
+      await act(async () => root.render(view(true)));
+      await act(async () => root.render(view(false)));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+
+      expect(container.textContent).toContain('ACP 会话失败');
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+it.each([
+    { title: '工作流已暂停' as string | null, expected: '工作流已暂停', absent: 'ACP 会话失败' },
+    { title: null, expected: 'ACP 会话失败', absent: '工作流已暂停' },
+  ])('titles the runtime error banner from runtimeErrorTitle ($expected)', async ({ title, expected, absent }) => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TestProviders>
+            <ACPChatDialog
+              session={completedSession()}
+              projectId="project-render"
+              taskId="task-render"
+              runId="run-render"
+              roundId="round-render"
+              nodeId="node-render"
+              attemptId="attempt-render"
+              runtimeComposerContext={{
+                isOrchestrated: true,
+                lifecycle: inactiveWithoutFailureLifecycle(),
+                runtimeStatus: 'paused',
+                workflowValid: true,
+                runtimeError: '节点输出经 3 次修复仍不符合协议，工作流已暂停。',
+                runtimeErrorTitle: title,
+              }}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        );
+      });
+
+      const banner = Array.from(container.querySelectorAll('span.font-semibold.text-destructive'))
+        .map((element) => element.textContent);
+      expect(banner).toContain(expected);
+      expect(banner).not.toContain(absent);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });
+

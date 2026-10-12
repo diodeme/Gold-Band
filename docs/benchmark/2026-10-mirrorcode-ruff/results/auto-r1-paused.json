@@ -1,0 +1,104 @@
+{
+  "benchmark": "MirrorCode",
+  "sample": "ruff_go",
+  "label": "auto-r1-paused",
+  "job": "ruff-go-gpt-auto",
+  "eval_log": "2026-10-08T03-25-33-00-00_MirrorCode-GoldBand_EDTFbfYizaK3LvyexDWb43.eval",
+  "eval_id": "JZVRkwwu2uqQBaGvrqMSyK",
+  "task": "MirrorCode-GoldBand",
+  "task_version": "0.1.193",
+  "model": "anthropic/gpt-5.6-sol",
+  "token_limit": null,
+  "sample_limit": null,
+  "agent_exit_code": "2",
+  "eval_started_at": "2026-10-08T03:25:33+00:00",
+  "eval_completed_at": "2026-10-08T17:21:48+00:00",
+  "eval_elapsed_seconds": 50175.0,
+  "usage": {
+    "anthropic/gpt-5.6-sol": {
+      "input_tokens": 4800077,
+      "output_tokens": 377830,
+      "total_tokens": 637609395,
+      "input_tokens_cache_read": 632431488,
+      "reasoning_tokens": 117908
+    }
+  },
+  "scores": {
+    "all": {
+      "passed": 124,
+      "failed": 698,
+      "total": 822,
+      "frac_passed": 0.15085158150851583
+    },
+    "visible": {
+      "passed": 123,
+      "failed": 638,
+      "total": 761,
+      "frac_passed": 0.1616294349540079
+    },
+    "hidden": {
+      "passed": 1,
+      "failed": 60,
+      "total": 61,
+      "frac_passed": 0.01639344262295082
+    }
+  },
+  "files": [
+    {
+      "file": "job/logs/2026-10-08T03-25-33-00-00_MirrorCode-GoldBand_EDTFbfYizaK3LvyexDWb43.eval",
+      "sha256": "8f3a5dd6222383b5c56d4d72936b1ad3bb41517829f3a245c9f216a8a596aa0a",
+      "bytes": 8513131
+    },
+    {
+      "file": "job/artifacts/ruff_go.tgz",
+      "sha256": "2efd7da17c8fa423e2009ca289bbfdc3efbfa6031afb319b9a4aa3d03ecdc224",
+      "bytes": 5806953
+    },
+    {
+      "file": "job/console.log",
+      "sha256": "75e693670d9721e8b3329f83e81514b3522d378aebe3bf4d96d44a3ff32a2a37",
+      "bytes": 45414
+    },
+    {
+      "file": "job/logs/artifacts/nuC56rpJGp9WeTfoXGgmBT/scored_cases_00000.jsonl",
+      "sha256": "c3fa1fd11a9d205e07a892b3628c1a7181276a64121cb14ede3b63d09e2d8381",
+      "bytes": 26392553
+    },
+    {
+      "file": "job/logs/artifacts/nuC56rpJGp9WeTfoXGgmBT/workspace_src_00000.tar",
+      "sha256": "23c0e93c0c12e8bad0f24168cdfa886a4969a446426ba80cb52e24bafe1d32d2",
+      "bytes": 225280
+    }
+  ],
+  "runner_files": [
+    {
+      "file": "runner/gb_mirrorcode.py",
+      "sha256": "551eac13bdae5ad700925afade4c26e530d24e19dec6ddf37daf24b3b5f4d157",
+      "bytes": 16614
+    },
+    {
+      "file": "runner/run-gpt.sh",
+      "sha256": "6a604bc5ebc2468c8c7777843abb0a80d4b882a5a1811c4e604adf03cd906d94",
+      "bytes": 930
+    },
+    {
+      "file": "runner/env-gpt.sh",
+      "sha256": "6cd5db8b103d03615b25b7e83d4c553a7dc55e650d18f556362af33e0c3f423e",
+      "bytes": 442
+    },
+    {
+      "file": "runner/launch-ruff-gpt.sh",
+      "sha256": "88b871a9a107d241511e8890fd4d342189f7c89db30015891738e325d8225028",
+      "bytes": 747
+    }
+  ],
+  "bundles": {
+    "mc-agent-bundle.tgz": {
+      "sha256": "601e11f777fe3b5ae25772b41a94f8e9efe80d700114a40eceb006c6b062eabe"
+    },
+    "cc-agent-bundle.tgz": {
+      "sha256": "1e17f1a5dcc7b0e6c6d4ab7f0480be5c992e9c2a62f84ff2210d7c8c8212647e"
+    }
+  },
+  "archive_location": "G:/gb-bench/archives/mirrorcode-ruff-gpt/auto-r1-paused"
+}

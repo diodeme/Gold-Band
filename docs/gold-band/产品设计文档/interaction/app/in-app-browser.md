@@ -44,6 +44,8 @@
 
 本地 HTML 打不开属于原有设计缺陷：§9 原先把「已授权目录 + `file://` 导航」当作可用方案，但 Windows WebView2 对子 WebView 不保证 `file://` 导航与相对资源加载，实际表现为白屏且没有任何 load 事件；同时前端在提交地址时先写权威 URL、再异步下发原生命令，失败既不回滚也不给出结构化错误，重复点击还会在同一个 page 上并发下发多条原生导航。修复方向是改用与图片预览同源的 Tauri 自定义协议承载本地 HTML（按当前页已授权目录读取、逐段拒绝越界路径），并把「提交地址 → 原生命令 → 权威 URL 收敛」变成单一在途队列：同目标重复提交合并为一次，失败回滚到上一次确认 URL 并写结构化错误码，而不是新增第二套页状态或对某个文件类型打补丁。
 
+本地 HTML 引用上级目录资源（如 `<script src="../node_modules/x.js">`）时白屏，也属于原有设计缺陷：协议 URL 的根直接等于授权目录，`..` 越过 URL 根后被 WHATWG 解析静默丢弃，请求被改写成授权目录下另一个不存在的路径。协议处理器既拿不到页面原本要的文件，也无法告诉用户缺了什么。只放大授权目录不能消除这个缺陷，修复方向是把「地址映射」和「授权」拆开：协议 URL 一一对应文件的绝对路径，相对引用永远解析到真实文件；授权是独立的一层，默认取文件所在的工作空间，越界请求记录被拒目录，由用户在 notice 行确认放开。
+
 不能把网页画在主应用 WebView 的 iframe 里：多数站点会拒绝嵌入，且会和 Gold Band IPC 同进程。子 WebView 是原生图层，不是 CSS div，必须按占位盒同步坐标，并在右栏折叠、Sheet、Dialog、切 Tab 时显隐。
 
 启用 Tauri `unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只会给 `WindowContent` 挂 `TAURI_DRAG_RESIZE_WINDOW`。Win10 关闭 native shadow 后没有 DWM 外侧缩放框，冷启动就会失去四边拖拽，不需要先打开浏览器页。这是正确的无边框缩放设计下的宿主挂钩缺口，不是 Win10 阴影策略错误，也不该改成 HTML 缩放手柄。修复是窗口就绪后重新断言 `resizable` 以挂上 Tauri overlay，并在任何 child WebView `HWND_TOP` 之后把该 overlay 再抬到最前；其客户区有孔洞，建议浮层仍可在孔内接收点击。
@@ -101,7 +103,7 @@
 - 关闭按钮对齐工作区 Tab：激活项 × 常显但弱化，未激活 hover 出现。
 - 右键使用 shadcn/ui ContextMenu：关闭、关闭其他标签、关闭左侧所有标签、关闭右侧所有标签、关闭所有标签。关闭所有标签后仍显示 `+`，内容区回到门户页，不关闭工作区浏览器 Tab。
 
-工具栏：后退、前进、刷新/停止、地址栏。页内前进后退用 WebView 原生会话历史。电脑/移动切换左侧是书签图标：当前 `http(s)` 页可点，已加入用 `accent-foreground` 实心并带 `accent` 浅底，再点删除。门户页上该书签按钮不可用。地址栏聚焦且尚未改字时，在输入框下方浮层展开最近访问（最多 8 条，标题 + 精简 URL + origin 图标）；开始输入后过滤同一列表，普通词额外提供「搜索网页」。悬停或键盘选中访问项时显示 ×，删除该条访问记录，不关浮层、不跳转。浮层只在地址栏编辑中打开：回车提交当前输入（需方向键才选中建议项），提交后或页 URL 同步后关闭，不再自动弹出。浮层不挤占工具栏、页签或网页；网页子 WebView 的位置和尺寸在展开前后保持不变。内部页签和溢出菜单复用同一 origin 图标，没有图标时用 Globe。地址栏提交时，显式 scheme、域名、IP、localhost 与本地 HTML 作为地址；其他裸词和含空格文本按当前搜索引擎生成查询 URL。空页首次提交必须创建原生页，已有活页才 navigate。提供带 shadcn Tooltip 的「用系统浏览器打开」次要动作；对尚未提交的搜索词也使用当前搜索引擎解析。
+工具栏：后退、前进、刷新/停止、地址栏。页内前进后退用 WebView 原生会话历史。电脑/移动切换左侧是书签图标：当前 `http(s)` 页可点，已加入用 `accent-foreground` 实心并带 `accent` 浅底，再点删除。门户页上该书签按钮不可用。地址栏聚焦且尚未改字时，在输入框下方浮层展开最近访问（最多 8 条，标题 + 精简 URL + origin 图标）；开始输入后过滤同一列表，普通词额外提供「搜索网页」。悬停或键盘选中访问项时显示 ×，删除该条访问记录，不关浮层、不跳转。浮层只在地址栏编辑中打开：回车提交当前输入（需方向键才选中建议项），提交后或页 URL 同步后关闭，不再自动弹出。浮层不挤占工具栏、页签或网页；网页子 WebView 的位置和尺寸在展开前后保持不变。内部页签和溢出菜单复用同一 origin 图标，没有图标时用 Globe。地址栏提交时，显式 scheme、域名、IP、localhost 与本地 HTML 作为地址；其他裸词和含空格文本按当前搜索引擎生成查询 URL。空页首次提交必须创建原生页，已有活页才 navigate。提供带 shadcn Tooltip 的「用系统浏览器打开」次要动作；对尚未提交的搜索词也使用当前搜索引擎解析。该动作统一经 `browser_open_in_system_browser` 由 Rust 校验后交给系统 opener：只放行 `http(s)` 网页和 canonical 后仍存在的本地 `.html/.htm`，拒绝 UNC、特权/内部协议与其他本地文件；主 WebView 的 opener 权限不放开 `file://`。失败时在当前页 notice 行按 code 提示，不静默。
 
 电脑版 / 移动版是当前内部页的浏览意图，不是设置项，也不落盘。默认电脑版，工具栏在「用系统浏览器打开」左侧显示手机图标，表示下一步切到移动版；移动版时显示电脑图标。点击后在**同一活 WebView** 上更换 User-Agent 并 reload 当前文档：电脑版使用引擎默认 UA（切回时恢复创建时记下的引擎 UA），移动版使用固定 Android Chrome UA。reload 不加历史条目，前进后退继续使用该实例的原生会话历史。栏宽仍跟右侧工作区走，不模拟手机外框。纯 CSS 按宽度响应的站点可能看起来变化不大；按 UA 分流的站点（如 Google、百度）会切版。新标签默认电脑版，互不影响。
 
@@ -194,15 +196,18 @@ BrowserPanel
 | × 工作区「浏览器」（close） | hide | 全部丢弃 | **保留** | 去掉 |
 | 内部关闭所有标签 | hide | 全部关闭 | 清空 | 仍在，空态 + |
 | 离开会话 Shell（例如进入独立工作台设置页） | 立即 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 随 scope 保存 |
+| 连续隐藏达到 `browserHiddenReleaseSecs`（默认 3600 秒） | 保持隐藏 | 全部丢弃，释放 WebView 进程 | 保留（URL、标题） | 不变；再显示时重建当前页并重新加载 |
 | 应用退出 | 全部 close | 无 | 丢弃 | 丢弃；Cookie 保留 |
 
 丢弃后的再打开：只重建当前页；其余内部页只显示标题，点到再创建 WebView。页内 JS 状态和滚动位置不恢复；Cookie 使登录通常仍有效。
 
-展示状态与资源终止必须分离：右栏收起、切 Tab、切 scope、离开 Shell、进入设置页只做 `hide + suppress`，**不销毁**实例；只有用户明确关闭浏览器工作对象（`reason === 'close'`）、关闭内部页、LRU 淘汰和应用退出才 `discard`。因此 `BrowserNativeLifecycle` 必须同时评估 `available`、`requestedOpen`、`presented`、`autoCollapsedHidden`、`activeIsBrowser` 与 `scopeKey`：任一展示条件不成立才 suppress。`scopeKey` 变化只触发重新求值：浏览器会话是进程单例，切换会话时可见页并未改变，展示条件仍成立就不得对同一页面 hide / show，强制 hide→show 只会造成闪屏。
+展示状态与资源终止必须分离：右栏收起、切 Tab、切 scope、离开 Shell、进入设置页只做 `hide + suppress`，**不销毁**实例；只有用户明确关闭浏览器工作对象（`reason === 'close'`）、关闭内部页、LRU 淘汰、连续隐藏达到释放时限和应用退出才 `discard`。因此 `BrowserNativeLifecycle` 必须同时评估 `available`、`requestedOpen`、`presented`、`autoCollapsedHidden`、`activeIsBrowser` 与 `scopeKey`：任一展示条件不成立才 suppress。`scopeKey` 变化只触发重新求值：浏览器会话是进程单例，切换会话时可见页并未改变，展示条件仍成立就不得对同一页面 hide / show，强制 hide→show 只会造成闪屏。
 
 隐藏后重新显示必然是原生图层的一次 hide → show，中间会露出承载面板的 HTML 空白，因此首次测量与 `show` 必须在 layout 阶段（首帧前）发出，不得排进 `requestAnimationFrame`；只有 resize / observer 驱动的后续同步才走 rAF 合并。只有 `live` 翻转时才额外补一次同步，避免挂载时重复同步。
 
-占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
+离开可见状态同样在 layout 阶段发出 `suppress`，早于下一页绘制，也早于会话页卸载时的被动 effect。子 WebView 不在 HTML 树里，占位盒卸掉不会让它消失；若把 `hide` 留到绘制之后，设置页、上下文页已经显示时网页仍会盖在原来的矩形上。浏览器一旦打开过，宿主模块已在内存中，这次调用直接 `suppress`，不再等待动态 `import()`。会话壳卸载仍用 generation 微任务避开 StrictMode 的模拟卸载，但该微任务由 layout cleanup 登记，仍在绘制前执行。
+
+占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，不论当时 `suppress` 标志是否已经由 `resume` 清掉，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。`lastBounds` 只表示最近一次有效占位测量，不是原生窗口已经到达的矩形。是否调用 `setBounds` 要和上一次成功发给原生窗口的矩形，或当前在途目标比较。隐藏期间记下的新尺寸，即使 `resume` 后占位盒没有再变化，也必须提交。否则在别的会话改过侧边栏或右栏宽度后，回来时网页会停在离开前的矩形上，和已经更新的面板错位。另一条路径仍然保留：不得把隐藏期间的窄测量写进原生窗口，否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
 
 导航同样只有一个在途事务，与页面身份绑定：同一个 `pageId` 同时最多有一条未完成的原生 create/navigate，同目标重复提交直接复用在途 Promise，不同目标只保留最后一个排队目标。权威 URL（`page.url`）只在原生命令成功后写回；失败时结束 loading、让页面保持在上一次确认的 URL，并把结构化错误码投到该页 notice。地址栏作为用户输入保留待修正内容，不回写失败地址为权威值。禁用「先写 URL 再发命令」和「同一页并发导航」，是因为前者会留下白屏但地址栏显示成功的假象，后者会随点击次数线性堆积原生调用，最终拖垮 WebView 消息循环并让整个应用无响应。
 
@@ -210,9 +215,11 @@ BrowserPanel
 
 `suppress` 语义固定为幂等的「隐藏并阻止迟到 show」，`resume` 为幂等的「解除抑制并通知占位组件按当前 bounds 重新 show」；重复调用不得产生额外 IPC 或重复 show。`resume` 只清标志位而不同步，会留下工具栏还在、网页全白的状态。`scope-change` 的 close resolver 保持 no-op：scope 切换由 `BrowserNativeLifecycle` 统一驱动，该组件位于 `RightWorkspaceProvider` 内部，子级 effect 先于父级执行；若父级 resolver 再 suppress，会把刚恢复的新 scope 页面重新隐藏。`deactivate` 与 `workspace-close` 走 suppress，只有 `close` 走 `discardAll`。
 
-临时离开统一 suppress 而不是 discard，是为了保留页内 JS 状态、滚动位置、SPA 状态和原生导航历史，代价是隐藏实例仍占用内存并可能继续跑定时器、网络或音频，由 5 个活实例上限兜底。语义按 Tauri 子 WebView 定义，不绑定具体内核：`show/hide`、bounds、`close`、registry 与 LRU 对所有平台一致，Windows WebView2 / macOS WKWebView / Linux WebKitGTK 只作为平台实现细节。第一版不引入平台专属 suspend/冻结状态机；只有实测隐藏实例消耗不可接受时，才单独设计跨平台降级能力。
+临时离开统一 suppress 而不是 discard，是为了保留页内 JS 状态、滚动位置、SPA 状态和原生导航历史，代价是隐藏实例仍占用内存并可能继续跑定时器、网络或音频，由 5 个活实例上限和隐藏释放时限兜底。语义按 Tauri 子 WebView 定义，不绑定具体内核：`show/hide`、bounds、`close`、registry 与 LRU 对所有平台一致，Windows WebView2 / macOS WKWebView / Linux WebKitGTK 只作为平台实现细节。不引入平台专属 suspend/冻结状态机。
 
-`WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。原生网页的显隐只由 `BrowserNativeLifecycle` 写入；浏览器面板和占位组件卸载不得自行调用 `resume`、`suppress` 或 `hideAll`，避免同一 scope 切换产生重复 hide/show。占位组件只负责在 layout 阶段测量并把当前 `pageId + bounds + visible` 交给 host，后续 ResizeObserver/窗口变化通过 rAF 合并到 `ensurePage`；同一次测量不得再旁路发送 bounds IPC。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效；但无论是面板卸载、Shell 卸载还是 `available=false`，cleanup 都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
+隐藏释放：实测浏览器打开过后，隐藏实例所在的独立 WebView2 环境（`browser-profile`）常驻约 200MB。浏览器宿主在 `suppress` 生效时记下隐藏起点并挂一个定时器，时长取 `configs/app-config.toml` 的 `browserHiddenReleaseSecs`（默认 3600 秒，非正数回落默认值），经 `AppConfigVm` 下发。到期时宿主等待在途 create / bounds 结束，再按 discard 释放全部活实例：内部页的 URL 与标题保留，只把 `live` 投影为 false。时限内 `resume` 取消定时器并直接显示原实例；超过时限才 `resume`（例如定时器被系统挂起而未触发）时先完成释放，再按丢弃后的再打开规则重建当前页并重新加载。`ensurePage` 与导航必须等待在途释放完成，并从会话重新读取页面投影，不得用释放前的页面对象复用已关闭的实例。时限只配置一处，宿主保持懒加载：配置在宿主模块加载前到达时先记下，加载后再应用。
+
+`WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。原生网页的显隐只由 `BrowserNativeLifecycle` 写入；浏览器面板和占位组件卸载不得自行调用 `resume`、`suppress` 或 `hideAll`，避免同一 scope 切换产生重复 hide/show。占位组件只负责在 layout 阶段测量并把当前 `pageId + bounds + visible` 交给 host，后续 ResizeObserver/窗口变化通过 rAF 合并到 `ensurePage`；同一次测量不得再旁路发送 bounds IPC。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效。这条失效检查放在 layout cleanup 登记的微任务里，真实卸载仍在绘制前 `suppress`。无论是面板卸载、Shell 卸载还是 `available=false`，都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。`available=false` 且宿主模块已加载时，在 layout effect 本体里同步 `suppress`，不等这个微任务。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
 
 地址建议浮层不进入活网页 LRU。聚焦/输入/键盘选中/主题或窗口尺寸变化时更新同一个实例；提交、Escape、主界面点到地址栏以外、浏览页子 WebView 获得焦点、浏览器整体隐藏或 owner 丢弃时 hide/close。地址栏因点击浮层而失焦不得 hide。show/hide revision 由模块级分配器跨组件挂载单调递增；整体隐藏还必须在 Rust 侧失效化在途 show，迟到请求不得覆盖较新的 hide。鼠标选择与删除通过带 revision 和稳定 item key 的事件回到主 WebView；主界面只接受当前可见 revision 且仍存在于当前建议投影中的项目。dismiss 只关闭浮层，不匹配建议项。
 
@@ -226,7 +233,9 @@ BrowserPanel
 
 点击浮层必然让地址栏先失焦（焦点转到原生浮层 WebView），因此不得把地址栏 `blur` 当成建议会话结束：那会先 hide 再在 `remove` 后 show，记录面板会闪一下。判定一次建议点击是否有效，必须使用**浮层当时正在显示的 revision**。`remove` 只更新剩余建议投影，不关浮层、不跳转。关闭只发生在选中跳转、提交、Escape、主界面点到地址栏以外，以及浏览页子 WebView 获得焦点（`dismiss`）。网页获得焦点由页面 WebView 的 focus 信号发出 dismiss，不能再靠地址栏失焦猜测。
 
-地址栏草稿属于用户：地址栏聚焦编辑期间，网页带来的 `url`/标题事件（跳转、重定向、SPA 路由变化）不得覆盖已输入内容，也不得把“已输入”状态重置回“最近访问”。只有切换内部页（`pageId` 变化）或提交后才允许用权威 URL 重写地址栏。否则同一个输入在“空白页”与“已打开页面”上会落到不同的建议模式：空白页稳定走过滤结果，已打开页面会被页面事件打回最近访问，表现为两处检索效果不一致。
+地址栏草稿属于用户：地址栏里已有未提交改动时，网页带来的 `url` 事件不得覆盖已输入内容，也不得把“已输入”状态重置回“最近访问”。仅聚焦、尚未改字不构成草稿。提交后清掉这层保护。只有切换内部页（`pageId` 变化）可以在仍有未提交改动时用权威 URL 重写地址栏。否则同一个输入在“空白页”与“已打开页面”上会落到不同的建议模式：空白页稳定走过滤结果，已打开页面会被页面事件打回最近访问，表现为两处检索效果不一致。
+
+同文档历史跳转不产生新文档，整页加载事件看不到它。`history.pushState`、`replaceState`、同文档后退/前进和 hash 变化仍要写回地址栏。Windows 上 `Source` 对一部分 `history.pushState` 保持为上一次整页加载的地址，`SourceChanged` 因此带不出新路径；`HistoryChanged` 之后由宿主读取文档的 `location.href`（WebView2 `ExecuteScript` 的 JSON 字符串，不是页面主动上报）。读取带递增 probe，文档加载会作废更早的读取，迟到结果不能盖住更新的地址。`SourceChanged` 在 `IsNewDocument == false` 时仍立即发布引擎 Source。macOS 观察 WKWebView 的 `URL`，Linux 观察 WebKit `uri`；这两处在整页加载进行中（`isLoading` / `is_loading`）不发布，避免和文档加载事件重复。不向浏览页开放 IPC。地址与上次已投影的位置相同则不重复发送。只有去掉 fragment 后的 `http(s)` 访问地址变了，才写入访问记录，避免页面滚动改 hash 时反复写历史文件。地址栏里已有未提交改动时，这条 `url` 事件仍然不覆盖草稿。
 
 地址建议浮层必须位于所有浏览页子 WebView 之上：子 WebView 创建时会插到窗口 z-order 顶部，因此**在浮层之后创建的网页子 WebView 会盖住浮层**，只留下网页视口上沿之上的一条建议可见。每次显示浮层都必须显式把它抬到最前（`SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`），不得依赖创建顺序；判定标准是窗口子级 z-order 中浮层排在网页子 WebView 之前，且列表在网页打开时仍完整可见。Windows 无边框缩放 overlay（`TAURI_DRAG_RESIZE_WINDOW`）必须压在浏览页之上，否则贴边的网页 HWND 会吃掉窗口右/下边缘命中；显示浮层后必须把该 overlay 再抬到最前。overlay 客户区有孔洞，建议列表仍在孔内接收点击。
 
@@ -241,8 +250,10 @@ BrowserPanel
 - 浏览用子 WebView **零 Tauri IPC**。capability 不得授予任何 Gold Band command。
 - 地址建议 child WebView 只加载应用内受信任入口，capability 仅授予 `core:event:default`，用于把 choose/remove 事件发给主 WebView；不得继承浏览页权限，也不得直接读取历史文件或调用浏览器命令。
 - 与主界面 WebView 使用不同的用户数据目录：`{appData}/browser-profile/`。退出时不 `clear_all_browsing_data`。产品可后续提供「清除浏览数据」，第一版不做入口也可以。
-- 本地 HTML 不通过 `file://` 导航，而是经 `gold-band-browser-file://` 自定义协议加载：Rust 只在「当前页已授权目录」内按路径段解析请求，拒绝越界、编码分隔符和非 GET/HEAD，响应带 `no-store`、`nosniff` 和按扩展名推断的 `Content-Type`。返回给前端与地址栏的展示 URL 仍是 canonical `file://` 路径，协议 URL 只存在于原生图层内部。
-- 授权目录只由「打开本地 HTML 时解析出的文件父目录」产生，不随导航扩散；页面一旦跳到 `http(s)`，该页的授权目录立即清空，协议请求随即 404，避免本地目录在浏览过程中被长期占有。授权目录的解析是浏览器专用轻量解析，不签发外部文件访问令牌、不启动文件监听，避免连续打开链接时堆积授权与 watcher。
+- 本地 HTML 不通过 `file://` 导航，而是经 `gold-band-browser-file://` 自定义协议加载。协议 URL 的路径就是文件 `file://` URL 的路径（如 `http://gold-band-browser-file.localhost/E:/repo/tmp/a.html`），与授权无关，因此 `../`、`./` 等相对引用总是解析到真实文件。Rust 拒绝点段、编码分隔符和非 GET/HEAD，canonical 后再按页面授权判定；响应带 `no-store`、`nosniff` 和按扩展名推断的 `Content-Type`。返回给前端与地址栏的展示 URL 仍是 canonical `file://` 路径，协议 URL 只存在于原生图层内部。
+- 授权（`LocalFileGrant`）属于原生页，是一组授权根加一组待确认的被拒目录。打开本地 HTML 时默认授权根取包含该文件的最内层工作空间：已注册工作空间根，或 Gold Band 托管的会话 worktree 根；都不包含时取文件所在目录。这与 VS Code Webview 默认 `localResourceRoots` 为工作空间目录一致。导航到已授权范围内的文档（含地址栏重新输入、页内链接）保留现有授权；导航到范围外的本地文档重新取默认授权；跳到 `http(s)` 立即清空授权，协议请求随即 404。授权解析不签发外部文件访问令牌、不启动文件监听，也不列目录。
+- 所有本地文件在该协议下同源，授权范围内的文件都能被页面脚本 `fetch` 读出，因此不默认放开整个磁盘。授权外的请求一律按 404 返回，页面无法据此探测路径是否存在；文件真实存在时，Rust 记录其所在目录（合并父子目录，最多 16 个），每新增一个就发一次 `local-access-denied { pageId, directories }` 事件。前端在该页 notice 行显示被拒目录和「允许访问」；点击后经 `browser_allow_local_access { pageId, directories }` 把仍处于待确认的目录并入授权根并刷新页面。Rust 只接受该页自己请求过的目录，其他路径一律忽略。该授权只在当前页生效、不落盘，页面离开本地文档时随授权一起清空。
+- 页内 `window.open` / Ctrl+点击打开的本地目标（`file://` 或本协议 URL）只有在打开它的页面授权已覆盖该文件时才转成内部新页，远程网页无法借此打开本地文档。
 - Windows 下 WebView2 只保证自定义协议以 `http://<scheme>.localhost/<path>` 形态参与导航（`wry` 仅改写初始 URL，`navigate` 不会改写），因此导航 URL 需要平台化生成；协议处理器同时接受 `http(s)://<scheme>.localhost` 与 `<scheme>://localhost` 两种形态。
 - 禁止把任意 `file://`、`tauri://`、`ipc.localhost` 暴露给不可信页；`file://` 不再进入导航白名单，只保留 canonical 展示语义。
 - `gold-band-preview` 仍用于图片预览；其 CSP 不能承载可执行 HTML，故不作为内置浏览器文档协议。
@@ -275,6 +286,8 @@ blob、必须 POST、或另存为拿不到完整字节时，返回结构化错�
 
 Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、另存为。Linux 已知 Wayland 下子 WebView 可能错位，第一版不增加发行版特判；功能在可对齐的环境交付，错位记为已知限制。
 
+平台原生监听代码必须在对应系统的真实 Rust target 上通过编译门禁。macOS 的 `objc2::define_class!` 协议实现必须先把协议导入为标识符，再在宏内引用；`ivars` / `alloc` 所属 trait 必须显式进入作用域。Tauri `with_webview` 的 `Send` 调度边界只携带可发送的整数句柄，在目标 UI 回调内恢复 Objective-C retained pointer；调度失败必须立即释放所有权。跨平台日志接口使用 `Display + ?Sized` 统一接受字符串、具体错误和 trait object。PR Checks 使用 macOS runner 编译桌面 crate，避免 Linux / Windows 因条件编译跳过 WKWebView 集成错误。
+
 ## 13. 错误
 
 后端只返回 `CommandErrorVm { code, params }`，不写对客文案。至少：
@@ -287,7 +300,9 @@ Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、�
 | `browser.navigation.invalid` | URL 不合法或 scheme 不允许 |
 | `browser.download.unsupported` | 该次下载无法另存为 |
 | `browser.download.cancelled` | 用户取消另存为（若需与失败区分） |
-| `browser.local_html.grant_failed` | 本地 HTML 路径无法授权或不是可读 HTML |
+| `browser.local_html.grant_failed` | 本地 HTML 路径无法授权或不是可读 HTML；或「允许访问」提交的目录已不在该页待确认列表中 |
+| `browser.local_html.access_denied` | 仅前端 notice code，由 `local-access-denied` 事件生成，`params.directories` 为待确认目录；不随加载完成清除，页面离开本地文档、用户允许或切换导航时清除 |
+| `browser.system_open.failed` | 系统 opener 未能用系统浏览器打开已校验的目标 |
 | `browser.page.limit_reached` | 内部页已达 32 个上限 |
 | `browser.bookmark.limit_reached` | 门户书签已达 32 个上限 |
 | `browser.bookmark.invalid` | URL 不是可加入的 `http(s)` 站点，或排序 ids 不匹配 |
@@ -300,6 +315,6 @@ Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、�
 
 过度设计：不把每个 URL 做成工作区资源；不按工作空间复制浏览会话；不用 1GB 内存做主阈值；不在启动预热 WebView；不导入外站 Cookie；不做下载队列。浏览会话单例比「每 scope 一份」更少状态。现有工作区 Tab、ContextMenu、BrandLoadingState、preview grant、文件链接 resolver 直接复用。
 
-本地 HTML 协议不引入本地 HTTP 服务、缓存、临时目录或第二份授权状态：协议处理器直接复用页面已持有的授权目录与 Tauri 异步自定义协议能力，读文件是单次有界读取（上限 64MB），请求之间无共享状态。导航收敛不新增页状态字段，只复用现有 `page.url` 与 `loading`，因此也没有引入额外的事实源。
+本地 HTML 协议不引入本地 HTTP 服务、缓存、临时目录或第二份授权状态：协议处理器直接复用页面已持有的 `LocalFileGrant` 与 Tauri 异步自定义协议能力，读文件是单次有界读取（上限 64MB）。授权只是把原先的单个目录换成授权根列表加有界的被拒目录列表，仍挂在原生页上，与页同生命周期；默认授权根只在打开本地文档时读取一次已注册工作空间并做路径前缀比较，不扫描目录。被拒目录只在新增时发一次事件，单页最多 16 个，不随请求数增长。导航收敛不新增页状态字段，只复用现有 `page.url` 与 `loading`，因此也没有引入额外的事实源。
 
-性能：未打开路径零增量。打开后最多 5 块 WebView，可见时每动画帧最多一次 bounds IPC。关右栏或 × 投影 Tab 必须停同步并丢弃实例，避免看不见时占内存。内部页摘要有界（建议内部页上限 32，超出拒绝新建或淘汰最旧非当前页标题，实现时在开发方案固定）。坐标同步不得触发会话 Markdown 重渲染。本地 HTML 协议按需读取单个文件，不做目录扫描、不做递归遍历；同一目标连续提交不产生额外原生调用，因此性能风险与点击次数无关。
+性能：未打开路径零增量。打开后最多 5 块 WebView，可见时每动画帧最多一次 bounds IPC。关右栏只 hide + suppress 并停同步，连续隐藏达到 `browserHiddenReleaseSecs` 后丢弃全部实例；× 投影 Tab 立即丢弃。看不见时的内存占用因此有时间上限，隐藏期间只多一个定时器。内部页摘要有界（建议内部页上限 32，超出拒绝新建或淘汰最旧非当前页标题，实现时在开发方案固定）。坐标同步不得触发会话 Markdown 重渲染。本地 HTML 协议按需读取单个文件，不做目录扫描、不做递归遍历；同一目标连续提交不产生额外原生调用，因此性能风险与点击次数无关。

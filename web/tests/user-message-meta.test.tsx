@@ -36,7 +36,7 @@ describe('UserMessageMeta', () => {
     await act(async () => root.render(
       <UserMessageMeta
         role={{ profileId: 'pf-dev', name: 'Development and Testing', content: '完整角色定义' }}
-        quotes={[{ id: 'quote-1', sourceMessageKey: 'message-1', text: '引用内容' }]}
+        quotes={[{ id: 'quote-1', text: '引用内容', source: { kind: 'agentMessage', messageKey: 'message-1' } }]}
       />,
     ));
 

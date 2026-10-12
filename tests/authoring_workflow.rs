@@ -247,6 +247,82 @@ fn create_task_from_requirement_writes_authoring_files() {
 }
 
 #[test]
+fn saved_workflow_model_config_remaps_only_observed_models_and_keeps_memory_in_sync() {
+    let temp = tempdir().unwrap();
+    let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(root).with_provider_diagnostics_source(std::sync::Arc::new(|| {
+        Ok(BTreeMap::from([("claude-acp".to_string(), ProviderDiagnosticSnapshot {
+            available: true, error: None, checked_at: "2026-10-08T00:00:00Z".into(),
+            capabilities: Some(serde_json::json!({"configOptions": [
+                {"id":"model", "category":"model", "currentValue":"observed", "options":[{"value":"observed"},{"value":"unknown"}]},
+                {"id":"effort", "category":"thought_level", "options":[{"value":"xhigh"}]},
+                {"id":"fast", "category":"model_config", "options":[{"value":"false"}]}
+            ]})),
+        })]))
+    }));
+    let definition = workflow(&app, "plan");
+    let old = BTreeMap::from([
+        ("reasoning_effort".into(), "xhigh".into()),
+        ("context".into(), "500k".into()),
+        ("fast".into(), "false".into()),
+    ]);
+    for model in ["unknown", "observed"] {
+        let mut bindings = configured_bindings(&definition);
+        for binding in &mut bindings.bindings {
+            binding.model_id = Some(model.into());
+            binding.config_options = old.clone();
+            binding
+                .model_bound_overrides
+                .insert(model.into(), old.clone());
+        }
+        let store = app
+            .save_workflow_template_with_bindings(
+                format!("Config {model}"),
+                definition.clone(),
+                bindings,
+            )
+            .unwrap();
+        let id = store.last_used_template_id.unwrap();
+        let reloaded = app.workflow_templates().unwrap();
+        let saved = reloaded
+            .templates
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap();
+        let expected = if model == "unknown" {
+            old.clone()
+        } else {
+            BTreeMap::from([
+                ("effort".into(), "xhigh".into()),
+                ("fast".into(), "false".into()),
+            ])
+        };
+        for binding in &saved.model_bindings.bindings {
+            assert_eq!(binding.config_options, expected);
+            assert_eq!(binding.model_bound_overrides.get(model), Some(&expected));
+        }
+        let revision = saved.model_bindings.binding_revision;
+        let repeated = app
+            .update_workflow_template_with_bindings(
+                &id,
+                saved.workflow.clone(),
+                saved.model_bindings.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            repeated
+                .templates
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap()
+                .model_bindings
+                .binding_revision,
+            revision
+        );
+    }
+}
+
+#[test]
 fn create_task_accepts_lightweight_authoring_workflow_with_model_bindings() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -661,13 +737,13 @@ fn built_in_validation_profiles_do_not_block_on_missing_external_evidence() {
             DesktopLanguage::ZhCn,
             "环境问题或需要人工验收导致当前验证无法继续时，应如实记录未执行项和证据缺口，但不构成阻塞条件",
             "前序存在开发节点但没有产出 `dev-report.md`，不构成阻塞条件",
-            "仅因环境或人工条件无法执行的验证记为 `FOLLOW_UP`",
+            "不得仅据此把工作流节点声明为 BLOCKED",
         ),
         (
             DesktopLanguage::En,
             "Environment issues or required manual acceptance may prevent validation from continuing, but do not constitute blocking conditions",
             "If a predecessor dev node did not produce `dev-report.md`, that absence is not a blocking condition",
-            "A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`",
+            "do not declare the workflow node BLOCKED solely because of it",
         ),
     ] {
         let temp = tempdir().unwrap();

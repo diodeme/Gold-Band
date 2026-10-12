@@ -475,6 +475,7 @@ fn windows_executable_candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
 /// MCP stdio checks, and Windows shell fallbacks so the app does not surface a
 /// transient console window while the command runs.
 pub fn background_command(program: impl AsRef<OsStr>) -> ProcessCommand {
+    #[allow(clippy::disallowed_methods)] // The single sanctioned constructor.
     let mut command = ProcessCommand::new(program);
     apply_background_process_flags(&mut command);
     command
@@ -640,7 +641,47 @@ fn process_group_is_alive(group_id: u32) -> bool {
     };
     // Signal 0 performs existence/permission checking without changing process state.
     let result = unsafe { libc::kill(-group_id, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    let exists = result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    #[cfg(target_os = "linux")]
+    return exists && process_group_has_running_member(group_id);
+    #[cfg(not(target_os = "linux"))]
+    exists
+}
+
+/// `kill(-group, 0)` also finds zombies. A killed descendant whose new parent
+/// never reaps it (a container whose PID 1 is not an init) stays a zombie for
+/// good; it holds no stdio or other resources, so it does not keep the group
+/// alive. The leader is checked first; the `/proc` scan only runs once it is gone.
+#[cfg(target_os = "linux")]
+fn process_group_has_running_member(group_id: i32) -> bool {
+    let running_member = |pid: &str| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| proc_stat_state_and_group(&stat))
+            .is_some_and(|(state, group)| group == group_id && !matches!(state, 'Z' | 'X'))
+    };
+    if running_member(&group_id.to_string()) {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|pid| pid.bytes().all(|b| b.is_ascii_digit()) && running_member(pid))
+    })
+}
+
+/// State and process group of a `/proc/<pid>/stat` line: `pid (comm) state ppid pgrp ...`,
+/// where `comm` may itself contain spaces and parentheses.
+#[cfg(target_os = "linux")]
+fn proc_stat_state_and_group(stat: &str) -> Option<(char, i32)> {
+    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let group = fields.nth(1)?.parse().ok()?;
+    Some((state, group))
 }
 
 /// Best-effort cleanup for a process-group id persisted before an app crash.
@@ -821,6 +862,46 @@ mod tests {
                 .unwrap();
             assert!(status.success());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_group_of_unreaped_zombies_is_not_alive() {
+        use std::os::unix::process::CommandExt;
+
+        // A group whose only member is killed and never reaped, like an orphan
+        // adopted by a container PID 1 that is not an init (here: this test).
+        let mut member = super::background_command("sleep");
+        member.arg("60").stdin(Stdio::null());
+        member.process_group(0);
+        let mut member = member.spawn().unwrap();
+        let group_id = member.id();
+        assert!(super::process_group_is_alive(group_id));
+
+        unsafe { libc::kill(group_id as i32, libc::SIGKILL) };
+        let stat = format!("/proc/{group_id}/stat");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::fs::read_to_string(&stat)
+            .ok()
+            .and_then(|stat| super::proc_stat_state_and_group(&stat))
+            .is_none_or(|(state, _)| state != 'Z')
+        {
+            assert!(std::time::Instant::now() < deadline, "member never became a zombie");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(unsafe { libc::kill(-(group_id as i32), 0) }, 0);
+        assert!(!super::process_group_is_alive(group_id));
+        member.wait().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_stat_parsing_tolerates_parentheses_in_the_command_name() {
+        assert_eq!(
+            super::proc_stat_state_and_group("42 (node (x) y) Z 1 40 40 0 -1"),
+            Some(('Z', 40))
+        );
+        assert_eq!(super::proc_stat_state_and_group("garbage"), None);
     }
 
     #[test]

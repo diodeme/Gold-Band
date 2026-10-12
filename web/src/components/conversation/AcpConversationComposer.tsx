@@ -31,7 +31,7 @@ import {
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { Button } from '@/components/ui/button';
 import type { AttachmentItem } from '@/lib/attachment-service';
-import type { ComposerQuote } from '@/lib/composer-context';
+import type { ComposerQuote, ComposerWorkspaceFileRef } from '@/lib/composer-context';
 import type { SlashCatalogGroup, SlashCatalogItemKind } from '@/lib/slash-command';
 import { cn } from '@/lib/utils';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
@@ -45,8 +45,11 @@ export interface AcpConversationComposerProps {
   sending: boolean;
   attachments: AttachmentItem[];
   quotes: readonly ComposerQuote[];
+  workspaceFiles: readonly ComposerWorkspaceFileRef[];
   contextError: string | null;
   onRemoveQuote: (id: string) => void;
+  onRemoveWorkspaceFile: (id: string) => void;
+  onOpenWorkspaceFile: (file: ComposerWorkspaceFileRef) => void;
   onRemoveAttachment: (id: string) => void;
   onPreviewAttachment: (item: AttachmentItem) => void;
   onClearAttachments: () => void;
@@ -78,6 +81,7 @@ export interface AcpConversationComposerProps {
   onPickFiles: () => void | Promise<void>;
   canStop: boolean;
   stopInProgress: boolean;
+  stopCommandInFlight: boolean;
   onStop: () => void | Promise<void>;
   canSubmit: boolean;
   canSubmitHistory: boolean;
@@ -113,6 +117,7 @@ export function AcpConversationComposer(props: AcpConversationComposerProps) {
     prompt="" onPromptChange={noop} onSubmit={noop} sending={false}
     onHistoryTextCommit={noop}
     attachments={[]} quotes={[]} contextError={null} fileError={null}
+    workspaceFiles={[]} onRemoveWorkspaceFile={noop} onOpenWorkspaceFile={noop}
     slashGroups={[]} slashMenuOpen={false} committedSlashCommand={null}
     placeholder={t('demo.inputDisabled')} inputDisabled={true}
     onTextareaKeyDown={noop} onDragEnter={(event) => event.preventDefault()}
@@ -131,8 +136,11 @@ function AcpConversationComposerContent({
   sending,
   attachments,
   quotes,
+  workspaceFiles,
   contextError,
   onRemoveQuote,
+  onRemoveWorkspaceFile,
+  onOpenWorkspaceFile,
   onRemoveAttachment,
   onPreviewAttachment,
   onClearAttachments,
@@ -159,6 +167,7 @@ function AcpConversationComposerContent({
   onPickFiles,
   canStop,
   stopInProgress,
+  stopCommandInFlight,
   onStop,
   canSubmit,
   canSubmitHistory,
@@ -182,7 +191,7 @@ function AcpConversationComposerContent({
       text: (cursor: import('@/lib/composer-history').HistoryCursor) => getRuntimeApi().getComposerHistoryText(locator, cursor),
     } : null;
   }, [historyScope]);
-  const draftIdentity = useMemo(() => ({ attachments, quotes }), [attachments, quotes]);
+  const draftIdentity = useMemo(() => ({ attachments, quotes, workspaceFiles }), [attachments, quotes, workspaceFiles]);
   const history = useComposerHistory({
     scope: historyScope, source: historySource, input: prompt,
     draftIdentity, disabled: inputDisabled, onChange: onPromptChange,
@@ -240,9 +249,12 @@ function AcpConversationComposerContent({
         >
           <ComposerContextArea
             quotes={history.browsing ? [] : quotes}
+            workspaceFiles={history.browsing ? [] : workspaceFiles}
             attachments={history.browsing ? [] : attachments}
             error={contextError}
             onRemoveQuote={onRemoveQuote}
+            onRemoveWorkspaceFile={onRemoveWorkspaceFile}
+            onOpenWorkspaceFile={onOpenWorkspaceFile}
             onRemoveAttachment={onRemoveAttachment}
             onPreviewAttachment={onPreviewAttachment}
           />
@@ -340,7 +352,7 @@ function AcpConversationComposerContent({
                     className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
-                    disabled={stopInProgress}
+                    disabled={stopCommandInFlight}
                     onClick={() => { void onStop(); }}
                   >
                     {stopInProgress ? (

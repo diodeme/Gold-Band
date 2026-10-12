@@ -1371,6 +1371,119 @@ mod tests {
     }
 
     #[test]
+    fn workflow_manual_check_reports_intervention_without_counters() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+
+        let started = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-09-23T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        assert_eq!(started.event_type, WireEventType::ExecutionStarted);
+        assert!(started.counters.is_none());
+
+        let mut paused = workflow_fact(
+            LifecycleEventType::ExecutionPaused,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        paused.payload.pause_reason = Some(MetricsPauseReason::WaitingForUserInput);
+        paused.transition = MetricsTransition::Paused {
+            transition_id: "pause-1".to_string(),
+        };
+        let paused = store
+            .collect(paused, "2026-09-23T00:00:02.000".to_string(), "test", 2)
+            .unwrap();
+        assert_eq!(paused.event_type, WireEventType::ExecutionPaused);
+        assert!(paused.counters.is_none());
+
+        let mut intervention = workflow_fact(
+            LifecycleEventType::InterventionRequested,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        intervention.fact_id = "manual-decision-1".to_string();
+        intervention.payload.intervention_kind = Some(MetricsInterventionKind::ManualDecision);
+        let intervention = store
+            .collect(
+                intervention,
+                "2026-09-23T00:00:03.000".to_string(),
+                "test",
+                3,
+            )
+            .unwrap();
+        assert_eq!(
+            intervention.event_type,
+            WireEventType::InterventionRequested
+        );
+        assert_eq!(
+            intervention.intervention_kind,
+            Some(MetricsInterventionKind::ManualDecision)
+        );
+        assert!(intervention.counters.is_none());
+
+        let completed = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionCompleted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-09-23T00:00:04.000".to_string(),
+                "test",
+                4,
+            )
+            .unwrap();
+        assert_eq!(completed.event_type, WireEventType::ExecutionCompleted);
+        let counters = completed.counters.unwrap();
+        assert_eq!(counters.pause_count, 1);
+        assert_eq!(counters.resume_count, 0);
+        assert_eq!(counters.manual_continue_count, 0);
+    }
+
+    #[test]
+    fn direct_background_checkpoint_replaces_snapshot_without_new_follow_up() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let mut terminal = workflow_fact(LifecycleEventType::ExecutionCompleted, "run-001", "round-001", "task-uuid");
+        terminal.session_mode = MetricsSessionMode::Direct;
+        terminal.subject = MetricsSubject::DirectTurn { attempt_id: "task-uuid".into(), attempt_index: 1 };
+        terminal.fact_id = "prompt-a:completed".into();
+        terminal.transition = MetricsTransition::FollowUps { action_ids: vec!["prompt-a".into()] };
+        terminal.payload.usage = Some(TokenUsage { total_tokens: Some(30), ..Default::default() });
+        let initial = store.collect(terminal.clone(), "2026-08-20T00:00:01Z".into(), "test", 1).unwrap();
+        let mut permission = terminal.clone();
+        permission.fact_id = "permission-1".into();
+        permission.event_type = LifecycleEventType::InterventionRequested;
+        permission.payload = Default::default();
+        permission.payload.intervention_kind = Some(gold_band::app::observability::MetricsInterventionKind::Permission);
+        permission.transition = MetricsTransition::PermissionRequested { request_id: "permission-1".into() };
+        store.collect(permission, "2026-08-20T00:00:02Z".into(), "test", 2).unwrap();
+        terminal.fact_id = "background:permission-1".into();
+        terminal.transition = MetricsTransition::None;
+        let updated = store.collect(terminal.clone(), "2026-08-20T00:00:03Z".into(), "test", 3).unwrap();
+        let replay = store.collect(terminal, "2026-08-20T00:00:04Z".into(), "test", 4).unwrap();
+        assert!(updated.event_revision > initial.event_revision);
+        assert_eq!(replay.event_revision, updated.event_revision);
+        assert_eq!(updated.usage.unwrap().total_tokens, Some(30));
+        let counters = updated.counters.unwrap();
+        assert_eq!(counters.permission_request_count, 1);
+        assert_eq!(counters.follow_up_count, 1);
+    }
+
+    #[test]
     fn repeated_terminal_follow_up_projection_is_idempotent() {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();

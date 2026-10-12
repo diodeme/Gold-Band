@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gold_band::app::observability::RuntimeLifecycleBus;
 use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID, RuntimeLifecycleEvent};
 use gold_band::domain::RunStatus;
+use gold_band::provider::{self, PromptWorkspaceFileRef};
 use gold_band::scheduler::db::{
     RemoveExecutionHistoryResult, ScheduledExecutionHistoryAnchor, ScheduledExecutionHistoryCursor,
     ScheduledExecutionHistoryPage, ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult,
@@ -83,6 +84,57 @@ impl std::error::Error for ScheduledServiceError {}
 pub type ScheduledServiceResult<T> = Result<T, ScheduledServiceError>;
 pub type CoordinatorRunFuture =
     Pin<Box<dyn Future<Output = ScheduledServiceResult<ManualRunResult>> + Send + 'static>>;
+
+fn validate_prompt_quotes(quotes: &[provider::UserPromptQuote]) -> ScheduledServiceResult<()> {
+    provider::validate_user_prompt_quotes(quotes).map_err(|error| {
+        ScheduledServiceError::invalid(
+            "validate-quotes",
+            serde_json::json!({ "code": error.code(), "params": error.params() }),
+        )
+    })
+}
+
+/// Editing may drop stored quotes but never introduce or rewrite one: quotes are
+/// frozen when the user takes them, and the edit sheet has nothing to quote from.
+fn retained_quotes(
+    stored: &[provider::UserPromptQuote],
+    requested: Option<&[provider::UserPromptQuote]>,
+) -> ScheduledServiceResult<Vec<provider::UserPromptQuote>> {
+    let Some(requested) = requested else {
+        return Ok(stored.to_vec());
+    };
+    let retained = stored
+        .iter()
+        .filter(|quote| requested.iter().any(|kept| kept.id == quote.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if retained.len() != requested.len() {
+        return Err(ScheduledServiceError::invalid(
+            "validate-quotes",
+            serde_json::json!({ "code": "scheduled.quote-not-stored" }),
+        ));
+    }
+    Ok(retained)
+}
+
+fn validate_prompt_workspace_files(
+    app: &App,
+    references: &[PromptWorkspaceFileRef],
+    attachment_count: usize,
+) -> ScheduledServiceResult<()> {
+    let roots = app.prompt_workspace_roots(&app.paths.repo_root);
+    provider::resolve_prompt_workspace_files(&roots, references, attachment_count)
+        .map(|_| ())
+        .map_err(|error| {
+            ScheduledServiceError::invalid(
+                "validate-workspace-files",
+                serde_json::json!({
+                    "code": error.code(),
+                    "params": error.params(),
+                }),
+            )
+        })
+}
 
 fn schedule_input_error(error: ScheduleError) -> ScheduledServiceError {
     let params = match error {
@@ -470,12 +522,14 @@ impl ScheduledTaskService {
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
+            workspace_files: input.workspace_files.clone(),
             work_location: Default::default(),
             selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            quotes: input.quotes.clone(),
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -496,6 +550,12 @@ impl ScheduledTaskService {
                 }),
             ));
         }
+        validate_prompt_workspace_files(
+            &workspace.app,
+            &input.workspace_files,
+            input.attachment_paths.as_deref().map_or(0, <[_]>::len),
+        )?;
+        validate_prompt_quotes(&input.quotes)?;
 
         let id = format!("scheduled-{}", Uuid::new_v4());
         let session_policy = input.session_policy.unwrap_or(SessionPolicy::New);
@@ -630,6 +690,19 @@ impl ScheduledTaskService {
                 })
                 .collect()
         });
+        let effective_workspace_files = input
+            .workspace_files
+            .clone()
+            .unwrap_or_else(|| current.definition.content_snapshot.workspace_files.clone());
+        validate_prompt_workspace_files(
+            &workspace.app,
+            &effective_workspace_files,
+            attachment_paths.len(),
+        )?;
+        let effective_quotes = retained_quotes(
+            &current.definition.content_snapshot.quotes,
+            input.quotes.as_deref(),
+        )?;
         let validation_input = ConversationCreateInputVm {
             project_id: input.project_id.clone(),
             content: input.content.clone(),
@@ -639,12 +712,14 @@ impl ScheduledTaskService {
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
+            workspace_files: effective_workspace_files,
             work_location: Default::default(),
             selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            quotes: effective_quotes,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -1562,6 +1637,8 @@ mod tests {
                 schedule: valid_schedule_input(),
                 overlap_policy: OverlapPolicy::SkipWhenRunning,
                 session_policy: None,
+                workspace_files: Vec::new(),
+                quotes: Vec::new(),
             }
         }
 
@@ -1584,6 +1661,8 @@ mod tests {
                 schedule: valid_schedule_input(),
                 overlap_policy: definition.overlap_policy,
                 session_policy: SessionPolicy::New,
+                workspace_files: None,
+                quotes: None,
             }
         }
 
@@ -1976,6 +2055,108 @@ mod tests {
                 .scheduled_task_dir(result.definition.id())
                 .join("inputs/report.txt")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn scheduled_quotes_are_frozen_on_create_and_can_only_be_removed_by_edit() {
+        let fixture = Fixture::new();
+        let quote = |id: &str, text: &str| gold_band::provider::UserPromptQuote {
+            id: id.to_string(),
+            text: text.to_string(),
+            source: gold_band::provider::UserPromptQuoteSource::File {
+                label: "src/lib.rs".to_string(),
+                start_line: 3,
+                end_line: 4,
+            },
+        };
+        let mut input = fixture.create_input();
+        input.quotes = vec![quote("a", "first"), quote("b", "second")];
+        let created = fixture.service.create(input).unwrap();
+        assert_eq!(created.definition.content_snapshot.quotes.len(), 2);
+        let fingerprint = created.definition.content_fingerprint.clone();
+
+        let mut rewrite =
+            fixture.update_input(&created.definition, "Generate the scheduled report");
+        rewrite.quotes = Some(vec![quote("a", "rewritten")]);
+        rewrite.quotes.as_mut().unwrap().push(quote("c", "new"));
+        let error = fixture.service.update(rewrite).unwrap_err();
+        assert_eq!(
+            error.params["details"]["code"],
+            "scheduled.quote-not-stored"
+        );
+
+        let mut remove = fixture.update_input(&created.definition, "Generate the scheduled report");
+        remove.quotes = Some(vec![quote("b", "ignored text")]);
+        let updated = fixture.service.update(remove).unwrap();
+        assert_eq!(
+            updated.definition.content_snapshot.quotes,
+            vec![quote("b", "second")]
+        );
+        assert_ne!(updated.definition.content_fingerprint, fingerprint);
+
+        let mut over_budget = fixture.create_input();
+        over_budget.quotes = vec![quote(
+            "big",
+            &"x".repeat(gold_band::provider::MAX_USER_PROMPT_QUOTE_CHARS + 1),
+        )];
+        let error = fixture.service.create(over_budget).unwrap_err();
+        assert_eq!(
+            error.params["details"]["code"],
+            "conversation.prompt-quote-limit-exceeded"
+        );
+    }
+
+    #[test]
+    fn scheduled_workspace_file_references_are_validated_before_persistence() {
+        let fixture = Fixture::new();
+        let reference_path = fixture.app.paths.repo_root.join("src/context.ts");
+        std::fs::create_dir_all(reference_path.parent().unwrap()).unwrap();
+        std::fs::write(reference_path.as_std_path(), b"export {}").unwrap();
+        let valid_reference = gold_band::provider::PromptWorkspaceFileRef {
+            project_id: fixture.app.paths.project_id.clone(),
+            relative_path: "src/context.ts".to_string(),
+        };
+        let mut input = fixture.create_input();
+        input.workspace_files = vec![valid_reference.clone()];
+
+        let created = fixture.service.create(input).unwrap();
+        assert_eq!(
+            created.definition.content_snapshot.workspace_files,
+            vec![valid_reference.clone()]
+        );
+
+        let mut invalid_update = fixture.update_input(&created.definition, "updated");
+        invalid_update.workspace_files = Some(vec![gold_band::provider::PromptWorkspaceFileRef {
+            project_id: "other-project".to_string(),
+            relative_path: "src/context.ts".to_string(),
+        }]);
+        let error = fixture.service.update(invalid_update).unwrap_err();
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(
+            error.params["details"]["code"],
+            "conversation.workspace-file-project-unavailable"
+        );
+        assert_eq!(
+            fixture
+                .service
+                .get(&created.definition.project_id, created.definition.id())
+                .unwrap()
+                .definition
+                .content_snapshot
+                .workspace_files,
+            vec![valid_reference]
+        );
+
+        let mut clear_update = fixture.update_input(&created.definition, "clear refs");
+        clear_update.workspace_files = Some(Vec::new());
+        let updated = fixture.service.update(clear_update).unwrap();
+        assert!(
+            updated
+                .definition
+                .content_snapshot
+                .workspace_files
+                .is_empty()
         );
     }
 
@@ -2753,6 +2934,8 @@ mod tests {
             schedule: valid_schedule_input(),
             overlap_policy: OverlapPolicy::SkipWhenRunning,
             session_policy: None,
+            workspace_files: Vec::new(),
+            quotes: Vec::new(),
         };
         service.create(input_for(first_app, "first")).unwrap();
         service.create(input_for(second_app, "second")).unwrap();

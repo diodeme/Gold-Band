@@ -9,6 +9,8 @@ import { ReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import '@/i18n';
+import { deriveAcpRuntimeComposerState } from '@/lib/acp-runtime-composer-state';
+import type { ConversationAttemptLifecycleVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -50,6 +52,7 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     onPickFiles: vi.fn(),
     canStop: false,
     stopInProgress: false,
+    stopCommandInFlight: false,
     onStop: vi.fn(),
     canSubmit: true,
     sendButtonBusy: false,
@@ -94,6 +97,110 @@ describe('AcpConversationComposer', () => {
   async function renderComposer(props: Partial<ComposerProps> = {}) {
     await act(async () => root.render(<AcpConversationComposer {...baseProps(props)} />));
   }
+
+  it.each(['failed', 'cancelled'] as const)(
+    'restores send after an ACP %s terminal notification despite stale local busy flags',
+    async (terminalStatus) => {
+      const onStop = vi.fn();
+      const onSubmit = vi.fn();
+      const lifecycle: ConversationAttemptLifecycleVm = {
+        runtime: { status: 'completed', outcome: null, pauseReason: null, resumable: false, current: false, active: false, continuable: false, phase: 'terminal' },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false, turnId: 'turn-1' },
+        displayStatus: 'running',
+        runtimeDisplay: { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode: null, blockingError: false },
+        continueKind: null,
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'processing', statusKey: null, canStop: true, lockInput: false },
+      };
+      const renderState = async (stopping: boolean, localTurnId = 'turn-1') => {
+        const state = deriveAcpRuntimeComposerState({
+          lifecycle, workflowValid: true, prompt: 'try again', waitingForUserInteraction: false,
+          sending: true, awaitingResponse: true, waitingForOptimisticPrompt: false,
+          localTurnId, cancelling: stopping, stopCommandPending: stopping,
+          turnAccepted: true, hasResponseAfterTurn: false, hasTimelineItems: true,
+          hasEffectiveEvents: true, timelineProcessingKind: 'tool',
+        });
+        await renderComposer({
+          prompt: 'try again', queueSubmit: false, onStop, onSubmit,
+          inputDisabled: state.inputDisabled, canSubmit: state.canSubmit,
+          canStop: state.canStop, stopInProgress: state.stopInProgress,
+          stopCommandInFlight: state.stopCommandInFlight,
+          sendButtonBusy: state.statusActive,
+        });
+      };
+      const sendButton = () => host.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!;
+      await renderState(false);
+      expect(sendButton().disabled).toBe(true);
+      if (terminalStatus === 'cancelled') {
+        const stop = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '停止')!;
+        expect(stop).toBeDefined();
+        await act(async () => stop.click());
+        expect(onStop).toHaveBeenCalledTimes(1);
+        lifecycle.acp.stopping = true;
+        lifecycle.acp.liveTurnActivity = 'cancel-requested';
+        lifecycle.composer.mode = 'stopping';
+        await renderState(true);
+        expect(sendButton().disabled).toBe(true);
+        const stopping = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('正在停止'));
+        expect(stopping?.disabled).toBe(true);
+      }
+      lifecycle.acp.liveTurnActivity = 'idle';
+      lifecycle.acp.latestTurnStatus = terminalStatus;
+      lifecycle.acp.stopping = false;
+      await renderState(terminalStatus === 'cancelled');
+      expect(sendButton().disabled).toBe(false);
+      expect(sendButton().querySelector('.animate-spin')).toBeNull();
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(false);
+      expect(host.textContent).not.toContain('正在停止');
+      await act(async () => sendButton().click());
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      lifecycle.acp = { ...lifecycle.acp, turnId: 'turn-2', liveTurnActivity: 'running', latestTurnStatus: 'none' };
+      lifecycle.composer.mode = 'normal';
+      await renderState(false, 'turn-2');
+      expect(sendButton().disabled).toBe(true);
+      expect(host.textContent).toContain('停止');
+    },
+  );
+
+  it('keeps a backend-only stopping turn retryable so a repeated Stop can settle it', async () => {
+    // After a restart the persisted lifecycle still says stopping, but no
+    // local stop command is in flight. Stop must stay clickable.
+    const onStop = vi.fn();
+    const lifecycle: ConversationAttemptLifecycleVm = {
+      runtime: { status: 'paused', outcome: null, pauseReason: 'process-interrupted', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
+      control: { mode: 'non-runtime-controlled' },
+      acp: { sessionAvailability: 'established', liveTurnActivity: 'cancel-requested', latestTurnStatus: 'none', stopping: true, turnId: 'turn-1' },
+      displayStatus: 'cancelling',
+      runtimeDisplay: { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: false, reasonCode: null, blockingError: false },
+      continueKind: null,
+      composer: { mode: 'normal', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: false, lockInput: true },
+    };
+    const renderState = async (localStopPending: boolean) => {
+      const state = deriveAcpRuntimeComposerState({
+        lifecycle, workflowValid: true, prompt: '', waitingForUserInteraction: false,
+        sending: false, awaitingResponse: false, waitingForOptimisticPrompt: false,
+        localTurnId: null, cancelling: localStopPending, stopCommandPending: localStopPending,
+        turnAccepted: false, hasResponseAfterTurn: false, hasTimelineItems: true,
+        hasEffectiveEvents: true, timelineProcessingKind: 'tool',
+      });
+      await renderComposer({
+        onStop, inputDisabled: state.inputDisabled, canSubmit: state.canSubmit,
+        canStop: state.canStop, stopInProgress: state.stopInProgress,
+        stopCommandInFlight: state.stopCommandInFlight, sendButtonBusy: state.statusActive,
+      });
+    };
+    const stopButton = () => [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('正在停止'));
+
+    await renderState(false);
+    expect(stopButton()).toBeDefined();
+    expect(stopButton()!.disabled).toBe(false);
+    await act(async () => stopButton()!.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    await renderState(true);
+    expect(stopButton()!.disabled).toBe(true);
+  });
 
   it('keeps the demo composer visible while blocking input, attachments and submission', async () => {
     const props = baseProps({ prompt: 'existing draft', canSubmit: true, canStop: true, showRuntimeContinue: true });
@@ -189,7 +296,7 @@ describe('AcpConversationComposer', () => {
       committedSlashCommand: { prefix: '/review', description: 'Review' },
     });
 
-    const wrapper = host.querySelector('[data-slot="prompt-input-textarea-with-adornment"]');
+    const wrapper = host.querySelector('[data-slot="prompt-input-textarea-field"][data-leading-adornment="true"]');
     const textarea = wrapper?.querySelector('textarea');
     const adornment = wrapper?.querySelector(':scope > span');
     expect(wrapper?.className).toContain('px-2.5');
@@ -377,7 +484,7 @@ describe('AcpConversationComposer', () => {
 
   it('renders quotes and attachments inside the prompt input context area', async () => {
     await renderComposer({
-      quotes: [{ id: 'quote-1', sourceKey: 'answer-1', text: '引用内容' }],
+      quotes: [{ id: 'quote-1', text: '引用内容', source: { kind: 'agentMessage', messageKey: 'answer-1' } }],
       attachments: [{ id: 'image-1', name: 'image.png', size: 12, mime: 'image/png', source: 'dialog', previewUrl: 'blob:image' }],
     });
 

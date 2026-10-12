@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,7 +9,15 @@ use uuid::Uuid;
 use crate::commands::{CommandErrorVm, CommandResult};
 
 use super::models::{ExternalFileAccessGrantVm, FileRevisionVm, WorkspaceFilePreviewGrantVm};
-use super::paths::{display_path, error};
+use super::paths::{comparable_path, display_path, error};
+use super::trash_bin::TrashedEntry;
+
+/// Undo history is session-scoped on the frontend; this bound only keeps the
+/// receipts that back it from growing without limit.
+const MAX_TRASH_RECEIPTS: usize = 64;
+/// Worktree roots whose Git membership was verified. A session touches a
+/// handful of roots, so a small LRU avoids re-running Git on every file call.
+const MAX_VALIDATED_WORKSPACE_ROOTS: usize = 32;
 
 #[derive(Clone, Default)]
 pub struct WorkspaceFileRuntime {
@@ -21,6 +29,24 @@ struct WorkspaceFileRuntimeInner {
     external_grants: HashMap<String, ExternalGrant>,
     preview_grants: HashMap<String, PreviewGrant>,
     recent_writes: HashMap<PathBuf, RecentWrite>,
+    trash_receipts: VecDeque<TrashReceipt>,
+    validated_roots: VecDeque<ValidatedWorkspaceRoot>,
+}
+
+struct ValidatedWorkspaceRoot {
+    key: String,
+    git_pointer: Vec<u8>,
+}
+
+fn workspace_root_key(project_id: &str, root: &Path) -> String {
+    format!("{project_id}\0{}", comparable_path(root))
+}
+
+#[derive(Clone)]
+pub(crate) struct TrashReceipt {
+    pub id: String,
+    pub project_id: String,
+    pub entry: TrashedEntry,
 }
 
 #[derive(Clone)]
@@ -31,13 +57,18 @@ struct ExternalGrant {
     ttl: Duration,
 }
 
+/// SVG previews are served as source and rendered by `<img>` (script-free image mode);
+/// the sandbox keeps a direct navigation to the preview URL script-free as well, while
+/// inline styles and embedded data images still render like in a regular browser.
+const PREVIEW_CONTENT_SECURITY_POLICY: &str =
+    "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src data:; sandbox";
+
 #[derive(Clone)]
 struct PreviewGrant {
     project_id: String,
     path: PathBuf,
     revision: FileRevisionVm,
     mime_type: String,
-    svg: bool,
     expires_at: SystemTime,
 }
 
@@ -57,7 +88,7 @@ impl WorkspaceFileRuntime {
         mime_type: String,
         ttl_seconds: u64,
     ) -> CommandResult<WorkspaceFilePreviewGrantVm> {
-        self.issue_preview(project_id, path, revision, mime_type, false, ttl_seconds)
+        self.issue_preview(project_id, path, revision, mime_type, ttl_seconds)
     }
 
     pub(crate) fn issue_external_grant(
@@ -132,7 +163,6 @@ impl WorkspaceFileRuntime {
         path: PathBuf,
         revision: FileRevisionVm,
         mime_type: String,
-        svg: bool,
         ttl_seconds: u64,
     ) -> CommandResult<WorkspaceFilePreviewGrantVm> {
         let token = Uuid::new_v4().to_string();
@@ -146,7 +176,6 @@ impl WorkspaceFileRuntime {
                 path,
                 revision,
                 mime_type,
-                svg,
                 expires_at,
             },
         );
@@ -189,6 +218,45 @@ impl WorkspaceFileRuntime {
             .map(|write| (write.operation_id.clone(), write.revision.clone()))
     }
 
+    pub(crate) fn record_trash_receipt(
+        &self,
+        project_id: String,
+        entry: TrashedEntry,
+    ) -> CommandResult<String> {
+        let id = Uuid::new_v4().to_string();
+        let mut inner = self.lock()?;
+        inner.trash_receipts.push_back(TrashReceipt {
+            id: id.clone(),
+            project_id,
+            entry,
+        });
+        while inner.trash_receipts.len() > MAX_TRASH_RECEIPTS {
+            inner.trash_receipts.pop_front();
+        }
+        Ok(id)
+    }
+
+    pub(crate) fn trash_receipt(&self, project_id: &str, id: &str) -> CommandResult<TrashReceipt> {
+        self.lock()?
+            .trash_receipts
+            .iter()
+            .find(|receipt| receipt.id == id && receipt.project_id == project_id)
+            .cloned()
+            .ok_or_else(|| {
+                error(
+                    "workspace-file.restore-unavailable",
+                    serde_json::json!({ "reason": "receipt-not-found" }),
+                )
+            })
+    }
+
+    pub(crate) fn forget_trash_receipt(&self, id: &str) -> CommandResult<()> {
+        self.lock()?
+            .trash_receipts
+            .retain(|receipt| receipt.id != id);
+        Ok(())
+    }
+
     pub fn preview_protocol_response(&self, token: &str, static_frame: bool) -> Response<Vec<u8>> {
         match self.read_preview(token, static_frame) {
             Ok((bytes, mime_type)) => Response::builder()
@@ -196,10 +264,7 @@ impl WorkspaceFileRuntime {
                 .header(header::CONTENT_TYPE, mime_type)
                 .header(header::CACHE_CONTROL, "no-store")
                 .header("X-Content-Type-Options", "nosniff")
-                .header(
-                    "Content-Security-Policy",
-                    "default-src 'none'; img-src 'self'; sandbox",
-                )
+                .header("Content-Security-Policy", PREVIEW_CONTENT_SECURITY_POLICY)
                 .body(bytes)
                 .unwrap_or_else(|_| empty_response(StatusCode::INTERNAL_SERVER_ERROR)),
             Err(status) => empty_response(status),
@@ -232,10 +297,6 @@ impl WorkspaceFileRuntime {
             return Err(StatusCode::CONFLICT);
         }
         let bytes = std::fs::read(&grant.path).map_err(|_| StatusCode::NOT_FOUND)?;
-        if grant.svg {
-            let png = rasterize_svg(&bytes).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
-            return Ok((png, "image/png".to_string()));
-        }
         if static_frame && grant.mime_type == "image/gif" {
             let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Gif)
                 .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
@@ -246,6 +307,59 @@ impl WorkspaceFileRuntime {
             return Ok((png.into_inner(), "image/png".to_string()));
         }
         Ok((bytes, grant.mime_type))
+    }
+
+    /// Whether `root` was validated for `project_id` with the same `.git`
+    /// pointer. A changed pointer drops the entry so the caller re-validates.
+    pub(crate) fn workspace_root_validated(
+        &self,
+        project_id: &str,
+        root: &Path,
+        git_pointer: &[u8],
+    ) -> CommandResult<bool> {
+        let key = workspace_root_key(project_id, root);
+        let mut inner = self.lock()?;
+        let Some(index) = inner
+            .validated_roots
+            .iter()
+            .position(|entry| entry.key == key)
+        else {
+            return Ok(false);
+        };
+        let Some(entry) = inner.validated_roots.remove(index) else {
+            return Ok(false);
+        };
+        if entry.git_pointer != git_pointer {
+            return Ok(false);
+        }
+        inner.validated_roots.push_back(entry);
+        Ok(true)
+    }
+
+    pub(crate) fn remember_workspace_root(
+        &self,
+        project_id: &str,
+        root: &Path,
+        git_pointer: Vec<u8>,
+    ) -> CommandResult<()> {
+        let key = workspace_root_key(project_id, root);
+        let mut inner = self.lock()?;
+        inner.validated_roots.retain(|entry| entry.key != key);
+        inner
+            .validated_roots
+            .push_back(ValidatedWorkspaceRoot { key, git_pointer });
+        while inner.validated_roots.len() > MAX_VALIDATED_WORKSPACE_ROOTS {
+            inner.validated_roots.pop_front();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn forget_workspace_root(&self, project_id: &str, root: &Path) -> CommandResult<()> {
+        let key = workspace_root_key(project_id, root);
+        self.lock()?
+            .validated_roots
+            .retain(|entry| entry.key != key);
+        Ok(())
     }
 
     fn lock(&self) -> CommandResult<std::sync::MutexGuard<'_, WorkspaceFileRuntimeInner>> {
@@ -264,23 +378,6 @@ impl WorkspaceFileRuntimeInner {
             .retain(|_, grant| grant.expires_at > now);
         self.recent_writes.retain(|_, write| write.expires_at > now);
     }
-}
-
-fn rasterize_svg(bytes: &[u8]) -> Result<Vec<u8>, ()> {
-    let mut options = resvg::usvg::Options::default();
-    options.image_href_resolver = resvg::usvg::ImageHrefResolver {
-        resolve_data: Box::new(|_, _, _| None),
-        resolve_string: Box::new(|_, _| None),
-    };
-    let tree = resvg::usvg::Tree::from_data(bytes, &options).map_err(|_| ())?;
-    let size = tree.size().to_int_size();
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height()).ok_or(())?;
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::default(),
-        &mut pixmap.as_mut(),
-    );
-    pixmap.encode_png().map_err(|_| ())
 }
 
 fn external_grant_vm(token: String, expires_at: SystemTime) -> ExternalFileAccessGrantVm {
@@ -367,7 +464,6 @@ mod tests {
                 path.clone(),
                 revision,
                 "image/png".to_string(),
-                false,
                 30,
             )
             .unwrap();
@@ -413,7 +509,6 @@ mod tests {
                 path.clone(),
                 revision,
                 "image/png".to_string(),
-                false,
                 30,
             )
             .unwrap();
@@ -496,7 +591,6 @@ mod tests {
                 path,
                 revision,
                 "image/gif".to_string(),
-                false,
                 30,
             )
             .unwrap();
@@ -511,14 +605,11 @@ mod tests {
     }
 
     #[test]
-    fn svg_preview_is_rasterized_and_never_returns_source_dom() {
+    fn svg_preview_returns_source_under_a_script_free_policy() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("safe.svg");
-        std::fs::write(
-            &path,
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red"/></svg>"#,
-        )
-        .unwrap();
+        let path = dir.path().join("scripted.svg");
+        let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><script>alert(1)</script><text y="2">21</text></svg>"#;
+        std::fs::write(&path, source).unwrap();
         let runtime = WorkspaceFileRuntime::default();
         let revision = super::super::service::revision_for_path(&path).unwrap();
         let preview = runtime
@@ -527,7 +618,6 @@ mod tests {
                 path,
                 revision,
                 "image/svg+xml".to_string(),
-                true,
                 30,
             )
             .unwrap();
@@ -536,9 +626,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),
-            "image/png"
+            "image/svg+xml"
         );
-        assert!(response.body().starts_with(&[0x89, b'P', b'N', b'G']));
-        assert!(!response.body().windows(4).any(|window| window == b"<svg"));
+        assert_eq!(response.body().as_slice(), source.as_bytes());
+        assert_eq!(
+            response.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        let policy = response
+            .headers()
+            .get("Content-Security-Policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(policy.contains("default-src 'none'"));
+        assert!(
+            policy
+                .split(';')
+                .any(|directive| directive.trim() == "sandbox")
+        );
+        assert!(!policy.contains("script-src"));
     }
 }

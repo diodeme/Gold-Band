@@ -595,12 +595,12 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 
 - 复用现有 workspace 文件 watcher 的普通文件事件。
 - 额外监听通过 `git rev-parse --git-path` 解析出的 HEAD、index、refs、packed-refs 等 Git 元数据路径。
-- 前端先订阅并启动 monitor，再读取首次 canonical snapshot/history；`workspacePath = null` 作为主工作区的合法作用域原样传给后端，不能跳过 monitor；加载或 mutation pending 期间的事件保留一个 dirty follow-up。
+- 前端先订阅，再由 monitored bootstrap 注册 monitor 并读取首次 canonical overview；bootstrap 返回 `workspaceScopePath`，未传路径与显式项目根都规范为主工作区 `null`，只有 linked worktree 保留 canonical path。前端把原始路径、canonical scope 与 repository 物理路径注册到同一 Store 会话，后续刷新与 mutation 统一使用 canonical scope；加载或 mutation pending 期间的事件保留一个 dirty follow-up。
 - 事件合并采用 150ms quiet debounce 和 1 秒最大延迟；普通 workspace 事件只重新读取 snapshot/status，metadata/ref 事件才读取 snapshot/history。
 - Rust 事件通道固定为 1024 项；notify error 或溢出统一升级为 repository scope invalidation，monitor identity 为 `projectId + common directory + workspace path`。
 - Git/gh 操作成功后立即刷新，不等待 watcher。
 - 不使用 fallback poll；事件恢复失败通过下一次资源激活重试 monitor 并执行一次权威 snapshot 对账。
-- 一个 repository/workspace 只存在一个 monitor，多 UI 消费者共享快照。
+- 一个 repository/workspace 只存在一个 monitor，多 UI 消费者共享快照。同一 `projectId + canonical root` 的 workspace watcher 复用前必须比较 canonical scope；不一致时返回 `workspace-file.watch-failed` 并记录 `workspace_watch_scope_conflict`，避免文件面板与源码管理的启动顺序改变事件身份。
 
 不得让每个文件行、每个 tab 或每个 React hook 独立轮询 Git。
 
@@ -608,7 +608,7 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 
 源码管理不能把 repository snapshot、history 和导航状态保存在 `SourceControlWorkspacePanel` 的组件本地。右侧 Dock 只挂载 active resource，打开 `file-diff` 会卸载源码管理面板；若状态跟随组件生命周期，用户返回时会重复读取 Git，并丢失当前分区、分页、选择和详情。
 
-采用独立 `SourceControlStore`，以 `projectId + canonical workspacePath` 作为会话身份；首次请求前以规范化 requested path 建立路由别名，snapshot 返回后注册 canonical path 别名。每个会话统一保存：
+采用独立 `SourceControlStore`，以 `projectId + canonical workspace scope` 作为会话身份；主工作区 scope 固定为 `null`，linked worktree 使用 canonical path。首次请求前以规范化 requested path 建立路由别名，bootstrap 返回后把原始请求路径、canonical scope 和 repository 物理路径归并到同一会话。每个会话统一保存：
 
 - repository snapshot、history pages、加载状态和完整结构化错误 `code + params`；Git operation 终态刷新后仍保留原始失败原因。
 - 当前源码管理分区、history page、selected OID Set 和 focused commit。
@@ -1222,3 +1222,55 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 - 必要时更新 `gold-band-mvp-plan.md`。
 
 本功能首版不需要新增内置 prompt。若后续增加 AI 生成 commit message、PR title/body 或 Issue 摘要，必须在 `src/prompts/zh-CN/...` 与 `src/prompts/en/...` 下保持一致目录并同步维护，禁止在实现代码中硬编码长 prompt。
+
+## 20. 单文件 Discard 与操作错误生命周期（2026-09-29）
+
+- 新增 typed mutation discard-path { path }，复用 workspace 写锁和版本校验；使用 Git literal pathspec 还原 index/worktree，处理 tracked、新增、删除、重命名和 unborn index。只接受当前 status 的精确文件，拒绝目录、子模块、越界路径及冲突流程，不执行递归清理。
+- 前端更改行复用 ContextMenu + AlertDialog，七语言文案同步；取消不写入，确认后文件级 pending，同一 workspace 写操作互斥，返回 workspace status 后局部收敛。
+- 根因：load 捕获旧 operationError 后在异步完成时回填，覆盖新操作或关闭结果产生的清空状态。删除迟到错误回填；背景读保留完成时的当前错误，不新增 error identity 或平行状态模型。
+- 回归：先确认 start/dismiss 与 terminal refresh 交叠的两项测试失败（old failure 重新出现），修复后转绿；新增 DOM 确认/取消/pending/禁用测试、workspace mutation 请求与局部回写测试、真实 Git 文件还原/新增删除/重命名/特殊路径/版本拦截测试。
+- 验证：受影响前端测试 82 项通过，真实 Git typed mutation 测试 5 项通过，前端类型检查与生产构建通过。浏览器使用实际面板和隔离数据验证右键菜单、确认和取消、长路径及 440px/1200px 布局。
+- 过度设计与性能评审：复用现有 Git CLI、协调锁、revision、会话状态和 copy-in 组件；新增常数次单文件 Git 调用，路径匹配 O(n) 沿用当前 status，n 为工作区变更条目数。不增加 catalog/history 全量读取、文件正文读取、依赖、缓存或队列。
+
+## 21. Workspace 变更检测诊断（2026-09-29）
+
+- 当前现场现象是普通工作区文件修改后没有触发源码管理 overview；Git status 与 metadata watcher 正常。现有日志只能证明没有发起 overview，无法区分原生 notify、Tauri event、Store 路由过滤或 refresh 调度在哪一层中断，因此本轮先补全链路证据，不改变刷新语义。
+- 原生 workspace watcher 记录 start/reuse/stop、匿名 scope hash、引用计数，以及每批事件数、队列溢出、保守失效、发出路径数和耗时。前端按 250ms、按项目聚合事件路由计数，通过 typed IPC 记录订阅结果、匹配会话数、metadata 过滤数、越界数及 worktree refresh 起止与结果。
+- 诊断上报为 fire-and-forget，失败不得影响事件路由或 status 刷新；报告拒绝未知字段和超大计数，不传文件路径、文件内容或命令参数。接口测试固定 camelCase IPC 契约、路由计数和诊断失败时仍刷新。
+- 过度设计与性能评审：复用 tracing、runtime.log、现有 watcher 和 Store，不增加依赖、持久状态、轮询、缓存或重启状态机。原生每批最多一条 DEBUG，前端每 250ms 每项目最多一条路由摘要，每次真实 worktree refresh 两条摘要；聚合窗口和会话 LRU 使内存与调用量有界。
+
+## 22. Workspace 变更事件身份收敛（2026-09-29）
+
+- 根因：主工作区同时以语义身份 `workspacePath = null` 和物理项目根路径存在。workspace watcher 正确发出 `null`，但以显式项目根打开的 SourceControlStore 会话严格比较原始路径，导致事件进入 `out_of_scope_sessions` 且不触发 refresh；属于 canonical identity 契约未贯通，而不是 notify 或 Git status 失效。
+- 后端 Git bootstrap 与文件 workspace resolver 统一产出 canonical scope：未传路径和显式项目根均为 `null`，linked worktree 才是 canonical path。Git bootstrap 与独立 monitor resolver 使用跨平台文件系统 identity 判断显式路径是否为项目根，Windows 的分隔符、大小写和长路径形式差异不得产生 linked worktree scope。物理 repository identity 继续用于 Git 执行和路径边界，不再兼任主工作区的语义 scope。
+- 前端 bootstrap 后将原始请求路径、canonical scope 和 repository 物理路径注册为同一 Store 会话别名；monitor、刷新、历史、审阅与写操作统一使用 canonical scope。事件仍按 scope 精确匹配，不采用路径包含关系，因此嵌套 worktree 不会刷新主工作区。
+- workspace watcher 保存 canonical scope；同一物理 root 只有 scope 相同才增加引用计数，scope 冲突记录 `workspace_watch_scope_conflict` 并返回结构化失败，文件面板与源码管理先后启动的结果一致。
+- 回归与验收：修复前最小 Store 测试稳定得到“期望第二次 snapshot，实际仅一次”；修复后该测试及 SourceControlStore 全部 56 项通过。真实 Git 测试固定显式项目根为 `null`、linked worktree 为路径，并保持主工作区 bootstrap 4 次、linked worktree 5 次 Git 命令预算；workspace resolver 与 watcher scope 顺序测试通过，生产 TypeScript 检查通过。
+- 过度设计与性能评审：复用既有 resolver、bootstrap DTO、Store alias、watcher 引用计数和结构化错误；不新增依赖、缓存、状态机、队列、文件扫描或 Git 调用。新增工作仅发生在 bootstrap/watcher 注册时，为常数次内存路径归一化与比较；事件路由和刷新复杂度不变。
+
+## 23. Windows watcher 路径表示统一（2026-09-29）
+
+- 现场证据：workspace watcher 已发出普通文件事件，前端 `routed_sessions = 0` 且全部进入 `out_of_scope_sessions`；`data.csv` 可由 Git status 与 numstat 正常读取，排除文件类型、大小和 Git parser。
+- 根因：Git repository identity 由 `std::fs::canonicalize` 产生，在 Windows 上可带 `\\?\` 或 `\\?\UNC\` 前缀；workspace watcher 发事件前会去掉此前缀。前端 path identity 只处理分隔符、drive 大小写和末尾斜杠，导致同一物理路径在边界判断中被误判为越界。这是跨层 canonical identity 实现不完整，不是 watcher、Git status 或刷新时序失效。
+- 修复：共享 `normalizeWorkspacePath` 统一普通/verbatim drive 与 UNC 路径，再由源码管理、文件 Store 和 Diff Store 共同消费；watcher scope 复用同一去前缀语义。事件仍需同时满足精确 scope 与 workspace 边界，未放宽 linked worktree 隔离。
+- 诊断：`out_of_scope_sessions` 细分为 `scope_mismatch_sessions`、`nested_worktree_filtered_sessions` 与 `path_outside_workspace_sessions`，watcher start/reuse 记录 `scope_kind = main | linked`；保持 DEBUG、内容无关与 250ms 有界聚合。
+- 回归：最小 Store 接口测试使用带 verbatim 前缀的 repository path 与普通 watcher path，修复前稳定观察到 snapshot 调用 0 次，修复后触发主工作区 refresh。watcher scope 测试固定带前缀与普通路径可复用同一 linked worktree watch。
+- 验证：SourceControlStore 58 项、共享文件 Store 与右侧工作区相关测试合计 123 项、Git 诊断 5 项、workspace watcher 9 项通过；前端生产 TypeScript 检查、Rust 格式检查和相关 diff check 通过。桌面真实 watcher 仍由重新编译后的客户端现场修改普通文件完成最终确认。
+- 过度设计与性能评审：复用共享路径工具、现有 watcher 和诊断 DTO，不新增依赖、缓存、状态机、扫描或 Git 调用。每次事件仅增加常数次字符串前缀处理与计数，刷新次数和数据量不变。
+
+## 21. 更改列表 numstat 刷新连续性（2026-09-30）
+
+- 根因：workspace mutation 返回完整 status，随后 workspace/repository watcher 的轻量 overview 整体覆盖 status，将 addedLines/deletedLines 置空，统计请求完成后再次显示。原有渐进加载设计正确，缺少已有数据重验证时的合并契约。
+- 修复：两条 overview 发布路径共用同作用域、同 HEAD、同分组的行级统计投影合并；保持现有 request revision 防止旧统计回写，最新统计响应直接替换保留值。保留 watcher 和统计重算，不根据相同 porcelain revision 跳过可能发生的内容修改。
+- 验收：先观察 discard 后 worktree/repository watcher 两项测试在旧实现上因统计置空失败，再确认修复转绿；边界测试覆盖 HEAD/workspace/path/oldPath/kind/group/binary，DOM 测试固定统计节点不卸载且新数值直接更新。
+- 刷新范围：放弃更改接口仍返回当前 workspace status；watcher 按既有工作区/元数据范围校验。更改 Tab 未加载历史和 catalog 时不引入其读取。此次不改变 watcher 事件归属或后端 API。
+- 过度设计与性能评审：复用现有状态、revision 和 Git CLI，不新增依赖、缓存、队列或跨层身份；以 Map 在 O(n) 时间、O(n) 临时内存合并当前变更列表，n 为当前 status 行数，没有新增 I/O、逐文件请求或正文读取。
+
+验证结果：98 项相关前端测试通过，生产类型检查与 Vite 构建通过。浏览器在实际源码管理面板配合隔离数据完成“确认放弃 → watcher 轻量响应 → 暂停统计 → 新统计返回”，剩余统计节点保持同一 DOM，+2/-1 直接更新为 +12/-1；440px 与 1200px 无横向溢出。未对真实用户文件执行放弃操作。
+
+## 22. Discard 行加载图标重叠与 Windows 文件占用诊断（2026-09-30）
+
+- 根因：DiscardMenu 在文件行外使用 absolute right/top 放置 spinner，未参与统计与操作区的宽度分配。改为复用 SourceControlDiffFileRow 的 trailing 插槽，以不可收缩的 24px 操作区承载 spinner，菜单不再负责进度图标定位。
+- 回归：DOM 测试先确认旧实现的 spinner 不在文件行内而失败；修复后验证 spinner 和 +1/-0 同时存在于行内，21 项相关前端测试通过。浏览器 440px 长路径场景中统计右边界 404px、操作区左边界 410px，间隔 6px，无横向溢出。
+- Windows 诊断：临时仓库 data.csv 持有 FileShare.ReadWrite（无 Delete）句柄时，git restore --source=HEAD --staged --worktree 返回 unable to unlink old data.csv: Invalid argument，退出码 255；释放句柄后同一命令返回 0。该实验证明占用可产生截图中的错误，不能据此指定用户现场的占用进程；不通过覆盖写入或强杀进程绕过占用。
+- 设计与性能评审：复用现有行和 pending action，无新增依赖、状态、I/O 或列表计算；仅调整 spinner 所属布局位置。

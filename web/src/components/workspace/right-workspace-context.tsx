@@ -1,11 +1,23 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
-import type { AttachmentItem } from '@/lib/attachment-service';
+import { mermaidSourceDigest } from '@/lib/mermaid-diagram';
+import { revokeAttachmentPreviewUrls, type AttachmentItem } from '@/lib/attachment-service';
+import {
+  WorkspaceFileReferenceBridgeProvider,
+  useWorkspaceFileReferenceBridgeState,
+} from './workspace-file-reference-bridge';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 import {
-  normalizeSourceControlWorkspacePath,
-  sameSourceControlWorkspacePath,
-} from './source-control/source-control-identity';
+  MAIN_WORKSPACE_TAB_ROOT,
+  effectiveWorkspaceTabRoot,
+  normalizeWorkspacePath,
+  sameWorkspacePath,
+  sameWorkspaceTabRoot,
+  workspaceRootRef,
+  workspaceTabRootForLocation,
+  type WorkspaceTabRoot,
+} from '@/lib/workspace-root';
+import type { SessionWorkLocationVm, WorkspaceRootRef } from '@/types';
 
 export interface AgentTranscriptLocator {
   projectId: string;
@@ -54,9 +66,19 @@ interface RightWorkspaceResourceBase {
   attention: boolean;
 }
 
-export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
-  kind: 'file-browser';
+/**
+ * Tabs whose content lives under the session's work location. `root` is a
+ * projection of the current session; `browseMain` records the user's choice
+ * to view the project root while the session's worktree is unavailable.
+ */
+interface WorkspaceRootedResource {
   projectId: string;
+  root: WorkspaceTabRoot;
+  browseMain: boolean;
+}
+
+export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & WorkspaceRootedResource & {
+  kind: 'file-browser';
   selectedFile?: FileWorkspaceResource | null;
 };
 
@@ -76,6 +98,8 @@ export type AgentTranscriptResource = RightWorkspaceResourceBase & {
 export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'file';
   projectId: string;
+  /** Root the file was resolved in; `null` is the project root. */
+  workspacePath: string | null;
   locator: import('@/types').WorkspaceFileLocatorVm;
   target: import('@/types').FileTargetLocationVm | null;
   targetRevision: number;
@@ -104,10 +128,8 @@ export type TurnAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
   attachmentId: string;
 };
 
-export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
+export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & WorkspaceRootedResource & {
   kind: 'source-control';
-  projectId: string;
-  workspacePath?: string | null;
 };
 
 export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
@@ -122,6 +144,8 @@ export type DraftAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'draft-attachment';
   projectId: string;
   attachment: AttachmentItem;
+  /** Message preview key recorded after a successful send. Absent until then. */
+  previewAliasKey?: string;
 };
 
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
@@ -135,6 +159,11 @@ export type WorkflowEditWorkspaceResource = RightWorkspaceResourceBase & {
   locator: ConversationRunLocator;
 };
 
+export type AutoConfigWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'auto-config';
+  locator: ConversationRunLocator;
+};
+
 export type SystemPromptWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'system-prompt';
   locator: AcpAttemptWorkspaceLocator;
@@ -143,6 +172,11 @@ export type SystemPromptWorkspaceResource = RightWorkspaceResourceBase & {
 export type HiddenPromptSectionWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'hidden-prompt-section';
   locator: HiddenPromptSectionWorkspaceLocator;
+};
+
+export type CompactionSummaryWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'compaction-summary';
+  locator: AcpAttemptWorkspaceLocator & { eventId: string };
 };
 
 export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
@@ -158,8 +192,18 @@ export type BrowserWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'browser';
 };
 
+/**
+ * A Mermaid diagram from rendered Markdown. Markdown has no locator back to its
+ * message, so the bounded diagram source itself is the content-addressed identity.
+ */
+export type MermaidDiagramWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'mermaid-diagram';
+  source: string;
+};
+
 export type RightWorkspaceResource =
   | AcpImageWorkspaceResource
+  | MermaidDiagramWorkspaceResource
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
   | ConversationDirectoryWorkspaceResource
@@ -172,8 +216,10 @@ export type RightWorkspaceResource =
   | DraftAttachmentWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
+  | AutoConfigWorkspaceResource
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
+  | CompactionSummaryWorkspaceResource
   | RawFramesWorkspaceResource
   | ScheduledTaskConfigWorkspaceResource
   | BrowserWorkspaceResource;
@@ -222,6 +268,13 @@ export interface RightWorkspaceCommands {
   openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
   closeTab: (key: string) => void | Promise<void>;
   getResource: (key: string) => RightWorkspaceResource | null;
+  /**
+   * Root new file operations (links, mentions, references) resolve against:
+   * the file tab's root, else the session's. `null` while it is unavailable.
+   */
+  currentFileRoot: () => WorkspaceRootRef | null;
+  aliasOpenDraftAttachment: (attachmentId: string, previewAliasKey: string) => boolean;
+  activatePreviewAlias: (previewAliasKey: string) => boolean;
 }
 
 export type RightWorkspaceResourceKind = RightWorkspaceResource['kind'];
@@ -296,7 +349,7 @@ export class ConversationWorkspaceStore {
 
   save(scope: ConversationWorkspaceScope, state: RightWorkspaceSessionState) {
     const stored = this.entries.peek(scope.key);
-    this.entries.set(scope.key, {
+    this.put(scope.key, {
       scope,
       state: cloneRightWorkspaceState(state),
       presentation: stored?.presentation ?? createInitialRightWorkspacePresentation(),
@@ -336,7 +389,7 @@ export class ConversationWorkspaceStore {
   openWorkspace(scope: ConversationWorkspaceScope, { explicit }: { explicit: boolean }) {
     const stored = this.entries.peek(scope.key);
     const presentation = stored?.presentation ?? createInitialRightWorkspacePresentation();
-    this.entries.set(scope.key, {
+    this.put(scope.key, {
       scope,
       state: cloneRightWorkspaceState(stored?.state ?? createInitialRightWorkspaceState()),
       presentation: {
@@ -350,7 +403,7 @@ export class ConversationWorkspaceStore {
   closeWorkspace(scope: ConversationWorkspaceScope) {
     const stored = this.entries.peek(scope.key);
     if (!stored?.presentation.requestedOpen) return false;
-    this.entries.set(scope.key, {
+    this.put(scope.key, {
       scope,
       state: cloneRightWorkspaceState(stored.state),
       presentation: {
@@ -373,7 +426,7 @@ export class ConversationWorkspaceStore {
     const promotedActiveTabKey = draftWorkspace.state.activeTabKey == null
       ? null
       : promotedTabs[draftWorkspace.state.tabs.findIndex((resource) => resource.key === draftWorkspace.state.activeTabKey)]?.key ?? null;
-    this.entries.set(conversation.key, {
+    this.put(conversation.key, {
       scope: conversation,
       state: {
         tabs: promotedTabs,
@@ -385,11 +438,54 @@ export class ConversationWorkspaceStore {
   }
 
   deleteConversation(projectId: string, taskId: string) {
-    this.entries.deleteWhere(({ scope }) => scope.kind === 'conversation' && scope.projectId === projectId && scope.taskId === taskId);
+    this.discardWhere((stored) => stored.scope.kind === 'conversation' && stored.scope.projectId === projectId && stored.scope.taskId === taskId);
   }
 
   deleteProject(projectId: string) {
-    this.entries.deleteWhere(({ scope }) => scope.projectId === projectId);
+    this.discardWhere((stored) => stored.scope.projectId === projectId);
+  }
+
+  private put(key: string, stored: StoredConversationWorkspace) {
+    const evicting = this.entries.peek(key) === undefined && this.entries.size >= CONVERSATION_WORKSPACE_LRU_LIMIT;
+    const oldestKey = evicting ? this.entries.keys()[0] : undefined;
+    const evicted = oldestKey === undefined ? undefined : this.entries.peek(oldestKey);
+    this.entries.set(key, stored);
+    if (evicted && oldestKey !== key) revokeDraftAttachmentPreviewResources(evicted.state.tabs);
+  }
+
+  private discardWhere(predicate: (stored: StoredConversationWorkspace) => boolean) {
+    for (const key of this.entries.keys()) {
+      const stored = this.entries.peek(key);
+      if (!stored || !predicate(stored)) continue;
+      revokeDraftAttachmentPreviewResources(stored.state.tabs);
+      this.entries.delete(key);
+    }
+  }
+
+  aliasDraftAttachmentPreview(scopeKey: string, attachmentId: string, previewAliasKey: string) {
+    const stored = this.entries.peek(scopeKey);
+    if (!stored) return false;
+    const key = draftAttachmentWorkspaceResourceKey(scopeKey, attachmentId);
+    const index = stored.state.tabs.findIndex((tab) => tab.kind === 'draft-attachment' && tab.key === key);
+    if (index < 0) return false;
+    const current = stored.state.tabs[index];
+    if (current?.kind !== 'draft-attachment') return false;
+    if (current.previewAliasKey === previewAliasKey) return true;
+    const tabs = stored.state.tabs.slice();
+    tabs[index] = { ...current, previewAliasKey };
+    this.put(scopeKey, {
+      scope: stored.scope,
+      state: { tabs, activeTabKey: stored.state.activeTabKey },
+      presentation: stored.presentation,
+    });
+    return true;
+  }
+
+  draftAttachmentForPreviewAlias(scopeKey: string, previewAliasKey: string) {
+    const stored = this.entries.peek(scopeKey);
+    return stored?.state.tabs.find((tab): tab is DraftAttachmentWorkspaceResource => (
+      tab.kind === 'draft-attachment' && tab.previewAliasKey === previewAliasKey
+    )) ?? null;
   }
 
   has(scope: ConversationWorkspaceScope) {
@@ -414,6 +510,9 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
           key: fileBrowserWorkspaceResourceKey(action.resource.projectId),
           scopeKey: action.resource.scopeKey,
           projectId: action.resource.projectId,
+          root: existingFileBrowser?.root
+            ?? { kind: 'available' as const, workspacePath: action.resource.workspacePath },
+          browseMain: existingFileBrowser?.browseMain ?? false,
           title: existingFileBrowser?.title ?? action.resource.title,
           description: existingFileBrowser?.description ?? action.resource.description,
           attention: action.resource.attention,
@@ -464,29 +563,10 @@ function promoteDraftWorkspaceResource(
 ): RightWorkspaceResource {
   const scopeKey = conversation.key;
   if (resource.kind === 'draft-attachment') {
-    const name = resource.attachment.name;
-    const path = taskInputAttachmentPath(name);
-    const locator: AcpAttemptWorkspaceLocator = {
-      projectId: conversation.projectId,
-      taskId: conversation.taskId,
-      taskUuid: conversation.taskUuid,
-      runId: conversation.runId,
-      roundId: '',
-      nodeId: '',
-      attemptId: '',
-      branchId: '',
-    };
     return {
-      kind: 'conversation-asset',
-      key: conversationAssetWorkspaceResourceKey('input-attachment', locator, name, path),
+      ...resource,
+      key: draftAttachmentWorkspaceResourceKey(scopeKey, resource.attachment.id),
       scopeKey,
-      title: name,
-      description: path,
-      attention: false,
-      locator,
-      assetKind: 'input-attachment',
-      name,
-      path,
     };
   }
   if (resource.kind === 'scheduled-task-config') {
@@ -514,23 +594,26 @@ export function RightWorkspaceProvider({
   initialWidth,
   scope = DEFAULT_SCOPE,
   store,
-  sourceControlWorkspacePath = null,
+  workLocation = null,
   children,
 }: {
   initialWidth?: number;
   scope?: ConversationWorkspaceScope | null;
   store?: ConversationWorkspaceStore;
-  sourceControlWorkspacePath?: string | null;
+  /** Work location of the presented session; `null` uses the project root. */
+  workLocation?: SessionWorkLocationVm | null;
   children: ReactNode;
 }) {
+  const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridgeState();
   const internalStoreRef = useRef<ConversationWorkspaceStore | null>(null);
   if (!internalStoreRef.current) internalStoreRef.current = new ConversationWorkspaceStore();
   const effectiveStore = store ?? internalStoreRef.current;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
-  const sourceControlWorkspacePathRef = useRef(sourceControlWorkspacePath);
-  sourceControlWorkspacePathRef.current = sourceControlWorkspacePath;
-  const sourceControlWorkspaceIdentity = normalizeSourceControlWorkspacePath(sourceControlWorkspacePath);
+  const sessionRoot = workspaceTabRootForLocation(workLocation);
+  const sessionRootRef = useRef(sessionRoot);
+  sessionRootRef.current = sessionRoot;
+  const sessionRootIdentity = `${sessionRoot.kind}:${sessionRoot.kind === 'unavailable' ? sessionRoot.reason : ''}:${normalizeWorkspacePath(sessionRoot.workspacePath) ?? ''}`;
   const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
@@ -538,14 +621,14 @@ export function RightWorkspaceProvider({
   const previousScopeRef = useRef<ConversationWorkspaceScope | null>(scope);
   const [rendererRevision, renderRenderer] = useReducer((currentRevision) => currentRevision + 1, 0);
   const peekProjectedState = useCallback((targetScope: ConversationWorkspaceScope) => (
-    projectSourceControlWorkspaceState(
+    projectWorkspaceTabRoots(
       effectiveStore.peek(targetScope),
-      sourceControlWorkspacePathRef.current,
+      sessionRootRef.current,
     )
   ), [effectiveStore]);
   const sessionState = useMemo(
     () => scope ? peekProjectedState(scope) : createInitialRightWorkspaceState(),
-    [peekProjectedState, revision, scope, sourceControlWorkspaceIdentity],
+    [peekProjectedState, revision, scope, sessionRootIdentity],
   );
   const shellState = useMemo(
     () => effectiveStore.peekShellState(scope, initialWidth),
@@ -600,6 +683,15 @@ export function RightWorkspaceProvider({
     if (!currentScope) return null;
     return peekProjectedState(currentScope).tabs.find((tab) => tab.key === key) ?? null;
   }, [peekProjectedState]);
+  const currentFileRoot = useCallback((): WorkspaceRootRef | null => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return null;
+    const fileBrowser = peekProjectedState(currentScope).tabs.find(
+      (tab): tab is FileBrowserWorkspaceResource => tab.kind === 'file-browser' && tab.projectId === currentScope.projectId,
+    );
+    const root = fileBrowser?.root ?? sessionRootRef.current;
+    return root.kind === 'available' ? workspaceRootRef(currentScope.projectId, root.workspacePath) : null;
+  }, [peekProjectedState]);
   const openWorkspace = useCallback(() => {
     const currentScope = scopeRef.current;
     if (!currentScope) return;
@@ -626,6 +718,21 @@ export function RightWorkspaceProvider({
     if (next.tabs.length === 0) effectiveStore.closeWorkspace(scope);
     render();
   }, [commit, effectiveStore, peekProjectedState, scope]);
+  const aliasOpenDraftAttachment = useCallback((attachmentId: string, previewAliasKey: string) => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return false;
+    return effectiveStore.aliasDraftAttachmentPreview(currentScope.key, attachmentId, previewAliasKey);
+  }, [effectiveStore]);
+  const activatePreviewAlias = useCallback((previewAliasKey: string) => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return false;
+    const tab = effectiveStore.draftAttachmentForPreviewAlias(currentScope.key, previewAliasKey);
+    if (!tab) return false;
+    if (!commit({ type: 'activate', key: tab.key })) return true;
+    effectiveStore.openWorkspace(currentScope, { explicit: false });
+    render();
+    return true;
+  }, [commit, effectiveStore]);
   const closeWorkspace = useCallback(async () => {
     if (!scope) return;
     const current = peekProjectedState(scope);
@@ -685,11 +792,19 @@ export function RightWorkspaceProvider({
     openResource,
     closeTab,
     getResource,
-  }), [closeTab, getResource, openResource, scope?.key, scope?.projectId]);
+    currentFileRoot,
+    aliasOpenDraftAttachment,
+    activatePreviewAlias,
+  }), [activatePreviewAlias, aliasOpenDraftAttachment, closeTab, currentFileRoot, getResource, openResource, scope?.key, scope?.projectId]);
   return (
-    <RightWorkspaceCommandsContext.Provider value={commands}>
-      <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
-    </RightWorkspaceCommandsContext.Provider>
+    <WorkspaceFileReferenceBridgeProvider
+      bridge={workspaceFileReferenceBridge.bridge}
+      commands={workspaceFileReferenceBridge.commands}
+    >
+      <RightWorkspaceCommandsContext.Provider value={commands}>
+        <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
+      </RightWorkspaceCommandsContext.Provider>
+    </WorkspaceFileReferenceBridgeProvider>
   );
 }
 
@@ -727,7 +842,7 @@ export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
   ].join(':');
 }
 
-export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit', locator: ConversationRunLocator) {
+export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit' | 'auto-config', locator: ConversationRunLocator) {
   return `${kind}:${locator.projectId}:${locator.taskUuid ?? 'missing-task-uuid'}:${locator.runId}`;
 }
 
@@ -743,23 +858,41 @@ export function sourceControlWorkspaceResourceKey(projectId: string) {
   return `source-control:${projectId}`;
 }
 
-export function projectSourceControlWorkspaceState(
+/**
+ * Point file and source-control tabs at the session's work location. A file
+ * selected under a different root is a different file and is deselected; one
+ * whose root became unavailable stays selected so returning restores it.
+ */
+export function projectWorkspaceTabRoots(
   state: RightWorkspaceSessionState,
-  workspacePath: string | null | undefined,
+  sessionRoot: WorkspaceTabRoot,
 ): RightWorkspaceSessionState {
   let changed = false;
   const tabs = state.tabs.map((tab) => {
-    if (tab.kind !== 'source-control' || sameSourceControlWorkspacePath(tab.workspacePath, workspacePath)) {
-      return tab;
-    }
+    if (tab.kind !== 'source-control' && tab.kind !== 'file-browser') return tab;
+    const browseMain = sessionRoot.kind === 'unavailable' && tab.browseMain;
+    const root = effectiveWorkspaceTabRoot(sessionRoot, browseMain);
+    if (tab.browseMain === browseMain && sameWorkspaceTabRoot(tab.root, root)) return tab;
     changed = true;
-    return { ...tab, workspacePath: workspacePath ?? null };
+    if (tab.kind === 'source-control') return { ...tab, root, browseMain };
+    const selectedFile = tab.selectedFile
+      && root.kind === 'available'
+      && !sameWorkspacePath(tab.selectedFile.workspacePath, root.workspacePath)
+      ? null
+      : tab.selectedFile;
+    return { ...tab, root, browseMain, selectedFile };
   });
   return changed ? { ...state, tabs } : state;
 }
 
+export { MAIN_WORKSPACE_TAB_ROOT };
+
 export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
   return `scheduled-task-config:${scopeKey}`;
+}
+
+export function mermaidDiagramWorkspaceResourceKey(scopeKey: string, source: string) {
+  return `mermaid-diagram:${scopeKey}:${mermaidSourceDigest(source)}`;
 }
 
 export function gitFileComparisonWorkspaceResourceKey(projectId: string, source: import('@/types').GitComparisonSourceVm) {
@@ -808,6 +941,33 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
 
 export function taskInputAttachmentPath(name: string) {
   return `task-inputs/${name}`;
+}
+
+export function userInputAttachmentPath(name: string) {
+  return `user-inputs/${name}`;
+}
+
+export function sentAttachmentPreviewAliasKey(input: {
+  assetKind: 'input-attachment' | 'message-attachment';
+  locator: AcpAttemptWorkspaceLocator;
+  name: string;
+}) {
+  const path = input.assetKind === 'input-attachment'
+    ? taskInputAttachmentPath(input.name)
+    : userInputAttachmentPath(input.name);
+  return conversationAssetWorkspaceResourceKey(input.assetKind, input.locator, input.name, path);
+}
+
+export function detachDraftAttachmentPreview(attachment: AttachmentItem): AttachmentItem {
+  if (!attachment.file || !attachment.previewUrl?.startsWith('blob:')) return { ...attachment };
+  return {
+    ...attachment,
+    previewUrl: URL.createObjectURL(attachment.file),
+  };
+}
+
+export function revokeDraftAttachmentPreviewResources(tabs: readonly RightWorkspaceResource[]) {
+  revokeAttachmentPreviewUrls(tabs.flatMap((tab) => tab.kind === 'draft-attachment' ? [tab.attachment] : []));
 }
 
 function canonicalTaskInputPath(path: string | null | undefined, name: string) {
@@ -864,6 +1024,26 @@ export function hiddenPromptSectionWorkspaceResourceKey(locator: HiddenPromptSec
   ].join(':');
 }
 
+export function createCompactionSummaryWorkspaceResource(input: {
+  scopeKey: string;
+  title: string;
+  locator: AcpAttemptWorkspaceLocator;
+  eventId: string;
+}): CompactionSummaryWorkspaceResource {
+  return {
+    kind: 'compaction-summary',
+    key: JSON.stringify(['compaction-summary', input.locator.projectId,
+      input.locator.taskUuid ?? input.locator.taskId, input.locator.runId,
+      input.locator.roundId, input.locator.nodeId, input.locator.attemptId,
+      input.locator.outerNodeId ?? null, input.locator.outerAttemptId ?? null,
+      input.locator.branchId, input.eventId]),
+    scopeKey: input.scopeKey,
+    title: input.title,
+    attention: false,
+    locator: { ...input.locator, eventId: input.eventId },
+  };
+}
+
 export function createHiddenPromptSectionWorkspaceResource(input: {
   scopeKey: string;
   title: string;
@@ -906,6 +1086,6 @@ export function createDraftAttachmentWorkspaceResource(input: {
     title: input.attachment.name,
     description: input.attachment.path ?? null,
     attention: false,
-    attachment: input.attachment,
+    attachment: detachDraftAttachmentPreview(input.attachment),
   };
 }

@@ -15,16 +15,11 @@
    - 선택: 이전 실패 사유가 review rejection이거나 전행 chain/context에 review node, `review-report.md`, review artifact/path가 있으면 해당 보고서를 읽어 review 피드백을 반영합니다
    - 선택: 이전 실패 사유가 test failure이거나 전행 chain/context에 test node, `test-report.md`, test artifact/path가 있으면 해당 보고서를 읽어 test 피드백을 반영합니다
    - 선택: 이전 실패 사유가 acceptance failure이거나 전행 chain/context에 acceptance node, `accept-report.md`, acceptance artifact/path가 있으면 해당 보고서를 읽어 acceptance 피드백을 반영합니다
-2. TodoWrite를 만들고 실행을 시작합니다
+2. task/todo tool이 있으면 그것으로 계획의 task를 추적합니다
 
 ### 2단계: 작업 실행
 
-계획의 각 task에 대해:
-1. in_progress로 표시합니다
-2. 계획된 단계를 엄격히 따릅니다
-3. 완료 시 completed로 표시합니다
-
-todo list의 task 상태를 동기화합니다. 이번 round에 `tech-plan.md`를 사용하면 그 안의 task 상태도 동기화합니다.
+계획된 단계에 따라 계획의 task를 실행합니다. 이번 round에 `tech-plan.md`를 사용하면 그 안의 task checkbox를 실제 진행에 맞춰 동기화합니다.
 
 ### 3단계: 변경 기록
 

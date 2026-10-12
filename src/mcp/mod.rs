@@ -317,10 +317,16 @@ fn name_value_entries(entries: &BTreeMap<String, String>) -> Vec<Value> {
 }
 
 fn mcp_server_to_acp_json(server: &McpServerConfig) -> Value {
+    // Managed definitions have a stable protocol ID and a localizable display name.
+    let name = if server.managed {
+        &server.id
+    } else {
+        &server.name
+    };
     match &server.transport {
         McpTransportConfig::Stdio { command, args, env } => {
             serde_json::json!({
-                "name": server.name,
+                "name": name,
                 "command": command,
                 "args": args,
                 "env": name_value_entries(env),
@@ -329,7 +335,7 @@ fn mcp_server_to_acp_json(server: &McpServerConfig) -> Value {
         McpTransportConfig::Http { url, headers, .. } => {
             serde_json::json!({
                 "type": "http",
-                "name": server.name,
+                "name": name,
                 "url": url,
                 "headers": name_value_entries(headers),
             })
@@ -337,7 +343,7 @@ fn mcp_server_to_acp_json(server: &McpServerConfig) -> Value {
         McpTransportConfig::Sse { url, headers } => {
             serde_json::json!({
                 "type": "sse",
-                "name": server.name,
+                "name": name,
                 "url": url,
                 "headers": name_value_entries(headers),
             })
@@ -1546,6 +1552,42 @@ mod tests {
 
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "lookup");
+    }
+
+    #[test]
+    fn managed_acp_servers_use_stable_ids_and_preserve_display_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = McpManager::new(settings_path(&temp));
+        let channel: Value =
+            serde_json::from_str(include_str!("../../configs/channels/wb.json")).unwrap();
+        let mut graph: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "id": channel["builtinMcpServers"][0]["id"],
+            "name": channel["builtinMcpServers"][0]["name"],
+            "transport": "http",
+            "url": channel["builtinMcpServers"][0]["transport"]["url"],
+            "managed": true
+        }))
+        .unwrap();
+        let memory = crate::memory::mcp::managed_server_config("memory-server".into());
+        manager
+            .reconcile_managed_config(graph.clone(), true)
+            .unwrap();
+        manager.reconcile_managed_config(memory, true).unwrap();
+        let servers = manager.configured_acp_mcp_servers().unwrap();
+        assert_eq!(servers[0]["name"], "maling-code-graph");
+        assert_eq!(servers[1]["name"], "gold-band-memory");
+        assert_eq!(manager.enabled_servers().unwrap()[0].name, "码灵代码图谱");
+
+        graph.name = "改名后的代码图谱".into();
+        graph.transport = McpTransportConfig::Sse {
+            url: "https://example.test/sse".into(),
+            headers: BTreeMap::new(),
+        };
+        manager.reconcile_managed_config(graph, true).unwrap();
+        assert_eq!(
+            manager.configured_acp_mcp_servers().unwrap()[0]["name"],
+            "maling-code-graph"
+        );
     }
 
     #[test]

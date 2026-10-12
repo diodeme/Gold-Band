@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   runtimeGraphEdgeClassName,
   runtimeGraphEdgeDisplayLabel,
-  runtimeGraphTopologySignature,
+  runtimeGraphLayoutSpec,
+  workflowLayoutKey,
 } from '@/components/workflowGraph';
 import type { GraphNodeVm, GraphVm, RuntimeDisplayVm } from '@/types';
 
@@ -34,11 +35,14 @@ function graph(patch: Partial<GraphVm> = {}): GraphVm {
   return {
     nodes: [node('dev', { sequence: 1 }), node('test', { sequence: 2 })],
     edges: [{ from: 'dev', to: 'test', label: 'success' }],
+    groups: [],
     ...patch,
   };
 }
 
-describe('runtime graph topology signature', () => {
+const layoutKey = (value: GraphVm) => workflowLayoutKey(runtimeGraphLayoutSpec(value, (label) => label));
+
+describe('runtime graph layout key', () => {
   it('ignores runtime-only node state so status refreshes do not rerun layout', () => {
     const before = graph();
     const after = graph({
@@ -57,9 +61,14 @@ describe('runtime graph topology signature', () => {
       ],
     });
 
-    expect(runtimeGraphTopologySignature(before, 'actual')).toBe(
-      runtimeGraphTopologySignature(after, 'actual'),
-    );
+    expect(layoutKey(after)).toBe(layoutKey(before));
+  });
+
+  it('ignores traversal counts so repeated loops do not rerun layout', () => {
+    const before = graph();
+    const after = graph({ edges: [{ from: 'dev', to: 'test', label: 'success', traversalCount: 4 }] });
+
+    expect(layoutKey(after)).toBe(layoutKey(before));
   });
 
   it('changes when edge labels change because success and failure edges affect layout', () => {
@@ -68,9 +77,17 @@ describe('runtime graph topology signature', () => {
       edges: [{ from: 'dev', to: 'test', label: 'failure' }],
     });
 
-    expect(runtimeGraphTopologySignature(before, 'actual')).not.toBe(
-      runtimeGraphTopologySignature(after, 'actual'),
-    );
+    expect(layoutKey(after)).not.toBe(layoutKey(before));
+  });
+
+  it('changes when dynamic group containment changes', () => {
+    const before = graph();
+    const after = graph({
+      nodes: [node('dev', { sequence: 1, dynamicGroupId: 'g1' }), node('test', { sequence: 2 })],
+      groups: [{ id: 'g1', parentGroupId: null }],
+    });
+
+    expect(layoutKey(after)).not.toBe(layoutKey(before));
   });
 });
 

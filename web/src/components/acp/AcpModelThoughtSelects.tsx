@@ -1,9 +1,11 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown } from 'lucide-react';
 
 import type { AcpModeVm, AcpSelectConfigOptionVm } from '@/types';
 import { cn } from '@/lib/utils';
+import { AcpModelConfigDiscoveryMenuSection, useAcpModelConfigDiscovery } from './AcpModelConfigDiscovery';
+import { hasObservedAuthoringModel } from '@/lib/acp-composite-config';
 import {
   ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
@@ -94,6 +96,10 @@ type ThoughtLevelProps = Omit<AcpSelectConfigOptionVm, "options"> & {
 };
 
 type Props = {
+  /** Enables on-demand model config discovery for this Agent. */
+  agentType?: string;
+  /** Callers projecting compositeSections supply this; otherwise derived from configOptions/modelBoundCatalogs. */
+  modelConfigObserved?: boolean;
   models: Array<AcpModeVm & { available?: boolean }>;
   modelValue?: string | null;
   modelValueLabel?: string | null;
@@ -116,7 +122,29 @@ type Props = {
   disabled?: boolean;
 };
 
-export function AcpModelThoughtSelects({
+export function AcpModelThoughtSelects(props: Props) {
+  const { agentType, modelValue, configOptions, modelBoundCatalogs, modelConfigObserved } = props;
+  // Owned here so the menu stays open when a fetched catalog switches single -> composite mode.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const discovery = useAcpModelConfigDiscovery(agentType, modelValue);
+  const observed = modelConfigObserved
+    ?? hasObservedAuthoringModel(configOptions, modelBoundCatalogs, modelValue);
+  const showDiscovery = Boolean(agentType && modelValue && !observed);
+  return <AcpModelThoughtSelectsControl
+    {...props}
+    menuOpen={menuOpen}
+    onMenuOpenChange={setMenuOpen}
+    menuFooter={showDiscovery ? <AcpModelConfigDiscoveryMenuSection discovery={discovery} /> : null}
+  />;
+}
+
+type MenuControlProps = {
+  menuOpen: boolean;
+  onMenuOpenChange: (open: boolean) => void;
+  menuFooter: ReactNode;
+};
+
+function AcpModelThoughtSelectsControl({
   models,
   modelValue,
   modelValueLabel,
@@ -137,9 +165,11 @@ export function AcpModelThoughtSelects({
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   triggerClassName,
   disabled = false,
-}: Props) {
+  menuOpen,
+  onMenuOpenChange: setMenuOpen,
+  menuFooter,
+}: Props & MenuControlProps) {
   const { t } = useTranslation();
-  const [menuOpen, setMenuOpen] = useState(false);
   const [openSection, setOpenSection] = useState<string | null>(null);
   const keepMenuOpenRef = useRef(false);
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
@@ -162,6 +192,7 @@ export function AcpModelThoughtSelects({
     valueRef,
     tooltipOpen,
     showTooltipIfOverflowing,
+    showTooltipOnKeyboardFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useAcpComposerConfigOverflowTooltip();
@@ -197,6 +228,9 @@ export function AcpModelThoughtSelects({
         align={align}
         triggerClassName={triggerClassName}
         disabled={disabled}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        footer={menuFooter}
       />
     ) : null;
   }
@@ -228,7 +262,7 @@ export function AcpModelThoughtSelects({
             onPointerEnter={showTooltipIfOverflowing}
             onPointerLeave={hideTooltip}
             onPointerDown={hideTooltip}
-            onFocus={showTooltipIfOverflowing}
+            onFocus={showTooltipOnKeyboardFocus}
             onBlur={hideTooltip}
           >
             <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
@@ -338,6 +372,7 @@ export function AcpModelThoughtSelects({
             </DropdownMenuSub>
           );
         })}
+        {menuFooter}
       </DropdownMenuContent>
     </DropdownMenu>
   );

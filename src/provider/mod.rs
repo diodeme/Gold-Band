@@ -1,4 +1,6 @@
 pub(crate) mod cicd;
+pub mod quotes;
+pub mod workspace_files;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
@@ -13,9 +15,9 @@ use crate::domain::{
 use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE, RUNTIME_HIDDEN_CONTEXT,
-    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_ROLE_MESSAGE,
-    RUNTIME_WORKFLOW_RESUME, profile_template_context, prompt_by_language,
-    render as render_template,
+    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_FILES,
+    RUNTIME_USER_ROLE_MESSAGE, RUNTIME_WORKFLOW_RESUME, profile_template_context,
+    prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
@@ -35,16 +37,19 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::str::FromStr;
 use tracing::debug;
+pub use workspace_files::{
+    MAX_PROMPT_WORKSPACE_FILES, PromptWorkspaceFileRef, PromptWorkspaceRoot,
+    ResolvedWorkspaceFileRef, WorkspaceFileRefError, prompt_workspace_roots,
+    resolve_prompt_workspace_files, workspace_file_authoring_identity,
+};
 
 use crate::acp::events::AttachmentMeta;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserPromptQuote {
-    pub id: String,
-    pub source_message_key: String,
-    pub text: String,
-}
+pub use quotes::{
+    DiffQuoteOrigin, DiffQuoteScope, MAX_USER_PROMPT_DIFF_QUOTE_BYTES, MAX_USER_PROMPT_QUOTE_CHARS,
+    MAX_USER_PROMPT_QUOTES, UserPromptQuote, UserPromptQuoteError, UserPromptQuoteSource,
+    conversation_prompt_text, validate_user_prompt_quotes,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,9 +71,11 @@ pub fn conversation_prompt_has_payload(
     display_text: &str,
     attachment_count: usize,
     role: Option<&UserPromptRole>,
+    workspace_file_count: usize,
 ) -> bool {
     !display_text.trim().is_empty()
         || attachment_count > 0
+        || workspace_file_count > 0
         || role.is_some_and(UserPromptRole::is_complete)
 }
 
@@ -80,6 +87,8 @@ pub struct ConversationPromptInput {
     pub quotes: Vec<UserPromptQuote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<UserPromptRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
 }
 
 impl From<String> for ConversationPromptInput {
@@ -88,44 +97,56 @@ impl From<String> for ConversationPromptInput {
             display_text: prompt.clone(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         }
     }
 }
 
-pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
-pub const MAX_USER_PROMPT_QUOTES: usize = 64;
-pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
-pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+/// Structured input that belongs to the task alongside its requirement and
+/// `authoring/inputs`. Like those, it reaches every new session that renders
+/// the requirement, not just the first visible turn. The role exists only for
+/// Direct tasks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPromptInput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
+}
+
+impl TaskPromptInput {
+    pub fn is_empty(&self) -> bool {
+        self.quotes.is_empty() && self.role.is_none() && self.workspace_files.is_empty()
+    }
+}
+
 pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
-
-pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
-    let display_text = display_text.trim();
-    if quotes.is_empty() {
-        return display_text.to_string();
-    }
-    let quote_blocks = quotes
-        .iter()
-        .map(|quote| {
-            quote
-                .text
-                .lines()
-                .map(|line| format!("> {line}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!("{quote_blocks}\n\n{display_text}")
-}
 
 pub fn conversation_agent_prompt_text(
     input: &ConversationPromptInput,
     language: DesktopLanguage,
 ) -> String {
-    let user_input = conversation_prompt_text(&input.display_text, &input.quotes);
-    let Some(role) = input.role.as_ref() else {
+    agent_prompt_text(
+        &input.display_text,
+        &input.quotes,
+        input.role.as_ref(),
+        language,
+    )
+}
+
+fn agent_prompt_text(
+    display_text: &str,
+    quotes: &[UserPromptQuote],
+    role: Option<&UserPromptRole>,
+    language: DesktopLanguage,
+) -> String {
+    let user_input = conversation_prompt_text(display_text, quotes, language);
+    let Some(role) = role else {
         return user_input;
     };
     if role.content.trim().is_empty() {
@@ -143,41 +164,80 @@ pub fn conversation_agent_prompt_text(
     .to_string()
 }
 
-/// Attachment content awaiting projection into an ACP session/prompt content block.
+/// A file the user gave this turn, awaiting projection at the outbound ACP request boundary.
 ///
-/// The live ACP connection capabilities decide whether this becomes visual/embedded
-/// content or the protocol-baseline resource link at the outbound request boundary.
+/// Inline content becomes an ACP `image` / `resource` block when the live connection declares
+/// that capability; every other file reaches the Agent as a host path listed in the prompt text.
 #[derive(Debug, Clone)]
 pub enum AcpContentBlock {
     Image(AcpImageBlock),
     Resource(AcpResourceBlock),
-    ResourceLink(AcpResourceLinkBlock),
+    File(AcpFileRef),
+}
+
+impl AcpContentBlock {
+    pub fn file(&self) -> &AcpFileRef {
+        match self {
+            Self::Image(image) => &image.file,
+            Self::Resource(resource) => &resource.file,
+            Self::File(file) => file,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpImageBlock {
     pub data: String,
     pub mime_type: String,
-    pub link: AcpResourceLinkBlock,
+    pub file: AcpFileRef,
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpResourceBlock {
-    pub resource: AcpTextResourceContents,
-    pub link: AcpResourceLinkBlock,
-}
-
-#[derive(Debug, Clone)]
-pub struct AcpTextResourceContents {
     pub text: String,
+    pub mime_type: String,
+    pub file: AcpFileRef,
 }
 
-#[derive(Debug, Clone)]
-pub struct AcpResourceLinkBlock {
-    pub name: String,
-    pub uri: String,
-    pub mime_type: String,
+/// A file on the host running the Agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpFileRef {
+    /// Absolute host path.
+    pub path: String,
     pub size: u64,
+}
+
+impl AcpFileRef {
+    pub fn uri(&self) -> String {
+        url::Url::from_file_path(&self.path)
+            .map(|url| url.to_string())
+            .unwrap_or_else(|_| format!("file://{}", self.path))
+    }
+}
+
+/// The user turn with the files the Agent must read by path listed before it.
+pub fn prompt_text_with_files(
+    user_prompt: &str,
+    files: &[&AcpFileRef],
+    language: DesktopLanguage,
+) -> String {
+    if files.is_empty() {
+        return user_prompt.to_string();
+    }
+    let files = files
+        .iter()
+        .map(|file| json!({ "path": file.path, "size": file.size }))
+        .collect::<Vec<_>>();
+    let listing = render_template(
+        prompt_by_language(language, RUNTIME_USER_FILES),
+        json!({ "files": files }),
+    )
+    .expect("bundled user files prompt renders");
+    let listing = listing.trim();
+    if user_prompt.trim().is_empty() {
+        return listing.to_string();
+    }
+    format!("{listing}\n\n{user_prompt}")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -376,6 +436,10 @@ pub struct WorkerInvocation {
     /// and are referenced from the first user message as task-inputs/*.
     #[serde(default)]
     pub task_input_attachment_paths: Vec<String>,
+    /// Task quotes, role and workspace files, loaded with the task inputs for
+    /// every new session and applied when the requirement is rendered.
+    #[serde(default, skip_serializing_if = "TaskPromptInput::is_empty")]
+    pub task_prompt_input: TaskPromptInput,
     /// Attachments explicitly added by a later user turn belong to this
     /// attempt and are materialized under user-inputs/* before prompting.
     #[serde(default)]
@@ -385,6 +449,10 @@ pub struct WorkerInvocation {
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
+    /// Registered workspace roots used to resolve the turn's workspace files.
+    /// Empty means the conversation project root in `adapter_workspace_dir`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_file_roots: Vec<PromptWorkspaceRoot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,185 +770,66 @@ pub struct PromptBundle {
     pub runtime_control_source_transition_id: Option<String>,
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
+    pub workspace_files: Vec<ResolvedWorkspaceFileRef>,
     pub content_blocks: Vec<AcpContentBlock>,
     pub scheduled_trigger: Option<crate::acp::events::ScheduledTriggerPayload>,
+    /// Language of the runtime-rendered prompt text, including the file list added at the ACP boundary.
+    pub language: DesktopLanguage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttachmentContentKind {
-    Image,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AttachmentFormat {
-    extensions: &'static [&'static str],
-    mime_type: &'static str,
-    content_kind: AttachmentContentKind,
-}
+/// Raster formats the Agent can receive as an inline ACP image.
+const INLINE_IMAGE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+];
+const TEXT_ATTACHMENT_FALLBACK_MIME_TYPE: &str = "text/plain";
 
 const INLINE_IMAGE_DECODE_MAX_DIMENSION: u32 = 8_192;
 const INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 128 * 1024 * 1024;
 const INLINE_IMAGE_JPEG_QUALITY: u8 = 92;
 const INLINE_IMAGE_RESIZE_ATTEMPTS: usize = 10;
 
-const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
-    AttachmentFormat {
-        extensions: &["png"],
-        mime_type: "image/png",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["jpg", "jpeg"],
-        mime_type: "image/jpeg",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["webp"],
-        mime_type: "image/webp",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["gif"],
-        mime_type: "image/gif",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["bmp"],
-        mime_type: "image/bmp",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["txt"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["md", "markdown"],
-        mime_type: "text/markdown",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["json", "jsonl"],
-        mime_type: "application/json",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["csv"],
-        mime_type: "text/csv",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["html", "htm"],
-        mime_type: "text/html",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["css"],
-        mime_type: "text/css",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["js", "jsx"],
-        mime_type: "text/javascript",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["ts", "tsx"],
-        mime_type: "text/typescript",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["rs"],
-        mime_type: "text/rust",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["py"],
-        mime_type: "text/python",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["go"],
-        mime_type: "text/go",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["java"],
-        mime_type: "text/java",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["c", "h"],
-        mime_type: "text/c",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["cpp", "hpp"],
-        mime_type: "text/cpp",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["yaml", "yml"],
-        mime_type: "text/yaml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["xml"],
-        mime_type: "text/xml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["toml"],
-        mime_type: "text/toml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["log"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["sql"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["sh", "bash", "zsh"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-];
+/// MIME type by file name; the content itself decides how an attachment reaches the Agent.
+pub fn file_mime_type(path: &std::path::Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // mime_guess maps these to video/mp2t, application/javascript and similar.
+    match extension.as_str() {
+        "ts" | "tsx" => "text/typescript".to_string(),
+        "js" | "jsx" => "text/javascript".to_string(),
+        "md" | "markdown" => "text/markdown".to_string(),
+        "json" | "jsonl" => "application/json".to_string(),
+        _ => mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string(),
+    }
+}
 
-fn attachment_format(extension: &str) -> Option<&'static AttachmentFormat> {
-    ATTACHMENT_FORMATS
-        .iter()
-        .find(|format| format.extensions.contains(&extension))
+pub fn is_inline_image_mime_type(mime_type: &str) -> bool {
+    INLINE_IMAGE_MIME_TYPES.contains(&mime_type)
 }
 
 pub fn attachment_meta_for_path(
     path: &std::path::Path,
     storage_prefix: &str,
-) -> Result<Option<AttachmentMeta>> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let Some(format) = attachment_format(&extension) else {
-        return Ok(None);
-    };
+) -> Result<AttachmentMeta> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("unknown")
         .to_string();
-    Ok(Some(AttachmentMeta {
+    Ok(AttachmentMeta {
         path: format!("{storage_prefix}/{name}"),
-        mime_type: format.mime_type.to_string(),
+        mime_type: file_mime_type(path),
         size: path.metadata()?.len(),
         name,
-    }))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -891,96 +840,85 @@ pub enum PromptVisibility {
 }
 
 /// Resolve file paths into attachment intents without exceeding the configured inline budgets.
-/// Text over the content budget is projected metadata-first as a resource link and is never read.
-/// Images are inspected metadata/header-first. Those outside the byte or dimension budget are
-/// streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
-/// path remains canonical and is used whenever the live Agent only supports links.
+/// Any file type is accepted. Content over its inline budget is referenced by path and never read
+/// in full. Images are inspected metadata/header-first. Those outside the byte or dimension budget
+/// are streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
+/// path remains canonical and is what the Agent receives when it cannot take the image inline.
 pub fn resolve_attachments(
     paths: &[String],
     storage_prefix: &str,
     policy: AttachmentProjectionPolicy,
 ) -> Result<Vec<ResolvedAttachment>> {
-    let mut resolved = Vec::new();
-    for path_str in paths {
-        let std_path = std::path::Path::new(path_str);
-        let extension = std_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if attachment_format(&extension).is_none() {
-            continue;
-        }
-        if let Some(attachment) = resolved_attachment(std_path, storage_prefix, policy)? {
-            resolved.push(attachment);
-        }
-    }
-    Ok(resolved)
+    paths
+        .iter()
+        .map(|path| resolved_attachment(std::path::Path::new(path), storage_prefix, policy))
+        .collect()
 }
 
 fn resolved_attachment(
     path: &std::path::Path,
     storage_prefix: &str,
     policy: AttachmentProjectionPolicy,
-) -> Result<Option<ResolvedAttachment>> {
-    let Some(meta) = attachment_meta_for_path(path, storage_prefix)? else {
-        return Ok(None);
-    };
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let format = attachment_format(&extension)
-        .expect("attachment metadata is only created for a supported format");
-    let uri = format!("file://{}", path.to_string_lossy().replace('\\', "/"));
-    let link = AcpResourceLinkBlock {
-        name: meta.name.clone(),
-        uri,
-        mime_type: meta.mime_type.clone(),
+) -> Result<ResolvedAttachment> {
+    let meta = attachment_meta_for_path(path, storage_prefix)?;
+    let file = AcpFileRef {
+        path: path.to_string_lossy().into_owned(),
         size: meta.size,
     };
-    let block = match format.content_kind {
-        AttachmentContentKind::Image => {
-            project_image_attachment(path, format.mime_type, &link, policy)
-        }
-        AttachmentContentKind::Text if meta.size > policy.inline_content_max_bytes => {
-            AcpContentBlock::ResourceLink(link)
-        }
-        AttachmentContentKind::Text => {
-            let data = std::fs::read(path)?;
-            if data.len() as u64 > policy.inline_content_max_bytes {
-                AcpContentBlock::ResourceLink(link)
-            } else {
-                AcpContentBlock::Resource(AcpResourceBlock {
-                    resource: AcpTextResourceContents {
-                        text: String::from_utf8(data)
-                            .unwrap_or_else(|_| "[binary file]".to_string()),
-                    },
-                    link,
-                })
-            }
-        }
+    let block = if is_inline_image_mime_type(&meta.mime_type) {
+        project_image_attachment(path, &meta.mime_type, file, policy)
+    } else {
+        project_text_attachment(path, &meta.mime_type, file, policy)
     };
-    Ok(Some(ResolvedAttachment { meta, block }))
+    Ok(ResolvedAttachment { meta, block })
 }
 
 fn project_image_attachment(
     path: &std::path::Path,
     original_mime_type: &str,
-    link: &AcpResourceLinkBlock,
+    file: AcpFileRef,
     policy: AttachmentProjectionPolicy,
 ) -> AcpContentBlock {
-    let Some((bytes, mime_type)) =
-        inline_image_derivative(path, original_mime_type, link.size, policy)
+    match inline_image_derivative(path, original_mime_type, file.size, policy) {
+        Some((bytes, mime_type)) => AcpContentBlock::Image(AcpImageBlock {
+            data: base64_encode(&bytes),
+            mime_type,
+            file,
+        }),
+        None => AcpContentBlock::File(file),
+    }
+}
+
+/// UTF-8 text within the content budget becomes embedded text; anything else stays a path.
+fn project_text_attachment(
+    path: &std::path::Path,
+    mime_type: &str,
+    file: AcpFileRef,
+    policy: AttachmentProjectionPolicy,
+) -> AcpContentBlock {
+    if file.size > policy.inline_content_max_bytes {
+        return AcpContentBlock::File(file);
+    }
+    let Some(text) = read_file_with_limit(path, policy.inline_content_max_bytes)
+        .and_then(|data| String::from_utf8(data).ok())
+        .filter(|text| !text.contains('\0'))
     else {
-        return AcpContentBlock::ResourceLink(link.clone());
+        return AcpContentBlock::File(file);
     };
-    AcpContentBlock::Image(AcpImageBlock {
-        data: base64_encode(&bytes),
-        mime_type,
-        link: link.clone(),
+    let mime_type = if is_text_mime_type(mime_type) {
+        mime_type
+    } else {
+        TEXT_ATTACHMENT_FALLBACK_MIME_TYPE
+    };
+    AcpContentBlock::Resource(AcpResourceBlock {
+        text,
+        mime_type: mime_type.to_string(),
+        file,
     })
+}
+
+pub fn is_text_mime_type(mime_type: &str) -> bool {
+    mime_type.starts_with("text/") || matches!(mime_type, "application/json" | "application/xml")
 }
 
 fn inline_image_derivative(
@@ -1091,14 +1029,6 @@ pub fn resolve_user_input_attachments(
     let mut resolved = Vec::with_capacity(paths.len());
     for path in paths {
         let source = std::path::Path::new(path);
-        let extension = source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if attachment_format(&extension).is_none() {
-            continue;
-        }
         let name = source
             .file_name()
             .and_then(|name| name.to_str())
@@ -1116,24 +1046,13 @@ pub fn resolve_user_input_attachments(
                 Ok(())
             })?;
         }
-        if let Some(attachment) = resolved_attachment(
+        resolved.push(resolved_attachment(
             destination.as_std_path(),
             USER_INPUT_ATTACHMENT_PREFIX,
             policy,
-        )? {
-            resolved.push(attachment);
-        }
+        )?);
     }
     Ok(resolved)
-}
-
-/// Returns the set of file extensions supported as attachments.
-/// This is the single source of truth — the frontend queries it via Tauri command.
-pub fn supported_attachment_extensions() -> Vec<&'static str> {
-    ATTACHMENT_FORMATS
-        .iter()
-        .flat_map(|format| format.extensions.iter().copied())
-        .collect()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -1638,6 +1557,14 @@ impl AcpProvider {
                     .unwrap_or_else(|| prompt.user_prompt.clone()),
                 quotes: prompt.quotes.clone(),
                 role: prompt.role.clone(),
+                workspace_files: prompt
+                    .workspace_files
+                    .iter()
+                    .map(|reference| PromptWorkspaceFileRef {
+                        project_id: reference.project_id.clone(),
+                        relative_path: reference.relative_path.clone(),
+                    })
+                    .collect(),
             },
             attachment_paths: req
                 .task_input_attachment_paths
@@ -1855,6 +1782,7 @@ impl AcpProvider {
             finalize_req.continue_ref = Some(continue_ref);
             finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
             finalize_req.task_input_attachment_paths.clear();
+            finalize_req.task_prompt_input = TaskPromptInput::default();
             finalize_req.user_input_attachment_paths.clear();
             let control_turn_kind = if preserve_control_prompt
                 && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
@@ -2307,7 +2235,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
-    let requirement_for_agent = requirement_text_for_agent(req, &requirement_text);
+    let turn_context = turn_prompt_context(req, &requirement_text);
+    let requirement_for_agent = requirement_text_for_agent(req, &turn_context, &requirement_text);
 
     let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
@@ -2347,6 +2276,37 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         attachment_metas.push(resolved.meta);
         content_blocks.push(resolved.block);
     }
+    let prompt_workspace_files = turn_context.workspace_files;
+    let resolved_workspace_files = if prompt_workspace_files.is_empty() {
+        Vec::new()
+    } else {
+        let roots = if req.workspace_file_roots.is_empty() {
+            vec![PromptWorkspaceRoot {
+                project_id: req.runtime_context.project_id.clone(),
+                root: req.adapter_workspace_dir.as_std_path().to_path_buf(),
+            }]
+        } else {
+            req.workspace_file_roots.clone()
+        };
+        resolve_prompt_workspace_files(
+            &roots,
+            prompt_workspace_files,
+            req.task_input_attachment_paths.len() + req.user_input_attachment_paths.len(),
+        )
+        .map_err(|error| {
+            runtime_error(crate::runtime_error::manual_runtime_error_info(
+                RuntimeErrorDomain::Workspace,
+                error.code(),
+                error.diagnostic(),
+                error.params(),
+            ))
+        })?
+    };
+    for reference in &resolved_workspace_files {
+        content_blocks.push(workspace_files::resolved_workspace_file_content_block(
+            reference,
+        ));
+    }
 
     let display_text = req
         .prompt_display
@@ -2363,15 +2323,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         system_prompt,
         user_prompt,
         display_text,
-        quotes: req
-            .prompt_display
-            .as_ref()
-            .map(|input| input.quotes.clone())
-            .unwrap_or_default(),
-        role: req
-            .prompt_display
-            .as_ref()
-            .and_then(|input| input.role.clone()),
+        quotes: turn_context.quotes.to_vec(),
+        role: turn_context.role.cloned(),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
@@ -2384,19 +2337,66 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         runtime_control_source_transition_id: None,
         runtime_control_transition_cause: None,
         attachment_metas,
+        workspace_files: resolved_workspace_files,
         content_blocks,
         scheduled_trigger: scheduled_trigger_payload(req)?,
+        language: req.runtime_context.language,
     })
 }
 
-fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) -> String {
-    let Some(display) = req.prompt_display.as_ref() else {
-        return requirement_text.to_string();
-    };
-    if display.role.is_none() {
+/// Quotes, role and workspace files the agent receives with this turn: the
+/// task's own input when the requirement is rendered, otherwise those of the
+/// user message being sent.
+struct TurnPromptContext<'a> {
+    text: &'a str,
+    quotes: &'a [UserPromptQuote],
+    role: Option<&'a UserPromptRole>,
+    workspace_files: &'a [PromptWorkspaceFileRef],
+}
+
+fn turn_prompt_context<'a>(
+    req: &'a WorkerInvocation,
+    requirement_text: &'a str,
+) -> TurnPromptContext<'a> {
+    if req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask {
+        let input = &req.task_prompt_input;
+        return TurnPromptContext {
+            text: requirement_text,
+            quotes: &input.quotes,
+            role: input.role.as_ref(),
+            workspace_files: &input.workspace_files,
+        };
+    }
+    match req.prompt_display.as_ref() {
+        Some(input) => TurnPromptContext {
+            text: &input.display_text,
+            quotes: &input.quotes,
+            role: input.role.as_ref(),
+            workspace_files: &input.workspace_files,
+        },
+        None => TurnPromptContext {
+            text: requirement_text,
+            quotes: &[],
+            role: None,
+            workspace_files: &[],
+        },
+    }
+}
+
+fn requirement_text_for_agent(
+    req: &WorkerInvocation,
+    context: &TurnPromptContext<'_>,
+    requirement_text: &str,
+) -> String {
+    if context.role.is_none() && context.quotes.is_empty() {
         return requirement_text.to_string();
     }
-    conversation_agent_prompt_text(display, req.runtime_context.language)
+    agent_prompt_text(
+        context.text,
+        context.quotes,
+        context.role,
+        req.runtime_context.language,
+    )
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
@@ -3215,6 +3215,7 @@ mod tests {
                     name: "开发".to_string(),
                     content: "你是开发角色".to_string(),
                 }),
+                workspace_files: Vec::new(),
             },
             crate::config::DesktopLanguage::ZhCn,
         );
@@ -3232,6 +3233,7 @@ mod tests {
                 display_text: "继续".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             crate::config::DesktopLanguage::En,
         );
@@ -3245,8 +3247,8 @@ mod tests {
             name: "开发".to_string(),
             content: "完整角色定义".to_string(),
         };
-        assert!(conversation_prompt_has_payload("", 0, Some(&role)));
-        assert!(!conversation_prompt_has_payload("   ", 0, None));
+        assert!(conversation_prompt_has_payload("", 0, Some(&role), 0));
+        assert!(!conversation_prompt_has_payload("   ", 0, None, 0));
         assert!(!conversation_prompt_has_payload(
             "",
             0,
@@ -3254,13 +3256,15 @@ mod tests {
                 profile_id: "pf-dev".to_string(),
                 name: "开发".to_string(),
                 content: String::new(),
-            })
+            }),
+            0
         ));
         let wrapped = conversation_agent_prompt_text(
             &ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: Some(role),
+                workspace_files: Vec::new(),
             },
             crate::config::DesktopLanguage::ZhCn,
         );
@@ -3343,12 +3347,14 @@ mod tests {
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
+            task_prompt_input: TaskPromptInput::default(),
             user_input_attachment_paths: Vec::new(),
             attachment_projection_policy: AttachmentProjectionPolicy::from(
                 &crate::config::RuntimeConfig::default(),
             ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
+            workspace_file_roots: Vec::new(),
         }
     }
 
@@ -3387,6 +3393,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prompt_bundle_projects_workspace_references_as_resource_links() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("WorkspaceFileTree.tsx"), "x").unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt")).unwrap();
+        std::fs::create_dir_all(&attempt_dir).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.adapter_workspace_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        req.workspace_dir = req.adapter_workspace_dir.clone();
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "project-001".to_string(),
+            relative_path: "WorkspaceFileTree.tsx".to_string(),
+        }];
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert!(matches!(
+            prompt.content_blocks.last(),
+            Some(AcpContentBlock::File(file))
+                if file.path == prompt.workspace_files[0].canonical_path && file.size == 1
+        ));
+        assert!(!prompt.user_prompt.contains("WorkspaceFileTree.tsx"));
+    }
+
+    #[test]
+    fn prompt_bundle_projects_another_workspace_as_an_absolute_path() {
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(other.path().join("attempt")).unwrap();
+        std::fs::create_dir_all(&attempt_dir).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.workspace_file_roots = vec![PromptWorkspaceRoot {
+            project_id: "other-project".to_string(),
+            root: other.path().to_path_buf(),
+        }];
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "other-project".to_string(),
+            relative_path: "foreign.ts".to_string(),
+        }];
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert!(
+            prompt.workspace_files[0]
+                .canonical_path
+                .contains("foreign.ts")
+        );
+        assert!(matches!(
+            prompt.content_blocks.last(),
+            Some(AcpContentBlock::File(file))
+                if std::path::Path::new(&file.path).is_absolute() && file.path.ends_with("foreign.ts")
+        ));
+        assert!(!prompt.user_prompt.contains("foreign.ts"));
+    }
+
     fn scheduled_invocation(
         trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
     ) -> WorkerInvocation {
@@ -3397,6 +3460,7 @@ mod tests {
             display_text: "检查主分支状态".to_string(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         });
         req.resume_prompt_id = Some("occurrence-turn-001".to_string());
         req.scheduled_context = Some(scheduled_context(trigger_kind));
@@ -3665,26 +3729,74 @@ mod tests {
     }
 
     #[test]
-    fn every_advertised_attachment_extension_is_resolvable() {
+    fn any_file_type_is_resolved_by_content() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = supported_attachment_extensions()
-            .into_iter()
-            .map(|extension| {
-                let path = dir.path().join(format!("sample.{extension}"));
-                std::fs::write(&path, b"{}\n").unwrap();
-                path.to_string_lossy().to_string()
-            })
-            .collect::<Vec<_>>();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let paths = vec![
+            write("App.vue", b"<template />\n"),
+            write("Dockerfile", b"FROM rust\n"),
+            write("tool.exe", b"MZ\x90\x00\x03\x00"),
+            write("latin1.txt", b"caf\xe9"),
+        ];
 
         let resolved =
             resolve_attachments(&paths, "task-inputs", test_attachment_projection_policy())
                 .unwrap();
 
         assert_eq!(resolved.len(), paths.len());
-        assert!(resolved.iter().all(|attachment| {
-            attachment.meta.path.starts_with("task-inputs/")
-                && attachment.meta.mime_type != "application/octet-stream"
-        }));
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource)
+                if resource.text == "<template />\n" && resource.mime_type == "text/plain"
+        ));
+        assert!(matches!(
+            &resolved[1].block,
+            AcpContentBlock::Resource(resource) if resource.text == "FROM rust\n"
+        ));
+        for (attachment, path) in resolved[2..].iter().zip(&paths[2..]) {
+            assert!(matches!(
+                &attachment.block,
+                AcpContentBlock::File(file)
+                    if file.path == *path && file.size == std::fs::metadata(path).unwrap().len()
+            ));
+        }
+        assert_eq!(resolved[2].meta.path, "task-inputs/tool.exe");
+    }
+
+    #[test]
+    fn listed_files_render_in_every_language_before_the_user_prompt() {
+        let first = AcpFileRef {
+            path: "/host/a.exe".to_string(),
+            size: 7,
+        };
+        let second = AcpFileRef {
+            path: "/host/b.md".to_string(),
+            size: 64_001,
+        };
+        for language in [
+            DesktopLanguage::ZhCn,
+            DesktopLanguage::ZhTw,
+            DesktopLanguage::En,
+            DesktopLanguage::JaJp,
+            DesktopLanguage::KoKr,
+            DesktopLanguage::PtBr,
+            DesktopLanguage::Es,
+        ] {
+            let text = prompt_text_with_files("do it", &[&first, &second], language);
+            let lines = text.lines().collect::<Vec<_>>();
+            assert!(lines[1].starts_with("- `/host/a.exe`") && lines[1].contains('7'));
+            assert!(lines[2].starts_with("- `/host/b.md`") && lines[2].contains("64001"));
+            assert!(text.ends_with("\n\ndo it"), "{language:?}: {text}");
+        }
+        assert_eq!(
+            prompt_text_with_files("do it", &[], DesktopLanguage::En),
+            "do it"
+        );
+        assert!(!prompt_text_with_files("", &[&first], DesktopLanguage::En).ends_with('\n'));
     }
 
     #[test]
@@ -3707,7 +3819,7 @@ mod tests {
         assert!(matches!(
             &resolved[0].block,
             AcpContentBlock::Resource(resource)
-                if resource.resource.text.contains("{\"event\":2}")
+                if resource.text.contains("{\"event\":2}")
         ));
     }
 
@@ -3736,11 +3848,11 @@ mod tests {
 
         assert!(matches!(
             &resolved[0].block,
-            AcpContentBlock::Resource(resource) if resource.resource.text.len() == 64_000
+            AcpContentBlock::Resource(resource) if resource.text.len() == 64_000
         ));
         assert!(matches!(
             &resolved[1].block,
-            AcpContentBlock::ResourceLink(link) if link.size == 64_001
+            AcpContentBlock::File(file) if file.size == 64_001
         ));
     }
 
@@ -3767,12 +3879,12 @@ mod tests {
                 if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
                     && image.data.len()
                         <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
-                    && image.link.mime_type == "image/png"
+                    && image.file.path.ends_with("large.png")
         ));
     }
 
     #[test]
-    fn undecodable_oversized_image_falls_back_to_original_resource_link() {
+    fn undecodable_oversized_image_falls_back_to_the_original_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.png");
         std::fs::write(&path, vec![0_u8; 8 * 1024]).unwrap();
@@ -3788,8 +3900,8 @@ mod tests {
 
         assert!(matches!(
             &resolved[0].block,
-            AcpContentBlock::ResourceLink(link)
-                if link.uri.ends_with("/broken.png") && link.size == 8 * 1024
+            AcpContentBlock::File(file)
+                if file.path.ends_with("broken.png") && file.size == 8 * 1024
         ));
     }
 
@@ -3839,13 +3951,13 @@ mod tests {
         assert!(matches!(
             &prompt.content_blocks[1],
             AcpContentBlock::Image(image)
-                if image.link.uri.contains("/attempt-001/user-inputs/follow-up.png")
+                if image.file.uri().contains("/attempt-001/user-inputs/follow-up.png")
         ));
         assert!(matches!(
             &prompt.content_blocks[2],
             AcpContentBlock::Resource(resource)
-                if resource.resource.text == "runtime notes"
-                    && resource.link.uri.contains("/attempt-001/user-inputs/notes.txt")
+                if resource.text == "runtime notes"
+                    && resource.file.uri().contains("/attempt-001/user-inputs/notes.txt")
         ));
     }
 
@@ -4309,6 +4421,7 @@ mod tests {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "1Z".to_string(),
@@ -4799,12 +4912,14 @@ mod tests {
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
+            task_prompt_input: TaskPromptInput::default(),
             user_input_attachment_paths: Vec::new(),
             attachment_projection_policy: AttachmentProjectionPolicy::from(
                 &crate::config::RuntimeConfig::default(),
             ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
+            workspace_file_roots: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

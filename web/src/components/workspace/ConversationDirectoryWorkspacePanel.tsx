@@ -15,8 +15,8 @@ import { FileWorkspaceSplitLayout } from './files/FileWorkspacePanel';
 import { WorkspaceDirectoryContextMenu } from './files/WorkspaceDirectoryContextMenu';
 import { isMarkdownDocumentPath } from './files/markdown-document';
 import { ReadonlyMarkdownWorkspaceViewer } from './files/ReadonlyMarkdownWorkspaceViewer';
-import { isHtmlDocumentPath } from './browser/web-target';
-import { openWebTarget } from './browser/open-web-target';
+import { isBrowserDocumentPath } from './browser/web-target';
+import { openLocalDocumentInBrowser } from './browser/open-web-target';
 
 type Node = WorkspaceDirectoryEntryVm & { id: string; children: Node[] | null; loading: boolean };
 
@@ -102,18 +102,19 @@ function ConversationDirectoryTextPreview({
 }) {
   const { t } = useTranslation();
   const workspace = useRightWorkspaceCommands();
-  const htmlDocument = isHtmlDocumentPath(selected.canonicalPath);
-  const openHtmlInBrowser = useCallback(async () => {
-    if (!htmlDocument || !workspace.scopeKey) return;
-    await openWebTarget(selected.canonicalPath, {
-      projectId: resource.locator.projectId,
+  const browserDocument = isBrowserDocumentPath(selected.canonicalPath);
+  const openDocumentInBrowser = useCallback(async () => {
+    if (!browserDocument || !workspace.scopeKey) return;
+    await openLocalDocumentInBrowser(selected.canonicalPath, {
+      // Run directories are authorized per project, independent of work location.
+      root: { projectId: resource.locator.projectId, workspacePath: null },
       scopeKey: workspace.scopeKey,
       openResource: workspace.openResource,
       browserTitle: t('workspace.browser.title'),
     });
-  }, [htmlDocument, resource.locator.projectId, selected.canonicalPath, t, workspace.openResource, workspace.scopeKey]);
+  }, [browserDocument, resource.locator.projectId, selected.canonicalPath, t, workspace.openResource, workspace.scopeKey]);
   if (isMarkdownDocumentPath(selected.canonicalPath)) {
-    return <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} />;
+    return <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} quoteLabel={selected.canonicalPath} />;
   }
   return (
     <WorkspaceFileEditor
@@ -129,7 +130,8 @@ function ConversationDirectoryTextPreview({
       onSave={() => undefined}
       initialStateJson={null}
       onPersistState={() => undefined}
-      onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined}
+      onOpenInBrowser={browserDocument ? openDocumentInBrowser : undefined}
+      quoteLabel={selected.canonicalPath}
     />
   );
 }
@@ -240,5 +242,5 @@ export function ConversationDirectoryWorkspacePanel({ resource, layout }: { reso
         : snapshot.kind === 'image' ? <div className="flex h-full items-center justify-center overflow-auto p-4"><img src={workspaceFilePreviewUrl(snapshot.previewGrant.token)} alt={snapshot.name} className="max-h-full max-w-full object-contain" /></div>
           : <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.unsupportedTitle')}</div>;
   const tree = <ConversationDirectoryTree roots={roots} loading={loading} selectedPath={selected?.canonicalPath ?? null} actionFailure={actionFailure} onLoadDirectory={load} onOpenFile={openFile} onCopyFailed={onCopyFailed} onOpenInFileManager={openInManager} />;
-  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} selectedFileKey={selected?.canonicalPath ?? null} content={content} tree={tree} treeWidth={null} onTreeWidthChange={() => undefined} />;
+  return <FileWorkspaceSplitLayout layout={layout} hasFile={Boolean(selected)} revealFileKey={selected?.canonicalPath ?? null} content={content} tree={tree} treeWidth={null} onTreeWidthChange={() => undefined} />;
 }

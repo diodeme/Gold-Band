@@ -51,12 +51,13 @@ export function DraftAttachmentWorkspacePanel({ resource }: { resource: DraftAtt
             documentKey={resource.key}
             name={attachment.name}
             value={textState.content}
+            quoteLabel={attachment.name}
           />
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center gap-2 px-6 text-sm text-muted-foreground">
           <TriangleAlert className="size-4" />
-          {t('workspace.filesPanel.draftPreviewUnavailable')}
+          {t('workspace.filesPanel.attachmentPreviewUnavailable')}
         </div>
       )}
     </section>

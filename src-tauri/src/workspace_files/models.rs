@@ -106,6 +106,9 @@ pub enum WorkspaceFileSnapshotVm {
 #[serde(rename_all = "camelCase")]
 pub struct ListWorkspaceDirectoryInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     #[serde(default)]
     pub relative_path: String,
 }
@@ -114,6 +117,9 @@ pub struct ListWorkspaceDirectoryInput {
 #[serde(rename_all = "camelCase")]
 pub struct OpenWorkspacePathInFileManagerInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     #[serde(default)]
     pub relative_path: String,
 }
@@ -122,6 +128,9 @@ pub struct OpenWorkspacePathInFileManagerInput {
 #[serde(rename_all = "camelCase")]
 pub struct SearchWorkspaceFilesInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     pub query: String,
     pub request_id: String,
     pub limit: usize,
@@ -131,6 +140,9 @@ pub struct SearchWorkspaceFilesInput {
 #[serde(rename_all = "camelCase")]
 pub struct ResolveWorkspaceFileLinkInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     pub raw_href: String,
     #[serde(default)]
     pub base_canonical_path: Option<String>,
@@ -140,6 +152,9 @@ pub struct ResolveWorkspaceFileLinkInput {
 #[serde(rename_all = "camelCase")]
 pub struct ReadFileResourceInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     pub canonical_path: String,
     pub external_access_token: Option<String>,
     #[serde(default)]
@@ -148,8 +163,22 @@ pub struct ReadFileResourceInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenFileWithSystemAppInput {
+    pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    pub canonical_path: String,
+    pub external_access_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolveMarkdownImageInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     pub markdown_canonical_path: String,
     pub markdown_external_access_token: Option<String>,
     pub raw_src: String,
@@ -192,6 +221,9 @@ pub enum MarkdownImagePreviewVm {
 #[serde(rename_all = "camelCase")]
 pub struct WriteFileResourceInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
     pub canonical_path: String,
     pub external_access_token: Option<String>,
     pub content: String,
@@ -207,6 +239,11 @@ pub struct WriteFileResourceInput {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileChangedEventVm {
     pub project_id: String,
+    /// Work location of a workspace watch: the linked worktree root, or `None`
+    /// for the project root and single-file external watches. Consumers route
+    /// by this identity rather than a path prefix (dynamic worktrees live
+    /// inside the project directory).
+    pub workspace_path: Option<String>,
     pub canonical_path: String,
     pub kind: String,
     pub revision: Option<FileRevisionVm>,
@@ -217,10 +254,73 @@ pub struct WorkspaceFileChangedEventVm {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileWatchInput {
     pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileTokenInput {
     pub token: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceEntryKindInput {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkspaceEntryInput {
+    pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub parent_relative_path: String,
+    pub name: String,
+    pub kind: WorkspaceEntryKindInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameWorkspaceEntryInput {
+    pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    pub relative_path: String,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkspaceEntryInput {
+    pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreWorkspaceEntryInput {
+    pub project_id: String,
+    /// Linked worktree the session works in; `None` is the project root.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    pub receipt_id: String,
+}
+
+/// Result of moving an entry to the system trash. `receipt_id` is an opaque
+/// session-scoped handle for `restore_workspace_entry`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntryDeletionVm {
+    pub receipt_id: String,
+    pub entry: WorkspaceDirectoryEntryVm,
 }

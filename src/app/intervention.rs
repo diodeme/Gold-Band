@@ -1189,13 +1189,16 @@ fn elicitation_prompt_and_actions(
         .and_then(Value::as_object);
     let custom_answer_targets = properties
         .into_iter()
-        .flat_map(|properties| properties.values())
-        .filter_map(custom_answer_target)
+        .flat_map(|properties| {
+            properties.iter().filter_map(|(name, schema)| {
+                custom_answer_target(name, schema, properties)
+            })
+        })
         .collect::<std::collections::BTreeSet<_>>();
     let questions = properties
         .into_iter()
         .flat_map(|properties| properties.iter())
-        .filter(|(_, schema)| custom_answer_target(schema).is_none())
+        .filter(|(name, schema)| custom_answer_target(name, schema, properties.unwrap()).is_none())
         .map(|(field_name, schema)| {
             elicitation_question(
                 field_name,
@@ -1446,17 +1449,38 @@ fn remote_scalar_choice_question(
     }
 }
 
-fn custom_answer_target(schema: &Value) -> Option<&str> {
-    schema
+fn custom_answer_target<'a>(
+    field_name: &'a str,
+    schema: &'a Value,
+    properties: &'a serde_json::Map<String, Value>,
+) -> Option<&'a str> {
+    let explicit = schema
         .pointer("/_meta/_askUserQuestionCustomAnswer")
         .filter(|metadata| {
             metadata
                 .get("isCustomAnswer")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
-        })?
-        .get("questionId")
-        .and_then(Value::as_str)
+        })
+        .and_then(|metadata| metadata.get("questionId"))
+        .and_then(Value::as_str);
+    if explicit.is_some() {
+        return explicit;
+    }
+    // Plain Claude clients retain the paired field names without AIR metadata.
+    let target = field_name.strip_suffix("_custom")?;
+    if schema.get("type").and_then(Value::as_str) != Some("string")
+        || !elicitation_options(schema).is_empty()
+    {
+        return None;
+    }
+    let question = properties.get(target)?;
+    let options = if question.get("type").and_then(Value::as_str) == Some("array") {
+        elicitation_options(question.get("items")?)
+    } else {
+        elicitation_options(question)
+    };
+    (!options.is_empty()).then_some(target)
 }
 
 fn elicitation_question(
@@ -2547,6 +2571,22 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn upgraded_acp_plain_claude_custom_answer_is_one_question() {
+        let request = serde_json::from_value(serde_json::json!({
+            "mode":"form", "sessionId":"session-001", "message":"Database?",
+            "requestedSchema":{"type":"object","properties":{
+                "question_0":{"type":"string","enum":["MySQL","PostgreSQL"]},
+                "question_0_custom":{"type":"string"}
+            }}
+        })).unwrap();
+        let (prompt, actions) = super::elicitation_prompt_and_actions(&request).unwrap();
+        assert_eq!(prompt.questions.len(), 1);
+        assert!(prompt.questions[0].allows_custom_answer);
+        assert!(!prompt.requires_desktop);
+        assert!(matches!(actions[0], InterventionAllowedAction::ElicitationFixedForm { .. }));
     }
 
     #[test]

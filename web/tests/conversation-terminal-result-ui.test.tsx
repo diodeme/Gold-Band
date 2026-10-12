@@ -33,7 +33,7 @@ describe('ConversationSidebar Direct terminal result dot', () => {
       workspaces: [{ projectId: 'project-001', workspacePath: 'D:/project', name: 'Project' }],
       pinRefs: [],
       pinnedTasks: [],
-      pinnedTaskPage: { status: 'ready-empty', nextCursor: null },
+      pinnedTaskPage: { status: 'ready', nextCursor: null },
       tasksByWorkspace: {
         'project-001': [{
           projectId: 'project-001',
@@ -50,7 +50,7 @@ describe('ConversationSidebar Direct terminal result dot', () => {
             occurredAt: '2026-08-18T10:00:00Z',
           },
           runs: [],
-          runHistoryStatus: 'ready-empty',
+          runHistoryStatus: 'ready',
           runsNextCursor: null,
           pinned: false,
         }],

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react';
 import { ArrowLeft, ArrowRight, Bookmark, ChevronDown, ExternalLink, Monitor, Plus, RefreshCw, Smartphone, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { openExternalUrl } from '@/api';
+import { browserOpenInSystemBrowser } from '@/api';
 import { Button } from '@/components/ui/button';
 import {
   ContextMenu,
@@ -18,7 +18,13 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import type { BrowserSearchEngine } from './web-target';
-import { browserSessionStore, BLANK_BROWSER_URL, isBrowserPortalUrl } from './browser-session-store';
+import {
+  BLANK_BROWSER_URL,
+  BROWSER_LOCAL_ACCESS_DENIED_CODE,
+  browserSessionStore,
+  isBrowserPortalUrl,
+  type BrowserNotice,
+} from './browser-session-store';
 import { browserWebviewHost } from './browser-webview-host';
 import { BrowserAddressField } from './BrowserAddressField';
 import { BrowserFavicon } from './BrowserFavicon';
@@ -40,11 +46,10 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   const active = session.pages.find((page) => page.pageId === session.activePageId) ?? null;
   const [address, setAddress] = useState(active?.url === BLANK_BROWSER_URL ? '' : (active?.url ?? ''));
   const [typed, setTyped] = useState(false);
-  // The address bar draft belongs to the user while it is focused. Page url/title events keep
-  // arriving from the native webview (SPA route changes, redirects) and must never overwrite
-  // what the user is typing, otherwise the suggestion list silently flips from filtered
-  // results to recent visits on an already-open tab.
+  // A typed, unsubmitted address belongs to the user. Focusing the field alone must not
+  // freeze it: same-document navigations still have to replace the displayed URL.
   const editingAddressRef = useRef(false);
+  const typedRef = useRef(false);
   const lastSyncedPageRef = useRef<string | null>(active?.pageId ?? null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
@@ -72,7 +77,8 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   useEffect(() => {
     const pageChanged = lastSyncedPageRef.current !== (active?.pageId ?? null);
     lastSyncedPageRef.current = active?.pageId ?? null;
-    if (!pageChanged && editingAddressRef.current) return;
+    if (!pageChanged && typedRef.current) return;
+    typedRef.current = false;
     setTyped(false);
     setAddress(!active || active.url === BLANK_BROWSER_URL ? '' : active.url);
   }, [active?.pageId, active?.url]);
@@ -97,6 +103,9 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   }, []);
 
   const submitAddress = useCallback((override?: string) => {
+    typedRef.current = false;
+    editingAddressRef.current = false;
+    setTyped(false);
     const url = normalizeBrowserAddress(override ?? address, searchEngine);
     if (!active) {
       browserSessionStore.openUrl(url);
@@ -161,6 +170,7 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
             onAddressChange={setAddress}
             onTyped={() => {
               editingAddressRef.current = true;
+              typedRef.current = true;
               setTyped(true);
             }}
             onSubmit={submitAddress}
@@ -197,7 +207,17 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
             label={t('workspace.browser.openInSystemBrowser')}
             disabled={!externalHref}
             data-browser-open-external="true"
-            onClick={() => externalHref && void openExternalUrl(externalHref)}
+            onClick={() => {
+              if (!externalHref) return;
+              const pageId = active?.pageId;
+              void browserOpenInSystemBrowser(externalHref).catch((reason: { code?: unknown }) => {
+                if (!pageId) return;
+                browserSessionStore.reportNotice(
+                  pageId,
+                  typeof reason?.code === 'string' ? reason.code : 'browser.system_open.failed',
+                );
+              });
+            }}
           >
             <ExternalLink />
           </BrowserToolbarButton>
@@ -253,10 +273,8 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
           <Plus />
         </Button>
       </div>
-      {session.noticeCode ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5 text-xs text-muted-foreground" data-browser-notice={session.noticeCode}>
-          <span className="min-w-0 flex-1">{t(`errors.${session.noticeCode}`)}</span>
-        </div>
+      {session.notice ? (
+        <BrowserNoticeRow notice={session.notice} />
       ) : null}
       {active ? (
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -273,6 +291,47 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
         </div>
       ) : portal}
     </section>
+  );
+}
+
+function BrowserNoticeRow({ notice }: { notice: BrowserNotice }) {
+  const { t } = useTranslation();
+  const [allowing, setAllowing] = useState(false);
+  const directories = notice.code === BROWSER_LOCAL_ACCESS_DENIED_CODE && Array.isArray(notice.params.directories)
+    ? notice.params.directories.filter((directory): directory is string => typeof directory === 'string')
+    : [];
+  const message = directories.length === 0
+    ? t(`errors.${notice.code}`)
+    : t(directories.length === 1
+      ? 'errors.browser.local_html.access_denied'
+      : 'errors.browser.local_html.access_denied_more', {
+      directory: directories[0],
+      count: directories.length,
+    });
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5 text-xs text-muted-foreground"
+      data-browser-notice={notice.code}
+    >
+      <span className="min-w-0 flex-1 break-all">{message}</span>
+      {directories.length > 0 ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="shrink-0"
+          disabled={allowing}
+          data-browser-allow-local-access="true"
+          onClick={() => {
+            setAllowing(true);
+            void browserWebviewHost.allowLocalAccess(notice.pageId, directories)
+              .finally(() => setAllowing(false));
+          }}
+        >
+          {t('workspace.browser.allowLocalAccess')}
+        </Button>
+      ) : null}
+    </div>
   );
 }
 

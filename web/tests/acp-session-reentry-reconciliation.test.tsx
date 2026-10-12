@@ -42,7 +42,6 @@ vi.mock('@/api/client', async () => {
         runtime.listener = listener;
         return () => undefined;
       },
-      getSupportedAttachmentExtensions: async () => [],
     }),
   };
 });
@@ -86,9 +85,13 @@ import {
   createAcpEventWindowCacheKey,
   createAcpSessionCacheKey,
   loadedEventBufferLimit,
+  markAcpSessionContentHydrated,
   optimisticUserEvent,
   resetAcpResourceCache,
   restoreAcpSession,
+  storeAcpLoadedEventWindow,
+  storeAcpBranchViewState,
+  storeAcpSession,
   updateAcpOptimisticEvents,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -106,6 +109,14 @@ import type {
 } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
 
 const locator = {
   projectId: 'project-watermark',
@@ -189,7 +200,7 @@ function update(eventUpdate: AcpUiEventVm): AcpSessionUpdatedEventVm {
 }
 
 async function renderDialog(
-  acpSession: AcpSessionVm,
+  acpSession: AcpSessionVm | null,
   branchId = 'root',
   onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
   optimisticEvents?: AcpUiEventVm[],
@@ -219,26 +230,26 @@ async function renderDialog(
   }
   await act(async () => {
     root.render(
-      <TooltipProvider>
-        <ACPChatDialog
-          session={acpSession}
-          {...dialogLocator}
-          branchId={branchId}
-          eventPageSize={eventPageSize}
-          runtimeComposerContext={lifecycle ? {
-            isOrchestrated: true,
-            runtimeStatus: lifecycle.runtime.status,
-            workflowValid: true,
-            lifecycle,
-          } : undefined}
-          allowEventOnlySessionShell={allowEventOnlySessionShell}
-          onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
-          onAtBottomChange={onAtBottomChange}
-          showSystemPromptAction={false}
-          showRawFramesAction={false}
-          usageCompact
-        />
-      </TooltipProvider>,
+      <TestProviders>
+          <ACPChatDialog
+            session={acpSession}
+            {...dialogLocator}
+            branchId={branchId}
+            eventPageSize={eventPageSize}
+            runtimeComposerContext={lifecycle ? {
+              isOrchestrated: true,
+              runtimeStatus: lifecycle.runtime.status,
+              workflowValid: true,
+              lifecycle,
+            } : undefined}
+            allowEventOnlySessionShell={allowEventOnlySessionShell}
+            onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
+            onAtBottomChange={onAtBottomChange}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>,
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
@@ -268,17 +279,17 @@ async function renderStoredOptimisticDialog(
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
-        <ACPChatDialog
-          session={acpSession}
-          {...locator}
-          branchId="root"
-          eventPageSize={eventPageSize}
-          showSystemPromptAction={false}
-          showRawFramesAction={false}
-          usageCompact
-        />
-      </TooltipProvider>,
+      <TestProviders>
+          <ACPChatDialog
+            session={acpSession}
+            {...locator}
+            branchId="root"
+            eventPageSize={eventPageSize}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>,
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
@@ -429,6 +440,115 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it.each([false, true])('does not paint an obsolete cached head while reentry is awaiting canonical content (replay loss: %s)', async (loseReplay) => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('old-head', 10, 'textDelta', '12:58 cached answer')]);
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    const count = loseReplay ? CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + 1 : 1;
+    for (let index = 0; index < count; index += 1) {
+      applyConversationEventToBranchSnapshots(update(event(
+        `background-${index}`, 20 + index, 'textDelta', `background answer ${index}`,
+      )));
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(loseReplay);
+    let resolveHead!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { resolveHead = resolve; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).not.toContain('12:58 cached answer');
+      expect(container.querySelector('[data-testid="markdown"]')).toBeNull();
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+      await act(async () => resolveHead(session([event('current-head', 100, 'textDelta', '15:46 current answer')])));
+      expect(container.textContent).toContain('15:46 current answer');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([
+    { tail: 'visible content', hidden: [] },
+    { tail: 'chat-hidden metadata', hidden: [
+      event('usage', 12, 'usageUpdate'),
+      event('info', 13, 'sessionInfo', null, { title: 'Renamed' }),
+    ] },
+  ])('reenters a followed session from cache when the live head ends with $tail', async ({ hidden }) => {
+    vi.mocked(getAcpSession).mockResolvedValue(session([event('first', 10, 'textDelta', 'First answer')]));
+    const view = await renderDialog(null);
+    try {
+      await act(async () => {
+        runtime.listener?.(update(event('second', 11, 'textDelta', 'Second answer')));
+        hidden.forEach((item) => runtime.listener?.(update(item)));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+      expect(view.container.textContent).toContain('Second answer');
+    } finally {
+      await unmount(view.root);
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root').headRevision).toBe(11 + hidden.length);
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const states: string[] = [];
+    const reentry = await renderDialog(null, 'root', (state) => states.push(state));
+    try {
+      expect(states).not.toContain('loading');
+      expect(reentry.container.textContent).toContain('Second answer');
+    } finally {
+      await unmount(reentry.root);
+    }
+  });
+
+  it('preserves an explicitly detached cached history while the background head advances', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const history = session([event('history-anchor', 10, 'textDelta', 'Reading this history')]);
+    storeAcpSession(cacheKey, history);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: history.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: history.events,
+    }, 1_000);
+    storeAcpBranchViewState(cacheKey, {
+      anchorKey: null, anchorOffset: 0, scrollTop: 0, atBottom: false, hasOlder: true, hasNewer: true,
+    });
+    markAcpSessionContentHydrated(cacheKey);
+    applyConversationEventToBranchSnapshots(update(event('background-head', 20, 'textDelta', 'New background head')));
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).toContain('Reading this history');
+      expect(container.textContent).not.toContain('New background head');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('reports a failed reentry read instead of unlocking obsolete hydrated content', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('old-head', 10, 'textDelta', 'Obsolete cached answer')]);
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    applyConversationEventToBranchSnapshots(update(event('new-head', 20, 'textDelta', 'Background answer')));
+    let rejectHead!: (reason: Error) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise((_, reject) => { rejectHead = reject; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      vi.useFakeTimers();
+      vi.mocked(getAcpSession).mockRejectedValue(new Error('Reentry read unavailable'));
+      await act(async () => {
+        rejectHead(new Error('Reentry read unavailable'));
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+      expect(container.textContent).not.toContain('Obsolete cached answer');
+      expect(container.textContent).toContain('Reentry read unavailable');
+    } finally {
+      vi.useRealTimers();
+      await unmount(root);
+    }
+  });
+
   it.each([
     { outcome: 'success', arrival: 'body' },
     { outcome: 'failure', arrival: 'body' },
@@ -485,7 +605,7 @@ describe('ACP session re-entry reconciliation', () => {
             status: 'running', attempts: [nextLeaf] }],
         }] },
       });
-      return <RightWorkspaceProvider><GitBranchPickerSnapshotProvider><TooltipProvider>
+      return <GitBranchPickerSnapshotProvider><TestProviders>
         <ConversationRunPage run={run} taskTitle="Manual check" appConfig={mockBootstrap.appConfig}
           agentRegistry={null} followMode={mode} onAutoFollowChange={(follow) => setMode(follow ? 'auto' : 'manual')}
           onRerun={() => {}} onEditWorkflow={() => {}} initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={() => {}}
@@ -494,7 +614,7 @@ describe('ACP session re-entry reconciliation', () => {
             setRun({ ...initial, selectedSession: null,
               sessionTree: { ...initial.sessionTree, selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}` } });
           }} />
-      </TooltipProvider></GitBranchPickerSnapshotProvider></RightWorkspaceProvider>;
+      </TestProviders></GitBranchPickerSnapshotProvider>;
     }
     await act(async () => root.render(<RunHarness />));
     try {
@@ -1005,7 +1125,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={next}
               {...secondLocator}
@@ -1014,7 +1134,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -2427,7 +2547,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={second}
               {...secondLocator}
@@ -2436,7 +2556,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3025,7 +3145,7 @@ describe('ACP session re-entry reconciliation', () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={canonicalHead}
             {...locator}
@@ -3035,7 +3155,7 @@ describe('ACP session re-entry reconciliation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       );
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -3249,7 +3369,7 @@ describe('ACP session re-entry reconciliation', () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={historicalWindow}
             {...locator}
@@ -3259,7 +3379,7 @@ describe('ACP session re-entry reconciliation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       );
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -3756,7 +3876,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={head}
               {...locator}
@@ -3766,7 +3886,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3800,7 +3920,7 @@ describe('ACP session re-entry reconciliation', () => {
       expect(container.textContent).toContain('prop 一代旧内容');
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={current}
               {...locator}
@@ -3809,7 +3929,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3933,7 +4053,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={nextSession}
               {...nextLocator}
@@ -3943,7 +4063,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -4513,6 +4633,46 @@ describe('ACP session re-entry reconciliation', () => {
       expect(second.container.textContent).not.toContain('缓存中的一代旧内容');
     } finally {
       await unmount(second.root);
+    }
+  });
+
+  it('restores the live-updated event window instead of an older cached session snapshot on remount', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const staleSnapshot = session([
+      event('stale-snapshot-head', 10, 'textDelta', '旧快照末尾内容'),
+    ]);
+    storeAcpSession(cacheKey, staleSnapshot);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: 'session-watermark',
+      timelineGeneration: 2, coveredRevision: 30,
+      events: [event('live-window-head', 30, 'textDelta', '实时窗口最新内容')],
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    vi.mocked(getAcpSession).mockImplementation(() => new Promise(() => undefined));
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TestProviders>
+            <ACPChatDialog
+              session={null}
+              {...locator}
+              branchId="root"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('实时窗口最新内容');
+      expect(container.textContent).not.toContain('旧快照末尾内容');
+    } finally {
+      await unmount(root);
     }
   });
 
@@ -5106,7 +5266,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5117,7 +5277,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5200,7 +5360,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5210,7 +5370,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5363,7 +5523,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5379,7 +5539,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5850,7 +6010,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={canonicalHead}
               {...locator}
@@ -5859,7 +6019,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 
@@ -6214,4 +6374,29 @@ describe('ACP session re-entry reconciliation', () => {
       await unmount(root);
     }
   });
+});
+
+
+it('shows a memory-only execution error before persistence and after reentry', async () => {
+  const body = session([event('reply', 2, 'textDelta', 'Preserved reply'),
+    event('unfinished-tool', 3, 'toolCall', null, { title: 'Bash', toolCallId: 'unfinished-tool', status: 'running' })]);
+  const current = terminalLifecycle('disk-turn');
+  current.acp = { ...current.acp, revision: 12, operationId: 'disk-op', latestTurnStatus: 'none', liveTurnActivity: 'running' };
+  current.composer = { ...current.composer, mode: 'runtime-active', submitTarget: 'none', canStop: true, lockInput: true };
+  vi.mocked(getAcpSession).mockResolvedValue(body);
+  const failure = { owner: { turnId: 'disk-turn', operationId: 'disk-op', revision: 12 }, error: { code: { domain: 'runtime-io', code: 'runtime.io.storage-full' }, domain: 'runtime-io', recovery: 'manual', params: {}, diagnostic: 'TEST_DISK_FULL', raw: null } } as const;
+  const first = await renderDialog(body, 'root', undefined, undefined, locator, undefined, current);
+  await act(async () => { runtime.listener?.({ ...locator, executionError: failure, event: null, session: null }); });
+  expect(first.container.textContent).toContain('TEST_DISK_FULL');
+  expect(first.container.textContent).toContain('Preserved reply');
+  await act(async () => first.container.querySelector<HTMLButtonElement>('[data-theme-role="activity"] > button')!.click());
+  expect(first.container.textContent).toContain('结果未确认');
+  expect(first.container.querySelector('[data-prompt-kit-tool]')?.textContent).not.toContain('运行中');
+  expect(body.events.at(-1)?.status).toBe('running');
+  expect(first.container.querySelector('textarea')?.disabled).toBe(false);
+  await unmount(first.root);
+  const second = await renderDialog(body, 'root', undefined, undefined, locator, undefined, { ...current, executionError: failure });
+  expect(second.container.textContent).toContain('TEST_DISK_FULL');
+  expect(second.container.textContent).toContain('Preserved reply');
+  await unmount(second.root);
 });

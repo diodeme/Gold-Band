@@ -3,7 +3,10 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { isWholeFileDiffQuote } from '@/lib/composer-context';
+import { quoteLabel, quoteSourceDetail } from '@/lib/composer-quote-i18n';
 import { USER_MESSAGE_META_CHIP_CLASS_NAME } from '@/lib/conversation-composer-layout';
+import { cn } from '@/lib/utils';
 import type { UserPromptQuote } from '@/types';
 
 export function UserMessageQuotes({ quotes }: { quotes: readonly UserPromptQuote[] }) {
@@ -40,16 +43,24 @@ export function UserMessageQuotes({ quotes }: { quotes: readonly UserPromptQuote
             className="min-h-0 divide-y divide-border/50 overflow-y-auto overscroll-contain"
             data-user-message-quotes-scroll="true"
           >
-            {quotes.map((quote, index) => (
-              <div key={quote.id} className="px-3 py-2.5">
-                <div className="mb-1 text-ui-caption text-muted-foreground">
-                  {t('acp.userQuoteLabel', { index: index + 1 })}
+            {quotes.map((quote, index) => {
+              const detail = quoteSourceDetail(t, quote.source);
+              return (
+                <div key={quote.id} className="px-3 py-2.5">
+                  <div className="mb-1 break-all text-ui-caption text-muted-foreground">
+                    {detail ?? quoteLabel(t, quote, index)}
+                  </div>
+                  {quote.text && !isWholeFileDiffQuote(quote) ? (
+                    <div className={cn(
+                      'whitespace-pre-wrap break-words text-sm leading-5 [overflow-wrap:anywhere]',
+                      quote.source.kind !== 'agentMessage' && 'font-mono text-xs',
+                    )}>
+                      {quote.text}
+                    </div>
+                  ) : null}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-sm leading-5 [overflow-wrap:anywhere]">
-                  {quote.text}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </PopoverContent>

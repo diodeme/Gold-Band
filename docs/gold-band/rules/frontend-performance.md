@@ -30,6 +30,7 @@
 - Tabs、宽度、激活项等展示状态变化时，只消费 `openResource` 等命令的组件不应重渲染。
 - Context 应按领域和更新频率拆分，例如 `WorkspaceStateContext` 与 `WorkspaceCommandsContext`。
 - Context value 中的 callback 必须保持稳定，并通过 ref 读取最新状态。
+- 给组件加 `memo` 时，必须让所有调用路径传入的 props 身份稳定，并附“父级在数据不变时重渲染、子树零提交”的回归测试；不能只验证引入 memo 时关注的那一条路径。
 - 禁止把不断变化的大对象作为 Context value 传给整棵页面树。
 - 组件只订阅渲染所需的最小派生值；只在回调中使用的数据不得形成宽泛订阅。
 - 第三方组件把 render prop、renderer 或 `children` 作为 React `ElementType` 使用时，必须传入模块级或其他稳定 identity 的组件，禁止在 render 中内联创建组件类型。
@@ -101,6 +102,7 @@
 - 流式缓冲每个 identity 只保留一个最新快照。
 - 分页窗口、LRU 和事件缓存不超过约定上限。
 - 页面隐藏时刷新降频或暂停。
+- 会话流式事件和运行时快照不引起侧栏与页面壳重渲染。
 - Resize 热路径在同一离散布局区间内不提交 React state。
 
 必要时使用 React Profiler、浏览器 Performance、heap snapshot 和 memlab 记录 baseline、target 与 final；不得用主观判断替代测量。

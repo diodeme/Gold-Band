@@ -45,11 +45,11 @@ function sidebarVm(): ConversationSidebarVm {
     ],
     pinRefs: [],
     pinnedTasks: [],
-    pinnedTaskPage: { status: 'ready-empty', nextCursor: null },
+    pinnedTaskPage: { status: 'ready', nextCursor: null },
     tasksByWorkspace: { 'workspace-a': [], 'workspace-b': [] },
     workspaceTaskPages: {
-      'workspace-a': { status: 'ready-empty', nextCursor: null },
-      'workspace-b': { status: 'ready-empty', nextCursor: null },
+      'workspace-a': { status: 'ready', nextCursor: null },
+      'workspace-b': { status: 'ready', nextCursor: null },
     },
     lastActiveWorkspaceId: 'workspace-a',
   };
@@ -103,7 +103,7 @@ describe('ConversationSidebar workspace expansion intent', () => {
     vm.pinnedTasks = [{
       projectId: 'workspace-a', taskId: 'task-actions', taskUuid: 'uuid-actions',
       title: 'C:\\very-long-workspace-path\\conversation-title', autoTitle: false,
-      runMode: 'direct', latestRun: null, runs: [], runHistoryStatus: 'ready-empty',
+      runMode: 'direct', latestRun: null, runs: [], runHistoryStatus: 'ready',
       runsNextCursor: null, pinned: true, pinnedOrder: 0,
     }];
     vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
@@ -112,7 +112,7 @@ describe('ConversationSidebar workspace expansion intent', () => {
         <ConversationSidebar {...callbacks} vm={vm} active={{ kind: 'conversation-home' }} />,
       ));
       const rename = container.querySelector<HTMLButtonElement>('[aria-label="conversation.sidebar.rename"]')!;
-      const actions = rename.parentElement!;
+      const actions = rename.parentElement?.parentElement!;
       expect(actions.classList.contains('bg-sidebar')).toBe(false);
       expect(actions.classList.contains('absolute')).toBe(false);
       expect(actions.classList.contains('shrink-0')).toBe(true);
@@ -148,7 +148,7 @@ describe('ConversationSidebar workspace expansion intent', () => {
         resumable: true,
       },
       runs: [],
-      runHistoryStatus: 'ready-empty',
+      runHistoryStatus: 'ready',
       runsNextCursor: null,
       pinned: true,
       pinnedOrder: 0,

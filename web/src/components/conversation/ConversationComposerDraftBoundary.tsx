@@ -19,7 +19,7 @@ export const ConversationComposerDraftBoundary = forwardRef<
   useImperativeHandle(
     ref,
     () => createConversationComposerDraftBoundaryHandle(owner),
-    [owner.reset],
+    [owner.changeWorkspace, owner.reset],
   );
 
   return (

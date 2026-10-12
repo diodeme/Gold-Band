@@ -1282,40 +1282,35 @@ impl ScheduledRuntime {
 
     fn handle_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
         let occurrence_key = scheduled_occurrence_key(&event);
-        if event_finishes_occurrence(&event) {
-            if let Some(key) = occurrence_key {
-                if let Some(entry) = take_active_occurrence(&self.active, &key) {
-                    let occurrence_id = key.occurrence_id;
-                    let app_handle = self.app_handle.clone();
-                    let pending_guard_joins = self.pending_guard_joins.clone();
-                    let join = tauri::async_runtime::spawn(async move {
-                        entry.guard.stop().await;
-                        finish_lifecycle_occurrence(
-                            app_handle,
-                            occurrence_id,
-                            entry.metadata,
-                            event,
-                        );
-                    });
-                    if let Ok(mut pending) = pending_guard_joins.lock() {
-                        pending.push(join);
-                    }
-                    return;
+        // Only scheduled executions carry an occurrence id (App injects it); every other run's
+        // terminal events legitimately have none. A scheduled terminal event that is lost is
+        // finished and reported by reconcile_running_occurrences.
+        if event_finishes_occurrence(&event)
+            && let Some(key) = occurrence_key
+        {
+            if let Some(entry) = take_active_occurrence(&self.active, &key) {
+                let occurrence_id = key.occurrence_id;
+                let app_handle = self.app_handle.clone();
+                let pending_guard_joins = self.pending_guard_joins.clone();
+                let join = tauri::async_runtime::spawn(async move {
+                    entry.guard.stop().await;
+                    finish_lifecycle_occurrence(
+                        app_handle,
+                        occurrence_id,
+                        entry.metadata,
+                        event,
+                    );
+                });
+                if let Ok(mut pending) = pending_guard_joins.lock() {
+                    pending.push(join);
                 }
-                warn!(
-                    project_id = %key.project_id,
-                    occurrence_id = %key.occurrence_id,
-                    "scheduled lifecycle terminal event arrived but no active occurrence registered (lease lost or already finished)"
-                );
-            } else {
-                // 终止事件未携带 occurrence_id（orchestrator 硬编码 None，依赖 App 注入）。
-                // 若这是某条 scheduled run 的完成事件，对应 occurrence 会因收不到事件卡 running，
-                // 只能靠主动对账收尾。这里记录便于定位。
-                warn!(
-                    event = ?event,
-                    "scheduled lifecycle terminal event has no occurrence id; occurrence may stick in running"
-                );
+                return;
             }
+            warn!(
+                project_id = %key.project_id,
+                occurrence_id = %key.occurrence_id,
+                "scheduled lifecycle terminal event arrived but no active occurrence registered (lease lost or already finished)"
+            );
         }
     }
 }
@@ -3395,6 +3390,8 @@ pub(super) fn execute_definition_with_action(
                         thread::Builder::new()
                             .name("scheduled-continuous-prompt".to_string())
                             .spawn(move || {
+                                let attachment_paths = input.attachment_paths.clone();
+                                let prompt_input = scheduled_continue_prompt_input(input);
                                 let result = tauri::async_runtime::block_on(
                                     crate::commands::send_acp_prompt_with_configured_app(
                                         handle,
@@ -3405,11 +3402,11 @@ pub(super) fn execute_definition_with_action(
                                         round_id_for_thread,
                                         node_id_for_thread,
                                         attempt_id_for_thread,
-                                        input.content.into(),
+                                        prompt_input,
                                         None,
                                         None,
                                         None,
-                                        input.attachment_paths,
+                                        attachment_paths,
                                     ),
                                 );
                                 if let Err(error) = result {
@@ -3541,6 +3538,17 @@ fn latest_attempt(
     )))
 }
 
+fn scheduled_continue_prompt_input(
+    input: crate::view_models_conversation::ConversationCreateInputVm,
+) -> gold_band::provider::ConversationPromptInput {
+    gold_band::provider::ConversationPromptInput {
+        display_text: input.content,
+        quotes: input.quotes,
+        role: input.role,
+        workspace_files: input.workspace_files,
+    }
+}
+
 fn scheduled_create_input(
     app: &App,
     definition: &ScheduledTaskDefinition,
@@ -3586,12 +3594,14 @@ fn scheduled_create_input(
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
+        workspace_files: definition.content_snapshot.workspace_files.clone(),
         work_location: Default::default(),
         selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
         role: None,
+        quotes: definition.content_snapshot.quotes.clone(),
     })
 }
 
@@ -4027,6 +4037,46 @@ mod tests {
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[test]
+    fn scheduled_continue_prompt_keeps_workspace_file_references_and_quotes() {
+        let input = crate::view_models_conversation::ConversationCreateInputVm {
+            project_id: "project-a".to_string(),
+            content: "检查状态".to_string(),
+            run_mode: "direct".to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: None,
+            attachment_paths: Some(vec!["C:/temp/note.txt".to_string()]),
+            work_location: Default::default(),
+            selected_branch: None,
+            scheduled_task_id: Some("scheduled-1".to_string()),
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+            role: None,
+            workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+                project_id: "project-b".to_string(),
+                relative_path: "src/lib.rs".to_string(),
+            }],
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                text: "frozen".to_string(),
+                source: gold_band::provider::UserPromptQuoteSource::AgentMessage {
+                    message_key: "message-1".to_string(),
+                },
+            }],
+        };
+
+        let prompt = super::scheduled_continue_prompt_input(input);
+        assert_eq!(prompt.quotes.len(), 1);
+        assert_eq!(prompt.quotes[0].text, "frozen");
+
+        assert_eq!(prompt.display_text, "检查状态");
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert_eq!(prompt.workspace_files[0].project_id, "project-b");
+        assert_eq!(prompt.workspace_files[0].relative_path, "src/lib.rs");
     }
 
     #[test]

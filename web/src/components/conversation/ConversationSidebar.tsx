@@ -1,6 +1,8 @@
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
 import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -15,6 +17,9 @@ import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/conversation-run-identity';
 import { formatCompactRelativeTime } from '@/lib/datetime';
+import { useConversationTaskActive } from '@/lib/conversation-sidebar-activity';
+import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
+import { ResidentPin } from '@/components/conversation/ResidentPin';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
@@ -22,6 +27,7 @@ export function conversationSidebarTerminalResultDotClass(
   kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
 ) {
   if (kind === 'completed') return 'bg-gold-success';
+  if (kind === 'new-message') return 'bg-gold-attention';
   if (kind === 'stopped') return 'bg-gold-warning';
   return 'bg-gold-danger';
 }
@@ -63,11 +69,13 @@ export function isConversationSidebarMoreNavigationActive(page: ConversationPage
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
+  showMulticaTaskManagement?: boolean;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
+  onSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
@@ -86,11 +94,13 @@ interface ConversationSidebarProps {
 export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
+  showMulticaTaskManagement = true,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
   onSelect,
   onNewConversation,
   onSearch,
+  onSetResident,
   onPinTask,
   onUnpinTask,
   onRenameTask,
@@ -118,7 +128,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
-  const moreNavigationActive = isConversationSidebarMoreNavigationActive(active);
+  const moreNavigationActive = isConversationSidebarMoreNavigationActive(active)
+    && (active.kind !== 'multica-tasks' || showMulticaTaskManagement);
   const [moreNavigationOpen, setMoreNavigationOpen] = useState(moreNavigationActive);
   const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
     (acc[task.projectId] ??= []).push(task);
@@ -262,6 +273,21 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     ));
   };
 
+  // One identity for every row: memoized TaskRows re-render only when their own data changes.
+  const rowCommands = useStableCallbacks<TaskRowCommands>({
+    select: selectTask,
+    selectRun: selectTaskRun,
+    toggleRuns: toggleTaskRuns,
+    expandRuns: expandTaskRuns,
+    loadMoreRuns: (task) => onRequestTaskRuns(task, task.runsNextCursor),
+    pin: (task) => onPinTask(task.projectId, task.taskId),
+    unpin: (task) => onUnpinTask(task.projectId, task.taskId),
+    setResident: async (task, resident) => { await onSetResident?.(task.projectId, task.taskId, resident); },
+    rename: (task, title) => onRenameTask(task.projectId, task.taskId, title),
+    remove: (task) => onDeleteTask(task.projectId, task.taskId, task.taskUuid),
+    pauseRun: (task, runId) => onPauseRun?.(task.projectId, task.taskId, runId),
+  });
+
   const confirmWorkspaceRemoval = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     if (!workspaceToRemove || !onRemoveWorkspace || workspaceRemovalPending) return;
@@ -339,16 +365,18 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               data-conversation-sidebar-more-content
               className="flex flex-col gap-0.5 overflow-hidden pt-0.5 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
             >
-              <SidebarButton
-                compact
-                active={active.kind === 'multica-tasks'}
-                icon={<Globe />}
-                label={t('conversation.sidebar.multicaTaskManagement')}
-                onClick={() => {
-                  setMoreNavigationOpen(true);
-                  onSelect({ kind: 'multica-tasks' });
-                }}
-              />
+              {showMulticaTaskManagement ? (
+                <SidebarButton
+                  compact
+                  active={active.kind === 'multica-tasks'}
+                  icon={<Globe />}
+                  label={t('conversation.sidebar.multicaTaskManagement')}
+                  onClick={() => {
+                    setMoreNavigationOpen(true);
+                    onSelect({ kind: 'multica-tasks' });
+                  }}
+                />
+              ) : null}
               <SidebarButton
                 compact
                 active={activeNavigationKey === 'scheduled-tasks'}
@@ -413,17 +441,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                               isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                               activeRunKey={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) ? activeRunKey : null}
                               expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
-                              onSelect={() => selectTask('pinned', task)}
-                              onSelectRun={(runId) => {
-                                selectTaskRun('pinned', task, runId);
-                              }}
-                              onToggleRuns={() => toggleTaskRuns('pinned', task)}
-                              onExpandRuns={() => expandTaskRuns('pinned', task)}
-                              onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
-                              onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                              onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                              onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
-                              onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
+                              scope="pinned"
+                              commands={rowCommands}
+                              residencyEditable={Boolean(onSetResident)}
                               t={t}
                             />
                           ))}
@@ -535,18 +555,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
                         expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
-                        onSelect={() => selectTask('workspace', task)}
-                        onSelectRun={(runId) => {
-                          selectTaskRun('workspace', task, runId);
-                        }}
-                        onToggleRuns={() => toggleTaskRuns('workspace', task)}
-                        onExpandRuns={() => expandTaskRuns('workspace', task)}
-                        onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
-                        onPin={() => onPinTask(task.projectId, task.taskId)}
-                        onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                        onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                        onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
-                        onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
+                        scope="workspace"
+                        commands={rowCommands}
+                        residencyEditable={Boolean(onSetResident)}
                         t={t}
                       />
                     ))}
@@ -561,7 +572,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         {t('conversation.sidebar.retryConversations')}
                       </Button>
                     ) : null}
-                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready-empty' ? (
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready'
+                      && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
+                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length === 0 ? (
                       <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && vm.workspaceTaskPages[ws.projectId]?.nextCursor ? (
@@ -586,7 +599,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </button>
             ) : null}
 
-            {vm.loadStatus === 'ready-empty' ? (
+            {vm.loadStatus === 'ready' && vm.workspaces.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs text-muted-foreground">
                 {t('conversation.sidebar.noWorkspaces')}
               </div>
@@ -687,10 +700,12 @@ export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm
   return task.runMode === 'direct' && task.agentIdentity ? 'agent-icon' : 'runtime-status';
 }
 
+/** Direct Agent rows show activity (breathing icon + spinner) while the task is active. */
 export function shouldShowConversationSidebarActivity(
-  task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity' | 'activity'>,
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity'>,
+  taskActive: boolean,
 ) {
-  return task.runMode === 'direct' && Boolean(task.agentIdentity && task.activity);
+  return task.runMode === 'direct' && Boolean(task.agentIdentity) && taskActive;
 }
 
 export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
@@ -753,42 +768,56 @@ function RunStopMenu({
   );
 }
 
-function TaskRow({
+/** Row actions shared by every TaskRow; identity-stable so the memoized rows can skip renders. */
+interface TaskRowCommands {
+  select: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => void;
+  selectRun: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm, runId: string) => void;
+  toggleRuns: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => void;
+  expandRuns: (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => void;
+  loadMoreRuns: (task: ConversationTaskRowVm) => void;
+  pin: (task: ConversationTaskRowVm) => void;
+  unpin: (task: ConversationTaskRowVm) => void;
+  setResident: (task: ConversationTaskRowVm, resident: boolean) => Promise<void>;
+  rename: (task: ConversationTaskRowVm, title: string) => void;
+  remove: (task: ConversationTaskRowVm) => void;
+  pauseRun: (task: ConversationTaskRowVm, runId: string) => void | Promise<void>;
+}
+
+const TaskRow = memo(function TaskRow({
   task,
+  scope,
   pinned,
   isActive,
   activeRunKey,
   expanded,
-  onSelect,
-  onSelectRun,
-  onToggleRuns,
-  onExpandRuns,
-  onLoadMoreRuns,
-  onPin,
-  onUnpin,
-  onRename,
-  onDelete,
-  onPauseRun,
+  commands,
+  residencyEditable,
   t,
 }: {
   task: ConversationTaskRowVm;
+  scope: ConversationSidebarRunListScope;
   pinned: boolean;
   isActive: boolean;
   activeRunKey?: string | null;
   expanded: boolean;
-  onSelect: () => void;
-  onSelectRun?: (runId: string) => void;
-  onToggleRuns: () => void;
-  onExpandRuns: () => void;
-  onLoadMoreRuns: () => void;
-  onPin?: () => void;
-  onUnpin?: () => void;
-  onRename?: (title: string) => void;
-  onDelete?: () => void;
-  onPauseRun?: (runId: string) => void | Promise<void>;
+  commands: TaskRowCommands;
+  residencyEditable: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
+  const onSelect = () => commands.select(scope, task);
+  const onSelectRun = (runId: string) => commands.selectRun(scope, task, runId);
+  const onToggleRuns = () => commands.toggleRuns(scope, task);
+  const onExpandRuns = () => commands.expandRuns(scope, task);
+  const onLoadMoreRuns = () => commands.loadMoreRuns(task);
+  // Pinned-section rows only offer unpin; workspace rows choose by the pinned flag.
+  const onPin = scope === 'workspace' ? () => commands.pin(task) : undefined;
+  const onUnpin = () => commands.unpin(task);
+  const onSetResident = residencyEditable ? (resident: boolean) => commands.setResident(task, resident) : undefined;
+  const onRename = (title: string) => commands.rename(task, title);
+  const onDelete = () => commands.remove(task);
+  const onPauseRun = (runId: string) => commands.pauseRun(task, runId);
   const [editing, setEditing] = useState(false);
+  const [residencyPending, setResidencyPending] = useState(false);
   const readOnly = useReadOnlyExperience();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
@@ -799,7 +828,8 @@ function TaskRow({
   const latestRun = task.latestRun;
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
-  const showActivity = shouldShowConversationSidebarActivity(task);
+  const taskActive = useConversationTaskActive(task.activity, `${task.projectId}:${task.taskId}`);
+  const showActivity = shouldShowConversationSidebarActivity(task, taskActive);
   const unreadTerminalResult = isDirect ? task.unreadTerminalResult ?? null : null;
   const unreadTerminalResultLabel = unreadTerminalResult
     ? t(`conversation.sidebar.terminalResult.${unreadTerminalResult.kind}`)
@@ -913,32 +943,66 @@ function TaskRow({
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-sm">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
+            {residencyPending ? <Loader2 className="size-3 shrink-0 animate-spin" aria-label={t("common.loading")} /> : null}
+            {task.runMode === "direct" && task.resident ? <Tooltip><TooltipTrigger asChild><span className="inline-flex shrink-0" aria-label={t("conversation.sidebar.resident")}><ResidentPin /></span></TooltipTrigger><TooltipContent>{t("conversation.sidebar.resident")}</TooltipContent></Tooltip> : null}
           </span>
         )}
-        {relativeTime ? (
+        {showActivity ? (
+          <span className="inline-flex h-4 shrink-0 items-center" role="status" aria-label={t('status.running')}>
+            <AcpProcessingSpinner className="size-3" />
+          </span>
+        ) : relativeTime ? (
           <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
       <span data-demo-task-actions={readOnly || undefined} className="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
-        {onRename ? (
-          <Button disabled={readOnly} title={t('conversation.sidebar.rename')} aria-label={t('conversation.sidebar.rename')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
-            <Pencil className="size-3" />
-          </Button>
-        ) : null}
+        {(
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('conversation.sidebar.rename')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
+                  <Pencil className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('conversation.sidebar.rename')}</TooltipContent>
+          </Tooltip>
+        )}
         {pinned && onUnpin ? (
-          <Button disabled={readOnly} title={t('conversation.sidebar.unpin')} aria-label={t('conversation.sidebar.unpin')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
-            <PinOff className="size-3" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('conversation.sidebar.unpin')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
+                  <PinOff className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('conversation.sidebar.unpin')}</TooltipContent>
+          </Tooltip>
         ) : onPin ? (
-          <Button disabled={readOnly} title={t('conversation.sidebar.pinToTop')} aria-label={t('conversation.sidebar.pinToTop')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
-            <Pin className="size-3" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('conversation.sidebar.pinToTop')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
+                  <Pin className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('conversation.sidebar.pinToTop')}</TooltipContent>
+          </Tooltip>
         ) : null}
-        {onDelete ? (
-          <Button disabled={readOnly} title={t('common.delete')} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
-            <Trash2 className="size-3" />
-          </Button>
-        ) : null}
+        {(
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button disabled={readOnly} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+                  <Trash2 className="size-3" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('common.delete')}</TooltipContent>
+          </Tooltip>
+        )}
       </span>
     </div>
   );
@@ -946,7 +1010,17 @@ function TaskRow({
   return (
     <>
     <div className={cn(expanded && hasRuns && 'space-y-1')}>
-      {taskRow}
+      {task.runMode === "direct" && onSetResident ? (
+        <ContextMenu><ContextMenuTrigger asChild>{taskRow}</ContextMenuTrigger>
+          <ContextMenuContent><ContextMenuItem disabled={readOnly || residencyPending} onSelect={() => {
+            setResidencyPending(true);
+            void onSetResident(!task.resident).finally(() => setResidencyPending(false));
+          }}>
+            {residencyPending ? <Loader2 className="size-4 animate-spin" /> : task.resident ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+            {t(task.resident ? "conversation.sidebar.releaseResident" : "conversation.sidebar.keepResident")}
+          </ContextMenuItem></ContextMenuContent>
+        </ContextMenu>
+      ) : taskRow}
       {expanded && hasRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
@@ -1026,7 +1100,7 @@ function TaskRow({
     </AlertDialog>
     </>
   );
-}
+});
 
 // ── Sidebar Button ──
 

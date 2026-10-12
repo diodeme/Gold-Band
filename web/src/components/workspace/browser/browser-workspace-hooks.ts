@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRightWorkspaceCommands, type RightWorkspaceResourceTransitionReason } from '../right-workspace-context';
 import { openWebTarget } from './open-web-target';
@@ -7,18 +7,48 @@ export function useOpenWebTarget() {
   const { t } = useTranslation();
   const workspace = useRightWorkspaceCommands();
   return (href: string) => openWebTarget(href, {
-    projectId: workspace.projectId,
+    root: workspace.currentFileRoot(),
     scopeKey: workspace.scopeKey,
     openResource: workspace.openResource,
     browserTitle: t('workspace.browser.title'),
   });
 }
 
-let browserHostModule: Promise<typeof import('./browser-webview-host')> | null = null;
+type BrowserHostModule = typeof import('./browser-webview-host');
+
+let browserHostModule: Promise<BrowserHostModule> | null = null;
+let browserHostModuleSync: BrowserHostModule | null = null;
+let configuredHiddenReleaseSecs: number | null = null;
 
 function loadBrowserHost() {
-  browserHostModule ??= import('./browser-webview-host');
+  browserHostModule ??= import('./browser-webview-host').then((module) => {
+    browserHostModuleSync = module;
+    if (configuredHiddenReleaseSecs != null) module.browserWebviewHost.setHiddenReleaseDelay(configuredHiddenReleaseSecs);
+    return module;
+  });
   return browserHostModule;
+}
+
+function loadedBrowserHost() {
+  return browserHostModuleSync?.browserWebviewHost ?? null;
+}
+
+function suppressBrowserHost() {
+  const host = loadedBrowserHost();
+  if (host) {
+    void host.suppress();
+    return;
+  }
+  void loadBrowserHost().then(({ browserWebviewHost }) => browserWebviewHost.suppress());
+}
+
+function applyBrowserVisibility(host: BrowserHostModule['browserWebviewHost'], suppressed: boolean) {
+  if (suppressed) {
+    void host.suppress();
+    return;
+  }
+  host.resume();
+  if (host.hasBlockingOverlay()) void host.hideAll();
 }
 
 export function notifyBrowserLayoutFrame() {
@@ -43,6 +73,7 @@ export function BrowserNativeLifecycle({
   available,
   requestedOpen,
   activeIsBrowser,
+  hiddenReleaseSecs,
 }: {
   scopeKey: string | null;
   presented: boolean;
@@ -50,24 +81,31 @@ export function BrowserNativeLifecycle({
   available: boolean;
   requestedOpen: boolean;
   activeIsBrowser: boolean;
+  hiddenReleaseSecs: number;
 }) {
   const browserWasPresentedRef = useRef(false);
+  useLayoutEffect(() => {
+    // Recorded for a host that loads later; the host module stays lazy until a browser opens.
+    configuredHiddenReleaseSecs = hiddenReleaseSecs;
+    loadedBrowserHost()?.setHiddenReleaseDelay(hiddenReleaseSecs);
+  }, [hiddenReleaseSecs]);
   const ownerGenerationRef = useRef(0);
   const visibilityGenerationRef = useRef(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     ownerGenerationRef.current += 1;
     return () => {
       const cleanupGeneration = ++ownerGenerationRef.current;
+      // 由 layout cleanup 登记，微任务在绘制前执行；同一提交里的 StrictMode 重挂载会使 generation 失效。
       queueMicrotask(() => {
         if (
           ownerGenerationRef.current !== cleanupGeneration
           || !browserWasPresentedRef.current
         ) return;
-        void loadBrowserHost().then(({ browserWebviewHost }) => browserWebviewHost.suppress());
+        suppressBrowserHost();
       });
     };
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (activeIsBrowser) browserWasPresentedRef.current = true;
     if (!browserWasPresentedRef.current) return;
     const generation = ++visibilityGenerationRef.current;
@@ -77,14 +115,14 @@ export function BrowserNativeLifecycle({
       || autoCollapsedHidden
       || !presented
       || !activeIsBrowser;
-    void loadBrowserHost().then(async ({ browserWebviewHost }) => {
+    const host = loadedBrowserHost();
+    if (host) {
+      applyBrowserVisibility(host, suppressed);
+      return;
+    }
+    void loadBrowserHost().then(({ browserWebviewHost }) => {
       if (visibilityGenerationRef.current !== generation) return;
-      if (suppressed) {
-        await browserWebviewHost.suppress();
-        return;
-      }
-      browserWebviewHost.resume();
-      if (browserWebviewHost.hasBlockingOverlay()) await browserWebviewHost.hideAll();
+      applyBrowserVisibility(browserWebviewHost, suppressed);
     });
   }, [activeIsBrowser, autoCollapsedHidden, available, presented, requestedOpen, scopeKey]);
   return null;

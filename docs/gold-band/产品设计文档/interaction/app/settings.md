@@ -164,9 +164,13 @@
 - Español（`es`）
 
 ### 6.2 行为
-- 选择后立即切换界面语言并写入 `desktopLanguage`。
+- 选择后先写入 `desktopLanguage`；后端完成校验与持久化并返回 canonical 偏好后，前端加载返回语言对应的内置语言包，再同时发布偏好与界面语言。语言包加载失败时不发布尚未可用的语言状态。
+- 客户端启动只让已持久化的当前语言进入关键路径：取得 bootstrap 后动态加载这一份语言包，加载并激活成功后才发布应用就绪状态和显示主窗口。其他六份语言包不参与启动下载与解析。
+- 七份 UI 语言包以英文 key 集合作为基准，在测试与 CI 中校验叶子 key 完全一致；新增或删除 UI key 必须同步全部语言。普通缺词视为构建缺陷，运行时不加载英文包、不使用英文 fallback。
 - 设置里还没有 `desktopLanguage` 时，桌面端第一次加载按系统界面语言写入一次。简体中文、繁体中文（含香港、澳门）、日语、韩语、巴西葡萄牙语、西班牙语映射到上表；葡萄牙语其他地区和其他语言写入 `en`。写入之后以设置为准，系统语言再变化不覆盖。
+- Prompt 本地化独立于 UI 语言包；角色缺少对应语言时仍按 Prompt 规则降级到英文，不改变 UI 语言包的无 fallback 契约。
 - Windows 安装包按系统界面语言选择 NSIS 语言，未匹配时使用英文，不弹出语言对话框。安装包语言不会写入应用设置。
+- 每个渠道在渠道配置 `mainBinaryName` 声明独立的主程序文件名（default 为 `gold-band-desktop.exe`，wb 为 `maling-desktop.exe`），构建时写入 Tauri `mainBinaryName`，渠道名重复或格式非法时构建失败。NSIS 安装与更新只按文件名检测并关闭运行中的进程，因此同一台机器上安装或更新一个渠道不会关闭另一个渠道的客户端。旧版本升级时由安装器删除旧文件名的程序并把开始菜单、桌面快捷方式改指向新程序；通知 AUMID、开始菜单快捷方式与内置 memory MCP 启动路径在启动时按当前程序路径自动校正。
 
 ### 6.3 UI 形式
 推荐使用下拉选择：
@@ -242,15 +246,19 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-08-16 Theme SDK 补齐字体声明名与文件内建 family 的一致性校验；内置 `Inter Variable / Gold Band MiSans` 保持既有展示名与用户偏好语义，产品展示名继续独立管理。应用入口与依赖清单均移除 Fontsource Inter 全局旁路。后续以构建器派生的 `runtimeFamily` 隔离浏览器全局 font-face identity，自定义栈随当前主题重新投影；两个内置主题不再因复用作者 family 而相互请求字体资源。
 - UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
+- 「高级」页中“记录详细日志”所在分组标题为「日志」（2026-10-03 起，原为与 tab 重名的「高级」）。
 - 设置页中的问号帮助入口（如“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。收集签名安装包时必须使用 Cargo 解析后的 target 目录：优先 `cargo metadata` 的 `target_directory`（覆盖本机 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 与用户/项目 `build.target-dir`），再回退环境变量和仓库内 `target/`、`src-tauri/target/`；不得写死某台机器的绝对路径。清理过期 bundle 与生成 `latest.json` 使用同一组候选目录。
-- 桌面端启动 90 秒后执行首次后台更新检查，此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 渠道仍只更新状态并提示用户，不自动下载或安装；`wb` 渠道仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。相同版本已经作为完整 pending 文件存在时必须幂等跳过下载；pending 文件使用临时文件加原子替换写入，最终路径存在即代表本次完整写入已经提交。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
+- 桌面端启动 20 秒后执行首次后台更新检查（避开启动恢复与 Agent 诊断高峰），此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 与 `wb` 渠道均启用静默更新：非关键更新只更新状态并在标题栏提示用户，不自动下载或安装；仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。pending 更新按渠道 `appKey` 隔离在临时目录，先原子写入安装包、最后提交 `pending.json`（版本 + 签名）；安装前必须用渠道 public key 重新校验签名并确认版本仍高于运行版本，校验失败清理目录且不安装。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27 起更新提示增加三级红点：后台发现当前可更新版本后，左侧 `Settings`、设置页 `Advanced` tab、`Updates` 分组标题同时显示红点。用户进入设置页时只清除 `Settings` 红点；切到 `Advanced` tab 时只清除 `Advanced` 红点；`Updates` 红点不因进入页面消失，只有当前已无可更新版本时才自动消失。
-- 红点状态按“当前可用版本号 + 分层已读版本号”计算，而不是简单布尔值：`Settings`、`Advanced` 和公告关闭状态都持久化到用户级桌面配置，并与版本号绑定；同一版本已读/关闭后不再重复提示，但一旦后台发现更高版本，三级红点和公告都会重新出现。
-- 右侧主内容区顶部新增公告区：首次发现某个新版本且该版本公告尚未被关闭时，页面 header 下方展示一条可关闭公告，提示“发现新版本，可前往 设置 → 高级 → 更新”。点击“查看更新”打开轻量弹窗，明确引导用户前往设置页更新；关闭公告后仅移除公告本身，不影响三级红点。
-- 可用更新快照持久化到用户级桌面配置，因此用户在发现更新后关闭应用再打开，公告、设置页状态和更新版本信息不会因为重启丢失；只要存在这份快照，高级页更新状态区就按“可更新”态展示版本信息与安装入口，而不是回退成“尚未检查”；只有后续检查确认当前已无可更新版本时，才清空这份快照与 `Updates` 红点。
+- 红点状态按“当前可用版本号 + 分层已读版本号”计算，而不是简单布尔值：`Settings`、`Advanced` 已读状态持久化到用户级桌面配置，并与版本号绑定；同一版本已读后不再重复提示，但一旦后台发现更高版本，三级红点会重新出现。
+- 2026-09-30 起顶部公告横幅移除，改为标题栏「帮助」右侧的高对比度更新按钮（主题 token `attention` / `attentionForeground`）。按钮以版本比较为唯一事实：只要已知远端版本高于运行版本就一直显示，不可关闭；用户点击更新但安装未发生（失败、取消退出）时按钮仍保留。按钮文案随状态切换为「更新 / 更新中 N% / 重启安装 / 更新失败」，点击均打开更新弹窗。
+- 更新弹窗为响应式 Dialog：宽度上限收窄为 `50rem`（根字号 16px 时为 800px），保留 `92vw` 自适应宽度与 `min(88vh,56rem)` 高度上限；标题与底部操作固定，更新说明区域滚动；说明中的图片点击后打开放大预览（仅限弹窗内 Markdown，会话 Markdown 图片不变）。底部主按钮直接执行与设置页「下载并安装」相同的 `start_update_install`：下载中显示进度条并禁用，失败显示「阶段 + 原因」并提供重试，下载完成后自动走应用重启流程安装；已下载就绪时主按钮为「重启并安装」。
+- 更新状态由后端统一管理：`idle / checking / available / downloading / ready / not-available / error`，下载单飞；检查失败时保留已知更新并附带错误，只有没有已知更新时才进入 `error`。错误为结构化码（`updater.network / signature-invalid / manifest-invalid / io / stale-package / check-failed / download-failed / install-failed` 等）加 `params.phase` 与 `params.detail`，前端按码与阶段本地化。下载进度事件节流为 100ms，前端以独立 external store 订阅，只刷新进度消费组件。
+- 下载完成后的安装与普通关闭应用共用同一退出生命周期：先完成前端文件保存握手，再暂停运行中的会话（`Paused + ProcessInterrupted`）、关闭 ACP 连接、浏览器、调度与 IM，最后才安装 pending 更新；不得绕过清理直接退出。
+- 可用更新快照持久化到用户级桌面配置，因此用户在发现更新后关闭应用再打开，标题栏更新按钮、设置页状态和更新版本信息不会因为重启丢失；只要存在这份快照，高级页更新状态区就按“可更新”态展示版本信息与安装入口，而不是回退成“尚未检查”；只有后续检查确认当前已无可更新版本时，才清空这份快照与 `Updates` 红点。
 
 ## 9. 2026-06-12 指标上报地址展示
 
@@ -280,3 +288,26 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 设置页「通用」是 IM 接入、私聊绑定和六类通知偏好的唯一可见入口；权威事实仍是后端 IM settings 与 connection generation。
 - 企业微信标题行只展示平台名和状态徽章，不展示“安装级目标”等实现注释；未接入时的操作说明使用“尚未接入企业微信…”。
 - 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。
+
+## 13. 多语言更新日志
+
+- 发布准备必须明确 Git 起止范围、目标版本，以及用户确认的普通更新 / 关键更新选择；已明确回答的同版本选择直接复用，缺失或含糊时先询问，不得根据提交类型、破坏性变更、安全修复或更新日志措辞推断关键性。普通更新只提示、由用户手动触发下载与安装；关键更新后台下载签名包，在正常退出生命周期或既有后续启动安装路径中安装，不因发现或下载完成而强制重启、中断当前工作。
+- `release-notes/<version>/release.json` 是 default 渠道该版本关键性的唯一事实源，与七语言 Markdown 同时准备；完整对象只能是 `{"critical": false}` 或 `{"critical": true}`，普通更新也必须显式写入 false。覆盖已有文件前必须读取并核对用户选择，有冲突先确认；已有文件本身不能替代用户确认。git-changelog 完成时报告目标版本、最终普通 / 关键选择及文件清单。
+- 生成器从实际发布 SHA/tag 对应版本目录读取元数据；七语言正文和 `release.json` 必须进入该发布 SHA/tag，不能只存在于工作区或另一 workflow 分支。历史版本缺少 `release.json` 时按普通更新处理；文件存在时必须严格校验为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型或额外字段均在写入任何生成产物前失败，不能静默回落或留下部分输出。七个 locale manifest 与兼容 `latest.json` 共八份 default manifest 必须携带相同 `critical` 值；`wb` 的单 manifest 与既有关键更新构建参数保持不变，不消费该 default 元数据。
+- 文件准备不授权提交、push、打 tag 或发布；这些操作均需用户另行明确请求。
+- 「帮助 → 更新日志」查看当前版本的更新日志：构建时由 Vite 插件把 `release-notes/<package.json 版本>/<语言>.md` 打进前端，所有渠道（含 wb）都使用其基础版本的日志；每种语言是独立的懒加载分块（单个约 4–7 KB），启动时不加载，打开弹窗时只读取当前界面语言，缺少翻译时回退到 zh-CN，没有日志时显示“当前版本暂无更新日志”。只打包当前版本，不提供历史版本列表；日志随安装包固定，发布后修改需要发新版本。
+- Markdown 渲染分两类：`chat` 用于消息流内的回复（Agent 会话消息、Agent 提问卡片），标题字号接近正文；`document` 用于独立阅读的文档（会话系统提示词渲染视图、上下文管理正文），标题使用文档层级；`github-release` 是在 `document` 基础上增加单换行即换行与直接加载远程图片的更新日志渲染。
+- 文档类标题：H1/H2 为 18px 粗体并带弱分隔线、上方 32px 间距，H3 为 16px 粗体、上方 24px 间距，首个标题无上间距。
+- 更新日志弹窗与更新弹窗共用同一外壳与 `github-release` 渲染，底部「更多」打开渠道配置 `releaseNotesUrl` 声明的页面（default 为 GitHub Releases 页面，wb 为企业微信更新日志文档），不从更新地址推导；该值为空时不显示「更多」。
+- 更新日志以 GitHub Release 的显示效果为准，按 GitHub 兼容 Markdown 编写：提示框只使用 `NOTE / TIP / IMPORTANT / WARNING / CAUTION` 五种，`[!TYPE]` 单独占第一行，标题由类型固定、不可自定义，需要小标题时把下一行写成加粗文字；不使用 Obsidian 的 `[!attention]` 等 callout 和 `![…|500]` 图片宽度写法；单个换行即换行，编号列表写成 `1. 内容`。
+- 客户端更新弹窗使用共享 `Markdown` 的 `github-release` 渲染模式，与 GitHub Release 正文保持一致：单个换行显示为换行，五种 GitHub 提示框显示为带图标的提示框，标题跟随界面语言，颜色依次使用 `attention`、`success`、`emphasis`、`warning`、`danger` 主题 token，保证五种提示框在各主题下可区分且清晰；其他类型保持为普通引用。该模式下段落之间保留间距，避免与单个换行混淆；弹窗打开时焦点停在弹窗本身，不落到说明中的代码复制按钮等控件。提示框属于 GFM 通用语法，聊天和文件预览同样渲染（见[对话运行时](conversational-runtime.md)与[工作区文件](workspace-files.md)）；`github-release` 只额外把单个换行渲染为换行，并直接加载更新说明中的网络图片，不经过受信任图片域名。
+
+- `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。default 发布生成七个 `latest.<locale>.json`，并保留与简体中文 manifest 相同的 `latest.json` 供旧客户端与缺失 locale 资产时回退；客户端按已保存界面语言选择 locale manifest；该选择只发生在后台更新请求中，设置页「更新地址」始终展示配置的 `latest.json`，不随语言变化。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成并覆盖 release-please 默认正文，格式为 `# Gold Band vX.Y.Z` 标题、中英文锚点跳转、`## 中文` / `## English` 两段，原文标题（代码块外）各降一级；图片继续引用 `static.dion.blue`。`wb`、自定义更新 URL 和 `npm run build:wb` 均保持单一 `latest.json`，不接入 locale 选择。
+
+## 14. 受信任的图片域名
+
+- Markdown 中的网络图片只从用户信任的 host 加载。加载图片会把请求发给文档作者或 Agent 指定的服务器，可能暴露 IP，也可能被注入的 Agent 用来把数据拼进图片地址外传；Agent 侧的 sandbox 和工具权限不覆盖渲染这一步，所以由渲染层把关。
+- 信任从图片本身产生：对话中点击图片占位上的“加载”，或在文件预览顶部提示中点击“加载”。确认后写入持久化列表，之后任何会话和文档中来自这些 host 的图片直接显示。我们发布的更新说明不经过此列表。
+- 「高级」页的“受信任的图片域名”分组以自动换行的胶囊标签列出已信任的 host，标签内提供移除按钮，不设内部滚动和最大高度；超过 20 个时只显示前 20 个，末尾以同款胶囊显示被折叠数量「+N」（悬停提示「显示全部 N 个」），点击原地展开，展开后末尾「收起」；移除失败时标签标记为错误并提示重试；列表为空时显示空状态。不提供手动添加入口：信任应在看到图片时决定，避免凭空填写宽泛域名。
+- 数据：`state.json` 的 `remoteImageTrust { schemaVersion: 1, trustedHosts }`，经 `with_state` 事务读改写，多处同时信任不会丢更新。host 按 WHATWG URL 规则规范化（小写、IDN 转 punycode、默认端口省略、非默认端口保留），只做精确匹配，不支持子域名通配，也不区分 http/https。
+- 接口：启动 bootstrap 携带 `remoteImageTrust`；`trust_remote_image_hosts(hosts)` 批量信任，任一 host 非法时整体拒绝并返回 `remote-image.host-invalid`；`revoke_remote_image_host(host)` 移除。两者幂等，成功时返回最新的完整列表，前端 `remote-image-trust-store` 以最后一次写入的响应收敛，每张图片只订阅自己 host 是否受信任。

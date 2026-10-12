@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { acpRuntimeErrorBannerCopy, acpRuntimeErrorBannerTitle } from '@/lib/acp-runtime-error';
 import type { RuntimeErrorInfoVm } from '@/types';
+import i18n, { loadI18nLanguage } from '@/i18n';
 
 function runtimeError(overrides: Partial<RuntimeErrorInfoVm> = {}): RuntimeErrorInfoVm {
   return {
@@ -28,6 +29,26 @@ function fakeT(prefix: string) {
 }
 
 describe('acpRuntimeErrorBannerCopy', () => {
+  it('keeps the ACP AuthRequired reason visible once in the existing error banner', async () => {
+    await loadI18nLanguage('zh-CN');
+    const error = runtimeError({
+      code: { domain: 'provider', code: 'provider.auth-required' },
+      domain: 'provider', recovery: 'manual', retryPolicy: null,
+      diagnostic: 'ACP session/prompt failed: Authentication required',
+      raw: { code: -32000, message: 'Authentication required' },
+    });
+    const copy = acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), error);
+    expect(copy).toContain('Authentication required');
+    expect(copy?.match(/Authentication required/g)).toHaveLength(1);
+    expect(copy).not.toContain('errors.provider.auth-required');
+  });
+  it('localizes storage failures even without diagnostic text', async () => {
+    await loadI18nLanguage('zh-CN');
+    expect(acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), runtimeError({
+      code: { domain: 'runtime-io', code: 'runtime.io.storage-full' },
+      domain: 'runtime-io',
+    }))).toContain('磁盘空间不足');
+  });
   it('maps a removed thought-level option to unsupported-model copy', () => {
     const copy = acpRuntimeErrorBannerCopy(fakeT('zh'), runtimeError({
       params: {
@@ -103,5 +124,57 @@ describe('acpRuntimeErrorBannerCopy', () => {
       diagnostic: '磁盘空间不足。 (os error 112)',
     }))).toBe('磁盘空间不足。 (os error 112)');
     expect(acpRuntimeErrorBannerCopy(fakeT('zh'), null)).toBeNull();
+  });
+});
+
+async function zhCnT() {
+  const { default: i18next } = await import('i18next');
+  const { default: zhCN } = await import('@/locales/zh-CN.json');
+  const i18n = i18next.createInstance();
+  await i18n.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } } });
+  return i18n.t.bind(i18n) as never;
+}
+
+describe('acpRuntimeErrorBannerCopy with catalog copy', () => {
+  it('localizes dynamic completion repair exhaustion by error code', async () => {
+    const t = await zhCnT();
+
+    const copy = acpRuntimeErrorBannerCopy(t, runtimeError({
+      code: { domain: 'dynamic', code: 'dynamic.completion.repair-exhausted' },
+      domain: 'dynamic',
+      params: { repairAttempts: 3, maxRepairAttempts: 3, validationErrors: [] },
+      diagnostic: 'dynamic-node-completion validation failed',
+    }));
+
+    expect(copy).toBe(
+      '节点输出经 3 次修复仍不符合协议，工作流已暂停。\ndynamic-node-completion validation failed',
+    );
+  });
+
+  it('localizes static workflow output repair exhaustion by error code', async () => {
+    const copy = acpRuntimeErrorBannerCopy(await zhCnT(), runtimeError({
+      code: { domain: 'workflow', code: 'workflow.output.repair-exhausted' },
+      domain: 'workflow',
+      params: { nodeId: 'accept', repairAttempts: 3, maxRepairAttempts: 3 },
+    }));
+
+    expect(copy).toBe('节点输出经 3 次修复仍不符合输出格式，工作流已暂停。');
+  });
+});
+
+describe('acpRuntimeErrorBannerTitle', () => {
+  it('titles workflow and dynamic pauses as workflow paused', async () => {
+    const t = await zhCnT();
+    for (const domain of ['workflow', 'dynamic']) {
+      expect(acpRuntimeErrorBannerTitle(t, runtimeError({ code: { domain, code: 'x' }, domain })))
+        .toBe('工作流已暂停');
+    }
+  });
+
+  it('keeps the default ACP title for session and provider errors', async () => {
+    const t = await zhCnT();
+    expect(acpRuntimeErrorBannerTitle(t, runtimeError())).toBeNull();
+    expect(acpRuntimeErrorBannerTitle(t, runtimeError({ code: { domain: 'provider', code: 'provider.execution-error' }, domain: 'provider' }))).toBeNull();
+    expect(acpRuntimeErrorBannerTitle(t, null)).toBeNull();
   });
 });

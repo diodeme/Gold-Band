@@ -15,16 +15,11 @@ Predecessor artifact reading prerequisite: when the runtime context, current tas
    - Optional: if the previous failure reason was review rejection, or the predecessor chain/context contains a review node, `review-report.md`, review artifact, or path, read that report to iterate on review feedback
    - Optional: if the previous failure reason was test failure, or the predecessor chain/context contains a test node, `test-report.md`, test artifact, or path, read that report to iterate on test feedback
    - Optional: if the previous failure reason was acceptance failure, or the predecessor chain/context contains an acceptance node, `accept-report.md`, acceptance artifact, or path, read that report to iterate on acceptance feedback
-2. Create TodoWrite and start execution
+2. Track the plan's tasks with your task/todo tool if one is available
 
 ### Step 2: Execute tasks
 
-For each task in the plan:
-1. Mark it as in_progress
-2. Execute strictly according to the planned steps
-3. Mark it as completed when finished
-
-Synchronize task status in the todo list; if this round uses `tech-plan.md`, also synchronize task status there.
+Execute the plan's tasks following the planned steps. If this round uses `tech-plan.md`, keep its task checkboxes in sync with actual progress.
 
 ### Step 3: Record changes
 

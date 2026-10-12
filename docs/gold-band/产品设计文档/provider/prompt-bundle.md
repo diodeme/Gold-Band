@@ -37,6 +37,7 @@
 - Gold Band / ACP 文件夹规则中的稳定部分
 - 当前节点 profile id 解析出的完整角色说明
 - 当前节点 `output` DSL 派生出的发射规则：`InlineControl` 展开 artifact 契约；`PostTurnProjection` 只声明业务 turn 自然完成、控制结果随后后置归一化，不暴露 artifact 名称、schema 或 success condition
+- AI-DYNAMIC acceptance 的稳定角色规则可以在 system prompt 中声明 `next.type` 决策词汇，业务 turn、隐藏 finalize 与 repair 必须保持一致；这不等于展开 `dynamic-node-completion` artifact 名称或 JSON schema，完整控制协议仍只进入隐藏 finalize / repair user prompt。merge 不承担路由决策，不注入该词汇
 - 现有 `extra_system_sections`，本期继续按原样放在 system prompt
 
 `systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要、本轮反馈以及 PostTurn finalize / repair 的完整控制协议。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。
@@ -86,6 +87,15 @@ Profile 数据增加 `dynamicTemplate: boolean`，默认值为 `false`。该字�
 `execution.surface` 必须由 invocation 创建入口显式赋值：普通 workflow worker 使用 `workflow`，AI-DYNAMIC 内部 worker / merge / acceptance 使用 `aiDynamic`。枚举值统一采用 camelCase，不得通过 `runtime_node_id`、目录结构、output artifact 名称或其他身份字段反推执行面；`runtime_node_id` 只保留动态节点定位职责。`execution.can_route_next` 在显式执行面为 `aiDynamic` 且当前 turn 使用 `InlineControl` 时为 `true`。`PostTurnProjection` 从业务 turn 到隐藏 finalize / repair 始终保留原始 emission identity，并渲染为 `false`，避免 Profile 或 system prompt 提前或重复要求 artifact；Runtime 只在独立隐藏 user prompt 中提供完整控制协议，并根据 render mode 消费控制结果。
 
 角色编辑页提供“启用动态模板”开关，默认关闭；问号提示展示上述变量和枚举值。自定义角色可以复用同一套判断，不需要复制内置角色或修改 runtime 代码。内置角色扫描结果中，仅 `plan` 和 `dev` 需要根据执行面切换规则，因此两者开启该开关，其余内置角色保持关闭。
+
+### 3.4 内置角色正文约束
+
+内置角色会发给不同 ACP Agent，正文遵守 `docs/gold-band/rules/prompt-authoring.md`：
+
+- 描述所需能力（类型检查、任务跟踪、结构化提问），不写死某个 Agent 独有的工具名；点名工具时带可用性条件和替代路径。
+- 每条规则在文件内只有一处定义。验收类角色（`accept`、AI-DYNAMIC `acceptance`）的 `FOLLOW_UP` 是单一定义：仅限不属于任何已批准条款的观察、仅因环境或人工条件无法执行的验证、历史遗留与本轮范围外问题；本轮要求的条款一律不得降级。
+- 审查角色的严重度按对当前改动的实际影响定级，代码质量类清单是经验参考而非阈值；CRITICAL 只用于安全漏洞和数据丢失风险。
+- 规划角色（`plan`）只产出 `tech-plan.md`，不以用户确认作为修改代码的前提；访谈角色的挑战模式按情境触发，不按固定轮次。
 
 ---
 

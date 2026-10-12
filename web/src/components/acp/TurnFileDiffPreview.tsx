@@ -44,15 +44,15 @@ export function TurnFileDiffPreview({
 
   const comparison = state.key === requestKey ? state.comparison : initialComparison;
   const errorCode = state.key === requestKey ? state.errorCode : null;
-  const addedLines = comparison?.stats.addedLines ?? change.addedLines ?? 0;
-  const deletedLines = comparison?.stats.deletedLines ?? change.deletedLines ?? 0;
+  const addedLines = comparison ? comparison.stats.addedLines : change.addedLines;
+  const deletedLines = comparison ? comparison.stats.deletedLines : change.deletedLines;
 
   return (
     <section className="flex h-[clamp(10rem,44vh,24rem)] min-h-0 w-[min(40rem,calc(100vw-2rem))] min-w-0 flex-col overflow-hidden" data-turn-file-diff-preview={change.id}>
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 px-2.5 text-xs">
         <span className="min-w-0 flex-1 truncate font-mono text-foreground">{change.logicalPath}</span>
-        <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400">+{addedLines}</span>
-        <span className="shrink-0 tabular-nums text-destructive">-{deletedLines}</span>
+        {addedLines != null && <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400">+{addedLines}</span>}
+        {deletedLines != null && <span className="shrink-0 tabular-nums text-destructive">-{deletedLines}</span>}
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         {errorCode ? (
@@ -65,7 +65,7 @@ export function TurnFileDiffPreview({
         ) : comparison.limitationCode && !comparison.after && !comparison.before ? (
           <PreviewMessage
             icon={<TriangleAlert className="size-4 text-amber-500" />}
-            text={t(`errors.${comparison.limitationCode}`, { defaultValue: t('turnFiles.previewUnavailable') })}
+            text={t(comparison.limitationCode === 'turn-files.diff-too-large' ? 'turnFiles.comparisonTooLarge' : 'turnFiles.evidenceUnavailable')}
           />
         ) : (
           <ReadonlyUnifiedDiff comparison={comparison} ariaLabel={t('turnFiles.diffPreview')} />

@@ -217,41 +217,40 @@ function PromptInputTextarea({
     }
   }
 
-  const textarea = (
-    <Textarea
-      ref={handleRef}
-      value={textareaValue}
-      style={{
-        ...style,
-        ...leadingAdornmentLayout.textareaStyle,
-      }}
-      onChange={handleChange}
-      onKeyDown={handleKeyDown}
-      className={cn(
-        "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-        className,
-        hasLeadingAdornment && "px-0"
-      )}
-      rows={1}
-      disabled={effectiveDisabled}
-      {...props}
-    />
-  )
-
-  if (!hasLeadingAdornment) return textarea
-
+  // The wrapper is always rendered so the textarea keeps its DOM identity (focus and caret) when a
+  // leading adornment appears or disappears; only the adornment slot and horizontal inset change.
   return (
     <div
-      data-slot="prompt-input-textarea-with-adornment"
-      className={cn("relative min-w-0 px-2.5", containerClassName)}
+      data-slot="prompt-input-textarea-field"
+      data-leading-adornment={hasLeadingAdornment ? "true" : undefined}
+      className={cn("relative min-w-0", hasLeadingAdornment && "px-2.5", containerClassName)}
     >
-      <span
-        ref={leadingAdornmentLayout.adornmentRef}
-        className={cn(COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME, "left-2.5 top-2")}
-      >
-        {leadingAdornment}
-      </span>
-      {textarea}
+      {hasLeadingAdornment ? (
+        <span
+          ref={leadingAdornmentLayout.adornmentRef}
+          className={cn(COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME, "left-2.5 top-2")}
+        >
+          {leadingAdornment}
+        </span>
+      ) : null}
+      <Textarea
+        ref={handleRef}
+        value={textareaValue}
+        style={{
+          ...style,
+          ...leadingAdornmentLayout.textareaStyle,
+        }}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        className={cn(
+          "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
+          className,
+          hasLeadingAdornment && "px-0"
+        )}
+        rows={1}
+        disabled={effectiveDisabled}
+        {...props}
+      />
     </div>
   )
 }

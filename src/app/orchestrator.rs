@@ -44,8 +44,9 @@ use crate::dynamic::{
     DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
     WorkspaceStatus, dynamic_completion_effective_schema, dynamic_graph_has_active_leaf,
     dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection, refresh_dynamic_current_leaf_ids,
-    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
-    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
+    resolve_dynamic_completion_handoff_files, validate_dynamic_group_state,
+    validate_dynamic_node_state, validate_dynamic_run_state, validate_workspace_state,
+    validate_workspace_topology, write_dynamic_node_state,
 };
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
@@ -73,7 +74,7 @@ use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
+    UserPromptRenderMode, WorkerInvocation, conversation_agent_prompt_text,
     conversation_prompt_has_payload, prepare_prompt_bundle, render_new_round_trigger_reason_line,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
@@ -87,7 +88,9 @@ use crate::runtime_error::{
     manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
 use crate::storage::{append_jsonl, read_json, write_json};
-use crate::workflow_model_binding::{TaskAuthoringWorkflow, validate_and_inject};
+use crate::workflow_model_binding::{
+    TaskAuthoringWorkflow, WorkflowModelBindings, validate_and_inject,
+};
 
 use super::ids::{
     generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
@@ -208,9 +211,12 @@ fn effective_previous_pause_reason(
 }
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
+const WORKFLOW_OUTPUT_REPAIR_EXHAUSTED: &str = "workflow.output.repair-exhausted";
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 const DYNAMIC_FANOUT_WORKSPACE_DIRTY: &str = "dynamic.fanout.workspace-dirty";
 const DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED: &str = "dynamic.fanout.workspace-check-failed";
+const DYNAMIC_JSON_SYNTAX: &str = "dynamic.json.syntax";
+const DYNAMIC_COMPLETION_REPAIR_EXHAUSTED: &str = "dynamic.completion.repair-exhausted";
 const DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT: usize = 5;
 const DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT: usize = 10;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -605,6 +611,7 @@ fn apply_continue_input_to_prompt_state(
             &value.display_text,
             state.input_attachment_paths.len(),
             value.role.as_ref(),
+            value.workspace_files.len(),
         )
     }) {
         input.display_text = input.display_text.trim().to_string();
@@ -1019,69 +1026,76 @@ pub(crate) fn launch_prepared_run_background(
 
     thread::Builder::new()
         .name("gold-band-run".to_string())
-        .spawn(move || {
-            let app = background_app;
-            let PreparedRunData {
-                validated,
-                resolved_profiles,
-                mut run,
-                mut round,
-                node,
-            } = prepared.data;
-            let fallback_node = node.clone();
-            // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
-            // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
-            let drive_result = catch_unwind(AssertUnwindSafe(|| {
-                prepare_run_worktree_background(&app, &task_id, &mut run, &round, &node).and_then(
-                    |ready| {
-                        if !ready {
-                            return Ok(());
-                        }
-                        drive_from_node(
-                            &app,
-                            &task_id,
-                            &validated,
-                            &resolved_profiles,
-                            &mut run,
-                            &mut round,
-                            node,
-                        )
-                    },
-                )
-            }));
-            let err = match drive_result {
-                Ok(Ok(())) => None,
-                Ok(Err(err)) => Some(err),
-                Err(panic_payload) => Some(anyhow::anyhow!(
-                    "background drive panicked: {}",
-                    panic_payload
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
-                        .unwrap_or("<non-string panic payload>")
-                )),
-            };
-            if let Some(err) = err {
-                terminalize_background_drive_error(
-                    &app,
-                    &task_id,
-                    &run,
-                    &round,
-                    &fallback_node,
-                    &err,
-                );
-                let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
-                let _ = std::fs::write(
-                    app.paths
-                        .runs_dir(&task_id)
-                        .join("desktop-start-error.txt")
-                        .as_std_path(),
-                    err.to_string(),
-                );
-            }
-        })?;
+        .spawn(move || drive_accepted_run(&background_app, &task_id, prepared))?;
 
     Ok(initial_run)
+}
+
+/// Drives an accepted run on the calling thread until it reaches a terminal or
+/// paused state, then returns the canonical persisted run state.
+pub(crate) fn run_prepared_run_foreground(
+    app: &App,
+    task_id: &str,
+    prepared: AcceptedRun,
+) -> Result<RunState> {
+    let run_id = prepared.run().id.clone();
+    drive_accepted_run(app, task_id, prepared);
+    app.run_status(task_id, &run_id)
+}
+
+/// Single drive path shared by background and foreground launches. Drive
+/// errors and panics are terminalized into the canonical run state instead of
+/// being returned, so every caller observes the same lifecycle facts.
+fn drive_accepted_run(app: &App, task_id: &str, prepared: AcceptedRun) {
+    let PreparedRunData {
+        validated,
+        resolved_profiles,
+        mut run,
+        mut round,
+        node,
+    } = prepared.data;
+    let fallback_node = node.clone();
+    // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
+    // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
+    let drive_result = catch_unwind(AssertUnwindSafe(|| {
+        prepare_run_worktree_background(app, task_id, &mut run, &round, &node).and_then(|ready| {
+            if !ready {
+                return Ok(());
+            }
+            drive_from_node(
+                app,
+                task_id,
+                &validated,
+                &resolved_profiles,
+                &mut run,
+                &mut round,
+                node,
+            )
+        })
+    }));
+    let err = match drive_result {
+        Ok(Ok(())) => None,
+        Ok(Err(err)) => Some(err),
+        Err(panic_payload) => Some(anyhow::anyhow!(
+            "background drive panicked: {}",
+            panic_payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or("<non-string panic payload>")
+        )),
+    };
+    if let Some(err) = err {
+        terminalize_background_drive_error(app, task_id, &run, &round, &fallback_node, &err);
+        let _ = std::fs::create_dir_all(app.paths.runs_dir(task_id).as_std_path());
+        let _ = std::fs::write(
+            app.paths
+                .runs_dir(task_id)
+                .join("desktop-start-error.txt")
+                .as_std_path(),
+            err.to_string(),
+        );
+    }
 }
 
 pub(crate) fn prepare_run(
@@ -1089,11 +1103,23 @@ pub(crate) fn prepare_run(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<PreparedRun> {
-    let workflow: WorkflowDsl = match workflow_override {
-        Some(path) => read_json(path)?,
-        None => app.executable_task_workflow(task_id)?,
+    let (workflow, model_bindings) = match workflow_override {
+        Some(path) => (
+            read_json::<WorkflowDsl>(path)?,
+            WorkflowModelBindings::default(),
+        ),
+        None => {
+            let authoring = app.task_authoring_workflow(task_id)?;
+            let workflow = validate_and_inject(
+                &authoring.workflow,
+                &authoring.model_bindings,
+                &app.config.agents,
+                &app.provider_diagnostics(),
+            )?;
+            (workflow, authoring.model_bindings)
+        }
     };
-    prepare_run_from_workflow(app, task_id, workflow, None)
+    prepare_run_from_workflow(app, task_id, workflow, None, model_bindings, None)
 }
 
 pub(crate) fn prepare_run_in_worktree(
@@ -1109,7 +1135,14 @@ pub(crate) fn prepare_run_in_worktree(
         .require_worktree(&app.paths.repo_root)?
         .head
         .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?;
-    prepare_run_from_workflow(app, task_id, workflow, Some(fork_commit))
+    prepare_run_from_workflow(
+        app,
+        task_id,
+        workflow,
+        Some(fork_commit),
+        WorkflowModelBindings::default(),
+        None,
+    )
 }
 
 pub(crate) fn prepare_run_in_worktree_at(
@@ -1122,7 +1155,14 @@ pub(crate) fn prepare_run_in_worktree_at(
         Some(path) => read_json(path)?,
         None => app.executable_task_workflow(task_id)?,
     };
-    prepare_run_from_workflow(app, task_id, workflow, Some(fork_commit))
+    prepare_run_from_workflow(
+        app,
+        task_id,
+        workflow,
+        Some(fork_commit),
+        WorkflowModelBindings::default(),
+        None,
+    )
 }
 
 pub(crate) fn prepare_run_with_authoring(
@@ -1137,7 +1177,59 @@ pub(crate) fn prepare_run_with_authoring(
         &app.config.agents,
         &app.provider_diagnostics(),
     )?;
-    prepare_run_from_workflow(app, task_id, workflow, None)
+    prepare_run_from_workflow(
+        app,
+        task_id,
+        workflow,
+        None,
+        authoring.model_bindings.clone(),
+        None,
+    )
+}
+
+pub(crate) fn prepare_auto_run_in_worktree(
+    app: &App,
+    task_id: &str,
+    auto_config: crate::config::ConversationAutoConfig,
+) -> Result<PreparedRun> {
+    let fork_commit = GitRepositoryService::default()
+        .require_worktree(&app.paths.repo_root)?
+        .head
+        .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?;
+    prepare_auto_run_in_worktree_at(app, task_id, auto_config, fork_commit)
+}
+
+pub(crate) fn prepare_auto_run(
+    app: &App,
+    task_id: &str,
+    auto_config: crate::config::ConversationAutoConfig,
+) -> Result<PreparedRun> {
+    let workflow = app.executable_task_workflow(task_id)?;
+    prepare_run_from_workflow(
+        app,
+        task_id,
+        workflow,
+        None,
+        WorkflowModelBindings::default(),
+        Some(auto_config),
+    )
+}
+
+pub(crate) fn prepare_auto_run_in_worktree_at(
+    app: &App,
+    task_id: &str,
+    auto_config: crate::config::ConversationAutoConfig,
+    fork_commit: String,
+) -> Result<PreparedRun> {
+    let workflow = app.executable_task_workflow(task_id)?;
+    prepare_run_from_workflow(
+        app,
+        task_id,
+        workflow,
+        Some(fork_commit),
+        WorkflowModelBindings::default(),
+        Some(auto_config),
+    )
 }
 
 fn prepare_run_from_workflow(
@@ -1145,6 +1237,8 @@ fn prepare_run_from_workflow(
     task_id: &str,
     workflow: WorkflowDsl,
     worktree_fork_commit: Option<String>,
+    model_bindings: WorkflowModelBindings,
+    auto_config: Option<crate::config::ConversationAutoConfig>,
 ) -> Result<PreparedRun> {
     let validated = validate_workflow_snapshot(workflow)?;
     if worktree_fork_commit.is_none() && workflow_contains_ai_dynamic(&validated.raw) {
@@ -1224,6 +1318,19 @@ fn prepare_run_from_workflow(
     validate_run_state(&run)?;
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
     prepared.runtime_candidate = runtime_candidate;
+    if let Some(auto_config) = auto_config {
+        crate::execution_plan::publish_initial_auto(&app.paths, task_id, &run_id, auto_config)
+            .map_err(|error| anyhow!(error))?;
+    } else {
+        crate::execution_plan::publish_initial_workflow(
+            &app.paths,
+            task_id,
+            &run_id,
+            validated.raw.clone(),
+            model_bindings,
+        )
+        .map_err(|error| anyhow!(error))?;
+    }
     write_json(
         &app.paths.workflow_snapshot_file(task_id, &run_id),
         &validated.raw,
@@ -1433,6 +1540,36 @@ fn prepare_run_worktree_background(
     write_json(&app.paths.run_file(task_id, &run.id), &durable_run)?;
     *run = durable_run;
     Ok(true)
+}
+
+/// Directory an attempt's session works in, read from canonical run and
+/// dynamic workspace catalog state without Git validation. Relative prompt
+/// workspace-file references resolve here, so a worktree session never reads
+/// the project root's copy of a file.
+pub(crate) fn attempt_session_workspace_dir(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    dynamic: Option<(&str, &str, &str)>,
+) -> Result<Utf8PathBuf> {
+    let Some((outer_node_id, outer_attempt_id, dynamic_node_id)) = dynamic else {
+        return Ok(app
+            .run_status(task_id, run_id)?
+            .worktree
+            .map_or_else(|| app.paths.repo_root.clone(), |worktree| worktree.path));
+    };
+    let graph = load_dynamic_graph(
+        &app.paths
+            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+        &app.paths.repo_root,
+    )?;
+    let node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == dynamic_node_id)
+        .ok_or_else(|| anyhow!("dynamic node `{dynamic_node_id}` is missing"))?;
+    Ok(dynamic_workspace(&graph, &node.workspace_id)?.path.clone())
 }
 
 pub(crate) fn run_workspace_dir(app: &App, task_id: &str, run_id: &str) -> Result<Utf8PathBuf> {
@@ -2399,168 +2536,37 @@ pub(crate) fn run_continue_dynamic_inner_background(
             && initial_run.current_attempt.as_deref() == Some(outer_attempt_id),
         "dynamic inner attempt is not in the current AI-DYNAMIC node"
     );
-    let background_app = app.clone_for_background();
-    let background_task_id = task_id.to_string();
-    let background_task_uuid = initial_run.task_uuid.clone();
-    let background_run_id = run_id.to_string();
-    let background_round_id = round_id.to_string();
-    let background_outer_node_id = outer_node_id.to_string();
-    let background_outer_attempt_id = outer_attempt_id.to_string();
-    let background_dynamic_node_id = dynamic_node_id.to_string();
-    let background_dynamic_attempt_id = dynamic_attempt_id.to_string();
-    let background_request_id = request_id.clone();
-    let background_execution_id = execution_id.clone();
-    let background_outer_execution_id = outer_execution_id.clone();
+    let target = DynamicInnerContinueTarget {
+        task_id: task_id.to_string(),
+        task_uuid: initial_run.task_uuid.clone(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        outer_node_id: outer_node_id.to_string(),
+        outer_attempt_id: outer_attempt_id.to_string(),
+        dynamic_node_id: dynamic_node_id.to_string(),
+        dynamic_attempt_id: dynamic_attempt_id.to_string(),
+        request_id: request_id.clone(),
+        execution_id: execution_id.clone(),
+        outer_execution_id: outer_execution_id.clone(),
+    };
     let (launch_sender, launch_receiver) = mpsc::channel();
     let launch_failure_sender = launch_sender.clone();
-    let resume_key = reserve_dynamic_resume_request(
-        &app.paths.repo_root,
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        DynamicResumeLease {
-            request_id: request_id.clone(),
-            execution_id: execution_id.clone(),
-            node_id: dynamic_node_id.to_string(),
-            attempt_id: dynamic_attempt_id.to_string(),
-            launch_signal: Some(launch_sender.clone()),
-        },
-    )?;
+    let resume_key = target.reserve(app, Some(launch_sender.clone()))?;
+    let background_app = app.clone_for_background();
     let spawn_result = thread::Builder::new()
         .name("gold-band-dynamic-runtime-continue".to_string())
         .spawn(move || {
-            let app = background_app;
-            if let Err(err) = run_continue_dynamic_inner(
-                &app,
-                &background_task_id,
-                &background_run_id,
-                &background_round_id,
-                &background_outer_node_id,
-                &background_outer_attempt_id,
-                &background_dynamic_node_id,
-                &background_dynamic_attempt_id,
+            let _ = drive_accepted_dynamic_inner_continue(
+                &background_app,
+                &target,
                 prompt_id,
                 input,
                 attachment_paths,
                 model_override,
                 permission_mode_override,
                 Some(launch_sender),
-                background_request_id.clone(),
-                background_execution_id.clone(),
-                background_outer_execution_id.clone(),
-            ) {
-                if dynamic_runtime_continue_was_cancelled(&err) {
-                    tracing::info!(
-                        project_id = %app.paths.project_id,
-                        task_id = %background_task_id,
-                        run_id = %background_run_id,
-                        round_id = %background_round_id,
-                        node_id = %background_dynamic_node_id,
-                        attempt_id = %background_dynamic_attempt_id,
-                        outer_node_id = %background_outer_node_id,
-                        outer_attempt_id = %background_outer_attempt_id,
-                        request_id = %background_request_id,
-                        execution_id = %background_execution_id,
-                        "revoked dynamic conversation runtime continue exited before leaf launch"
-                    );
-                    return;
-                }
-                let info = runtime_continue_launch_error(&err);
-                tracing::warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %background_task_id,
-                    run_id = %background_run_id,
-                    round_id = %background_round_id,
-                    node_id = %background_dynamic_node_id,
-                    attempt_id = %background_dynamic_attempt_id,
-                    outer_node_id = %background_outer_node_id,
-                    outer_attempt_id = %background_outer_attempt_id,
-                    request_id = %background_request_id,
-                    execution_id = %background_execution_id,
-                    error_code = %info.code.code,
-                    error_domain = ?info.domain,
-                    error = %err,
-                    "accepted dynamic conversation runtime continue failed in background"
-                );
-                let resume_key = dynamic_state_lock_key(
-                    &app.paths.repo_root,
-                    &background_task_id,
-                    &background_run_id,
-                    &background_round_id,
-                    &background_outer_node_id,
-                    &background_outer_attempt_id,
-                );
-                let failed_resumes =
-                    fail_dynamic_resume_requests(&resume_key, |_| true, info.clone())
-                        .unwrap_or_default();
-                for mut resume in failed_resumes {
-                    let _ = app.pause_dynamic_attempt_runtime_state_if_active_execution(
-                        &background_task_id,
-                        &background_run_id,
-                        &background_round_id,
-                        &background_outer_node_id,
-                        &background_outer_attempt_id,
-                        &resume.node_id,
-                        &resume.execution_id,
-                        PauseReason::RuntimeAbnormal,
-                    );
-                    if let Some(sender) = resume.launch_signal.take() {
-                        let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
-                    }
-                }
-                let converged = app
-                    .pause_dynamic_attempt_runtime_state_if_active_execution(
-                        &background_task_id,
-                        &background_run_id,
-                        &background_round_id,
-                        &background_outer_node_id,
-                        &background_outer_attempt_id,
-                        &background_dynamic_node_id,
-                        &background_execution_id,
-                        PauseReason::RuntimeAbnormal,
-                    )
-                    .unwrap_or(false);
-                let outer_converged = if converged {
-                    false
-                } else {
-                    matches!(
-                        app.pause_attempt_runtime_state_if_active_execution(
-                            &background_task_id,
-                            &background_run_id,
-                            &background_round_id,
-                            &background_outer_node_id,
-                            &background_outer_attempt_id,
-                            &background_outer_execution_id,
-                            PauseReason::RuntimeAbnormal,
-                        ),
-                        Ok(AttemptRuntimePauseResult::Converged)
-                    )
-                };
-                if converged || outer_converged {
-                    let _ = app.emit_acp_session_update(AcpLiveEventContext {
-                        task_id: background_task_id.clone(),
-                        task_uuid: background_task_uuid.clone(),
-                        run_id: background_run_id.clone(),
-                        round_id: background_round_id.clone(),
-                        node_id: background_dynamic_node_id.clone(),
-                        attempt_id: background_dynamic_attempt_id.clone(),
-                        outer_node_id: Some(background_outer_node_id.clone()),
-                        outer_attempt_id: Some(background_outer_attempt_id.clone()),
-                    });
-                }
-                let _ = launch_failure_sender.send(RuntimeContinueLaunch::Failed(info.clone()));
-                let _ =
-                    std::fs::create_dir_all(app.paths.runs_dir(&background_task_id).as_std_path());
-                let _ = std::fs::write(
-                    app.paths
-                        .runs_dir(&background_task_id)
-                        .join("desktop-dynamic-continue-error.txt")
-                        .as_std_path(),
-                    err.to_string(),
-                );
-            }
+                Some(launch_failure_sender),
+            );
         });
     if let Err(error) = spawn_result {
         let error: anyhow::Error = error.into();
@@ -2630,6 +2636,316 @@ pub(crate) fn run_continue_dynamic_inner_background(
         }
     }
     launch_result
+}
+
+/// Identity of one accepted continue of a paused AI-DYNAMIC leaf and the ids of
+/// the execution it starts.
+struct DynamicInnerContinueTarget {
+    task_id: String,
+    task_uuid: Option<String>,
+    run_id: String,
+    round_id: String,
+    outer_node_id: String,
+    outer_attempt_id: String,
+    dynamic_node_id: String,
+    dynamic_attempt_id: String,
+    request_id: String,
+    execution_id: String,
+    outer_execution_id: String,
+}
+
+impl DynamicInnerContinueTarget {
+    fn reserve(
+        &self,
+        app: &App,
+        launch_signal: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+    ) -> Result<String> {
+        reserve_dynamic_resume_request(
+            &app.paths.repo_root,
+            &self.task_id,
+            &self.run_id,
+            &self.round_id,
+            &self.outer_node_id,
+            &self.outer_attempt_id,
+            DynamicResumeLease {
+                request_id: self.request_id.clone(),
+                execution_id: self.execution_id.clone(),
+                node_id: self.dynamic_node_id.clone(),
+                attempt_id: self.dynamic_attempt_id.clone(),
+                launch_signal,
+            },
+        )
+    }
+}
+
+/// Drives a reserved leaf continue, and the rest of its AI-DYNAMIC graph, on the
+/// calling thread. A failure converges the leaf, or else the outer attempt, back
+/// to a paused state before it is returned.
+#[allow(clippy::too_many_arguments)]
+fn drive_accepted_dynamic_inner_continue(
+    app: &App,
+    target: &DynamicInnerContinueTarget,
+    prompt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+    launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+    launch_failure: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+) -> Result<RunState> {
+    let err = match run_continue_dynamic_inner(
+        app,
+        &target.task_id,
+        &target.run_id,
+        &target.round_id,
+        &target.outer_node_id,
+        &target.outer_attempt_id,
+        &target.dynamic_node_id,
+        &target.dynamic_attempt_id,
+        prompt_id,
+        input,
+        attachment_paths,
+        model_override,
+        permission_mode_override,
+        launch,
+        target.request_id.clone(),
+        target.execution_id.clone(),
+        target.outer_execution_id.clone(),
+    ) {
+        Ok(run) => return Ok(run),
+        Err(err) => err,
+    };
+    if dynamic_runtime_continue_was_cancelled(&err) {
+        tracing::info!(
+            project_id = %app.paths.project_id,
+            task_id = %target.task_id,
+            run_id = %target.run_id,
+            round_id = %target.round_id,
+            node_id = %target.dynamic_node_id,
+            attempt_id = %target.dynamic_attempt_id,
+            outer_node_id = %target.outer_node_id,
+            outer_attempt_id = %target.outer_attempt_id,
+            request_id = %target.request_id,
+            execution_id = %target.execution_id,
+            "revoked dynamic conversation runtime continue exited before leaf launch"
+        );
+        return Err(err);
+    }
+    let info = runtime_continue_launch_error(&err);
+    tracing::warn!(
+        project_id = %app.paths.project_id,
+        task_id = %target.task_id,
+        run_id = %target.run_id,
+        round_id = %target.round_id,
+        node_id = %target.dynamic_node_id,
+        attempt_id = %target.dynamic_attempt_id,
+        outer_node_id = %target.outer_node_id,
+        outer_attempt_id = %target.outer_attempt_id,
+        request_id = %target.request_id,
+        execution_id = %target.execution_id,
+        error_code = %info.code.code,
+        error_domain = ?info.domain,
+        error = %err,
+        "accepted dynamic conversation runtime continue failed"
+    );
+    let resume_key = dynamic_state_lock_key(
+        &app.paths.repo_root,
+        &target.task_id,
+        &target.run_id,
+        &target.round_id,
+        &target.outer_node_id,
+        &target.outer_attempt_id,
+    );
+    let failed_resumes =
+        fail_dynamic_resume_requests(&resume_key, |_| true, info.clone()).unwrap_or_default();
+    for mut resume in failed_resumes {
+        let _ = app.pause_dynamic_attempt_runtime_state_if_active_execution(
+            &target.task_id,
+            &target.run_id,
+            &target.round_id,
+            &target.outer_node_id,
+            &target.outer_attempt_id,
+            &resume.node_id,
+            &resume.execution_id,
+            PauseReason::RuntimeAbnormal,
+        );
+        if let Some(sender) = resume.launch_signal.take() {
+            let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
+        }
+    }
+    let converged = app
+        .pause_dynamic_attempt_runtime_state_if_active_execution(
+            &target.task_id,
+            &target.run_id,
+            &target.round_id,
+            &target.outer_node_id,
+            &target.outer_attempt_id,
+            &target.dynamic_node_id,
+            &target.execution_id,
+            PauseReason::RuntimeAbnormal,
+        )
+        .unwrap_or(false);
+    let outer_converged = if converged {
+        false
+    } else {
+        matches!(
+            app.pause_attempt_runtime_state_if_active_execution(
+                &target.task_id,
+                &target.run_id,
+                &target.round_id,
+                &target.outer_node_id,
+                &target.outer_attempt_id,
+                &target.outer_execution_id,
+                PauseReason::RuntimeAbnormal,
+            ),
+            Ok(AttemptRuntimePauseResult::Converged)
+        )
+    };
+    if converged || outer_converged {
+        let _ = app.emit_acp_session_update(AcpLiveEventContext {
+            task_id: target.task_id.clone(),
+            task_uuid: target.task_uuid.clone(),
+            run_id: target.run_id.clone(),
+            round_id: target.round_id.clone(),
+            node_id: target.dynamic_node_id.clone(),
+            attempt_id: target.dynamic_attempt_id.clone(),
+            outer_node_id: Some(target.outer_node_id.clone()),
+            outer_attempt_id: Some(target.outer_attempt_id.clone()),
+        });
+    }
+    if let Some(sender) = &launch_failure {
+        let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
+    }
+    let _ = std::fs::create_dir_all(app.paths.runs_dir(&target.task_id).as_std_path());
+    let _ = std::fs::write(
+        app.paths
+            .runs_dir(&target.task_id)
+            .join("desktop-dynamic-continue-error.txt")
+            .as_std_path(),
+        err.to_string(),
+    );
+    Err(err)
+}
+
+/// Headless continue of a paused run, driven on the calling thread until the
+/// run settles again. Under an AI-DYNAMIC node every paused leaf session
+/// resumes in place, as continuing each of them in the desktop does; otherwise
+/// the regular runtime continue applies.
+///
+/// `recover_interrupted` is the caller's assertion that the host that left the
+/// run `Running` is gone: the run is first paused as `ProcessInterrupted`, the
+/// same recovery the desktop applies to its runs at startup.
+pub(crate) fn run_continue_foreground(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    recover_interrupted: bool,
+) -> Result<RunState> {
+    let mut run = app.run_status(task_id, run_id)?;
+    if run.status == RunStatus::Running {
+        if !recover_interrupted {
+            return Err(runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Workflow,
+                "runtime.continue-run-still-running",
+                "run is still running; continue an interrupted run with recovery",
+                serde_json::json!({ "taskId": task_id, "runId": run_id }),
+            )));
+        }
+        run = app.run_pause(task_id, run_id, PauseReason::ProcessInterrupted)?;
+    }
+    ensure!(
+        is_run_continuable(&run),
+        "current run is not resumable by continue"
+    );
+    let (Some(round_id), Some(outer_node_id), Some(outer_attempt_id)) = (
+        run.current_round.clone(),
+        run.current_node.clone(),
+        run.current_attempt.clone(),
+    ) else {
+        bail!("current run has no current attempt");
+    };
+    let graph_path = app.paths.dynamic_graph_file(
+        task_id,
+        run_id,
+        &round_id,
+        &outer_node_id,
+        &outer_attempt_id,
+    );
+    if !graph_path.exists() {
+        return run_continue(app, task_id, run_id, None, None, Vec::new(), None, None);
+    }
+    let graph = load_dynamic_graph(&graph_path, &app.paths.repo_root)?;
+    let paused = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind != DynamicNodeKind::WorkflowInvocation
+                && node.status == DynamicNodeStatus::Paused
+                && node
+                    .pause_reason
+                    .is_some_and(PauseReason::allows_explicit_runtime_continue)
+        })
+        .collect::<Vec<_>>();
+    // Paused workflow invocations are re-armed by the parent continue.
+    if paused.is_empty() {
+        return run_continue(app, task_id, run_id, None, None, Vec::new(), None, None);
+    }
+    let outer_execution_id = next_runtime_execution_id();
+    let targets = paused
+        .iter()
+        .map(|leaf| DynamicInnerContinueTarget {
+            task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run_id.to_string(),
+            round_id: round_id.clone(),
+            outer_node_id: outer_node_id.clone(),
+            outer_attempt_id: outer_attempt_id.clone(),
+            dynamic_node_id: leaf.id.clone(),
+            dynamic_attempt_id: dynamic_attempt_id(leaf),
+            request_id: next_dynamic_resume_request_id(),
+            execution_id: next_runtime_execution_id(),
+            outer_execution_id: outer_execution_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    for target in &targets {
+        target.reserve(app, None)?;
+    }
+    // One continue drives the AI-DYNAMIC graph; the dynamic resume coordinator
+    // hands the other leaves to that driver, and their calls return at once.
+    let driven = thread::scope(|scope| {
+        let workers = targets
+            .iter()
+            .map(|target| {
+                scope.spawn(move || {
+                    drive_accepted_dynamic_inner_continue(
+                        app,
+                        target,
+                        None,
+                        None,
+                        Vec::new(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err(anyhow!("dynamic continue worker panicked")))
+            })
+            .collect::<Vec<_>>()
+    });
+    let run = app.run_status(task_id, run_id)?;
+    // A failed drive has converged the run back to paused; that state is the result.
+    if run.status == RunStatus::Running {
+        driven.into_iter().collect::<Result<Vec<_>>>()?;
+    }
+    Ok(run)
 }
 
 pub(crate) fn run_continue_background(
@@ -4067,6 +4383,20 @@ fn emit_run_paused_lifecycle_event(
             kind: RuntimeInterventionKind::ManualDecisionRequired,
             task_title: task_title(app, task_id),
         });
+        emit_run_metrics_fact(
+            app,
+            run,
+            super::observability::LifecycleEventType::InterventionRequested,
+            format!(
+                "{event_id}:intervention:manual-decision:{}",
+                run.execution.revision
+            ),
+            occurred_at.clone(),
+            None,
+            Some(RuntimeInterventionKind::ManualDecisionRequired),
+            None,
+            None,
+        );
     }
     emit_run_metrics_fact(
         app,
@@ -4676,7 +5006,10 @@ fn apply_control_decision(
                 continue_ref: None,
             }))
         }
-        ControlDecision::PauseRun(reason) => {
+        ControlDecision::PauseRun {
+            reason,
+            runtime_error,
+        } => {
             run.status = RunStatus::Paused;
             run.pause_reason = Some(reason);
             run.updated_at = now_rfc3339_like();
@@ -4704,22 +5037,25 @@ fn apply_control_decision(
                 pause_stage,
                 pause_summary.clone(),
             );
+            let mut event_data = run_event_data(
+                &ExecutionContext::for_run(task_id, &run.id)
+                    .with_round(round.id.clone())
+                    .with_node(node.node_id.clone())
+                    .with_attempt(node.attempt_id.clone()),
+                Some(pause_stage),
+                Some(run.status),
+                Some(pause_summary),
+                Some(reason),
+            );
+            event_data.control_failure = runtime_error
+                .map(|runtime_error| serde_json::json!({ "runtimeError": runtime_error }));
             append_run_event_best_effort(
                 &app.paths,
                 task_id,
                 &run.id,
                 "run_paused",
                 run.updated_at.clone(),
-                run_event_data(
-                    &ExecutionContext::for_run(task_id, &run.id)
-                        .with_round(round.id.clone())
-                        .with_node(node.node_id.clone())
-                        .with_attempt(node.attempt_id.clone()),
-                    Some(pause_stage),
-                    Some(run.status),
-                    Some(pause_summary),
-                    Some(reason),
-                ),
+                event_data,
             );
             persist_runtime_state(app, task_id, run, round, node)?;
             emit_pause_side_effects(app, task_id, run, round, node);
@@ -4783,21 +5119,15 @@ fn apply_control_decision(
     }
 }
 
-fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
-    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id)).ok()?;
-    if role.profile_id.trim().is_empty()
-        || role.name.trim().is_empty()
-        || role.content.trim().is_empty()
-    {
+/// The first turn shows the requirement as typed. Task quotes and a role wrap
+/// the requirement in the assembled prompt, so the timeline must not show that.
+fn initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
+    if super::task_prompt_input(app, task_id).is_empty() {
         return None;
     }
-    let requirement =
-        std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path()).ok()?;
-    Some(ConversationPromptInput {
-        display_text: requirement,
-        quotes: Vec::new(),
-        role: Some(role),
-    })
+    std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path())
+        .ok()
+        .map(ConversationPromptInput::from)
 }
 
 pub(crate) fn drive_from_node(
@@ -4844,7 +5174,7 @@ fn drive_from_node_with_runtime_candidate(
         None,
         super::direct_conversation_agent_label(app, task_id)
             .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
-        load_initial_prompt_display(app, task_id),
+        initial_prompt_display(app, task_id),
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
@@ -4881,6 +5211,29 @@ struct DynamicExecutionContext<'a> {
     parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
+}
+
+impl<'a> DynamicExecutionContext<'a> {
+    fn with_dynamic<'b>(&'b self, dynamic: &'b AiDynamicNode) -> DynamicExecutionContext<'b> {
+        DynamicExecutionContext {
+            app: self.app,
+            task_id: self.task_id,
+            run_id: self.run_id,
+            round_id: self.round_id,
+            outer_node_id: self.outer_node_id,
+            outer_attempt_id: self.outer_attempt_id,
+            outer_runtime_execution_id: self.outer_runtime_execution_id.clone(),
+            outer_new_round_trigger: self.outer_new_round_trigger.clone(),
+            dynamic,
+            task_uuid: self.task_uuid,
+            run_uuid: self.run_uuid,
+            round_uuid: self.round_uuid,
+            outer_node_uuid: self.outer_node_uuid,
+            parent_continue_input: self.parent_continue_input.clone(),
+            parent_continue_prompt_id: self.parent_continue_prompt_id.clone(),
+            resume_override: self.resume_override.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -8428,23 +8781,68 @@ fn accept_dynamic_completion_proposal(
     let proposal_id = proposal.id.clone();
     let source_node_id = proposal.source_node_id.clone();
     graph.proposals.push(proposal);
-    let visible_node_ids = match materialize_dynamic_next(ctx, graph, source_index, completion.next)
-    {
-        Ok(visible) => visible,
-        Err(error) => {
-            let info = normalize_runtime_error(&error);
-            if info.code_str() == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED {
-                // Reading the fork baseline happens before any workspace transition.
-                graph.proposals.pop();
-                mark_dynamic_node_paused(
-                    &mut graph.nodes[source_index],
-                    PauseReason::RuntimeAbnormal,
-                    Some(info),
-                );
-                persist_dynamic_graph(ctx, graph)?;
+    // Migration must finish before taking the read lock. The lock then spans
+    // both the authoritative node read and dynamic materialization so a
+    // concurrent Current publish cannot change the run plan mid-proposal.
+    // Legacy test/fixture graphs may not have a plan yet; those retain the
+    // historical context-local behavior until their first canonical read.
+    let plan_available = ctx
+        .app
+        .paths
+        .execution_plan_manifest_file(ctx.task_id, ctx.run_id)
+        .exists()
+        || ctx
+            .app
+            .paths
+            .workflow_snapshot_file(ctx.task_id, ctx.run_id)
+            .exists();
+    if plan_available {
+        crate::execution_plan::load_current(&ctx.app.paths, ctx.task_id, ctx.run_id)
+            .map_err(|error| anyhow!(error))?;
+    }
+    let dispatch_key = crate::execution_plan::lock_key(&ctx.app.paths, ctx.task_id, ctx.run_id);
+    let mut materialize = |latest_dynamic: crate::dsl::AiDynamicNode| {
+        graph.run.control = latest_dynamic.control.clone();
+        let dispatch_ctx = ctx.with_dynamic(&latest_dynamic);
+        match materialize_dynamic_next(&dispatch_ctx, graph, source_index, completion.next.clone())
+        {
+            Ok(visible) => Ok(visible),
+            Err(error) => {
+                let info = normalize_runtime_error(&error);
+                if info.code_str() == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED {
+                    // Reading the fork baseline happens before any workspace transition.
+                    graph.proposals.pop();
+                    mark_dynamic_node_paused(
+                        &mut graph.nodes[source_index],
+                        PauseReason::RuntimeAbnormal,
+                        Some(info),
+                    );
+                    persist_dynamic_graph(ctx, graph)?;
+                }
+                Err(error)
             }
-            return Err(error);
         }
+    };
+    let visible_node_ids = if plan_available {
+        crate::execution_plan::with_dispatch_read(&dispatch_key, || {
+            let latest_dynamic =
+                match crate::execution_plan::ai_dynamic_node_for_dispatch_under_lock(
+                    &ctx.app.paths,
+                    ctx.task_id,
+                    ctx.run_id,
+                    ctx.dynamic.id.as_str(),
+                ) {
+                    Ok(Some(node)) => node,
+                    Ok(None) => ctx.dynamic.clone(),
+                    Err(error) if error.code() == crate::execution_plan::error::NOT_FOUND => {
+                        ctx.dynamic.clone()
+                    }
+                    Err(error) => return Err(anyhow!(error)),
+                };
+            materialize(latest_dynamic)
+        })??
+    } else {
+        materialize(ctx.dynamic.clone())?
     };
     append_dynamic_event(
         ctx,
@@ -9406,7 +9804,7 @@ fn execute_dynamic_worker(
                     )
                     .try_exists()?;
                 let schema_validation_errors = err
-                    .downcast_ref::<DynamicCompletionSchemaValidationError>()
+                    .downcast_ref::<DynamicCompletionValidationError>()
                     .map(|error| error.errors.clone());
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
@@ -9484,6 +9882,9 @@ fn execute_dynamic_worker(
                 continue;
             }
             Err(err) => {
+                let validation_errors = err
+                    .downcast_ref::<DynamicCompletionValidationError>()
+                    .map(|error| error.errors.clone());
                 append_dynamic_event(
                     ctx,
                     "dynamic_proposal_repair_exhausted",
@@ -9493,9 +9894,26 @@ fn execute_dynamic_worker(
                         "repairAttempts": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "error": err.to_string(),
+                        "validationErrors": validation_errors,
                     }),
                 )?;
-                return Err(err);
+                let Some(validation_errors) = validation_errors else {
+                    return Err(err);
+                };
+                // Invalid output is a workflow pause the user can continue from,
+                // not an unknown internal failure.
+                return Err(runtime_error(manual_runtime_error_info(
+                    RuntimeErrorDomain::Dynamic,
+                    DYNAMIC_COMPLETION_REPAIR_EXHAUSTED,
+                    format!("{err:#}"),
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "repairAttempts": proposal_repair_prompts,
+                        "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "validationErrors": validation_errors,
+                    }),
+                )));
             }
         }
     }
@@ -10334,7 +10752,17 @@ fn build_dynamic_completion_from_raw(
             &ctx.app.paths.repo_root,
         )?
     };
-    let (completion, parsed, schema_errors) = parse_dynamic_completion_artifact(ctx, &graph, raw)?;
+    let attachments_dir = ctx.app.paths.dynamic_node_attachments_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        attempt_id,
+    );
+    let (completion, parsed, schema_errors) =
+        parse_dynamic_completion_artifact(ctx, &graph, raw, &attachments_dir)?;
     let raw_output_path = ctx
         .app
         .paths
@@ -10363,17 +10791,36 @@ fn parse_dynamic_completion_artifact(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     raw: &str,
+    attachments_dir: &Utf8Path,
 ) -> Result<(
     DynamicNodeCompletion,
     serde_json::Value,
     Vec<DynamicProposalValidationError>,
 )> {
-    let parsed: serde_json::Value = parse_json_artifact(raw)?;
-    let schema_errors = validate_dynamic_completion_schema(ctx, graph, &parsed)?;
+    let submission: serde_json::Value =
+        parse_json_artifact(raw).map_err(|error| match error
+            .downcast_ref::<crate::artifacts::JsonArtifactSyntaxError>(
+        ) {
+            Some(syntax) => DynamicCompletionValidationError {
+                errors: vec![dynamic_json_syntax_validation_error(syntax)],
+            }
+            .into(),
+            None => error,
+        })?;
+    let schema_errors = validate_dynamic_completion_schema(ctx, graph, &submission)?;
+    // The proposal stores the frozen canonical text, never the handoff paths,
+    // so later file edits cannot change materialized tasks.
+    let parsed = resolve_dynamic_completion_handoff_files(&submission, attachments_dir).map_err(
+        |file_errors| {
+            let mut errors = schema_errors.clone();
+            errors.extend(file_errors);
+            anyhow::Error::from(DynamicCompletionValidationError { errors })
+        },
+    )?;
     let completion: DynamicNodeCompletion = serde_path_to_error::deserialize(parsed.clone())
         .map_err(|err| {
             if !schema_errors.is_empty() {
-                return DynamicCompletionSchemaValidationError {
+                return DynamicCompletionValidationError {
                     errors: schema_errors.clone(),
                 }
                 .into();
@@ -10450,9 +10897,44 @@ fn missing_field_from_serde_message(message: &str) -> Option<&str> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("dynamic-node-completion schema validation failed")]
-struct DynamicCompletionSchemaValidationError {
+#[error("dynamic-node-completion validation failed")]
+struct DynamicCompletionValidationError {
     errors: Vec<DynamicProposalValidationError>,
+}
+
+fn dynamic_json_syntax_validation_error(
+    syntax: &crate::artifacts::JsonArtifactSyntaxError,
+) -> DynamicProposalValidationError {
+    let (message, expected) = match syntax.category {
+        crate::artifacts::JsonSyntaxCategory::Eof => (
+            "JSON ended before every object, array or string was closed",
+            "complete JSON with every `{`, `[` and `\"` closed",
+        ),
+        crate::artifacts::JsonSyntaxCategory::Syntax => (
+            "JSON has a syntax error at the reported position",
+            "valid JSON syntax at the reported position",
+        ),
+    };
+    let mut error = DynamicProposalValidationError::new(
+        DYNAMIC_JSON_SYNTAX,
+        message,
+        serde_json::json!({
+            "category": syntax.category,
+            "line": syntax.line,
+            "column": syntax.column,
+            "snippet": syntax.snippet,
+            "parser": syntax.message,
+        }),
+    );
+    error.actual = Some(format!(
+        "line {} column {}, text before the error: {}",
+        syntax.line, syntax.column, syntax.snippet
+    ));
+    error.expected = Some(expected.to_string());
+    error.suggestion = Some(
+        "output the whole dynamic-node-completion JSON again; do not change fields that were already correct".to_string(),
+    );
+    error
 }
 
 fn validate_dynamic_completion_schema(
@@ -12172,6 +12654,37 @@ fn unique_dynamic_node_id(graph: &DynamicGraphState, base: &str) -> String {
     unreachable!()
 }
 
+fn resolve_unstarted_control_plane(
+    dynamic: &AiDynamicNode,
+    stored: &DynamicAgentTaskSpec,
+) -> (String, Option<String>, Option<String>, bool) {
+    let provider = dynamic_control_provider(dynamic).to_string();
+    let model = match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { model, .. } => model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                stored
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            }),
+        AiDynamicAgentStrategy::Dynamic { .. } => {
+            dynamic_acceptance_model(dynamic).map(str::to_string)
+        }
+    };
+    (
+        provider,
+        model,
+        dynamic_control_permission_mode(dynamic),
+        dynamic_control_auto_accept(dynamic),
+    )
+}
+
 fn create_dynamic_merge_node(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -12183,6 +12696,8 @@ fn create_dynamic_merge_node(
         .ok_or_else(|| anyhow!("dynamic group missing"))?;
     let id = unique_dynamic_node_id(graph, &format!("{}-merge", group.id));
     let task = group.merge.task.clone();
+    let (provider, model, permission_mode, auto_accept) =
+        resolve_unstarted_control_plane(ctx.dynamic, &group.merge);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -12204,11 +12719,11 @@ fn create_dynamic_merge_node(
         depth: group.depth,
         depends_on: group.terminal_node_ids.clone(),
         workspace_id: group.target_workspace_id.clone(),
-        provider: Some(group.merge.provider.clone()),
+        provider: Some(provider),
         profile: None,
-        model: group.merge.model.clone(),
-        permission_mode: dynamic_control_permission_mode(ctx.dynamic),
-        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
+        model,
+        permission_mode,
+        auto_accept,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12237,6 +12752,8 @@ fn create_dynamic_acceptance_node(
         .ok_or_else(|| anyhow!("dynamic group `{}` has no merge node", group.id))?;
     let id = unique_dynamic_node_id(graph, &format!("{}-accept", group.id));
     let task = group.acceptance.task.clone();
+    let (provider, model, permission_mode, auto_accept) =
+        resolve_unstarted_control_plane(ctx.dynamic, &group.acceptance);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -12258,11 +12775,11 @@ fn create_dynamic_acceptance_node(
         depth: group.depth,
         depends_on: vec![merge_node_id.clone()],
         workspace_id: group.target_workspace_id.clone(),
-        provider: Some(group.acceptance.provider.clone()),
+        provider: Some(provider),
         profile: None,
-        model: group.acceptance.model.clone(),
-        permission_mode: dynamic_control_permission_mode(ctx.dynamic),
-        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
+        model,
+        permission_mode,
+        auto_accept,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12703,11 +13220,15 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "input_attachment_paths");
-    let task_input_attachment_paths = if matches!(session_mode, SessionMode::New) {
-        super::task_input_attachment_paths(ctx.app, ctx.task_id)
-    } else {
-        Vec::new()
-    };
+    let (task_input_attachment_paths, task_prompt_input) =
+        if matches!(session_mode, SessionMode::New) {
+            (
+                super::task_input_attachment_paths(ctx.app, ctx.task_id),
+                super::task_prompt_input(ctx.app, ctx.task_id),
+            )
+        } else {
+            (Vec::new(), Default::default())
+        };
     let user_input_attachment_paths = resume_input_attachment_paths;
     dynamic_invocation_build_step_end(
         ctx,
@@ -12736,6 +13257,15 @@ fn build_dynamic_worker_invocation(
         );
         Vec::new()
     });
+    let workspace_file_roots = if !task_prompt_input.workspace_files.is_empty()
+        || prompt_display
+            .as_ref()
+            .is_some_and(|input| !input.workspace_files.is_empty())
+    {
+        ctx.app.prompt_workspace_roots(&workspace_dir)
+    } else {
+        Vec::new()
+    };
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12778,12 +13308,14 @@ fn build_dynamic_worker_invocation(
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
         task_input_attachment_paths,
+        task_prompt_input,
         user_input_attachment_paths,
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &ctx.app.config,
         ),
         mcp_servers,
         scheduled_context: None,
+        workspace_file_roots,
     };
     dynamic_invocation_build_step_end(
         ctx,
@@ -14338,30 +14870,6 @@ fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -
     dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, workspace_id))
 }
 
-#[derive(Debug, Clone)]
-struct DynamicWorktreeNamespace {
-    task: Utf8PathBuf,
-    run: Utf8PathBuf,
-    leaf: Utf8PathBuf,
-}
-
-fn remove_empty_dynamic_worktree_directory_best_effort(path: &Utf8Path, scope: &str) -> bool {
-    match std::fs::remove_dir(path.as_std_path()) {
-        Ok(()) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => false,
-        Err(error) => {
-            tracing::warn!(
-                workspace_path = path.as_str(),
-                cleanup_scope = scope,
-                %error,
-                "failed to remove an empty released dynamic worktree directory"
-            );
-            false
-        }
-    }
-}
-
 fn canonical_existing_dynamic_namespace_path(path: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
     match std::fs::symlink_metadata(path.as_std_path()) {
         Ok(_) => {
@@ -14395,7 +14903,7 @@ fn preflight_dynamic_worktree_namespace(
     ctx: &DynamicExecutionContext<'_>,
     workspace_id: &str,
     workspace_path: &Utf8Path,
-) -> Result<DynamicWorktreeNamespace> {
+) -> Result<Utf8PathBuf> {
     let worktrees_root = ctx.app.paths.repo_gold_band_root.join("worktrees");
     let task_ref = safe_dynamic_ref(ctx.task_id);
     let run_ref = safe_dynamic_ref(ctx.run_id);
@@ -14455,39 +14963,36 @@ fn preflight_dynamic_worktree_namespace(
         ensure_dynamic_namespace_path_matches_canonical_location(path, expected)?;
     }
 
-    Ok(DynamicWorktreeNamespace {
-        task: task_namespace,
-        run: run_namespace,
-        leaf,
-    })
+    Ok(leaf)
 }
 
-fn prune_released_dynamic_worktree_namespace_best_effort(
+fn ensure_released_dynamic_worktree_directory_best_effort(
     ctx: &DynamicExecutionContext<'_>,
     workspace_id: &str,
     workspace_path: &Utf8Path,
 ) {
-    let namespace = match preflight_dynamic_worktree_namespace(ctx, workspace_id, workspace_path) {
+    let leaf = match preflight_dynamic_worktree_namespace(ctx, workspace_id, workspace_path) {
         Ok(namespace) => namespace,
         Err(error) => {
             tracing::warn!(
                 workspace_id,
                 workspace_path = workspace_path.as_str(),
                 %error,
-                "refused to prune a released dynamic worktree outside its canonical namespace"
+                "refused to restore a released dynamic worktree directory outside its canonical namespace"
             );
             return;
         }
     };
 
-    for (scope, path) in [
-        ("leaf", namespace.leaf.as_path()),
-        ("run", namespace.run.as_path()),
-        ("task", namespace.task.as_path()),
-    ] {
-        if !remove_empty_dynamic_worktree_directory_best_effort(path, scope) {
-            break;
-        }
+    // Session history keeps this cwd after Git releases the worktree. Directory
+    // restoration is best-effort and must not change the Git release outcome.
+    if let Err(error) = std::fs::create_dir_all(leaf.as_std_path()) {
+        tracing::warn!(
+            workspace_id,
+            workspace_path = leaf.as_str(),
+            %error,
+            "failed to restore a released dynamic worktree directory"
+        );
     }
 }
 
@@ -14660,6 +15165,18 @@ fn dynamic_fanout_head(workspace: &WorkspaceState) -> Result<String> {
         .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))
 }
 
+/// Runtime worktrees live inside the user repository so merge agents can read
+/// them; the namespace must never show up as user changes or be committed.
+fn ensure_repo_gold_band_root_locally_excluded(app: &App) -> Result<()> {
+    let relative = app
+        .paths
+        .repo_gold_band_root
+        .strip_prefix(&app.paths.repo_root)
+        .map_err(|_| anyhow!("repository Gold Band root is outside the repository"))?;
+    GitRepositoryService::default()
+        .ensure_local_exclude(&app.paths.repo_root, &format!("/{relative}/"))
+}
+
 fn fork_dynamic_workspace_from_commit(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
@@ -14679,6 +15196,8 @@ fn fork_dynamic_workspace_from_commit(
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+    ensure_repo_gold_band_root_locally_excluded(ctx.app)
+        .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"))?;
     if let Err(error) = GitWorkspaceManager::default().ensure_worktree(
         &parent.repo_root,
         &path,
@@ -14773,10 +15292,10 @@ fn release_dynamic_workspace_best_effort(
         if let Err(error) = GitCoordinationService.with_runtime_write(
             &repository.common_dir,
             Some(&expected_path),
-            "dynamic-worktree-prune",
+            "dynamic-worktree-retain-directory",
             || {
                 preflight_dynamic_worktree_namespace(ctx, workspace_id, &workspace.path)?;
-                prune_released_dynamic_worktree_namespace_best_effort(
+                ensure_released_dynamic_worktree_directory_best_effort(
                     ctx,
                     workspace_id,
                     &expected_path,
@@ -14788,7 +15307,7 @@ fn release_dynamic_workspace_best_effort(
                 workspace_id,
                 workspace_path = workspace.path.as_str(),
                 %error,
-                "failed to coordinate released dynamic worktree pruning"
+                "failed to coordinate released dynamic worktree directory restoration"
             );
         }
         return false;
@@ -14803,7 +15322,7 @@ fn release_dynamic_workspace_best_effort(
                 Ok(())
             },
             || {
-                prune_released_dynamic_worktree_namespace_best_effort(
+                ensure_released_dynamic_worktree_directory_best_effort(
                     ctx,
                     workspace_id,
                     &expected_path,
@@ -15365,6 +15884,10 @@ fn drive_from_node_with_initial_session(
     let mut model_override = initial_model_override;
     let mut permission_mode_override = initial_permission_mode_override;
     let mut invalid_output_repair_prompts = 0;
+    // The workflow captured when an attempt starts stays with that attempt,
+    // including its in-attempt repair. A successor attempt executes the plan
+    // snapshot read inside the same dispatch critical section that created it.
+    let mut active_workflow = Cow::Borrowed(workflow);
 
     loop {
         let current_resume_metrics_context = resume_metrics_context.take();
@@ -15515,7 +16038,7 @@ fn drive_from_node_with_initial_session(
             });
         }
 
-        let current_node_dsl = workflow
+        let current_node_dsl = active_workflow
             .get_node(&current_node_id)
             .expect("validated node exists");
         let outer_new_round_trigger = if matches!(current_node_dsl, NodeDsl::AiDynamic(_)) {
@@ -15526,7 +16049,7 @@ fn drive_from_node_with_initial_session(
                 round,
                 &current_node_id,
                 &current_attempt_id,
-                workflow,
+                active_workflow.as_ref(),
             )
         } else {
             None
@@ -15562,7 +16085,7 @@ fn drive_from_node_with_initial_session(
                             &run.id,
                             round,
                             &current_attempt_id,
-                            workflow,
+                            active_workflow.as_ref(),
                             &current_node_id,
                             node.clone(),
                             session_mode,
@@ -15888,7 +16411,7 @@ fn drive_from_node_with_initial_session(
         }
 
         if node.status == RunStatus::Completed && node.outcome == Some(NodeOutcome::Invalid) {
-            if let Some(schema) = output_schema_for_node(workflow, &node.node_id) {
+            if let Some(schema) = output_schema_for_node(active_workflow.as_ref(), &node.node_id) {
                 if invalid_output_repair_prompts >= MAX_INVALID_OUTPUT_REPAIR_PROMPTS {
                     append_run_event_best_effort(
                         &app.paths,
@@ -15914,12 +16437,28 @@ fn drive_from_node_with_initial_session(
                     apply_control_decision(
                         app,
                         task_id,
-                        workflow,
+                        active_workflow.as_ref(),
                         resolved_profiles,
                         run,
                         round,
                         &node,
-                        ControlDecision::PauseRun(PauseReason::RuntimeAbnormal),
+                        ControlDecision::PauseRun {
+                            reason: PauseReason::RuntimeAbnormal,
+                            runtime_error: Some(Box::new(manual_runtime_error_info(
+                                RuntimeErrorDomain::Workflow,
+                                WORKFLOW_OUTPUT_REPAIR_EXHAUSTED,
+                                format!(
+                                    "invalid output repair exhausted at {}/{}/{}",
+                                    round.id, node.node_id, node.attempt_id
+                                ),
+                                serde_json::json!({
+                                    "nodeId": node.node_id,
+                                    "attemptId": node.attempt_id,
+                                    "repairAttempts": invalid_output_repair_prompts,
+                                    "maxRepairAttempts": MAX_INVALID_OUTPUT_REPAIR_PROMPTS,
+                                }),
+                            ))),
+                        },
                         expected_execution_id.as_deref(),
                     )?;
                     app.finish_runtime_candidate_best_effort(
@@ -15944,12 +16483,15 @@ fn drive_from_node_with_initial_session(
                     apply_control_decision(
                         app,
                         task_id,
-                        workflow,
+                        active_workflow.as_ref(),
                         resolved_profiles,
                         run,
                         round,
                         &node,
-                        ControlDecision::PauseRun(PauseReason::ErrorBlocked),
+                        ControlDecision::PauseRun {
+                            reason: PauseReason::ErrorBlocked,
+                            runtime_error: None,
+                        },
                         node.runtime_execution_id.as_deref(),
                     )?;
                     app.finish_runtime_candidate_best_effort(
@@ -16010,7 +16552,7 @@ fn drive_from_node_with_initial_session(
             }
         }
 
-        if should_pause_for_manual_check(workflow, &node) {
+        if should_pause_for_manual_check(active_workflow.as_ref(), &node) {
             node.status = RunStatus::Paused;
             node.outcome = None;
             node.manual_check_pending = true;
@@ -16100,19 +16642,34 @@ fn drive_from_node_with_initial_session(
         }
 
         emit_node_completed_lifecycle_event(app, task_id, run, round, &node);
-        let decision = decide_next_step(workflow, run, round, &node);
+        let dispatch_key = crate::execution_plan::lock_key(&app.paths, task_id, &run.id);
+        let (next_execution, successor_workflow) =
+            crate::execution_plan::with_dispatch_read(&dispatch_key, || {
+                let fresh_workflow =
+                    validate_workflow_snapshot(load_run_workflow(app, task_id, &run.id)?)?;
+                let fresh_profiles = resolve_workflow_profiles(
+                    &app.paths,
+                    &fresh_workflow.raw,
+                    app.config.desktop_language,
+                )?;
+                let decision = decide_next_step(&fresh_workflow, run, round, &node);
+                let next = apply_control_decision(
+                    app,
+                    task_id,
+                    &fresh_workflow,
+                    &fresh_profiles,
+                    run,
+                    round,
+                    &node,
+                    decision,
+                    node.runtime_execution_id.as_deref(),
+                )?;
+                Ok::<_, anyhow::Error>((next, fresh_workflow))
+            })
+            .map_err(|error| anyhow!(error))??;
 
-        if let Some(next) = apply_control_decision(
-            app,
-            task_id,
-            workflow,
-            resolved_profiles,
-            run,
-            round,
-            &node,
-            decision,
-            node.runtime_execution_id.as_deref(),
-        )? {
+        if let Some(next) = next_execution {
+            active_workflow = Cow::Owned(successor_workflow);
             node = next.node;
             let prompt_state = AcpInvocationPromptState::workflow_transition(
                 app.config.desktop_language,
@@ -16219,7 +16776,10 @@ mod tests {
                 }
                 index if index == self.missing_turns => Some(OutputArtifactPayload {
                     name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                    content: test_end_completion("repaired completion"),
+                    content: test_end_submission_in(
+                        &req.runtime_context.attachments_dir,
+                        "repaired completion",
+                    ),
                 }),
                 _ => panic!("dynamic repair should finish after the second provider turn"),
             };
@@ -16252,6 +16812,313 @@ mod tests {
         fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
             Ok(None)
         }
+    }
+
+    struct DispatchPlanInvocation {
+        node_id: String,
+        task_instruction: Option<String>,
+        model: Option<String>,
+        config_options: BTreeMap<String, String>,
+    }
+
+    struct DispatchPlanProvider {
+        invocations: Arc<Mutex<Vec<DispatchPlanInvocation>>>,
+        paths: crate::storage::GoldBandPaths,
+        task_id: String,
+        run_id: String,
+        updated_workflow: WorkflowDsl,
+    }
+
+    impl ProviderAdapter for DispatchPlanProvider {
+        fn describe_provider(&self) -> ProviderInfo {
+            ProviderInfo {
+                provider_id: "claude-acp".to_string(),
+                display_name: "Dispatch plan test".to_string(),
+                capabilities: ProviderCapabilities {
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    supports_system_prompt: false,
+                    supports_raw_stream: false,
+                },
+                is_default: true,
+            }
+        }
+
+        fn doctor(&self) -> DoctorResult {
+            DoctorResult {
+                available: true,
+                error: None,
+                capabilities: None,
+            }
+        }
+
+        fn run_worker_with_runtime_callbacks(
+            &self,
+            req: WorkerInvocation,
+            _live_update: Option<crate::provider::AcpLiveUpdate<'_>>,
+            _session_update: Option<crate::provider::AcpSessionUpdate<'_>>,
+            prompt_accepted: Option<crate::provider::AcpPromptAccepted<'_>>,
+            _runtime_phase_update: Option<crate::provider::ProviderRuntimePhaseUpdate<'_>>,
+        ) -> Result<ProviderRunResult> {
+            if let Some(prompt_accepted) = prompt_accepted {
+                prompt_accepted("dispatch-plan-prompt")?;
+            }
+            self.run_worker(req)
+        }
+
+        fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
+            let node_id = req.runtime_context.node_id.clone();
+            if node_id == "dev" {
+                crate::execution_plan::publish_revision_checked(
+                    &self.paths,
+                    &self.task_id,
+                    &self.run_id,
+                    1,
+                    crate::execution_plan::ExecutionPlanRunMode::Workflow,
+                    0,
+                    crate::execution_plan::ExecutionPlanPayload::Workflow {
+                        workflow: self.updated_workflow.clone(),
+                        model_bindings: WorkflowModelBindings::default(),
+                    },
+                    |_| Ok(()),
+                )
+                .expect("current execution plan publishes while the attempt is running");
+            }
+            self.invocations
+                .lock()
+                .unwrap()
+                .push(DispatchPlanInvocation {
+                    node_id,
+                    task_instruction: req.task_instruction.clone(),
+                    model: req.model.clone(),
+                    config_options: req.config_options.clone(),
+                });
+            Ok(ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: None,
+                result_payload: None,
+                worker_ref_seed: Some(SessionRef {
+                    provider: "claude-acp".to_string(),
+                    mode: req.session_mode,
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    continue_ref: Some(serde_json::json!({ "acpSessionId": "dispatch-plan" })),
+                    open_command: None,
+                }),
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: None,
+            })
+        }
+
+        fn open_session(&self, _worker_ref: &SessionRef) -> Result<()> {
+            Ok(())
+        }
+
+        fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    fn dispatch_plan_worker(
+        id: &str,
+        goal: &str,
+        model: &str,
+        option: Option<(&str, &str)>,
+    ) -> NodeDsl {
+        let mut config_options = BTreeMap::new();
+        if let Some((key, value)) = option {
+            config_options.insert(key.to_string(), value.to_string());
+        }
+        NodeDsl::Worker(crate::dsl::WorkerNode {
+            id: id.to_string(),
+            execution_slot_id: None,
+            provider: Some("claude-acp".to_string()),
+            model: Some(model.to_string()),
+            profile: None,
+            goal: Some(goal.to_string()),
+            output: None,
+            success_condition: None,
+            permission_mode: None,
+            auto_accept: false,
+            config_options,
+            manual_check: Some(false),
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RawAgent,
+        })
+    }
+
+    fn dispatch_plan_edge(from: &str, to: &str) -> crate::dsl::EdgeDsl {
+        crate::dsl::EdgeDsl {
+            from: from.to_string(),
+            to: to.to_string(),
+            on: crate::dsl::EdgeOutcome::Success,
+            session: None,
+            new_round_entry: None,
+        }
+    }
+
+    fn dispatch_plan_workflow(nodes: Vec<NodeDsl>, edges: Vec<crate::dsl::EdgeDsl>) -> WorkflowDsl {
+        WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "dispatch-plan".to_string(),
+            entry: "dev".to_string(),
+            control: Default::default(),
+            nodes,
+            edges,
+        }
+    }
+
+    #[test]
+    fn successor_attempt_uses_the_execution_plan_captured_for_dispatch() {
+        let (_temp, repo_root) = init_repo();
+        let paths = crate::storage::GoldBandPaths::new(repo_root.clone());
+        let task_id = "task-dispatch-plan";
+        let run_id = "run-001";
+        let entry = dispatch_plan_workflow(
+            vec![
+                dispatch_plan_worker("dev", "entry-dev-goal", "entry-model", None),
+                dispatch_plan_worker("accept", "old-accept-goal", "old-model", None),
+            ],
+            vec![
+                dispatch_plan_edge("dev", "accept"),
+                dispatch_plan_edge("accept", "$end"),
+            ],
+        );
+        let updated = dispatch_plan_workflow(
+            vec![
+                dispatch_plan_worker("dev", "ignored-current-attempt-goal", "entry-model", None),
+                dispatch_plan_worker(
+                    "accept",
+                    "fresh-accept-goal",
+                    "fresh-model",
+                    Some(("reasoning_effort", "high")),
+                ),
+                dispatch_plan_worker("review", "fresh-review-goal", "fresh-review-model", None),
+            ],
+            vec![
+                dispatch_plan_edge("dev", "accept"),
+                dispatch_plan_edge("accept", "review"),
+                dispatch_plan_edge("review", "$end"),
+            ],
+        );
+        crate::execution_plan::publish_initial_workflow(
+            &paths,
+            task_id,
+            run_id,
+            entry.clone(),
+            WorkflowModelBindings::default(),
+        )
+        .unwrap();
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let app = App::with_provider(
+            repo_root,
+            Box::new(DispatchPlanProvider {
+                invocations: invocations.clone(),
+                paths,
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                updated_workflow: updated,
+            }),
+        );
+        let validated = validate_workflow_snapshot(entry).unwrap();
+        let profiles = super::super::profile_resolver::resolve_workflow_profiles(
+            &app.paths,
+            &validated.raw,
+            app.config.desktop_language,
+        )
+        .unwrap();
+        let started_at = "2026-09-22T00:00:00Z".to_string();
+        let mut run = RunState {
+            version: VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: started_at.clone(),
+            updated_at: started_at.clone(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("dev".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::StartingNode,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "dev".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                started_at.clone(),
+            ),
+        };
+        let mut round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run_id.to_string(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = super::super::state_factory::create_node_state(
+            &run.id,
+            &round.id,
+            "dev",
+            "attempt-001",
+            validated.get_node("dev").unwrap(),
+            None,
+        );
+        let entry_resolved_config = node.resolved_config.clone();
+        persist_runtime_state(&app, task_id, &run, &round, &node).unwrap();
+
+        drive_from_node(
+            &app, task_id, &validated, &profiles, &mut run, &mut round, node,
+        )
+        .unwrap();
+
+        let seen = invocations.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].node_id, "dev");
+        assert_eq!(seen[0].task_instruction.as_deref(), Some("entry-dev-goal"));
+        assert_eq!(seen[0].model.as_deref(), Some("entry-model"));
+        assert_eq!(seen[1].node_id, "accept");
+        assert_eq!(
+            seen[1].task_instruction.as_deref(),
+            Some("fresh-accept-goal")
+        );
+        assert_eq!(seen[1].model.as_deref(), Some("fresh-model"));
+        assert_eq!(
+            seen[1]
+                .config_options
+                .get("reasoning_effort")
+                .map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(seen[2].node_id, "review");
+        assert_eq!(
+            seen[2].task_instruction.as_deref(),
+            Some("fresh-review-goal")
+        );
+        assert_eq!(seen[2].model.as_deref(), Some("fresh-review-model"));
+        let persisted_dev: NodeState =
+            read_json(
+                &app.paths
+                    .node_file(task_id, run_id, "round-001", "dev", "attempt-001"),
+            )
+            .unwrap();
+        assert_eq!(persisted_dev.resolved_config, entry_resolved_config);
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.outcome, Some(RunOutcome::Success));
     }
 
     #[test]
@@ -16592,6 +17459,7 @@ mod tests {
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         };
         let state = runtime_control_resume_prompt_state(
             DesktopLanguage::ZhCn,
@@ -16635,6 +17503,7 @@ mod tests {
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             }),
             Some("prompt-2".to_string()),
             Vec::new(),
@@ -16722,6 +17591,7 @@ mod tests {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             }),
             Some("prompt-attachment-only".to_string()),
             vec!["C:/temp/context.txt".to_string()],
@@ -17226,6 +18096,19 @@ mod tests {
             prepared_follow_up.session_workspace_dir,
             durable_worktree.path
         );
+        // Prompt workspace-file references resolve inside the session's
+        // worktree, never against the project root's copy.
+        assert_eq!(
+            app.attempt_session_workspace_dir(&task_id, &run.id, &round.id, None)
+                .unwrap(),
+            durable_worktree.path
+        );
+        let prompt_root = app
+            .prompt_workspace_roots(&durable_worktree.path)
+            .into_iter()
+            .find(|root| root.project_id == app.paths.project_id)
+            .unwrap();
+        assert_eq!(prompt_root.root, durable_worktree.path.as_std_path());
 
         let mut tampered = durable.clone();
         tampered.worktree.as_mut().unwrap().path = repo_root;
@@ -18025,6 +18908,132 @@ mod tests {
     }
 
     #[test]
+    fn manual_check_pause_emits_metrics_for_pause_and_manual_decision() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let bus = crate::app::observability::RuntimeLifecycleBus::new();
+        let app = App::new(repo_root)
+            .with_metrics_collection_enabled(true)
+            .with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let started_at = "2026-09-23T10:00:00.000".to_string();
+        let task_uuid = generate_uuid();
+        let run_uuid = generate_uuid();
+        let node_uuid = generate_uuid();
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: Some(task_uuid),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: started_at.clone(),
+            updated_at: started_at.clone(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some("cicd".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: Some(run_uuid.clone()),
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: round_id.to_string(),
+            run_id: run_id.to_string(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let mut node = NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "cicd".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+            manual_check_pending: true,
+            runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
+            uuid: Some(node_uuid.clone()),
+        };
+        node.resolved_config
+            .insert("profileName".to_string(), serde_json::json!("CI/CD"));
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        write_json(&app.paths.round_file(task_id, run_id, round_id), &round).unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "cicd", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        emit_pause_side_effects(&app, task_id, &run, &round, &node);
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().any(|fact| {
+            fact.event_type == crate::app::observability::LifecycleEventType::ExecutionPaused
+                && fact.payload.pause_reason
+                    == Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
+        }));
+        let intervention = facts.iter().find(|fact| {
+            fact.event_type == crate::app::observability::LifecycleEventType::InterventionRequested
+        });
+        let Some(intervention) = intervention else {
+            panic!("expected manual-decision intervention metrics fact");
+        };
+        assert_eq!(
+            intervention.payload.intervention_kind,
+            Some(crate::app::observability::MetricsInterventionKind::ManualDecision)
+        );
+        assert!(matches!(
+            intervention.subject,
+            crate::app::observability::MetricsSubject::WorkflowNodeAttempt { .. }
+        ));
+        assert_eq!(
+            intervention.fact_id,
+            format!(
+                "{}:intervention:manual-decision:{}",
+                crate::app::notification::make_dedup_key(
+                    &app.paths.project_id,
+                    task_id,
+                    run_id,
+                    round_id,
+                    "cicd",
+                    "attempt-001",
+                    PauseReason::WaitingForUserInput,
+                ),
+                run.execution.revision
+            )
+        );
+    }
+
+    #[test]
     fn manual_check_submission_rejects_a_stale_attempt_before_resume() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -18712,6 +19721,35 @@ mod tests {
         )
     }
 
+    /// Raw `end` completion as an agent submits it: the summary text is
+    /// written to the attempt attachments directory and referenced by path.
+    fn test_end_submission_in(attachments_dir: &Utf8Path, summary: &str) -> String {
+        let summary_path = attachments_dir.join("handoff/summary.md");
+        std::fs::create_dir_all(summary_path.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(summary_path.as_std_path(), summary).unwrap();
+        serde_json::json!({
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summaryPath": "handoff/summary.md",
+            "next": { "type": "end" }
+        })
+        .to_string()
+    }
+
+    fn test_end_submission(app: &App, node_id: &str, attempt_id: &str, summary: &str) -> String {
+        let attachments_dir = app.paths.dynamic_node_attachments_dir(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            node_id,
+            attempt_id,
+        );
+        test_end_submission_in(&attachments_dir, summary)
+    }
+
     #[test]
     fn dynamic_inline_control_repair_uses_a_distinct_prompt_identity() {
         let (_temp, repo_root) = init_repo();
@@ -18758,6 +19796,51 @@ mod tests {
             dynamic_proposal_repair_prompt_id(&invocations[0].0, 1)
         );
         assert_ne!(invocations[0].0, invocations[1].0);
+    }
+
+    #[test]
+    fn dynamic_unclosed_completion_repairs_with_syntax_error_and_pauses_with_structured_code() {
+        // The root object misses one closing brace; `next.node` alone is a complete object.
+        let unclosed = r#"{"version":"0.1","kind":"dynamic-node-completion","status":"success","summary":"s","next":{"type":"single","node":{"id":"plan","kind":"worker","title":"t","task":"t"}}"#;
+        let (_temp, repo_root) = init_repo();
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let app = App::with_provider(
+            repo_root.clone(),
+            Box::new(DynamicRepairIdentityProvider {
+                invocations: invocations.clone(),
+                missing_turns: usize::MAX,
+                initial_output: Some(unclosed.to_string()),
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("implementation");
+        node.status = DynamicNodeStatus::Running;
+        node.begin_runtime_execution("execution-implementation", "2026-06-16T00:00:01Z");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let error = execute_dynamic_worker(&ctx, &graph, node).unwrap_err();
+
+        assert_eq!(
+            invocations.lock().unwrap().len(),
+            1 + MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS as usize
+        );
+        let info = normalize_runtime_error(&error);
+        assert_eq!(info.domain, RuntimeErrorDomain::Dynamic);
+        assert_eq!(info.code_str(), DYNAMIC_COMPLETION_REPAIR_EXHAUSTED);
+        assert_eq!(info.recovery, RecoveryMode::Manual);
+        assert_eq!(
+            info.pause_reason_after_retry_boundary(),
+            PauseReason::RuntimeAbnormal
+        );
+        let errors = info.params["validationErrors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["code"], DYNAMIC_JSON_SYNTAX);
+        assert_eq!(errors[0]["params"]["category"], "eof");
+        assert_eq!(errors[0]["params"]["line"], 1);
+        assert_eq!(errors[0]["params"]["column"], unclosed.len());
     }
 
     #[test]
@@ -19412,6 +20495,89 @@ mod tests {
     }
 
     #[test]
+    fn unstarted_merge_and_acceptance_use_the_current_control_plane() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let mut group = test_group_state("print-a-b", "bootstrap", vec!["impl-a"], vec!["impl-a"]);
+        group.merge.provider = "cursor".to_string();
+        group.merge.model = Some("grok-4.6".to_string());
+        group.acceptance.provider = "cursor".to_string();
+        group.acceptance.model = Some("grok-4.6".to_string());
+        graph.groups.push(group);
+
+        let fixed = AiDynamicNode {
+            id: "ai-dynamic".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Fixed {
+                provider: "claude-acp".to_string(),
+                model: Some("sonnet".to_string()),
+                permission_mode: Some("bypassPermissions".to_string()),
+                auto_accept: false,
+            },
+            config_options: Default::default(),
+            model_bound_overrides: Default::default(),
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        };
+        let fixed_ctx = test_context(&app, &fixed);
+        let merge = create_dynamic_merge_node(&fixed_ctx, &graph, 0).unwrap();
+        assert_eq!(merge.provider.as_deref(), Some("claude-acp"));
+        assert_eq!(merge.model.as_deref(), Some("sonnet"));
+        assert_eq!(merge.permission_mode.as_deref(), Some("bypassPermissions"));
+        assert!(!merge.auto_accept);
+        graph.groups[0].merge_node_id = Some(merge.id);
+        let acceptance = create_dynamic_acceptance_node(&fixed_ctx, &graph, 0).unwrap();
+        assert_eq!(acceptance.provider.as_deref(), Some("claude-acp"));
+        assert_eq!(acceptance.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            acceptance.permission_mode.as_deref(),
+            Some("bypassPermissions")
+        );
+
+        let dynamic = AiDynamicNode {
+            id: "ai-dynamic".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "cursor".to_string(),
+                bootstrap_model: Some("gpt-5.4-mini".to_string()),
+                permission_mode: Some("agent".to_string()),
+                auto_accept: true,
+                bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
+                acceptance_model: Some("grok-4.6".to_string()),
+                acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
+                routing_prompt: String::new(),
+                available_agents: Vec::new(),
+            },
+            config_options: Default::default(),
+            model_bound_overrides: Default::default(),
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        };
+        graph.groups[0].merge.provider = "claude-acp".to_string();
+        graph.groups[0].merge.model = Some("sonnet".to_string());
+        let dynamic_ctx = test_context(&app, &dynamic);
+        let switched = create_dynamic_merge_node(&dynamic_ctx, &graph, 0).unwrap();
+        assert_eq!(switched.provider.as_deref(), Some("cursor"));
+        assert_eq!(switched.model.as_deref(), Some("grok-4.6"));
+        assert_eq!(switched.permission_mode.as_deref(), Some("agent"));
+        assert!(switched.auto_accept);
+
+        let unchanged = test_dynamic();
+        graph.groups[0].merge.provider = "claude-acp".to_string();
+        graph.groups[0].merge.model = Some("gpt-5.4".to_string());
+        let unchanged_ctx = test_context(&app, &unchanged);
+        let kept = create_dynamic_merge_node(&unchanged_ctx, &graph, 0).unwrap();
+        assert_eq!(kept.provider.as_deref(), Some("claude-acp"));
+        assert_eq!(kept.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(kept.permission_mode, None);
+    }
+
+    #[test]
     fn dynamic_group_successor_creation_emits_session_update() {
         let (_temp, repo_root) = init_repo();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -19540,6 +20706,62 @@ mod tests {
 
         assert_eq!(invocation.adapter_workspace_dir, repo_root);
         assert_eq!(invocation.workspace_dir, worktree_dir);
+    }
+
+    #[test]
+    fn dynamic_leaf_new_session_carries_the_task_quotes() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let quote = crate::provider::UserPromptQuote {
+            id: "quote-1".to_string(),
+            text: "任务引用的内容".to_string(),
+            source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                message_key: "answer-1".to_string(),
+            },
+        };
+        write_json(
+            &app.paths.task_prompt_input_file(ctx.task_id),
+            &crate::provider::TaskPromptInput {
+                quotes: vec![quote.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let node = test_worktree_node("leaf");
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+        let build = |session_mode, render_mode| {
+            build_dynamic_worker_invocation(
+                &ctx,
+                &graph,
+                &node,
+                &dynamic_attempt_id(&node),
+                None,
+                session_mode,
+                None,
+                Some("继续".to_string()),
+                "test-turn".to_string(),
+                None,
+                PromptVisibility::Visible,
+                render_mode,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        let prompt = render_prompt_bundle(&build(
+            SessionMode::New,
+            UserPromptRenderMode::RequirementTask,
+        ))
+        .unwrap();
+        assert!(prompt.user_prompt.contains("> 任务引用的内容"));
+        assert_eq!(prompt.quotes, vec![quote]);
+
+        let resumed = build(SessionMode::Continue, UserPromptRenderMode::WorkflowResume);
+        assert!(resumed.task_prompt_input.is_empty());
     }
 
     #[test]
@@ -20847,7 +22069,7 @@ mod tests {
         assert!(!prompt.user_prompt.contains("## 运行预算"));
         assert!(!prompt.user_prompt.contains("## Agent 与 profile 选项"));
         assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
-        assert!(!prompt.system_prompt.contains("next.type"));
+        assert!(prompt.system_prompt.contains("next.type"));
         assert!(
             prompt
                 .system_prompt
@@ -20866,7 +22088,7 @@ mod tests {
                 .system_prompt
                 .contains("dynamic-node-completion")
         );
-        assert!(!finalize_prompt.system_prompt.contains("next.type"));
+        assert!(finalize_prompt.system_prompt.contains("next.type"));
         assert!(finalize_prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
@@ -21011,7 +22233,7 @@ mod tests {
         assert!(
             prompt
                 .system_prompt
-                .contains("人类最新指令 > 原始需求与明确非目标")
+                .contains("人类最新指令 > 原始需求及其中或用户明确声明的非目标")
         );
         assert!(!prompt.user_prompt.contains("continueFromNodeId"));
         assert!(prompt.user_prompt.contains("hello-step"));
@@ -21067,7 +22289,7 @@ mod tests {
 
         let prompt = render_prompt_bundle(&invocation).unwrap();
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
-        assert!(prompt.system_prompt.contains("`BLOCKER` 仅限"));
+        assert!(prompt.system_prompt.contains("已批准条款未实现、部分实现"));
         assert!(prompt.system_prompt.contains("`FOLLOW_UP`"));
         assert!(prompt.system_prompt.contains("不创建修复任务"));
         assert!(prompt.system_prompt.contains("当前改动造成的可达回归"));
@@ -21985,7 +23207,7 @@ mod tests {
             "attempt-001",
             &OutputArtifactPayload {
                 name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                content: test_end_completion("stale"),
+                content: test_end_submission(&app, &node.id, "attempt-001", "stale"),
             },
         )
         .unwrap();
@@ -22023,7 +23245,7 @@ mod tests {
             "attempt-001",
             &OutputArtifactPayload {
                 name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                content: test_end_completion("stale"),
+                content: test_end_submission(&app, &node.id, "attempt-001", "stale"),
             },
         )
         .unwrap();
@@ -22178,6 +23400,31 @@ mod tests {
         assert!(graph.proposals.is_empty());
         assert!(graph.groups.is_empty());
         assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+    }
+
+    #[test]
+    fn fanout_worktree_namespace_stays_out_of_user_repository_status() {
+        let (_temp, repo_root) = init_repo();
+        // Only the colocated test runtime storage is excluded; real user
+        // repositories do not know about Gold Band's in-repo namespace.
+        std::fs::write(repo_root.join(".git/info/exclude"), "gold-band-home/\n").unwrap();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node("source")]);
+        let repository = GitRepositoryService::default();
+        assert!(repository.is_clean(&repo_root).unwrap());
+
+        fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "source").unwrap();
+
+        assert_eq!(repository.status_porcelain(&repo_root).unwrap(), "");
+        assert!(repository.is_clean(&repo_root).unwrap());
+        // Repeated forks keep the local exclude idempotent.
+        fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "sibling").unwrap();
+        let exclude = std::fs::read_to_string(repo_root.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches("/.gold-band/").count(), 1);
     }
 
     #[test]
@@ -22398,9 +23645,9 @@ mod tests {
                 .status,
             WorkspaceStatus::Released
         );
-        assert!(!workspace.path.exists());
-        assert!(!run_namespace.exists());
-        assert!(!task_namespace.exists());
+        assert!(workspace.path.is_dir());
+        assert!(run_namespace.is_dir());
+        assert!(task_namespace.is_dir());
         assert!(worktrees_root.exists());
     }
 
@@ -22545,7 +23792,7 @@ mod tests {
     }
 
     #[test]
-    fn released_dynamic_worktree_pruning_preserves_nonempty_and_outside_directories() {
+    fn released_dynamic_worktree_directory_preserves_nonempty_and_outside_directories() {
         let (temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -22556,18 +23803,18 @@ mod tests {
         let sentinel = canonical_leaf.join("preserve.txt");
         std::fs::write(sentinel.as_std_path(), "preserve").unwrap();
 
-        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &canonical_leaf);
+        ensure_released_dynamic_worktree_directory_best_effort(&ctx, workspace_id, &canonical_leaf);
 
         assert!(sentinel.exists());
 
         let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside-empty")).unwrap();
         std::fs::create_dir_all(outside.as_std_path()).unwrap();
-        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &outside);
+        ensure_released_dynamic_worktree_directory_best_effort(&ctx, workspace_id, &outside);
         assert!(outside.exists());
     }
 
     #[test]
-    fn released_dynamic_worktree_pruning_keeps_shared_parents_until_last_leaf() {
+    fn released_dynamic_worktree_directory_retains_siblings_and_parents() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -22582,32 +23829,120 @@ mod tests {
         std::fs::create_dir_all(first_leaf.as_std_path()).unwrap();
         std::fs::create_dir_all(second_leaf.as_std_path()).unwrap();
 
-        prune_released_dynamic_worktree_namespace_best_effort(
+        ensure_released_dynamic_worktree_directory_best_effort(
             &ctx,
             first_workspace_id,
             &first_leaf,
         );
 
-        assert!(!first_leaf.exists());
+        assert!(first_leaf.is_dir());
         assert!(second_leaf.exists());
         assert!(run_namespace.exists());
         assert!(task_namespace.exists());
         assert!(worktrees_root.exists());
 
-        prune_released_dynamic_worktree_namespace_best_effort(
+        ensure_released_dynamic_worktree_directory_best_effort(
             &ctx,
             second_workspace_id,
             &second_leaf,
         );
 
-        assert!(!second_leaf.exists());
-        assert!(!run_namespace.exists());
-        assert!(!task_namespace.exists());
+        assert!(second_leaf.is_dir());
+        assert!(run_namespace.is_dir());
+        assert!(task_namespace.is_dir());
         assert!(worktrees_root.exists());
     }
 
     #[test]
-    fn already_released_dynamic_worktree_retries_empty_namespace_pruning() {
+    fn dynamic_worktree_release_retains_session_directory_without_changing_release_outcome() {
+        for block_directory_creation in [false, true] {
+            let (_temp, repo_root) = init_repo();
+            let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+            let workspace_id = fork_dynamic_workspace(
+                &ctx,
+                &mut graph,
+                "workspace-main",
+                "closed-group",
+                "closed-child",
+            )
+            .unwrap();
+            let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+            if block_directory_creation {
+                // Git already released the checkout, but a file now occupies cwd.
+                git(
+                    &repo_root,
+                    &["worktree", "remove", "--force", workspace.path.as_str()],
+                );
+                std::fs::write(&workspace.path, "preserve").unwrap();
+            }
+
+            assert!(release_dynamic_workspace_best_effort(
+                &ctx,
+                &mut graph,
+                &workspace_id,
+            ));
+            assert_eq!(
+                dynamic_workspace(&graph, &workspace_id).unwrap().status,
+                WorkspaceStatus::Released
+            );
+            let catalog = git_output(&repo_root, &["worktree", "list", "--porcelain"]).unwrap();
+            assert!(catalog.success);
+            assert!(
+                !catalog
+                    .stdout
+                    .contains(workspace.branch.as_deref().unwrap())
+            );
+            assert!(
+                !git_output(
+                    &repo_root,
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{}", workspace.branch.as_deref().unwrap()),
+                    ],
+                )
+                .unwrap()
+                .success
+            );
+            if block_directory_creation {
+                assert_eq!(
+                    std::fs::read_to_string(&workspace.path).unwrap(),
+                    "preserve"
+                );
+                std::fs::remove_file(&workspace.path).unwrap();
+            } else {
+                assert!(workspace.path.is_dir());
+                assert_eq!(std::fs::read_dir(&workspace.path).unwrap().count(), 0);
+            }
+
+            let released = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+            assert!(!release_dynamic_workspace_best_effort(
+                &ctx,
+                &mut graph,
+                &workspace_id,
+            ));
+            assert!(workspace.path.is_dir());
+            assert_eq!(
+                serde_json::to_value(dynamic_workspace(&graph, &workspace_id).unwrap()).unwrap(),
+                serde_json::to_value(released).unwrap()
+            );
+            let sentinel = workspace.path.join("follow-up.txt");
+            std::fs::write(&sentinel, "preserve").unwrap();
+            assert!(!release_dynamic_workspace_best_effort(
+                &ctx,
+                &mut graph,
+                &workspace_id,
+            ));
+            assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "preserve");
+        }
+    }
+
+    #[test]
+    fn already_released_dynamic_worktree_restores_missing_session_directory() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -22626,7 +23961,6 @@ mod tests {
             &repo_root,
             &["worktree", "remove", "--force", workspace.path.as_str()],
         );
-        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
         dynamic_workspace_mut(&mut graph, &workspace_id)
             .unwrap()
             .status = WorkspaceStatus::Released;
@@ -22636,13 +23970,17 @@ mod tests {
             &mut graph,
             &workspace_id,
         ));
-        assert!(!workspace.path.exists());
-        assert!(!dynamic_worktree_base_dir(&ctx).exists());
-        assert!(!dynamic_worktree_base_dir(&ctx).parent().unwrap().exists());
+        assert!(workspace.path.is_dir());
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert!(workspace.path.is_dir());
     }
 
     #[test]
-    fn released_dynamic_worktree_pruning_waits_for_the_shared_repository_lock() {
+    fn released_dynamic_worktree_directory_waits_for_the_shared_repository_lock() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -22790,9 +24128,9 @@ mod tests {
             dynamic_workspace(&graph, &workspace_id).unwrap().status,
             WorkspaceStatus::Released
         );
-        assert!(!canonical_path.exists());
-        assert!(!run_namespace.exists());
-        assert!(!task_namespace.exists());
+        assert!(canonical_path.is_dir());
+        assert!(run_namespace.is_dir());
+        assert!(task_namespace.is_dir());
     }
 
     #[test]
@@ -24410,7 +25748,7 @@ mod tests {
             result_payload: Some(ProviderResultPayload {
                 output_artifact: Some(OutputArtifactPayload {
                     name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                    content: test_end_completion("already done"),
+                    content: test_end_submission(&app, &node.id, &attempt_id, "already done"),
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
@@ -24687,7 +26025,11 @@ mod tests {
             &graph,
         )
         .unwrap();
-        write_dynamic_completion_artifact(&app, "bootstrap", test_end_completion("already done"));
+        write_dynamic_completion_artifact(
+            &app,
+            "bootstrap",
+            test_end_submission(&app, "bootstrap", "attempt-001", "already done"),
+        );
         let (launch_signal, launch_result) = mpsc::channel();
         let resume = DynamicResumeOverride {
             request_id: "resume-bootstrap".to_string(),
@@ -24754,7 +26096,11 @@ mod tests {
             &graph,
         )
         .unwrap();
-        write_dynamic_completion_artifact(&app, "bootstrap", test_end_completion("already done"));
+        write_dynamic_completion_artifact(
+            &app,
+            "bootstrap",
+            test_end_submission(&app, "bootstrap", "attempt-001", "already done"),
+        );
         let (launch_signal, launch_result) = mpsc::channel();
         let resume = test_dynamic_resume_override(
             "resume-bootstrap-revoked",

@@ -6,6 +6,7 @@ use gold_band::config::{
     ConversationDynamicAgentRef, ConversationDynamicControl, ConversationPin, ConversationRunMode,
     ConversationRunModeEntry, ConversationWorkspaceEntry, DesktopUiMode,
 };
+use gold_band::provider::ConversationPromptInput;
 use gold_band::storage::GoldBandPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -19,7 +20,8 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    resolve_command_app, spawn_blocking_command, validate_runtime_workspace_for_command,
+    resolve_command_app, spawn_blocking_command, validate_prompt_workspace_files,
+    validate_runtime_workspace_for_command,
 };
 use crate::conversation_attention::{
     ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
@@ -748,22 +750,25 @@ pub fn set_scheduled_task_enabled(
 }
 
 #[tauri::command]
-pub fn create_scheduled_task(
+pub async fn create_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::CreateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
     let service = state.scheduled_service().map_err(command_error)?;
-    let record = service.create(input).map_err(scheduled_service_error)?;
-    let workspace_name = service
-        .workspace_name(&record.definition.project_id)
-        .map_err(scheduled_service_error)?;
-    Ok(
-        crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-            &record.definition,
-            &workspace_name,
-            record.next_run_at,
-        ),
-    )
+    spawn_blocking_command(move || {
+        let record = service.create(input).map_err(scheduled_service_error)?;
+        let workspace_name = service
+            .workspace_name(&record.definition.project_id)
+            .map_err(scheduled_service_error)?;
+        Ok(
+            crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
+                &record.definition,
+                &workspace_name,
+                record.next_run_at,
+            ),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -781,16 +786,20 @@ pub fn get_scheduled_task(
 }
 
 #[tauri::command]
-pub fn update_scheduled_task(
+pub async fn update_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::UpdateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
-    let record = state
-        .scheduled_service()
-        .map_err(command_error)?
-        .update(input)
-        .map_err(scheduled_service_error)?;
-    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
+    let service = state.scheduled_service().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let record = service.update(input).map_err(scheduled_service_error)?;
+        Ok(
+            crate::view_models_conversation::ScheduledTaskEditVm::from_definition(
+                &record.definition,
+            ),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -952,6 +961,19 @@ async fn create_conversation_run_inner(
     let mut validation =
         crate::view_models_conversation::validate_conversation_create_vm(&app, &input)
             .map_err(command_error)?;
+    let prompt_input = ConversationPromptInput {
+        display_text: input.content.clone(),
+        quotes: input.quotes.clone(),
+        role: input.role.clone(),
+        workspace_files: input.workspace_files.clone(),
+    };
+    validate_prompt_workspace_files(
+        &app,
+        crate::commands::PromptWorkspaceTarget::ProjectRoot,
+        &prompt_input,
+        input.attachment_paths.as_deref().map_or(0, <[_]>::len),
+    )
+    .await?;
     validate_direct_capabilities(state.inner(), &input, &mut validation)?;
     if !validation.valid {
         return Err(CommandErrorVm::new(
@@ -965,6 +987,10 @@ async fn create_conversation_run_inner(
             }),
         ));
     }
+    crate::commands::validate_conversation_prompt_input(
+        &prompt_input,
+        input.attachment_paths.as_deref(),
+    )?;
     let app = configure_conversation_runtime_callbacks(
         app,
         app_handle.clone(),
@@ -1105,6 +1131,29 @@ pub async fn pin_conversation(
         .map_err(command_error)?
     })
     .await
+}
+
+#[tauri::command]
+pub async fn set_conversation_resident(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    resident: bool,
+) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app_state = context.app().load_state().map_err(command_error)?;
+        let (workspace_path, project_id) = workspace_entry_for_project(&app_state, &project_id)
+            .ok_or_else(|| CommandErrorVm::new("workspace.not-found", serde_json::json!({})))?;
+        let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        app.set_conversation_resident(&task_id, resident).map_err(|error| {
+            if let Some(error) = error.downcast_ref::<gold_band::app::ConversationResidencyError>() {
+                CommandErrorVm::new(error.code, serde_json::json!({}))
+            } else { command_error(error) }
+        })?;
+        let pin = app_state.conversation_pins.iter().find(|p| p.project_id == project_id && p.task_id == task_id);
+        crate::view_models_conversation::conversation_task_row_vm(&app, &project_id, &task_id, pin.is_some(), pin.map(|p| p.order)).map_err(command_error)
+    }).await
 }
 
 #[tauri::command]
@@ -1434,10 +1483,14 @@ pub fn get_conversation_run_mode(
                         bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                         bootstrap_model_id: cfg.bootstrap_model_id.clone(),
                         bootstrap_config_options: cfg.bootstrap_config_options.clone(),
-                        bootstrap_model_bound_overrides: cfg.bootstrap_model_bound_overrides.clone(),
+                        bootstrap_model_bound_overrides: cfg
+                            .bootstrap_model_bound_overrides
+                            .clone(),
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
                         acceptance_config_options: cfg.acceptance_config_options.clone(),
-                        acceptance_model_bound_overrides: cfg.acceptance_model_bound_overrides.clone(),
+                        acceptance_model_bound_overrides: cfg
+                            .acceptance_model_bound_overrides
+                            .clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
                         auto_accept: cfg.auto_accept,
@@ -1508,6 +1561,11 @@ pub fn save_conversation_run_mode(
                 )),
             );
         };
+        let authoring_revision = state
+            .conversation_run_modes
+            .get(&resolved_project_id)
+            .map(|entry| entry.authoring_revision.saturating_add(1))
+            .unwrap_or(1);
         state.conversation_run_modes.insert(
             resolved_project_id,
             ConversationRunModeEntry {
@@ -1541,7 +1599,7 @@ pub fn save_conversation_run_mode(
                         )
                     })
                     .collect(),
-                    auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
+                auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
                     agent_strategy: cfg.agent_strategy,
                     agent_type: cfg.agent_type,
                     bootstrap_agent_type: cfg.bootstrap_agent_type,
@@ -1592,11 +1650,89 @@ pub fn save_conversation_run_mode(
                     active_template_id: cfg.active_template_id,
                     active_template_name: cfg.active_template_name,
                 }),
+                authoring_revision,
             },
         );
         (true, Ok(()))
     })
     .map_err(command_error)?
+}
+
+fn conversation_project_app(
+    global_app: &App,
+    config: gold_band::config::RuntimeConfig,
+    project_id: &str,
+) -> CommandResult<(App, String)> {
+    let app_state = global_app.load_state().map_err(command_error)?;
+    let Some((workspace_path, _)) = workspace_entry_for_project(&app_state, project_id) else {
+        return Err(CommandErrorVm::new(
+            "workspace.not-found",
+            serde_json::json!({ "projectId": project_id }),
+        ));
+    };
+    let app = global_app.with_repo_root(Utf8PathBuf::from(workspace_path), config);
+    let resolved_project_id = app.paths.project_id.clone();
+    Ok((app, resolved_project_id))
+}
+
+fn execution_plan_app(state: &DesktopState, project_id: &str) -> CommandResult<(App, String)> {
+    let context = state.context().map_err(command_error)?;
+    conversation_project_app(&context.app(), context.config, project_id)
+}
+
+#[tauri::command]
+pub fn get_conversation_execution_plan(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    task_uuid: String,
+    run_id: String,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanView> {
+    let (app, project_id) = execution_plan_app(&state, &project_id)?;
+    app.get_conversation_execution_plan(&project_id, &task_id, &task_uuid, &run_id)
+        .map_err(|error| command_error(anyhow::anyhow!(error)))
+}
+
+#[tauri::command]
+pub fn preflight_conversation_execution_plan_save(
+    state: State<'_, DesktopState>,
+    mut command: gold_band::execution_plan::ExecutionPlanSaveCommand,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanPreflight> {
+    let (app, project_id) = execution_plan_app(&state, &command.project_id)?;
+    command.project_id = project_id;
+    app.preflight_conversation_execution_plan_save(&command)
+        .map_err(|error| command_error(anyhow::anyhow!(error)))
+}
+
+#[tauri::command]
+pub fn save_conversation_execution_plan(
+    state: State<'_, DesktopState>,
+    mut command: gold_band::execution_plan::ExecutionPlanSaveCommand,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanSaveResult> {
+    let (app, project_id) = execution_plan_app(&state, &command.project_id)?;
+    command.project_id = project_id;
+    app.save_conversation_execution_plan(&command)
+        .map_err(|error| command_error(anyhow::anyhow!(error)))
+}
+
+#[tauri::command]
+pub fn recover_conversation_execution_plan_operation(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    task_uuid: String,
+    run_id: String,
+    operation_id: String,
+) -> CommandResult<gold_band::execution_plan::ExecutionPlanSaveResult> {
+    let (app, project_id) = execution_plan_app(&state, &project_id)?;
+    app.recover_conversation_execution_plan_operation(
+        &project_id,
+        &task_id,
+        &task_uuid,
+        &run_id,
+        &operation_id,
+    )
+    .map_err(|error| command_error(anyhow::anyhow!(error)))
 }
 
 #[tauri::command]
@@ -1875,6 +2011,8 @@ pub async fn delete_conversation_task(
             .task_show(&task_id)
             .ok()
             .and_then(|task| task.uuid);
+        gold_band::acp::client::close_direct_conversation(&normalized_project_id, &task_id)
+            .map_err(command_error)?;
         {
             let _memory_guard = gold_band::memory::lock_project(
                 &workspace_app.paths,
@@ -2022,11 +2160,7 @@ pub async fn stat_attachment_files(
                 let path = Path::new(&p);
                 let name = path.file_name()?.to_str()?.to_string();
                 let size = path.metadata().ok()?.len();
-                let ext = path
-                    .extension()
-                    .and_then(|value| value.to_str())?
-                    .to_ascii_lowercase();
-                let mime = attachment_mime_for_ext(&ext);
+                let mime = gold_band::provider::file_mime_type(path);
                 let preview_url = mime
                     .starts_with("image/")
                     .then(|| {
@@ -2043,7 +2177,7 @@ pub async fn stat_attachment_files(
                             .map(|grant| grant.token)
                     })
                     .flatten();
-                let content_url = (attachment_text_previewable_mime(mime)
+                let content_url = (gold_band::provider::is_text_mime_type(&mime)
                     && size <= crate::view_models_conversation::MAX_ATTACHMENT_PER_FILE)
                     .then(|| {
                         let revision = crate::workspace_files::revision_for_preview(path).ok()?;
@@ -2121,41 +2255,16 @@ pub fn show_conversation_attachment(
             serde_json::json!({ "name": name }),
         ));
     }
-    let ext = Path::new(&name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let is_image = matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-    );
-    let mime = attachment_mime_for_ext(&ext);
-    let content = if is_image {
-        let bytes = fs::read(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?;
-        format!("data:{};base64,{}", mime, base64_encode(&bytes))
-    } else {
-        fs::read_to_string(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?
-    };
+    let preview = read_attachment_preview(path.as_std_path(), Path::new(&name))?;
     Ok(ContentVm {
         title: name.clone(),
         kind: "input-attachment".to_string(),
-        content,
+        content: preview.content,
         metadata: serde_json::json!({
             "name": name,
-            "mimeType": mime,
-            "isImage": is_image,
-            "encoding": if is_image { "data-url" } else { "text" },
+            "mimeType": preview.mime_type,
+            "isImage": preview.encoding == AttachmentPreviewEncoding::DataUrl,
+            "encoding": preview.encoding,
         }),
     })
 }
@@ -2217,43 +2326,22 @@ fn message_attachment_content_from_attempt_dir(
             serde_json::json!({ "name": name, "path": attachment_path }),
         ));
     }
-    let ext = Path::new(&relative_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .or_else(|| Path::new(name).extension().and_then(|e| e.to_str()))
-        .unwrap_or("")
-        .to_lowercase();
-    let is_image = matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-    );
-    let mime = attachment_mime_for_ext(&ext);
-    let content = if is_image {
-        let bytes = fs::read(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?;
-        format!("data:{};base64,{}", mime, base64_encode(&bytes))
+    let named_by = if Path::new(&relative_path).extension().is_some() {
+        Path::new(&relative_path)
     } else {
-        fs::read_to_string(path.as_std_path()).map_err(|e| {
-            CommandErrorVm::new(
-                "attachment.unreadable",
-                serde_json::json!({ "message": e.to_string() }),
-            )
-        })?
+        Path::new(name)
     };
+    let preview = read_attachment_preview(path.as_std_path(), named_by)?;
     Ok(ContentVm {
         title: name.to_string(),
         kind: "message-attachment".to_string(),
-        content,
+        content: preview.content,
         metadata: serde_json::json!({
             "name": name,
             "path": relative_path,
-            "mimeType": mime,
-            "isImage": is_image,
-            "encoding": if is_image { "data-url" } else { "text" },
+            "mimeType": preview.mime_type,
+            "isImage": preview.encoding == AttachmentPreviewEncoding::DataUrl,
+            "encoding": preview.encoding,
         }),
     })
 }
@@ -2280,39 +2368,50 @@ fn sanitize_message_attachment_relative_path(path: &str) -> CommandResult<String
     Ok(components.join("/"))
 }
 
-fn attachment_mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        "txt" => "text/plain",
-        "md" | "markdown" => "text/markdown",
-        "json" | "jsonl" => "application/json",
-        "csv" => "text/csv",
-        "html" | "htm" => "text/html",
-        "css" => "text/css",
-        "js" | "jsx" => "text/javascript",
-        "ts" | "tsx" => "text/typescript",
-        "rs" => "text/rust",
-        "py" => "text/python",
-        "go" => "text/go",
-        "java" => "text/java",
-        "c" | "h" => "text/c",
-        "cpp" | "hpp" => "text/cpp",
-        "yaml" | "yml" => "text/yaml",
-        "xml" => "text/xml",
-        "toml" => "text/toml",
-        "log" => "text/plain",
-        "sql" => "text/sql",
-        "sh" | "bash" | "zsh" => "text/x-shellscript",
-        _ => "application/octet-stream",
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum AttachmentPreviewEncoding {
+    DataUrl,
+    Text,
+    /// Not previewable; any file type can be attached.
+    Binary,
 }
 
-fn attachment_text_previewable_mime(mime: &str) -> bool {
-    mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml")
+struct AttachmentPreview {
+    mime_type: String,
+    content: String,
+    encoding: AttachmentPreviewEncoding,
+}
+
+/// Reads an attachment for the workspace preview; `named_by` supplies its MIME type.
+fn read_attachment_preview(path: &Path, named_by: &Path) -> CommandResult<AttachmentPreview> {
+    let mime_type = gold_band::provider::file_mime_type(named_by);
+    let bytes = fs::read(path).map_err(|e| {
+        CommandErrorVm::new(
+            "attachment.unreadable",
+            serde_json::json!({ "message": e.to_string() }),
+        )
+    })?;
+    if gold_band::provider::is_inline_image_mime_type(&mime_type) {
+        let content = format!("data:{};base64,{}", mime_type, base64_encode(&bytes));
+        return Ok(AttachmentPreview {
+            mime_type,
+            content,
+            encoding: AttachmentPreviewEncoding::DataUrl,
+        });
+    }
+    Ok(match String::from_utf8(bytes) {
+        Ok(content) if !content.contains('\0') => AttachmentPreview {
+            mime_type,
+            content,
+            encoding: AttachmentPreviewEncoding::Text,
+        },
+        _ => AttachmentPreview {
+            mime_type,
+            content: String::new(),
+            encoding: AttachmentPreviewEncoding::Binary,
+        },
+    })
 }
 
 fn materialize_attachment_files_to_dir(
@@ -2340,18 +2439,6 @@ fn materialize_attachment_files_to_dir(
     for file in files {
         let _declared_mime = file.mime.as_deref().unwrap_or_default();
         let name = sanitize_attachment_file_name(&file.name)?;
-        let ext = Path::new(&name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if !crate::view_models_conversation::allowed_attachment_ext(&ext) {
-            return Err(CommandErrorVm::new(
-                "conversation.attachment-unsupported-type",
-                serde_json::json!({ "name": file.name }),
-            ));
-        }
-
         let bytes = base64_decode(&file.data_base64).map_err(|message| {
             CommandErrorVm::new(
                 "conversation.attachment-unreadable",
@@ -2525,21 +2612,13 @@ fn base64_value(byte: u8) -> Option<u8> {
     }
 }
 
-#[tauri::command]
-pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
-    Ok(gold_band::provider::supported_attachment_extensions()
-        .into_iter()
-        .map(str::to_string)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
-        conversation_search_task_roots, decode_execution_history_cursor,
-        delete_scheduled_execution_history_items, encode_execution_history_cursor,
-        execution_history_vm, materialize_attachment_files_to_dir,
+        MaterializeAttachmentFileInput, base64_encode, conversation_project_app,
+        conversation_search_result_for_workspace, conversation_search_task_roots,
+        decode_execution_history_cursor, delete_scheduled_execution_history_items,
+        encode_execution_history_cursor, execution_history_vm, materialize_attachment_files_to_dir,
         message_attachment_content_from_attempt_dir, runtime_workspace_entry_for_project,
         scheduled_runtime_settings_vm, scheduled_service_error,
         validate_execution_history_delete_batch, validate_scheduled_runtime_settings_input,
@@ -3011,7 +3090,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_materialized_attachment_types() {
+    fn materializes_any_attachment_type() {
         let root = Utf8PathBuf::from_path_buf(
             std::env::temp_dir()
                 .join("gold-band-materialize-test")
@@ -3024,9 +3103,10 @@ mod tests {
             data_base64: base64_encode(&[1, 2]),
         }];
 
-        let error = materialize_attachment_files_to_dir(&root, &files).unwrap_err();
+        let result = materialize_attachment_files_to_dir(&root, &files).unwrap();
 
-        assert_eq!(error.code, "conversation.attachment-unsupported-type");
+        assert_eq!(result[0].name, "archive.exe");
+        assert_eq!(std::fs::read(&result[0].path).unwrap(), vec![1, 2]);
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
@@ -3064,6 +3144,19 @@ mod tests {
         assert_eq!(text_content.kind, "message-attachment");
         assert_eq!(text_content.title, "notes.txt");
         assert_eq!(text_content.content, "runtime notes");
+        assert_eq!(text_content.metadata["encoding"], "text");
+
+        std::fs::write(
+            user_inputs.join("tool.exe").as_std_path(),
+            [0x4d_u8, 0x5a, 0, 0xff],
+        )
+        .unwrap();
+        let binary_content =
+            message_attachment_content_from_attempt_dir(&root, "tool.exe", "user-inputs/tool.exe")
+                .unwrap();
+        assert_eq!(binary_content.content, "");
+        assert_eq!(binary_content.metadata["encoding"], "binary");
+        assert_eq!(binary_content.metadata["isImage"], false);
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
@@ -3216,6 +3309,7 @@ mod tests {
                 direct_config: None,
                 direct_preferences: Default::default(),
                 auto_config: None,
+                authoring_revision: 0,
             },
         );
 
@@ -3228,5 +3322,62 @@ mod tests {
         assert_eq!(state.conversation_pins[0].project_id, "ws-b");
         assert!(state.conversation_run_modes.get("ws-a").is_none());
         assert_eq!(state.last_conversation_workspace.as_deref(), Some("ws-b"));
+    }
+
+    #[test]
+    fn execution_plan_reads_the_registered_conversation_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let path_config = gold_band::storage::StoragePathConfig {
+            app_key: "gold-band-execution-plan-workspace-test",
+            config_dir_name: ".gold-band-execution-plan-workspace-test",
+            home_env_var: "GOLD_BAND_EXECUTION_PLAN_WORKSPACE_TEST_HOME",
+        };
+        let desktop_root = Utf8PathBuf::from_path_buf(directory.path().join("desktop")).unwrap();
+        let foreign_root = Utf8PathBuf::from_path_buf(directory.path().join("foreign")).unwrap();
+        std::fs::create_dir_all(desktop_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(foreign_root.as_std_path()).unwrap();
+        let config = gold_band::config::RuntimeConfig::default();
+        let desktop = App::with_config_and_path_config(desktop_root, config.clone(), path_config);
+        let foreign =
+            App::with_config_and_path_config(foreign_root.clone(), config.clone(), path_config);
+        desktop
+            .with_state(|state| {
+                state
+                    .conversation_workspaces
+                    .push(ConversationWorkspaceEntry {
+                        project_id: foreign.paths.project_id.clone(),
+                        workspace_path: foreign_root.to_string(),
+                        name: "Foreign".to_string(),
+                        added_at: "2026-09-23T00:00:00Z".to_string(),
+                    });
+                (true, ())
+            })
+            .unwrap();
+
+        let direct = desktop.get_conversation_execution_plan(
+            &foreign.paths.project_id,
+            "task-missing",
+            "task-uuid",
+            "run-missing",
+        );
+        assert_eq!(
+            direct.unwrap_err().code(),
+            gold_band::execution_plan::error::CURRENT_LOCATOR_CONFLICT
+        );
+
+        let (workspace_app, resolved_project_id) =
+            conversation_project_app(&desktop, config, &foreign.paths.project_id).unwrap();
+        assert_eq!(resolved_project_id, foreign.paths.project_id);
+        assert_eq!(workspace_app.paths.repo_root, foreign.paths.repo_root);
+        let missing = workspace_app.get_conversation_execution_plan(
+            &resolved_project_id,
+            "task-missing",
+            "task-uuid",
+            "run-missing",
+        );
+        assert_eq!(
+            missing.unwrap_err().code(),
+            gold_band::execution_plan::error::NOT_FOUND
+        );
     }
 }

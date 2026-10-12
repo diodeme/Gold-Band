@@ -21,6 +21,7 @@ import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
+import { useMentionMenuLabels } from '@/hooks/useMentionWorkspaceFiles';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import {
@@ -34,7 +35,6 @@ import {
   buildSlashCatalog,
   committedRoleSnapshot,
   parseCommittedSlashItem,
-  restoreSlashCommandInputFocus,
   slashSendableText,
 } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
@@ -48,7 +48,14 @@ import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { cn } from '@/lib/utils';
-import { hasUserPromptPayload } from '@/lib/composer-context';
+import {
+  addComposerQuote,
+  addComposerWorkspaceFile,
+  hasUserPromptPayload,
+  type ComposerQuoteDraft,
+  type ComposerWorkspaceFileRef,
+} from '@/lib/composer-context';
+import { composerQuoteFailureMessage } from '@/lib/composer-quote-i18n';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 import {
   createDraftAttachmentWorkspaceResource,
@@ -57,6 +64,9 @@ import {
   useOptionalRightWorkspace,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
+import { composerWorkspaceFileRefFromEntry, openWorkspaceFileReference } from '@/lib/workspace-file-reference';
+import { workspaceRootRef } from '@/lib/workspace-root';
+import { type AddWorkspaceFileRefResult, useWorkspaceFileReferenceBridge } from '@/components/workspace/workspace-file-reference-bridge';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -73,7 +83,7 @@ interface ConversationComposerProps {
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null, sentAttachments?: readonly { id: string; name: string }[]) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
@@ -136,6 +146,7 @@ export function ConversationWorkspaceControl({
     valueRef,
     tooltipOpen,
     showTooltipIfOverflowing,
+    showTooltipOnKeyboardFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>({ always: variant === 'info' });
@@ -155,7 +166,7 @@ export function ConversationWorkspaceControl({
     onKeyDown: () => {
       selectionUsedPointerRef.current = false;
     },
-    onFocus: showTooltipIfOverflowing,
+    onFocus: showTooltipOnKeyboardFocus,
     onBlur: hideTooltip,
   };
   const value = (
@@ -484,12 +495,14 @@ export function ConversationComposer({
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
   const [branchSelection, setBranchSelection] = useState<{ projectId: string; branch: string } | null>(null);
   const [branchMutationPending, setBranchMutationPending] = useState(false);
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
   const rightWorkspace = useOptionalRightWorkspace();
+  const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
@@ -509,7 +522,9 @@ export function ConversationComposer({
 
   const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
-    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
+    const key = draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id);
+    const existing = rightWorkspace.tabs.find((tab) => tab.key === key);
+    void rightWorkspace.openResource(existing?.kind === 'draft-attachment' ? existing : createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
       attachment,
@@ -540,6 +555,10 @@ export function ConversationComposer({
     });
   }, [projectId]);
 
+  const handleWorkspaceChange = useCallback((nextProjectId: string) => {
+    onWorkspaceChange(nextProjectId);
+  }, [onWorkspaceChange]);
+
   useWindowDragGuard();
 
   const isAuto = runMode.mode === 'auto';
@@ -552,6 +571,73 @@ export function ConversationComposer({
   // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
   // user is guided to add one first (decision e).
   const multicaBinding = composerDraft.draft.multica;
+  const workspaceFiles = composerDraft.draft.workspaceFiles;
+  const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
+  const attachmentsRef = useRef(composerDraft.draft.attachments);
+  const workspaceFilesRef = useRef(workspaceFiles);
+  const quotes = composerDraft.draft.quotes;
+  const setComposerQuotes = composerDraft.setQuotes;
+  const quotesRef = useRef(quotes);
+  useEffect(() => {
+    attachmentsRef.current = composerDraft.draft.attachments;
+  }, [composerDraft.draft.attachments]);
+  useEffect(() => {
+    workspaceFilesRef.current = workspaceFiles;
+  }, [workspaceFiles]);
+  useEffect(() => {
+    quotesRef.current = quotes;
+  }, [quotes]);
+
+  const addQuote = useCallback((draft: ComposerQuoteDraft, focus: boolean) => {
+    const result = addComposerQuote(quotesRef.current, { ...draft, id: crypto.randomUUID() });
+    if (!result.ok) {
+      setContextError(composerQuoteFailureMessage(t, result));
+      return false;
+    }
+    quotesRef.current = result.quotes;
+    setComposerQuotes(result.quotes);
+    setContextError(null);
+    if (focus) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return true;
+  }, [setComposerQuotes, t]);
+
+  const addWorkspaceFile = useCallback((
+    reference: ComposerWorkspaceFileRef,
+    focus: boolean,
+  ): AddWorkspaceFileRefResult => {
+    const result = addComposerWorkspaceFile(
+      workspaceFilesRef.current,
+      attachmentsRef.current.length,
+      reference,
+    );
+    if (!result.ok) {
+      if (result.code === 'composer.context.limit-exceeded') {
+        setContextError(
+          t('errors.composer.context-limit-exceeded', { max: result.max }),
+        );
+        return { kind: 'limit-exceeded', max: result.max };
+      }
+      return { kind: 'duplicate' };
+    }
+    workspaceFilesRef.current = result.workspaceFiles;
+    setComposerWorkspaceFiles(result.workspaceFiles);
+    setContextError(null);
+    if (focus) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return { kind: 'added' };
+  }, [setComposerWorkspaceFiles, t]);
+
+  useEffect(() => workspaceFileReferenceBridge.register({
+    addQuote: (draft, options) => addQuote(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
+    addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
+  }), [addQuote, addWorkspaceFile, workspaceFileReferenceBridge]);
+
+  const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
+    if (!rightWorkspace?.scopeKey) return;
+    // A new conversation has no session worktree yet; its references live in the project root.
+    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource, workspaceRootRef(file.projectId, null))
+      .then(() => setContextError(null))
+      .catch(error => setContextError(displayAppError(t, error)));
+  }, [rightWorkspace, t]);
   const multicaActive = multicaBinding !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
@@ -671,20 +757,28 @@ export function ConversationComposer({
   const slashCatalog = useMemo(
     () => buildSlashCatalog(
       t('acp.slashAgentGroup'),
-      profiles,
+      // A role is a Direct conversation input; Workflow and AUTO nodes use their own profiles.
+      isDirect ? profiles : [],
       agentCommands.commands,
     ),
-    [agentCommands.commands, profiles, t],
+    [agentCommands.commands, isDirect, profiles, t],
   );
-  const restoreComposerFocus = useCallback(() => {
-    restoreSlashCommandInputFocus(composerTextareaRef);
-  }, []);
+  const mentionLabels = useMentionMenuLabels();
+  const mentionRoot = useMemo(() => (projectId ? workspaceRootRef(projectId, null) : null), [projectId]);
   const slashCommands = useSlashCommandController({
     input: content,
     groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setContent,
-    onInputFocusRequested: restoreComposerFocus,
+    textareaRef: composerTextareaRef,
+    mention: {
+      // A new conversation's prompt resolves references against the project root.
+      root: mentionRoot,
+      labels: mentionLabels,
+      onSelectWorkspaceFile: (entry) => {
+        if (projectId) addWorkspaceFile(composerWorkspaceFileRefFromEntry(projectId, entry), false);
+      },
+    },
   });
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashItem(
@@ -698,6 +792,7 @@ export function ConversationComposer({
     slashSendableText(content, committedSlashCommand),
     attachments.length,
     committedRoleSnapshot(committedSlashCommand),
+    workspaceFiles.length,
   );
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const slashAgentIconKey = isDirect
@@ -801,40 +896,6 @@ export function ConversationComposer({
     onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) }, projectId);
   };
 
-  useEffect(() => {
-    if (!isDirect || !selectedDirectAgentObj) return;
-    const normalized = normalizeConfigOptionOverrides(
-      selectedDirectAgentObj,
-      selectedDirectConfigOptions,
-      selectedDirectModel,
-    );
-    if (normalized.removedOptionIds.length === 0) return;
-    setSelectedDirectConfigOptions(normalized.configOptions);
-    updateDirectConfig({
-      agentType: selectedDirectAgent,
-      modelId: selectedDirectModel || undefined,
-      permissionMode: selectedDirectPermissionMode || undefined,
-      autoAccept: selectedDirectAutoAccept || undefined,
-      configOptions: normalized.configOptions,
-      modelBoundOverrides: selectedDirectModelBoundOverrides,
-    });
-  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions, selectedDirectModelBoundOverrides]);
-
-  useEffect(() => {
-    if (!isAuto || isDynamicAuto || !selectedAgentObj) return;
-    const normalized = normalizeConfigOptionOverrides(
-      selectedAgentObj,
-      selectedConfigOptions,
-      selectedModel,
-    );
-    if (normalized.removedOptionIds.length === 0) return;
-    setSelectedConfigOptions(normalized.configOptions);
-    updateAutoSession({
-      configOptions: normalized.configOptions,
-      modelBoundOverrides: selectedModelBoundOverrides,
-    });
-  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions, selectedModel, selectedModelBoundOverrides]);
-
   const handleSubmit = async () => {
     if (!canSubmit) return;
     const role = committedRoleSnapshot(committedSlashCommand);
@@ -884,6 +945,11 @@ export function ConversationComposer({
         ? branchSelection.branch
         : undefined,
       ...(role ? { role } : {}),
+      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
+        projectId: refProjectId,
+        relativePath,
+      })),
+      quotes,
     };
     setSubmittingAttachments(true);
     try {
@@ -922,13 +988,14 @@ export function ConversationComposer({
           attachmentPaths: paths.length > 0 ? paths : undefined,
         },
         composerDraft.draft.multica,
+        attachments.map(({ id, name }) => ({ id, name })),
       );
       if (submitError) {
         setRunModeError(submitError);
         return;
       }
-      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
+      setContextError(null);
     } catch {
       // Attachment hook owns the user-facing file error.
     } finally {
@@ -958,6 +1025,11 @@ export function ConversationComposer({
       }) : undefined,
       autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
       ...(role ? { role } : {}),
+      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
+        projectId: refProjectId,
+        relativePath,
+      })),
+      quotes,
     };
   };
 
@@ -988,6 +1060,7 @@ export function ConversationComposer({
       onScheduledTaskCreated?.();
       exitScheduledMode();
       setRunModeError(null);
+      setContextError(null);
     } catch (error) {
       setRunModeError(displayAppError(t, error));
     } finally {
@@ -1057,7 +1130,7 @@ export function ConversationComposer({
             workspaces={workspaces}
             workLocation={workLocation}
             busy={busy || submittingAttachments}
-            onWorkspaceChange={onWorkspaceChange}
+            onWorkspaceChange={handleWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
             forceSelector={multicaActive}
@@ -1079,8 +1152,22 @@ export function ConversationComposer({
         >
           <ComposerContextArea
             attachments={attachments}
+            quotes={quotes}
+            workspaceFiles={workspaceFiles}
+            error={contextError}
+            onRemoveQuote={(id) => {
+              setComposerQuotes(quotes.filter((quote) => quote.id !== id));
+              setContextError(null);
+            }}
             onRemoveAttachment={removeComposerAttachment}
             onPreviewAttachment={openComposerAttachment}
+            onRemoveWorkspaceFile={(id) => {
+              setComposerWorkspaceFiles(
+                workspaceFiles.filter((file) => file.id !== id),
+              );
+              setContextError(null);
+            }}
+            onOpenWorkspaceFile={openWorkspaceFile}
           />
           <SlashCommandMenu
             open={slashCommands.isOpen}
@@ -1186,6 +1273,7 @@ export function ConversationComposer({
                   <AcpModelThoughtSelects
                     models={directModels}
                     modelValue={selectedDirectModel}
+                    agentType={selectedDirectAgentObj?.agentType}
                     configOptions={selectedDirectAgentObj?.configOptions}
                     modelBoundCatalogs={selectedDirectAgentObj?.modelBoundCatalogs}
                     configOptionValues={selectedDirectConfigOptions}
@@ -1405,6 +1493,7 @@ export function ConversationComposer({
                   <AcpModelThoughtSelects
                     models={models}
                     modelValue={selectedModel}
+                    agentType={selectedAgentObj?.agentType}
                     configOptions={selectedAgentObj?.configOptions}
                     modelBoundCatalogs={selectedAgentObj?.modelBoundCatalogs}
                     configOptionValues={selectedConfigOptions}

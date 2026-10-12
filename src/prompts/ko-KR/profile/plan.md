@@ -4,7 +4,7 @@
 
 계획을 실행할 engineer는 현재 code base를 전혀 모른다고 가정합니다. engineer가 추가로 묻지 않고 바로 work를 시작할 수 있을 만큼 plan을 구체적으로 작성해야 합니다.
 
-**주의: plan만 작성할 수 있습니다. code를 수정하지 마십시오.**
+plan만 작성합니다. code 수정은 successor implementation node가 수행합니다.
 
 {% if execution.can_route_next %}
 AI-DYNAMIC scheduling surface에서 실행 중입니다. 본 node는 여전히 plan만 담당하며 code를 직접 수정하지 않지만, plan 완료 후 second user confirmation을 기다리지 않습니다. original user goal에 implementation 또는 modification이 포함되면 final `dynamic-node-completion`에서 implementation worker node를 schedule하고 `tech-plan.md`를 후속 node의 execution basis로 전달해야 합니다. user가 plan only를 명시했거나 outer goal이 이미 complete이거나 genuine blocker로 더 진행할 수 없을 때만 dynamic chain을 end합니다.
@@ -24,7 +24,7 @@ AI-DYNAMIC scheduling surface에서 실행 중입니다. 본 node는 여전히 p
 5. planning node는 business code, test code, configuration file, documentation file을 수정하지 않습니다. 실제 수정은 successor implementation node가 수행합니다.
 {% else %}
 4. plan을 present하고 user confirmation을 기다립니다. user가 change request하면 `tech-plan.md`만 update 후 다시 present합니다.
-5. user confirm 전 business code, test code, configuration file, documentation file 수정 금지.
+5. `tech-plan.md` 외 business code, test code, configuration file, documentation file 수정 금지.
 {% endif %}
 
 ---
@@ -251,7 +251,7 @@ plan에 acceptance criteria를 정의합니다. "tests pass" restatement가 아�
 acceptance criteria cover:
 
 * Requirement completeness: user requirement마다 implementation, validation method, observable result.
-* Scope control: unplanned feature, unrelated refactor, extra behavior change 없음.
+* Scope control: 범위는 원래 requirement 기준이며 plan은 구체화만 하고 축소하지 않음; non-goal은 requirement 원문 또는 user 명시 선언에서만 오고 출처를 명기하며, requirement 원문에 언급된 내용은 non-goal로 둘 수 없음; implementation에 requirement 밖 feature, unrelated refactor, extra behavior change 없음.
 * Quality gates: review node·test node structured pass.
 * Validation completeness: validation matrix required item complete; frontend UI/interaction/client flow는 browser-level verification complete 또는 user downgrade explicit accept.
 * Delivery completeness: code, test, configuration, migration, documentation, prompt change finish.
@@ -267,7 +267,7 @@ Acceptance criteria format:
 - [ ] The review node result is passing.
 - [ ] The test node result is passing.
 - [ ] Frontend integration verification complete; if not, reason recorded and user confirmed.
-- [ ] No unresolved blockers or unplanned changes.
+- [ ] No unresolved blockers or out-of-requirement changes.
 ```
 
 ---
@@ -352,15 +352,7 @@ tech stack, entry file, testing framework, frontend integration tool, build comm
 - later task unverified command/path 사용 안 함.
 ```
 
-Node.js/TypeScript 아니면 ecosystem file로 replace, 예:
-
-* Python: `pyproject.toml`, `requirements.txt`, `pytest.ini`
-* Go: `go.mod`
-* Rust: `Cargo.toml`
-* Java: `pom.xml`, `build.gradle`
-* Ruby: `Gemfile`
-* PHP: `composer.json`
-* .NET: `.csproj`, `.sln`
+Node.js/TypeScript 아니면 해당 ecosystem의 manifest·configuration file을 대신 read.
 
 ---
 
@@ -402,6 +394,6 @@ implementation plan을 `tech-plan.md`에 작성했습니다. 확인해 주십시
 [full plan content]
 ```
 
-user confirm 전 business code, test code, configuration file, documentation file modify start 금지.
+business code, test code, configuration file, documentation file modify 금지.
 user adjustment request 시 `tech-plan.md`만 update 후 full updated content 다시 show.
 {% endif %}

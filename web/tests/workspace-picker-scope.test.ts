@@ -42,9 +42,7 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
   updateBadges: {
     settingsEntrySeenVersion: null,
     settingsAdvancedSeenVersion: null,
-    announcementClosedVersion: null,
   },
-  persistedAvailableUpdate: null,
   clientVersion: '0.0.0',
   platform: 'windows',
   windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },

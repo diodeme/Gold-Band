@@ -44,13 +44,13 @@ export function WorkspaceFileLinkProvider({ children, browserPreferences }: { ch
   const targetRevisionsRef = useRef(new Map<string, number>());
   const openWebUrl = useCallback(async (href: string) => {
     await openWebTarget(href, {
-      projectId: workspace.projectId,
+      root: workspace.currentFileRoot(),
       scopeKey: workspace.scopeKey,
       openResource: workspace.openResource,
       browserTitle: t('workspace.browser.title'),
       browserPreferences,
     });
-  }, [browserPreferences, t, workspace.openResource, workspace.projectId, workspace.scopeKey]);
+  }, [browserPreferences, t, workspace.currentFileRoot, workspace.openResource, workspace.scopeKey]);
   const openLocalFile = useCallback(async (
     rawHref: string,
     baseCanonicalPath?: string | null,
@@ -61,9 +61,15 @@ export function WorkspaceFileLinkProvider({ children, browserPreferences }: { ch
         error: { code: 'workspace-file.project-not-found', params: {} },
       };
     }
+    // Links resolve against the current file root; an unavailable worktree
+    // never falls back to the project root.
+    const root = workspace.currentFileRoot();
+    if (!root) {
+      return { status: 'error', error: { code: 'workspace-file.workspace-unavailable', params: {} } };
+    }
     if (classifyWebTarget(rawHref) === 'local-html') {
       const result = await openWebTarget(rawHref, {
-        projectId: workspace.projectId,
+        root,
         scopeKey: workspace.scopeKey,
         openResource: workspace.openResource,
         browserTitle: t('workspace.browser.title'),
@@ -73,7 +79,7 @@ export function WorkspaceFileLinkProvider({ children, browserPreferences }: { ch
         : { status: 'error', error: result.error };
     }
     try {
-      const resolved = await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath);
+      const resolved = await resolveWorkspaceFileLink(root, rawHref, baseCanonicalPath);
       const key = fileWorkspaceResourceKey(workspace.projectId, resolved.locator.canonicalPath);
       const fileBrowser = workspace.getResource(fileBrowserWorkspaceResourceKey(workspace.projectId));
       const existing = fileBrowser?.kind === 'file-browser'
@@ -102,6 +108,7 @@ export function WorkspaceFileLinkProvider({ children, browserPreferences }: { ch
         key,
         scopeKey: workspace.scopeKey,
         projectId: workspace.projectId,
+        workspacePath: root.workspacePath,
         title: fileName(resolved.locator.canonicalPath),
         description: resolved.locator.relativePath ?? resolved.locator.canonicalPath,
         attention: false,
@@ -113,7 +120,7 @@ export function WorkspaceFileLinkProvider({ children, browserPreferences }: { ch
     } catch (reason) {
       return { status: 'error', error: fileLinkError(reason) };
     }
-  }, [t, workspace.getResource, workspace.openResource, workspace.projectId, workspace.scopeKey]);
+  }, [t, workspace.currentFileRoot, workspace.getResource, workspace.openResource, workspace.projectId, workspace.scopeKey]);
   const handler = useMemo(
     () => workspace.projectId && workspace.scopeKey ? { openLocalFile, openWebUrl } : null,
     [openLocalFile, openWebUrl, workspace.projectId, workspace.scopeKey],

@@ -4,8 +4,6 @@
 
 code 작성, test 작성, business file 수정은 하지 않습니다. 유일한 output은 `grill-consensus.md` consensus document입니다.
 
-**주의: 사용자가 shared understanding을 confirm하기 전 interview content 기반 action을 취하지 마십시오.**
-
 ---
 
 ## 핵심 원칙

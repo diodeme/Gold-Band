@@ -119,3 +119,55 @@
 - 续跑前要处理的问题：
   - CC 的 seed 要合并两段（gated-b 加上 gated-resume）的 token 与闸门标记；
   - AUTO 是在进程被杀时暂停的，run 仍记为 running；中断时还有 3 个并行 fan-out 叶子在跑，现有 `continue` 不支持多个叶子同时暂停。
+
+## 8. 反复暂停与继续（分段运行）
+
+订阅账号的 5 小时额度撑不完整个任务，两臂需要反复"跑一段、停一段"。每一段都是一个独立的 Inspect eval，记账和续跑都以分段账本为准。
+
+- **分段账本**：`resume-state/<arm>/ledger.json`，由 `segments.py` 维护。每段记录 job、状态（running / interrupted / completed）、本段 token、checkpoint 和冻结状态。
+  - **暂停**：SIGINT 该 eval，不评分。runner 在 teardown 中写 checkpoint，并让 agent 暂停。
+  - **关闭**：从 eval 日志判断结束类型，结束容器内残留进程，把状态冻结为 `s<N>.tgz`。
+  - **续跑**：从最后一份冻结状态新开 `<base>-s<N+1>`。容器一律保留。
+- **CC 闸门版**：
+  - 会话异常（退出码非 0、没有新的 result 记录、`is_error`）算作基础设施中断，不算一次提交，抛出 `SegmentInterrupted`，本段不评分。
+  - checkpoint 是本段结束时的闸门种子（`ResumeSeed.from_gate`，即 `seed_gate` 的逆运算），下一段直接沿用。
+  - gated-b 加上 gated-resume 的链式种子已核对：累计 757,767,253 token，idx 73，最好可见 0.6544（498/761）。
+- **AUTO**：
+  - 只有 Gold Band 退出码 0 或 1（run 结束）才评分，其余抛出 `SegmentInterrupted`。
+  - teardown 先对 gold-band 发 SIGTERM，最多等 120 秒，CLI 会把 run 暂停为 `process-interrupted`；之后才结束 agent。
+  - 下一段用 `continue --recover-interrupted` 继续：先把仍记为 running 的 run 按桌面启动恢复的语义暂停，再逐个继续所有暂停的 AI-DYNAMIC 叶子。同一 attempt 只有一个调度 driver。
+  - 产品改动见 `interaction/cli/cli.md`。
+- **账号看门狗**（`watchdog.py`，决策逻辑在 `watchdog_policy.py`，systemd unit `gb-watchdog`）：每 5 分钟检查一次，节奏模仿人工查看。
+  - **额度读取**：读 3 个托管账号的实时额度（Codex `wham/usage`），每个账号单独排期。
+    - 余量 >30：每 20–30 分钟随机读一次。
+    - 余量 ≤30：每 5 分钟读一次。
+    - 某个窗口已用完：在该窗口的 `reset_at` 之后再随机等 1–5 分钟读一次；自动重置后立即重读。
+    - 没到时间的账号沿用上次读数参与决策。
+  - **指纹**：每个账号每隔 1–2 小时（随机）用 ModelTrace 测一次 `gpt-5.6-sol`（medium 思考强度），首轮在启动后 1 小时内随机进行。额度用完的账号到期也不测，等额度恢复后再补测。
+    - 测试请求带账号前缀 `mt-<邮箱前缀>/gpt-5.6-sol`，固定打到该账号；不带前缀的请求照常轮询。
+    - 读到 luna 即隔离该账号：禁用，优先级降到 -100。读到 5.5 重测一次。
+    - 被隔离的账号按同样的随机间隔临时启用约 2 分钟复测，读到 sol 才恢复。
+    - 3 个账号全部被隔离时停机。
+  - **额度**：
+    - 运行中合计余量 ≤ 5 时暂停两臂；暂停后任一账号余量 ≥ 30 才继续。
+    - 5 小时额度只等待恢复。
+    - 某个账号的周额度一用完，就立即用重置机会恢复它（一次重置同时恢复周额度和 5 小时额度），不等其他账号。
+    - 每个账号最多自动重置 2 次，并且以服务器返回的剩余次数（`available_count`）为准，始终至少留 1 次给人工。因此人工手动用过的次数也会被算进去。只有 `applicable_available_count > 0`（账号当前被限额、有可生效的重置）时才执行。redeem id 先落盘，保证重试时不会重复扣次数。
+    - 所有可用账号的周额度都用完，并且都不能再自动重置时，停机。
+  - **分段**：自行结束的段会被关闭并续跑。连续 2 段在 5M token 内结束，视为没有进展，停机。某一臂完成时只报告，不影响另一臂。
+  - **网络抖动**：访问 CPA 时遇到网络层错误或 502/503/504，客户端退避重试 3 次（5/15/45 秒），认证错误不重试。连续约 30 分钟（6 次检查）都失败才停机。
+  - **停机**：暂停两臂，等人工执行 `watchdog.py release`。`watchdog.py hold` 可以人工停机。
+  - **事件**：写入 `watchdog/events.jsonl`（台北时间）。
+  - **范围**：只改动这 3 个托管账号，不碰其他凭据，也不会用到第 3 次重置机会。
+- **等 token 结算**：两臂按相同 token 预算比较。
+  - AUTO 完成后，以它账本的累计 token 作为预算。CC 若尚未完成，就继续跑。
+  - CC 的实时 token（账本累计加上运行段的 sample buffer 中已完成模型事件的 `total_tokens`）达到预算后，看门狗暂停 CC，不再续跑，并对该冻结状态做一次官方评分。
+  - **快照评分**：`score-snapshot.sh` 只取冻结状态中的 `workdir/src`，交给 `gb_mirrorcode_snapshot` task（同一 setup、scorer、版本，模型为 mockllm）还原并评分。评分 job 与运行 job 分开，结果写入 `snapshot-scored` 事件。
+  - **校验**：用该方法给 CC s2 冻结状态（757,767,253 token）评分，得到 visible 0.6544（与当时 CC 自己的最好可见分 498/761 一致），hidden 0.3115。
+  - `watchdog.py lift-budget` 解除预算，CC 可以从冻结状态继续跑。
+- **离线测试**：`test_segments.py`、`test_watchdog.py`、`test_cpa.py` 与 `test_sample_buffer.py`，共 83 个。重构后，两份已存的闸门种子由 `gated_resume_seed.py` 重新生成，结果完全一致。
+- **离线预演（2026-10-11）**：在同镜像的一次性容器中还原 AUTO s2 冻结状态，断网运行。
+  - 第一遍 `continue --recover-interrupted`：3 个叶子都恢复了原 ACP 会话（`restored=true`），断网下 run 正常暂停为 runtime-abnormal。
+  - 第二遍运行 20 秒后发 SIGTERM：1 秒内以退出码 2 退出，run 为 `process-interrupted`。
+  - 预演中发现并修复了一个产品缺陷：容器 PID 1 不回收孤儿时，Agent 后代变成僵尸，进程组存活判定一直为真，终止时关闭连接会卡死，CLI 无法退出。详见开发计划"Headless runner 反复暂停与继续"。
+  - 修复后二进制 SHA-256 为 `6dedb346…`，bundle `mc-agent-bundle-continue2.tgz` 为 `4e3a7fea…`。

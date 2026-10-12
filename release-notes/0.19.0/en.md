@@ -2,49 +2,68 @@
 
 ### 1.Direct sessions keep receiving background messages and can stay running
 
-When an Agent keeps working after a reply ends (for example, when a scheduled task fires or a sub-Agent runs in the background), a Direct session now keeps receiving its replies, tool calls, permission requests and questions instead of losing them once the reply ends.
+When an Agent keeps working after a reply ends (for example, when a scheduled task fires or a sub-Agent runs in the background), a Direct session now keeps receiving its replies, tool calls, permission requests and questions instead of losing them once the reply ends. (Currently mainly supported for Claude Code.)
+
+![image.png](https://static.dion.blue/2026/10/20261010151334594.png)
 
 1.You are notified once when a new background reply arrives; later content of the same reply does not notify again.
-2.While background work is running, the session icon in the sidebar pulses and a spinner replaces the time; inside the session you can see what the Agent is thinking about or which tool it is calling.
-3.While there is background activity, the composer shows a stop button so you can stop the background work; sending new messages is not affected.
-4.Files changed by background tools are counted in the most recent turn's file changes.
+2.While there is background activity, the composer shows a stop button so you can stop the background work; sending new messages is not affected.
 
-Right-click a Direct session and choose "Keep session running" to show a pin next to its title; right-click again and choose "Allow session eviction" to undo it.
+Right-click a Direct session and choose "Keep session running" to show a pin next to its title; right-click again and choose "Allow session eviction" to undo it. You can also click the pin button to the left of "Raw frames" at the top of the session to turn this on or off.
+![企业微信截图_17916164711387.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916164711387.png)
 
-All live Direct sessions are kept while there are 8 or fewer. Above 8, sessions idle for more than 6 hours are reclaimed; above 20, the sessions that have been inactive the longest are reclaimed early. Sessions kept running, executing, or waiting for you to answer a permission request or question are never reclaimed.
+![image.png](https://static.dion.blue/2026/10/20261012140125448.png)
+
+Direct, workflow and AUTO sessions now share the same reclaim rules: sessions idle for more than 10 minutes are reclaimed, and when there are more than 8 idle sessions, the ones inactive the longest are reclaimed first. Sessions kept running, executing, or waiting for you to answer a permission request or question are never reclaimed. If the Agent has scheduled tasks or other long-running work, keep the session running.
 
 > [!WARNING]
-> Keeping a session running only applies while the app is open; kept sessions are not started automatically after the app restarts. Scheduled tasks in a session that is not kept running may be interrupted when the session is reclaimed. Stopping background work only sends a cancel request to the Agent; whether its scheduled tasks are removed is up to the Agent.
+> 1.Keeping a session running only applies while the app is open; kept sessions are not started automatically after the app restarts. Scheduled tasks in a session that is not kept running may be interrupted when the session is reclaimed. Stopping background work only sends a cancel request to the Agent; whether its scheduled tasks are removed is up to the Agent.
+> 2.ACP currently has no signal for whether a background task has finished, so background work is considered finished when no background activity is running and no new activity has occurred for 10 seconds. As a result, a session may stay active for up to 10 seconds after its background task has ended.
+
 
 ### 2.Mermaid diagrams and GitHub alerts in Markdown
 
 ` ```mermaid ` code blocks in conversations and file previews now render as diagrams whose colors follow the current theme. Click a diagram to open it in the right workspace, where you can zoom, pan, and copy or save it as PNG.
 
+![image.png](https://static.dion.blue/2026/10/20261010151001399.png)
+
+
 Conversations and file previews also support GitHub's five alerts: `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` and `[!CAUTION]`.
+
+![企业微信截图_17916161364315.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916161364315.png)
+
 
 ### 3.Web images load only from trusted domains
 
 To prevent documents or Agent replies from making the client send requests to arbitrary servers, web images in Markdown now load automatically only from trusted domains.
 
 1.In conversations: untrusted images show a placeholder; click "Load" to trust the domain and display the image.
+![企业微信截图_17916165045640.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916165045640.png)
+![企业微信截图_17916165149409.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916165149409.png)
+
 2.In file previews: untrusted images stay as links, and a banner at the top lets you trust every domain in the document at once.
+![企业微信截图_17916165865322.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916165865322.png)
+
 3.View and remove trusted domains in "Settings → Advanced → Trusted image domains".
+
+![image.png](https://static.dion.blue/2026/10/20261010151155662.png)
 
 ### 4.View context compaction summaries
 
-When an Agent finishes compacting context and returns a text summary, the compaction entry shows "View summary". Click it to open the summary in the right workspace. It renders as Markdown by default, and you can switch to source and copy it.
+When an Agent finishes compacting context and returns a text summary, the compaction entry shows "View summary" (only if the Agent returns one). Click it to open the summary in the right workspace. It renders as Markdown by default, and you can switch to source and copy it.
+![企业微信截图_17916167016992.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916167016992.png)
+
 
 ### 5.Fetch configuration per model
 
 When you pick a model that has not been used yet in a workflow node, AUTO settings, the home composer or a session, "Configuration for this model has not been fetched" and a "Fetch model configuration" button appear. Clicking it starts the Agent once with that model to read its actual options; no message is sent and no task is created.
 
-You can keep editing, saving and starting tasks without clicking it. Existing model settings are no longer trimmed using another model's configuration, and a failed background Agent diagnosis no longer clears model configurations that were already fetched.
+![企业微信截图_17916167706477.png](https://static.dion.blue/2026/10/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%88%AA%E5%9B%BE_17916167706477.png)
 
-### 6.Release notes render like GitHub and are available from the Help menu
 
-Notes in the update dialog now render the same way as GitHub Releases, including line breaks and alerts. The new "Help → Release notes" lets you read the current version's notes at any time.
+You can keep editing, saving and starting tasks without clicking it. Unsupported settings fall back to unspecified when the session starts.
 
-### 7.Redesigned workflow graph layout
+### 6.Redesigned workflow graph layout
 
 The workflow editor and run graph use a new automatic layout with clearer node and edge placement. Groups created dynamically by AI-DYNAMIC are shown as nested frames, and a loading indicator appears when layout takes longer.
 
@@ -78,10 +97,18 @@ Claude ACP is upgraded to `0.87.0` and Codex ACP to `2.1.1`.
 2.Fixed files created by Cursor being recorded as modifications with Diff markers mixed into their content.
 3.File change rows consistently show the file name, directory and added/removed lines; files edited multiple times also show the edit count.
 
-### 5.Other improvements
+### 5.Lower resource usage
 
-1.Unified image preview: both file images and session images zoom directly with the mouse wheel, fit the window when first opened, and offer a "100%" button for the original size.
-2.When the built-in browser opens a local HTML file, resources in parent directories now load correctly; when a page accesses a directory outside the granted scope, you can choose "Allow access" in the notice.
-3.Headings in conversations have a clearer hierarchy and keep their spacing while streaming; "Release notes" moved to the end of the Help menu.
-4.Fixed installing or updating a client from one channel closing a running client from another channel when both are installed.
-5.Updated the ACP Registry and Agent catalog.
+1.Idle sessions are reclaimed promptly under the rules above instead of holding Agent processes indefinitely.
+2.Built-in browser pages hidden for more than 1 hour are released and reload from their address when shown again.
+3.npx Agents that are already installed now start directly, without the npx wrapper processes that used to stay running.
+4.The sidebar no longer re-renders as a whole while a session is streaming a reply.
+
+### 6.Other improvements
+
+1.Markdown tables in conversations and documents fill the text width and wrap automatically; long links and code no longer stretch the table.
+2.Unified image preview: both file images and session images zoom directly with the mouse wheel, fit the window when first opened, and offer a "100%" button for the original size.
+3.When the built-in browser opens a local HTML file, resources in parent directories now load correctly; when a page accesses a directory outside the granted scope, you can choose "Allow access" in the notice.
+4.Headings in conversations have a clearer hierarchy and keep their spacing while streaming; "Release notes" moved to the end of the Help menu.
+5.Fixed installing or updating a client from one channel closing a running client from another channel when both are installed.
+6.Updated the ACP Registry and Agent catalog.

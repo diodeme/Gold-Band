@@ -18,10 +18,12 @@ type BrowserHostModule = typeof import('./browser-webview-host');
 
 let browserHostModule: Promise<BrowserHostModule> | null = null;
 let browserHostModuleSync: BrowserHostModule | null = null;
+let configuredHiddenReleaseSecs: number | null = null;
 
 function loadBrowserHost() {
   browserHostModule ??= import('./browser-webview-host').then((module) => {
     browserHostModuleSync = module;
+    if (configuredHiddenReleaseSecs != null) module.browserWebviewHost.setHiddenReleaseDelay(configuredHiddenReleaseSecs);
     return module;
   });
   return browserHostModule;
@@ -71,6 +73,7 @@ export function BrowserNativeLifecycle({
   available,
   requestedOpen,
   activeIsBrowser,
+  hiddenReleaseSecs,
 }: {
   scopeKey: string | null;
   presented: boolean;
@@ -78,8 +81,14 @@ export function BrowserNativeLifecycle({
   available: boolean;
   requestedOpen: boolean;
   activeIsBrowser: boolean;
+  hiddenReleaseSecs: number;
 }) {
   const browserWasPresentedRef = useRef(false);
+  useLayoutEffect(() => {
+    // Recorded for a host that loads later; the host module stays lazy until a browser opens.
+    configuredHiddenReleaseSecs = hiddenReleaseSecs;
+    loadedBrowserHost()?.setHiddenReleaseDelay(hiddenReleaseSecs);
+  }, [hiddenReleaseSecs]);
   const ownerGenerationRef = useRef(0);
   const visibilityGenerationRef = useRef(0);
   useLayoutEffect(() => {

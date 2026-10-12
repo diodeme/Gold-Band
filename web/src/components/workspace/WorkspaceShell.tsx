@@ -735,6 +735,7 @@ function WorkspaceShellLayout({
         available={rightWorkspaceAvailable}
         requestedOpen={workspace.requestedOpen}
         activeIsBrowser={activeRightResource?.kind === 'browser'}
+        hiddenReleaseSecs={appConfig.browserHiddenReleaseSecs}
       />
       {memoryWorkspace && <ProjectMemorySheet key={memoryWorkspace.projectId} {...memoryWorkspace} onClose={() => setMemoryWorkspace(null)} />}
       <AppTitleBar

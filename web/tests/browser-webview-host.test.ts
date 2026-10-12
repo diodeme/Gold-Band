@@ -605,3 +605,88 @@ describe('browser webview host lifecycle', () => {
     expect(api.browserDiscardAll).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('browser webview hidden release', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    api.browserCreatePage.mockImplementation(async (input) => ({ pageId: input.pageId, url: input.url, label: `gb-${input.pageId}` }));
+    api.browserDiscardAll.mockResolvedValue(undefined);
+    browserWebviewHost.setHiddenReleaseDelay(3600);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    browserWebviewHost.resetForTests();
+    browserSessionStore.resetForTests();
+    document.body.replaceChildren();
+  });
+
+  it('keeps hidden pages live when the browser returns within the release delay', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(HOUR_MS - 1000);
+    browserWebviewHost.resume();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(api.browserDiscardAll).not.toHaveBeenCalled();
+    expect(browserSessionStore.page(page.pageId)?.live).toBe(true);
+  });
+
+  it('releases native pages after the delay but keeps tabs and urls, then recreates on return', async () => {
+    const page = liveNativePage('https://example.com/docs');
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+    const released = browserSessionStore.page(page.pageId);
+    expect(released?.live).toBe(false);
+    expect(released?.url).toBe('https://example.com/docs');
+
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(released!, bounds, true);
+    expect(api.browserCreatePage).toHaveBeenCalledWith(expect.objectContaining({ pageId: page.pageId, url: 'https://example.com/docs' }));
+  });
+
+  it('uses the configured delay', async () => {
+    liveNativePage();
+    browserWebviewHost.setHiddenReleaseDelay(60);
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(60 * 1000);
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases on return when the timer was delayed past the deadline', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.suppress();
+    // Simulate sleep or background throttling: wall clock advances but the timer has not fired.
+    vi.setSystemTime(Date.now() + HOUR_MS + 1000);
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(browserSessionStore.page(page.pageId)!, bounds, true);
+
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+    expect(api.browserCreatePage).toHaveBeenCalledWith(expect.objectContaining({ pageId: page.pageId }));
+  });
+
+  it('waits for an in-flight release before showing the returning page', async () => {
+    const page = liveNativePage();
+    let finishDiscard!: () => void;
+    api.browserDiscardAll.mockImplementationOnce(() => new Promise<void>((resolve) => { finishDiscard = resolve; }));
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    browserWebviewHost.resume();
+    const showing = browserWebviewHost.ensurePage(browserSessionStore.page(page.pageId)!, bounds, true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.browserCreatePage).not.toHaveBeenCalled();
+    expect(api.browserShowPage).not.toHaveBeenCalled();
+
+    finishDiscard();
+    await showing;
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+    expect(api.browserCreatePage).toHaveBeenCalledTimes(1);
+    expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
+  });
+});

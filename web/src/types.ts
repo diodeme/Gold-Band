@@ -231,6 +231,8 @@ export interface AppConfigVm {
   acpChatEventPageSize: number;
   acpChatEventWindowPageCount: number;
   acpChatResourceCacheSessionCount: number;
+  /** Hidden built-in browser pages are released after this long and reloaded on return. */
+  browserHiddenReleaseSecs: number;
   conversationInlineContentMaxBytes: number;
   conversationInlineImageMaxBytes: number;
   conversationInlineImageMaxDimension: number;

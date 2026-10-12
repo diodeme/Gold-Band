@@ -32,6 +32,7 @@ import {
   DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
 } from './lib/acp-chat-pagination';
 import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from './lib/acp-chat-resource-cache';
+import { DEFAULT_BROWSER_HIDDEN_RELEASE_SECS } from './components/workspace/browser/browser-config';
 
 const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, browser: { schemaVersion: 1, searchEngine: 'baidu', openLocalLinksInBrowser: true, openWebLinksInBrowser: true }, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
@@ -488,6 +489,7 @@ export const mockBootstrap: AppBootstrapVm = {
     acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
     acpChatEventWindowPageCount: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
     acpChatResourceCacheSessionCount: DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+    browserHiddenReleaseSecs: DEFAULT_BROWSER_HIDDEN_RELEASE_SECS,
     conversationInlineContentMaxBytes: 20_000,
     conversationInlineImageMaxBytes: 4 * 1024 * 1024,
     conversationInlineImageMaxDimension: 2_560,

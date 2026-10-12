@@ -8,6 +8,7 @@ import {
   canonicalizeBrowserUrl,
   isBrowserPortalUrl,
 } from './browser-session-store';
+import { DEFAULT_BROWSER_HIDDEN_RELEASE_SECS } from './browser-config';
 
 export interface BrowserBounds {
   x: number;
@@ -138,6 +139,11 @@ class BrowserWebviewHost {
   private showPromise: Promise<void> | null = null;
   private visibilityRevision = 0;
   private suppressed = false;
+  /** Native pages hidden this long are released; returning recreates them from their URL. */
+  private hiddenReleaseMs = DEFAULT_BROWSER_HIDDEN_RELEASE_SECS * 1000;
+  private hiddenSince: number | null = null;
+  private hiddenReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private releasePromise: Promise<void> | null = null;
 
   async ensureStarted() {
     if (this.started) return;
@@ -163,6 +169,9 @@ class BrowserWebviewHost {
 
   async ensurePage(page: BrowserPage, bounds: BrowserBounds, visible: boolean) {
     await this.ensureStarted();
+    if (this.releasePromise) await this.releasePromise;
+    // The caller's page may predate a release that finished meanwhile; use the current record.
+    page = browserSessionStore.page(page.pageId) ?? page;
     const next = roundBounds(bounds);
     if (next.width < 2 || next.height < 2) {
       // A hidden page stays hidden. Resume clears the flag before the placeholder
@@ -238,10 +247,20 @@ class BrowserWebviewHost {
     }
   }
 
+  setHiddenReleaseDelay(seconds: number) {
+    if (!(seconds > 0)) return;
+    this.hiddenReleaseMs = seconds * 1000;
+    if (this.hiddenSince != null) this.scheduleHiddenRelease();
+  }
+
   async suppress() {
     const changed = !this.suppressed;
     this.suppressed = true;
-    if (changed) this.visibilityRevision += 1;
+    if (changed) {
+      this.visibilityRevision += 1;
+      this.hiddenSince = Date.now();
+      this.scheduleHiddenRelease();
+    }
     this.visiblePageId = null;
     await this.hideAll();
   }
@@ -250,6 +269,10 @@ class BrowserWebviewHost {
     if (!this.suppressed) return;
     this.suppressed = false;
     this.visibilityRevision += 1;
+    // Timers may fire late (sleep, background throttling): judge by elapsed time on return.
+    const hiddenFor = this.hiddenSince == null ? 0 : Date.now() - this.hiddenSince;
+    this.clearHiddenRelease();
+    if (hiddenFor >= this.hiddenReleaseMs) void this.releaseLivePages();
     this.visibilityListener?.();
   }
 
@@ -283,15 +306,43 @@ class BrowserWebviewHost {
 
   async discardAll() {
     await this.suppress();
-    const live = browserSessionStore.livePageIds();
-    await Promise.all(this.pendingCreates.values());
-    await Promise.all([...this.pendingBounds.values()].map((operation) => operation.promise));
-    await api().browserDiscardAll?.();
-    this.lastBounds.clear();
-    this.appliedBounds.clear();
-    this.pendingBounds.clear();
-    this.visiblePageId = null;
-    browserSessionStore.markDiscarded(live);
+    this.clearHiddenRelease();
+    await this.releaseLivePages();
+  }
+
+  private scheduleHiddenRelease() {
+    if (this.hiddenReleaseTimer != null) clearTimeout(this.hiddenReleaseTimer);
+    const remaining = Math.max(0, (this.hiddenSince ?? Date.now()) + this.hiddenReleaseMs - Date.now());
+    this.hiddenReleaseTimer = setTimeout(() => {
+      this.hiddenReleaseTimer = null;
+      if (this.suppressed) void this.releaseLivePages();
+    }, remaining);
+  }
+
+  private clearHiddenRelease() {
+    if (this.hiddenReleaseTimer != null) clearTimeout(this.hiddenReleaseTimer);
+    this.hiddenReleaseTimer = null;
+    this.hiddenSince = null;
+  }
+
+  /** Closes every native page while keeping tabs and URLs; the next ensurePage recreates them. */
+  private releaseLivePages() {
+    this.releasePromise ??= (async () => {
+      try {
+        await Promise.all(this.pendingCreates.values());
+        await Promise.all([...this.pendingBounds.values()].map((operation) => operation.promise));
+        const live = browserSessionStore.livePageIds();
+        await api().browserDiscardAll?.();
+        this.lastBounds.clear();
+        this.appliedBounds.clear();
+        this.pendingBounds.clear();
+        this.visiblePageId = null;
+        browserSessionStore.markDiscarded(live);
+      } finally {
+        this.releasePromise = null;
+      }
+    })();
+    return this.releasePromise;
   }
 
   commitNavigation(pageId: string, url: string) {
@@ -474,6 +525,9 @@ class BrowserWebviewHost {
     this.layoutListener = null;
     this.visibilityRevision = 0;
     this.suppressed = false;
+    this.clearHiddenRelease();
+    this.releasePromise = null;
+    this.hiddenReleaseMs = DEFAULT_BROWSER_HIDDEN_RELEASE_SECS * 1000;
   }
 
   private nativeBoundsTarget(pageId: string): BrowserBounds | null {
@@ -600,6 +654,7 @@ class BrowserWebviewHost {
 
   private async performNavigation(pageId: string, target: string) {
     await this.ensureStarted();
+    if (this.releasePromise) await this.releasePromise;
     const current = browserSessionStore.page(pageId);
     if (!current) return;
     if (current.live && canonicalizeBrowserUrl(current.url) === target) return;

@@ -10,6 +10,7 @@ const host = vi.hoisted(() => ({
   suppress: vi.fn(async () => undefined),
   resume: vi.fn(),
   hasBlockingOverlay: vi.fn(() => false),
+  setHiddenReleaseDelay: vi.fn(),
 }));
 
 vi.mock('@/components/workspace/browser/browser-webview-host', () => ({

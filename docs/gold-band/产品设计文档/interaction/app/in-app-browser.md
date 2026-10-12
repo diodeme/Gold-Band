@@ -196,11 +196,12 @@ BrowserPanel
 | × 工作区「浏览器」（close） | hide | 全部丢弃 | **保留** | 去掉 |
 | 内部关闭所有标签 | hide | 全部关闭 | 清空 | 仍在，空态 + |
 | 离开会话 Shell（例如进入独立工作台设置页） | 立即 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 随 scope 保存 |
+| 连续隐藏达到 `browserHiddenReleaseSecs`（默认 3600 秒） | 保持隐藏 | 全部丢弃，释放 WebView 进程 | 保留（URL、标题） | 不变；再显示时重建当前页并重新加载 |
 | 应用退出 | 全部 close | 无 | 丢弃 | 丢弃；Cookie 保留 |
 
 丢弃后的再打开：只重建当前页；其余内部页只显示标题，点到再创建 WebView。页内 JS 状态和滚动位置不恢复；Cookie 使登录通常仍有效。
 
-展示状态与资源终止必须分离：右栏收起、切 Tab、切 scope、离开 Shell、进入设置页只做 `hide + suppress`，**不销毁**实例；只有用户明确关闭浏览器工作对象（`reason === 'close'`）、关闭内部页、LRU 淘汰和应用退出才 `discard`。因此 `BrowserNativeLifecycle` 必须同时评估 `available`、`requestedOpen`、`presented`、`autoCollapsedHidden`、`activeIsBrowser` 与 `scopeKey`：任一展示条件不成立才 suppress。`scopeKey` 变化只触发重新求值：浏览器会话是进程单例，切换会话时可见页并未改变，展示条件仍成立就不得对同一页面 hide / show，强制 hide→show 只会造成闪屏。
+展示状态与资源终止必须分离：右栏收起、切 Tab、切 scope、离开 Shell、进入设置页只做 `hide + suppress`，**不销毁**实例；只有用户明确关闭浏览器工作对象（`reason === 'close'`）、关闭内部页、LRU 淘汰、连续隐藏达到释放时限和应用退出才 `discard`。因此 `BrowserNativeLifecycle` 必须同时评估 `available`、`requestedOpen`、`presented`、`autoCollapsedHidden`、`activeIsBrowser` 与 `scopeKey`：任一展示条件不成立才 suppress。`scopeKey` 变化只触发重新求值：浏览器会话是进程单例，切换会话时可见页并未改变，展示条件仍成立就不得对同一页面 hide / show，强制 hide→show 只会造成闪屏。
 
 隐藏后重新显示必然是原生图层的一次 hide → show，中间会露出承载面板的 HTML 空白，因此首次测量与 `show` 必须在 layout 阶段（首帧前）发出，不得排进 `requestAnimationFrame`；只有 resize / observer 驱动的后续同步才走 rAF 合并。只有 `live` 翻转时才额外补一次同步，避免挂载时重复同步。
 
@@ -214,7 +215,9 @@ BrowserPanel
 
 `suppress` 语义固定为幂等的「隐藏并阻止迟到 show」，`resume` 为幂等的「解除抑制并通知占位组件按当前 bounds 重新 show」；重复调用不得产生额外 IPC 或重复 show。`resume` 只清标志位而不同步，会留下工具栏还在、网页全白的状态。`scope-change` 的 close resolver 保持 no-op：scope 切换由 `BrowserNativeLifecycle` 统一驱动，该组件位于 `RightWorkspaceProvider` 内部，子级 effect 先于父级执行；若父级 resolver 再 suppress，会把刚恢复的新 scope 页面重新隐藏。`deactivate` 与 `workspace-close` 走 suppress，只有 `close` 走 `discardAll`。
 
-临时离开统一 suppress 而不是 discard，是为了保留页内 JS 状态、滚动位置、SPA 状态和原生导航历史，代价是隐藏实例仍占用内存并可能继续跑定时器、网络或音频，由 5 个活实例上限兜底。语义按 Tauri 子 WebView 定义，不绑定具体内核：`show/hide`、bounds、`close`、registry 与 LRU 对所有平台一致，Windows WebView2 / macOS WKWebView / Linux WebKitGTK 只作为平台实现细节。第一版不引入平台专属 suspend/冻结状态机；只有实测隐藏实例消耗不可接受时，才单独设计跨平台降级能力。
+临时离开统一 suppress 而不是 discard，是为了保留页内 JS 状态、滚动位置、SPA 状态和原生导航历史，代价是隐藏实例仍占用内存并可能继续跑定时器、网络或音频，由 5 个活实例上限和隐藏释放时限兜底。语义按 Tauri 子 WebView 定义，不绑定具体内核：`show/hide`、bounds、`close`、registry 与 LRU 对所有平台一致，Windows WebView2 / macOS WKWebView / Linux WebKitGTK 只作为平台实现细节。不引入平台专属 suspend/冻结状态机。
+
+隐藏释放：实测浏览器打开过后，隐藏实例所在的独立 WebView2 环境（`browser-profile`）常驻约 200MB。浏览器宿主在 `suppress` 生效时记下隐藏起点并挂一个定时器，时长取 `configs/app-config.toml` 的 `browserHiddenReleaseSecs`（默认 3600 秒，非正数回落默认值），经 `AppConfigVm` 下发。到期时宿主等待在途 create / bounds 结束，再按 discard 释放全部活实例：内部页的 URL 与标题保留，只把 `live` 投影为 false。时限内 `resume` 取消定时器并直接显示原实例；超过时限才 `resume`（例如定时器被系统挂起而未触发）时先完成释放，再按丢弃后的再打开规则重建当前页并重新加载。`ensurePage` 与导航必须等待在途释放完成，并从会话重新读取页面投影，不得用释放前的页面对象复用已关闭的实例。时限只配置一处，宿主保持懒加载：配置在宿主模块加载前到达时先记下，加载后再应用。
 
 `WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。原生网页的显隐只由 `BrowserNativeLifecycle` 写入；浏览器面板和占位组件卸载不得自行调用 `resume`、`suppress` 或 `hideAll`，避免同一 scope 切换产生重复 hide/show。占位组件只负责在 layout 阶段测量并把当前 `pageId + bounds + visible` 交给 host，后续 ResizeObserver/窗口变化通过 rAF 合并到 `ensurePage`；同一次测量不得再旁路发送 bounds IPC。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效。这条失效检查放在 layout cleanup 登记的微任务里，真实卸载仍在绘制前 `suppress`。无论是面板卸载、Shell 卸载还是 `available=false`，都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。`available=false` 且宿主模块已加载时，在 layout effect 本体里同步 `suppress`，不等这个微任务。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
 
@@ -314,4 +317,4 @@ Windows / macOS / Linux 共用占位同步、show/hide、内部页、profile、�
 
 本地 HTML 协议不引入本地 HTTP 服务、缓存、临时目录或第二份授权状态：协议处理器直接复用页面已持有的 `LocalFileGrant` 与 Tauri 异步自定义协议能力，读文件是单次有界读取（上限 64MB）。授权只是把原先的单个目录换成授权根列表加有界的被拒目录列表，仍挂在原生页上，与页同生命周期；默认授权根只在打开本地文档时读取一次已注册工作空间并做路径前缀比较，不扫描目录。被拒目录只在新增时发一次事件，单页最多 16 个，不随请求数增长。导航收敛不新增页状态字段，只复用现有 `page.url` 与 `loading`，因此也没有引入额外的事实源。
 
-性能：未打开路径零增量。打开后最多 5 块 WebView，可见时每动画帧最多一次 bounds IPC。关右栏或 × 投影 Tab 必须停同步并丢弃实例，避免看不见时占内存。内部页摘要有界（建议内部页上限 32，超出拒绝新建或淘汰最旧非当前页标题，实现时在开发方案固定）。坐标同步不得触发会话 Markdown 重渲染。本地 HTML 协议按需读取单个文件，不做目录扫描、不做递归遍历；同一目标连续提交不产生额外原生调用，因此性能风险与点击次数无关。
+性能：未打开路径零增量。打开后最多 5 块 WebView，可见时每动画帧最多一次 bounds IPC。关右栏只 hide + suppress 并停同步，连续隐藏达到 `browserHiddenReleaseSecs` 后丢弃全部实例；× 投影 Tab 立即丢弃。看不见时的内存占用因此有时间上限，隐藏期间只多一个定时器。内部页摘要有界（建议内部页上限 32，超出拒绝新建或淘汰最旧非当前页标题，实现时在开发方案固定）。坐标同步不得触发会话 Markdown 重渲染。本地 HTML 协议按需读取单个文件，不做目录扫描、不做递归遍历；同一目标连续提交不产生额外原生调用，因此性能风险与点击次数无关。

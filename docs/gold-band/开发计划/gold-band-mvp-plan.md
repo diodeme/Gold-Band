@@ -2964,3 +2964,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 验收及评审：复用现有组件和事件，不新增依赖、恢复按钮、轮询或无界积压。每 attempt 一条错误、最多 128 条，诊断和参数各限 16 KiB；常规加载不增加正文读取，锁内不执行 I/O。浏览器通过临时测试页面挂载实际 ACPChatDialog 验证，完成后移除测试入口。
 
 - [x] 验证结果：ACP lifecycle 118 项、RuntimeError 11 项、桌面错误 envelope 1 项、Web 相关 229 项测试通过；桌面端 `cargo check --tests`、前端 TypeScript 检查与 Vite 生产构建通过。浏览器在 480px 窄窗验证错误通知、停止处理、未确认工具、回复/草稿保留及切走重入。生产构建保留既有 chunk 大小与混合导入警告。
+
+## 2026-10-13 复合模型二级菜单在窄会话栏内原地展开
+
+- 根因：会话栏浮层以会话栏为碰撞边界，复合菜单的二级菜单固定 22rem 侧向弹出。会话栏变窄后左右两侧都放不下，Radix 翻到左侧并把宽度压到剩余空间，但定位仍按原宽度计算，菜单被挤到窗口最左边并覆盖侧边栏。
+- 实现：`portal-container` 新增纯函数 `overlayFitsBeside` / `overlayCollisionRect`；`AcpModelThoughtSelects` 把模型与配置分区收成同一个 `CompositeConfigSection`，`openSection` 统一记录 `{ id, presentation: flyout | inline }`。每次尝试打开时测量主菜单与边界：放得下走原有 Radix 侧弹；放不下时悬停不弹出，点击 / Enter / Space / → 在主菜单内原地展开，← 收起。
+- 证据：`web/tests/acp-model-thought-submenu-placement.test.tsx` 在修复前因窄边界下仍打开侧向菜单而失败，修复后与相关菜单、碰撞边界测试全部通过；浏览器 harness 验证 480px 会话栏原地展开且不越界，900px 会话栏保持悬停侧弹。
+- 过度设计与性能评审：只在打开二级菜单时读一次 `getBoundingClientRect`，无常驻监听、缓存或新的持久状态；两种载体共用同一份单选列表。

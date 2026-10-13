@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown } from 'lucide-react';
 
@@ -32,6 +32,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { overlayCollisionRect, overlayFitsBeside, useOverlayPositioning } from '@/lib/portal-container';
 import {
   ACP_THOUGHT_LEVEL_CATEGORY,
   type AcpCompositeConfigSection,
@@ -82,14 +83,25 @@ export function acpConfigMenuSelectionMode(
   return hasThought || hasExtra ? 'composite' : 'single';
 }
 
+/** Side flyout when the conversation pane has room beside the menu, otherwise expanded inside it. */
+export type AcpCompositeSectionPresentation = 'flyout' | 'inline';
+export type AcpCompositeOpenSection = { id: string; presentation: AcpCompositeSectionPresentation };
+
 export function nextAcpCompositeSection(
-  currentSection: string | null,
+  currentSection: AcpCompositeOpenSection | null,
   section: string,
   open: boolean,
-) {
-  if (open) return section;
-  return currentSection === section ? null : currentSection;
+  presentation: AcpCompositeSectionPresentation = 'flyout',
+): AcpCompositeOpenSection | null {
+  if (open) return { id: section, presentation };
+  return currentSection?.id === section ? null : currentSection;
 }
+
+// Keep in sync with COMPOSITE_SUBMENU_CLASS width.
+const COMPOSITE_SUBMENU_WIDTH_REM = 22;
+const COMPOSITE_SUBMENU_SIDE_OFFSET = 6;
+const COMPOSITE_SUBMENU_CLASS = 'w-[min(22rem,calc(100vw-2rem))] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto';
+const COMPOSITE_SUBMENU_OPEN_KEYS = ['Enter', ' ', 'ArrowRight'];
 
 type ThoughtLevelProps = Omit<AcpSelectConfigOptionVm, "options"> & {
   options: Array<AcpSelectConfigOptionVm["options"][number] & { available?: boolean }>;
@@ -170,7 +182,10 @@ function AcpModelThoughtSelectsControl({
   menuFooter,
 }: Props & MenuControlProps) {
   const { t } = useTranslation();
-  const [openSection, setOpenSection] = useState<string | null>(null);
+  const [openSection, setOpenSection] = useState<AcpCompositeOpenSection | null>(null);
+  const changeOpenSection = (id: string, open: boolean, presentation?: AcpCompositeSectionPresentation) => {
+    setOpenSection((current) => nextAcpCompositeSection(current, id, open, presentation));
+  };
   const keepMenuOpenRef = useRef(false);
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
   const selectedModel = models.find((model) => model.id === modelValue);
@@ -290,91 +305,180 @@ function AcpModelThoughtSelectsControl({
         align={align}
         className="w-[min(19rem,calc(100vw-2rem))]"
       >
-        <DropdownMenuSub
-          open={openSection === 'model'}
-          onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, 'model', open))}
-        >
-          <DropdownMenuSubTrigger className="py-2">
-            <span className="w-20 shrink-0 truncate text-muted-foreground">{t('acp.currentModel')}</span>
-            <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedModel?.name ?? modelValueLabel ?? ''}</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent
-            sideOffset={6}
-            className="w-[min(22rem,calc(100vw-2rem))] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto"
-          >
-            <DropdownMenuRadioGroup
-              value={modelValue || UNSPECIFIED_ACP_CONFIG_VALUE}
-              onValueChange={(value) => {
-                onModelChange(value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value);
-              }}
-            >
-              {showUnspecifiedModel ? (
-                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
-                  {unspecifiedLabel}
-                </DropdownMenuRadioItem>
-              ) : null}
-              {models.map((model) => (
-                <DropdownMenuRadioItem key={model.id} value={model.id} disabled={model.available === false} className="items-start py-2" onSelect={handleConfigOptionSelect}>
-                  <span className="block min-w-0">
-                    <span className="block truncate font-medium">{model.name}</span>
-                    {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{model.description}</span> : null}
-                  </span>
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        <CompositeConfigSection
+          id="model"
+          label={t('acp.currentModel')}
+          labelClassName="w-20"
+          valueLabel={selectedModel?.name ?? modelValueLabel ?? ''}
+          value={modelValue || UNSPECIFIED_ACP_CONFIG_VALUE}
+          onValueChange={(value) => onModelChange(value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value)}
+          unspecifiedLabel={showUnspecifiedModel ? unspecifiedLabel : null}
+          items={models.map((model) => ({
+            value: model.id,
+            name: model.name,
+            description: model.description,
+            available: model.available,
+          }))}
+          openSection={openSection}
+          onOpenChange={changeOpenSection}
+          onItemSelect={handleConfigOptionSelect}
+        />
 
         {sections.map((section) => {
           const selected = section.options.find((option) => option.value === section.value);
           const label = acpCompositeSectionLabel(section, t('acp.thoughtLevel'), thoughtLevelCount, t);
-          const showUnspecified = section.showUnspecified ?? true;
           return (
-            <DropdownMenuSub
+            <CompositeConfigSection
               key={section.id}
-              open={openSection === section.id}
-              onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, section.id, open))}
-            >
-              <DropdownMenuSubTrigger
-                className="py-2"
-                data-acp-composite-section={section.category}
-                data-acp-composite-section-label={label}
-              >
-                <span className="w-40 shrink-0 truncate text-muted-foreground">{label}</span>
-                <span className="min-w-0 flex-1 truncate text-right text-foreground">{selected?.name ?? section.valueLabel ?? ''}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                sideOffset={6}
-                className="w-[min(22rem,calc(100vw-2rem))] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto"
-              >
-                <DropdownMenuRadioGroup
-                  value={section.value || UNSPECIFIED_ACP_CONFIG_VALUE}
-                  onValueChange={(value) => changeConfigOption?.(
-                    section.id,
-                    value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value,
-                  )}
-                >
-                  {showUnspecified ? (
-                    <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
-                      {t('acp.unspecifiedThoughtLevel')}
-                    </DropdownMenuRadioItem>
-                  ) : null}
-                  {section.options.map((option) => (
-                    <DropdownMenuRadioItem key={option.value} value={option.value} disabled={option.available === false} className="items-start py-2" onSelect={handleConfigOptionSelect}>
-                      <span className="block min-w-0">
-                        <span className="block truncate font-medium">{option.name}</span>
-                        {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{option.description}</span> : null}
-                      </span>
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+              id={section.id}
+              label={label}
+              labelClassName="w-40"
+              valueLabel={selected?.name ?? section.valueLabel ?? ''}
+              triggerAttributes={{
+                'data-acp-composite-section': section.category,
+                'data-acp-composite-section-label': label,
+              }}
+              value={section.value || UNSPECIFIED_ACP_CONFIG_VALUE}
+              onValueChange={(value) => changeConfigOption?.(
+                section.id,
+                value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value,
+              )}
+              unspecifiedLabel={(section.showUnspecified ?? true) ? t('acp.unspecifiedThoughtLevel') : null}
+              items={section.options}
+              openSection={openSection}
+              onOpenChange={changeOpenSection}
+              onItemSelect={handleConfigOptionSelect}
+            />
           );
         })}
         {menuFooter}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+type CompositeConfigItem = {
+  value: string;
+  name: string;
+  description?: string | null;
+  available?: boolean;
+};
+
+type CompositeConfigSectionProps = {
+  id: string;
+  label: string;
+  labelClassName: string;
+  valueLabel: string;
+  triggerAttributes?: Record<`data-${string}`, string>;
+  value: string;
+  onValueChange: (value: string) => void;
+  /** null hides the unspecified option. */
+  unspecifiedLabel: string | null;
+  items: CompositeConfigItem[];
+  openSection: AcpCompositeOpenSection | null;
+  onOpenChange: (id: string, open: boolean, presentation?: AcpCompositeSectionPresentation) => void;
+  onItemSelect: (event: Event) => void;
+};
+
+function CompositeConfigSection({
+  id,
+  label,
+  labelClassName,
+  valueLabel,
+  triggerAttributes,
+  value,
+  onValueChange,
+  unspecifiedLabel,
+  items,
+  openSection,
+  onOpenChange,
+  onItemSelect,
+}: CompositeConfigSectionProps) {
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const inlineId = useId();
+  const { collisionBoundary, collisionPadding } = useOverlayPositioning();
+  const presentation = openSection?.id === id ? openSection.presentation : null;
+
+  // Measured on each open attempt so the decision follows the live pane width and menu position.
+  const flyoutFits = () => {
+    const menu = triggerRef.current?.closest('[data-slot="dropdown-menu-content"]');
+    if (!menu) return true;
+    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const width = Math.min(COMPOSITE_SUBMENU_WIDTH_REM * rem, window.innerWidth - 2 * rem);
+    return overlayFitsBeside(
+      menu.getBoundingClientRect(),
+      overlayCollisionRect(collisionBoundary),
+      width,
+      COMPOSITE_SUBMENU_SIDE_OFFSET,
+      collisionPadding,
+    );
+  };
+  const handleFlyoutOpenChange = (open: boolean) => {
+    if (open) {
+      // Hover never expands inline; only an explicit click or key does.
+      if (flyoutFits()) onOpenChange(id, true, 'flyout');
+      return;
+    }
+    if (presentation === 'flyout') onOpenChange(id, false);
+  };
+  const handleClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (flyoutFits()) return;
+    event.preventDefault();
+    onOpenChange(id, presentation !== 'inline', 'inline');
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const expand = COMPOSITE_SUBMENU_OPEN_KEYS.includes(event.key);
+    const collapse = event.key === 'ArrowLeft' && presentation === 'inline';
+    if ((!expand && !collapse) || flyoutFits()) return;
+    event.preventDefault();
+    const toggles = event.key === 'Enter' || event.key === ' ';
+    onOpenChange(id, collapse ? false : !(toggles && presentation === 'inline'), 'inline');
+  };
+
+  const radioGroup = (
+    <DropdownMenuRadioGroup value={value} onValueChange={onValueChange}>
+      {unspecifiedLabel !== null ? (
+        <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={onItemSelect}>
+          {unspecifiedLabel}
+        </DropdownMenuRadioItem>
+      ) : null}
+      {items.map((item) => (
+        <DropdownMenuRadioItem key={item.value} value={item.value} disabled={item.available === false} className="items-start py-2" onSelect={onItemSelect}>
+          <span className="block min-w-0">
+            <span className="block truncate font-medium">{item.name}</span>
+            {item.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{item.description}</span> : null}
+          </span>
+        </DropdownMenuRadioItem>
+      ))}
+    </DropdownMenuRadioGroup>
+  );
+
+  return (
+    <>
+      <DropdownMenuSub open={presentation === 'flyout'} onOpenChange={handleFlyoutOpenChange}>
+        <DropdownMenuSubTrigger
+          ref={triggerRef}
+          className={cn('py-2', presentation === 'inline' && '[&>svg:last-child]:rotate-90')}
+          {...triggerAttributes}
+          {...(presentation === 'inline'
+            ? { 'aria-expanded': true, 'aria-controls': inlineId, 'data-state': 'open' }
+            : null)}
+          onClick={handleClick}
+          onKeyDown={handleKeyDown}
+        >
+          <span className={cn(labelClassName, 'shrink-0 truncate text-muted-foreground')}>{label}</span>
+          <span className="min-w-0 flex-1 truncate text-right text-foreground">{valueLabel}</span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent sideOffset={COMPOSITE_SUBMENU_SIDE_OFFSET} className={COMPOSITE_SUBMENU_CLASS}>
+          {radioGroup}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      {presentation === 'inline' ? (
+        <div id={inlineId} role="group" aria-label={label} data-acp-composite-inline={id} className="pl-3">
+          {radioGroup}
+        </div>
+      ) : null}
+    </>
   );
 }
 

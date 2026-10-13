@@ -18,6 +18,7 @@ import {
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
   projectAcpSessionControlEvents,
+  projectLiveAcpEventBatch,
   promptRetryFooterKind,
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
@@ -565,6 +566,7 @@ describe('ACP chat event handling', () => {
     expect(updated?.pendingInteractions).toEqual([{
       kind: 'elicitation',
       interactionId: 'elicit-live',
+      sessionId: null,
       turnId: null,
       promptEventId: null,
       message,
@@ -678,6 +680,41 @@ describe('ACP chat event handling', () => {
     expect(
       reconcileAcpSessionForDisplay(live, settledProjection)?.pendingInteractions,
     ).toEqual([]);
+  });
+
+  it('keeps a live permission settlement after the display reconcile', () => {
+    const pendingPermission = {
+      kind: 'permission' as const,
+      interactionId: '0',
+      sessionId: 'session-1',
+      turnId: null,
+      promptEventId: null,
+      title: 'Edit file_A.txt',
+      toolCallId: 'toolu-1',
+      options: [],
+      raw: { requestId: '0' },
+    };
+    const live = session({
+      status: 'running',
+      pendingInteractions: [pendingPermission],
+    });
+    const cancelled = event({
+      id: 'permission-0',
+      seq: 30,
+      kind: 'permissionRequest',
+      status: 'cancelled',
+      toolCallId: 'toolu-1',
+      title: 'Edit file_A.txt',
+      raw: { requestId: '0', cancelled: true },
+    });
+
+    const projected = projectAcpSessionControlEvents(live, [cancelled], null);
+    expect(projected?.pendingInteractions).toEqual([]);
+
+    // The live batch projection is the newest fact: reconciling the display
+    // snapshot first and projecting afterwards must keep the settlement.
+    const batched = projectLiveAcpEventBatch(live, live, [cancelled], null);
+    expect(batched?.pendingInteractions).toEqual([]);
   });
 
   it('does not infer pending interactions from a terminal session history window', () => {

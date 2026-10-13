@@ -235,6 +235,7 @@ import {
   isTerminalAcpLifecycle,
   isTerminalLifecycleForTurn,
   shouldHidePendingAcpInteractions,
+  routesAcpStopToBackgroundControl,
   mergeConversationAttemptLifecycle,
   mergeConversationAttemptLiveControlFacets,
   shouldSettleAcpComposerTransientState,
@@ -3440,13 +3441,11 @@ export function ACPChatDialog(
           latest && (!current || shouldPreferAcpSessionMetadata(latest, current))
             ? latest
             : (current ?? latest);
-        const reconciled = reconcileAcpSessionForDisplay(
+        const reconciled = projectLiveAcpEventBatch(
           latest,
-          projectAcpSessionControlEvents(
-            base,
-            normalizedEvents,
-            lifecycleProjectionRef.current,
-          ),
+          base,
+          normalizedEvents,
+          lifecycleProjectionRef.current,
         );
         latestSessionRef.current = reconciled;
         if (reconciled) storeAcpSession(eventWindowKey, reconciled);
@@ -6181,7 +6180,7 @@ export function ACPChatDialog(
 
   const stopSession = async () => {
     if (!canStopSession || stopCommandInFlight || backgroundCancelPending) return;
-    if (!composerState.canStop && backgroundControl) {
+    if (routesAcpStopToBackgroundControl(composerState, backgroundControl)) {
       const scope = eventWindowKey;
       setBackgroundCancelPending(true);
       setCancelError(null);
@@ -11721,6 +11720,22 @@ export function projectAcpSessionControlEvents(
     projected = applyPendingInteractionEventsToSession(projected, events);
   }
   return settlePendingAcpInteractionsForLifecycle(projected, lifecycle);
+}
+
+/**
+ * Reconcile the display snapshot first, then apply the live control-event
+ * projection on top: the live batch is the newest fact, so snapshot-
+ * preservation rules must not roll back its interaction settlements. Matches
+ * the replay catch-up order.
+ */
+export function projectLiveAcpEventBatch(
+  latest: AcpSessionVm | null | undefined,
+  base: AcpSessionVm | null | undefined,
+  events: AcpUiEventVm[],
+  lifecycle?: ConversationAttemptLifecycleVm | null,
+): AcpSessionVm | null {
+  const reconciledBase = reconcileAcpSessionForDisplay(latest, base) ?? base ?? null;
+  return projectAcpSessionControlEvents(reconciledBase, events, lifecycle);
 }
 
 function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) {

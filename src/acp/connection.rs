@@ -3669,7 +3669,7 @@ mod tests {
                 .unwrap()
         );
         let response = worker.join().unwrap();
-        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert!(matches!(response.action, ElicitationAction::Cancel));
         assert_eq!(prompts.count(), 0);
     }
 

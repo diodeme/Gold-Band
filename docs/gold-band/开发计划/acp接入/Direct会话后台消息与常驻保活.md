@@ -204,3 +204,24 @@ Windows debug 测试进程树（包含测试宿主与模拟适配器，排除采
 - asyncTasks 不接入：claude-agent-acp 仅在 _meta.jetbrains.air 客户端模式下上报后台任务，该模式整体切换适配器行为（跟踪 claude-agent-acp#1285），在其进入标准 ACP 前由手动常驻覆盖定时任务场景。
 - 验证：cargo test retention / direct / config::tests 168 项通过；前端 resident-pin-toggle（关/开图标与点击方向、请求中禁用防重入）与侧栏常驻、活动指示共 9 项通过；web 全量测试失败集合与 HEAD 一致（均为既有失败）；tsc 与生产构建通过。浏览器（web:dev 浏览器 API，Direct 夹具）实测浅色/深色、640px 窄宽：描边→加载→渐变实心，侧栏同步出现图钉，解除后两处同步消失，Tooltip 文案正确。
 - 自评审：未新增状态或持久字段，只删除 Direct 专属配置和第二条维护线程；选择函数单次 O(N log N)，N 为存活会话数；前端仅在已加载的侧栏行上派生 props，不新增请求。
+
+### 2026-10-13：交互归属修正、后台停止结算与取消语义
+
+- 根因一（归属）：`handle_permission_request` / `handle_elicitation_request` 先判 `direct.is_some()` 再看活动 prompt turn，Direct 会话内 turn 进行中到达的权限/提问被误标为 session-only identity，前端 `shouldHidePendingAcpInteractions` 因此在停止/turn 终止时不隐藏卡片。
+- 根因二（实时回滚）：`applyEventUpdates` 先投影后 reconcile，`shouldPreservePendingInteractions` 在 next.events 缺少结算证据时把实时 `cancelled` 权限结算回滚成 pending，卡片重进会话才消失。
+- 根因三（停止路由）：`stopSession` 以 `!composerState.canStop` 决定后台路径，而 canStop 含 waitingForUserInteraction；定时唤醒后的后台提问挂起时停止被送入前台路径，后端无前台 turn 返回 no-op，界面无任何反应（runtime.log 10:48:52–10:49:01 四次 `status=no-op`）。
+- 根因四（后台停止不结算）：后台提问在 Direct 消费者线程内同步阻塞等待，退出条件 `is_prompt_cancel_requested` 不含后台停止；即使路由正确，提问请求永远无人回复、消费者线程卡死、停止标记无法落盘。
+- 修复：交互归属改为活动 prompt turn 优先（Direct 同时携带 sessionId，`for_turn_and_session`），仅无 turn 时 session-only；权限结算决策事件强制重申交互 identity；DirectRuntime 新增单调 background cancel epoch，等待闭包按帧到达时捕获的 epoch 检测后台停止并结算；提问响应枚举新增 Cancel，取消/超时/孤儿/批量关闭统一回 cancel，decline 仅留给用户拒绝；前端停止路由按归属判定（`routesAcpStopToBackgroundControl`），实时批投影抽为 `projectLiveAcpEventBatch`（先 reconcile 后投影）。
+- RED：`direct_in_turn_interactions_are_bound_to_the_active_prompt_turn`（identity.turn_id 为 None）、`background_stop_settles_a_pending_session_interaction`（accepted 后无 action=cancel 响应）、`cancelled_elicitation_wait_reports_cancel_action`（回 decline）、前端 `keeps a live permission settlement after the display reconcile`（reconcile 后 pending 复活）、`routes Stop through the background control path`（backgroundControl 参数为 undefined）。GREEN：上述全部转绿；三个 Direct fixture 测试用共享互斥串行化并以唯一 task id 隔离 teardown（`close_direct_conversation` 按 project/task 圈定，误伤并行测试的会话）。
+- 验证：Rust 全量 1623 项通过（失败集合与 HEAD 基线一致：catalog/quotes/path_files 等既有失败，另有个别负载敏感项单跑稳定通过）；前端全量 2823 项通过，失败集合与基线一致（含他人进行中改动的失败），新增 `acp-stop-routing` DOM 测试覆盖后台/前台双路径。
+- 自评审：新增一个原子计数器与一个枚举值，未新增状态机、持久字段或轮询；等待循环每 200ms 多读一次原子变量；前端投影顺序调整不改变计算量。未验证：真实 Claude 定时唤醒场景的手工端到端重跑。
+- 复审补正：路由初版仅以后端 acpActive / runtimeActive 判定归属，遗漏本地已提交未被 lifecycle 确认的新 prompt（sending / 乐观提示 / 等待响应），后台窗口内此时点停止会误走后台路径、前台 prompt 不被停止。改为 composer state 统一导出 `foregroundTurnOwned`（后端活动或本地在途），路由只读该事实；纯函数测试 RED（3 项 expected true to be false）→ GREEN。桌面 crate `gold-band-desktop` cargo check 通过；`ElicitationAction::Cancel` 的消费方（timeline 响应事件、前端 answered 判定、IM/intervention 校验）均按“任一响应即结算”处理，无需改动；无人值守 `settle_elicitation_without_responder` 保持 decline（策略性拒绝而非停止）。
+
+## 2026-10-13（二）：后台活动态不消失——工具生命周期归属缺失
+
+- 现象：task-154 设置定时任务后侧边栏持续显示活动中、停止按钮常驻。10 秒宽限期应让它消失。
+- 根因（设计缺陷）：DirectRuntime.active_tools 只信任 provider 终态更新移除条目；Claude 适配器在会话被取消后不补发被停工具（AskUserQuestion …f2e036）的终态，该条目永久滞留。active_tools>0 时 isDirectBackgroundActive 恒真，宽限期规则失效；新 prompt 的工具活动重置 background_cancel_requested 后窗口重开、滞留工具使 activeTools 恒为 1；protected() 同源也使保留会话永不被回收。时间线投影早已按"停止后无完成证据即中断"结算，运行时工具集合缺同一条归属规则，两处事实不一致。
+- 修复：工具集合条目记录归属（ActiveToolOwner::ForegroundTurn / BackgroundEpisode，登记时取帧的 goldBandBackground 事实，observe_update 显式收 background 参数，不再反读 _meta 投影注释）；两个边界结算——run_prompt 任意 stopReason 返回（含失败路径）结算前台工具，cancel_retained_direct_session accepted 结算后台 episode 工具；迟终态忽略不重开窗口，同 id 新 pending/in_progress 按新活动登记。
+- RED：`background_stop_settles_a_pending_session_interaction` 追加断言（accepted 停止后 active_tool_count=1）、`direct_turn_end_settles_foreground_tools_without_terminal_updates`（end_turn 后 active_tool_count=1），均按根因失败。GREEN：两者转绿；新增状态级测试 `owning_boundaries_settle_only_their_own_running_tools`（归属隔离 + 迟终态不重开窗口）。
+- 验证：acp 模块 630+ 通过、全量 lib 1624 通过，失败集合与既有基线一致（path_files/embedded_catalog/quotes/managed_operation 为既有失败）；clippy 触达文件无警告；gold-band-desktop cargo check 通过。未验证：真实 Claude 定时唤醒场景手工重跑。
+- 自评审：仅内存 map 值类型加一个归属枚举与两个结算调用，无新增状态机/持久字段/轮询；结算是 O(工具数) 一次 retain，无锁持有跨 IO。环境备注：E 盘满导致编译失败，清理 target/debug/incremental（12G 再生缓存）恢复。

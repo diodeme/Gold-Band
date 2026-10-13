@@ -1,7 +1,7 @@
 //! Exclusive ownership of a retained Direct session's consumer between prompts.
 use super::*;
 use crate::acp::retention::DirectSessionRegistration;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 static PENDING: LazyLock<Mutex<HashMap<String, DirectSessionRegistration>>> =
@@ -14,6 +14,27 @@ pub struct DirectBackgroundControl {
     pub connection_generation: u64,
     pub active_tools: usize,
     pub expires_at_ms: u64,
+}
+
+/// Ownership of a running tool. The owning boundary — the foreground prompt
+/// turn's return or an accepted background stop — settles tools the provider
+/// never terminated; later work re-registers as new activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActiveToolOwner {
+    ForegroundTurn,
+    BackgroundEpisode,
+}
+
+impl ActiveToolOwner {
+    fn from_background(background: bool) -> Self {
+        if background { Self::BackgroundEpisode } else { Self::ForegroundTurn }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveToolState {
+    status: String,
+    owner: ActiveToolOwner,
 }
 
 pub fn direct_background_control(attempt: &Utf8Path) -> Option<DirectBackgroundControl> {
@@ -74,6 +95,10 @@ pub fn cancel_retained_direct_session(attempt: &Utf8Path, expected: &DirectBackg
     let accepted = AdapterConnectionManager::shared().cancel_attempt_prompt(attempt)?;
     if accepted && let Some(direct) = entry.direct.as_ref() {
         direct.background_cancel_requested.store(true, Ordering::Release);
+        direct.background_cancel_epoch.fetch_add(1, Ordering::Release);
+        // The accepted stop ends this background episode; its tools that never
+        // received a provider terminal update are settled by the boundary.
+        direct.settle_tools_owned_by(ActiveToolOwner::BackgroundEpisode);
         // The consumer records the stop after every frame received before it.
         *direct.pending_cancel_marker.lock().expect("Direct cancel marker lock") =
             Some(entry.connection.session_route_watermark(&entry.session_id));
@@ -88,10 +113,13 @@ pub(super) struct DirectRuntime {
     abort: AtomicBool,
     closing: AtomicBool,
     busy: AtomicBool,
-    active_tools: Mutex<HashMap<String, String>>,
+    active_tools: Mutex<HashMap<String, ActiveToolState>>,
     last_activity: Mutex<Instant>,
     last_background_activity: Mutex<Option<Instant>>,
     background_cancel_requested: AtomicBool,
+    /// Monotonic counter of accepted background stops. Interaction waiters
+    /// capture it when they start and settle with a cancel once it moves.
+    background_cancel_epoch: AtomicU64,
     /// Accepted background stop awaiting its canonical timeline record, ordered
     /// after the route frames received before the stop.
     pending_cancel_marker: Mutex<Option<Option<crate::acp::connection::SessionRouteWatermark>>>,
@@ -225,6 +253,7 @@ pub(super) fn prepare_direct_session(attempt: &Utf8Path) -> Option<Arc<DirectRun
             last_activity: Mutex::new(Instant::now()),
             last_background_activity: Mutex::new(None),
             background_cancel_requested: AtomicBool::new(false),
+            background_cancel_epoch: AtomicU64::new(0),
             pending_cancel_marker: Mutex::new(None),
             worker: Mutex::new(None),
         })
@@ -243,6 +272,26 @@ impl DirectRuntime {
             return None;
         }
         *self.last_background_activity.lock().ok()?
+    }
+
+    pub(super) fn background_cancel_epoch(&self) -> u64 {
+        self.background_cancel_epoch.load(Ordering::Acquire)
+    }
+
+    /// Boundary tests observe the canonical tool set through this read.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn active_tool_count(&self) -> usize {
+        self.active_tools.lock().expect("Direct tools lock").len()
+    }
+
+    /// The owning boundary ended; drop its running tools that never received
+    /// a provider terminal update. A late terminal frame for a settled id is
+    /// ignored; later pending/in_progress frames register as new activity.
+    pub(super) fn settle_tools_owned_by(&self, owner: ActiveToolOwner) {
+        self.active_tools
+            .lock()
+            .expect("Direct tools lock")
+            .retain(|_, tool| tool.owner != owner);
     }
 
     pub(super) fn abort_requested(&self) -> bool {
@@ -271,8 +320,10 @@ impl DirectRuntime {
     }
 
     // Only accepted Live updates reach here; replay and foreground leases never renew TTL.
-    pub(super) fn observe_update(&self, update: &Value) {
+    // `background` is the canonical delivery context: outside any user prompt.
+    pub(super) fn observe_update(&self, update: &Value, background: bool) {
         let kind = update.get("sessionUpdate").and_then(Value::as_str);
+        let owner = ActiveToolOwner::from_background(background);
         let mut settles = false;
         let changed = match kind {
             Some("agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk") => update
@@ -286,7 +337,14 @@ impl DirectRuntime {
                     .unwrap_or_default();
                 match update.get("status").and_then(Value::as_str) {
                     Some(status @ ("pending" | "in_progress")) => {
-                        tools.insert(id.into(), status.into()).as_deref() != Some(status)
+                        tools
+                            .insert(
+                                id.into(),
+                                ActiveToolState { status: status.into(), owner },
+                            )
+                            .as_ref()
+                            .map(|tool| tool.status.as_str())
+                            != Some(status)
                             || update.get("content").is_some()
                             || update.get("rawOutput").is_some()
                     }
@@ -304,7 +362,7 @@ impl DirectRuntime {
             _ => false,
         };
         if changed {
-            if update.pointer("/_meta/goldBandBackground").and_then(Value::as_bool) == Some(true) {
+            if background {
                 *self.last_background_activity.lock().expect("Direct activity lock") = Some(Instant::now());
             }
             // Settling tools after a stop belongs to the stopped episode; only new work reopens it.
@@ -865,9 +923,8 @@ mod tests {
     #[test]
     fn background_stop_activity_tracks_parallel_tools_and_ignores_usage() {
         let direct = state();
-        let background = |mut value: Value| {
-            value["_meta"] = json!({"goldBandBackground":true});
-            direct.observe_update(&value);
+        let background = |value: Value| {
+            direct.observe_update(&value, true);
         };
         background(json!({"sessionUpdate":"usage_update","used":1}));
         assert!(direct.last_background_activity.lock().unwrap().is_none());
@@ -886,9 +943,8 @@ mod tests {
     #[test]
     fn accepted_background_stop_closes_the_window_until_new_work_starts() {
         let direct = state();
-        let background = |mut value: Value| {
-            value["_meta"] = json!({"goldBandBackground":true});
-            direct.observe_update(&value);
+        let background = |value: Value| {
+            direct.observe_update(&value, true);
         };
         background(json!({"sessionUpdate":"tool_call","toolCallId":"a","status":"in_progress"}));
         background(json!({"sessionUpdate":"tool_call","toolCallId":"b","status":"in_progress"}));
@@ -907,15 +963,39 @@ mod tests {
     }
 
     #[test]
+    fn owning_boundaries_settle_only_their_own_running_tools() {
+        let direct = state();
+        direct.observe_update(
+            &json!({"sessionUpdate":"tool_call","toolCallId":"bg","status":"pending"}),
+            true,
+        );
+        direct.observe_update(
+            &json!({"sessionUpdate":"tool_call","toolCallId":"fg","status":"pending"}),
+            false,
+        );
+        direct.settle_tools_owned_by(ActiveToolOwner::BackgroundEpisode);
+        assert_eq!(direct.active_tools.lock().unwrap().len(), 1);
+        // A late terminal frame for the settled tool must not reopen the stop window.
+        direct.background_cancel_requested.store(true, Ordering::Release);
+        direct.observe_update(
+            &json!({"sessionUpdate":"tool_call_update","toolCallId":"bg","status":"cancelled"}),
+            true,
+        );
+        assert!(direct.background_activity_window().is_none());
+        direct.settle_tools_owned_by(ActiveToolOwner::ForegroundTurn);
+        assert!(direct.active_tools.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn known_tools_protect_and_completion_starts_a_fresh_window() {
         let direct = state();
         let old = Instant::now() - Duration::from_secs(30000);
         *direct.last_activity.lock().unwrap() = old;
         let running = json!({"sessionUpdate":"tool_call","toolCallId":"bg","status":"in_progress"});
-        direct.observe_update(&running);
+        direct.observe_update(&running, false);
         assert!(direct.protected());
         let progress_time = *direct.last_activity.lock().unwrap();
-        direct.observe_update(&running);
+        direct.observe_update(&running, false);
         assert_eq!(
             *direct.last_activity.lock().unwrap(),
             progress_time,
@@ -923,6 +1003,7 @@ mod tests {
         );
         direct.observe_update(
             &json!({"sessionUpdate":"tool_call_update","toolCallId":"bg","status":"completed"}),
+            false,
         );
         assert!(!direct.protected());
         assert!(*direct.last_activity.lock().unwrap() > old);
@@ -932,9 +1013,10 @@ mod tests {
     fn usage_heartbeats_do_not_extend_retention_and_pin_is_independent_of_work() {
         let direct = state();
         let before = *direct.last_activity.lock().unwrap();
-        direct.observe_update(&json!({"sessionUpdate":"usage_update","used":123}));
+        direct.observe_update(&json!({"sessionUpdate":"usage_update","used":123}), false);
         direct.observe_update(
             &json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":""}}),
+            false,
         );
         assert_eq!(*direct.last_activity.lock().unwrap(), before);
         direct.resident.store(true, Ordering::Release);

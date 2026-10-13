@@ -1580,7 +1580,7 @@ fn canonical_elicitation_response_is_valid(
     content: Option<&Value>,
 ) -> Result<bool, InterventionError> {
     match action {
-        ElicitationAction::Decline => Ok(content.is_none()),
+        ElicitationAction::Decline | ElicitationAction::Cancel => Ok(content.is_none()),
         ElicitationAction::Accept => {
             if content.is_some_and(|content| !content.is_object()) {
                 return Ok(false);

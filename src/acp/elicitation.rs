@@ -33,6 +33,9 @@ const ELICITATION_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub enum ElicitationAction {
     Accept,
     Decline,
+    /// The execution was stopped or expired before the user answered. Only a
+    /// real user rejection uses `Decline`.
+    Cancel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,7 +201,7 @@ pub fn wait_for_elicitation_response_until_cancelled(
         if is_cancel_requested() {
             return Ok(ElicitationResponseState {
                 elicitation_id: elicitation_id.to_string(),
-                action: ElicitationAction::Decline,
+                action: ElicitationAction::Cancel,
                 content: None,
                 decided_at: current_timestamp(),
             });
@@ -212,7 +215,7 @@ pub fn wait_for_elicitation_response_until_cancelled(
         if started_at.elapsed() >= timeout {
             return Ok(ElicitationResponseState {
                 elicitation_id: elicitation_id.to_string(),
-                action: ElicitationAction::Decline,
+                action: ElicitationAction::Cancel,
                 content: None,
                 decided_at: current_timestamp(),
             });
@@ -260,7 +263,7 @@ pub fn cancel_pending_elicitation_requests(
         write_elicitation_response(
             attempt_dir,
             elicitation_id,
-            ElicitationAction::Decline,
+            ElicitationAction::Cancel,
             None,
             decided_at.clone(),
         )?;
@@ -288,6 +291,7 @@ pub fn upsert_elicitation_response_event(
     let action_value = match action {
         ElicitationAction::Accept => "accept",
         ElicitationAction::Decline => "decline",
+        ElicitationAction::Cancel => "cancel",
     };
     let _ = append_elicitation_response_item(
         &timeline_path,
@@ -344,6 +348,7 @@ pub fn elicitation_response_result(response: &ElicitationResponseState) -> Value
     let action_str = match response.action {
         ElicitationAction::Accept => "accept",
         ElicitationAction::Decline => "decline",
+        ElicitationAction::Cancel => "cancel",
     };
     let mut result = serde_json::json!({ "action": action_str });
     if let Some(content) = &response.content {
@@ -577,12 +582,12 @@ mod tests {
             Duration::from_millis(100),
         )
         .unwrap();
-        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert!(matches!(response.action, ElicitationAction::Cancel));
         assert_eq!(response.content, None);
     }
 
     #[test]
-    fn elicitation_wait_declines_when_turn_cancel_is_requested() {
+    fn elicitation_wait_cancels_when_turn_cancel_is_requested() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
         let checks = std::cell::Cell::new(0_u8);
 
@@ -598,7 +603,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert!(matches!(response.action, ElicitationAction::Cancel));
         assert_eq!(response.content, None);
         assert!(!elicitation_response_file(&attempt_dir, "elicit-late-after-cancel").exists());
     }
@@ -625,7 +630,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert!(matches!(response.action, ElicitationAction::Cancel));
         assert_eq!(response.content, None);
     }
 
@@ -653,6 +658,23 @@ mod tests {
         let result = elicitation_response_result(&response);
         assert_eq!(result["action"], "decline");
         assert!(result.get("content").is_none());
+    }
+
+    #[test]
+    fn cancelled_elicitation_wait_reports_cancel_action() {
+        let (_dir, attempt_dir) = dummy_attempt_dir();
+        let response = wait_for_elicitation_response_until_cancelled(
+            &attempt_dir,
+            "elicit-cancel",
+            Duration::from_secs(10),
+            || true,
+        )
+        .unwrap();
+        let result = elicitation_response_result(&response);
+        assert_eq!(
+            result["action"], "cancel",
+            "a cancelled prompt turn must answer elicitation with action=cancel, not decline"
+        );
     }
 
     #[test]
@@ -746,7 +768,7 @@ mod tests {
         let response_path = elicitation_response_file(&attempt_dir, "elicit-cancel-me");
         assert!(response_path.exists());
         let response: ElicitationResponseState = read_json(&response_path).unwrap();
-        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert!(matches!(response.action, ElicitationAction::Cancel));
         let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
         let event = items
             .iter()
@@ -759,7 +781,7 @@ mod tests {
                 .as_ref()
                 .and_then(|raw| raw.get("action"))
                 .and_then(|value| value.as_str()),
-            Some("decline")
+            Some("cancel")
         );
     }
 

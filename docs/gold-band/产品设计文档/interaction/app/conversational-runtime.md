@@ -1,10 +1,18 @@
 # 会话式运行时
 
+## 2026-10-13：交互归属修正、后台停止结算与取消语义
+
+- 前端停止路由按"停止对象归属"判定，不按展示状态：无前台 turn 归属（后端 acpActive / runtimeActive 为 false，且本地没有发送中、等待乐观提示或等待响应的新 prompt）且存在 backgroundControl 时走 Direct 后台停止路径；`canStop` 只控制按钮可用性。会话级提问/权限挂起造成的 interaction-waiting 不得把停止推入前台路径。
+- 后台停止 accepted 后必须结算"停止前已到达"的等待交互：DirectRuntime 维护单调 background cancel epoch，交互等待在请求帧到达时捕获 epoch，发现 epoch 前进即退出等待——权限回 `cancelled` outcome，提问回 `action=cancel`，并清理挂起信号文件；停止后新到达的交互属于新一轮后台活动，不被旧停止结算。等待阻塞的消费者线程因此解除，后台停止标记按既有 route watermark 顺序落盘。
+- 提问响应统一 accept / decline / cancel 三值：decline 仅表示用户明确拒绝；前台停止、后台停止、等待超时与孤儿请求统一回 cancel（ACP `elicitation/create` 的 Cancel action，权限为 Cancelled outcome）。会话关闭批量取消同样写 cancel。
+- 实时事件批投影先做快照 reconcile、再叠加实时控制事件（与追页路径一致）：实时批次是最新事实，快照保留规则不得把其中的交互结算回滚成 pending。
+- 运行中工具按归属结算，不等待 provider 补发终态：DirectRuntime 的工具集合记录每项归属（前台 prompt turn 或后台 episode，取自帧到达时的 goldBandBackground 事实）。prompt 返回（任意 stopReason，含失败路径）结算前台归属的工具；后台停止 accepted 结算该 episode 的工具——与时间线"停止后无完成证据的工具显示已中断"同一条规则。provider 事后迟到终态被忽略，不重开停止窗口；同 id 的后续 pending/in_progress 按新活动登记。两侧边界共同保证 active_tools 不再永久滞留，10 秒宽限期恢复为唯一过期来源，保留会话也不会因滞留工具被永久 protected。
+
 ## 2026-10-09：Direct 会话后台消息与常驻
 
 - Direct 的 ACP 消费者属于存活会话。prompt 的 end_turn 完成该轮输入，随后仍按 sessionId 持续接收并持久化消息、工具更新、权限和问题。前台 prompt 与后台读取通过现有 attempt prompt lock 有序交接，旧消费者退出并刷新后才恢复下一个消费者；同一 route 不同时拥有两个消费者。
 - Direct 不再执行下述 2026-09-19 的 admission 前消息丢弃策略；显式 session/load 历史重放仍保留原去重。稳定 messageId/toolCallId 在不同输出、用户 prompt 之间可继续更新；需要恢复旧项时仅按索引读取该项，不常驻全量历史。缺少身份的通知按接收顺序展示，不猜测属于哪个 prompt。
-- Direct 的交互请求绑定真实 sessionId 与 request identity；session/update 未提供通用 prompt 归属，因此不把 Direct 权限/问题强行绑定当前或上一轮输入。已完成 prompt 的 lifecycle 不隐藏新的会话级待处理请求；响应复用既有权限/问题接口，不复活 Run/Attempt，也不自动批准。Workflow/AUTO 保留原 prompt 归属和限制。
+- Direct 的交互归属按"请求帧到达时是否存在活动 prompt turn"判定：turn 内到达的权限/提问绑定该 turn 的 turnId + promptEventId（Direct 同时携带 sessionId），由自身结算或该 turn terminal 收口；仅 end_turn 后到达的请求才绑定 session-only identity（sessionId + request identity），已完成 prompt 的 lifecycle 不隐藏这类会话级待处理请求。响应复用既有权限/问题接口，不复活 Run/Attempt，也不自动批准。权限结算的 timeline 决策事件必须与初始持久化携带同一交互 identity，不得依赖 runtime 热缓存继承。Workflow/AUTO 保留原 prompt 归属和限制。
 - 2026-10-10 起 Direct 与 Workflow/AUTO 共用一套空闲回收：acpSessionIdleTtlSecs=600 空闲 TTL、acpMaxIdleSessionRuntimes=8 空闲上限（两类会话合计），由 acpSessionSweepIntervalSecs=60 的周期 sweep 与每次 release 执行；超过上限按最近活动 LRU 先回收。原 acpDirectSessionRetention（residentThreshold/6 小时 TTL/capacityTarget）删除。受保护会话既不过期也不占空闲上限：正在执行、前台租约，以及 Direct 独有的手动常驻、正式交互等待、已知未完成工具、关闭中和共享别名。
 - 有效内容、工具进度、交互及执行完成续期；重复的纯工具状态、usage 心跳、页面租约不刷新空闲时间。注册表维护不扫描历史；消息队列继续有界。ACP 没有通用隐藏定时器清单（claude-agent-acp 的 asyncTasks 仅在 JetBrains AIR 客户端模式下提供，且会整体切换适配器行为，暂不接入），长周期定时器可能受回收影响，不能以无消息断言后台无任务；需要长期存活的 Direct 会话由用户手动常驻。
 - 仅 Direct 提供常驻开关：侧边栏右键“常驻会话/解除常驻”，以及会话头部“原始帧”左侧的图钉切换按钮，两者调用同一 App.set_conversation_resident 并以侧边栏会话行为唯一状态源。头部未常驻显示 Fluent pin-24-regular 描边图钉，常驻显示与侧边栏相同的渐变实心图钉；Tooltip 提示有定时任务等长时间工作时开启常驻，请求中显示加载态并禁用，只读体验或会话行未加载时不显示。标题旁倾斜实心图钉及 Tooltip 表示保留偏好，和置顶顺序独立。偏好更新 authoring/conversation.json 的 resident；元数据活动时间更新共用文件锁。历史会话设置偏好不启动进程，重启不自动启动。删除会话先关闭读取/会话再删除文件。

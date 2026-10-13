@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/diodeme/Gold-Band/compare/v0.19.0...v0.19.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **acp:** expand the composite config submenu in place in narrow panes ([5680449](https://github.com/diodeme/Gold-Band/commit/56804496d750eb7f8c17a21613e088a53bb05d53))
+* **acp:** settle Direct interactions and tools on stop boundaries ([e56d864](https://github.com/diodeme/Gold-Band/commit/e56d864169aeeb104ce9a97ed2e49fec463c9e7a))
+
 ## [0.19.0](https://github.com/diodeme/Gold-Band/compare/v0.18.0...v0.19.0) (2026-10-12)
 
 

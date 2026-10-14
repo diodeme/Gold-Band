@@ -378,13 +378,21 @@ export type WorkspaceFileSnapshotVm =
   | ImageFileSnapshotVm
   | UnsupportedFileSnapshotVm;
 
+export type MarkdownImageSource =
+  | { kind: 'workspace' }
+  | {
+      kind: 'document';
+      canonicalPath: string;
+      externalAccessToken?: string | null;
+      approvedExternalTargets?: string[];
+    };
+
 export interface ResolveMarkdownImageInput {
   projectId: string;
   workspacePath: string | null;
-  markdownCanonicalPath: string;
-  markdownExternalAccessToken: string | null;
+  source: MarkdownImageSource;
+  /** Markdown URL syntax: query/fragment are excluded, percent encoding is decoded once. */
   rawSrc: string;
-  approvedExternalTargets: string[];
 }
 
 export type MarkdownImagePreviewVm =

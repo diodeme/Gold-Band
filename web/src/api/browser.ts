@@ -3196,7 +3196,9 @@ export const browserApi: RuntimeApi = {
     if (/^(?:https?:|data:|javascript:)/iu.test(raw)) {
       return Promise.reject({ code: 'workspace-file.markdown-image-network-blocked', params: { src: raw } });
     }
-    const parent = input.markdownCanonicalPath.replace(/\/[^/]*$/u, '');
+    const parent = input.source.kind === 'document'
+      ? input.source.canonicalPath.replace(/\/[^/]*$/u, '')
+      : input.workspacePath ?? browserWorkspaceRoot;
     const canonicalPath = /^[A-Za-z]:\//u.test(raw) || raw.startsWith('/')
       ? raw
       : `${parent}/${raw}`.replace('/./', '/');

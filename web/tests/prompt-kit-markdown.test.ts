@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
+import { isLocalFileHref, Markdown } from '@/components/prompt-kit/markdown';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { isDocumentAnchorHref, isExternalUrlHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 
@@ -43,13 +43,6 @@ describe('prompt-kit Markdown', () => {
     expect(parseLocalFileLinkTarget('src/client.rs')).toBeNull();
   });
 
-  it('proxies only local Markdown destinations through the safe render URL', () => {
-    const proxied = proxyLocalFileLinks('[file](D:/repo/client.rs:10) [web](https://example.com) ![image](D:/repo/a.png)\n[file2](D:/repo/next.rs:20)');
-    expect(proxied).toContain('https://gold-band.local-file.invalid/?href=');
-    expect(proxied.match(/https:\/\/gold-band\.local-file\.invalid/g)).toHaveLength(2);
-    expect(proxied).toContain('[web](https://example.com)');
-    expect(proxied).toContain('![image](D:/repo/a.png)');
-  });
   it('renders complete Markdown in static mode', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '**完成内容**',

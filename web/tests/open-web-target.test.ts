@@ -7,6 +7,27 @@ import { browserWorkspaceResourceKey } from '@/components/workspace/right-worksp
 const MAIN_ROOT = { projectId: 'project-1', workspacePath: null };
 
 describe('openWebTarget', () => {
+  it('keeps the resolver URL query and fragment for the browser page', async () => {
+    browserSessionStore.resetForTests();
+    const url = 'file:///D:/repo/docs/index.html?ov=grid#section';
+    const resolveLocalHtml = vi.fn(async () => ({ url }));
+    const result = await openWebTarget('docs/index.html?ov=grid#section', {
+      root: MAIN_ROOT, scopeKey: 'draft:project-1', openResource: vi.fn(),
+      browserTitle: '浏览器', resolveLocalHtml,
+    });
+    expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
+    expect(browserSessionStore.activePage()?.url).toBe(url);
+    browserSessionStore.resetForTests();
+  });
+
+  it('recognizes literal browser document filenames and encoded href paths separately', () => {
+    expect(isBrowserDocumentPath('D:/repo/中文 # 100%.html')).toBe(true);
+    expect(isBrowserDocumentPath('/repo/name?variant.html')).toBe(true);
+    expect(classifyWebTarget('docs/%E4%B8%AD%E6%96%87%20%23%25.html?ov=grid#section')).toBe('local-html');
+    expect(classifyWebTarget('docs/index%2Ehtml?ov=grid#section')).toBe('local-html');
+    expect(classifyWebTarget('javascript:alert(1).html')).toBe('invalid');
+  });
+
   it('classifies http, local html, mailto and ordinary files', () => {
     expect(classifyWebTarget('https://example.com')).toBe('http');
     expect(classifyWebTarget('docs/index.html')).toBe('local-html');
@@ -89,7 +110,7 @@ describe('openWebTarget', () => {
   it('resolves local html through the file link resolver', async () => {
     browserSessionStore.resetForTests();
     const resolveLocalHtml = vi.fn(async () => ({
-      canonicalPath: 'D:/repo/docs/index.html',
+      url: 'file:///D:/repo/docs/index.html',
     }));
     const result = await openWebTarget('docs/index.html', {
       root: MAIN_ROOT,
@@ -101,10 +122,10 @@ describe('openWebTarget', () => {
     expect(resolveLocalHtml).toHaveBeenCalledWith({
       projectId: 'project-1',
       workspacePath: null,
-      rawHref: 'docs/index.html',
+      target: { kind: 'href', href: 'docs/index.html' },
     });
     expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
-    expect(browserSessionStore.activePage()?.url).toBe('D:/repo/docs/index.html');
+    expect(browserSessionStore.activePage()?.url).toBe('file:///D:/repo/docs/index.html');
     browserSessionStore.resetForTests();
   });
 
@@ -117,7 +138,7 @@ describe('openWebTarget', () => {
 
     browserSessionStore.resetForTests();
     const openResource = vi.fn();
-    const resolveLocalHtml = vi.fn(async () => ({ canonicalPath: 'D:/repo/art/pelican.svg' }));
+    const resolveLocalHtml = vi.fn(async () => ({ url: 'file:///D:/repo/art/pelican.svg' }));
     const result = await openLocalDocumentInBrowser('D:/repo/art/pelican.svg', {
       root: MAIN_ROOT,
       scopeKey: 'draft:project-1',
@@ -125,19 +146,19 @@ describe('openWebTarget', () => {
       browserTitle: '浏览器',
       resolveLocalHtml,
     });
-    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: null, rawHref: 'D:/repo/art/pelican.svg' });
+    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: null, target: { kind: 'path', path: 'D:/repo/art/pelican.svg' } });
     expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
-    expect(browserSessionStore.activePage()?.url).toBe('D:/repo/art/pelican.svg');
+    expect(browserSessionStore.activePage()?.url).toBe('file:///D:/repo/art/pelican.svg');
     expect(openResource).toHaveBeenCalledWith(expect.objectContaining({ kind: 'browser', scopeKey: 'draft:project-1' }));
     browserSessionStore.resetForTests();
   });
 
   it('resolves local html in the session worktree and refuses it while unavailable', async () => {
     browserSessionStore.resetForTests();
-    const resolveLocalHtml = vi.fn(async () => ({ canonicalPath: 'D:/repo/.wt/a/docs/index.html' }));
+    const resolveLocalHtml = vi.fn(async () => ({ url: 'file:///D:/repo/.wt/a/docs/index.html' }));
     const context = { scopeKey: 'draft:project-1', openResource: vi.fn(), browserTitle: '浏览器', resolveLocalHtml };
     await openWebTarget('docs/index.html', { ...context, root: { projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' } });
-    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: 'D:/repo/.wt/a', rawHref: 'docs/index.html' });
+    expect(resolveLocalHtml).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: 'D:/repo/.wt/a', target: { kind: 'href', href: 'docs/index.html' } });
 
     resolveLocalHtml.mockClear();
     const unavailable = await openWebTarget('docs/index.html', { ...context, root: null });
@@ -169,7 +190,7 @@ describe('openWebTarget', () => {
   it('opens a local html page with the same canonical identity on repeated clicks', async () => {
     browserSessionStore.resetForTests();
     const resolveLocalHtml = vi.fn(async () => ({
-      canonicalPath: 'D:/repo/docs/index.html',
+      url: 'file:///D:/repo/docs/index.html',
     }));
     const context = {
       root: MAIN_ROOT,

@@ -121,7 +121,7 @@
 |---|---|
 | `http://` / `https://` | 按“设置 → 通用 → 浏览器”路由；localhost 与普通网页默认均在内置浏览器打开，可分别切换 |
 | 地址栏裸词 / 含空格文本 | 使用当前搜索引擎搜索；支持百度、Google、Bing |
-| 会话 / Markdown 中的本地 `.html` / `.htm`（相对路径、绝对路径、`file://`） | 经现有文件链接 resolver 得到 canonical locator 后，用 preview grant 在内部页加载 |
+| 会话 / Markdown 中的本地 `.html` / `.htm`（相对路径、绝对路径、`file://`） | Rust 将 href 的 pathname 与 query/fragment 分离，仅 pathname 进入文件 resolver；返回保留导航参数的 canonical `file:` URL，再经受授权的本地文档协议加载 |
 | 工作空间 / 运行目录树中的 `.html` / `.htm` | 默认打开文件工作区 CodeMirror 源码；源码右上角浮层按钮再走内置浏览器 |
 | 其他本地文件 | 现有文件工作区 |
 | `mailto:` / `tel:` | 系统 opener |
@@ -250,7 +250,7 @@ BrowserPanel
 - 浏览用子 WebView **零 Tauri IPC**。capability 不得授予任何 Gold Band command。
 - 地址建议 child WebView 只加载应用内受信任入口，capability 仅授予 `core:event:default`，用于把 choose/remove 事件发给主 WebView；不得继承浏览页权限，也不得直接读取历史文件或调用浏览器命令。
 - 与主界面 WebView 使用不同的用户数据目录：`{appData}/browser-profile/`。退出时不 `clear_all_browsing_data`。产品可后续提供「清除浏览数据」，第一版不做入口也可以。
-- 本地 HTML 不通过 `file://` 导航，而是经 `gold-band-browser-file://` 自定义协议加载。协议 URL 的路径就是文件 `file://` URL 的路径（如 `http://gold-band-browser-file.localhost/E:/repo/tmp/a.html`），与授权无关，因此 `../`、`./` 等相对引用总是解析到真实文件。Rust 拒绝点段、编码分隔符和非 GET/HEAD，canonical 后再按页面授权判定；响应带 `no-store`、`nosniff` 和按扩展名推断的 `Content-Type`。返回给前端与地址栏的展示 URL 仍是 canonical `file://` 路径，协议 URL 只存在于原生图层内部。
+- 本地 HTML 不通过 `file://` 导航，而是经 `gold-band-browser-file://` 自定义协议加载。协议 URL 的路径就是文件 `file://` URL 的路径（如 `http://gold-band-browser-file.localhost/E:/repo/tmp/a.html`），与授权无关，因此 `../`、`./` 等相对引用总是解析到真实文件。Rust 拒绝点段、编码分隔符和非 GET/HEAD，canonical 后再按页面授权判定；响应带 `no-store`、`nosniff` 和按扩展名推断的 `Content-Type`。返回给前端与地址栏的展示 URL 仍是 canonical `file://` URL，协议 URL 只存在于原生图层内部。query/fragment 属于导航目标而不是文件名，在展示 URL、原生导航、地址回写和系统浏览器打开之间完整保留；授权与实际文件读取仅使用 canonical path，不随参数扩大范围。
 - 授权（`LocalFileGrant`）属于原生页，是一组授权根加一组待确认的被拒目录。打开本地 HTML 时默认授权根取包含该文件的最内层工作空间：已注册工作空间根，或 Gold Band 托管的会话 worktree 根；都不包含时取文件所在目录。这与 VS Code Webview 默认 `localResourceRoots` 为工作空间目录一致。导航到已授权范围内的文档（含地址栏重新输入、页内链接）保留现有授权；导航到范围外的本地文档重新取默认授权；跳到 `http(s)` 立即清空授权，协议请求随即 404。授权解析不签发外部文件访问令牌、不启动文件监听，也不列目录。
 - 所有本地文件在该协议下同源，授权范围内的文件都能被页面脚本 `fetch` 读出，因此不默认放开整个磁盘。授权外的请求一律按 404 返回，页面无法据此探测路径是否存在；文件真实存在时，Rust 记录其所在目录（合并父子目录，最多 16 个），每新增一个就发一次 `local-access-denied { pageId, directories }` 事件。前端在该页 notice 行显示被拒目录和「允许访问」；点击后经 `browser_allow_local_access { pageId, directories }` 把仍处于待确认的目录并入授权根并刷新页面。Rust 只接受该页自己请求过的目录，其他路径一律忽略。该授权只在当前页生效、不落盘，页面离开本地文档时随授权一起清空。
 - 页内 `window.open` / Ctrl+点击打开的本地目标（`file://` 或本协议 URL）只有在打开它的页面授权已覆盖该文件时才转成内部新页，远程网页无法借此打开本地文档。

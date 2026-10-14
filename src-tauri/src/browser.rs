@@ -146,13 +146,20 @@ pub struct BrowserResolveLocalHtmlInput {
     pub project_id: String,
     #[serde(default)]
     pub workspace_path: Option<String>,
-    pub raw_href: String,
+    pub target: BrowserLocalDocumentInput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BrowserLocalDocumentInput {
+    Href { href: String },
+    Path { path: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserLocalHtmlTargetVm {
-    pub canonical_path: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -314,21 +321,70 @@ pub async fn browser_resolve_local_html(
     file_runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
     input: BrowserResolveLocalHtmlInput,
 ) -> CommandResult<BrowserLocalHtmlTargetVm> {
+    let (href, suffix) = local_document_href(&input.target)?;
     let locator = crate::workspace_files::resolve_file_link_locator(
         state.inner(),
         file_runtime.inner(),
         &input.project_id,
         input.workspace_path.as_deref(),
-        &input.raw_href,
+        &href,
     )
     .await?;
     let path = PathBuf::from(&locator.canonical_path);
     if !is_browser_document_path(&path) {
         return Err(navigation_invalid());
     }
+    let mut url = Url::from_file_path(path).map_err(|_| local_html_grant_failed())?;
+    copy_navigation_suffix(&suffix, &mut url);
     Ok(BrowserLocalHtmlTargetVm {
-        canonical_path: locator.canonical_path,
+        url: url.to_string(),
     })
+}
+
+/// File paths and hrefs are different inputs: only hrefs have URL delimiters.
+fn local_document_href(input: &BrowserLocalDocumentInput) -> CommandResult<(String, Url)> {
+    let mut suffix = Url::parse("file:///").expect("file URL base");
+    let href = match input {
+        BrowserLocalDocumentInput::Path { path } => Url::from_file_path(path)
+            .map_err(|_| navigation_invalid())?
+            .to_string(),
+        BrowserLocalDocumentInput::Href { href } => {
+            let (before_fragment, fragment) = href
+                .trim()
+                .split_once('#')
+                .map_or((href.trim(), None), |(path, fragment)| {
+                    (path, Some(fragment))
+                });
+            let (pathname, query) = before_fragment
+                .split_once('?')
+                .map_or((before_fragment, None), |(path, query)| (path, Some(query)));
+            if pathname.is_empty() {
+                return Err(navigation_invalid());
+            }
+            suffix.set_query(query);
+            suffix.set_fragment(fragment);
+            pathname.to_owned()
+        }
+    };
+    // Reject network shares before canonicalization can make a network request.
+    let decoded = percent_encoding::percent_decode_str(&href)
+        .decode_utf8()
+        .map_err(|_| navigation_invalid())?;
+    if decoded.replace('\\', "/").starts_with("//") {
+        return Err(local_html_grant_failed());
+    }
+    if let Ok(url) = Url::parse(&href)
+        && url.scheme() == "file"
+        && url.host_str().is_some_and(|host| !host.is_empty())
+    {
+        return Err(local_html_grant_failed());
+    }
+    Ok((href, suffix))
+}
+
+fn copy_navigation_suffix(source: &Url, target: &mut Url) {
+    target.set_query(source.query());
+    target.set_fragment(source.fragment());
 }
 
 /// The main WebView's opener scope only admits `http(s)`, so local pages reach the
@@ -362,8 +418,7 @@ pub(crate) fn system_browser_url(raw: &str) -> CommandResult<Url> {
         if url.host_str().is_some_and(|host| !host.is_empty()) {
             return Err(local_html_grant_failed());
         }
-        let path = url.to_file_path().map_err(|_| local_html_grant_failed())?;
-        let target = resolved_from_file_path(&path)?;
+        let target = resolved_from_url(url.clone())?;
         let canonical = target
             .url
             .to_file_path()
@@ -1607,16 +1662,19 @@ pub(crate) fn resolve_browser_target(raw: &str) -> CommandResult<ResolvedBrowser
 }
 
 fn resolved_from_url(url: Url) -> CommandResult<ResolvedBrowserTarget> {
-    if url.scheme() == "file" {
-        let path = url.to_file_path().map_err(|_| local_html_grant_failed())?;
-        if is_browser_document_path(&path) {
-            return resolved_from_file_path(&path);
-        }
-        return Err(navigation_invalid());
-    }
-    if is_browser_local_file_url(&url) {
-        let path = local_path_for_url(&url).map_err(|_| local_html_grant_failed())?;
-        return resolved_from_file_path(&path);
+    if url.scheme() == "file" || is_browser_local_file_url(&url) {
+        let path = if url.scheme() == "file" {
+            if url.host_str().is_some_and(|host| !host.is_empty()) {
+                return Err(local_html_grant_failed());
+            }
+            url.to_file_path().map_err(|_| local_html_grant_failed())?
+        } else {
+            local_path_for_url(&url).map_err(|_| local_html_grant_failed())?
+        };
+        let mut target = resolved_from_file_path(&path)?;
+        copy_navigation_suffix(&url, &mut target.url);
+        copy_navigation_suffix(&url, &mut target.navigation_url);
+        return Ok(target);
     }
     if !navigation_allowed(&url, None) {
         return Err(navigation_invalid());
@@ -2371,6 +2429,85 @@ impl BrowserHostInner {
 mod tests {
     use super::*;
     use tauri::http::header;
+
+    #[test]
+    fn local_html_href_separates_path_before_decoding() {
+        let input: BrowserResolveLocalHtmlInput = serde_json::from_value(serde_json::json!({
+            "projectId": "project", "workspacePath": null,
+            "target": { "kind": "href", "href": "docs/index%23%25.html?ov=grid#section" }
+        }))
+        .unwrap();
+        let (path, suffix) = local_document_href(&input.target).unwrap();
+        assert_eq!(path, "docs/index%23%25.html");
+        assert_eq!(suffix.query(), Some("ov=grid"));
+        assert_eq!(suffix.fragment(), Some("section"));
+    }
+
+    #[test]
+    fn local_html_literal_path_preserves_filename_delimiters() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("中文 space # 100%.html");
+        std::fs::write(&path, "<html>literal</html>").unwrap();
+        let (href, suffix) = local_document_href(&BrowserLocalDocumentInput::Path {
+            path: path.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        assert_eq!(Url::parse(&href).unwrap().to_file_path().unwrap(), path);
+        assert_eq!(suffix.query(), None);
+        assert_eq!(suffix.fragment(), None);
+        assert!(resolve_browser_target(&href).is_ok());
+    }
+
+    #[test]
+    fn local_html_href_rejects_network_shares_before_filesystem_access() {
+        for href in [
+            "file://server/share/a.html",
+            "//server/share/a.html",
+            "%5C%5Cserver/share/a.html",
+        ] {
+            assert!(
+                local_document_href(&BrowserLocalDocumentInput::Href { href: href.into() })
+                    .is_err()
+            );
+        }
+    }
+
+    fn local_html_with_url_suffix() -> (tempfile::TempDir, Url) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("中文 space # 100%.html");
+        std::fs::write(&path, "<html id=section>grid</html>").unwrap();
+        let mut url = Url::from_file_path(canonicalize_display_path(&path).unwrap()).unwrap();
+        url.set_query(Some("ov=grid&value=%23%3F%25"));
+        url.set_fragment(Some("section"));
+        (dir, url)
+    }
+
+    #[test]
+    fn local_html_url_suffix_survives_file_and_protocol_navigation() {
+        let (_dir, url) = local_html_with_url_suffix();
+        let target = resolve_browser_target(url.as_str()).unwrap();
+        assert_eq!(target.url, url);
+        assert_eq!(target.navigation_url.query(), url.query());
+        assert_eq!(target.navigation_url.fragment(), url.fragment());
+        let reopened = resolve_browser_target(target.navigation_url.as_str()).unwrap();
+        assert_eq!(reopened.url, url);
+        assert_eq!(reopened.local_document, target.local_document);
+    }
+
+    #[test]
+    fn local_html_url_suffix_survives_system_browser_open() {
+        let (_dir, url) = local_html_with_url_suffix();
+        assert_eq!(system_browser_url(url.as_str()).unwrap(), url);
+    }
+
+    #[test]
+    fn local_html_url_suffix_survives_display_projection() {
+        let (_dir, url) = local_html_with_url_suffix();
+        let mut navigation = local_document_navigation_url(&url.to_file_path().unwrap()).unwrap();
+        navigation.set_query(url.query());
+        navigation.set_fragment(url.fragment());
+        assert_eq!(browser_display_url(&navigation), url);
+    }
 
     #[test]
     fn https_and_blank_are_allowed() {

@@ -10,6 +10,7 @@ import { DesktopWindowFrame } from '../DesktopWindowFrame';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { MarkdownLocalImageConfigProvider } from '@/components/prompt-kit/markdown-local-images';
 import { cn } from '@/lib/utils';
 import { overlayOwnerAttribute, rightWorkspaceOverlayOwner, CollisionBoundaryContext, conversationOverlayCollisionBoundary } from '@/lib/portal-container';
 import {
@@ -714,6 +715,7 @@ function WorkspaceShellLayout({
   );
 
   return (
+    <MarkdownLocalImageConfigProvider config={appConfig.workspaceFiles}>
     <WorkspaceFileReferencePresentationProvider value={workspaceFileReferencePresentation}>
     <DesktopWindowFrame frameStyle={windowFrameStyle}>
     <div
@@ -889,5 +891,6 @@ function WorkspaceShellLayout({
     </div>
     </DesktopWindowFrame>
     </WorkspaceFileReferencePresentationProvider>
+    </MarkdownLocalImageConfigProvider>
   );
 }

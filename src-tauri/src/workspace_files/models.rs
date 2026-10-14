@@ -179,11 +179,26 @@ pub struct ResolveMarkdownImageInput {
     /// Linked worktree the session works in; `None` is the project root.
     #[serde(default)]
     pub workspace_path: Option<String>,
-    pub markdown_canonical_path: String,
-    pub markdown_external_access_token: Option<String>,
+    pub source: MarkdownImageSource,
+    /// Markdown URL syntax, not an already-decoded filesystem path.
     pub raw_src: String,
-    #[serde(default)]
-    pub approved_external_targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MarkdownImageSource {
+    Workspace,
+    Document {
+        canonical_path: String,
+        #[serde(default)]
+        external_access_token: Option<String>,
+        #[serde(default)]
+        approved_external_targets: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

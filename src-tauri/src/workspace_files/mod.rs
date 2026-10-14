@@ -295,40 +295,65 @@ pub async fn resolve_markdown_image(
         input.workspace_path.as_deref(),
     )
     .await?;
-    let markdown_path = canonicalize_file(Path::new(&input.markdown_canonical_path), "read")?;
-    authorize_external_if_needed(
-        runtime.inner(),
-        &root.project_id,
-        &root.path,
-        &markdown_path,
-        input.markdown_external_access_token.as_deref(),
-        "read",
-    )?;
-    let image_path = resolve_markdown_image_path(&markdown_path, &input.raw_src)?;
-    let markdown_directory = markdown_path.parent().ok_or_else(|| {
-        paths::error(
-            "workspace-file.markdown-image-src-invalid",
-            serde_json::json!({ "src": input.raw_src }),
-        )
-    })?;
-    let auto_allowed =
-        path_is_within(&image_path, &root.path) || path_is_within(&image_path, markdown_directory);
-    let explicitly_approved = input.approved_external_targets.iter().any(|candidate| {
-        canonicalize_file(Path::new(candidate), "read").is_ok_and(|approved| approved == image_path)
-    });
-    if !auto_allowed && !explicitly_approved {
-        return Ok(MarkdownImagePreviewVm::ApprovalRequired {
-            canonical_path: paths::display_path(&image_path),
-            reason: "outside-document-directory".to_owned(),
-        });
-    }
-
     let runtime = runtime.inner().clone();
-    let read_root = root.clone();
-    let snapshot = spawn_blocking_command(move || {
-        service::read_file(&read_root, &runtime, &image_path, None, false)
-    })
-    .await?;
+    spawn_blocking_command(move || resolve_markdown_image_from_root(&root, &runtime, &input)).await
+}
+
+/// Shared production boundary: source authorization and all image filesystem I/O
+/// run together on the blocking pool, before a revision-bound preview is issued.
+fn resolve_markdown_image_from_root(
+    root: &paths::ResolvedWorkspaceRoot,
+    runtime: &WorkspaceFileRuntime,
+    input: &ResolveMarkdownImageInput,
+) -> CommandResult<MarkdownImagePreviewVm> {
+    let image_path = match &input.source {
+        MarkdownImageSource::Workspace => {
+            let image_path = resolve_markdown_image_path(&root.path, &input.raw_src)?;
+            if !path_is_within(&image_path, &root.path) {
+                return Err(paths::error(
+                    "workspace-file.path-outside-workspace",
+                    serde_json::json!({ "path": paths::display_path(&image_path) }),
+                ));
+            }
+            image_path
+        }
+        MarkdownImageSource::Document {
+            canonical_path,
+            external_access_token,
+            approved_external_targets,
+        } => {
+            let markdown_path = canonicalize_file(Path::new(canonical_path), "read")?;
+            authorize_external_if_needed(
+                runtime,
+                &root.project_id,
+                &root.path,
+                &markdown_path,
+                external_access_token.as_deref(),
+                "read",
+            )?;
+            let directory = markdown_path.parent().ok_or_else(|| {
+                paths::error(
+                    "workspace-file.markdown-image-src-invalid",
+                    serde_json::json!({ "src": input.raw_src }),
+                )
+            })?;
+            let image_path = resolve_markdown_image_path(directory, &input.raw_src)?;
+            let auto_allowed =
+                path_is_within(&image_path, &root.path) || path_is_within(&image_path, directory);
+            let explicitly_approved = approved_external_targets.iter().any(|candidate| {
+                canonicalize_file(Path::new(candidate), "read")
+                    .is_ok_and(|approved| paths::same_path(&approved, &image_path))
+            });
+            if !auto_allowed && !explicitly_approved {
+                return Ok(MarkdownImagePreviewVm::ApprovalRequired {
+                    canonical_path: paths::display_path(&image_path),
+                    reason: "outside-document-directory".to_owned(),
+                });
+            }
+            image_path
+        }
+    };
+    let snapshot = service::read_file(root, runtime, &image_path, None, false)?;
     Ok(match snapshot {
         WorkspaceFileSnapshotVm::Image {
             locator,
@@ -355,68 +380,76 @@ pub async fn resolve_markdown_image(
     })
 }
 
-fn resolve_markdown_image_path(markdown_path: &Path, raw_src: &str) -> CommandResult<PathBuf> {
-    let raw = raw_src.trim();
-    let lower = raw.to_ascii_lowercase();
-    if raw.is_empty()
-        || lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("data:")
-        || lower.starts_with("javascript:")
-        || raw.starts_with("\\\\")
-        || raw.starts_with("//")
-    {
-        return Err(paths::error(
-            if lower.starts_with("http://") || lower.starts_with("https://") {
-                "workspace-file.markdown-image-network-blocked"
-            } else if raw.starts_with("\\\\") || raw.starts_with("//") {
-                "workspace-file.markdown-image-unc-blocked"
-            } else {
-                "workspace-file.markdown-image-src-invalid"
-            },
-            serde_json::json!({ "src": raw }),
-        ));
-    }
-    if lower.starts_with("file:") {
-        let url = url::Url::parse(raw).map_err(|_| {
-            paths::error(
-                "workspace-file.markdown-image-src-invalid",
-                serde_json::json!({ "src": raw }),
-            )
-        })?;
+fn resolve_markdown_image_path(base_directory: &Path, raw_src: &str) -> CommandResult<PathBuf> {
+    let invalid = || {
+        paths::error(
+            "workspace-file.markdown-image-src-invalid",
+            serde_json::json!({ "src": raw_src }),
+        )
+    };
+    // rawSrc is a Markdown URL: remove URL suffixes before decoding, so %23
+    // names a literal '#' while an unescaped '#' starts a fragment.
+    let raw = raw_src.trim().split(['?', '#']).next().unwrap_or("");
+    validate_markdown_image_reference(raw, raw_src, true)?;
+    let decoded = if raw.to_ascii_lowercase().starts_with("file:") {
+        let url = url::Url::parse(raw).map_err(|_| invalid())?;
         if url
             .host_str()
             .is_some_and(|host| !host.is_empty() && host != "localhost")
         {
             return Err(paths::error(
                 "workspace-file.markdown-image-unc-blocked",
-                serde_json::json!({ "src": raw }),
+                serde_json::json!({ "src": raw_src }),
             ));
         }
-        let path = url.to_file_path().map_err(|_| {
-            paths::error(
-                "workspace-file.markdown-image-src-invalid",
-                serde_json::json!({ "src": raw }),
-            )
-        })?;
-        return canonicalize_file(&path, "read");
-    }
-    let decoded = percent_decode_str(raw).decode_utf8().map_err(|_| {
-        paths::error(
-            "workspace-file.markdown-image-src-invalid",
-            serde_json::json!({ "src": raw }),
-        )
-    })?;
-    let path = Path::new(decoded.as_ref());
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
+        // to_file_path already percent-decodes: do not decode the result again.
+        url.to_file_path().map_err(|_| invalid())?
     } else {
-        markdown_path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .join(path)
+        let decoded = percent_decode_str(raw)
+            .decode_utf8()
+            .map_err(|_| invalid())?;
+        PathBuf::from(paths::normalize_platform_file_link_path(&decoded))
+    };
+    // Recheck decoded prefixes before any filesystem access: encoded UNC and
+    // schemes must not reach canonicalize (which can access a network share).
+    validate_markdown_image_reference(&decoded.to_string_lossy(), raw_src, false)?;
+    let candidate = if decoded.is_absolute() {
+        decoded
+    } else {
+        base_directory.join(decoded)
     };
     canonicalize_file(&candidate, "read")
+}
+
+fn validate_markdown_image_reference(
+    value: &str,
+    raw_src: &str,
+    allow_file: bool,
+) -> CommandResult<()> {
+    let lower = value.to_ascii_lowercase();
+    let slash = value.replace('\\', "/");
+    let code = if slash.starts_with("//") {
+        Some("workspace-file.markdown-image-unc-blocked")
+    } else if lower.starts_with("http:") || lower.starts_with("https:") {
+        Some("workspace-file.markdown-image-network-blocked")
+    } else if value.is_empty()
+        || value.contains('\0')
+        || (!paths::looks_like_windows_drive_absolute(paths::normalize_platform_file_link_path(
+            value,
+        )) && value
+            .split(['/', '\\'])
+            .next()
+            .is_some_and(|prefix| prefix.contains(':'))
+            && !(allow_file && lower.starts_with("file:")))
+    {
+        Some("workspace-file.markdown-image-src-invalid")
+    } else {
+        None
+    };
+    match code {
+        Some(code) => Err(paths::error(code, serde_json::json!({ "src": raw_src }))),
+        None => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -678,6 +711,252 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn markdown_image_workspace_source_requires_no_markdown_document() {
+        let input = serde_json::from_value::<ResolveMarkdownImageInput>(serde_json::json!({
+            "projectId": "project-a",
+            "workspacePath": null,
+            "source": { "kind": "workspace" },
+            "rawSrc": "docs/overview.png"
+        }));
+        assert!(
+            input.is_ok(),
+            "workspace image input must not require a document: {input:?}"
+        );
+        let dir = tempdir().unwrap();
+        let root = image_test_root(dir.path());
+        let image_path = root.path.join("docs/overview.png");
+        std::fs::create_dir(image_path.parent().unwrap()).unwrap();
+        write_test_png(&image_path);
+        let runtime = WorkspaceFileRuntime::default();
+        let preview = resolve_markdown_image_from_root(&root, &runtime, &input.unwrap()).unwrap();
+        let MarkdownImagePreviewVm::Ready {
+            canonical_path,
+            preview_grant,
+            width,
+            height,
+            mime_type,
+            ..
+        } = preview
+        else {
+            panic!("expected ready PNG preview");
+        };
+        assert_eq!(
+            canonical_path,
+            paths::display_path(&std::fs::canonicalize(&image_path).unwrap())
+        );
+        assert_eq!((width, height, mime_type.as_str()), (3, 2, "image/png"));
+        assert_eq!(
+            preview_protocol_response(&runtime, &preview_grant.token).body(),
+            &std::fs::read(image_path).unwrap()
+        );
+        runtime.release_preview(&preview_grant.token).unwrap();
+        assert!(
+            !preview_protocol_response(&runtime, &preview_grant.token)
+                .status()
+                .is_success()
+        );
+    }
+
+    fn image_test_root(path: &Path) -> paths::ResolvedWorkspaceRoot {
+        paths::ResolvedWorkspaceRoot {
+            project_id: "project-a".to_owned(),
+            path: std::fs::canonicalize(path).unwrap(),
+            workspace_scope_path: None,
+            config: gold_band::config::WorkspaceFilesConfig::default(),
+        }
+    }
+
+    fn write_test_png(path: &Path) {
+        image::RgbImage::from_pixel(3, 2, image::Rgb([20, 40, 60]))
+            .save(path)
+            .unwrap();
+    }
+
+    fn workspace_image_input(raw_src: &str) -> ResolveMarkdownImageInput {
+        ResolveMarkdownImageInput {
+            project_id: "project-a".to_owned(),
+            workspace_path: None,
+            source: MarkdownImageSource::Workspace,
+            raw_src: raw_src.to_owned(),
+        }
+    }
+
+    #[test]
+    fn markdown_image_workspace_boundary_rejects_escape_without_external_authorization() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        // Invalid content proves authorization fails before the image reader.
+        let outside = dir.path().join("outside.png");
+        std::fs::write(&outside, b"not an image").unwrap();
+        let root = image_test_root(&workspace);
+        let runtime = WorkspaceFileRuntime::default();
+        for raw in [
+            "../outside.png".to_owned(),
+            url::Url::from_file_path(&outside).unwrap().to_string(),
+        ] {
+            assert_eq!(
+                resolve_markdown_image_from_root(&root, &runtime, &workspace_image_input(&raw))
+                    .unwrap_err()
+                    .code,
+                "workspace-file.path-outside-workspace"
+            );
+        }
+        assert!(
+            runtime
+                .validate_external_grant(None, "project-a", &outside, "read")
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(windows, ignore = "requires Windows symlink privilege or Developer Mode")]
+    fn markdown_image_workspace_rejects_symlink_escape() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("outside.png");
+        write_test_png(&outside);
+        let link = workspace.join("linked.png");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside, &link).unwrap();
+        let root = image_test_root(&workspace);
+        assert_eq!(
+            resolve_markdown_image_from_root(
+                &root,
+                &WorkspaceFileRuntime::default(),
+                &workspace_image_input("linked.png")
+            )
+            .unwrap_err()
+            .code,
+            "workspace-file.path-outside-workspace"
+        );
+    }
+
+    #[test]
+    fn markdown_image_document_authorization_and_exact_approval_are_preserved() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = image_test_root(workspace.path());
+        let directory = outside.path().join("docs");
+        std::fs::create_dir(&directory).unwrap();
+        let document = directory.join("README.md");
+        std::fs::write(&document, "# Readme").unwrap();
+        let document = std::fs::canonicalize(document).unwrap();
+        write_test_png(&directory.join("inside.png"));
+        write_test_png(&outside.path().join("outside.png"));
+        write_test_png(&outside.path().join("other.png"));
+        let target = std::fs::canonicalize(outside.path().join("outside.png")).unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let mut input = workspace_image_input("inside.png");
+        input.source = MarkdownImageSource::Document {
+            canonical_path: paths::display_path(&document),
+            external_access_token: None,
+            approved_external_targets: vec![],
+        };
+        assert_eq!(
+            resolve_markdown_image_from_root(&root, &runtime, &input)
+                .unwrap_err()
+                .code,
+            "workspace-file.external-access-denied"
+        );
+        let grant = runtime
+            .issue_external_grant(root.project_id.clone(), document, 30)
+            .unwrap();
+        if let MarkdownImageSource::Document {
+            external_access_token,
+            ..
+        } = &mut input.source
+        {
+            *external_access_token = Some(grant.token.clone());
+        }
+        assert!(matches!(
+            resolve_markdown_image_from_root(&root, &runtime, &input).unwrap(),
+            MarkdownImagePreviewVm::Ready { .. }
+        ));
+        input.raw_src = "../outside.png".to_owned();
+        assert!(matches!(
+            resolve_markdown_image_from_root(&root, &runtime, &input).unwrap(),
+            MarkdownImagePreviewVm::ApprovalRequired { .. }
+        ));
+        if let MarkdownImageSource::Document {
+            approved_external_targets,
+            ..
+        } = &mut input.source
+        {
+            approved_external_targets.push(paths::display_path(&target));
+        }
+        assert!(matches!(
+            resolve_markdown_image_from_root(&root, &runtime, &input).unwrap(),
+            MarkdownImagePreviewVm::Ready { .. }
+        ));
+        input.raw_src = "../other.png".to_owned();
+        assert!(matches!(
+            resolve_markdown_image_from_root(&root, &runtime, &input).unwrap(),
+            MarkdownImagePreviewVm::ApprovalRequired { .. }
+        ));
+        runtime.release_external_grant(&grant.token).unwrap();
+        assert_eq!(
+            resolve_markdown_image_from_root(&root, &runtime, &input)
+                .unwrap_err()
+                .code,
+            "workspace-file.external-access-denied"
+        );
+    }
+
+    #[test]
+    fn markdown_image_workspace_uses_existing_format_and_size_limits() {
+        let dir = tempdir().unwrap();
+        let mut root = image_test_root(dir.path());
+        write_test_png(&root.path.join("image.png"));
+        std::fs::write(root.path.join("fake.png"), "not an image").unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        assert_eq!(
+            resolve_markdown_image_from_root(&root, &runtime, &workspace_image_input("fake.png"))
+                .unwrap(),
+            MarkdownImagePreviewVm::Unsupported {
+                limitation_code: "workspace-file.format-unsupported".to_owned()
+            }
+        );
+        root.config.image_preview_max_bytes = 1;
+        assert_eq!(
+            resolve_markdown_image_from_root(&root, &runtime, &workspace_image_input("image.png"))
+                .unwrap(),
+            MarkdownImagePreviewVm::Unsupported {
+                limitation_code: "workspace-file.too-large".to_owned()
+            }
+        );
+        root.config.image_preview_max_bytes = 1024;
+        root.config.image_preview_max_pixels = 5;
+        assert_eq!(
+            resolve_markdown_image_from_root(&root, &runtime, &workspace_image_input("image.png"))
+                .unwrap(),
+            MarkdownImagePreviewVm::Unsupported {
+                limitation_code: "workspace-file.image-dimensions-too-large".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn markdown_image_url_suffix_is_removed_before_single_percent_decode() {
+        let dir = tempdir().unwrap();
+        let markdown = dir.path().join("README.md");
+        let image = dir.path().join("中文 %20 # image.png");
+        std::fs::write(&markdown, "# Readme").unwrap();
+        std::fs::write(&image, b"image").unwrap();
+        assert_eq!(
+            resolve_markdown_image_path(
+                markdown.parent().unwrap(),
+                "%E4%B8%AD%E6%96%87%20%2520%20%23%20image.png?v=1#preview"
+            )
+            .unwrap(),
+            std::fs::canonicalize(image).unwrap(),
+        );
+    }
+
+    #[test]
     fn external_grant_is_bound_to_exact_project_and_path() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("first.txt");
@@ -820,14 +1099,78 @@ mod tests {
         std::fs::write(&image, b"image").unwrap();
 
         assert_eq!(
-            resolve_markdown_image_path(&markdown, "assets/screen%20shot.png").unwrap(),
+            resolve_markdown_image_path(markdown.parent().unwrap(), "assets/screen%20shot.png")
+                .unwrap(),
             std::fs::canonicalize(image).unwrap(),
         );
         let file_url = url::Url::from_file_path(image_dir.join("screen shot.png")).unwrap();
         assert_eq!(
-            resolve_markdown_image_path(&markdown, file_url.as_str()).unwrap(),
+            resolve_markdown_image_path(markdown.parent().unwrap(), file_url.as_str()).unwrap(),
             std::fs::canonicalize(image_dir.join("screen shot.png")).unwrap(),
         );
+    }
+
+    #[test]
+    fn markdown_image_encoded_network_and_schemes_are_rejected_before_io() {
+        let dir = tempdir().unwrap();
+        for (raw, code) in [
+            (
+                "%2F%2Fserver/share/image.png",
+                "workspace-file.markdown-image-unc-blocked",
+            ),
+            (
+                "%5C%5Cserver/share/image.png",
+                "workspace-file.markdown-image-unc-blocked",
+            ),
+            (
+                "/\\server/share/image.png",
+                "workspace-file.markdown-image-unc-blocked",
+            ),
+            (
+                "file://server/share/image.png",
+                "workspace-file.markdown-image-unc-blocked",
+            ),
+            (
+                "https%3A%2F%2Fexample.com/a.png",
+                "workspace-file.markdown-image-network-blocked",
+            ),
+            (
+                "javascript%3Aalert(1)",
+                "workspace-file.markdown-image-src-invalid",
+            ),
+            (
+                "ftp://example.com/a.png",
+                "workspace-file.markdown-image-src-invalid",
+            ),
+            ("blob:local", "workspace-file.markdown-image-src-invalid"),
+        ] {
+            assert_eq!(
+                resolve_markdown_image_path(dir.path(), raw)
+                    .unwrap_err()
+                    .code,
+                code,
+                "{raw}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn markdown_image_windows_url_pathname_and_file_url_share_one_decode() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("中文 %20 # image.png");
+        write_test_png(&file);
+        let url = url::Url::from_file_path(&file).unwrap();
+        let expected = std::fs::canonicalize(&file).unwrap();
+        for raw in [
+            format!("{}?v=1#image", url.as_str()),
+            format!("{}?v=1#image", url.path()),
+        ] {
+            assert_eq!(
+                resolve_markdown_image_path(dir.path(), &raw).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -837,19 +1180,22 @@ mod tests {
         std::fs::write(&markdown, "# Readme").unwrap();
 
         assert_eq!(
-            resolve_markdown_image_path(&markdown, "https://tracker.example/image.png")
-                .unwrap_err()
-                .code,
+            resolve_markdown_image_path(
+                markdown.parent().unwrap(),
+                "https://tracker.example/image.png"
+            )
+            .unwrap_err()
+            .code,
             "workspace-file.markdown-image-network-blocked",
         );
         assert_eq!(
-            resolve_markdown_image_path(&markdown, "data:image/png;base64,AAAA")
+            resolve_markdown_image_path(markdown.parent().unwrap(), "data:image/png;base64,AAAA")
                 .unwrap_err()
                 .code,
             "workspace-file.markdown-image-src-invalid",
         );
         assert_eq!(
-            resolve_markdown_image_path(&markdown, r"\\server\share\image.png")
+            resolve_markdown_image_path(markdown.parent().unwrap(), r"\\server\share\image.png")
                 .unwrap_err()
                 .code,
             "workspace-file.markdown-image-unc-blocked",

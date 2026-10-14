@@ -130,10 +130,18 @@ interface MarkdownRuntimeState {
 ```rust
 pub struct ResolveMarkdownImageInput {
     pub project_id: String,
-    pub markdown_canonical_path: String,
-    pub markdown_external_access_token: Option<String>,
+    pub workspace_path: Option<String>,
+    pub source: MarkdownImageSource,
     pub raw_src: String,
-    pub approved_external_targets: Vec<String>,
+}
+
+pub enum MarkdownImageSource {
+    Workspace,
+    Document {
+        canonical_path: String,
+        external_access_token: Option<String>,
+        approved_external_targets: Vec<String>,
+    },
 }
 
 pub struct WorkspaceFilePreviewGrantVm {
@@ -160,7 +168,7 @@ pub enum MarkdownImagePreviewVm {
 }
 ```
 
-前端只能提交 `projectId + markdownCanonicalPath + rawSrc + 当前文档授权集合`。最终路径解析、canonicalize、symlink 边界、格式识别和授权判断全部由 Rust 权威执行。
+前端提交 `projectId + workspacePath + source + rawSrc`，`source` 使用 camelCase 判别联合：文档为 `{ kind: 'document', canonicalPath, externalAccessToken, approvedExternalTargets }`，ACP 会话为 `{ kind: 'workspace' }`。文档来源仍必须验证真实 Markdown 文件及其授权，workspace 来源不能伪造 Markdown 文件，且只自动读取 canonical workspace/worktree root 内图片。rawSrc 按 Markdown URL 语义先分离 query/fragment、再解码一次（`file:` 使用 URL 库转换），编码后的 UNC/危险协议在文件 I/O 前再次拒绝。最终路径解析、canonicalize、symlink 边界、格式识别和授权判断全部由 Rust 权威执行。
 
 ## 8. Atomic Editor 接入
 

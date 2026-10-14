@@ -81,6 +81,7 @@ import {
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
+import { MarkdownLocalImageProvider } from '@/components/prompt-kit/markdown-local-images';
 import { compactionSummaryEventId, hasCompactionSummary } from '@/lib/acp-compaction-summary';
 import {
   Message,
@@ -2573,6 +2574,11 @@ export function ACPChatDialog(
   const mentionLabels = useMentionMenuLabels();
   // Prompt file references resolve against the session's work location.
   const mentionWorkLocation = effective?.workLocation;
+  const imageWorkLocationKind = effective?.workLocation?.kind;
+  const imageWorkspacePath = worktreePathOfLocation(effective?.workLocation);
+  const markdownImageRoot = useMemo(() => projectId && imageWorkLocationKind && imageWorkLocationKind !== 'unavailable'
+    ? workspaceRootRef(projectId, imageWorkspacePath)
+    : null, [projectId, imageWorkLocationKind, imageWorkspacePath]);
   const mentionRoot = useMemo(
     () => (projectId && mentionWorkLocation?.kind !== 'unavailable'
       ? workspaceRootRef(projectId, worktreePathOfLocation(mentionWorkLocation))
@@ -6644,6 +6650,7 @@ export function ACPChatDialog(
     );
 
   return (
+    <MarkdownLocalImageProvider scopeKey={eventWindowKey} root={markdownImageRoot}>
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <TurnAttachmentCardPreviewLimitContext.Provider value={turnAttachmentCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
@@ -6978,6 +6985,7 @@ export function ACPChatDialog(
     </AcpBranchLocatorContext.Provider>
     </TurnAttachmentCardPreviewLimitContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
+    </MarkdownLocalImageProvider>
   );
 }
 

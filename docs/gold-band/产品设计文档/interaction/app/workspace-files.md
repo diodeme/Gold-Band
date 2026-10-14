@@ -113,6 +113,8 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - `turn-attachment` 不接受前端绝对路径。后端必须先以完整 attempt locator、branch、changeSetId 和 attachmentId 查询 finalized manifest，验证 branch ownership，再在 attempt `attachments/` 根内解析 manifest 相对路径；canonicalize 后越界、缺失、非普通文件或 symlink escape 一律拒绝。验证通过后才可复用工作空间外精确读写 grant 与 watcher。
 - 图片不使用 `file://`。Rust 完成文件签名、字节数、像素数和 revision 校验后签发 `WorkspaceFilePreviewGrantVm { token, expiresAtMs }`；SVG 禁止原始 DOM 注入和外部资源加载。
 - Markdown 图片不使用组件默认的原始 `<img src>`：工作空间内图片以及工作空间外 Markdown 同目录/子目录相对图片自动签发 preview grant；文档目录外引用按当前文档统一确认一次，且只授权文档实际引用的精确文件。grant 到期前按当前引用批量原子轮换，新 token 生效后再释放旧 token；页面重新可见、图片加载失败或开发后端重启导致内存 grant 丢失时幂等补发。UNC 和危险 scheme 不加载；网络图片不经过 preview grant，只有 host 已受信任时才直接加载。
+- ACP 会话中的本地 Markdown 图片复用安全预览接口，以现有 project/session identity 与 canonical `workLocation` 绑定 workspace/worktree；不借用文件面板当前浏览的目录，不在工作位置未就绪或已释放时回落主项目。只有 canonical root 内图片自动签发 grant，越界、软链接逃逸、UNC 和危险协议拒绝；文档来源继续沿用真实 Markdown 文件及精确批准集合。
+- 对话 Markdown 的本地链接与图片在 Streamdown 的 HAST 阶段统一适配，保留 sanitize/harden；不修改代码片段，不把内部定位代理发往网络。仅近视口图片申请 grant，按会话去重并限制并发/引用量；总驻留像素复用 `imagePreviewMaxPixels` 作为预算。离屏、页面隐藏、切换身份及卸载释放引用，迟到 grant 立即回收；重新可见后重新申请，不把已释放 token 再交给 `<img>`。图片点击使用 canonical 文件路径打开工作区，token 仅用于受控预览，不交给系统 opener。
 - 所有文件错误继续使用 `CommandErrorVm { code, params }`；Rust 不产生对客文案，前端同步维护中英文恢复提示。
 - “在文件管理器中显示”必须先由 Rust 按当前 project/attempt 根目录解析相对路径、执行 canonicalize 并完成越界校验，再把已授权 canonical path 交给官方 `tauri-plugin-opener` 的 `reveal_item_in_dir`。工作空间与运行/会话目录复用同一平台抽象，不在业务代码中拼接 Explorer 参数，也不维护 `xdg-open`/Finder 分支。
 

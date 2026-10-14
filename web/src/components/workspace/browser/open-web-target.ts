@@ -1,4 +1,5 @@
 import { browserResolveLocalHtml, openExternalUrl } from '@/api';
+import type { BrowserResolveLocalHtmlInput } from '@/api/client';
 import type { RightWorkspaceCommands } from '../right-workspace-context';
 import type { BrowserPreferences, WorkspaceRootRef } from '@/types';
 import { browserWorkspaceResourceKey } from '../right-workspace-context';
@@ -6,7 +7,6 @@ import { browserSessionStore } from './browser-session-store';
 import {
   classifyWebTarget,
   isLocalhostUrl,
-  localHtmlHrefFrom,
   normalizeBrowserAddress,
 } from './web-target';
 
@@ -53,14 +53,21 @@ export async function openWebTarget(
     return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
   }
   if (kind === 'local-html') {
-    return openLocalDocumentInBrowser(localHtmlHrefFrom(href) ?? href, context);
+    return openResolvedLocalDocument({ kind: 'href', href }, context);
   }
   return openBrowserPage(normalizeBrowserAddress(href, context.browserPreferences?.searchEngine), context.scopeKey, context);
 }
 
-/** Opens a local HTML/SVG document in the built-in browser once the backend grants its directory. */
+/** Opens a literal canonical HTML/SVG path, not a URL or percent-encoded href. */
 export async function openLocalDocumentInBrowser(
-  rawPath: string,
+  path: string,
+  context: OpenWebTargetContext,
+): Promise<OpenWebTargetResult> {
+  return openResolvedLocalDocument({ kind: 'path', path }, context);
+}
+
+async function openResolvedLocalDocument(
+  target: BrowserResolveLocalHtmlInput['target'],
   context: OpenWebTargetContext,
 ): Promise<OpenWebTargetResult> {
   if (!context.scopeKey) {
@@ -73,9 +80,9 @@ export async function openLocalDocumentInBrowser(
   try {
     const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
       ...context.root,
-      rawHref: rawPath,
+      target,
     });
-    url = resolved.canonicalPath;
+    url = resolved.url;
   } catch (reason) {
     const value = reason as { code?: unknown; params?: unknown };
     return {

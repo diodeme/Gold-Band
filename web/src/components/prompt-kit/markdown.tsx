@@ -20,7 +20,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ImagePreviewDialog, type ImagePreviewTarget } from '@/components/shared/ImagePreviewDialog';
-import { openExternalUrl } from '@/api';
+import { openExternalUrl, workspaceFilePreviewUrl } from '@/api';
+import { isLocalImageLocator, localHrefFromRenderedHref, localImageSource, rehypeLocalResources } from '@/lib/markdown-local-resources';
+import { useLocalMarkdownImage } from './markdown-local-images';
 import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isHttpUrlHref, isLocalFileHref, isSystemHandlerHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
@@ -69,7 +71,6 @@ export interface MarkdownResourceLinkHandler {
 }
 
 const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
-const LOCAL_FILE_PROXY_PREFIX = 'https://gold-band.local-file.invalid/?href=';
 
 export function MarkdownResourceLinkProvider({ handler, children }: { handler: MarkdownResourceLinkHandler | null; children: React.ReactNode }) {
   return <MarkdownResourceLinkContext.Provider value={handler}>{children}</MarkdownResourceLinkContext.Provider>;
@@ -93,29 +94,6 @@ export function MarkdownImagePreviewProvider({ children }: { children: React.Rea
 }
 
 export { isLocalFileHref };
-
-export function proxyLocalFileLinks(markdown: string) {
-  return markdown.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string, offset: number) => {
-    if (markdown[offset - 1] === '!') return match;
-    const trimmed = destination.trim();
-    const href = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
-    return isLocalFileHref(href)
-      ? `[${label}](${LOCAL_FILE_PROXY_PREFIX}${encodeURIComponent(href)})`
-      : match;
-  });
-}
-
-function localHrefFromRenderedHref(href: string | undefined) {
-  if (!href) return null;
-  if (href.startsWith(LOCAL_FILE_PROXY_PREFIX)) {
-    try {
-      return decodeURIComponent(href.slice(LOCAL_FILE_PROXY_PREFIX.length));
-    } catch {
-      return null;
-    }
-  }
-  return isLocalFileHref(href) ? href : null;
-}
 
 function renderedLinkText(node: React.ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
@@ -372,6 +350,44 @@ function downloadImageBlob(blob: Blob, fileName: string) {
 const MarkdownRemoteImagePolicyContext = createContext<RemoteImagePolicy>('user-trust');
 
 function MarkdownImage(props: MarkdownImageProps) {
+  if (isLocalImageLocator(props.src)) return <LocalMarkdownImage {...props} />;
+  return <RemoteMarkdownImage {...props} />;
+}
+
+function LocalMarkdownImage(props: MarkdownImageProps) {
+  const { t } = useTranslation();
+  const source = localImageSource(props.src);
+  const { hostRef, state, dimensions, canRetry, refresh } = useLocalMarkdownImage(source);
+  const [decodeFailure, setDecodeFailure] = useState<string | null>(null);
+  const retriedToken = useRef<string | null>(null);
+  const failed = state?.kind === 'error' || (state?.kind === 'ready' && decodeFailure === state.previewGrant.token);
+  return (
+    <span ref={hostRef} className="block max-w-full" data-gb-markdown-local-image="true"
+      style={state?.kind !== 'ready' && dimensions ? { aspectRatio: `${dimensions.width} / ${dimensions.height}` } : undefined}>
+      {state?.kind === 'ready' && !failed ? (
+        <LoadedMarkdownImage {...props} src={workspaceFilePreviewUrl(state.previewGrant.token)} localPath={state.canonicalPath}
+          className={cn('h-auto', props.className)} width={state.width} height={state.height}
+          onLoad={() => { retriedToken.current = null; }}
+          onError={() => {
+            if (retriedToken.current === null) {
+              retriedToken.current = state.previewGrant.token;
+              refresh();
+            } else setDecodeFailure(state.previewGrant.token);
+          }} />
+      ) : (
+        <span className="my-2 inline-flex min-h-8 max-w-full items-center gap-2 text-xs text-muted-foreground">
+          <ImageIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-all">{props.alt || source || t('common.imageNotAvailable')}</span>
+          {failed ? <span>{t('common.imageNotAvailable')}</span> : <Loader2 className="size-3 animate-spin" aria-label={t('common.loading')} />}
+          {failed && canRetry ? <Button type="button" variant="ghost" size="sm" className="h-6 px-2"
+            onClick={(event) => { event.preventDefault(); event.stopPropagation(); setDecodeFailure(null); retriedToken.current = null; refresh(); }}>{t('common.retry')}</Button> : null}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function RemoteMarkdownImage(props: MarkdownImageProps) {
   const policy = useContext(MarkdownRemoteImagePolicyContext);
   const host = props.src ? remoteImageHost(props.src) : null;
   const trusted = useRemoteImageHostTrusted(host);
@@ -433,7 +449,7 @@ function BlockedRemoteImage({ host, src, alt }: { host: string; src: string; alt
   );
 }
 
-function LoadedMarkdownImage({ node: _node, className, src, alt = '', onLoad, onError, ...props }: MarkdownImageProps) {
+function LoadedMarkdownImage({ node: _node, className, src, localPath, alt = '', onLoad, onError, ...props }: MarkdownImageProps & { localPath?: string }) {
   const { t } = useTranslation();
   const openPreview = useContext(MarkdownImagePreviewContext);
   const linkHandler = useContext(MarkdownResourceLinkContext);
@@ -468,18 +484,22 @@ function LoadedMarkdownImage({ node: _node, className, src, alt = '', onLoad, on
     if (!src) return;
     try {
       const response = await fetch(src);
+      if (!response.ok) throw new Error('image-unavailable');
       const blob = await response.blob();
-      downloadImageBlob(blob, imageDownloadName(src, alt));
+      downloadImageBlob(blob, imageDownloadName(localPath ?? src, alt));
     } catch {
-      await openExternalUrl(src);
+      if (localPath) setFailed(true);
+      else await openExternalUrl(src);
     }
-  }, [alt, src]);
+  }, [alt, localPath, src]);
 
   // Clicking an image opens its own source like a link to it: a modal that provides a preview
   // zooms in place; otherwise web images open like web links and local images like file links.
   const openMode = !src || !showImage
     ? null
-    : openPreview
+    : localPath
+      ? linkHandler ? 'open' : null
+      : openPreview
       ? 'preview'
       : isExternalUrlHref(src) || (linkHandler && isLocalFileHref(src))
         ? 'open'
@@ -491,8 +511,8 @@ function LoadedMarkdownImage({ node: _node, className, src, alt = '', onLoad, on
       openPreview?.({ src, alt });
       return;
     }
-    if (isLocalFileHref(src)) {
-      void linkHandler?.openLocalFile(src);
+    if (localPath || isLocalFileHref(src)) {
+      void linkHandler?.openLocalFile(localPath ?? src);
       return;
     }
     if (isSystemHandlerHref(src) || !linkHandler?.openWebUrl || !isHttpUrlHref(src)) {
@@ -500,7 +520,7 @@ function LoadedMarkdownImage({ node: _node, className, src, alt = '', onLoad, on
       return;
     }
     void linkHandler.openWebUrl(src);
-  }, [alt, linkHandler, openMode, openPreview, src]);
+  }, [alt, linkHandler, localPath, openMode, openPreview, src]);
 
   if (!src) return null;
   return (
@@ -632,6 +652,7 @@ const alertRemarkPlugins: Pluggable[] = [
 // Streamdown's sanitizer strips classes; allow only the alert markers so callouts survive.
 const alertRehypePlugins: Pluggable[] = [
   defaultRehypePlugins.raw,
+  rehypeLocalResources,
   [sanitizePlugin, {
     ...sanitizeSchema,
     attributes: {
@@ -765,7 +786,7 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
         urlTransform={markdownUrlTransform}
         linkSafety={markdownLinkSafety}
       >
-        {proxyLocalFileLinks(children)}
+        {children}
       </Streamdown>
       </MarkdownRemoteImagePolicyContext.Provider>
     </div>

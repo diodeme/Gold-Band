@@ -521,7 +521,7 @@ fn looks_like_windows_absolute(value: &str) -> bool {
     looks_like_windows_drive_absolute(value) || value.starts_with("\\\\")
 }
 
-fn looks_like_windows_drive_absolute(value: &str) -> bool {
+pub(crate) fn looks_like_windows_drive_absolute(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3
         && bytes[0].is_ascii_alphabetic()
@@ -529,7 +529,7 @@ fn looks_like_windows_drive_absolute(value: &str) -> bool {
         && matches!(bytes[2], b'/' | b'\\')
 }
 
-fn normalize_platform_file_link_path(value: &str) -> &str {
+pub(crate) fn normalize_platform_file_link_path(value: &str) -> &str {
     #[cfg(windows)]
     if let Some(without_url_root) = value.strip_prefix('/') {
         if looks_like_windows_drive_absolute(without_url_root) {

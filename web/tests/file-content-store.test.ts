@@ -556,7 +556,12 @@ describe('FileContentStore Markdown runtime contract', () => {
     await store.syncMarkdownImages(markdownResource.key, ['image.png']);
 
     expect(api.resolveMarkdownImage).toHaveBeenCalledWith(expect.objectContaining({
-      markdownCanonicalPath: 'D:/repo/readme.md',
+      source: {
+        kind: 'document',
+        canonicalPath: 'D:/repo/readme.md',
+        externalAccessToken: null,
+        approvedExternalTargets: [],
+      },
       rawSrc: 'image.png',
     }));
     expect(store.markdownImages(markdownResource.key).get('image.png')?.kind).toBe('ready');
@@ -580,7 +585,7 @@ describe('FileContentStore Markdown runtime contract', () => {
     expect(store.markdownImages(markdownResource.key).get('../outside.png')?.kind).toBe('approvalRequired');
 
     await store.approveMarkdownImages(markdownResource.key);
-    expect(api.resolveMarkdownImage.mock.calls[1]?.[0].approvedExternalTargets).toEqual(['D:/outside.png']);
+    expect(api.resolveMarkdownImage.mock.calls[1]?.[0].source.approvedExternalTargets).toEqual(['D:/outside.png']);
     expect(store.markdownImages(markdownResource.key).get('../outside.png')?.kind).toBe('ready');
   });
 

@@ -401,6 +401,21 @@ function browserAgentIdentity(agentType: string) {
   } : null;
 }
 
+const browserMessageImageFixtures = [
+  {
+    path: `user-inputs/${'1'.repeat(64)}/image.png`,
+    dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAI0lEQVR4nGO442ZDU8QwvCz4DwOjFoxaMGrBELaAFmjoWwAA/6vswXu58G8AAAAASUVORK5CYII=',
+  },
+  {
+    path: `user-inputs/${'2'.repeat(64)}/image.png`,
+    dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAJUlEQVR4nGOQm5ZCU8QwvCz4DwMEBUctGLVg1ILBawEt0NC3AABnIaHLWrIU7AAAAABJRU5ErkJggg==',
+  },
+  {
+    path: `user-inputs/${'3'.repeat(64)}/image.png`,
+    dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAJUlEQVR4nGMwT7lOU8QwvCz4DwPkCY5aMGrBqAWDwgJaoKFvAQBdvm8MvB+fjAAAAABJRU5ErkJggg==',
+  },
+];
+
 function browserCompletedConversationRun(): ConversationRunVm {
   const compactionStatus = new URLSearchParams(window.location.search).get('compactionStatus') ?? 'completed';
   const compactionRunning = compactionStatus === 'in_progress';
@@ -599,6 +614,25 @@ function browserCompletedConversationRun(): ConversationRunVm {
       ],
     },
   };
+  if (new URLSearchParams(window.location.search).get('attachmentIdentity') === '1') {
+    run.selectedSession.events.push(...browserMessageImageFixtures.map((fixture, index) => ({
+      id: `browser-user-image-${index + 1}`,
+      seq: 6 + index,
+      timestamp: `2026-08-04 10:0${index + 2}`,
+      kind: 'userTextDelta' as const,
+      content: '',
+      raw: {
+        promptId: `browser-image-prompt-${index + 1}`,
+        attachments: [{ name: 'image.png', path: fixture.path, type: 'image/png', size: atob(fixture.dataBase64).length }],
+      },
+    })));
+    run.selectedSession.eventPage = {
+      ...run.selectedSession.eventPage!,
+      loadedCount: run.selectedSession.events.length,
+      total: run.selectedSession.events.length,
+      newestSeq: 5 + browserMessageImageFixtures.length,
+    };
+  }
   const attempt = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
   if (attempt?.lifecycle) {
     attempt.status = 'completed';
@@ -2151,8 +2185,20 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve({ ...mockContent, title: name, kind: 'input-attachment' });
   },
-  showConversationMessageAttachment(_projectId: string, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _path: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
-    return this.showConversationAttachment(_projectId, _taskId, name);
+  showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    const fixture = browserMessageImageFixtures.find((image) => image.path === path);
+    if (!fixture || projectId !== 'default' || taskId !== 'mock-task' || runId !== 'run-052'
+      || roundId !== 'round-001' || nodeId !== 'dev' || attemptId !== 'attempt-001'
+      || outerNodeId || outerAttemptId) {
+      return Promise.reject({ code: 'attachment.not-found', params: { path } });
+    }
+    return Promise.resolve({
+      ...mockContent,
+      title: name,
+      kind: 'message-attachment',
+      content: `data:image/png;base64,${fixture.dataBase64}`,
+      metadata: { name, path, mimeType: 'image/png', isImage: true, encoding: 'data-url' },
+    });
   },
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });

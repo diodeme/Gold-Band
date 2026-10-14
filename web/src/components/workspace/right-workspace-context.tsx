@@ -943,19 +943,12 @@ export function taskInputAttachmentPath(name: string) {
   return `task-inputs/${name}`;
 }
 
-export function userInputAttachmentPath(name: string) {
-  return `user-inputs/${name}`;
-}
-
 export function sentAttachmentPreviewAliasKey(input: {
-  assetKind: 'input-attachment' | 'message-attachment';
+  assetKind: 'input-attachment';
   locator: AcpAttemptWorkspaceLocator;
   name: string;
 }) {
-  const path = input.assetKind === 'input-attachment'
-    ? taskInputAttachmentPath(input.name)
-    : userInputAttachmentPath(input.name);
-  return conversationAssetWorkspaceResourceKey(input.assetKind, input.locator, input.name, path);
+  return conversationAssetWorkspaceResourceKey(input.assetKind, input.locator, input.name, taskInputAttachmentPath(input.name));
 }
 
 export function detachDraftAttachmentPreview(attachment: AttachmentItem): AttachmentItem {

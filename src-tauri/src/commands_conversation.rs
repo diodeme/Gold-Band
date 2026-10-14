@@ -3161,6 +3161,48 @@ mod tests {
     }
 
     #[test]
+    fn shows_same_named_message_images_from_distinct_content_addressed_paths() {
+        use gold_band::provider::{AttachmentProjectionPolicy, resolve_user_input_attachments};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let mut attachments = Vec::new();
+        for (index, color) in [[255, 0, 0], [0, 0, 255]].into_iter().enumerate() {
+            let source = root.join(index.to_string()).join("image.png");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            image::RgbImage::from_pixel(2, 2, image::Rgb(color))
+                .save(&source)
+                .unwrap();
+            let bytes = std::fs::read(&source).unwrap();
+            let resolved = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                AttachmentProjectionPolicy::from(&gold_band::config::RuntimeConfig::default()),
+            )
+            .unwrap();
+            attachments.push((resolved[0].meta.clone(), bytes));
+        }
+        assert_ne!(attachments[0].0.path, attachments[1].0.path);
+        // Read both after publication, then reopen the first: each locator must keep its bytes.
+        for index in [0, 1, 0] {
+            let (meta, bytes) = &attachments[index];
+            let content =
+                message_attachment_content_from_attempt_dir(&attempt_dir, &meta.name, &meta.path)
+                    .unwrap();
+            assert_eq!(content.title, "image.png");
+            assert_eq!(content.kind, "message-attachment");
+            assert_eq!(content.metadata["path"], meta.path);
+            assert_eq!(content.metadata["mimeType"], "image/png");
+            assert_eq!(content.metadata["encoding"], "data-url");
+            assert_eq!(
+                content.content,
+                format!("data:image/png;base64,{}", base64_encode(bytes))
+            );
+        }
+    }
+
+    #[test]
     fn rejects_message_attachment_path_traversal() {
         let root = Utf8PathBuf::from_path_buf(
             std::env::temp_dir()

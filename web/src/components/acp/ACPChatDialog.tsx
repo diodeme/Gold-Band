@@ -102,7 +102,6 @@ import {
   createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
   createCompactionSummaryWorkspaceResource,
-  sentAttachmentPreviewAliasKey,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
@@ -5754,15 +5753,7 @@ export function ACPChatDialog(
   };
 
   const releaseSubmittedAttachments = (attachments: AttachmentItem[]) => {
-    if (rightWorkspace?.scopeKey) {
-      for (const attachment of attachments) {
-        rightWorkspace.aliasOpenDraftAttachment(attachment.id, sentAttachmentPreviewAliasKey({
-          assetKind: 'message-attachment',
-          locator: attemptWorkspaceLocator,
-          name: attachment.name,
-        }));
-      }
-    }
+    // Open drafts own detached URLs; sent previews use the backend's canonical path.
     revokeAttachmentPreviewUrls(attachments);
   };
 

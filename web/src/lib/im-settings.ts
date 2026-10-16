@@ -37,6 +37,7 @@ const reauthorizationErrors = new Set([
   'IM_AUTHENTICATION_REQUIRED',
   'IM_CREDENTIAL_INVALID',
   'IM_CREDENTIAL_UNAVAILABLE',
+  'IM_SCOPE_MISSING',
 ]);
 
 export function imChannelDisplayModel(channel: ImChannelSettingsVm): ImChannelDisplayModel {

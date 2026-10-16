@@ -41,7 +41,7 @@ Permission 和 ManualCheck 的企微远程审批已经基本完善，使用了�
 3. 单题多选，固定 scalar 选项：
    - markdown 详情 + vote_interaction mode=1；
    - 提交 content 为 { fieldName: [values...] }。
-4. 2-3 个单选题，固定 scalar 选项：
+4. 2-5 个单选题，固定 scalar 选项：
    - markdown 详情 + multiple_interaction；
    - custom answer 是否存在不影响分类，处理方式与不带 custom answer 完全一致；
    - custom answer companion field 一律从 IM 表单中移除；
@@ -61,12 +61,12 @@ Permission 和 ManualCheck 的企微远程审批已经基本完善，使用了�
 - multiple_interaction select option.text 建议最多 10 个字。
 - selector title 建议最多 13 个字。
 - vote_interaction 最多 20 个选项。
-- multiple_interaction 最多 3 个 selector，每个 selector 最多 10 个选项。
+- multiple_interaction 最多 5 个 selector，每个 selector 最多 10 个选项。
 - card title 建议最多 26 个字，desc 最多 30 个字。
 - sub_title_text 建议最多 112 个字。
 - option.id / submit key 有协议长度和字符约束，只能使用本地短 index 和 delivery identity。
-- task_id 继续使用 deterministic delivery identity。
-- submit_button.key 继续使用 <delivery_id>:submit。
+- task_id 使用 `<delivery_id>@<request_nonce>`，复用当前发送请求 ID 派生 nonce；回调还原 canonical delivery，原卡更新保留完整 task_id。
+- submit_button.key 使用 `<task_id>:submit`，与当前卡片 task_id 完整对应。
 
 大小策略：
 - 支持的 Elicitation 场景中，markdown 详情或卡片 payload 超过企微 32 KiB 时，必须截断后继续发送 IM，不允许因超限跳过。
@@ -83,7 +83,7 @@ Permission 和 ManualCheck 的企微远程审批已经基本完善，使用了�
 - 多选和多问题不得枚举 2^N 组合动作。需要引入 channel-agnostic 的固定表单契约，例如 RemoteElicitationForm：
   - SingleScalarChoice：一个字段和固定 scalar 选项；
   - MultiScalarChoice：一个字段和固定 scalar 选项；
-  - ScalarChoiceQuestions：2-3 个单选字段，每个字段有 selector key、field name、固定选项和 required 状态。
+  - ScalarChoiceQuestions：2-5 个单选字段，每个字段有 selector key、field name、固定选项和 required 状态。
 - 可将该契约挂在 InterventionAllowedAction::ElicitationFixedForm 或等价 typed 结构中，并纳入 expected state；timelineIdentity 仍不得参与 expected state 指纹。
 - 回调选择需要新的泛型 Form selection，例如 ImInboundActionSelection::Form { selections }，每个 selection 含 selector_key 和 option_ids。
 - 企微 connector 只把平台回调转换为泛型 Form selection，平台 DTO 不进入领域层。
@@ -95,7 +95,7 @@ custom answer 规则：
 - 通过 _meta._askUserQuestionCustomAnswer.isCustomAnswer=true 识别 companion field。
 - companion field 不作为独立问题展示。
 - 单题单选带 custom answer 时，IM 仍展示并提交固定选项；自定义答案去桌面端。
-- 2-3 个单选题时，custom answer 是否存在不影响分类；处理方式与不带完全一致，IM 移除 companion field，只提交主字段固定选项。
+- 2-5 个单选题时，custom answer 是否存在不影响分类；处理方式与不带完全一致，IM 移除 companion field，只提交主字段固定选项。
 - 若移除 companion 后固定选项对象无法通过原始 schema 校验，该请求不发送 IM。
 
 出站卡要求：
@@ -104,7 +104,7 @@ custom answer 规则：
 - markdown 详情展示任务、节点、message、每题标题、描述、题型、完整固定选项和说明；custom answer 场景可说明自定义答案需桌面端填写。
 - vote mode=0 使用 checkbox.mode=0。
 - 单题多选使用 checkbox.mode=1。
-- 2-3 个单选题使用 card_type=multiple_interaction，select_list 分别映射 q0/q1/q2。
+- 2-5 个单选题使用 card_type=multiple_interaction，select_list 分别映射 q0/q1/q2/q3/q4。
 - option.id 只使用本地短 index，不携带业务 JSON、HMAC token 或长值。
 - 详情 ACK 成功后才发送交互卡；卡片 ACK 成功后才把 delivery 标记 sent。
 
@@ -158,7 +158,7 @@ custom answer 规则：
 
 验收测试至少覆盖：
 - 五类范围分类：支持场景入 outbox，其他场景无 outbox 行。
-- 单题单选无 custom、带 custom、单题多选、2/3 个单选题。
+- 单题单选无 custom、带 custom、单题多选、2/5 个单选题。
 - custom companion 移除后 schema 仍合法；不合法则不发送 IM。
 - markdown 和卡片超 32 KiB 时截断发送，不跳过。
 - 截断 JSON 不产生非法协议帧，identity 字段不变。

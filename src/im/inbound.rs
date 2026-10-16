@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
@@ -7,16 +7,19 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::acp::elicitation::ElicitationAction;
 use crate::app::intervention::{
-    InterventionAllowedAction, InterventionCommand, InterventionCommandResult,
+    InterventionAction, InterventionAllowedAction, InterventionCommand, InterventionCommandResult,
     InterventionCommandStatus, InterventionError, InterventionErrorCode,
+    REMOTE_CUSTOM_ANSWER_OPTION, RemoteElicitationAnswer, RemoteFormViolation,
     intervention_action_for_allowed, intervention_action_for_elicitation_form,
     intervention_action_is_allowed,
 };
 
 use super::{
-    ImChannelKind, ImDelivery, ImDeliveryPayload, ImInboundActionResult, ImInboundActionSelection,
-    ImInboundEnvelope, ImRepository, ImRepositoryError,
+    ImChannelKind, ImDelivery, ImDeliveryPayload, ImErrorCode, ImInboundActionResult,
+    ImInboundEnvelope, ImInboundOutcome, ImRepository, ImRepositoryError, ImResolutionOutcome,
+    ImSubmittedAction, InterventionRef,
 };
 
 const ACTION_TOKEN_VERSION: u16 = 1;
@@ -109,6 +112,10 @@ pub enum ImInboundError {
     ActionIdentityInvalid,
     #[error("action was not published for this delivery")]
     ActionNotAllowed,
+    #[error("delivery does not exist")]
+    DeliveryNotFound,
+    #[error("submitted form answers are invalid")]
+    Form(RemoteFormViolation),
     #[error("IM repository failed")]
     Repository(#[from] ImRepositoryError),
     #[error("Runtime intervention failed")]
@@ -116,19 +123,32 @@ pub enum ImInboundError {
 }
 
 impl ImInboundError {
-    pub const fn code(&self) -> &'static str {
+    pub const fn code(&self) -> ImErrorCode {
         match self {
-            Self::TokenInvalid => "IM_ACTION_TOKEN_INVALID",
-            Self::Expired => "IM_ACTION_EXPIRED",
-            Self::InformationNotActionable => "IM_INFORMATION_NOT_ACTIONABLE",
-            Self::ConversationMismatch => "IM_CONVERSATION_MISMATCH",
-            Self::ActorMismatch => "IM_ACTOR_MISMATCH",
-            Self::BindingRevoked => "IM_BINDING_REVOKED",
-            Self::BindingUnavailable => "IM_STORAGE_UNAVAILABLE",
-            Self::ActionIdentityInvalid => "IM_ACTION_ID_INVALID",
-            Self::ActionNotAllowed => "IM_ACTION_INVALID",
-            Self::Repository(error) => error.code(),
-            Self::Intervention(error) => error.code.as_str(),
+            Self::TokenInvalid => ImErrorCode::ActionTokenInvalid,
+            Self::Expired => ImErrorCode::ActionExpired,
+            Self::InformationNotActionable => ImErrorCode::InformationNotActionable,
+            Self::ConversationMismatch => ImErrorCode::ConversationMismatch,
+            Self::ActorMismatch => ImErrorCode::ActorMismatch,
+            Self::BindingRevoked => ImErrorCode::BindingRevoked,
+            Self::BindingUnavailable | Self::Repository(_) => ImErrorCode::StorageUnavailable,
+            Self::ActionIdentityInvalid => ImErrorCode::ActionIdInvalid,
+            Self::ActionNotAllowed => ImErrorCode::ActionInvalid,
+            Self::DeliveryNotFound => ImErrorCode::DeliveryNotFound,
+            Self::Form(violation) => match violation {
+                RemoteFormViolation::AnswerMissing => ImErrorCode::FormAnswerMissing,
+                RemoteFormViolation::OptionInvalid => ImErrorCode::FormOptionInvalid,
+                RemoteFormViolation::CustomAnswerMissing => ImErrorCode::FormCustomAnswerMissing,
+                RemoteFormViolation::TextTooLong => ImErrorCode::FormTextTooLong,
+                RemoteFormViolation::AnswerInvalid => ImErrorCode::ActionInvalid,
+            },
+            Self::Intervention(error) => match error.code {
+                InterventionErrorCode::InterventionExpired => ImErrorCode::ActionExpired,
+                InterventionErrorCode::InterventionStorageUnavailable => {
+                    ImErrorCode::ActionProcessingFailed
+                }
+                _ => ImErrorCode::ActionInvalid,
+            },
         }
     }
 }
@@ -159,6 +179,15 @@ impl ActionLocks {
     }
 }
 
+/// Result of one inbound call. `resolution` is present exactly when the recorded
+/// outcome is `Accepted`; a replay of the same platform event re-derives it from
+/// the identical submission, so the first call and its replays respond the same.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImInboundHandling {
+    pub result: ImInboundActionResult,
+    pub resolution: Option<ImResolutionOutcome>,
+}
+
 pub struct ImInboundActionService {
     repository: Arc<ImRepository>,
     token_codec: ImActionTokenCodec,
@@ -181,11 +210,11 @@ impl ImInboundActionService {
         execute: impl FnOnce(
             InterventionCommand,
         ) -> Result<InterventionCommandResult, InterventionError>,
-    ) -> Result<ImInboundActionResult, ImInboundError> {
+    ) -> Result<ImInboundHandling, ImInboundError> {
         let delivery = self
             .repository
             .delivery(&envelope.delivery_id)?
-            .ok_or(ImInboundError::TokenInvalid)?;
+            .ok_or(ImInboundError::DeliveryNotFound)?;
         self.handle_with_delivery(envelope, &delivery, now_ms, execute)
     }
 
@@ -197,7 +226,7 @@ impl ImInboundActionService {
         execute: impl FnOnce(
             InterventionCommand,
         ) -> Result<InterventionCommandResult, InterventionError>,
-    ) -> Result<ImInboundActionResult, ImInboundError> {
+    ) -> Result<ImInboundHandling, ImInboundError> {
         let expected_action_id =
             deterministic_action_id(envelope.channel, &envelope.platform_event_id);
         if envelope.action_id != expected_action_id || envelope.platform_event_id.trim().is_empty()
@@ -220,12 +249,26 @@ impl ImInboundActionService {
         execute: impl FnOnce(
             InterventionCommand,
         ) -> Result<InterventionCommandResult, InterventionError>,
-    ) -> Result<ImInboundActionResult, ImInboundError> {
+    ) -> Result<ImInboundHandling, ImInboundError> {
         if let Some(existing) = self
             .repository
             .inbound_result(envelope.channel, &envelope.platform_event_id)?
         {
-            return Ok(existing);
+            let replay = match existing.outcome {
+                ImInboundOutcome::Accepted => {
+                    let ImDeliveryPayload::Intervention { ref reference, .. } = delivery.payload
+                    else {
+                        return Err(ImInboundError::InformationNotActionable);
+                    };
+                    let action = submitted_intervention_action(envelope, reference)?;
+                    Some(ImResolutionOutcome::from(&action))
+                }
+                _ => None,
+            };
+            return Ok(ImInboundHandling {
+                result: existing,
+                resolution: replay,
+            });
         }
         let ImDeliveryPayload::Intervention { ref reference, .. } = delivery.payload else {
             return Err(ImInboundError::InformationNotActionable);
@@ -251,72 +294,35 @@ impl ImInboundActionService {
                     .to_hex()
                     .to_string(),
                 platform_event_id: envelope.platform_event_id.clone(),
-                result_code: "ALREADY_APPLIED".into(),
+                outcome: ImInboundOutcome::AlreadyApplied,
                 result_revision: existing.result_revision,
                 received_at_ms: now_ms,
                 completed_at_ms: now_ms,
             };
             self.repository.record_inbound_result(&result)?;
-            return Ok(result);
+            return Ok(ImInboundHandling {
+                result,
+                resolution: None,
+            });
         }
-        let action = match &envelope.action {
-            ImInboundActionSelection::Resolved {
-                action_token,
-                action,
-            } => {
-                let claims = self.token_codec.decode(action_token)?;
-                if claims.expires_at_ms <= now_ms || delivery.expires_at_ms <= now_ms {
-                    return Err(ImInboundError::Expired);
-                }
-                if claims.delivery_id != delivery.delivery_id
-                    || claims.canonical_event_id != delivery.canonical_event_id
-                    || claims.channel != delivery.channel
-                    || claims.destination_id != delivery.destination.destination_id
-                {
-                    return Err(ImInboundError::TokenInvalid);
-                }
-                if !intervention_action_is_allowed(&reference.allowed_actions, action) {
-                    return Err(ImInboundError::ActionNotAllowed);
-                }
-                action.clone()
+        if let Some(action_token) = &envelope.action_token {
+            let claims = self.token_codec.decode(action_token)?;
+            if claims.expires_at_ms <= now_ms {
+                return Err(ImInboundError::Expired);
             }
-            ImInboundActionSelection::LocalIndex { index } => {
-                if reference.allowed_actions.iter().any(|action| {
-                    matches!(
-                        action,
-                        InterventionAllowedAction::ElicitationFixedForm { .. }
-                    )
-                }) {
-                    return Err(ImInboundError::ActionNotAllowed);
-                }
-                let allowed = reference
-                    .allowed_actions
-                    .get(*index)
-                    .ok_or(ImInboundError::ActionNotAllowed)?;
-                intervention_action_for_allowed(allowed)
+            if claims.delivery_id != delivery.delivery_id
+                || claims.canonical_event_id != delivery.canonical_event_id
+                || claims.channel != delivery.channel
+                || claims.destination_id != delivery.destination.destination_id
+            {
+                return Err(ImInboundError::TokenInvalid);
             }
-            ImInboundActionSelection::Form { selections } => {
-                let mut forms =
-                    reference
-                        .allowed_actions
-                        .iter()
-                        .filter_map(|action| match action {
-                            InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
-                            _ => None,
-                        });
-                let Some(form) = forms.next() else {
-                    return Err(ImInboundError::ActionNotAllowed);
-                };
-                if forms.next().is_some() {
-                    return Err(ImInboundError::ActionIdentityInvalid);
-                }
-                intervention_action_for_elicitation_form(form, selections)
-                    .map_err(ImInboundError::Intervention)?
-            }
-        };
+        }
         if delivery.expires_at_ms <= now_ms {
             return Err(ImInboundError::Expired);
         }
+        let action = submitted_intervention_action(envelope, reference)?;
+        let resolution = ImResolutionOutcome::from(&action);
         let command = InterventionCommand {
             locator: reference.locator.clone(),
             request: reference.request.clone(),
@@ -348,18 +354,175 @@ impl ImInboundActionService {
                 .to_hex()
                 .to_string(),
             platform_event_id: envelope.platform_event_id.clone(),
-            result_code: match command_result.status {
-                InterventionCommandStatus::Accepted => "ACCEPTED",
-                InterventionCommandStatus::AlreadyApplied => "ALREADY_APPLIED",
-            }
-            .into(),
+            outcome: match command_result.status {
+                InterventionCommandStatus::Accepted => ImInboundOutcome::Accepted,
+                InterventionCommandStatus::AlreadyApplied => ImInboundOutcome::AlreadyApplied,
+            },
             result_revision: None,
             received_at_ms: now_ms,
             completed_at_ms: now_ms,
         };
         self.repository.record_inbound_result(&result)?;
-        Ok(result)
+        let accepted = result.outcome == ImInboundOutcome::Accepted;
+        Ok(ImInboundHandling {
+            result,
+            resolution: accepted.then_some(resolution),
+        })
     }
+}
+
+/// Maps a decoded submission to the domain action published by this delivery.
+/// Pure: the same envelope and delivery always yield the same action.
+fn submitted_intervention_action(
+    envelope: &ImInboundEnvelope,
+    reference: &InterventionRef,
+) -> Result<InterventionAction, ImInboundError> {
+    let action = match &envelope.action {
+        ImSubmittedAction::PublishedAction { index } => {
+            if reference.allowed_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    InterventionAllowedAction::ElicitationFixedForm { .. }
+                )
+            }) {
+                return Err(ImInboundError::ActionNotAllowed);
+            }
+            let allowed = reference
+                .allowed_actions
+                .get(*index)
+                .ok_or(ImInboundError::ActionNotAllowed)?;
+            intervention_action_for_allowed(allowed)
+        }
+        ImSubmittedAction::PermissionOption { option_id } => InterventionAction::PermissionOption {
+            option_id: option_id.clone(),
+        },
+        ImSubmittedAction::ManualCheck { outcome } => {
+            InterventionAction::ManualCheck { outcome: *outcome }
+        }
+        ImSubmittedAction::ElicitationDecline => InterventionAction::Elicitation {
+            action: ElicitationAction::Decline,
+            content: None,
+        },
+        ImSubmittedAction::ElicitationForm { answers } => {
+            let mut forms = reference
+                .allowed_actions
+                .iter()
+                .filter_map(|action| match action {
+                    InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
+                    _ => None,
+                });
+            let Some(form) = forms.next() else {
+                return Err(ImInboundError::ActionNotAllowed);
+            };
+            if forms.next().is_some() {
+                return Err(ImInboundError::ActionIdentityInvalid);
+            }
+            let answers = normalized_form_answers(form, answers)?;
+            intervention_action_for_elicitation_form(form, &answers)
+                .map_err(ImInboundError::Form)?
+        }
+    };
+    if !intervention_action_is_allowed(&reference.allowed_actions, &action) {
+        return Err(ImInboundError::ActionNotAllowed);
+    }
+    Ok(action)
+}
+
+/// Normalizes transport form values against the fitted form persisted in the
+/// delivery. String selections, omitted empty multi-selects, and the separate
+/// custom-answer input are converted to the domain answer contract.
+fn normalized_form_answers(
+    form: &crate::app::intervention::RemoteElicitationForm,
+    answers: &BTreeMap<String, RemoteElicitationAnswer>,
+) -> Result<BTreeMap<String, RemoteElicitationAnswer>, ImInboundError> {
+    let allowed_keys = form
+        .questions
+        .iter()
+        .flat_map(|question| {
+            let selector = question.selector_key.as_str();
+            let custom = question
+                .custom_answer_key
+                .is_some()
+                .then(|| format!("{selector}_other"));
+            [Some(selector.to_owned()), custom]
+        })
+        .collect::<Vec<_>>();
+    if answers.keys().any(|key| {
+        !allowed_keys
+            .iter()
+            .any(|allowed| allowed.as_deref() == Some(key.as_str()))
+    }) {
+        return Err(ImInboundError::Form(RemoteFormViolation::AnswerInvalid));
+    }
+
+    let mut normalized = BTreeMap::new();
+    for question in &form.questions {
+        let selector = question.selector_key.as_str();
+        match question.question.question_kind {
+            crate::app::intervention::ElicitationQuestionKind::FreeText => {
+                if let Some(answer) = answers.get(selector) {
+                    let RemoteElicitationAnswer::Text { .. } = answer else {
+                        return Err(ImInboundError::Form(RemoteFormViolation::AnswerInvalid));
+                    };
+                    normalized.insert(selector.to_owned(), answer.clone());
+                }
+            }
+            crate::app::intervention::ElicitationQuestionKind::SingleSelect
+            | crate::app::intervention::ElicitationQuestionKind::MultiSelect => {
+                let selected = match answers.get(selector) {
+                    None => Vec::new(),
+                    Some(RemoteElicitationAnswer::Text { text }) => vec![text.clone()],
+                    Some(RemoteElicitationAnswer::Choice {
+                        option_ids,
+                        custom_text: None,
+                    }) => option_ids.clone(),
+                    Some(_) => {
+                        return Err(ImInboundError::Form(RemoteFormViolation::AnswerInvalid));
+                    }
+                };
+                let custom_answer = if question.custom_answer_key.is_some() {
+                    match answers.get(&format!("{selector}_other")) {
+                        None => None,
+                        Some(RemoteElicitationAnswer::Text { text: custom }) => {
+                            Some(custom.clone())
+                        }
+                        Some(_) => {
+                            return Err(ImInboundError::Form(RemoteFormViolation::AnswerInvalid));
+                        }
+                    }
+                } else {
+                    None
+                };
+                if selected
+                    .iter()
+                    .any(|option| option == REMOTE_CUSTOM_ANSWER_OPTION)
+                {
+                    if selected.len() != 1 {
+                        return Err(ImInboundError::Form(RemoteFormViolation::OptionInvalid));
+                    }
+                    let text = custom_answer.filter(|text| !text.trim().is_empty()).ok_or(
+                        ImInboundError::Form(RemoteFormViolation::CustomAnswerMissing),
+                    )?;
+                    normalized.insert(
+                        selector.to_owned(),
+                        RemoteElicitationAnswer::Choice {
+                            option_ids: Vec::new(),
+                            custom_text: Some(text),
+                        },
+                    );
+                } else {
+                    normalized.insert(
+                        selector.to_owned(),
+                        RemoteElicitationAnswer::Choice {
+                            option_ids: selected,
+                            custom_text: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 pub fn deterministic_action_id(channel: ImChannelKind, platform_event_id: &str) -> String {
@@ -372,6 +535,7 @@ pub fn deterministic_action_id(channel: ImChannelKind, platform_event_id: &str) 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use camino::Utf8PathBuf;
@@ -381,15 +545,16 @@ mod tests {
     use crate::acp::permission::write_pending_permission;
     use crate::app::App;
     use crate::app::intervention::{
-        InterventionAction, InterventionCommandService, InterventionLocator,
-        InterventionRequestIdentity, RemoteElicitationForm, RemoteElicitationFormSelection,
-        RemoteElicitationOption, RemoteScalarChoiceQuestion,
+        ElicitationQuestion, ElicitationQuestionKind, ElicitationQuestionOption,
+        InterventionCommandService, InterventionLocator, InterventionRequestIdentity,
+        MAX_REMOTE_TEXT_CHARS, RemoteElicitationAnswer, RemoteElicitationForm, RemoteQuestion,
+        RemoteQuestionConstraints,
     };
     use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
     use crate::im::{
         IM_PAYLOAD_VERSION, ImDelivery, ImDestination, ImNavigationLocator, ImNotificationKind,
-        InformationalNotification, InterventionPresentation, InterventionRef,
-        InterventionResolutionNotification,
+        ImResolutionOutcome, ImResolvedBy, InformationalNotification, InterventionPresentation,
+        InterventionRef, InterventionResolutionNotification, resolution_event_id,
     };
     use crate::runtime::{CURRENT_ACP_STORAGE_SCHEMA_VERSION, NodeState, RunState};
     use crate::storage::write_json;
@@ -556,11 +721,9 @@ mod tests {
             conversation_id: "private-chat-1".into(),
             actor_id: "actor-1".into(),
             delivery_id: delivery.delivery_id.clone(),
-            action: ImInboundActionSelection::Resolved {
-                action_token: token,
-                action: InterventionAction::PermissionOption {
-                    option_id: "allow".into(),
-                },
+            action_token: Some(token),
+            action: ImSubmittedAction::PermissionOption {
+                option_id: "allow".into(),
             },
         };
         let service = ImInboundActionService::new(Arc::clone(&repository), codec);
@@ -593,6 +756,12 @@ mod tests {
             .unwrap();
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         assert_eq!(first, second);
+        assert_eq!(
+            first.resolution,
+            Some(ImResolutionOutcome::PermissionOption {
+                option_id: "allow".into()
+            })
+        );
 
         let mut late_click = fixture.envelope.clone();
         late_click.platform_event_id = "callback-2".into();
@@ -604,24 +773,52 @@ mod tests {
                 panic!("a new msgid for the same intervention must not execute Runtime")
             })
             .unwrap();
-        assert_eq!(late_result.result_code, "ALREADY_APPLIED");
+        assert_eq!(late_result.result.outcome, ImInboundOutcome::AlreadyApplied);
+        assert_eq!(late_result.resolution, None);
         assert_eq!(
             fixture
                 .repository
                 .inbound_result(ImChannelKind::WeCom, "callback-2")
                 .unwrap()
-                .map(|result| result.result_code),
-            Some("ALREADY_APPLIED".to_owned())
+                .map(|result| result.outcome),
+            Some(ImInboundOutcome::AlreadyApplied)
         );
     }
 
     #[test]
-    fn local_index_action_resolves_from_authoritative_outbox() {
+    fn concurrent_redelivery_through_a_shared_service_executes_once() {
+        let fixture = fixture();
+        let executions = AtomicUsize::new(0);
+        let barrier = std::sync::Barrier::new(2);
+        let handle = || {
+            barrier.wait();
+            fixture
+                .service
+                .handle(&fixture.envelope, 100, |command| {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    InterventionCommandService::new(&fixture.app).execute(command)
+                })
+                .unwrap()
+        };
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(handle);
+            let second = scope.spawn(handle);
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(first, second);
+        assert_eq!(first.result.outcome, ImInboundOutcome::Accepted);
+    }
+
+    #[test]
+    fn published_action_index_resolves_from_authoritative_outbox() {
         let fixture = fixture();
         let mut envelope = fixture.envelope.clone();
         envelope.platform_event_id = "local-index-callback".into();
         envelope.action_id = deterministic_action_id(envelope.channel, &envelope.platform_event_id);
-        envelope.action = ImInboundActionSelection::LocalIndex { index: 0 };
+        envelope.action_token = None;
+        envelope.action = ImSubmittedAction::PublishedAction { index: 0 };
 
         let result = fixture
             .service
@@ -629,17 +826,62 @@ mod tests {
                 InterventionCommandService::new(&fixture.app).execute(command)
             })
             .unwrap();
-        assert_eq!(result.result_code, "ACCEPTED");
+        assert_eq!(result.result.outcome, ImInboundOutcome::Accepted);
 
         let mut invalid = envelope.clone();
         invalid.platform_event_id = "local-index-invalid-callback".into();
         invalid.action_id = deterministic_action_id(invalid.channel, &invalid.platform_event_id);
-        invalid.action = ImInboundActionSelection::LocalIndex { index: 1 };
+        invalid.action = ImSubmittedAction::PublishedAction { index: 1 };
         let late_invalid = fixture
             .service
             .handle(&invalid, 100, |_| unreachable!())
             .unwrap();
-        assert_eq!(late_invalid.result_code, "ALREADY_APPLIED");
+        assert_eq!(
+            late_invalid.result.outcome,
+            ImInboundOutcome::AlreadyApplied
+        );
+    }
+
+    #[test]
+    fn unpublished_actions_and_tampered_tokens_are_rejected_before_runtime() {
+        let fixture = fixture();
+        let mut unpublished = fixture.envelope.clone();
+        unpublished.action = ImSubmittedAction::PermissionOption {
+            option_id: "reject".into(),
+        };
+        assert!(matches!(
+            fixture
+                .service
+                .handle(&unpublished, 100, |_| unreachable!()),
+            Err(ImInboundError::ActionNotAllowed)
+        ));
+        let mut out_of_range = fixture.envelope.clone();
+        out_of_range.action = ImSubmittedAction::PublishedAction { index: 9 };
+        assert!(matches!(
+            fixture
+                .service
+                .handle(&out_of_range, 100, |_| unreachable!()),
+            Err(ImInboundError::ActionNotAllowed)
+        ));
+        let mut tampered = fixture.envelope.clone();
+        tampered.action_token = Some("forged.token".into());
+        let error = fixture
+            .service
+            .handle(&tampered, 100, |_| unreachable!())
+            .unwrap_err();
+        assert_eq!(error.code(), ImErrorCode::ActionTokenInvalid);
+        let mut missing = fixture.envelope.clone();
+        missing.delivery_id = "missing-delivery".into();
+        let error = fixture
+            .service
+            .handle(&missing, 100, |_| unreachable!())
+            .unwrap_err();
+        assert_eq!(error.code(), ImErrorCode::DeliveryNotFound);
+        let error = fixture
+            .service
+            .handle(&fixture.envelope, 10_000, |_| unreachable!())
+            .unwrap_err();
+        assert_eq!(error.code(), ImErrorCode::ActionExpired);
     }
 
     #[test]
@@ -661,27 +903,37 @@ mod tests {
             elicitation_id: "elicit-1".into(),
         };
         reference.allowed_actions = vec![InterventionAllowedAction::ElicitationFixedForm {
-            form: RemoteElicitationForm::MultiScalarChoice {
-                question: RemoteScalarChoiceQuestion {
+            form: RemoteElicitationForm {
+                questions: vec![RemoteQuestion {
                     selector_key: "q0".into(),
-                    field_name: "features".into(),
-                    title: "功能".into(),
-                    description: None,
-                    required: true,
-                    options: vec![
-                        RemoteElicitationOption {
-                            value: serde_json::json!("auth"),
-                            label: "认证".into(),
-                            description: None,
-                        },
-                        RemoteElicitationOption {
-                            value: serde_json::json!("logging"),
-                            label: "日志".into(),
-                            description: None,
-                        },
-                    ],
-                },
-                allows_empty: true,
+                    question: ElicitationQuestion {
+                        field_name: "features".into(),
+                        title: "功能".into(),
+                        description: None,
+                        question_kind: ElicitationQuestionKind::MultiSelect,
+                        options: vec![
+                            ElicitationQuestionOption {
+                                value: serde_json::json!("auth"),
+                                label: "认证".into(),
+                                description: None,
+                            },
+                            ElicitationQuestionOption {
+                                value: serde_json::json!("logging"),
+                                label: "日志".into(),
+                                description: None,
+                            },
+                        ],
+                        allows_custom_answer: false,
+                    },
+                    constraints: RemoteQuestionConstraints {
+                        required: true,
+                        allows_empty: false,
+                        max_chars: MAX_REMOTE_TEXT_CHARS,
+                        multiline: false,
+                    },
+                    custom_answer_key: None,
+                }],
+                decline_allowed: false,
             },
         }];
         presentation.questions = Vec::new();
@@ -691,11 +943,15 @@ mod tests {
         envelope.delivery_id = delivery.delivery_id.clone();
         envelope.platform_event_id = "form-callback-1".into();
         envelope.action_id = deterministic_action_id(envelope.channel, &envelope.platform_event_id);
-        envelope.action = ImInboundActionSelection::Form {
-            selections: vec![RemoteElicitationFormSelection {
-                selector_key: "q0".into(),
-                option_ids: vec!["1".into(), "0".into()],
-            }],
+        envelope.action_token = None;
+        envelope.action = ImSubmittedAction::ElicitationForm {
+            answers: BTreeMap::from([(
+                "q0".to_string(),
+                RemoteElicitationAnswer::Choice {
+                    option_ids: vec!["1".into(), "0".into()],
+                    custom_text: None,
+                },
+            )]),
         };
         let mut seen_content = None;
         let result = fixture
@@ -711,7 +967,13 @@ mod tests {
                 })
             })
             .unwrap();
-        assert_eq!(result.result_code, "ACCEPTED");
+        assert_eq!(result.result.outcome, ImInboundOutcome::Accepted);
+        assert_eq!(
+            result.resolution,
+            Some(ImResolutionOutcome::ElicitationSubmitted {
+                content: serde_json::json!({"features": ["logging", "auth"]})
+            })
+        );
         assert_eq!(
             seen_content,
             Some(serde_json::json!({"features": ["logging", "auth"]}))
@@ -721,17 +983,257 @@ mod tests {
         duplicate.platform_event_id = "form-callback-duplicate".into();
         duplicate.action_id =
             deterministic_action_id(duplicate.channel, &duplicate.platform_event_id);
-        duplicate.action = ImInboundActionSelection::Form {
-            selections: vec![RemoteElicitationFormSelection {
-                selector_key: "q0".into(),
-                option_ids: vec!["0".into(), "0".into()],
-            }],
+        duplicate.action = ImSubmittedAction::ElicitationForm {
+            answers: BTreeMap::from([(
+                "q0".to_string(),
+                RemoteElicitationAnswer::Choice {
+                    option_ids: vec!["0".into()],
+                    custom_text: None,
+                },
+            )]),
         };
         let duplicate_result = fixture
             .service
             .handle_with_delivery(&duplicate, &delivery, 100, |_| unreachable!())
             .unwrap();
-        assert_eq!(duplicate_result.result_code, "ALREADY_APPLIED");
+        assert_eq!(
+            duplicate_result.result.outcome,
+            ImInboundOutcome::AlreadyApplied
+        );
+    }
+
+    #[test]
+    fn feishu_rendered_decline_reaches_the_domain_once_and_requires_permission() {
+        use crate::im::connectors::feishu::card::{decode_card_action, delivery_card_content};
+        let fixture = fixture();
+        let mut delivery = fixture.delivery.clone();
+        delivery.channel = ImChannelKind::Feishu;
+        delivery.notification_kind = ImNotificationKind::Elicitation;
+        delivery.canonical_event_id = "feishu-decline-event".into();
+        delivery.refresh_id();
+        let ImDeliveryPayload::Intervention { reference, .. } = &mut delivery.payload else {
+            unreachable!()
+        };
+        reference.request = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-1".into(),
+        };
+        reference.allowed_actions = vec![
+            InterventionAllowedAction::ElicitationFixedForm {
+                form: RemoteElicitationForm {
+                    questions: vec![],
+                    decline_allowed: true,
+                },
+            },
+            InterventionAllowedAction::ElicitationDecline,
+        ];
+        fixture.repository.enqueue(&delivery, 100).unwrap();
+        let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
+        let card: serde_json::Value = serde_json::from_str(
+            &delivery_card_content(&delivery, &codec, crate::im::ImLocale::ZhCn).unwrap(),
+        )
+        .unwrap();
+        let value = card["body"]["elements"][2]["behaviors"][0]["value"].clone();
+        let callback = serde_json::json!({
+            "header": { "event_type": "card.action.trigger", "event_id": "decline-callback", "app_id": "cli_test" },
+            "event": {
+                "operator": { "open_id": delivery.destination.authorized_actor_id },
+                "context": { "open_chat_id": delivery.destination.conversation_id },
+                "action": { "value": value }
+            }
+        });
+        let envelope = decode_card_action(&serde_json::to_vec(&callback).unwrap())
+            .unwrap()
+            .envelope;
+        let mut denied = delivery.clone();
+        let ImDeliveryPayload::Intervention { reference, .. } = &mut denied.payload else {
+            unreachable!()
+        };
+        reference.allowed_actions.pop();
+        assert!(matches!(
+            submitted_intervention_action(&envelope, reference),
+            Err(ImInboundError::ActionNotAllowed)
+        ));
+        let executions = AtomicUsize::new(0);
+        let result = fixture
+            .service
+            .handle(&envelope, 100, |command| {
+                assert_eq!(
+                    command.action,
+                    InterventionAction::Elicitation {
+                        action: ElicitationAction::Decline,
+                        content: None
+                    }
+                );
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(InterventionCommandResult {
+                    status: InterventionCommandStatus::Accepted,
+                    canonical_state: "declined".into(),
+                })
+            })
+            .unwrap();
+        assert_eq!(result.result.outcome, ImInboundOutcome::Accepted);
+        assert_eq!(
+            result.resolution,
+            Some(ImResolutionOutcome::ElicitationDeclined)
+        );
+        let mut duplicate = envelope;
+        duplicate.platform_event_id = "second-decline-callback".into();
+        duplicate.action_id =
+            deterministic_action_id(duplicate.channel, &duplicate.platform_event_id);
+        let result = fixture
+            .service
+            .handle(&duplicate, 100, |_| panic!("late decline must not execute"))
+            .unwrap();
+        assert_eq!(result.result.outcome, ImInboundOutcome::AlreadyApplied);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn form_violations_map_to_structured_form_error_codes() {
+        let fixture = fixture();
+        let mut delivery = fixture.delivery.clone();
+        let ImDeliveryPayload::Intervention { reference, .. } = &mut delivery.payload else {
+            unreachable!();
+        };
+        reference.allowed_actions = vec![InterventionAllowedAction::ElicitationFixedForm {
+            form: RemoteElicitationForm {
+                questions: vec![RemoteQuestion {
+                    selector_key: "q0".into(),
+                    question: ElicitationQuestion {
+                        field_name: "note".into(),
+                        title: "备注".into(),
+                        description: None,
+                        question_kind: ElicitationQuestionKind::FreeText,
+                        options: Vec::new(),
+                        allows_custom_answer: false,
+                    },
+                    constraints: RemoteQuestionConstraints {
+                        required: true,
+                        allows_empty: false,
+                        max_chars: 4,
+                        multiline: false,
+                    },
+                    custom_answer_key: None,
+                }],
+                decline_allowed: false,
+            },
+        }];
+        let submit = |answers: BTreeMap<String, RemoteElicitationAnswer>| {
+            let mut envelope = fixture.envelope.clone();
+            envelope.action_token = None;
+            envelope.action = ImSubmittedAction::ElicitationForm { answers };
+            fixture
+                .service
+                .handle_with_delivery(&envelope, &delivery, 100, |_| unreachable!())
+                .unwrap_err()
+                .code()
+        };
+        assert_eq!(submit(BTreeMap::new()), ImErrorCode::FormAnswerMissing);
+        assert_eq!(
+            submit(BTreeMap::from([(
+                "q0".to_string(),
+                RemoteElicitationAnswer::Text {
+                    text: "too long".into()
+                }
+            )])),
+            ImErrorCode::FormTextTooLong
+        );
+        let mut indexed = fixture.envelope.clone();
+        indexed.action_token = None;
+        indexed.action = ImSubmittedAction::PublishedAction { index: 0 };
+        assert!(matches!(
+            fixture
+                .service
+                .handle_with_delivery(&indexed, &delivery, 100, |_| unreachable!()),
+            Err(ImInboundError::ActionNotAllowed)
+        ));
+    }
+
+    #[test]
+    fn transport_form_answers_are_normalized_from_the_delivery_form() {
+        let question =
+            |selector: &str, kind: ElicitationQuestionKind, custom: bool| RemoteQuestion {
+                selector_key: selector.into(),
+                question: ElicitationQuestion {
+                    field_name: format!("field_{selector}"),
+                    title: selector.into(),
+                    description: None,
+                    question_kind: kind,
+                    options: Vec::new(),
+                    allows_custom_answer: custom,
+                },
+                constraints: RemoteQuestionConstraints {
+                    required: false,
+                    allows_empty: true,
+                    max_chars: 100,
+                    multiline: false,
+                },
+                custom_answer_key: custom.then(|| format!("field_{selector}_custom")),
+            };
+        let form = RemoteElicitationForm {
+            questions: vec![
+                question("q0", ElicitationQuestionKind::SingleSelect, true),
+                question("q1", ElicitationQuestionKind::MultiSelect, true),
+                question("q2", ElicitationQuestionKind::FreeText, false),
+            ],
+            decline_allowed: false,
+        };
+        let text = |value: &str| RemoteElicitationAnswer::Text { text: value.into() };
+        let answers = BTreeMap::from([
+            ("q0".into(), text(REMOTE_CUSTOM_ANSWER_OPTION)),
+            ("q0_other".into(), text(" Custom answer ")),
+            (
+                "q1".into(),
+                RemoteElicitationAnswer::Choice {
+                    option_ids: vec!["0".into()],
+                    custom_text: None,
+                },
+            ),
+            ("q1_other".into(), text("ignored unless other is selected")),
+            ("q2".into(), text("note")),
+        ]);
+
+        let normalized = normalized_form_answers(&form, &answers).unwrap();
+        assert_eq!(
+            normalized.get("q0"),
+            Some(&RemoteElicitationAnswer::Choice {
+                option_ids: Vec::new(),
+                custom_text: Some(" Custom answer ".into()),
+            })
+        );
+        assert_eq!(
+            normalized.get("q1"),
+            Some(&RemoteElicitationAnswer::Choice {
+                option_ids: vec!["0".into()],
+                custom_text: None,
+            })
+        );
+        assert_eq!(normalized.get("q2"), Some(&text("note")));
+
+        let missing_multi =
+            normalized_form_answers(&form, &BTreeMap::from([("q0".into(), text("0"))])).unwrap();
+        assert_eq!(
+            missing_multi.get("q1"),
+            Some(&RemoteElicitationAnswer::Choice {
+                option_ids: Vec::new(),
+                custom_text: None,
+            })
+        );
+
+        let empty_custom = normalized_form_answers(
+            &form,
+            &BTreeMap::from([
+                ("q0".into(), text(REMOTE_CUSTOM_ANSWER_OPTION)),
+                ("q0_other".into(), text(" ")),
+            ]),
+        )
+        .unwrap_err();
+        assert_eq!(empty_custom.code(), ImErrorCode::FormCustomAnswerMissing);
+
+        let unknown =
+            normalized_form_answers(&form, &BTreeMap::from([("q9".into(), text("unexpected"))]))
+                .unwrap_err();
+        assert_eq!(unknown.code(), ImErrorCode::ActionInvalid);
     }
 
     #[test]
@@ -740,15 +1242,14 @@ mod tests {
         let ImDeliveryPayload::Intervention { reference, .. } = &fixture.delivery.payload else {
             unreachable!()
         };
-        let ImInboundActionSelection::Resolved { action, .. } = &fixture.envelope.action else {
-            unreachable!("fixture uses a resolved remote action")
-        };
         InterventionCommandService::new(&fixture.app)
             .execute(InterventionCommand {
                 locator: reference.locator.clone(),
                 request: reference.request.clone(),
                 expected_state: reference.expected_state.clone(),
-                action: action.clone(),
+                action: InterventionAction::PermissionOption {
+                    option_id: "allow".into(),
+                },
                 expires_at_ms: None,
             })
             .unwrap();
@@ -765,7 +1266,7 @@ mod tests {
                 InterventionCommandService::new(&fixture.app).execute(command)
             })
             .unwrap();
-        assert_eq!(recovered.result_code, "ALREADY_APPLIED");
+        assert_eq!(recovered.result.outcome, ImInboundOutcome::AlreadyApplied);
     }
 
     #[test]
@@ -829,7 +1330,7 @@ mod tests {
         ));
 
         delivery.notification_kind = ImNotificationKind::Permission;
-        delivery.canonical_event_id = "event-1:desktop-resolved".into();
+        delivery.canonical_event_id = resolution_event_id("event-1");
         delivery.refresh_id();
         delivery.payload = ImDeliveryPayload::InterventionResolution {
             version: IM_PAYLOAD_VERSION,
@@ -849,6 +1350,10 @@ mod tests {
                     scheduled_occurrence_id: None,
                 },
                 display_ref: Some(1),
+                resolved_by: ImResolvedBy::Desktop,
+                outcome: ImResolutionOutcome::PermissionOption {
+                    option_id: "allow".into(),
+                },
             },
         };
         fixture.repository.enqueue(&delivery, 100).unwrap();

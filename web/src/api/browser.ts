@@ -1,7 +1,7 @@
 import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
-import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
+import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
@@ -48,6 +48,42 @@ const browserMcpServers: McpServerVm[] = [{
 function emptyWorkflowModelBindings(): WorkflowModelBindings {
   return { definitionRevision: '', bindingRevision: 0, bindings: [] };
 }
+const browserImCapabilities: Record<ImChannelKind, ImChannelCapabilitiesVm> = {
+  weCom: {
+    proactiveDelivery: true,
+    cardActions: true,
+    privateChat: true,
+    messageUpdate: 'callbackOnly',
+    interaction: {
+      permissionMaxOptions: 20,
+      maxQuestions: 3,
+      singleChoiceMaxOptions: { singleQuestion: 20, multiQuestion: 10 },
+      multiChoice: { maxOptions: 20, withinMultiQuestion: false },
+      freeText: null,
+      customAnswer: { kind: 'unsupported' },
+      decline: false,
+    },
+  },
+  feishu: {
+    proactiveDelivery: true,
+    cardActions: true,
+    privateChat: true,
+    messageUpdate: 'anytime',
+    interaction: {
+      permissionMaxOptions: 20,
+      maxQuestions: 5,
+      singleChoiceMaxOptions: { singleQuestion: 20, multiQuestion: 20 },
+      multiChoice: { maxOptions: 4, withinMultiQuestion: true },
+      freeText: { maxChars: 500, multiline: true },
+      customAnswer: { kind: 'supported', maxChars: 100 },
+      decline: true,
+    },
+  },
+};
+const browserImIdentities: Record<ImChannelKind, { botId: string; displayName: string }> = {
+  weCom: { botId: 'scan-authorized-bot', displayName: 'WeCom Bot' },
+  feishu: { botId: 'cli_scan_authorized_app', displayName: 'Gold Band' },
+};
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
 const browserScheduledHistoryProjects = new Map<string, string>();
 const browserScheduledAcceptedRuns = new Set<string>();
@@ -120,22 +156,63 @@ function initialBrowserImSettings(): ImSettingsVm {
       notifications: defaultImNotifications(),
       connection: configured ? {
         kind: 'weCom', enabled, generation, state,
-        capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
-        identity: { botId: 'scan-authorized-bot', displayName: 'WeCom Bot' },
+        capabilities: browserImCapabilities.weCom,
+        identity: browserImIdentities.weCom,
         binding: bound ? { destinationId: 'user-1', conversationId: 'user-1', actorId: 'user-1', isPrivate: true } : null,
         lastConnectedAtMs: state === 'connected' ? Date.now() : null,
         lastErrorCode,
       } : null,
+    }, {
+      kind: 'feishu',
+      enabled: false,
+      publicIdentity: '',
+      credentialConfigured: false,
+      binding: null,
+      notifications: defaultImNotifications(),
+      connection: null,
     }],
   };
 }
 
 let browserImSettings: ImSettingsVm = initialBrowserImSettings();
 const browserImChannelListeners = new Set<(snapshot: ImChannelSnapshotVm) => void>();
-const browserWeComScanSessions = new Set<string>();
-const browserWeComScanPreview = typeof window === 'undefined'
+const browserScanSessions = new Set<string>();
+const browserScanPreview = typeof window === 'undefined'
   ? null
   : new URLSearchParams(window.location.search).get('imScan');
+
+function browserStartScan(kind: ImChannelKind, sessionId: string) {
+  browserScanSessions.add(sessionId);
+  return {
+    sessionId,
+    qrUrl: kind === 'weCom'
+      ? `https://work.weixin.qq.com/ai/qc/c?s=${encodeURIComponent(sessionId)}`
+      : `https://open.feishu.cn/page/cli?user_code=${encodeURIComponent(sessionId)}`,
+    expiresAtMs: Date.now() + 5 * 60_000,
+  };
+}
+
+async function browserCompleteScan(kind: ImChannelKind, sessionId: string) {
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  if (!browserScanSessions.delete(sessionId)) throw { code: 'IM_SCAN_CANCELLED', params: {} };
+  if (browserScanPreview === 'error') throw { code: 'IM_SCAN_NETWORK_UNAVAILABLE', params: {} };
+  const current = browserImSettings.channels.find((channel) => channel.kind === kind);
+  browserImSettings = {
+    channels: browserImSettings.channels.map((channel) => channel.kind === kind ? {
+      ...channel,
+      enabled: true,
+      publicIdentity: browserImIdentities[kind].botId,
+      credentialConfigured: true,
+      binding: null,
+      connection: {
+        kind, enabled: true, generation: (current?.connection?.generation ?? 0) + 1,
+        state: 'connected', capabilities: browserImCapabilities[kind],
+        identity: browserImIdentities[kind], binding: null, lastConnectedAtMs: Date.now(), lastErrorCode: null,
+      },
+    } : channel),
+  };
+  return structuredClone(browserImSettings);
+}
 
 const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
   operation: {
@@ -1214,36 +1291,22 @@ export const browserApi: RuntimeApi = {
     return structuredClone(browserImSettings);
   },
   async startWeComScanAuthorization(sessionId) {
-    browserWeComScanSessions.add(sessionId);
-    return {
-      sessionId,
-      authUrl: `https://work.weixin.qq.com/ai/qc/c?s=${encodeURIComponent(sessionId)}`,
-      expiresAtMs: Date.now() + 5 * 60_000,
-    };
+    return browserStartScan('weCom', sessionId);
   },
   async completeWeComScanAuthorization(sessionId) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    if (!browserWeComScanSessions.delete(sessionId)) throw { code: 'IM_SCAN_CANCELLED', params: {} };
-    if (browserWeComScanPreview === 'error') throw { code: 'IM_SCAN_NETWORK_UNAVAILABLE', params: {} };
-    const current = browserImSettings.channels.find((channel) => channel.kind === 'weCom');
-    browserImSettings = {
-      channels: browserImSettings.channels.map((channel) => channel.kind === 'weCom' ? {
-        ...channel,
-        enabled: true,
-        publicIdentity: 'scan-authorized-bot',
-        credentialConfigured: true,
-        binding: null,
-        connection: {
-          kind: 'weCom', enabled: true, generation: (current?.connection?.generation ?? 0) + 1,
-          state: 'connected', capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
-          identity: { botId: 'scan-authorized-bot', displayName: 'WeCom Bot' }, binding: null, lastConnectedAtMs: Date.now(), lastErrorCode: null,
-        },
-      } : channel),
-    };
-    return structuredClone(browserImSettings);
+    return browserCompleteScan('weCom', sessionId);
   },
   async cancelWeComScanAuthorization(sessionId) {
-    browserWeComScanSessions.delete(sessionId);
+    browserScanSessions.delete(sessionId);
+  },
+  async startFeishuScanAuthorization(sessionId) {
+    return browserStartScan('feishu', sessionId);
+  },
+  async completeFeishuScanAuthorization(sessionId) {
+    return browserCompleteScan('feishu', sessionId);
+  },
+  async cancelFeishuScanAuthorization(sessionId) {
+    browserScanSessions.delete(sessionId);
   },
   async setImChannelEnabled(input) {
     const current = browserImSettings.channels.find((channel) => channel.kind === input.kind);
@@ -1254,7 +1317,7 @@ export const browserApi: RuntimeApi = {
       enabled: input.enabled,
       generation: (current?.connection?.generation ?? 0) + 1,
       state: input.enabled ? 'connecting' : 'disabled',
-      capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
+      capabilities: browserImCapabilities[input.kind],
       identity: null,
       binding: null,
       lastConnectedAtMs: null,

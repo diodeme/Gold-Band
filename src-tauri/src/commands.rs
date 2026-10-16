@@ -85,6 +85,7 @@ use crate::conversation_workspace::{
     validate_runtime_workspace_access,
 };
 use crate::i18n::Translator;
+use crate::im_runtime::InterventionResolution;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::multica::state::{MulticaConnectCancel, SharedMulticaState};
 use crate::multica::{
@@ -2355,25 +2356,39 @@ fn desktop_intervention_source_event_id(
     ))
 }
 
+struct DesktopInterventionProjection {
+    source_event_id: String,
+    notification_kind: gold_band::im::ImNotificationKind,
+    locator: InterventionLocator,
+    outcome: gold_band::im::ImResolutionOutcome,
+}
+
+impl DesktopInterventionProjection {
+    fn for_result(self, result: &InterventionCommandResult) -> Option<Self> {
+        (result.status == gold_band::app::intervention::InterventionCommandStatus::Accepted)
+            .then_some(self)
+    }
+}
+
 fn project_desktop_intervention_resolution(
     state: &DesktopState,
-    projection: Option<(
-        String,
-        gold_band::im::ImNotificationKind,
-        InterventionLocator,
-    )>,
+    projection: Option<DesktopInterventionProjection>,
 ) {
-    let Some((source_event_id, notification_kind, locator)) = projection else {
+    let Some(projection) = projection else {
         return;
     };
     let Some(runtime) = state.im_runtime() else {
         return;
     };
-    match runtime.project_desktop_intervention_resolution(
-        &source_event_id,
-        notification_kind,
-        &locator,
-    ) {
+    let source_event_id = projection.source_event_id.as_str();
+    match runtime.project_intervention_resolution(&InterventionResolution {
+        source_event_id,
+        notification_kind: projection.notification_kind,
+        locator: &projection.locator,
+        resolved_by: gold_band::im::ImResolvedBy::Desktop,
+        source_delivery_id: None,
+        outcome: projection.outcome,
+    }) {
         Ok(result) => info!(
             canonical_event_id = source_event_id,
             inserted = result.inserted,
@@ -2392,11 +2407,7 @@ fn project_desktop_intervention_resolution(
 fn desktop_intervention_projection(
     app: &App,
     command: &InterventionCommand,
-) -> Option<(
-    String,
-    gold_band::im::ImNotificationKind,
-    InterventionLocator,
-)> {
+) -> Option<DesktopInterventionProjection> {
     let notification_kind = match &command.request {
         InterventionRequestIdentity::Permission { .. } => {
             gold_band::im::ImNotificationKind::Permission
@@ -2406,11 +2417,12 @@ fn desktop_intervention_projection(
         }
         InterventionRequestIdentity::ManualCheck => gold_band::im::ImNotificationKind::ManualCheck,
     };
-    Some((
-        desktop_intervention_source_event_id(app, command)?,
+    Some(DesktopInterventionProjection {
+        source_event_id: desktop_intervention_source_event_id(app, command)?,
         notification_kind,
-        command.locator.clone(),
-    ))
+        locator: command.locator.clone(),
+        outcome: gold_band::im::ImResolutionOutcome::from(&command.action),
+    })
 }
 
 fn recovered_permission_result(
@@ -5139,8 +5151,11 @@ pub async fn submit_manual_check(
         expires_at_ms: snapshot.expires_at_ms,
     };
     let im_projection = desktop_intervention_projection(&app, &command);
-    let (_, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
-    project_desktop_intervention_resolution(state.inner(), im_projection);
+    let (result, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
+    project_desktop_intervention_resolution(
+        state.inner(),
+        im_projection.and_then(|p| p.for_result(&result)),
+    );
     Ok(run_summary_vm(run))
 }
 
@@ -8484,10 +8499,13 @@ pub async fn respond_acp_permission(
         expires_at_ms: snapshot.expires_at_ms,
     };
     let im_projection = desktop_intervention_projection(&app, &command);
-    let (_, session) =
+    let (result, session) =
         execute_permission_intervention(app_handle, state.inner(), &app, project_id, command)
             .await?;
-    project_desktop_intervention_resolution(state.inner(), im_projection);
+    project_desktop_intervention_resolution(
+        state.inner(),
+        im_projection.and_then(|p| p.for_result(&result)),
+    );
     Ok(session)
 }
 
@@ -11200,7 +11218,7 @@ pub async fn respond_elicitation(
         expires_at_ms: None,
     };
     let im_projection = desktop_intervention_projection(&app, &command);
-    execute_elicitation_intervention(
+    let result = execute_elicitation_intervention(
         app_handle.clone(),
         state.inner(),
         &app,
@@ -11209,7 +11227,10 @@ pub async fn respond_elicitation(
     )
     .await
     .map_err(intervention_command_error)?;
-    project_desktop_intervention_resolution(state.inner(), im_projection);
+    project_desktop_intervention_resolution(
+        state.inner(),
+        im_projection.and_then(|p| p.for_result(&result)),
+    );
 
     Ok(())
 }
@@ -15626,6 +15647,37 @@ mod tests {
             result.status,
             gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied
         );
+    }
+
+    #[test]
+    fn desktop_resolution_is_only_published_for_the_accepted_winner() {
+        use gold_band::app::intervention::InterventionCommandStatus;
+        for status in [
+            InterventionCommandStatus::Accepted,
+            InterventionCommandStatus::AlreadyApplied,
+        ] {
+            let projection = DesktopInterventionProjection {
+                source_event_id: "event-1".into(),
+                notification_kind: gold_band::im::ImNotificationKind::Elicitation,
+                locator: InterventionLocator {
+                    project_id: "p".into(),
+                    task_id: "t".into(),
+                    run_id: "r".into(),
+                    round_id: "round".into(),
+                    node_id: "n".into(),
+                    attempt_id: "a".into(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                },
+                outcome: gold_band::im::ImResolutionOutcome::ElicitationDeclined,
+            };
+            let accepted = status == InterventionCommandStatus::Accepted;
+            let result = InterventionCommandResult {
+                status,
+                canonical_state: "resolved".into(),
+            };
+            assert_eq!(projection.for_result(&result).is_some(), accepted);
+        }
     }
 
     #[test]

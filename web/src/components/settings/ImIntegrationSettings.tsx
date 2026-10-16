@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
-  CheckCircle2,
   Loader2,
   MoreHorizontal,
   QrCode,
@@ -14,13 +13,16 @@ import {
   X,
 } from 'lucide-react';
 import {
+  cancelFeishuScanAuthorization,
   cancelWeComScanAuthorization,
+  completeFeishuScanAuthorization,
   completeWeComScanAuthorization,
   deleteImChannel,
   reconnectImChannel,
   resetImChannelBinding,
   saveImNotificationPreferences,
   setImChannelEnabled,
+  startFeishuScanAuthorization,
   startWeComScanAuthorization,
 } from '@/api';
 import {
@@ -69,6 +71,7 @@ import type {
   ImChannelKind,
   ImChannelSettingsVm,
   ImNotificationPreferencesVm,
+  ImScanAuthorizationVm,
   ImSettingsVm,
 } from '@/types';
 
@@ -131,6 +134,10 @@ const ImChannelEditor = memo(function ImChannelEditor({
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const display = imChannelDisplayModel(channel);
+  const channelTitle = t(`settings.im.channels.${channel.kind}.title`);
+  const resetCopy = channel.kind === 'feishu' ? 'settings.im.channels.feishu.resetBinding' : 'settings.im.resetBinding';
+  const titleId = `im-${channel.kind}-title`;
+  const enabledId = `im-${channel.kind}-enabled`;
   const generation = channel.connection?.generation ?? 0;
   const busy = pendingEnabled !== null || recoveryBusy || destructiveBusy;
 
@@ -196,12 +203,12 @@ const ImChannelEditor = memo(function ImChannelEditor({
     : display.tone === 'destructive' ? 'destructive' : 'outline';
 
   return (
-    <section className="space-y-5 py-5 first:pt-3 last:pb-3" aria-labelledby="im-wecom-title">
+    <section className="space-y-5 py-5 first:pt-3 last:pb-3" aria-labelledby={titleId}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 id="im-wecom-title" className="text-sm font-semibold">
-              {t('settings.im.channels.wecom.title')}
+            <h3 id={titleId} className="text-sm font-semibold">
+              {channelTitle}
             </h3>
             <Badge variant={badgeVariant} data-im-status={display.status}>
               {display.status === 'connecting' || display.status === 'reconnecting'
@@ -212,8 +219,11 @@ const ImChannelEditor = memo(function ImChannelEditor({
           </div>
           {channel.publicIdentity ? (
             <p className="break-all text-xs text-muted-foreground">
-              {t('settings.im.scan.botId', { id: channel.publicIdentity })}
+              {t(`settings.im.channels.${channel.kind}.identity`, { id: channel.publicIdentity })}
             </p>
+          ) : null}
+          {channel.kind === 'feishu' && channel.connection?.identity?.displayName ? (
+            <p className="break-words text-xs text-muted-foreground">{channel.connection.identity.displayName}</p>
           ) : null}
           {channel.binding ? (
             <p className="break-words text-xs text-muted-foreground">
@@ -225,9 +235,9 @@ const ImChannelEditor = memo(function ImChannelEditor({
         {channel.credentialConfigured ? (
           <div className="flex min-h-9 items-center gap-2">
             {pendingEnabled !== null ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden /> : null}
-            <Label htmlFor="im-wecom-enabled" className="text-xs">{t('settings.im.enabled')}</Label>
+            <Label htmlFor={enabledId} className="text-xs">{t('settings.im.enabled')}</Label>
             <Switch
-              id="im-wecom-enabled"
+              id={enabledId}
               checked={pendingEnabled ?? channel.enabled}
               disabled={busy}
               aria-busy={pendingEnabled !== null}
@@ -237,9 +247,13 @@ const ImChannelEditor = memo(function ImChannelEditor({
         ) : null}
       </div>
 
+      {channel.kind === 'feishu' ? (
+        <p className="text-xs text-muted-foreground">{t('settings.im.channels.feishu.singleDeviceHint')}</p>
+      ) : null}
+
       {!channel.credentialConfigured ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="min-w-0 text-sm text-muted-foreground">{t('settings.im.scan.notConfigured')}</p>
+          <p className="min-w-0 text-sm text-muted-foreground">{t('settings.im.scan.notConfigured', { channel: channelTitle })}</p>
           <Button type="button" size="sm" onClick={() => setScanOpen(true)}>
             <QrCode className="size-4" />
             {t('settings.im.scan.connect')}
@@ -249,6 +263,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
         <>
           <ConnectionGuidance
             channel={channel}
+            channelTitle={channelTitle}
             recoveryBusy={recoveryBusy}
             onReconnect={() => void reconnect()}
             onReauthorize={() => setScanOpen(true)}
@@ -271,7 +286,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
                   {channel.binding ? (
                     <DropdownMenuItem onSelect={() => setResetOpen(true)}>
                       <UserRoundCog />
-                      {t('settings.im.resetBinding.action')}
+                      {t(`${resetCopy}.action`)}
                     </DropdownMenuItem>
                   ) : null}
                   <DropdownMenuItem onSelect={() => setScanOpen(true)}>
@@ -293,8 +308,9 @@ const ImChannelEditor = memo(function ImChannelEditor({
 
       {error ? <p className="text-xs text-destructive" role="alert">{displayImError(t, error)}</p> : null}
 
-      <WeComScanDialog
+      <ImScanDialog
         channel={channel}
+        channelTitle={channelTitle}
         open={scanOpen}
         onOpenChange={setScanOpen}
         onSettings={onSettings}
@@ -302,8 +318,8 @@ const ImChannelEditor = memo(function ImChannelEditor({
       <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('settings.im.resetBinding.title')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('settings.im.resetBinding.description')}</AlertDialogDescription>
+            <AlertDialogTitle>{t(`${resetCopy}.title`)}</AlertDialogTitle>
+            <AlertDialogDescription>{t(`${resetCopy}.description`)}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={destructiveBusy}>{t('common.cancel')}</AlertDialogCancel>
@@ -312,7 +328,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
               void resetBinding();
             }}>
               {destructiveBusy ? <Loader2 className="size-4 animate-spin" /> : <UserRoundCog className="size-4" />}
-              {t('settings.im.resetBinding.confirm')}
+              {t(`${resetCopy}.confirm`)}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -320,7 +336,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('settings.im.deleteTitle', { channel: t('settings.im.channels.wecom.title') })}</AlertDialogTitle>
+            <AlertDialogTitle>{t('settings.im.deleteTitle', { channel: channelTitle })}</AlertDialogTitle>
             <AlertDialogDescription>{t('settings.im.deleteDescription')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -341,11 +357,13 @@ const ImChannelEditor = memo(function ImChannelEditor({
 
 function ConnectionGuidance({
   channel,
+  channelTitle,
   recoveryBusy,
   onReconnect,
   onReauthorize,
 }: {
   channel: ImChannelSettingsVm;
+  channelTitle: string;
   recoveryBusy: boolean;
   onReconnect: () => void;
   onReauthorize: () => void;
@@ -358,8 +376,8 @@ function ConnectionGuidance({
   return (
     <div className="flex flex-wrap items-start justify-between gap-3" data-im-guidance={display.status}>
       <div className="min-w-0 space-y-1">
-        <p className="text-sm font-medium">{t(`settings.im.guidance.${display.status}.title`)}</p>
-        <p className="text-xs text-muted-foreground">{t(`settings.im.guidance.${display.status}.description`)}</p>
+        <p className="text-sm font-medium">{t(`settings.im.guidance.${display.status}.title`, { channel: channelTitle })}</p>
+        <p className="text-xs text-muted-foreground">{t(`settings.im.guidance.${display.status}.description`, { channel: channelTitle })}</p>
         {errorCode ? (
           <p className="text-xs text-destructive" role="alert">
             {t(`settings.im.errors.${errorCode}`, { defaultValue: t('settings.im.errors.IM_OPERATION_FAILED') })}
@@ -467,14 +485,13 @@ function NotificationPreferencesForm({
   );
 }
 
-type WeComScanState =
+type ImScanState =
   | { kind: 'idle' | 'starting' }
-  | { kind: 'waitingQr'; authUrl: string; expiresAtMs: number }
-  | { kind: 'waitingBinding' }
-  | { kind: 'complete' }
+  | { kind: 'waitingQr'; qrUrl: string; expiresAtMs: number }
+  | { kind: 'waitingBinding'; generation: number }
   | { kind: 'error'; error: unknown };
 
-function WeComQrCanvas({ value, label, onError }: { value: string; label: string; onError: (error: unknown) => void }) {
+function ImQrCanvas({ value, label, onError }: { value: string; label: string; onError: (error: unknown) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     let active = true;
@@ -491,27 +508,54 @@ function WeComQrCanvas({ value, label, onError }: { value: string; label: string
   return <canvas ref={canvasRef} width={208} height={208} className="size-52 rounded-md bg-white" aria-label={label} />;
 }
 
-function WeComScanDialog({
+const IM_SCAN_AUTHORIZATION: Record<ImChannelKind, {
+  start: (sessionId: string, reauthorize: boolean) => Promise<ImScanAuthorizationVm>;
+  complete: (sessionId: string) => Promise<ImSettingsVm>;
+  cancel: (sessionId: string) => Promise<void>;
+}> = {
+  weCom: {
+    start: (sessionId) => startWeComScanAuthorization(sessionId),
+    complete: completeWeComScanAuthorization,
+    cancel: cancelWeComScanAuthorization,
+  },
+  feishu: {
+    start: startFeishuScanAuthorization,
+    complete: completeFeishuScanAuthorization,
+    cancel: cancelFeishuScanAuthorization,
+  },
+};
+
+function ImScanDialog({
   channel,
+  channelTitle,
   open,
   onOpenChange,
   onSettings,
 }: {
   channel: ImChannelSettingsVm;
+  channelTitle: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSettings: (settings: ImSettingsVm) => void;
 }) {
   const { t } = useTranslation();
-  const [state, setState] = useState<WeComScanState>({ kind: 'idle' });
+  const [state, setState] = useState<ImScanState>({ kind: 'idle' });
   const [now, setNow] = useState(() => Date.now());
   const activeSessionRef = useRef<string | null>(null);
+  const scan = IM_SCAN_AUTHORIZATION[channel.kind];
+  const reauthorize = channel.credentialConfigured;
 
   const cancelActive = useCallback(() => {
     const sessionId = activeSessionRef.current;
     activeSessionRef.current = null;
-    if (sessionId) void cancelWeComScanAuthorization(sessionId).catch(() => undefined);
-  }, []);
+    if (sessionId) void scan.cancel(sessionId).catch(() => undefined);
+  }, [scan]);
+
+  const close = useCallback(() => {
+    cancelActive();
+    setState({ kind: 'idle' });
+    onOpenChange(false);
+  }, [cancelActive, onOpenChange]);
 
   const start = useCallback(async () => {
     cancelActive();
@@ -519,29 +563,31 @@ function WeComScanDialog({
     activeSessionRef.current = sessionId;
     setState({ kind: 'starting' });
     try {
-      const authorization = await startWeComScanAuthorization(sessionId);
+      const authorization = await scan.start(sessionId, reauthorize);
       if (activeSessionRef.current !== sessionId) return;
       setNow(Date.now());
-      setState({ kind: 'waitingQr', authUrl: authorization.authUrl, expiresAtMs: authorization.expiresAtMs });
-      const settings = await completeWeComScanAuthorization(sessionId);
+      setState({ kind: 'waitingQr', qrUrl: authorization.qrUrl, expiresAtMs: authorization.expiresAtMs });
+      const settings = await scan.complete(sessionId);
       if (activeSessionRef.current !== sessionId) return;
       activeSessionRef.current = null;
       onSettings(settings);
       const savedChannel = settings.channels.find((candidate) => candidate.kind === channel.kind);
-      setState(savedChannel && imChannelDisplayModel(savedChannel).status === 'ready'
-        ? { kind: 'complete' }
-        : { kind: 'waitingBinding' });
+      if (savedChannel && imChannelDisplayModel(savedChannel).status === 'ready') {
+        close();
+      } else {
+        setState({ kind: 'waitingBinding', generation: savedChannel?.connection?.generation ?? 0 });
+      }
     } catch (error) {
       if (activeSessionRef.current !== sessionId) return;
       activeSessionRef.current = null;
       setState({ kind: 'error', error });
     }
-  }, [cancelActive, channel.kind, onSettings]);
+  }, [cancelActive, channel.kind, close, onSettings, reauthorize, scan]);
 
   useEffect(() => {
-    if (!open || state.kind !== 'idle') return;
+    if (!open || state.kind !== 'idle' || channel.kind === 'feishu') return;
     void start();
-  }, [open, start, state.kind]);
+  }, [channel.kind, open, start, state.kind]);
 
   useEffect(() => {
     if (state.kind !== 'waitingQr') return;
@@ -550,18 +596,15 @@ function WeComScanDialog({
   }, [state.kind]);
 
   useEffect(() => {
-    if (state.kind === 'waitingBinding' && imChannelDisplayModel(channel).status === 'ready') {
-      setState({ kind: 'complete' });
+    if (open && state.kind === 'waitingBinding'
+        && (channel.connection?.generation ?? -1) >= state.generation
+        && imChannelDisplayModel(channel).status === 'ready') {
+      close();
     }
-  }, [channel, state.kind]);
+  }, [channel, close, open, state]);
 
   useEffect(() => () => cancelActive(), [cancelActive]);
 
-  const close = useCallback(() => {
-    cancelActive();
-    setState({ kind: 'idle' });
-    onOpenChange(false);
-  }, [cancelActive, onOpenChange]);
   const qrError = useCallback((error: unknown) => setState({ kind: 'error', error }), []);
   const remainingSeconds = state.kind === 'waitingQr'
     ? Math.max(0, Math.ceil((state.expiresAtMs - now) / 1_000))
@@ -572,10 +615,24 @@ function WeComScanDialog({
     <Dialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>{t('settings.im.scan.title')}</DialogTitle>
-          <DialogDescription>{t('settings.im.scan.description')}</DialogDescription>
+          <DialogTitle>{t('settings.im.scan.title', { channel: channelTitle })}</DialogTitle>
+          <DialogDescription>{t('settings.im.scan.description', { channel: channelTitle })}</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-64 flex-col items-center justify-center gap-4 py-2" data-im-scan-state={state.kind}>
+          {state.kind === 'idle' && channel.kind === 'feishu' ? (
+            <div className="w-full space-y-4" data-im-scan-consent>
+              <p className="text-sm font-medium">{t('settings.im.channels.feishu.permissions.title')}</p>
+              <ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
+                {(['send', 'receive', 'update'] as const).map((permission) => (
+                  <li key={permission}>{t(`settings.im.channels.feishu.permissions.${permission}`)}</li>
+                ))}
+              </ul>
+              <Button type="button" className="w-full" onClick={() => void start()}>
+                <QrCode className="size-4" />
+                {t('settings.im.channels.feishu.permissions.confirm')}
+              </Button>
+            </div>
+          ) : null}
           {state.kind === 'starting' ? (
             <>
               <Loader2 className="size-6 animate-spin text-muted-foreground" />
@@ -584,8 +641,8 @@ function WeComScanDialog({
           ) : null}
           {state.kind === 'waitingQr' ? (
             <>
-              <WeComQrCanvas value={state.authUrl} label={t('settings.im.scan.qrCodeLabel')} onError={qrError} />
-              <p className="text-center text-sm font-medium">{t('settings.im.scan.waiting')}</p>
+              <ImQrCanvas value={state.qrUrl} label={t('settings.im.scan.qrCodeLabel', { channel: channelTitle })} onError={qrError} />
+              <p className="text-center text-sm font-medium">{t('settings.im.scan.waiting', { channel: channelTitle })}</p>
               <p className="text-xs text-muted-foreground">{t('settings.im.scan.expiresIn', { countdown })}</p>
             </>
           ) : null}
@@ -593,13 +650,7 @@ function WeComScanDialog({
             <>
               <UserRoundCog className="size-10 text-foreground" />
               <p className="text-center text-sm font-medium">{t('settings.im.scan.waitingBinding')}</p>
-              <p className="max-w-xs text-center text-xs text-muted-foreground">{t('settings.im.scan.nextStep')}</p>
-            </>
-          ) : null}
-          {state.kind === 'complete' ? (
-            <>
-              <CheckCircle2 className="size-10 text-foreground" />
-              <p className="text-sm font-medium">{t('settings.im.scan.complete')}</p>
+              <p className="max-w-xs text-center text-xs text-muted-foreground">{t('settings.im.scan.nextStep', { channel: channelTitle })}</p>
             </>
           ) : null}
           {state.kind === 'error' ? (
@@ -613,8 +664,8 @@ function WeComScanDialog({
           ) : null}
         </div>
         <DialogFooter>
-          <Button type="button" variant={state.kind === 'complete' ? 'default' : 'outline'} onClick={close}>
-            {t(state.kind === 'complete' ? 'common.done' : 'common.close')}
+          <Button type="button" variant="outline" onClick={close}>
+            {t('common.close')}
           </Button>
         </DialogFooter>
       </DialogContent>

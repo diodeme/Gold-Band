@@ -1,36 +1,41 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use gold_band::app::intervention::InterventionLocator;
 use gold_band::app::{App, RuntimeLifecycleEvent};
 use gold_band::im::{
-    IM_PAYLOAD_VERSION, ImActionResponseContext, ImActionTokenCodec, ImBindingSummary,
-    ImChannelCleanupOperation, ImChannelCleanupPhase, ImChannelKind, ImChannelSettings,
-    ImConnectionManager, ImConnector, ImConnectorEvent, ImCredentialStore, ImDelivery,
-    ImDeliveryInsertResult, ImDeliveryPayload, ImDeliveryWorker, ImDestination,
-    ImInboundActionService, ImInboundError, ImIntegrationSettings, ImLifecycleProjectionJob,
+    FeishuConnector, FeishuScanAuthClient, FeishuScanAuthError, FeishuScanAuthorization,
+    FeishuScanCredentials, IM_PAYLOAD_VERSION, ImActionResponse, ImActionResponseContext,
+    ImActionResponseState, ImActionTokenCodec, ImBindingSummary, ImChannelCleanupOperation,
+    ImChannelCleanupPhase, ImChannelKind, ImChannelSettings, ImConnectionManager, ImConnector,
+    ImConnectorEvent, ImCredentialStore, ImDelivery, ImDeliveryInsertResult, ImDeliveryPayload,
+    ImDeliveryWorker, ImDestination, ImErrorCode, ImInboundActionService, ImInboundEnvelope,
+    ImInboundHandling, ImInboundOutcome, ImIntegrationSettings, ImLifecycleProjectionJob,
     ImLifecycleProjectionQueueItem, ImLifecycleProjector, ImLocale, ImMaintenanceWorker,
-    ImMessageState, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
+    ImMessageUpdateMode, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
     ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget,
-    ImRepository, ImRepositoryError, ImWorkerSignal, InterventionResolutionNotification,
-    OsImCredentialStore, ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector,
-    WeComScanAuthClient, WeComScanAuthError, WeComScanCredentials, desktop_resolution_event_id,
-    drain_projection_queue, im_lifecycle_projection_channel, im_worker_channel,
+    ImRepository, ImRepositoryError, ImResolutionDispatch, ImResolutionOutcome, ImResolvedBy,
+    ImWorkerSignal, InterventionResolutionNotification, OsImCredentialStore,
+    ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector, WeComScanAuthClient,
+    WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
+    im_lifecycle_projection_channel, im_worker_channel, resolution_event_id,
     try_enqueue_projection,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app_with_emitters,
     resolve_command_app_with_workspace_label,
 };
+use crate::im_scan_session::{ScanSessionSlot, ScanSlotError};
 use crate::state::DesktopState;
 
 pub const IM_CHANNEL_STATE_EVENT: &str = "im-channel-state-updated";
@@ -112,23 +117,47 @@ pub struct ImChannelInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WeComScanSessionInput {
+pub struct ScanSessionInput {
     pub session_id: String,
 }
 
+/// The QR code a scan dialog renders, shared by every channel's scan flow.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WeComScanAuthorizationVm {
+pub struct ImScanAuthorizationVm {
     pub session_id: String,
-    pub auth_url: String,
+    pub qr_url: String,
     pub expires_at_ms: i64,
 }
 
-struct ActiveWeComScanSession {
-    session_id: String,
-    scode: Option<String>,
-    polling: bool,
-    cancellation: CancellationToken,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeishuScanStartInput {
+    pub session_id: String,
+    /// Re-authorizes the configured app instead of creating a new one.
+    pub reauthorize: bool,
+}
+
+impl From<ScanSlotError> for WeComScanAuthError {
+    fn from(error: ScanSlotError) -> Self {
+        match error {
+            ScanSlotError::Cancelled => Self::Cancelled,
+            ScanSlotError::Expired => Self::Expired,
+            ScanSlotError::SessionConflict => Self::SessionConflict,
+            ScanSlotError::ProtocolInvalid => Self::ProtocolInvalid,
+        }
+    }
+}
+
+impl From<ScanSlotError> for FeishuScanAuthError {
+    fn from(error: ScanSlotError) -> Self {
+        match error {
+            ScanSlotError::Cancelled => Self::Cancelled,
+            ScanSlotError::Expired => Self::Expired,
+            ScanSlotError::SessionConflict => Self::SessionConflict,
+            ScanSlotError::ProtocolInvalid => Self::ProtocolInvalid,
+        }
+    }
 }
 
 struct ActiveBindingPersistenceRetry {
@@ -136,10 +165,41 @@ struct ActiveBindingPersistenceRetry {
     cancellation: CancellationToken,
 }
 
+/// Outcome of `process_inbound`. `delivery` is the record the click belongs to
+/// whenever it could be loaded, including rejections, so the connector can
+/// render the reply card from it.
+struct ProcessedInboundAction {
+    delivery: Option<ImDelivery>,
+    handling: std::result::Result<ImInboundHandling, ImErrorCode>,
+    settled_resolution: Option<InterventionResolutionNotification>,
+}
+
+/// Resolution to broadcast after a channel's command was `Accepted`.
+struct AcceptedInboundAction {
+    source_event_id: String,
+    source_delivery_id: String,
+    outcome: ImResolutionOutcome,
+}
+
+#[derive(Debug, Default)]
+struct InboundTiming {
+    delivery_lookup_ms: u128,
+    workspace_resolve_ms: u128,
+    settings_read_ms: u128,
+    inbound_service_ms: u128,
+    domain_command_ms: u128,
+}
+
+impl InboundTiming {
+    fn elapsed_ms(started: Instant) -> u128 {
+        started.elapsed().as_millis()
+    }
+}
+
 pub struct DesktopImRuntime {
     repository: Arc<ImRepository>,
     credential_store: OsImCredentialStore,
-    token_codec: ImActionTokenCodec,
+    inbound_service: Arc<ImInboundActionService>,
     connection_manager: Arc<ImConnectionManager>,
     connectors: HashMap<ImChannelKind, Arc<dyn ImConnector>>,
     targets: RwLock<Vec<ImProjectionTarget>>,
@@ -151,10 +211,13 @@ pub struct DesktopImRuntime {
     worker_receivers: Mutex<HashMap<ImChannelKind, mpsc::Receiver<ImWorkerSignal>>>,
     worker_tasks: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
     wecom_scan_client: WeComScanAuthClient,
-    wecom_scan_session: Mutex<Option<ActiveWeComScanSession>>,
+    wecom_scan_session: ScanSessionSlot<String>,
+    feishu_scan_client: FeishuScanAuthClient,
+    feishu_scan_session: ScanSessionSlot<FeishuScanAuthorization>,
     settings_write_lock: Mutex<()>,
     binding_persistence_retries: Mutex<HashMap<ImChannelKind, ActiveBindingPersistenceRetry>>,
     last_projection_alert_at_ms: AtomicI64,
+    inbound_timing_sequence: AtomicU64,
     cancellation: CancellationToken,
 }
 
@@ -172,11 +235,18 @@ impl DesktopImRuntime {
         signing_key: Vec<u8>,
     ) -> Result<Arc<Self>> {
         let credential_store = OsImCredentialStore;
-        let token_codec =
-            ImActionTokenCodec::new(signing_key).map_err(|error| anyhow::anyhow!(error.code()))?;
+        let token_codec = ImActionTokenCodec::new(signing_key)
+            .map_err(|error| anyhow::anyhow!(error.code().as_str()))?;
         let repository = Arc::new(ImRepository::new(core_db_path));
+        let inbound_service = Arc::new(ImInboundActionService::new(
+            Arc::clone(&repository),
+            token_codec.clone(),
+        ));
         let wecom_scan_client =
             WeComScanAuthClient::new(gold_band::config::wecom_scan_auth_config().source.clone())
+                .map_err(|error| anyhow::anyhow!(error.code()))?;
+        let feishu_scan_client =
+            FeishuScanAuthClient::new(gold_band::config::feishu_scan_auth_config())
                 .map_err(|error| anyhow::anyhow!(error.code()))?;
         let (projection_sender, projection_receiver) = im_lifecycle_projection_channel();
         let (raw_event_sender, connector_event_receiver) = mpsc::channel(128);
@@ -184,6 +254,10 @@ impl DesktopImRuntime {
         connectors.insert(
             ImChannelKind::WeCom,
             Arc::new(WeComConnector::new(token_codec.clone())),
+        );
+        connectors.insert(
+            ImChannelKind::Feishu,
+            Arc::new(FeishuConnector::new(token_codec)),
         );
         let mut worker_senders = HashMap::new();
         let mut worker_receivers = HashMap::new();
@@ -195,7 +269,7 @@ impl DesktopImRuntime {
         Ok(Arc::new(Self {
             repository,
             credential_store,
-            token_codec,
+            inbound_service,
             connection_manager: Arc::new(ImConnectionManager::default()),
             connectors,
             targets: RwLock::new(Vec::new()),
@@ -207,10 +281,13 @@ impl DesktopImRuntime {
             worker_receivers: Mutex::new(worker_receivers),
             worker_tasks: Mutex::new(Vec::new()),
             wecom_scan_client,
-            wecom_scan_session: Mutex::new(None),
+            wecom_scan_session: ScanSessionSlot::default(),
+            feishu_scan_client,
+            feishu_scan_session: ScanSessionSlot::default(),
             settings_write_lock: Mutex::new(()),
             binding_persistence_retries: Mutex::new(HashMap::new()),
             last_projection_alert_at_ms: AtomicI64::new(i64::MIN),
+            inbound_timing_sequence: AtomicU64::new(0),
             cancellation: CancellationToken::new(),
         }))
     }
@@ -612,7 +689,8 @@ impl DesktopImRuntime {
 
     pub async fn shutdown(&self) {
         self.cancellation.cancel();
-        self.cancel_wecom_scan(None);
+        self.wecom_scan_session.cancel(None);
+        self.feishu_scan_session.cancel(None);
         for retry in self
             .binding_persistence_retries
             .lock()
@@ -654,49 +732,23 @@ impl DesktopImRuntime {
     async fn start_wecom_scan(
         &self,
         session_id: String,
-    ) -> Result<WeComScanAuthorizationVm, WeComScanAuthError> {
+    ) -> Result<ImScanAuthorizationVm, WeComScanAuthError> {
         if Uuid::parse_str(&session_id).is_err() {
             return Err(WeComScanAuthError::SessionInvalid);
         }
-        let cancellation = CancellationToken::new();
-        {
-            let mut active = self
-                .wecom_scan_session
-                .lock()
-                .expect("WeCom scan session lock poisoned");
-            if let Some(previous) = active.take() {
-                previous.cancellation.cancel();
-            }
-            *active = Some(ActiveWeComScanSession {
-                session_id: session_id.clone(),
-                scode: None,
-                polling: false,
-                cancellation: cancellation.clone(),
-            });
-        }
+        let cancellation = self.wecom_scan_session.open(&session_id);
         let authorization = match self.wecom_scan_client.generate(&cancellation).await {
             Ok(authorization) => authorization,
             Err(error) => {
-                self.cancel_wecom_scan(Some(&session_id));
+                self.wecom_scan_session.cancel(Some(&session_id));
                 return Err(error);
             }
         };
-        {
-            let mut active = self
-                .wecom_scan_session
-                .lock()
-                .expect("WeCom scan session lock poisoned");
-            let Some(current) = active.as_mut() else {
-                return Err(WeComScanAuthError::Cancelled);
-            };
-            if current.session_id != session_id || cancellation.is_cancelled() {
-                return Err(WeComScanAuthError::Cancelled);
-            }
-            current.scode = Some(authorization.scode);
-        }
-        Ok(WeComScanAuthorizationVm {
+        self.wecom_scan_session
+            .attach(&session_id, &cancellation, authorization.scode)?;
+        Ok(ImScanAuthorizationVm {
             session_id,
-            auth_url: authorization.auth_url,
+            qr_url: authorization.auth_url,
             expires_at_ms: chrono::Utc::now().timestamp_millis()
                 + i64::try_from(WECOM_SCAN_SESSION_TTL.as_millis()).unwrap_or(300_000),
         })
@@ -706,63 +758,122 @@ impl DesktopImRuntime {
         &self,
         session_id: &str,
     ) -> Result<WeComScanCredentials, WeComScanAuthError> {
-        let (scode, cancellation) = {
-            let mut active = self
-                .wecom_scan_session
-                .lock()
-                .expect("WeCom scan session lock poisoned");
-            let current = active
-                .as_mut()
-                .filter(|current| current.session_id == session_id)
-                .ok_or(WeComScanAuthError::Expired)?;
-            if current.polling {
-                return Err(WeComScanAuthError::SessionConflict);
-            }
-            current.polling = true;
-            (
-                current
-                    .scode
-                    .clone()
-                    .ok_or(WeComScanAuthError::ProtocolInvalid)?,
-                current.cancellation.clone(),
-            )
-        };
+        let (scode, cancellation) = self.wecom_scan_session.claim(session_id)?;
         let result = self.wecom_scan_client.poll(&scode, &cancellation).await;
-        self.cancel_wecom_scan(Some(session_id));
+        if result.is_err() {
+            self.wecom_scan_session.cancel(Some(session_id));
+        }
         result
     }
 
-    fn cancel_wecom_scan(&self, session_id: Option<&str>) {
-        let mut active = self
-            .wecom_scan_session
-            .lock()
-            .expect("WeCom scan session lock poisoned");
-        if active.as_ref().is_some_and(|current| {
-            session_id.is_none_or(|session_id| current.session_id == session_id)
-        }) && let Some(current) = active.take()
+    /// `existing_app_id` re-authorizes that app; `None` creates a new one.
+    async fn start_feishu_scan(
+        &self,
+        session_id: String,
+        existing_app_id: Option<&str>,
+    ) -> Result<ImScanAuthorizationVm, FeishuScanAuthError> {
+        if Uuid::parse_str(&session_id).is_err() {
+            return Err(FeishuScanAuthError::SessionInvalid);
+        }
+        let cancellation = self.feishu_scan_session.open(&session_id);
+        let authorization = match self
+            .feishu_scan_client
+            .begin(existing_app_id, &cancellation)
+            .await
         {
-            current.cancellation.cancel();
+            Ok(authorization) => authorization,
+            Err(error) => {
+                self.feishu_scan_session.cancel(Some(&session_id));
+                return Err(error);
+            }
+        };
+        let qr_url = authorization.qr_url.clone();
+        let expires_in = authorization.expires_in;
+        self.feishu_scan_session
+            .attach(&session_id, &cancellation, authorization)?;
+        Ok(ImScanAuthorizationVm {
+            session_id,
+            qr_url,
+            expires_at_ms: chrono::Utc::now().timestamp_millis()
+                + i64::try_from(expires_in.as_millis()).unwrap_or(i64::MAX / 2),
+        })
+    }
+
+    /// Polls until the user finishes scanning, then self-checks the new
+    /// credentials under the same cancellation before anything is persisted.
+    async fn complete_feishu_scan(
+        &self,
+        session_id: &str,
+    ) -> Result<FeishuScanCredentials, FeishuScanAuthError> {
+        let (authorization, cancellation) = self.feishu_scan_session.claim(session_id)?;
+        let result = async {
+            let credentials = self
+                .feishu_scan_client
+                .poll(&authorization, &cancellation)
+                .await?;
+            tokio::select! {
+                () = cancellation.cancelled() => Err(FeishuScanAuthError::Cancelled),
+                checked = self.feishu_scan_client.self_check(&credentials) => {
+                    checked.map(|()| credentials)
+                }
+            }
+        }
+        .await;
+        if result.is_err() {
+            self.feishu_scan_session.cancel(Some(session_id));
+        }
+        result
+    }
+
+    fn commit_scan<T>(
+        &self,
+        kind: ImChannelKind,
+        session_id: &str,
+        commit: impl FnOnce() -> CommandResult<T>,
+    ) -> CommandResult<T> {
+        // Acquire the settings lock first so cancellation remains available
+        // while another settings writer is busy. Then fence commit with the
+        // session slot, using the same lock as open/cancel.
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
+        match kind {
+            ImChannelKind::WeCom => self
+                .wecom_scan_session
+                .commit(session_id, commit)
+                .map_err(|error| wecom_scan_error(error.into()))?,
+            ImChannelKind::Feishu => self
+                .feishu_scan_session
+                .commit(session_id, commit)
+                .map_err(|error| feishu_scan_error(error.into()))?,
         }
     }
 
-    pub fn project_desktop_intervention_resolution(
+    fn cancel_scan(&self, kind: ImChannelKind, session_id: &str) {
+        match kind {
+            ImChannelKind::WeCom => self.wecom_scan_session.cancel(Some(session_id)),
+            ImChannelKind::Feishu => self.feishu_scan_session.cancel(Some(session_id)),
+        }
+    }
+
+    /// Broadcasts the terminal state of an intervention after the surface named
+    /// by `resolved_by` got `Accepted`. `source_delivery_id` is the clicked
+    /// delivery for a channel resolution and `None` for the desktop.
+    pub fn project_intervention_resolution(
         &self,
-        source_event_id: &str,
-        notification_kind: ImNotificationKind,
-        locator: &InterventionLocator,
+        resolution: &InterventionResolution<'_>,
     ) -> std::result::Result<ImProjectionResult, ImRepositoryError> {
         let targets = self
             .targets
             .read()
             .map_err(|_| ImRepositoryError::LockUnavailable)?
             .clone();
-        project_desktop_intervention_resolution(
+        project_intervention_resolution(
             &self.repository,
             &self.worker_senders,
             &targets,
-            source_event_id,
-            notification_kind,
-            locator,
+            resolution,
             chrono::Utc::now().timestamp_millis(),
         )
     }
@@ -1019,27 +1130,20 @@ impl DesktopImRuntime {
                     envelope,
                     response_context,
                 } => {
-                    let runtime = Arc::clone(&self);
-                    let handle = app_handle.clone();
-                    let fallback_context = response_context.clone();
-                    let result = tauri::async_runtime::spawn_blocking(move || {
-                        runtime.process_inbound(&handle, envelope, response_context)
-                    })
-                    .await;
-                    let (response_context, state) =
-                        settle_inbound_action(channel, generation, result, fallback_context);
-                    if let Some(connector) = self.connectors.get(&channel)
-                        && let Err(error) =
-                            connector.respond_to_action(response_context, state).await
-                    {
-                        warn!(
-                            channel = channel.as_str(),
+                    if let Some(connector) = self.connectors.get(&channel).cloned() {
+                        let process_runtime = Arc::clone(&self);
+                        let project_runtime = Arc::clone(&self);
+                        let handle = app_handle.clone();
+                        tauri::async_runtime::spawn(run_inbound_action(
+                            connector,
+                            channel,
                             generation,
-                            error_code = error.code.as_str(),
-                            retryable = error.retryable,
-                            platform_code = ?error.platform_code,
-                            "IM action card response failed"
-                        );
+                            response_context,
+                            move || process_runtime.process_inbound(&handle, envelope),
+                            move |accepted| {
+                                project_runtime.project_channel_resolution(channel, accepted)
+                            },
+                        ));
                     }
                 }
                 _ => {}
@@ -1159,90 +1263,211 @@ impl DesktopImRuntime {
     fn process_inbound(
         &self,
         app_handle: &AppHandle,
-        envelope: gold_band::im::ImInboundEnvelope,
-        mut response_context: ImActionResponseContext,
-    ) -> (
-        ImActionResponseContext,
-        std::result::Result<(), anyhow::Error>,
-    ) {
+        envelope: ImInboundEnvelope,
+    ) -> ProcessedInboundAction {
+        let total_started = Instant::now();
+        let mut timing = InboundTiming::default();
+        let delivery_started = Instant::now();
         let delivery = match self.repository.delivery(&envelope.delivery_id) {
-            Ok(delivery) => delivery.context("IM delivery not found"),
-            Err(error) => Err(anyhow::Error::new(error)),
+            Ok(Some(delivery)) => delivery,
+            Ok(None) => {
+                timing.delivery_lookup_ms = InboundTiming::elapsed_ms(delivery_started);
+                let processed = ProcessedInboundAction {
+                    delivery: None,
+                    handling: Err(ImErrorCode::DeliveryNotFound),
+                    settled_resolution: None,
+                };
+                self.log_inbound_timing(
+                    &envelope,
+                    Some(ImErrorCode::DeliveryNotFound),
+                    timing,
+                    total_started,
+                );
+                return processed;
+            }
+            Err(_) => {
+                timing.delivery_lookup_ms = InboundTiming::elapsed_ms(delivery_started);
+                let processed = ProcessedInboundAction {
+                    delivery: None,
+                    handling: Err(ImErrorCode::StorageUnavailable),
+                    settled_resolution: None,
+                };
+                self.log_inbound_timing(
+                    &envelope,
+                    Some(ImErrorCode::StorageUnavailable),
+                    timing,
+                    total_started,
+                );
+                return processed;
+            }
         };
-        let Ok(delivery) = delivery else {
-            return (
-                response_context,
-                Err(anyhow::anyhow!("IM_DELIVERY_NOT_FOUND")),
-            );
+        timing.delivery_lookup_ms = InboundTiming::elapsed_ms(delivery_started);
+        let handling = self.process_inbound_delivery(app_handle, &envelope, &delivery, &mut timing);
+        let settled_resolution = if handling
+            .as_ref()
+            .is_ok_and(|handling| handling.result.outcome == ImInboundOutcome::AlreadyApplied)
+        {
+            match stored_intervention_resolution(&self.repository, &delivery) {
+                Ok(resolution) => resolution,
+                Err(_) => {
+                    warn!(
+                        channel = envelope.channel.as_str(),
+                        error_code = ImErrorCode::StorageUnavailable.as_str(),
+                        "IM settled result lookup failed"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
         };
+        let error_code = handling.as_ref().err().copied();
+        self.log_inbound_timing(&envelope, error_code, timing, total_started);
+        ProcessedInboundAction {
+            delivery: Some(delivery),
+            handling,
+            settled_resolution,
+        }
+    }
+
+    fn process_inbound_delivery(
+        &self,
+        app_handle: &AppHandle,
+        envelope: &ImInboundEnvelope,
+        delivery: &ImDelivery,
+        timing: &mut InboundTiming,
+    ) -> std::result::Result<ImInboundHandling, ImErrorCode> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
         let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
-            let service =
-                ImInboundActionService::new(Arc::clone(&self.repository), self.token_codec.clone());
-            let result = service.handle_with_delivery(
-                &envelope,
-                &delivery,
-                chrono::Utc::now().timestamp_millis(),
-                |_| unreachable!("information payload never reaches Runtime"),
-            );
-            return (
-                response_context,
-                result.map(|_| ()).map_err(anyhow::Error::new),
-            );
+            let inbound_started = Instant::now();
+            return self
+                .inbound_service
+                .handle_with_delivery(envelope, delivery, now_ms, |_| {
+                    unreachable!("information payload never reaches Runtime")
+                })
+                .inspect(|_| {
+                    timing.inbound_service_ms = InboundTiming::elapsed_ms(inbound_started);
+                })
+                .map_err(|error| {
+                    timing.inbound_service_ms = InboundTiming::elapsed_ms(inbound_started);
+                    error.code()
+                });
         };
-        enrich_wecom_vote_context(&mut response_context, &envelope, &delivery);
-        enrich_wecom_form_context(&mut response_context, &envelope, &delivery);
         let state = app_handle.state::<DesktopState>();
-        let Ok(app) = resolve_command_app_with_emitters(
-            &app_handle,
+        let workspace_started = Instant::now();
+        let app = resolve_command_app_with_emitters(
+            app_handle,
             &state,
             Some(&reference.locator.project_id),
         )
-        .map_err(|error| anyhow::anyhow!(error.code)) else {
-            return (
-                response_context,
-                Err(anyhow::anyhow!("IM_WORKSPACE_UNAVAILABLE")),
-            );
-        };
-        let binding_authorized = (|| -> Result<bool, ImInboundError> {
+        .inspect(|_| {
+            timing.workspace_resolve_ms = InboundTiming::elapsed_ms(workspace_started);
+        })
+        .map_err(|_| {
+            timing.workspace_resolve_ms = InboundTiming::elapsed_ms(workspace_started);
+            ImErrorCode::WorkspaceUnavailable
+        })?;
+        let binding_authorized = {
+            let settings_started = Instant::now();
             let _settings_guard = self
                 .settings_write_lock
                 .lock()
-                .map_err(|_| ImInboundError::BindingUnavailable)?;
+                .inspect_err(|_| {
+                    timing.settings_read_ms = InboundTiming::elapsed_ms(settings_started);
+                })
+                .map_err(|_| ImErrorCode::StorageUnavailable)?;
             let settings = app
                 .load_settings()
-                .map_err(|_| ImInboundError::BindingUnavailable)?;
-            Ok(current_binding_authorizes_delivery(
-                &settings.im_integrations,
-                &delivery,
-            ))
-        })();
-        match binding_authorized {
-            Ok(true) => {}
-            Ok(false) => {
-                return (
-                    response_context,
-                    Err(anyhow::Error::new(ImInboundError::BindingRevoked)),
-                );
-            }
-            Err(error) => return (response_context, Err(anyhow::Error::new(error))),
+                .inspect_err(|_| {
+                    timing.settings_read_ms = InboundTiming::elapsed_ms(settings_started);
+                })
+                .map_err(|_| ImErrorCode::StorageUnavailable)?;
+            let authorized =
+                current_binding_authorizes_delivery(&settings.im_integrations, delivery);
+            timing.settings_read_ms = InboundTiming::elapsed_ms(settings_started);
+            authorized
+        };
+        if !binding_authorized {
+            return Err(ImErrorCode::BindingRevoked);
         }
-        let service =
-            ImInboundActionService::new(Arc::clone(&self.repository), self.token_codec.clone());
-        let result = service.handle_with_delivery(
-            &envelope,
-            &delivery,
-            chrono::Utc::now().timestamp_millis(),
-            |command| {
-                tauri::async_runtime::block_on(execute_intervention_command(
+        let inbound_started = Instant::now();
+        self.inbound_service
+            .handle_with_delivery(envelope, delivery, now_ms, |command| {
+                let command_started = Instant::now();
+                let result = tauri::async_runtime::block_on(execute_intervention_command(
                     app_handle.clone(),
                     state.inner(),
                     app,
                     Some(reference.locator.project_id.clone()),
                     command,
-                ))
-            },
+                ));
+                timing.domain_command_ms = InboundTiming::elapsed_ms(command_started);
+                result
+            })
+            .inspect(|_| {
+                timing.inbound_service_ms = InboundTiming::elapsed_ms(inbound_started);
+            })
+            .map_err(|error| {
+                timing.inbound_service_ms = InboundTiming::elapsed_ms(inbound_started);
+                error.code()
+            })
+    }
+
+    fn log_inbound_timing(
+        &self,
+        envelope: &ImInboundEnvelope,
+        error_code: Option<ImErrorCode>,
+        timing: InboundTiming,
+        total_started: Instant,
+    ) {
+        let sequence = self.inbound_timing_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        info!(
+            channel = envelope.channel.as_str(),
+            sequence,
+            cold = sequence == 1,
+            delivery_lookup_ms = timing.delivery_lookup_ms,
+            workspace_resolve_ms = timing.workspace_resolve_ms,
+            settings_read_ms = timing.settings_read_ms,
+            inbound_service_ms = timing.inbound_service_ms,
+            domain_command_ms = timing.domain_command_ms,
+            total_ms = InboundTiming::elapsed_ms(total_started),
+            error_code = error_code.map(|code| code.as_str()),
+            "IM inbound action timing"
         );
-        (response_context, result.map(|_| ()).map_err(Into::into))
+    }
+
+    fn project_channel_resolution(&self, channel: ImChannelKind, accepted: AcceptedInboundAction) {
+        let Some(source) = self
+            .repository
+            .delivery(&accepted.source_delivery_id)
+            .ok()
+            .flatten()
+        else {
+            warn!(
+                channel = channel.as_str(),
+                error_code = ImErrorCode::DeliveryNotFound.as_str(),
+                "IM intervention resolution projection skipped"
+            );
+            return;
+        };
+        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
+            return;
+        };
+        let result = self.project_intervention_resolution(&InterventionResolution {
+            source_event_id: &accepted.source_event_id,
+            notification_kind: source.notification_kind,
+            locator: &reference.locator,
+            resolved_by: ImResolvedBy::Channel(channel),
+            source_delivery_id: Some(&accepted.source_delivery_id),
+            outcome: accepted.outcome,
+        });
+        if let Err(error) = result {
+            warn!(
+                channel = channel.as_str(),
+                error_code = error.code(),
+                "IM intervention resolution projection failed"
+            );
+        }
     }
 
     fn persist_binding(
@@ -1311,74 +1536,67 @@ fn persist_binding_then_commit(
     Ok(manager.commit_binding(channel, generation, binding))
 }
 
-fn project_desktop_intervention_resolution(
+/// Inputs of one resolution broadcast; built by the surface that got `Accepted`.
+pub struct InterventionResolution<'a> {
+    pub source_event_id: &'a str,
+    pub notification_kind: ImNotificationKind,
+    pub locator: &'a InterventionLocator,
+    pub resolved_by: ImResolvedBy,
+    pub source_delivery_id: Option<&'a str>,
+    pub outcome: ImResolutionOutcome,
+}
+
+/// Writes one resolution record per eligible target (§9.2): targets that showed
+/// the card get a `Send` record, others a `TombstoneOnly` record that blocks a
+/// late source projection. A `CallbackOnly` channel that resolved the action
+/// already replaced its only card inside the callback and is skipped.
+fn project_intervention_resolution(
     repository: &ImRepository,
     worker_senders: &HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
     targets: &[ImProjectionTarget],
-    source_event_id: &str,
-    notification_kind: ImNotificationKind,
-    locator: &InterventionLocator,
+    resolution: &InterventionResolution<'_>,
     now_ms: i64,
 ) -> std::result::Result<ImProjectionResult, ImRepositoryError> {
-    let sources = repository.intervention_deliveries_for_canonical_event(source_event_id)?;
+    let sources =
+        repository.intervention_deliveries_for_canonical_event(resolution.source_event_id)?;
     let mut result = ImProjectionResult::default();
-    let mut projected_channels = std::collections::HashSet::new();
-    for source in sources {
-        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
-            result.skipped += 1;
-            continue;
-        };
-        projected_channels.insert(source.channel);
-        let resolution = desktop_resolution_delivery(
-            source.channel,
-            source.destination.clone(),
-            source.notification_kind,
-            source_event_id,
-            &reference.locator,
-            source.display_ref,
-            now_ms,
-        );
-        match repository.enqueue_resolution_and_expire_pending_source(
-            source_event_id,
-            &resolution,
-            now_ms,
-        )? {
-            ImDeliveryInsertResult::Inserted => {
-                result.inserted += 1;
-                if let Some(sender) = worker_senders.get(&source.channel) {
-                    let _ = sender.try_send(ImWorkerSignal::DeliveryAvailable);
-                }
-            }
-            ImDeliveryInsertResult::Duplicate => result.duplicates += 1,
-        }
-    }
     for target in targets {
-        if projected_channels.contains(&target.channel)
-            || !eligible_desktop_resolution_target(target, notification_kind)
-        {
+        if !eligible_resolution_target(target, resolution.notification_kind) {
             continue;
         }
         let destination = target
             .destination
             .clone()
             .expect("eligible IM target has a destination");
-        let resolution = desktop_resolution_delivery(
-            target.channel,
-            destination,
-            notification_kind,
-            source_event_id,
-            locator,
-            None,
-            now_ms,
-        );
+        let source = sources.iter().find(|source| {
+            source.channel == target.channel
+                && source.destination.destination_id == destination.destination_id
+                && source.notification_kind == resolution.notification_kind
+        });
+        if let Some(source) = source
+            && resolution.source_delivery_id == Some(source.delivery_id.as_str())
+            && target.capabilities.message_update == ImMessageUpdateMode::CallbackOnly
+        {
+            result.skipped += 1;
+            continue;
+        }
+        let (dispatch, display_ref) = match source {
+            Some(source) => (ImResolutionDispatch::Send, source.display_ref),
+            None => (ImResolutionDispatch::TombstoneOnly, None),
+        };
+        let delivery =
+            resolution_delivery(target.channel, destination, resolution, display_ref, now_ms);
         match repository.enqueue_resolution_and_expire_pending_source(
-            source_event_id,
-            &resolution,
+            resolution.source_event_id,
+            &delivery,
+            dispatch,
             now_ms,
         )? {
             ImDeliveryInsertResult::Inserted => {
                 result.inserted += 1;
-                if let Some(sender) = worker_senders.get(&target.channel) {
+                if dispatch == ImResolutionDispatch::Send
+                    && let Some(sender) = worker_senders.get(&target.channel)
+                {
                     let _ = sender.try_send(ImWorkerSignal::DeliveryAvailable);
                 }
             }
@@ -1388,16 +1606,20 @@ fn project_desktop_intervention_resolution(
     Ok(result)
 }
 
-fn desktop_resolution_delivery(
+fn resolution_delivery(
     channel: ImChannelKind,
     destination: ImDestination,
-    notification_kind: ImNotificationKind,
-    source_event_id: &str,
-    locator: &InterventionLocator,
+    resolution: &InterventionResolution<'_>,
     display_ref: Option<u16>,
     now_ms: i64,
 ) -> ImDelivery {
-    let canonical_event_id = desktop_resolution_event_id(source_event_id);
+    let InterventionResolution {
+        source_event_id,
+        notification_kind,
+        locator,
+        ..
+    } = *resolution;
+    let canonical_event_id = resolution_event_id(source_event_id);
     ImDelivery {
         delivery_id: ImDelivery::deterministic_id(
             channel,
@@ -1427,6 +1649,8 @@ fn desktop_resolution_delivery(
                     scheduled_occurrence_id: None,
                 },
                 display_ref,
+                resolved_by: resolution.resolved_by,
+                outcome: resolution.outcome.clone(),
             },
         },
         expires_at_ms: now_ms.saturating_add(TERMINAL_CONFIRMATION_TTL_MS),
@@ -1434,7 +1658,7 @@ fn desktop_resolution_delivery(
     }
 }
 
-fn eligible_desktop_resolution_target(
+fn eligible_resolution_target(
     target: &ImProjectionTarget,
     notification_kind: ImNotificationKind,
 ) -> bool {
@@ -1445,138 +1669,138 @@ fn eligible_desktop_resolution_target(
         && target.capabilities.card_actions
         && target.destination.is_some()
         && target.notifications.enabled(notification_kind)
-        && (notification_kind != ImNotificationKind::Elicitation
-            || target.channel == ImChannelKind::WeCom)
 }
 
-fn settle_inbound_action<E>(
+/// Runs one inbound action in its own task (§8): domain processing on the
+/// blocking pool, the card response, then the resolution broadcast when the
+/// command was `Accepted`. The dispatch loop never awaits it.
+async fn run_inbound_action(
+    connector: Arc<dyn ImConnector>,
     channel: ImChannelKind,
     generation: u64,
-    result: Result<
-        (
-            ImActionResponseContext,
-            std::result::Result<(), anyhow::Error>,
-        ),
-        E,
-    >,
-    fallback_context: ImActionResponseContext,
-) -> (ImActionResponseContext, ImMessageState)
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    match result {
-        Ok((processed_context, Ok(()))) => (processed_context, ImMessageState::Handled),
-        Ok((processed_context, Err(error))) => {
-            let error_code = inbound_processing_error_code(&error);
-            warn!(
-                channel = channel.as_str(),
-                generation, error_code, "IM inbound action failed"
-            );
-            (processed_context, inbound_failure_state(error_code))
-        }
+    response_context: ImActionResponseContext,
+    process: impl FnOnce() -> ProcessedInboundAction + Send + 'static,
+    project_resolution: impl FnOnce(AcceptedInboundAction) + Send + 'static,
+) {
+    let processed = tauri::async_runtime::spawn_blocking(process).await;
+    let (response, accepted) = inbound_action_response(channel, generation, processed);
+    if let Err(error) = connector
+        .respond_to_action(response_context, response)
+        .await
+    {
+        warn!(
+            channel = channel.as_str(),
+            generation,
+            error_code = error.code.as_str(),
+            retryable = error.retryable,
+            platform_code = ?error.platform_code,
+            "IM action card response failed"
+        );
+    }
+    if let Some(accepted) = accepted {
+        let _ = tauri::async_runtime::spawn_blocking(move || project_resolution(accepted)).await;
+    }
+}
+
+fn stored_intervention_resolution(
+    repository: &ImRepository,
+    source: &ImDelivery,
+) -> Result<Option<InterventionResolutionNotification>, gold_band::im::ImRepositoryError> {
+    let id = ImDelivery::deterministic_id(
+        source.channel,
+        &source.destination.destination_id,
+        source.notification_kind,
+        &resolution_event_id(&source.canonical_event_id),
+    );
+    Ok(repository
+        .delivery(&id)?
+        .and_then(|delivery| match delivery.payload {
+            ImDeliveryPayload::InterventionResolution { resolution, .. } => Some(resolution),
+            _ => None,
+        }))
+}
+
+fn inbound_action_response<E: std::fmt::Display>(
+    channel: ImChannelKind,
+    generation: u64,
+    processed: std::result::Result<ProcessedInboundAction, E>,
+) -> (ImActionResponse, Option<AcceptedInboundAction>) {
+    let processed = match processed {
+        Ok(processed) => processed,
         Err(error) => {
             warn!(
                 channel = channel.as_str(),
                 generation,
-                error_code = "IM_ACTION_TASK_FAILED",
+                error_code = ImErrorCode::ActionProcessingFailed.as_str(),
                 join_error = %error,
                 "IM inbound action task failed"
             );
-            (fallback_context, ImMessageState::Failed)
+            return (
+                rejected_response(ImErrorCode::ActionProcessingFailed, None),
+                None,
+            );
         }
+    };
+    let delivery = processed.delivery;
+    let handling = match processed.handling {
+        Ok(handling) => handling,
+        Err(code) => {
+            warn!(
+                channel = channel.as_str(),
+                generation,
+                error_code = code.as_str(),
+                "IM inbound action failed"
+            );
+            return (rejected_response(code, delivery), None);
+        }
+    };
+    match (handling.result.outcome, handling.resolution, delivery) {
+        (ImInboundOutcome::Accepted, Some(outcome), Some(delivery)) => {
+            let accepted = AcceptedInboundAction {
+                source_event_id: delivery.canonical_event_id.clone(),
+                source_delivery_id: delivery.delivery_id.clone(),
+                outcome: outcome.clone(),
+            };
+            let response = ImActionResponse {
+                state: ImActionResponseState::Handled,
+                resolved_by: Some(ImResolvedBy::Channel(channel)),
+                outcome: Some(outcome),
+                delivery: Some(delivery),
+            };
+            (response, Some(accepted))
+        }
+        (ImInboundOutcome::Rejected(code), _, delivery) => {
+            warn!(
+                channel = channel.as_str(),
+                generation,
+                error_code = code.as_str(),
+                "IM inbound action rejected"
+            );
+            (rejected_response(code, delivery), None)
+        }
+        (_, _, delivery) => (
+            ImActionResponse {
+                state: ImActionResponseState::AlreadyHandled,
+                resolved_by: processed
+                    .settled_resolution
+                    .as_ref()
+                    .map(|resolution| resolution.resolved_by),
+                outcome: processed
+                    .settled_resolution
+                    .map(|resolution| resolution.outcome),
+                delivery,
+            },
+            None,
+        ),
     }
 }
 
-fn enrich_wecom_vote_context(
-    context: &mut ImActionResponseContext,
-    envelope: &gold_band::im::ImInboundEnvelope,
-    delivery: &gold_band::im::ImDelivery,
-) {
-    let ImActionResponseContext::WeCom {
-        vote_selection: Some(vote_selection),
-        ..
-    } = context
-    else {
-        return;
-    };
-    let gold_band::im::ImInboundActionSelection::LocalIndex { index } = &envelope.action else {
-        return;
-    };
-    let Ok(selected_index) = vote_selection.selected_option_id.parse::<usize>() else {
-        return;
-    };
-    if selected_index != *index {
-        return;
-    }
-    let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
-        return;
-    };
-    vote_selection.vote_actions = reference.allowed_actions.clone();
-    vote_selection.display_ref = delivery.display_ref;
-}
-
-fn enrich_wecom_form_context(
-    context: &mut ImActionResponseContext,
-    envelope: &gold_band::im::ImInboundEnvelope,
-    delivery: &gold_band::im::ImDelivery,
-) {
-    let ImActionResponseContext::WeCom {
-        form_selection: Some(form_selection),
-        ..
-    } = context
-    else {
-        return;
-    };
-    let gold_band::im::ImInboundActionSelection::Form { selections } = &envelope.action else {
-        return;
-    };
-    if form_selection.selections != *selections {
-        return;
-    }
-    let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
-        return;
-    };
-    let Some(form) = reference
-        .allowed_actions
-        .iter()
-        .find_map(|action| match action {
-            gold_band::app::intervention::InterventionAllowedAction::ElicitationFixedForm {
-                form,
-            } => Some(form),
-            _ => None,
-        })
-    else {
-        return;
-    };
-    form_selection.card_kind = match form {
-        gold_band::app::intervention::RemoteElicitationForm::SingleScalarChoice { .. } => {
-            gold_band::im::ImWeComFormCardKind::VoteSingle
-        }
-        gold_band::app::intervention::RemoteElicitationForm::MultiScalarChoice { .. } => {
-            gold_band::im::ImWeComFormCardKind::VoteMulti
-        }
-        gold_band::app::intervention::RemoteElicitationForm::ScalarChoiceQuestions { .. } => {
-            gold_band::im::ImWeComFormCardKind::Multiple
-        }
-    };
-    form_selection.form = Some(form.clone());
-    form_selection.display_ref = delivery.display_ref;
-}
-
-fn inbound_processing_error_code(error: &anyhow::Error) -> &'static str {
-    error
-        .downcast_ref::<gold_band::im::ImInboundError>()
-        .map(gold_band::im::ImInboundError::code)
-        .unwrap_or("IM_ACTION_PROCESSING_FAILED")
-}
-
-fn inbound_failure_state(error_code: &str) -> ImMessageState {
-    match error_code {
-        "IM_ACTION_EXPIRED" | "INTERVENTION_EXPIRED" => ImMessageState::Expired,
-        "INTERVENTION_ALREADY_HANDLED" | "INTERVENTION_REVISION_CONFLICT" => {
-            ImMessageState::Handled
-        }
-        _ => ImMessageState::Failed,
+fn rejected_response(code: ImErrorCode, delivery: Option<ImDelivery>) -> ImActionResponse {
+    ImActionResponse {
+        state: ImActionResponseState::Rejected(code),
+        resolved_by: None,
+        outcome: None,
+        delivery,
     }
 }
 
@@ -1647,8 +1871,8 @@ pub fn get_im_settings(state: tauri::State<'_, DesktopState>) -> CommandResult<I
 pub async fn start_wecom_scan_authorization(
     app_handle: AppHandle,
     state: tauri::State<'_, DesktopState>,
-    input: WeComScanSessionInput,
-) -> CommandResult<WeComScanAuthorizationVm> {
+    input: ScanSessionInput,
+) -> CommandResult<ImScanAuthorizationVm> {
     let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
     runtime
@@ -1660,26 +1884,99 @@ pub async fn start_wecom_scan_authorization(
 #[tauri::command]
 pub async fn complete_wecom_scan_authorization(
     app_handle: AppHandle,
-    state: tauri::State<'_, DesktopState>,
-    input: WeComScanSessionInput,
+    _state: tauri::State<'_, DesktopState>,
+    input: ScanSessionInput,
 ) -> CommandResult<ImSettingsVm> {
     let runtime = require_im_runtime(&app_handle).await?;
     let credentials = runtime
         .complete_wecom_scan(&input.session_id)
         .await
         .map_err(wecom_scan_error)?;
-    install_scanned_wecom_credentials(&app_handle, &state, &runtime, credentials).await
+    install_scanned_credentials(
+        &app_handle,
+        &runtime,
+        &input.session_id,
+        ImChannelKind::WeCom,
+        credentials.bot_id,
+        BTreeMap::from([("secret".to_owned(), credentials.secret)]),
+    )
+    .await
 }
 
 #[tauri::command]
 pub fn cancel_wecom_scan_authorization(
     state: tauri::State<'_, DesktopState>,
-    input: WeComScanSessionInput,
+    input: ScanSessionInput,
 ) -> CommandResult<()> {
     let runtime = state
         .im_runtime()
         .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
-    runtime.cancel_wecom_scan(Some(&input.session_id));
+    runtime.wecom_scan_session.cancel(Some(&input.session_id));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_feishu_scan_authorization(
+    app_handle: AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    input: FeishuScanStartInput,
+) -> CommandResult<ImScanAuthorizationVm> {
+    let runtime = require_im_runtime(&app_handle).await?;
+    let existing_app_id = if input.reauthorize {
+        let settings = state
+            .app()
+            .and_then(|app| app.load_settings())
+            .map_err(im_command_error)?;
+        let app_id = settings
+            .im_integrations
+            .channels
+            .into_iter()
+            .find(|channel| channel.kind == ImChannelKind::Feishu)
+            .map(|channel| channel.public_identity)
+            .filter(|app_id| !app_id.is_empty())
+            .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))?;
+        Some(app_id)
+    } else {
+        None
+    };
+    runtime
+        .start_feishu_scan(input.session_id, existing_app_id.as_deref())
+        .await
+        .map_err(feishu_scan_error)
+}
+
+#[tauri::command]
+pub async fn complete_feishu_scan_authorization(
+    app_handle: AppHandle,
+    _state: tauri::State<'_, DesktopState>,
+    input: ScanSessionInput,
+) -> CommandResult<ImSettingsVm> {
+    let runtime = require_im_runtime(&app_handle).await?;
+    let credentials = runtime
+        .complete_feishu_scan(&input.session_id)
+        .await
+        .map_err(feishu_scan_error)?;
+    let (app_id, fields) = credentials.into_credential_fields();
+    install_scanned_credentials(
+        &app_handle,
+        &runtime,
+        &input.session_id,
+        ImChannelKind::Feishu,
+        app_id,
+        fields,
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn cancel_feishu_scan_authorization(
+    state: tauri::State<'_, DesktopState>,
+    input: ScanSessionInput,
+) -> CommandResult<()> {
+    let runtime = state
+        .im_runtime()
+        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    runtime.feishu_scan_session.cancel(Some(&input.session_id));
     Ok(())
 }
 
@@ -2057,113 +2354,133 @@ fn wecom_scan_error(error: WeComScanAuthError) -> CommandErrorVm {
     CommandErrorVm::new(error.code(), serde_json::json!({}))
 }
 
-async fn install_scanned_wecom_credentials(
-    app_handle: &AppHandle,
-    state: &DesktopState,
-    runtime: &Arc<DesktopImRuntime>,
-    credentials: WeComScanCredentials,
-) -> CommandResult<ImSettingsVm> {
-    let app = state.app().map_err(im_command_error)?;
+fn feishu_scan_error(error: FeishuScanAuthError) -> CommandErrorVm {
+    CommandErrorVm::new(error.code(), serde_json::json!({}))
+}
+
+/// Stages a new credential reference and rolls it back if configuration commit
+/// fails. The caller runs this blocking work outside the async executor.
+fn persist_scanned_credentials<T>(
+    store: &dyn ImCredentialStore,
+    kind: ImChannelKind,
+    fields: BTreeMap<String, String>,
+    commit: impl FnOnce(String) -> CommandResult<T>,
+) -> CommandResult<T> {
     let reference = OsImCredentialStore::new_reference();
-    let payload = gold_band::im::ImCredentialPayload::new(BTreeMap::from([(
-        "secret".to_owned(),
-        credentials.secret,
-    )]));
-    let reference_for_save = reference.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        OsImCredentialStore.save(ImChannelKind::WeCom, &reference_for_save, &payload)
+    let payload = gold_band::im::ImCredentialPayload::new(fields);
+    store
+        .save(kind, &reference, &payload)
+        .map_err(|error| im_error(error.code()))?;
+    let result = commit(reference.clone());
+    if result.is_err()
+        && let Err(error) = store.delete(kind, &reference)
+    {
+        warn!(
+            channel = kind.as_str(),
+            code = error.code(),
+            "rollback scanned IM credential failed"
+        );
+    }
+    result
+}
+
+/// Persists scanned credentials and reconfigures the runtime after commit.
+async fn install_scanned_credentials(
+    app_handle: &AppHandle,
+    runtime: &Arc<DesktopImRuntime>,
+    session_id: &str,
+    kind: ImChannelKind,
+    public_identity: String,
+    fields: BTreeMap<String, String>,
+) -> CommandResult<ImSettingsVm> {
+    let handle = app_handle.clone();
+    let runtime_for_install = Arc::clone(runtime);
+    let session_for_install = session_id.to_owned();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let runtime = runtime_for_install;
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let (settings, old_reference) =
+            persist_scanned_credentials(&OsImCredentialStore, kind, fields, |reference| {
+                runtime.commit_scan(kind, &session_for_install, || {
+                    if runtime
+                        .repository
+                        .channel_cleanup(kind)
+                        .map_err(|error| im_error(error.code()))?
+                        .is_some()
+                    {
+                        return Err(im_error("IM_CHANNEL_CLEANUP_PENDING"));
+                    }
+                    let mut settings = app.load_settings().map_err(im_command_error)?;
+                    let original_settings = settings.clone();
+                    let existing = settings
+                        .im_integrations
+                        .channels
+                        .iter()
+                        .find(|channel| channel.kind == kind)
+                        .cloned();
+                    let old_reference = existing
+                        .as_ref()
+                        .and_then(|channel| channel.credential_ref.clone());
+                    upsert_channel(
+                        &mut settings.im_integrations,
+                        scanned_channel_settings(
+                            kind,
+                            public_identity,
+                            reference,
+                            existing.as_ref(),
+                        ),
+                    );
+                    app.save_settings(&settings).map_err(im_command_error)?;
+                    if let Err(error) = state.update_settings_config(&settings) {
+                        let _ = app.save_settings(&original_settings);
+                        let _ = state.update_settings_config(&original_settings);
+                        return Err(im_command_error(error));
+                    }
+                    Ok((settings, old_reference))
+                })
+            })?;
+        if let Some(old_reference) = old_reference
+            && OsImCredentialStore.delete(kind, &old_reference).is_err()
+        {
+            warn!(
+                channel = kind.as_str(),
+                "cleanup previous IM credential reference failed"
+            );
+        }
+        Ok::<_, CommandErrorVm>(settings)
     })
     .await
-    .map_err(|_| im_error("IM_CREDENTIAL_UNAVAILABLE"))?
-    .map_err(|error| im_error(error.code()))?;
-
-    let write_guard = runtime
-        .settings_write_lock
-        .lock()
-        .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
-    if runtime
-        .repository
-        .channel_cleanup(ImChannelKind::WeCom)
-        .map_err(|error| im_error(error.code()))?
-        .is_some()
-    {
-        drop(write_guard);
-        let reference_for_delete = reference.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            OsImCredentialStore.delete(ImChannelKind::WeCom, &reference_for_delete)
-        })
-        .await;
-        return Err(im_error("IM_CHANNEL_CLEANUP_PENDING"));
-    }
-    let mut settings = match app.load_settings() {
-        Ok(settings) => settings,
-        Err(error) => {
-            drop(write_guard);
-            let reference_for_delete = reference.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                OsImCredentialStore.delete(ImChannelKind::WeCom, &reference_for_delete)
-            })
-            .await;
-            return Err(im_command_error(error));
-        }
-    };
-    let original_settings = settings.clone();
-    let existing = settings
-        .im_integrations
-        .channels
-        .iter()
-        .find(|channel| channel.kind == ImChannelKind::WeCom)
-        .cloned();
-    let old_reference = existing
-        .as_ref()
-        .and_then(|channel| channel.credential_ref.clone());
-    let identity_changed = existing
-        .as_ref()
-        .is_some_and(|channel| channel.public_identity != credentials.bot_id);
-    upsert_channel(
-        &mut settings.im_integrations,
-        ImChannelSettings {
-            kind: ImChannelKind::WeCom,
-            enabled: true,
-            public_identity: credentials.bot_id,
-            credential_ref: Some(reference.clone()),
-            binding: if identity_changed {
-                None
-            } else {
-                existing
-                    .as_ref()
-                    .and_then(|channel| channel.binding.clone())
-            },
-            notifications: existing
-                .map(|channel| channel.notifications)
-                .unwrap_or_default(),
-        },
-    );
-    if let Err(error) = app.save_settings(&settings) {
-        let _ = OsImCredentialStore.delete(ImChannelKind::WeCom, &reference);
-        return Err(im_command_error(error));
-    }
-    if let Err(error) = state.update_settings_config(&settings) {
-        let _ = app.save_settings(&original_settings);
-        let _ = state.update_settings_config(&original_settings);
-        let _ = OsImCredentialStore.delete(ImChannelKind::WeCom, &reference);
-        return Err(im_command_error(error));
-    }
-    drop(write_guard);
-    if let Some(old_reference) = old_reference {
-        let delete_result = tauri::async_runtime::spawn_blocking(move || {
-            OsImCredentialStore.delete(ImChannelKind::WeCom, &old_reference)
-        })
-        .await;
-        if !matches!(delete_result, Ok(Ok(()))) {
-            warn!("cleanup previous WeCom credential reference failed");
-        }
-    }
+    .map_err(|_| im_error("IM_CREDENTIAL_UNAVAILABLE"));
+    // Also retire this session if staging or loading configuration failed.
+    // A replacement session is deliberately unaffected.
+    runtime.cancel_scan(kind, session_id);
+    let settings = result??;
     runtime
         .reconfigure(app_handle)
         .await
         .map_err(im_command_error)?;
     Ok(settings_vm(&settings.im_integrations, Some(runtime)))
+}
+
+fn scanned_channel_settings(
+    kind: ImChannelKind,
+    public_identity: String,
+    credential_ref: String,
+    existing: Option<&ImChannelSettings>,
+) -> ImChannelSettings {
+    ImChannelSettings {
+        kind,
+        enabled: true,
+        public_identity,
+        credential_ref: Some(credential_ref),
+        // A scanned authorization establishes a new receiver trust boundary,
+        // even when it reuses the same bot/application identity.
+        binding: None,
+        notifications: existing
+            .map(|channel| channel.notifications.clone())
+            .unwrap_or_default(),
+    }
 }
 
 fn projection_targets(
@@ -2435,211 +2752,6 @@ mod tests {
         }
     }
 
-    fn vote_envelope(index: usize) -> gold_band::im::ImInboundEnvelope {
-        gold_band::im::ImInboundEnvelope {
-            action_id: "action-1".into(),
-            channel: ImChannelKind::WeCom,
-            platform_event_id: "platform-event-1".into(),
-            conversation_id: "user-1".into(),
-            actor_id: "user-1".into(),
-            delivery_id: "delivery-1".into(),
-            action: gold_band::im::ImInboundActionSelection::LocalIndex { index },
-        }
-    }
-
-    fn processed_wecom_vote_context() -> ImActionResponseContext {
-        ImActionResponseContext::WeCom {
-            req_id: "callback-req-1".into(),
-            task_id: "delivery-1".into(),
-            vote_selection: Some(gold_band::im::ImWeComVoteSelection {
-                selected_option_id: "1".into(),
-                vote_actions: vec![
-                    gold_band::app::intervention::InterventionAllowedAction::PermissionOption {
-                        option_id: "allow".into(),
-                        name: "Allow".into(),
-                        permission_kind:
-                            gold_band::app::intervention::PermissionActionKind::AllowOnce,
-                    },
-                ],
-                display_ref: None,
-            }),
-            form_selection: None,
-        }
-    }
-
-    #[test]
-    fn wecom_vote_context_is_enriched_only_from_the_current_outbox_selection() {
-        let mut delivery = vote_delivery();
-        delivery.display_ref = Some(80);
-        let mut context = ImActionResponseContext::WeCom {
-            req_id: "callback-req-1".into(),
-            task_id: "delivery-1".into(),
-            vote_selection: Some(gold_band::im::ImWeComVoteSelection {
-                selected_option_id: "1".into(),
-                vote_actions: Vec::new(),
-                display_ref: None,
-            }),
-            form_selection: None,
-        };
-        enrich_wecom_vote_context(&mut context, &vote_envelope(1), &delivery);
-        let ImActionResponseContext::WeCom {
-            vote_selection: Some(selection),
-            ..
-        } = context
-        else {
-            panic!("expected WeCom vote context");
-        };
-        assert_eq!(
-            selection
-                .vote_actions
-                .iter()
-                .map(|action| match action {
-                    gold_band::app::intervention::InterventionAllowedAction::PermissionOption {
-                        option_id,
-                        ..
-                    } => option_id.clone(),
-                    _ => unreachable!("fixture only contains permission options"),
-                })
-                .collect::<Vec<_>>(),
-            vec![
-                "allow".to_owned(),
-                "allow_for_session".into(),
-                "cancel".into()
-            ]
-        );
-        assert_eq!(selection.display_ref, Some(80));
-
-        let mut mismatch = ImActionResponseContext::WeCom {
-            req_id: "callback-req-2".into(),
-            task_id: "delivery-1".into(),
-            vote_selection: Some(gold_band::im::ImWeComVoteSelection {
-                selected_option_id: "1".into(),
-                vote_actions: Vec::new(),
-                display_ref: None,
-            }),
-            form_selection: None,
-        };
-        enrich_wecom_vote_context(&mut mismatch, &vote_envelope(2), &delivery);
-        let ImActionResponseContext::WeCom {
-            vote_selection: Some(selection),
-            ..
-        } = mismatch
-        else {
-            panic!("expected WeCom vote context");
-        };
-        assert!(selection.vote_actions.is_empty());
-    }
-
-    #[test]
-    fn wecom_form_context_is_enriched_from_the_current_outbox_form() {
-        let mut delivery = vote_delivery();
-        delivery.display_ref = Some(80);
-        let form = gold_band::app::intervention::RemoteElicitationForm::MultiScalarChoice {
-            question: gold_band::app::intervention::RemoteScalarChoiceQuestion {
-                selector_key: "q0".into(),
-                field_name: "features".into(),
-                title: "features".into(),
-                description: None,
-                required: true,
-                options: vec![gold_band::app::intervention::RemoteElicitationOption {
-                    value: serde_json::json!("auth"),
-                    label: "auth".into(),
-                    description: None,
-                }],
-            },
-            allows_empty: false,
-        };
-        if let gold_band::im::ImDeliveryPayload::Intervention { reference, .. } =
-            &mut delivery.payload
-        {
-            reference.allowed_actions = vec![
-                gold_band::app::intervention::InterventionAllowedAction::ElicitationFixedForm {
-                    form: form.clone(),
-                },
-            ];
-        }
-        let selections = vec![
-            gold_band::app::intervention::RemoteElicitationFormSelection {
-                selector_key: "q0".into(),
-                option_ids: vec!["0".into()],
-            },
-        ];
-        let mut envelope = vote_envelope(0);
-        envelope.action = gold_band::im::ImInboundActionSelection::Form {
-            selections: selections.clone(),
-        };
-        let mut context = ImActionResponseContext::WeCom {
-            req_id: "callback-req-1".into(),
-            task_id: "delivery-1".into(),
-            vote_selection: None,
-            form_selection: Some(gold_band::im::ImWeComFormSelection {
-                card_kind: gold_band::im::ImWeComFormCardKind::VoteSingle,
-                selections,
-                form: None,
-                display_ref: None,
-            }),
-        };
-        enrich_wecom_form_context(&mut context, &envelope, &delivery);
-        let ImActionResponseContext::WeCom {
-            form_selection: Some(form_selection),
-            ..
-        } = context
-        else {
-            panic!("expected WeCom form context");
-        };
-        assert_eq!(
-            form_selection.card_kind,
-            gold_band::im::ImWeComFormCardKind::VoteMulti
-        );
-        assert_eq!(form_selection.form.as_ref(), Some(&form));
-        assert_eq!(form_selection.display_ref, Some(80));
-    }
-
-    #[test]
-    fn inbound_action_settlement_preserves_the_processed_wecom_context() {
-        let processed = processed_wecom_vote_context();
-        let expected = processed.clone();
-        let (context, state) = settle_inbound_action(
-            ImChannelKind::WeCom,
-            1,
-            Ok::<_, std::io::Error>((processed, Ok(()))),
-            processed_wecom_vote_context(),
-        );
-        assert_eq!(context, expected);
-        assert_eq!(state, ImMessageState::Handled);
-
-        let processed = processed_wecom_vote_context();
-        let expected = processed.clone();
-        let (context, state) = settle_inbound_action(
-            ImChannelKind::WeCom,
-            1,
-            Ok::<_, std::io::Error>((
-                processed,
-                Err(anyhow::Error::new(
-                    gold_band::im::ImInboundError::InformationNotActionable,
-                )),
-            )),
-            processed_wecom_vote_context(),
-        );
-        assert_eq!(context, expected);
-        assert_eq!(state, ImMessageState::Failed);
-    }
-
-    #[tokio::test]
-    async fn inbound_action_join_failure_keeps_the_original_channel_context() {
-        let task = tokio::spawn(async {});
-        task.abort();
-        let join_error = task.await.unwrap_err();
-        let fallback = processed_wecom_vote_context();
-        let expected = fallback.clone();
-
-        let (context, state) =
-            settle_inbound_action(ImChannelKind::WeCom, 1, Err(join_error), fallback);
-
-        assert_eq!(context, expected);
-        assert_eq!(state, ImMessageState::Failed);
-    }
-
     #[test]
     fn projection_targets_keep_the_wecom_installation_binding() {
         let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
@@ -2674,6 +2786,227 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn scan_install_commits_once_and_rolls_back_staged_credentials_on_failure() {
+        for kind in ImChannelKind::ALL {
+            for fail_commit in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let runtime = DesktopImRuntime::with_signing_key(
+                    camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+                    vec![7; 32],
+                )
+                .unwrap();
+                let token = open_claimed_scan(&runtime, kind, "current");
+                let store = ScanTestStore {
+                    references: Mutex::new(vec!["existing-credential".into()]),
+                    on_save: Box::new(|| {
+                        assert!(
+                            !token.is_cancelled(),
+                            "the scan must remain active throughout credential staging"
+                        )
+                    }),
+                };
+                let mut configured_reference = "existing-credential".to_owned();
+                let result =
+                    persist_scanned_credentials(&store, kind, BTreeMap::new(), |reference| {
+                        runtime.commit_scan(kind, "current", || {
+                            if fail_commit {
+                                return Err(im_error("IM_STORAGE_UNAVAILABLE"));
+                            }
+                            configured_reference = reference;
+                            Ok(())
+                        })
+                    });
+                assert!(
+                    token.is_cancelled(),
+                    "commit must retire the session on success and failure"
+                );
+                assert_eq!(
+                    runtime
+                        .commit_scan(kind, "current", || Ok(()))
+                        .unwrap_err()
+                        .code,
+                    "IM_SCAN_CANCELLED"
+                );
+                if fail_commit {
+                    assert_eq!(result.unwrap_err().code, "IM_STORAGE_UNAVAILABLE");
+                    assert_eq!(configured_reference, "existing-credential");
+                    assert_eq!(
+                        *store.references.lock().unwrap(),
+                        vec!["existing-credential"]
+                    );
+                } else {
+                    result.unwrap();
+                    assert_ne!(configured_reference, "existing-credential");
+                    assert!(
+                        store
+                            .references
+                            .lock()
+                            .unwrap()
+                            .contains(&configured_reference)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scan_install_rejects_cancellation_or_replacement_during_credential_save() {
+        for kind in ImChannelKind::ALL {
+            for replacement in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let runtime = DesktopImRuntime::with_signing_key(
+                    camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+                    vec![7; 32],
+                )
+                .unwrap();
+                open_claimed_scan(&runtime, kind, "old");
+                let store = ScanTestStore {
+                    references: Mutex::new(vec!["existing-credential".into()]),
+                    on_save: Box::new(|| {
+                        if replacement {
+                            open_claimed_scan(&runtime, kind, "new");
+                        } else {
+                            match kind {
+                                ImChannelKind::WeCom => {
+                                    runtime.wecom_scan_session.cancel(Some("old"))
+                                }
+                                ImChannelKind::Feishu => {
+                                    runtime.feishu_scan_session.cancel(Some("old"))
+                                }
+                            }
+                        }
+                    }),
+                };
+                let mut configured_reference = "existing-credential".to_owned();
+                let result =
+                    persist_scanned_credentials(&store, kind, BTreeMap::new(), |reference| {
+                        runtime.commit_scan(kind, "old", || {
+                            configured_reference = reference;
+                            Ok(())
+                        })
+                    });
+                assert_eq!(
+                    configured_reference, "existing-credential",
+                    "cancelled or replaced scan must not overwrite channel settings"
+                );
+                assert_eq!(result.unwrap_err().code, "IM_SCAN_CANCELLED");
+                assert_eq!(
+                    *store.references.lock().unwrap(),
+                    vec!["existing-credential"]
+                );
+                if replacement {
+                    assert!(
+                        runtime.commit_scan(kind, "new", || Ok(())).is_ok(),
+                        "finishing the old request must preserve the replacement session"
+                    );
+                }
+            }
+        }
+    }
+
+    fn open_claimed_scan(
+        runtime: &DesktopImRuntime,
+        kind: ImChannelKind,
+        id: &str,
+    ) -> CancellationToken {
+        match kind {
+            ImChannelKind::WeCom => {
+                let token = runtime.wecom_scan_session.open(id);
+                runtime
+                    .wecom_scan_session
+                    .attach(id, &token, "ticket".into())
+                    .unwrap();
+                runtime.wecom_scan_session.claim(id).unwrap().1
+            }
+            ImChannelKind::Feishu => {
+                let token = runtime.feishu_scan_session.open(id);
+                runtime
+                    .feishu_scan_session
+                    .attach(
+                        id,
+                        &token,
+                        FeishuScanAuthorization {
+                            device_code: "ticket".into(),
+                            qr_url: "https://example.test/scan".into(),
+                            interval: std::time::Duration::from_secs(1),
+                            expires_in: std::time::Duration::from_secs(300),
+                        },
+                    )
+                    .unwrap();
+                runtime.feishu_scan_session.claim(id).unwrap().1
+            }
+        }
+    }
+
+    struct ScanTestStore<'a> {
+        references: Mutex<Vec<String>>,
+        on_save: Box<dyn Fn() + Send + Sync + 'a>,
+    }
+
+    impl ImCredentialStore for ScanTestStore<'_> {
+        fn save(
+            &self,
+            _kind: ImChannelKind,
+            reference: &str,
+            _payload: &gold_band::im::ImCredentialPayload,
+        ) -> Result<(), gold_band::im::ImCredentialError> {
+            self.references.lock().unwrap().push(reference.to_owned());
+            (self.on_save)();
+            Ok(())
+        }
+
+        fn load(
+            &self,
+            _kind: ImChannelKind,
+            _reference: &str,
+        ) -> Result<gold_band::im::ImCredentialPayload, gold_band::im::ImCredentialError> {
+            Err(gold_band::im::ImCredentialError::NotFound)
+        }
+
+        fn delete(
+            &self,
+            _kind: ImChannelKind,
+            reference: &str,
+        ) -> Result<(), gold_band::im::ImCredentialError> {
+            self.references
+                .lock()
+                .unwrap()
+                .retain(|stored| stored != reference);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn scanned_credentials_require_fresh_binding_even_for_the_same_app() {
+        for kind in ImChannelKind::ALL {
+            let mut existing = disabled_channel(kind);
+            existing.public_identity = "same-app".into();
+            existing.credential_ref = Some("old-reference".into());
+            existing.binding = Some(ImBindingSummary {
+                destination_id: "old-owner".into(),
+                conversation_id: "old-chat".into(),
+                authorized_actor_id: "old-owner".into(),
+                display_name: "Old owner".into(),
+            });
+            existing.notifications.manual_check = false;
+            let installed = scanned_channel_settings(
+                kind,
+                "same-app".into(),
+                "new-reference".into(),
+                Some(&existing),
+            );
+            assert!(
+                installed.binding.is_none(),
+                "a new authorization must not inherit the previous receiver"
+            );
+            assert!(installed.enabled);
+            assert_eq!(installed.notifications, existing.notifications);
+            assert_eq!(installed.credential_ref.as_deref(), Some("new-reference"));
+            assert!(existing.binding.is_some());
+        }
     }
 
     #[test]
@@ -2757,148 +3090,10 @@ mod tests {
                 &delivery,
             ));
         }
-        assert_eq!(ImInboundError::BindingRevoked.code(), "IM_BINDING_REVOKED");
-    }
-
-    #[test]
-    fn desktop_resolution_projects_all_intervention_kinds_and_wakes_the_worker() {
-        let temp = tempfile::tempdir().unwrap();
-        let repository = ImRepository::new(
-            camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
-        );
-        let (sender, mut receiver) = mpsc::channel(8);
-        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
-
-        for (index, kind) in [
-            gold_band::im::ImNotificationKind::Permission,
-            gold_band::im::ImNotificationKind::Elicitation,
-            gold_band::im::ImNotificationKind::ManualCheck,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let source_event_id = format!("event-{index}");
-            let mut source = vote_delivery();
-            source.notification_kind = kind;
-            source.canonical_event_id = source_event_id.clone();
-            source.refresh_id();
-            let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
-                unreachable!("fixture is an intervention")
-            };
-            let locator = reference.locator.clone();
-            repository.enqueue(&source, 100 + index as i64).unwrap();
-            let expected_display_ref = repository
-                .intervention_deliveries_for_canonical_event(&source_event_id)
-                .unwrap()[0]
-                .display_ref;
-
-            let result = project_desktop_intervention_resolution(
-                &repository,
-                &worker_senders,
-                &[],
-                &source_event_id,
-                kind,
-                &locator,
-                200 + index as i64,
-            )
-            .unwrap();
-            assert_eq!(result.inserted, 1);
-            assert_eq!(
-                receiver.try_recv().unwrap(),
-                ImWorkerSignal::DeliveryAvailable
-            );
-
-            let terminal_event_id = format!("{source_event_id}:desktop-resolved");
-            let terminal_id = ImDelivery::deterministic_id(
-                source.channel,
-                &source.destination.destination_id,
-                kind,
-                &terminal_event_id,
-            );
-            let terminal = repository.delivery(&terminal_id).unwrap().unwrap();
-            let ImDeliveryPayload::InterventionResolution { resolution, .. } = terminal.payload
-            else {
-                panic!("expected desktop resolution payload");
-            };
-            assert_eq!(resolution.notification_kind, kind);
-            assert_eq!(resolution.display_ref, expected_display_ref);
-
-            let replay = project_desktop_intervention_resolution(
-                &repository,
-                &worker_senders,
-                &[],
-                &source_event_id,
-                kind,
-                &locator,
-                300 + index as i64,
-            )
-            .unwrap();
-            assert_eq!(replay.duplicates, 1);
-            assert!(receiver.try_recv().is_err());
-        }
-    }
-
-    #[test]
-    fn desktop_resolution_wins_when_it_is_persisted_before_the_source_projection() {
-        let temp = tempfile::tempdir().unwrap();
-        let repository = ImRepository::new(
-            camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
-        );
-        let (sender, mut receiver) = mpsc::channel(2);
-        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
-        let mut source = vote_delivery();
-        source.refresh_id();
-        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
-            unreachable!("fixture is an intervention")
-        };
-        let target = ImProjectionTarget {
-            channel: ImChannelKind::WeCom,
-            enabled: true,
-            credential_available: true,
-            capabilities: WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap())
-                .capabilities(),
-            destination: Some(source.destination.clone()),
-            notifications: Default::default(),
-        };
-
-        let result = project_desktop_intervention_resolution(
-            &repository,
-            &worker_senders,
-            &[target],
-            &source.canonical_event_id,
-            source.notification_kind,
-            &reference.locator,
-            100,
-        )
-        .unwrap();
-        assert_eq!(result.inserted, 1);
         assert_eq!(
-            receiver.try_recv().unwrap(),
-            ImWorkerSignal::DeliveryAvailable
+            gold_band::im::ImInboundError::BindingRevoked.code(),
+            ImErrorCode::BindingRevoked
         );
-
-        assert_eq!(
-            repository.enqueue(&source, 101).unwrap(),
-            ImDeliveryInsertResult::Duplicate
-        );
-        assert!(
-            repository
-                .intervention_deliveries_for_canonical_event(&source.canonical_event_id)
-                .unwrap()
-                .is_empty()
-        );
-        let terminal_id = ImDelivery::deterministic_id(
-            source.channel,
-            &source.destination.destination_id,
-            source.notification_kind,
-            &desktop_resolution_event_id(&source.canonical_event_id),
-        );
-        let terminal = repository.delivery(&terminal_id).unwrap().unwrap();
-        assert!(matches!(
-            terminal.payload,
-            ImDeliveryPayload::InterventionResolution { .. }
-        ));
-        assert_eq!(terminal.display_ref, Some(1));
     }
 
     #[test]
@@ -2915,8 +3110,13 @@ mod tests {
             }],
         };
         let view = settings_vm(&settings, None);
-        assert_eq!(view.channels.len(), 1);
-        assert_eq!(view.channels[0].kind, ImChannelKind::WeCom);
+        assert_eq!(
+            view.channels
+                .iter()
+                .map(|channel| channel.kind)
+                .collect::<Vec<_>>(),
+            ImChannelKind::ALL
+        );
         let serialized = serde_json::to_string(&view).unwrap();
         assert!(serialized.contains("\"credentialConfigured\":true"));
         assert!(!serialized.contains(credential_reference));
@@ -3082,9 +3282,9 @@ mod tests {
 
     #[test]
     fn scan_authorization_view_model_contains_no_source_or_credentials() {
-        let serialized = serde_json::to_string(&WeComScanAuthorizationVm {
+        let serialized = serde_json::to_string(&ImScanAuthorizationVm {
             session_id: Uuid::new_v4().to_string(),
-            auth_url: "https://work.weixin.qq.com/ai/qc/c?s=short-lived".into(),
+            qr_url: "https://work.weixin.qq.com/ai/qc/c?s=short-lived".into(),
             expires_at_ms: 123,
         })
         .unwrap();
@@ -3111,19 +3311,490 @@ mod tests {
         assert!(terminal_connector_event(8, Ok(())).is_none());
     }
 
+    fn wecom_target(destination: &ImDestination) -> ImProjectionTarget {
+        ImProjectionTarget {
+            channel: ImChannelKind::WeCom,
+            enabled: true,
+            credential_available: true,
+            capabilities: WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap())
+                .capabilities(),
+            destination: Some(destination.clone()),
+            notifications: Default::default(),
+        }
+    }
+
+    fn resolution_repository() -> (tempfile::TempDir, ImRepository) {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = ImRepository::new(
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        );
+        (temp, repository)
+    }
+
+    fn source_locator(source: &ImDelivery) -> InterventionLocator {
+        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
+            unreachable!("fixture is an intervention")
+        };
+        reference.locator.clone()
+    }
+
+    fn resolution_record(repository: &ImRepository, source: &ImDelivery) -> ImDelivery {
+        let terminal_id = ImDelivery::deterministic_id(
+            source.channel,
+            &source.destination.destination_id,
+            source.notification_kind,
+            &resolution_event_id(&source.canonical_event_id),
+        );
+        repository.delivery(&terminal_id).unwrap().unwrap()
+    }
+
     #[test]
-    fn inbound_error_codes_map_to_sanitized_card_states() {
+    fn desktop_resolution_projects_all_intervention_kinds_and_wakes_the_worker() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(8);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+
+        for (index, (kind, outcome)) in [
+            (
+                ImNotificationKind::Permission,
+                ImResolutionOutcome::PermissionOption {
+                    option_id: "allow".into(),
+                },
+            ),
+            (
+                ImNotificationKind::Elicitation,
+                ImResolutionOutcome::ElicitationDeclined,
+            ),
+            (
+                ImNotificationKind::ManualCheck,
+                ImResolutionOutcome::ManualCheck {
+                    outcome: gold_band::domain::NodeOutcome::Success,
+                },
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source_event_id = format!("event-{index}");
+            let mut source = vote_delivery();
+            source.notification_kind = kind;
+            source.canonical_event_id = source_event_id.clone();
+            source.refresh_id();
+            let locator = source_locator(&source);
+            repository.enqueue(&source, 100 + index as i64).unwrap();
+            let expected_display_ref = repository
+                .intervention_deliveries_for_canonical_event(&source_event_id)
+                .unwrap()[0]
+                .display_ref;
+            let targets = [wecom_target(&source.destination)];
+            let resolution = InterventionResolution {
+                source_event_id: &source_event_id,
+                notification_kind: kind,
+                locator: &locator,
+                resolved_by: ImResolvedBy::Desktop,
+                source_delivery_id: None,
+                outcome: outcome.clone(),
+            };
+
+            let result = project_intervention_resolution(
+                &repository,
+                &worker_senders,
+                &targets,
+                &resolution,
+                200 + index as i64,
+            )
+            .unwrap();
+            assert_eq!(result.inserted, 1);
+            assert_eq!(
+                receiver.try_recv().unwrap(),
+                ImWorkerSignal::DeliveryAvailable
+            );
+
+            let terminal = resolution_record(&repository, &source);
+            let ImDeliveryPayload::InterventionResolution {
+                resolution: payload,
+                ..
+            } = terminal.payload
+            else {
+                panic!("expected resolution payload");
+            };
+            assert_eq!(payload.notification_kind, kind);
+            assert_eq!(payload.display_ref, expected_display_ref);
+            assert_eq!(payload.resolved_by, ImResolvedBy::Desktop);
+            assert_eq!(payload.outcome, outcome);
+
+            let replay = project_intervention_resolution(
+                &repository,
+                &worker_senders,
+                &targets,
+                &resolution,
+                300 + index as i64,
+            )
+            .unwrap();
+            assert_eq!(replay.duplicates, 1);
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn desktop_resolution_wins_when_it_is_persisted_before_the_source_projection() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+        let mut source = vote_delivery();
+        source.refresh_id();
+        let locator = source_locator(&source);
+
+        let result = project_intervention_resolution(
+            &repository,
+            &worker_senders,
+            &[wecom_target(&source.destination)],
+            &InterventionResolution {
+                source_event_id: &source.canonical_event_id,
+                notification_kind: source.notification_kind,
+                locator: &locator,
+                resolved_by: ImResolvedBy::Desktop,
+                source_delivery_id: None,
+                outcome: ImResolutionOutcome::PermissionOption {
+                    option_id: "allow".into(),
+                },
+            },
+            100,
+        )
+        .unwrap();
+        assert_eq!(result.inserted, 1);
+        assert!(
+            receiver.try_recv().is_err(),
+            "a tombstone must not wake the worker"
+        );
+        assert!(
+            repository
+                .claim_due(
+                    ImChannelKind::WeCom,
+                    101,
+                    std::time::Duration::from_secs(30),
+                    10
+                )
+                .unwrap()
+                .is_empty(),
+            "a tombstone is never sent"
+        );
+        let tombstone = resolution_record(&repository, &source);
+        assert!(matches!(
+            tombstone.payload,
+            ImDeliveryPayload::InterventionResolution { .. }
+        ));
+
         assert_eq!(
-            inbound_failure_state("IM_ACTION_EXPIRED"),
-            ImMessageState::Expired
+            repository.enqueue(&source, 102).unwrap(),
+            ImDeliveryInsertResult::Duplicate
+        );
+        assert!(
+            repository
+                .intervention_deliveries_for_canonical_event(&source.canonical_event_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn callback_only_source_clicked_on_its_own_channel_is_not_projected_again() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+        let mut source = vote_delivery();
+        source.refresh_id();
+        repository.enqueue(&source, 100).unwrap();
+        let locator = source_locator(&source);
+
+        let result = project_intervention_resolution(
+            &repository,
+            &worker_senders,
+            &[wecom_target(&source.destination)],
+            &InterventionResolution {
+                source_event_id: &source.canonical_event_id,
+                notification_kind: source.notification_kind,
+                locator: &locator,
+                resolved_by: ImResolvedBy::Channel(ImChannelKind::WeCom),
+                source_delivery_id: Some(&source.delivery_id),
+                outcome: ImResolutionOutcome::PermissionOption {
+                    option_id: "allow".into(),
+                },
+            },
+            101,
+        )
+        .unwrap();
+        assert_eq!(result.skipped, 1);
+        assert_eq!(result.inserted, 0);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn three_surface_resolution_matrix_preserves_winner_and_dispatch_intent() {
+        for winner in [
+            ImResolvedBy::Desktop,
+            ImResolvedBy::Channel(ImChannelKind::WeCom),
+            ImResolvedBy::Channel(ImChannelKind::Feishu),
+        ] {
+            let (_temp, repository) = resolution_repository();
+            let mut sources = Vec::new();
+            let mut targets = Vec::new();
+            let mut senders = HashMap::new();
+            let mut receivers = Vec::new();
+            for channel in [ImChannelKind::WeCom, ImChannelKind::Feishu] {
+                let mut source = vote_delivery();
+                source.channel = channel;
+                source.refresh_id();
+                repository.enqueue(&source, 100).unwrap();
+                let mut target = wecom_target(&source.destination);
+                target.channel = channel;
+                target.capabilities.message_update = match channel {
+                    ImChannelKind::WeCom => ImMessageUpdateMode::CallbackOnly,
+                    ImChannelKind::Feishu => ImMessageUpdateMode::Anytime,
+                };
+                let (sender, receiver) = mpsc::channel(2);
+                senders.insert(channel, sender);
+                receivers.push(receiver);
+                sources.push(source);
+                targets.push(target);
+            }
+            let clicked = sources
+                .iter()
+                .find(|s| winner == ImResolvedBy::Channel(s.channel));
+            let locator = source_locator(&sources[0]);
+            let outcome = ImResolutionOutcome::PermissionOption {
+                option_id: "allow".into(),
+            };
+            let resolution = InterventionResolution {
+                source_event_id: &sources[0].canonical_event_id,
+                notification_kind: sources[0].notification_kind,
+                locator: &locator,
+                resolved_by: winner,
+                source_delivery_id: clicked.map(|s| s.delivery_id.as_str()),
+                outcome: outcome.clone(),
+            };
+            project_intervention_resolution(&repository, &senders, &targets, &resolution, 101)
+                .unwrap();
+            for (index, source) in sources.iter().enumerate() {
+                let callback_only_winner =
+                    index == 0 && winner == ImResolvedBy::Channel(ImChannelKind::WeCom);
+                let stored = stored_intervention_resolution(&repository, source).unwrap();
+                assert_eq!(
+                    stored.is_none(),
+                    callback_only_winner,
+                    "{winner:?} -> {:?}",
+                    source.channel
+                );
+                assert_eq!(receivers[index].try_recv().is_ok(), !callback_only_winner);
+                if let Some(stored) = stored {
+                    assert_eq!(stored.resolved_by, winner);
+                    assert_eq!(stored.outcome, outcome);
+                }
+            }
+            // Replaying the winner cannot send or mutate another terminal result.
+            let replay =
+                project_intervention_resolution(&repository, &senders, &targets, &resolution, 102)
+                    .unwrap();
+            assert_eq!(replay.inserted, 0);
+            assert!(receivers.iter_mut().all(|r| r.try_recv().is_err()));
+        }
+    }
+
+    fn inbound_result(outcome: ImInboundOutcome) -> gold_band::im::ImInboundActionResult {
+        gold_band::im::ImInboundActionResult {
+            action_id: "action-1".into(),
+            channel: ImChannelKind::WeCom,
+            canonical_event_id: Some("event-1".into()),
+            actor_id_hash: "actor-hash".into(),
+            platform_event_id: "platform-event-1".into(),
+            outcome,
+            result_revision: None,
+            received_at_ms: 1,
+            completed_at_ms: 2,
+        }
+    }
+
+    fn processed(
+        outcome: ImInboundOutcome,
+        resolution: Option<ImResolutionOutcome>,
+    ) -> std::result::Result<ProcessedInboundAction, String> {
+        Ok(ProcessedInboundAction {
+            settled_resolution: None,
+            delivery: Some(vote_delivery()),
+            handling: Ok(ImInboundHandling {
+                result: inbound_result(outcome),
+                resolution,
+            }),
+        })
+    }
+
+    #[test]
+    fn late_submission_uses_the_persisted_winner_and_does_not_broadcast() {
+        let (_temp, repository) = resolution_repository();
+        let mut source = vote_delivery();
+        source.channel = ImChannelKind::Feishu;
+        source.notification_kind = ImNotificationKind::Elicitation;
+        source.refresh_id();
+        repository.enqueue(&source, 100).unwrap();
+        let mut target = wecom_target(&source.destination);
+        target.channel = source.channel;
+        target.capabilities.message_update = gold_band::im::ImMessageUpdateMode::Anytime;
+        let winner = ImResolutionOutcome::ElicitationSubmitted {
+            content: serde_json::json!({"choice": "accepted"}),
+        };
+        let locator = source_locator(&source);
+        project_intervention_resolution(
+            &repository,
+            &HashMap::new(),
+            &[target],
+            &InterventionResolution {
+                source_event_id: &source.canonical_event_id,
+                notification_kind: source.notification_kind,
+                locator: &locator,
+                resolved_by: ImResolvedBy::Desktop,
+                source_delivery_id: None,
+                outcome: winner.clone(),
+            },
+            101,
+        )
+        .unwrap();
+        let settled_resolution = stored_intervention_resolution(&repository, &source).unwrap();
+        let losing = ProcessedInboundAction {
+            delivery: Some(source),
+            handling: Ok(ImInboundHandling {
+                result: inbound_result(ImInboundOutcome::AlreadyApplied),
+                resolution: Some(ImResolutionOutcome::ElicitationSubmitted {
+                    content: serde_json::json!({"choice": "loser"}),
+                }),
+            }),
+            settled_resolution,
+        };
+        let (response, accepted) =
+            inbound_action_response::<String>(ImChannelKind::Feishu, 1, Ok(losing));
+        assert_eq!(response.state, ImActionResponseState::AlreadyHandled);
+        assert_eq!(response.outcome, Some(winner));
+        assert_eq!(response.resolved_by, Some(ImResolvedBy::Desktop));
+        assert!(accepted.is_none());
+    }
+
+    #[test]
+    fn inbound_action_response_maps_every_processing_result_to_a_structured_state() {
+        let allow = ImResolutionOutcome::PermissionOption {
+            option_id: "allow".into(),
+        };
+        let channel = ImChannelKind::WeCom;
+
+        let (response, accepted) = inbound_action_response(
+            channel,
+            1,
+            processed(ImInboundOutcome::Accepted, Some(allow.clone())),
+        );
+        assert_eq!(response.state, ImActionResponseState::Handled);
+        assert_eq!(response.resolved_by, Some(ImResolvedBy::Channel(channel)));
+        assert_eq!(response.outcome, Some(allow.clone()));
+        assert_eq!(response.delivery, Some(vote_delivery()));
+        let accepted = accepted.expect("accepted command broadcasts its resolution");
+        assert_eq!(accepted.source_event_id, "event-1");
+        assert_eq!(accepted.source_delivery_id, "delivery-1");
+        assert_eq!(accepted.outcome, allow);
+
+        let (response, accepted) = inbound_action_response(
+            channel,
+            1,
+            processed(ImInboundOutcome::AlreadyApplied, None),
+        );
+        assert_eq!(response.state, ImActionResponseState::AlreadyHandled);
+        assert_eq!(response.resolved_by, None);
+        assert!(accepted.is_none());
+
+        let (response, accepted) = inbound_action_response(
+            channel,
+            1,
+            processed(ImInboundOutcome::Rejected(ImErrorCode::ActionExpired), None),
         );
         assert_eq!(
-            inbound_failure_state("INTERVENTION_ALREADY_HANDLED"),
-            ImMessageState::Handled
+            response.state,
+            ImActionResponseState::Rejected(ImErrorCode::ActionExpired)
+        );
+        assert_eq!(response.delivery, Some(vote_delivery()));
+        assert!(accepted.is_none());
+
+        let (response, accepted) = inbound_action_response(
+            channel,
+            1,
+            Ok::<_, String>(ProcessedInboundAction {
+                settled_resolution: None,
+                delivery: Some(vote_delivery()),
+                handling: Err(ImErrorCode::BindingRevoked),
+            }),
         );
         assert_eq!(
-            inbound_failure_state("IM_ACTION_TOKEN_INVALID"),
-            ImMessageState::Failed
+            response.state,
+            ImActionResponseState::Rejected(ImErrorCode::BindingRevoked)
         );
+        assert_eq!(response.delivery, Some(vote_delivery()));
+        assert!(accepted.is_none());
+
+        let (response, accepted) =
+            inbound_action_response::<String>(channel, 1, Err("join failed".into()));
+        assert_eq!(
+            response.state,
+            ImActionResponseState::Rejected(ImErrorCode::ActionProcessingFailed)
+        );
+        assert_eq!(response.delivery, None);
+        assert!(accepted.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_inbound_action_does_not_block_other_actions() {
+        let connector: Arc<dyn ImConnector> = Arc::new(WeComConnector::new(
+            ImActionTokenCodec::new(vec![7; 32]).unwrap(),
+        ));
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (slow_projected, slow_projection) = std::sync::mpsc::channel::<()>();
+        let slow = tauri::async_runtime::spawn(run_inbound_action(
+            Arc::clone(&connector),
+            ImChannelKind::WeCom,
+            1,
+            ImActionResponseContext::new(()),
+            move || {
+                released.recv().unwrap();
+                processed(
+                    ImInboundOutcome::Accepted,
+                    Some(ImResolutionOutcome::ElicitationDeclined),
+                )
+                .unwrap()
+            },
+            move |_| slow_projected.send(()).unwrap(),
+        ));
+        let (fast_projected, fast_projection) = std::sync::mpsc::channel::<()>();
+        let fast = tauri::async_runtime::spawn(run_inbound_action(
+            connector,
+            ImChannelKind::WeCom,
+            1,
+            ImActionResponseContext::new(()),
+            || {
+                processed(
+                    ImInboundOutcome::Accepted,
+                    Some(ImResolutionOutcome::ElicitationDeclined),
+                )
+                .unwrap()
+            },
+            move |_| fast_projected.send(()).unwrap(),
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), fast)
+            .await
+            .expect("a fast action must finish while another action is still processing")
+            .unwrap();
+        fast_projection.try_recv().unwrap();
+        assert!(slow_projection.try_recv().is_err());
+
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), slow)
+            .await
+            .expect("the slow action finishes once released")
+            .unwrap();
+        slow_projection.try_recv().unwrap();
     }
 }

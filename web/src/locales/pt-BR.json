@@ -2545,24 +2545,42 @@
       "deleteDescription": "Isto desativa a conexão, remove o secret do armazenamento de credenciais do sistema e interrompe as entregas pendentes.",
       "confirmDelete": "Excluir",
       "scan": {
-        "title": "Conectar WeCom por código QR",
-        "description": "Escaneie com o app móvel WeCom e confirme a autorização.",
-        "notConfigured": "WeCom não está conectado. Conecte-o para configurar intervenção remota e notificações.",
-        "botId": "ID do bot: {{id}}",
+        "title": "Conectar {{channel}} por código QR",
+        "description": "Escaneie com o app móvel {{channel}} e confirme a autorização.",
+        "notConfigured": "{{channel}} não está conectado. Conecte-o para configurar intervenção remota e notificações.",
         "connect": "Escanear para conectar",
         "reauthorize": "Autorizar novamente",
         "generating": "Gerando código QR…",
-        "waiting": "Escaneie com WeCom e confirme a autorização",
+        "waiting": "Escaneie com {{channel}} e confirme a autorização",
         "expiresIn": "Código QR expira em {{countdown}}",
         "waitingBinding": "Autorizado, aguardando destinatário",
-        "complete": "WeCom está pronto",
-        "nextStep": "Envie uma mensagem ao bot no WeCom para concluir a vinculação do chat privado.",
+        "complete": "{{channel}} está pronto",
+        "nextStep": "Envie uma mensagem ao bot no {{channel}} para concluir a vinculação do chat privado.",
         "retry": "Gerar novamente",
-        "qrCodeLabel": "Código QR de autorização WeCom"
+        "qrCodeLabel": "Código QR de autorização {{channel}}"
       },
       "channels": {
-        "wecom": {
-          "title": "WeCom"
+        "weCom": {
+          "title": "WeCom",
+          "identity": "ID do bot: {{id}}"
+        },
+        "feishu": {
+          "title": "Feishu / Lark",
+          "identity": "App ID: {{id}}",
+          "singleDeviceHint": "Conecte cada bot a apenas um dispositivo para evitar que ações cheguem a outro dispositivo.",
+          "permissions": {
+            "title": "A conexão exige estas permissões",
+            "send": "Enviar mensagens para você",
+            "receive": "Ler mensagens privadas que você envia ao bot",
+            "update": "Atualizar cartões enviados pelo bot",
+            "confirm": "Concordar e gerar código QR"
+          },
+          "resetBinding": {
+            "action": "Vincular destinatário novamente",
+            "title": "Vincular destinatário novamente?",
+            "description": "Isso remove o vínculo atual da conversa privada. Envie uma mensagem ao bot pela conta usada na autorização para vincular novamente. Para usar outra conta, autorize o bot novamente.",
+            "confirm": "Vincular novamente"
+          }
         }
       },
       "status": {
@@ -2578,12 +2596,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "Conectar WeCom",
+          "title": "Conectar {{channel}}",
           "description": "Autorize por código QR, depois vincule um destinatário por chat privado."
         },
         "waitingBinding": {
           "title": "Vincular destinatário",
-          "description": "Envie uma mensagem ao bot no WeCom. A intervenção remota fica disponível depois que a vinculação permanente for concluída."
+          "description": "Envie uma mensagem ao bot no {{channel}}. A intervenção remota fica disponível depois que a vinculação permanente for concluída."
         },
         "connecting": {
           "title": "Estabelecendo conexão",
@@ -2598,7 +2616,7 @@
           "description": "Recuperação automática não pode continuar. Reconecte para tentar novamente."
         },
         "ready": {
-          "title": "WeCom está pronto",
+          "title": "{{channel}} está pronto",
           "description": "Intervenções remotas e notificações habilitadas são enviadas ao chat privado vinculado."
         },
         "paused": {
@@ -2607,7 +2625,7 @@
         },
         "reauthorize": {
           "title": "Autorização necessária",
-          "description": "As credenciais atuais estão indisponíveis. Autorize o bot novamente."
+          "description": "Escaneie novamente para confirmar a autorização."
         },
         "conflict": {
           "title": "O bot está conectado em outro lugar",
@@ -2657,10 +2675,12 @@
         "IM_SCAN_CANCELLED": "Autorização QR foi cancelada.",
         "IM_SCAN_EXPIRED": "O código QR expirou. Gere um novo.",
         "IM_SCAN_TIMEOUT": "Autorização QR expirou. Gere um novo código.",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "O serviço de autorização WeCom está temporariamente inacessível.",
-        "IM_SCAN_PROTOCOL_INVALID": "A resposta de autorização WeCom foi inválida. Gere um novo código.",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "O serviço de autorização está temporariamente inacessível.",
+        "IM_SCAN_PROTOCOL_INVALID": "A resposta de autorização foi inválida. Gere um novo código.",
         "IM_SCAN_SESSION_INVALID": "A sessão QR é inválida. Reabra-a.",
         "IM_SCAN_SESSION_CONFLICT": "Autorização QR já está em andamento.",
+        "IM_SCAN_DENIED": "A autorização foi recusada.",
+        "IM_SCOPE_MISSING": "O app não tem as permissões necessárias. Autorize novamente.",
         "IM_STALE_GENERATION": "O estado da conexão mudou. Tente novamente a partir do estado mais recente.",
         "IM_RUNTIME_UNAVAILABLE": "O runtime de IM não está pronto.",
         "IM_CHANNEL_CLEANUP_PENDING": "A configuração foi excluída. Limpeza local tentará novamente em segundo plano.",

@@ -1,6 +1,6 @@
 //! WeCom AI Bot WebSocket connector using the official wire protocol.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -19,16 +19,18 @@ use super::{
     notification_markdown, presentation_detail_text,
 };
 use crate::app::intervention::{
-    InterventionAllowedAction, PermissionActionKind, PermissionActionQualifier,
-    RemoteElicitationForm, RemoteElicitationFormSelection, permission_action_qualifier,
+    ElicitationQuestionKind, InterventionAllowedAction, PermissionActionKind,
+    PermissionActionQualifier, RemoteElicitationAnswer, RemoteElicitationForm,
+    permission_action_qualifier,
 };
 use crate::im::{
-    INTERVENTION_CONTEXT_FIELDS, ImActionResponseContext, ImActionTokenCodec,
-    ImChannelCapabilities, ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent,
-    ImDelivery, ImDeliveryPayload, ImDeliveryReceipt, ImErrorCode, ImInboundActionSelection,
-    ImInboundEnvelope, ImIntegrationError, ImLocale, ImMessageState, ImNotificationKind,
-    ImObservedBinding, ImWeComFormCardKind, ImWeComFormSelection, ImWeComVoteSelection,
-    MAX_IM_PRESENTATION_BYTES, ResolvedImChannelConfig, deterministic_action_id,
+    INTERVENTION_CONTEXT_FIELDS, ImActionResponse, ImActionResponseContext, ImActionResponseState,
+    ImActionTokenCodec, ImChannelCapabilities, ImChannelKind, ImConnectionIdentity, ImConnector,
+    ImConnectorEvent, ImCustomAnswerSupport, ImDelivery, ImDeliveryBinding, ImDeliveryPayload,
+    ImDeliveryReceipt, ImErrorCode, ImInboundEnvelope, ImIntegrationError,
+    ImInteractionCapabilities, ImLocale, ImMessageState, ImMessageUpdateMode,
+    ImMultiChoiceCapability, ImNotificationKind, ImObservedBinding, ImOptionLimit,
+    ImSubmittedAction, MAX_IM_PRESENTATION_BYTES, ResolvedImChannelConfig, deterministic_action_id,
     is_intervention_context_field,
 };
 
@@ -45,6 +47,31 @@ const WECOM_MAX_BUTTON_KEY_BYTES: usize = 1024;
 const WECOM_MAX_OPTION_ID_BYTES: usize = 128;
 const WECOM_MAX_TASK_ID_BYTES: usize = 128;
 const WECOM_VOTE_QUESTION_KEY: &str = "permission_choice";
+// Official multiple_interaction.select_list limit; four selectors return 42047.
+const WECOM_MAX_FORM_QUESTIONS: u8 = 3;
+const WECOM_MAX_MULTI_QUESTION_OPTIONS: u16 = 10;
+const WECOM_INTERACTION_CAPABILITIES: ImInteractionCapabilities = ImInteractionCapabilities {
+    permission_max_options: WECOM_MAX_VOTE_OPTIONS as u16,
+    max_questions: WECOM_MAX_FORM_QUESTIONS,
+    single_choice_max_options: ImOptionLimit {
+        single_question: WECOM_MAX_VOTE_OPTIONS as u16,
+        multi_question: WECOM_MAX_MULTI_QUESTION_OPTIONS,
+    },
+    multi_choice: Some(ImMultiChoiceCapability {
+        max_options: WECOM_MAX_VOTE_OPTIONS as u16,
+        within_multi_question: false,
+    }),
+    free_text: None,
+    custom_answer: ImCustomAnswerSupport::Unsupported,
+    decline: false,
+};
+pub(crate) const WECOM_CHANNEL_CAPABILITIES: ImChannelCapabilities = ImChannelCapabilities {
+    proactive_delivery: true,
+    card_actions: true,
+    private_chat: true,
+    message_update: ImMessageUpdateMode::CallbackOnly,
+    interaction: WECOM_INTERACTION_CAPABILITIES,
+};
 const PERMISSION_FIELD_PRIORITY: [&str; 4] = [
     "permissionTool",
     "permissionCommand",
@@ -60,7 +87,7 @@ enum WeComCommand {
     },
     RespondToAction {
         context: ImActionResponseContext,
-        state: ImMessageState,
+        action_response: ImActionResponse,
         deadline: Instant,
         response: oneshot::Sender<Result<(), ImIntegrationError>>,
     },
@@ -286,23 +313,21 @@ impl WeComConnector {
                                 )
                             }
                         }
-                        WeComCommand::RespondToAction { context, state, deadline, response } => {
-                            let ImActionResponseContext::WeCom {
-                                req_id,
-                                task_id,
-                                vote_selection,
-                                form_selection,
-                            } = context;
-                            let request = action_response_request(
-                                &req_id,
-                                &task_id,
-                                state,
-                                locale,
-                                vote_selection.as_ref(),
-                                form_selection.as_ref(),
-                            );
+                        WeComCommand::RespondToAction {
+                            context,
+                            action_response,
+                            deadline,
+                            response,
+                        } => {
+                            let Some(handle) = context.downcast_ref::<WeComResponseHandle>() else {
+                                let _ = response.send(Err(ImIntegrationError::permanent(
+                                    ImErrorCode::ProtocolInvalid,
+                                )));
+                                continue;
+                            };
+                            let request = action_response_request(handle, &action_response, locale);
                             (
-                                req_id,
+                                handle.req_id.clone(),
                                 request,
                                 PendingRequest::ActionResponse { response },
                                 deadline,
@@ -421,12 +446,7 @@ impl ImConnector for WeComConnector {
     }
 
     fn capabilities(&self) -> ImChannelCapabilities {
-        ImChannelCapabilities {
-            proactive_delivery: true,
-            card_actions: true,
-            message_update: true,
-            private_chat: true,
-        }
+        WECOM_CHANNEL_CAPABILITIES
     }
 
     fn advance_generation(&self, generation: u64) {
@@ -499,7 +519,11 @@ impl ImConnector for WeComConnector {
         }
     }
 
-    async fn send(&self, delivery: ImDelivery) -> Result<ImDeliveryReceipt, ImIntegrationError> {
+    async fn send(
+        &self,
+        delivery: ImDelivery,
+        _source: Option<&ImDelivery>,
+    ) -> Result<ImDeliveryReceipt, ImIntegrationError> {
         let sender = self.command_sender()?;
         let (response_tx, response_rx) = oneshot::channel();
         let deadline = Instant::now() + WECOM_REQUEST_TIMEOUT;
@@ -523,7 +547,7 @@ impl ImConnector for WeComConnector {
     async fn respond_to_action(
         &self,
         context: ImActionResponseContext,
-        state: ImMessageState,
+        action_response: ImActionResponse,
     ) -> Result<(), ImIntegrationError> {
         let sender = self.command_sender()?;
         let (response_tx, response_rx) = oneshot::channel();
@@ -532,7 +556,7 @@ impl ImConnector for WeComConnector {
             deadline,
             sender.send(WeComCommand::RespondToAction {
                 context,
-                state,
+                action_response,
                 deadline,
                 response: response_tx,
             }),
@@ -544,6 +568,18 @@ impl ImConnector for WeComConnector {
             .await
             .map_err(|_| request_timeout_error())?
             .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
+    }
+
+    /// WeCom template cards can only be replaced inside the click callback.
+    async fn update_message(
+        &self,
+        _binding: &ImDeliveryBinding,
+        _payload: &ImDeliveryPayload,
+        _source: Option<&ImDelivery>,
+    ) -> Result<(), ImIntegrationError> {
+        Err(ImIntegrationError::permanent(
+            ImErrorCode::UnsupportedCapability,
+        ))
     }
 }
 
@@ -623,9 +659,6 @@ fn vote_options(actions: &[InterventionAllowedAction], locale: ImLocale) -> Vec<
             })
         })
         .collect::<Vec<_>>();
-    if !options.iter().any(|option| option.safe_fallback) {
-        return Vec::new();
-    }
     if options.len() > WECOM_MAX_VOTE_OPTIONS {
         options.retain(|option| option.safe_fallback);
     }
@@ -700,18 +733,17 @@ fn delivery_elicitation_form(
 }
 
 fn elicitation_template_card(
-    delivery: &ImDelivery,
+    task_id: &str,
     form: &RemoteElicitationForm,
     title: &str,
     desc: &str,
     fields: Vec<Value>,
     locale: ImLocale,
 ) -> Value {
-    let task_id = delivery.delivery_id.clone();
-    match form {
-        RemoteElicitationForm::SingleScalarChoice { question }
-        | RemoteElicitationForm::MultiScalarChoice { question, .. } => {
-            let mode = matches!(form, RemoteElicitationForm::MultiScalarChoice { .. })
+    let card_kind = WeComFormCardKind::for_form(form);
+    match (card_kind, form.questions.as_slice()) {
+        (WeComFormCardKind::VoteSingle | WeComFormCardKind::VoteMulti, [question, ..]) => {
+            let mode = matches!(card_kind, WeComFormCardKind::VoteMulti)
                 .then_some(1)
                 .unwrap_or(0);
             json!({
@@ -726,7 +758,7 @@ fn elicitation_template_card(
                 "checkbox": {
                     "question_key": question.selector_key,
                     "mode": mode,
-                    "option_list": question.options.iter().enumerate().map(|(index, option)| json!({
+                    "option_list": question.question.options.iter().enumerate().map(|(index, option)| json!({
                         "id": index.to_string(),
                         "text": truncate_chars(&option.label, 11),
                         "is_checked": false,
@@ -739,7 +771,7 @@ fn elicitation_template_card(
                 "task_id": task_id,
             })
         }
-        RemoteElicitationForm::ScalarChoiceQuestions { questions } => json!({
+        (_, questions) => json!({
             "card_type": "multiple_interaction",
             "source": { "desc": "Gold Band" },
             "main_title": {
@@ -750,8 +782,8 @@ fn elicitation_template_card(
             "horizontal_content_list": fields,
             "select_list": questions.iter().map(|question| json!({
                 "question_key": question.selector_key,
-                "title": truncate_chars(&question.title, 13),
-                "option_list": question.options.iter().enumerate().map(|(index, option)| json!({
+                "title": truncate_chars(&question.question.title, 13),
+                "option_list": question.question.options.iter().enumerate().map(|(index, option)| json!({
                     "id": index.to_string(),
                     "text": truncate_chars(&option.label, 10),
                 })).collect::<Vec<_>>(),
@@ -813,13 +845,14 @@ fn send_request(
                     .filter(|desc| !desc.trim().is_empty())
                     .unwrap_or_else(|| localized(locale, &presentation.summary_key))
             };
-            if !valid_wecom_task_id(&delivery.delivery_id) {
+            let task_id = card_task_id(&delivery.delivery_id, req_id);
+            if card_delivery_id(&task_id) != Some(delivery.delivery_id.as_str()) {
                 return Err(ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid));
             }
             let mut template_card = if linked_detail {
                 if delivery.notification_kind == ImNotificationKind::Elicitation {
                     let form = delivery_elicitation_form(reference)?;
-                    elicitation_template_card(delivery, form, &title, desc, fields, locale)
+                    elicitation_template_card(&task_id, form, &title, desc, fields, locale)
                 } else {
                     let options = vote_options(&reference.allowed_actions, locale)
                         .into_iter()
@@ -842,7 +875,7 @@ fn send_request(
                             },
                             "sub_title_text": localized(locale, "im.permission.desktopGuidance"),
                             "horizontal_content_list": fields,
-                            "task_id": delivery.delivery_id,
+                            "task_id": task_id,
                         })
                     } else {
                         json!({
@@ -861,9 +894,9 @@ fn send_request(
                             },
                             "submit_button": {
                                 "text": localized(locale, "im.permission.submit"),
-                                "key": format!("{}:submit", delivery.delivery_id),
+                                "key": format!("{task_id}:submit"),
                             },
-                            "task_id": delivery.delivery_id,
+                            "task_id": task_id,
                         })
                     }
                 }
@@ -873,7 +906,7 @@ fn send_request(
                 let buttons = safe_wecom_actions(rendered_actions)
                     .into_iter()
                     .map(|action| {
-                        let key = format!("{}:{}", delivery.delivery_id, action.action_index);
+                        let key = format!("{task_id}:{}", action.action_index);
                         if key.len() > WECOM_MAX_BUTTON_KEY_BYTES {
                             return Err(ImIntegrationError::permanent(
                                 ImErrorCode::ProtocolInvalid,
@@ -890,7 +923,7 @@ fn send_request(
                             "desc": truncate_chars(desc, 30),
                         },
                         "horizontal_content_list": fields,
-                        "task_id": delivery.delivery_id,
+                        "task_id": task_id,
                     })
                 } else {
                     json!({
@@ -901,7 +934,7 @@ fn send_request(
                         },
                         "horizontal_content_list": fields,
                         "button_list": buttons,
-                        "task_id": delivery.delivery_id,
+                        "task_id": task_id,
                     })
                 }
             };
@@ -1156,39 +1189,131 @@ fn valid_wecom_task_id(task_id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'@'))
 }
 
-fn action_response_request(
-    req_id: &str,
-    task_id: &str,
-    state: ImMessageState,
-    locale: ImLocale,
-    vote_selection: Option<&ImWeComVoteSelection>,
-    form_selection: Option<&ImWeComFormSelection>,
-) -> Value {
-    if let Some(form_selection) = form_selection {
-        return form_action_response_request(req_id, task_id, state, locale, form_selection);
+/// Private WeCom reply handle carried through the generic layer as an opaque
+/// `ImActionResponseContext`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WeComResponseHandle {
+    req_id: String,
+    task_id: String,
+    selection: WeComCallbackSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WeComCallbackSelection {
+    Button,
+    Vote {
+        selected_option_id: String,
+    },
+    Form {
+        card_kind: WeComFormCardKind,
+        selections: Vec<WeComFormItem>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeComFormCardKind {
+    VoteSingle,
+    VoteMulti,
+    Multiple,
+}
+
+impl WeComFormCardKind {
+    fn for_form(form: &RemoteElicitationForm) -> Self {
+        match form.questions.as_slice() {
+            [question]
+                if question.question.question_kind == ElicitationQuestionKind::MultiSelect =>
+            {
+                Self::VoteMulti
+            }
+            [_] => Self::VoteSingle,
+            _ => Self::Multiple,
+        }
     }
-    let Some(vote_selection) = vote_selection else {
-        let content = message_state_label(locale, state);
-        let action_key = format!("{task_id}:0");
-        return json!({
-            "cmd": "aibot_respond_update_msg",
-            "headers": { "req_id": req_id },
-            "body": {
-                "response_type": "update_template_card",
-                "template_card": {
-                    "card_type": "button_interaction",
-                    "main_title": { "title": &content },
-                    "button_list": [
-                        { "text": &content, "key": &action_key }
-                    ],
-                    "task_id": task_id,
-                },
-            },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WeComFormItem {
+    selector_key: String,
+    option_ids: Vec<String>,
+}
+
+/// Renders the clicked-card replacement. The delivery the click belongs to is
+/// the only source of option labels and the display ref.
+fn action_response_request(
+    handle: &WeComResponseHandle,
+    response: &ImActionResponse,
+    locale: ImLocale,
+) -> Value {
+    let state = response.state.message_state();
+    let req_id = handle.req_id.as_str();
+    let task_id = handle.task_id.as_str();
+    let intervention = response
+        .delivery
+        .as_ref()
+        .and_then(|delivery| match &delivery.payload {
+            ImDeliveryPayload::Intervention { reference, .. } => Some((delivery, reference)),
+            _ => None,
         });
+    let selected_option_id = match &handle.selection {
+        WeComCallbackSelection::Form {
+            card_kind,
+            selections,
+        } => {
+            let delivered_form = intervention.and_then(|(delivery, reference)| {
+                reference
+                    .allowed_actions
+                    .iter()
+                    .find_map(|action| match action {
+                        InterventionAllowedAction::ElicitationFixedForm { form } => {
+                            Some((form, delivery.display_ref))
+                        }
+                        _ => None,
+                    })
+            });
+            return form_action_response_request(
+                req_id,
+                task_id,
+                state,
+                locale,
+                &WeComFormRender {
+                    card_kind: delivered_form
+                        .map_or(*card_kind, |(form, _)| WeComFormCardKind::for_form(form)),
+                    selections,
+                    form: delivered_form.map(|(form, _)| form),
+                    display_ref: delivered_form.and_then(|(_, display_ref)| display_ref),
+                },
+            );
+        }
+        WeComCallbackSelection::Vote { selected_option_id } => selected_option_id,
+        WeComCallbackSelection::Button => {
+            let content = message_state_label(locale, state);
+            let action_key = format!("{task_id}:0");
+            return json!({
+                "cmd": "aibot_respond_update_msg",
+                "headers": { "req_id": req_id },
+                "body": {
+                    "response_type": "update_template_card",
+                    "template_card": {
+                        "card_type": "button_interaction",
+                        "main_title": { "title": &content },
+                        "button_list": [
+                            { "text": &content, "key": &action_key }
+                        ],
+                        "task_id": task_id,
+                    },
+                },
+            });
+        }
     };
-    let selected_index = selected_vote_index(vote_selection);
-    let selected_action = selected_index.and_then(|index| vote_selection.vote_actions.get(index));
-    let mut options = if vote_selection.vote_actions.is_empty() {
+    let (vote_actions, display_ref) = match intervention {
+        Some((delivery, reference)) if selected_option_id.parse::<usize>().is_ok() => {
+            (reference.allowed_actions.as_slice(), delivery.display_ref)
+        }
+        _ => (&[][..], None),
+    };
+    let selected_index = selected_vote_index(selected_option_id, vote_actions);
+    let selected_action = selected_index.and_then(|index| vote_actions.get(index));
+    let mut options = if vote_actions.is_empty() {
         let fallback_index = selected_index.unwrap_or(0);
         vec![json!({
             "id": fallback_index.to_string(),
@@ -1196,7 +1321,7 @@ fn action_response_request(
             "is_checked": true,
         })]
     } else {
-        vote_options(&vote_selection.vote_actions, locale)
+        vote_options(vote_actions, locale)
             .into_iter()
             .map(|option| {
                 json!({
@@ -1214,7 +1339,7 @@ fn action_response_request(
             "is_checked": false,
         }));
     }
-    let title = vote_terminal_title(locale, state, selected_action, vote_selection.display_ref);
+    let title = vote_terminal_title(locale, state, selected_action, display_ref);
     json!({
         "cmd": "aibot_respond_update_msg",
         "headers": { "req_id": req_id },
@@ -1251,8 +1376,16 @@ fn vote_card_summary_key(selected_action: Option<&InterventionAllowedAction>) ->
     }
 }
 
+/// Inputs of the elicitation clicked-card replacement.
+struct WeComFormRender<'a> {
+    card_kind: WeComFormCardKind,
+    selections: &'a [WeComFormItem],
+    form: Option<&'a RemoteElicitationForm>,
+    display_ref: Option<u16>,
+}
+
 fn selected_form_option_ids<'a>(
-    form_selection: &'a ImWeComFormSelection,
+    form_selection: &WeComFormRender<'a>,
     selector_key: &str,
 ) -> Vec<&'a str> {
     form_selection
@@ -1272,37 +1405,36 @@ fn selected_form_option_ids<'a>(
 fn form_terminal_summary(
     locale: ImLocale,
     state: ImMessageState,
-    form_selection: &ImWeComFormSelection,
+    form_selection: &WeComFormRender<'_>,
 ) -> String {
     if state != ImMessageState::Handled {
         return message_state_label(locale, state).to_owned();
     }
-    let Some(form) = form_selection.form.as_ref() else {
+    let Some(form) = form_selection.form else {
         return message_state_label(locale, state).to_owned();
     };
-    match form {
-        RemoteElicitationForm::SingleScalarChoice { question }
-        | RemoteElicitationForm::MultiScalarChoice { question, .. } => {
+    match (form_selection.card_kind, form.questions.as_slice()) {
+        (WeComFormCardKind::VoteSingle | WeComFormCardKind::VoteMulti, [question, ..]) => {
             let selected = selected_form_option_ids(form_selection, &question.selector_key);
             selected
                 .iter()
                 .filter_map(|option_id| option_id.parse::<usize>().ok())
-                .filter_map(|index| question.options.get(index))
+                .filter_map(|index| question.question.options.get(index))
                 .map(|option| option.label.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         }
-        RemoteElicitationForm::ScalarChoiceQuestions { questions } => questions
+        (_, questions) => questions
             .iter()
             .map(|question| {
                 let selected = selected_form_option_ids(form_selection, &question.selector_key);
                 let label = selected
                     .first()
                     .and_then(|option_id| option_id.parse::<usize>().ok())
-                    .and_then(|index| question.options.get(index))
+                    .and_then(|index| question.question.options.get(index))
                     .map(|option| option.label.as_str())
                     .unwrap_or("-");
-                format!("{}: {label}", question.title)
+                format!("{}: {label}", question.question.title)
             })
             .collect::<Vec<_>>()
             .join(", "),
@@ -1312,7 +1444,7 @@ fn form_terminal_summary(
 fn form_terminal_title(
     locale: ImLocale,
     state: ImMessageState,
-    form_selection: &ImWeComFormSelection,
+    form_selection: &WeComFormRender<'_>,
 ) -> String {
     let summary = form_terminal_summary(locale, state, form_selection);
     terminal_title_with_leading_ref(locale, state, &summary, form_selection.display_ref)
@@ -1323,18 +1455,15 @@ fn form_action_response_request(
     task_id: &str,
     state: ImMessageState,
     locale: ImLocale,
-    form_selection: &ImWeComFormSelection,
+    form_selection: &WeComFormRender<'_>,
 ) -> Value {
     let title = form_terminal_title(locale, state, form_selection);
     let desc = localized(locale, "im.notification.elicitation.summary");
-    let mut template_card = match (form_selection.card_kind, form_selection.form.as_ref()) {
-        (
-            ImWeComFormCardKind::VoteSingle | ImWeComFormCardKind::VoteMulti,
-            Some(RemoteElicitationForm::SingleScalarChoice { question })
-            | Some(RemoteElicitationForm::MultiScalarChoice { question, .. }),
-        ) => {
+    let questions = form_selection.form.map(|form| form.questions.as_slice());
+    let mut template_card = match (form_selection.card_kind, questions) {
+        (WeComFormCardKind::VoteSingle | WeComFormCardKind::VoteMulti, Some([question])) => {
             let selected = selected_form_option_ids(form_selection, &question.selector_key);
-            let mode = matches!(form_selection.card_kind, ImWeComFormCardKind::VoteMulti)
+            let mode = matches!(form_selection.card_kind, WeComFormCardKind::VoteMulti)
                 .then_some(1)
                 .unwrap_or(0);
             json!({
@@ -1343,7 +1472,7 @@ fn form_action_response_request(
                     "question_key": question.selector_key,
                     "mode": mode,
                     "disable": true,
-                    "option_list": question.options.iter().enumerate().map(|(index, option)| {
+                    "option_list": question.question.options.iter().enumerate().map(|(index, option)| {
                         json!({
                             "id": index.to_string(),
                             "text": truncate_chars(&option.label, 11),
@@ -1355,18 +1484,15 @@ fn form_action_response_request(
                 },
             })
         }
-        (
-            ImWeComFormCardKind::Multiple,
-            Some(RemoteElicitationForm::ScalarChoiceQuestions { questions }),
-        ) => json!({
+        (WeComFormCardKind::Multiple, Some(questions)) if !questions.is_empty() => json!({
             "card_type": "multiple_interaction",
             "select_list": questions.iter().map(|question| {
                 let selected = selected_form_option_ids(form_selection, &question.selector_key);
                 json!({
                     "question_key": question.selector_key,
-                    "title": truncate_chars(&question.title, 13),
+                    "title": truncate_chars(&question.question.title, 13),
                     "disable": true,
-                    "option_list": question.options.iter().enumerate().map(|(index, option)| {
+                    "option_list": question.question.options.iter().enumerate().map(|(index, option)| {
                         json!({
                             "id": index.to_string(),
                             "text": truncate_chars(&option.label, 10),
@@ -1376,13 +1502,13 @@ fn form_action_response_request(
                 })
             }).collect::<Vec<_>>(),
         }),
-        (ImWeComFormCardKind::VoteSingle | ImWeComFormCardKind::VoteMulti, None) => {
+        (WeComFormCardKind::VoteSingle | WeComFormCardKind::VoteMulti, None) => {
             let selection = form_selection
                 .selections
                 .first()
                 .map(|selection| json!({
                     "question_key": selection.selector_key,
-                    "mode": matches!(form_selection.card_kind, ImWeComFormCardKind::VoteMulti).then_some(1).unwrap_or(0),
+                    "mode": matches!(form_selection.card_kind, WeComFormCardKind::VoteMulti).then_some(1).unwrap_or(0),
                     "disable": true,
                     "option_list": selection.option_ids.iter().map(|option_id| json!({
                         "id": option_id,
@@ -1392,7 +1518,7 @@ fn form_action_response_request(
                 }))
                 .unwrap_or_else(|| json!({
                     "question_key": "q0",
-                    "mode": if matches!(form_selection.card_kind, ImWeComFormCardKind::VoteMulti) { 1 } else { 0 },
+                    "mode": if matches!(form_selection.card_kind, WeComFormCardKind::VoteMulti) { 1 } else { 0 },
                     "disable": true,
                     "option_list": [{
                         "id": "0",
@@ -1405,7 +1531,7 @@ fn form_action_response_request(
                 "checkbox": selection,
             })
         }
-        (ImWeComFormCardKind::Multiple, None) => json!({
+        (WeComFormCardKind::Multiple, None) => json!({
             "card_type": "multiple_interaction",
             "select_list": if form_selection.selections.is_empty() {
                 vec![json!({
@@ -1461,13 +1587,15 @@ fn form_action_response_request(
     })
 }
 
-fn selected_vote_index(selection: &ImWeComVoteSelection) -> Option<usize> {
-    let id = selection.selected_option_id.as_str();
-    if id.len() > WECOM_MAX_OPTION_ID_BYTES {
+fn selected_vote_index(
+    selected_option_id: &str,
+    vote_actions: &[InterventionAllowedAction],
+) -> Option<usize> {
+    if selected_option_id.len() > WECOM_MAX_OPTION_ID_BYTES {
         return None;
     }
-    let index = id.parse().ok()?;
-    selection.vote_actions.get(index).map(|_| index)
+    let index = selected_option_id.parse().ok()?;
+    vote_actions.get(index).map(|_| index)
 }
 
 fn vote_terminal_title(
@@ -1596,7 +1724,12 @@ fn queue_failed_action_response(
     commands
         .try_send(WeComCommand::RespondToAction {
             context: context.clone(),
-            state: ImMessageState::Failed,
+            action_response: ImActionResponse {
+                state: ImActionResponseState::Rejected(ImErrorCode::ProtocolInvalid),
+                resolved_by: None,
+                outcome: None,
+                delivery: None,
+            },
             deadline: Instant::now() + WECOM_REQUEST_TIMEOUT,
             response,
         })
@@ -1678,7 +1811,7 @@ impl WeComActionParseReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct WeComActionParseFailure {
     reason: WeComActionParseReason,
     private_candidate: bool,
@@ -1688,6 +1821,7 @@ struct WeComActionParseFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WeComActionReference {
     delivery_id: String,
+    task_id: String,
     action_index: usize,
 }
 
@@ -1730,7 +1864,7 @@ fn action_envelope(
         .get("card_type")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let (delivery_id, action, task_id, vote_selection, form_selection) = match card_type {
+    let (delivery_id, action, task_id, selection) = match card_type {
         "button_interaction" => {
             let Some(raw_action) = card_event.get("event_key") else {
                 return Err(parse_failure(WeComActionParseReason::EventKeyMissing));
@@ -1738,18 +1872,17 @@ fn action_envelope(
             let action = decode_event_action(raw_action)
                 .ok_or_else(|| parse_failure(WeComActionParseReason::EventKeyDecodeFailed))?;
             let callback_task_id = non_empty_json_str(card_event.get("task_id")).map(str::to_owned);
-            let task_id = callback_task_id.unwrap_or_else(|| action.delivery_id.clone());
-            if task_id != action.delivery_id {
+            let task_id = callback_task_id.unwrap_or_else(|| action.task_id.clone());
+            if task_id != action.task_id {
                 return Err(parse_failure(WeComActionParseReason::TaskMismatch));
             }
             (
                 action.delivery_id,
-                ImInboundActionSelection::LocalIndex {
+                ImSubmittedAction::PublishedAction {
                     index: action.action_index,
                 },
                 task_id,
-                None,
-                None,
+                WeComCallbackSelection::Button,
             )
         }
         "vote_interaction" => {
@@ -1762,7 +1895,7 @@ fn action_envelope(
             else {
                 return Err(parse_failure(WeComActionParseReason::TaskIdMissing));
             };
-            if task_id != reference.delivery_id {
+            if task_id != reference.task_id {
                 return Err(parse_failure(WeComActionParseReason::TaskMismatch));
             }
             let selections =
@@ -1778,39 +1911,31 @@ fn action_envelope(
                     .map_err(|_| parse_failure(WeComActionParseReason::SelectionInvalid))?;
                 (
                     reference.delivery_id,
-                    ImInboundActionSelection::LocalIndex {
+                    ImSubmittedAction::PublishedAction {
                         index: action_index,
                     },
                     task_id,
-                    Some(ImWeComVoteSelection {
+                    WeComCallbackSelection::Vote {
                         selected_option_id: option_id.clone(),
-                        vote_actions: Vec::new(),
-                        display_ref: None,
-                    }),
-                    None,
+                    },
                 )
             } else if let [selection] = selections.as_slice()
                 && selection.selector_key == "q0"
             {
                 let card_kind = if selection.option_ids.is_empty() || selection.option_ids.len() > 1
                 {
-                    ImWeComFormCardKind::VoteMulti
+                    WeComFormCardKind::VoteMulti
                 } else {
-                    ImWeComFormCardKind::VoteSingle
+                    WeComFormCardKind::VoteSingle
                 };
                 (
                     reference.delivery_id,
-                    ImInboundActionSelection::Form {
-                        selections: selections.clone(),
-                    },
+                    submitted_form(&selections),
                     task_id,
-                    None,
-                    Some(ImWeComFormSelection {
+                    WeComCallbackSelection::Form {
                         card_kind,
                         selections,
-                        form: None,
-                        display_ref: None,
-                    }),
+                    },
                 )
             } else {
                 return Err(parse_failure(WeComActionParseReason::SelectionInvalid));
@@ -1826,27 +1951,22 @@ fn action_envelope(
             else {
                 return Err(parse_failure(WeComActionParseReason::TaskIdMissing));
             };
-            if task_id != reference.delivery_id {
+            if task_id != reference.task_id {
                 return Err(parse_failure(WeComActionParseReason::TaskMismatch));
             }
             let selections =
                 selected_form_items(card_event).map_err(|reason| parse_failure(reason))?;
-            if selections.is_empty() || selections.len() > 3 {
+            if selections.is_empty() || selections.len() > usize::from(WECOM_MAX_FORM_QUESTIONS) {
                 return Err(parse_failure(WeComActionParseReason::SelectionInvalid));
             }
             (
                 reference.delivery_id,
-                ImInboundActionSelection::Form {
-                    selections: selections.clone(),
-                },
+                submitted_form(&selections),
                 task_id,
-                None,
-                Some(ImWeComFormSelection {
-                    card_kind: ImWeComFormCardKind::Multiple,
+                WeComCallbackSelection::Form {
+                    card_kind: WeComFormCardKind::Multiple,
                     selections,
-                    form: None,
-                    display_ref: None,
-                }),
+                },
             )
         }
         _ => return Err(parse_failure(WeComActionParseReason::CardTypeInvalid)),
@@ -1865,15 +1985,34 @@ fn action_envelope(
             conversation_id: actor_id.clone(),
             actor_id,
             delivery_id,
+            // The request-specific wire key carries a stable delivery prefix;
+            // only that prefix is resolved against the authoritative outbox.
+            action_token: None,
             action,
         },
-        ImActionResponseContext::WeCom {
+        ImActionResponseContext::new(WeComResponseHandle {
             req_id: req_id.to_owned(),
             task_id,
-            vote_selection,
-            form_selection,
-        },
+            selection,
+        }),
     ))
+}
+
+fn submitted_form(selections: &[WeComFormItem]) -> ImSubmittedAction {
+    ImSubmittedAction::ElicitationForm {
+        answers: selections
+            .iter()
+            .map(|selection| {
+                (
+                    selection.selector_key.clone(),
+                    RemoteElicitationAnswer::Choice {
+                        option_ids: selection.option_ids.clone(),
+                        custom_text: None,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>(),
+    }
 }
 
 fn action_parse_failure(
@@ -1905,18 +2044,20 @@ fn callback_response_context(value: &Value) -> Option<ImActionResponseContext> {
         Some(task_id) => task_id.to_owned(),
         None => {
             decode_event_action(value.pointer("/body/event/template_card_event/event_key")?)?
-                .delivery_id
+                .task_id
         }
     };
-    Some(ImActionResponseContext::WeCom {
+    let selection = permission_vote_callback_context(value)
+        .or_else(|| form_callback_response_context(value))
+        .unwrap_or(WeComCallbackSelection::Button);
+    Some(ImActionResponseContext::new(WeComResponseHandle {
         req_id: non_empty_json_str(value.pointer("/headers/req_id"))?.to_owned(),
         task_id,
-        vote_selection: permission_vote_callback_context(value),
-        form_selection: form_callback_response_context(value),
-    })
+        selection,
+    }))
 }
 
-fn permission_vote_callback_context(value: &Value) -> Option<ImWeComVoteSelection> {
+fn permission_vote_callback_context(value: &Value) -> Option<WeComCallbackSelection> {
     let card_event = value.pointer("/body/event/template_card_event")?;
     if card_event.get("card_type").and_then(Value::as_str) != Some("vote_interaction") {
         return None;
@@ -1928,14 +2069,12 @@ fn permission_vote_callback_context(value: &Value) -> Option<ImWeComVoteSelectio
     if selection.selector_key != WECOM_VOTE_QUESTION_KEY || selection.option_ids.len() != 1 {
         return None;
     }
-    Some(ImWeComVoteSelection {
+    Some(WeComCallbackSelection::Vote {
         selected_option_id: selection.option_ids.first()?.clone(),
-        vote_actions: Vec::new(),
-        display_ref: None,
     })
 }
 
-fn form_callback_response_context(value: &Value) -> Option<ImWeComFormSelection> {
+fn form_callback_response_context(value: &Value) -> Option<WeComCallbackSelection> {
     let card_event = value.pointer("/body/event/template_card_event")?;
     let selections = selected_form_items(card_event).ok()?;
     let card_kind = match card_event.get("card_type").and_then(Value::as_str)? {
@@ -1947,25 +2086,21 @@ fn form_callback_response_context(value: &Value) -> Option<ImWeComFormSelection>
                 return None;
             }
             if selection.option_ids.len() > 1 || selection.option_ids.is_empty() {
-                ImWeComFormCardKind::VoteMulti
+                WeComFormCardKind::VoteMulti
             } else {
-                ImWeComFormCardKind::VoteSingle
+                WeComFormCardKind::VoteSingle
             }
         }
-        "multiple_interaction" => ImWeComFormCardKind::Multiple,
+        "multiple_interaction" => WeComFormCardKind::Multiple,
         _ => return None,
     };
-    Some(ImWeComFormSelection {
+    Some(WeComCallbackSelection::Form {
         card_kind,
         selections,
-        form: None,
-        display_ref: None,
     })
 }
 
-fn selected_form_items(
-    card_event: &Value,
-) -> Result<Vec<RemoteElicitationFormSelection>, WeComActionParseReason> {
+fn selected_form_items(card_event: &Value) -> Result<Vec<WeComFormItem>, WeComActionParseReason> {
     let Some(items) = card_event
         .pointer("/selected_items/selected_item")
         .and_then(Value::as_array)
@@ -2004,7 +2139,7 @@ fn selected_form_items(
             }
             option_ids.push(option_id.to_owned());
         }
-        selections.push(RemoteElicitationFormSelection {
+        selections.push(WeComFormItem {
             selector_key: question_key.to_owned(),
             option_ids,
         });
@@ -2017,12 +2152,11 @@ fn decode_event_action(raw_action: &Value) -> Option<WeComActionReference> {
     if encoded.len() > WECOM_MAX_BUTTON_KEY_BYTES {
         return None;
     }
-    let (delivery_id, action_index) = encoded.rsplit_once(':')?;
-    if delivery_id.is_empty() {
-        return None;
-    }
+    let (task_id, action_index) = encoded.rsplit_once(':')?;
+    let delivery_id = card_delivery_id(task_id)?;
     Some(WeComActionReference {
         delivery_id: delivery_id.to_owned(),
+        task_id: task_id.to_owned(),
         action_index: action_index.parse().ok()?,
     })
 }
@@ -2032,14 +2166,36 @@ fn decode_submit_action(raw_action: &Value) -> Option<WeComActionReference> {
     if encoded.len() > WECOM_MAX_BUTTON_KEY_BYTES {
         return None;
     }
-    let (delivery_id, suffix) = encoded.rsplit_once(':')?;
-    if delivery_id.is_empty() || suffix != "submit" || !valid_wecom_task_id(delivery_id) {
+    let (task_id, suffix) = encoded.rsplit_once(':')?;
+    let delivery_id = card_delivery_id(task_id)?;
+    if suffix != "submit" {
         return None;
     }
     Some(WeComActionReference {
         delivery_id: delivery_id.to_owned(),
+        task_id: task_id.to_owned(),
         action_index: 0,
     })
+}
+
+// WeCom task_id identifies one card creation, not an outbox delivery. Reuse the
+// existing request identity so a retry after an uncertain ACK can create a card.
+// Callback keys retain this wire identity; only the delivery prefix reaches the
+// canonical inbound service and its exactly-once business-action gate.
+fn card_task_id(delivery_id: &str, req_id: &str) -> String {
+    let nonce = Uuid::new_v5(&Uuid::NAMESPACE_URL, req_id.as_bytes());
+    format!("{delivery_id}@{}", nonce.simple())
+}
+
+fn card_delivery_id(task_id: &str) -> Option<&str> {
+    if !valid_wecom_task_id(task_id) {
+        return None;
+    }
+    let (delivery_id, nonce) = task_id.split_once('@')?;
+    if delivery_id.is_empty() || nonce.len() != 32 || Uuid::parse_str(nonce).is_err() {
+        return None;
+    }
+    Some(delivery_id)
 }
 
 fn non_empty_json_str(value: Option<&Value>) -> Option<&str> {
@@ -2281,9 +2437,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::app::intervention::{
-        InterventionAllowedAction, InterventionLocator, InterventionRequestIdentity,
-        PermissionActionKind, RemoteElicitationForm, RemoteElicitationFormSelection,
-        RemoteElicitationOption, RemoteScalarChoiceQuestion,
+        ElicitationQuestion, ElicitationQuestionOption, InterventionAllowedAction,
+        InterventionLocator, InterventionRequestIdentity, MAX_REMOTE_TEXT_CHARS,
+        PermissionActionKind, RemoteElicitationForm, RemoteQuestion, RemoteQuestionConstraints,
     };
     use crate::im::connectors::PlatformActionValue;
     use crate::im::{
@@ -2293,6 +2449,69 @@ mod tests {
     };
 
     use super::*;
+
+    fn handle_of(context: &ImActionResponseContext) -> &WeComResponseHandle {
+        context
+            .downcast_ref::<WeComResponseHandle>()
+            .expect("WeCom response context")
+    }
+
+    fn button_handle(req_id: &str, task_id: &str) -> WeComResponseHandle {
+        WeComResponseHandle {
+            req_id: req_id.into(),
+            task_id: card_task_id(task_id, "req-1"),
+            selection: WeComCallbackSelection::Button,
+        }
+    }
+
+    fn vote_handle(selected_option_id: &str) -> WeComResponseHandle {
+        WeComResponseHandle {
+            req_id: "callback-req-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
+            selection: WeComCallbackSelection::Vote {
+                selected_option_id: selected_option_id.into(),
+            },
+        }
+    }
+
+    fn response_with(
+        state: ImActionResponseState,
+        delivery: Option<ImDelivery>,
+    ) -> ImActionResponse {
+        ImActionResponse {
+            state,
+            resolved_by: None,
+            outcome: None,
+            delivery,
+        }
+    }
+
+    fn choice_question(
+        selector_key: &str,
+        field_name: &str,
+        question_kind: ElicitationQuestionKind,
+        options: Vec<ElicitationQuestionOption>,
+        allows_empty: bool,
+    ) -> RemoteQuestion {
+        RemoteQuestion {
+            selector_key: selector_key.into(),
+            question: ElicitationQuestion {
+                field_name: field_name.into(),
+                title: "数据库选择".into(),
+                description: Some("请选择".into()),
+                question_kind,
+                options,
+                allows_custom_answer: false,
+            },
+            constraints: RemoteQuestionConstraints {
+                required: true,
+                allows_empty,
+                max_chars: MAX_REMOTE_TEXT_CHARS,
+                multiline: false,
+            },
+            custom_answer_key: None,
+        }
+    }
 
     fn sample_delivery(payload: ImDeliveryPayload, kind: ImNotificationKind) -> ImDelivery {
         ImDelivery {
@@ -2329,8 +2548,8 @@ mod tests {
                     "eventtype": "template_card_event",
                     "template_card_event": {
                         "card_type": "button_interaction",
-                        "event_key": format!("{}:{}", action.delivery_id, action.action_index),
-                        "task_id": task_id
+                        "event_key": format!("{}:{}", action.task_id, action.action_index),
+                        "task_id": card_task_id(task_id, "req-1")
                     }
                 }
             }
@@ -2440,7 +2659,7 @@ mod tests {
             ImDeliveryPayload::InterventionResolution {
                 version: IM_PAYLOAD_VERSION,
                 resolution: InterventionResolutionNotification {
-                    canonical_event_id: "event-1:desktop-resolved".into(),
+                    canonical_event_id: crate::im::resolution_event_id("event-1"),
                     source_event_id: "event-1".into(),
                     notification_kind: kind,
                     locator: ImNavigationLocator {
@@ -2455,11 +2674,15 @@ mod tests {
                         scheduled_occurrence_id: None,
                     },
                     display_ref: Some(12),
+                    resolved_by: crate::im::ImResolvedBy::Desktop,
+                    outcome: crate::im::ImResolutionOutcome::ElicitationSubmitted {
+                        content: json!({}),
+                    },
                 },
             },
             kind,
         );
-        delivery.canonical_event_id = "event-1:desktop-resolved".into();
+        delivery.canonical_event_id = crate::im::resolution_event_id("event-1");
         delivery.display_ref = Some(12);
         delivery
     }
@@ -2494,8 +2717,8 @@ mod tests {
                     "eventtype": "template_card_event",
                     "template_card_event": {
                         "card_type": "vote_interaction",
-                        "event_key": format!("{delivery_id}:submit"),
-                        "task_id": task_id.unwrap_or(delivery_id),
+                        "event_key": format!("{}:submit", card_task_id(delivery_id, "req-1")),
+                        "task_id": card_task_id(task_id.unwrap_or(delivery_id), "req-1"),
                         "selected_items": {
                             "selected_item": [{
                                 "question_key": WECOM_VOTE_QUESTION_KEY,
@@ -2510,7 +2733,7 @@ mod tests {
 
     fn official_form_callback(
         card_type: &str,
-        selections: &[RemoteElicitationFormSelection],
+        selections: &[WeComFormItem],
         req_id: &str,
         msg_id: &str,
         delivery_id: &str,
@@ -2526,8 +2749,8 @@ mod tests {
                     "eventtype": "template_card_event",
                     "template_card_event": {
                         "card_type": card_type,
-                        "event_key": format!("{delivery_id}:submit"),
-                        "task_id": delivery_id,
+                        "event_key": format!("{}:submit", card_task_id(delivery_id, "req-1")),
+                        "task_id": card_task_id(delivery_id, "req-1"),
                         "selected_items": {
                             "selected_item": selections.iter().map(|selection| json!({
                                 "question_key": selection.selector_key,
@@ -2588,6 +2811,28 @@ mod tests {
         let encoded = request.to_string();
         for forbidden in ["template_card", "submit_button", "actionToken", "task_id"] {
             assert!(!encoded.contains(forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn resolution_markdown_uses_the_accepted_channel() {
+        let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
+        for (source, expected) in [
+            (ImChannelKind::Feishu, "飞书"),
+            (ImChannelKind::WeCom, "企业微信"),
+        ] {
+            let mut delivery = desktop_resolution_delivery(ImNotificationKind::ManualCheck);
+            let ImDeliveryPayload::InterventionResolution { resolution, .. } =
+                &mut delivery.payload
+            else {
+                unreachable!()
+            };
+            resolution.resolved_by = crate::im::ImResolvedBy::Channel(source);
+            let request = send_request("req-1", &delivery, &codec, ImLocale::ZhCn).unwrap();
+            assert_eq!(
+                request["body"]["markdown"]["content"],
+                format!("**id=0012 已在{expected}处理**")
+            );
         }
     }
 
@@ -2764,9 +3009,15 @@ mod tests {
         assert_eq!(options[2]["id"], "2");
         assert_eq!(options[2]["text"], "拒绝");
         assert_eq!(options[2]["is_checked"], false);
-        assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
+        assert_eq!(
+            card["submit_button"]["key"],
+            format!("{}:submit", card_task_id("delivery-1", "card-req-1"))
+        );
         assert_eq!(card["submit_button"]["text"], "提交");
-        assert_eq!(card["task_id"], delivery.delivery_id);
+        assert_eq!(
+            card["task_id"],
+            card_task_id(&delivery.delivery_id, "card-req-1")
+        );
         assert_eq!(card["main_title"]["title"], "权限审批（id=0007）");
         assert_eq!(card["main_title"]["desc"], "Agent 请求执行命令");
         assert_eq!(
@@ -2822,6 +3073,34 @@ mod tests {
     }
 
     #[test]
+    fn permission_card_with_only_allow_options_stays_actionable() {
+        let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
+        let delivery = permission_delivery(vec![permission_option(
+            "allow_once",
+            "Yes, proceed",
+            PermissionActionKind::AllowOnce,
+        )]);
+
+        let plan = linked_detail_send_plan(
+            "detail-req-1",
+            "card-req-1",
+            &delivery,
+            &codec,
+            ImLocale::En,
+        )
+        .unwrap();
+        let card = &plan.card_request["body"]["template_card"];
+        assert_eq!(card["card_type"], "vote_interaction");
+        assert_eq!(
+            card["checkbox"]["option_list"]
+                .as_array()
+                .expect("allow-only permission keeps a vote option")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn permission_detail_and_vote_card_share_the_same_display_ref() {
         let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
         let mut delivery = permission_delivery(vec![permission_option(
@@ -2847,7 +3126,7 @@ mod tests {
         assert_eq!(card_title, "Permission (id=0123)");
         assert_eq!(
             plan.card_request["body"]["template_card"]["task_id"],
-            delivery.delivery_id
+            card_task_id(&delivery.delivery_id, "card-req-1")
         );
     }
 
@@ -2889,7 +3168,10 @@ mod tests {
         assert_eq!(options[1]["id"], "1");
         assert_eq!(options[1]["text"], "失败");
         assert_eq!(options[1]["is_checked"], false);
-        assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
+        assert_eq!(
+            card["submit_button"]["key"],
+            format!("{}:submit", card_task_id("delivery-1", "card-req-1"))
+        );
     }
 
     #[test]
@@ -2995,41 +3277,41 @@ mod tests {
         let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
         let options = || {
             vec![
-                RemoteElicitationOption {
+                ElicitationQuestionOption {
                     value: json!("MySQL"),
                     label: "MySQL".into(),
                     description: Some("默认数据库".into()),
                 },
-                RemoteElicitationOption {
+                ElicitationQuestionOption {
                     value: json!("PostgreSQL"),
                     label: "PostgreSQL".into(),
                     description: None,
                 },
             ]
         };
-        let question =
-            |selector_key: &str, field_name: &str, options: Vec<RemoteElicitationOption>| {
-                RemoteScalarChoiceQuestion {
-                    selector_key: selector_key.into(),
-                    field_name: field_name.into(),
-                    title: "数据库选择".into(),
-                    description: Some("请选择".into()),
-                    required: true,
-                    options,
-                }
-            };
+        let form_of = |question: RemoteQuestion| RemoteElicitationForm {
+            questions: vec![question],
+            decline_allowed: false,
+        };
         for (form, mode) in [
             (
-                RemoteElicitationForm::SingleScalarChoice {
-                    question: question("q0", "question_0", options()),
-                },
+                form_of(choice_question(
+                    "q0",
+                    "question_0",
+                    ElicitationQuestionKind::SingleSelect,
+                    options(),
+                    false,
+                )),
                 0,
             ),
             (
-                RemoteElicitationForm::MultiScalarChoice {
-                    question: question("q0", "features", options()),
-                    allows_empty: true,
-                },
+                form_of(choice_question(
+                    "q0",
+                    "features",
+                    ElicitationQuestionKind::MultiSelect,
+                    options(),
+                    true,
+                )),
                 1,
             ),
         ] {
@@ -3124,8 +3406,11 @@ mod tests {
             assert_eq!(card["checkbox"]["option_list"][0]["id"], "0");
             assert_eq!(card["checkbox"]["option_list"][1]["id"], "1");
             assert!(card.get("button_list").is_none());
-            assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
-            assert_eq!(card["task_id"], "delivery-1");
+            assert_eq!(
+                card["submit_button"]["key"],
+                format!("{}:submit", card_task_id("delivery-1", "card-req-1"))
+            );
+            assert_eq!(card["task_id"], card_task_id("delivery-1", "card-req-1"));
             assert_eq!(card["main_title"]["title"], "补充信息（id=0123）");
         }
     }
@@ -3173,6 +3458,7 @@ mod tests {
     fn private_card_action_uses_sender_as_conversation_identity() {
         let action = WeComActionReference {
             delivery_id: "delivery-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
             action_index: 0,
         };
         let callback = official_action_callback(
@@ -3187,31 +3473,26 @@ mod tests {
         assert_eq!(envelope.actor_id, "single-user");
         assert_eq!(envelope.platform_event_id, "event-1");
         assert_eq!(
-            response_context,
-            ImActionResponseContext::WeCom {
-                req_id: "callback-req-1".into(),
-                task_id: "delivery-1".into(),
-                vote_selection: None,
-                form_selection: None,
-            }
+            handle_of(&response_context),
+            &button_handle("callback-req-1", "delivery-1")
         );
 
         let update = action_response_request(
-            "callback-req-1",
-            "delivery-1",
-            ImMessageState::Handled,
+            handle_of(&response_context),
+            &response_with(ImActionResponseState::Handled, None),
             ImLocale::ZhCn,
-            None,
-            None,
         );
         assert_eq!(update["headers"]["req_id"], "callback-req-1");
         assert_eq!(update["body"]["response_type"], "update_template_card");
         let card = &update["body"]["template_card"];
-        assert_eq!(card["task_id"], "delivery-1");
+        assert_eq!(card["task_id"], card_task_id("delivery-1", "req-1"));
         assert_eq!(card["card_type"], "button_interaction");
         assert_eq!(card["main_title"]["title"], "已处理");
         assert_eq!(card["button_list"][0]["text"], "已处理");
-        assert_eq!(card["button_list"][0]["key"], "delivery-1:0");
+        assert_eq!(
+            card["button_list"][0]["key"],
+            format!("{}:0", card_task_id("delivery-1", "req-1"))
+        );
 
         let repeated = official_action_callback(
             &action,
@@ -3255,6 +3536,7 @@ mod tests {
     fn optional_chattype_without_chatid_is_a_private_callback() {
         let action = WeComActionReference {
             delivery_id: "delivery-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
             action_index: 0,
         };
         let callback =
@@ -3263,13 +3545,8 @@ mod tests {
         assert_eq!(envelope.conversation_id, "single-user");
         assert_eq!(envelope.actor_id, "single-user");
         assert_eq!(
-            context,
-            ImActionResponseContext::WeCom {
-                req_id: "callback-req-1".into(),
-                task_id: "delivery-1".into(),
-                vote_selection: None,
-                form_selection: None,
-            }
+            handle_of(&context),
+            &button_handle("callback-req-1", "delivery-1")
         );
 
         let mut group_without_chattype = callback;
@@ -3284,6 +3561,7 @@ mod tests {
     fn missing_optional_task_id_derives_original_delivery_identity() {
         let action = WeComActionReference {
             delivery_id: "delivery-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
             action_index: 0,
         };
         let mut callback = official_action_callback(
@@ -3302,17 +3580,12 @@ mod tests {
         let (envelope, context) = action_envelope(&callback).unwrap();
         assert_eq!(envelope.delivery_id, "delivery-1");
         assert_eq!(
-            context,
-            ImActionResponseContext::WeCom {
-                req_id: "callback-req-1".into(),
-                task_id: "delivery-1".into(),
-                vote_selection: None,
-                form_selection: None,
-            }
+            handle_of(&context),
+            &button_handle("callback-req-1", "delivery-1")
         );
         assert_eq!(
             envelope.action,
-            ImInboundActionSelection::LocalIndex { index: 0 }
+            ImSubmittedAction::PublishedAction { index: 0 }
         );
     }
 
@@ -3330,29 +3603,36 @@ mod tests {
             assert_eq!(envelope.delivery_id, "delivery-1");
             assert_eq!(
                 envelope.action,
-                ImInboundActionSelection::LocalIndex {
+                ImSubmittedAction::PublishedAction {
                     index: expected_index
                 }
             );
-            let ImActionResponseContext::WeCom {
-                req_id,
-                task_id,
-                vote_selection,
-                form_selection: _,
-            } = context;
-            assert_eq!(req_id, "callback-req-1");
-            assert_eq!(task_id, "delivery-1");
-            let selection = vote_selection.expect("vote selection");
-            assert_eq!(selection.selected_option_id, selected_option_id);
-            assert!(selection.vote_actions.is_empty());
+            assert_eq!(
+                handle_of(&context),
+                &WeComResponseHandle {
+                    req_id: "callback-req-1".into(),
+                    task_id: card_task_id("delivery-1", "req-1"),
+                    selection: WeComCallbackSelection::Vote {
+                        selected_option_id: selected_option_id.into(),
+                    },
+                }
+            );
         }
     }
 
     #[test]
     fn official_elicitation_form_callbacks_become_generic_selections() {
+        let form_card_kind = |context: &ImActionResponseContext| match &handle_of(context).selection
+        {
+            WeComCallbackSelection::Form {
+                card_kind,
+                selections,
+            } => (*card_kind, selections.clone()),
+            other => panic!("expected form context, got {other:?}"),
+        };
         let single = official_form_callback(
             "vote_interaction",
-            &[RemoteElicitationFormSelection {
+            &[WeComFormItem {
                 selector_key: "q0".into(),
                 option_ids: vec!["1".into()],
             }],
@@ -3363,25 +3643,21 @@ mod tests {
         let (envelope, context) = action_envelope(&single).unwrap();
         assert_eq!(
             envelope.action,
-            ImInboundActionSelection::Form {
-                selections: vec![RemoteElicitationFormSelection {
-                    selector_key: "q0".into(),
-                    option_ids: vec!["1".into()],
-                }]
+            ImSubmittedAction::ElicitationForm {
+                answers: BTreeMap::from([(
+                    "q0".to_string(),
+                    RemoteElicitationAnswer::Choice {
+                        option_ids: vec!["1".into()],
+                        custom_text: None,
+                    },
+                )])
             }
         );
-        let ImActionResponseContext::WeCom {
-            form_selection: Some(form_selection),
-            ..
-        } = context
-        else {
-            panic!("expected form context");
-        };
-        assert_eq!(form_selection.card_kind, ImWeComFormCardKind::VoteSingle);
+        assert_eq!(form_card_kind(&context).0, WeComFormCardKind::VoteSingle);
 
         let multi = official_form_callback(
             "vote_interaction",
-            &[RemoteElicitationFormSelection {
+            &[WeComFormItem {
                 selector_key: "q0".into(),
                 option_ids: vec!["1".into(), "0".into()],
             }],
@@ -3390,27 +3666,21 @@ mod tests {
             "delivery-1",
         );
         let (_, context) = action_envelope(&multi).unwrap();
-        let ImActionResponseContext::WeCom {
-            form_selection: Some(form_selection),
-            ..
-        } = context
-        else {
-            panic!("expected form context");
-        };
-        assert_eq!(form_selection.card_kind, ImWeComFormCardKind::VoteMulti);
+        let (card_kind, selections) = form_card_kind(&context);
+        assert_eq!(card_kind, WeComFormCardKind::VoteMulti);
         assert_eq!(
-            form_selection.selections[0].option_ids,
+            selections[0].option_ids,
             vec!["1".to_string(), "0".to_string()]
         );
 
         let multiple = official_form_callback(
             "multiple_interaction",
             &[
-                RemoteElicitationFormSelection {
+                WeComFormItem {
                     selector_key: "q0".into(),
                     option_ids: vec!["0".into()],
                 },
-                RemoteElicitationFormSelection {
+                WeComFormItem {
                     selector_key: "q1".into(),
                     option_ids: vec!["1".into()],
                 },
@@ -3424,19 +3694,13 @@ mod tests {
             envelope.delivery_id, "delivery-1",
             "task and submit key must resolve the same delivery"
         );
-        let ImActionResponseContext::WeCom {
-            form_selection: Some(form_selection),
-            ..
-        } = context
-        else {
-            panic!("expected form context");
-        };
-        assert_eq!(form_selection.card_kind, ImWeComFormCardKind::Multiple);
-        assert_eq!(form_selection.selections.len(), 2);
+        let (card_kind, selections) = form_card_kind(&context);
+        assert_eq!(card_kind, WeComFormCardKind::Multiple);
+        assert_eq!(selections.len(), 2);
 
         let duplicate = official_form_callback(
             "vote_interaction",
-            &[RemoteElicitationFormSelection {
+            &[WeComFormItem {
                 selector_key: "q0".into(),
                 option_ids: vec!["0".into(), "0".into()],
             }],
@@ -3448,6 +3712,38 @@ mod tests {
             action_envelope(&duplicate).unwrap_err().reason,
             WeComActionParseReason::SelectionInvalid
         );
+    }
+
+    #[test]
+    fn multiple_interaction_accepts_up_to_three_questions() {
+        let selections = (0..3)
+            .map(|index| WeComFormItem {
+                selector_key: format!("q{index}"),
+                option_ids: vec![index.to_string()],
+            })
+            .collect::<Vec<_>>();
+        let callback = official_form_callback(
+            "multiple_interaction",
+            &selections,
+            "callback-req-1",
+            "event-form-three",
+            "delivery-1",
+        );
+
+        let (envelope, context) = action_envelope(&callback).unwrap();
+        let ImSubmittedAction::ElicitationForm { answers } = envelope.action else {
+            unreachable!("multiple_interaction submits an elicitation form");
+        };
+        assert_eq!(answers.len(), 3);
+        let WeComCallbackSelection::Form {
+            card_kind,
+            selections,
+        } = &handle_of(&context).selection
+        else {
+            unreachable!("multiple_interaction keeps a form callback context");
+        };
+        assert_eq!(*card_kind, WeComFormCardKind::Multiple);
+        assert_eq!(selections.len(), 3);
     }
 
     #[test]
@@ -3565,35 +3861,32 @@ mod tests {
 
     #[test]
     fn successful_vote_update_stays_a_disabled_vote_card() {
-        let selection = ImWeComVoteSelection {
-            selected_option_id: "0".into(),
-            vote_actions: vec![
-                permission_option("allow_once", "Allow once", PermissionActionKind::AllowOnce),
-                permission_option(
-                    "allow_for_session",
-                    "Allow for this session",
-                    PermissionActionKind::AllowAlways,
-                ),
-                permission_option("cancel", "Cancel", PermissionActionKind::RejectOnce),
-            ],
-            display_ref: Some(80),
-        };
+        let mut delivery = permission_delivery(vec![
+            permission_option("allow_once", "Allow once", PermissionActionKind::AllowOnce),
+            permission_option(
+                "allow_for_session",
+                "Allow for this session",
+                PermissionActionKind::AllowAlways,
+            ),
+            permission_option("cancel", "Cancel", PermissionActionKind::RejectOnce),
+        ]);
+        delivery.display_ref = Some(80);
         let update = action_response_request(
-            "callback-req-1",
-            "delivery-1",
-            ImMessageState::Handled,
+            &vote_handle("0"),
+            &response_with(ImActionResponseState::Handled, Some(delivery)),
             ImLocale::ZhCn,
-            Some(&selection),
-            None,
         );
         let card = &update["body"]["template_card"];
         assert_eq!(update["cmd"], "aibot_respond_update_msg");
         assert_eq!(update["body"]["response_type"], "update_template_card");
         assert_eq!(card["card_type"], "vote_interaction");
-        assert_eq!(card["task_id"], "delivery-1");
+        assert_eq!(card["task_id"], card_task_id("delivery-1", "req-1"));
         assert_eq!(card["checkbox"]["disable"], true);
         assert_eq!(card["checkbox"]["mode"], 0);
-        assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
+        assert_eq!(
+            card["submit_button"]["key"],
+            format!("{}:submit", card_task_id("delivery-1", "req-1"))
+        );
         assert!(card["submit_button"].get("disable").is_none());
         assert_eq!(card["main_title"]["title"], "id=0080 已处理：仅允许一次");
         assert_eq!(card["main_title"]["desc"], "Agent 请求执行命令");
@@ -3612,21 +3905,15 @@ mod tests {
 
     #[test]
     fn successful_manual_check_vote_update_keeps_selected_outcome() {
-        let selection = ImWeComVoteSelection {
-            selected_option_id: "1".into(),
-            vote_actions: vec![
-                InterventionAllowedAction::ManualSuccess,
-                InterventionAllowedAction::ManualFailure,
-            ],
-            display_ref: Some(80),
-        };
+        let mut delivery = permission_delivery(vec![
+            InterventionAllowedAction::ManualSuccess,
+            InterventionAllowedAction::ManualFailure,
+        ]);
+        delivery.display_ref = Some(80);
         let update = action_response_request(
-            "callback-req-1",
-            "delivery-1",
-            ImMessageState::Handled,
+            &vote_handle("1"),
+            &response_with(ImActionResponseState::Handled, Some(delivery)),
             ImLocale::ZhCn,
-            Some(&selection),
-            None,
         );
         let card = &update["body"]["template_card"];
         assert_eq!(card["card_type"], "vote_interaction");
@@ -3639,7 +3926,10 @@ mod tests {
         assert_eq!(options[1]["id"], "1");
         assert_eq!(options[1]["text"], "失败");
         assert_eq!(options[1]["is_checked"], true);
-        assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
+        assert_eq!(
+            card["submit_button"]["key"],
+            format!("{}:submit", card_task_id("delivery-1", "req-1"))
+        );
         assert!(card["submit_button"].get("disable").is_none());
     }
 
@@ -3647,33 +3937,52 @@ mod tests {
     fn elicitation_terminal_cards_keep_original_controls_and_display_ref() {
         let options = || {
             vec![
-                RemoteElicitationOption {
+                ElicitationQuestionOption {
                     value: json!("a"),
                     label: "选项A".into(),
                     description: None,
                 },
-                RemoteElicitationOption {
+                ElicitationQuestionOption {
                     value: json!("b"),
                     label: "选项B".into(),
                     description: None,
                 },
             ]
         };
-        let question = |selector: &str, field: &str| RemoteScalarChoiceQuestion {
-            selector_key: selector.into(),
-            field_name: field.into(),
-            title: format!("{selector} 标题"),
-            description: None,
-            required: true,
-            options: options(),
+        let question = |selector: &str, field: &str, kind: ElicitationQuestionKind| {
+            let mut question = choice_question(selector, field, kind, options(), false);
+            question.question.title = format!("{selector} 标题");
+            question.question.description = None;
+            question
         };
-        let multi_form = RemoteElicitationForm::MultiScalarChoice {
-            question: question("q0", "features"),
-            allows_empty: false,
+        let multi_form = RemoteElicitationForm {
+            questions: vec![question(
+                "q0",
+                "features",
+                ElicitationQuestionKind::MultiSelect,
+            )],
+            decline_allowed: false,
         };
+        let form_delivery = |form: &RemoteElicitationForm| {
+            let mut delivery =
+                permission_delivery(vec![InterventionAllowedAction::ElicitationFixedForm {
+                    form: form.clone(),
+                }]);
+            delivery.display_ref = Some(80);
+            delivery
+        };
+        let form_handle =
+            |card_kind: WeComFormCardKind, selections: Vec<WeComFormItem>| WeComResponseHandle {
+                req_id: "callback-req-1".into(),
+                task_id: card_task_id("delivery-1", "req-1"),
+                selection: WeComCallbackSelection::Form {
+                    card_kind,
+                    selections,
+                },
+            };
         let delivery = permission_delivery(Vec::new());
         let outbound = elicitation_template_card(
-            &delivery,
+            &card_task_id(&delivery.delivery_id, "req-1"),
             &multi_form,
             "补充信息（id=0080）",
             "任务正在等待你的回答。",
@@ -3682,22 +3991,20 @@ mod tests {
         );
         assert_eq!(outbound["card_type"], "vote_interaction");
         assert_eq!(outbound["checkbox"]["mode"], 1);
-        let multi_context = ImWeComFormSelection {
-            card_kind: ImWeComFormCardKind::VoteMulti,
-            selections: vec![RemoteElicitationFormSelection {
+        let multi_context = form_handle(
+            WeComFormCardKind::VoteMulti,
+            vec![WeComFormItem {
                 selector_key: "q0".into(),
                 option_ids: vec!["0".into(), "1".into()],
             }],
-            form: Some(multi_form.clone()),
-            display_ref: Some(80),
-        };
+        );
         let update = action_response_request(
-            "callback-req-1",
-            &delivery.delivery_id,
-            ImMessageState::Handled,
+            &multi_context,
+            &response_with(
+                ImActionResponseState::Handled,
+                Some(form_delivery(&multi_form)),
+            ),
             ImLocale::ZhCn,
-            None,
-            Some(&multi_context),
         );
         let card = &update["body"]["template_card"];
         assert_eq!(card["card_type"], "vote_interaction");
@@ -3705,15 +4012,22 @@ mod tests {
         assert_eq!(card["checkbox"]["disable"], true);
         assert_eq!(card["checkbox"]["option_list"][0]["is_checked"], true);
         assert_eq!(card["checkbox"]["option_list"][1]["is_checked"], true);
-        assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
+        assert_eq!(
+            card["submit_button"]["key"],
+            format!("{}:submit", card_task_id("delivery-1", "req-1"))
+        );
         assert!(card["submit_button"].get("disable").is_none());
         assert_eq!(card["main_title"]["title"], "id=0080 已处理：选项A, 选项B");
 
-        let questions_form = RemoteElicitationForm::ScalarChoiceQuestions {
-            questions: vec![question("q0", "q0"), question("q1", "q1")],
+        let questions_form = RemoteElicitationForm {
+            questions: vec![
+                question("q0", "q0", ElicitationQuestionKind::SingleSelect),
+                question("q1", "q1", ElicitationQuestionKind::SingleSelect),
+            ],
+            decline_allowed: false,
         };
         let outbound = elicitation_template_card(
-            &delivery,
+            &card_task_id(&delivery.delivery_id, "req-1"),
             &questions_form,
             "补充信息（id=0080）",
             "任务正在等待你的回答。",
@@ -3723,28 +4037,26 @@ mod tests {
         assert_eq!(outbound["card_type"], "multiple_interaction");
         assert_eq!(outbound["select_list"].as_array().unwrap().len(), 2);
         assert_eq!(outbound["select_list"][0]["question_key"], "q0");
-        let multiple_context = ImWeComFormSelection {
-            card_kind: ImWeComFormCardKind::Multiple,
-            selections: vec![
-                RemoteElicitationFormSelection {
+        let multiple_context = form_handle(
+            WeComFormCardKind::Multiple,
+            vec![
+                WeComFormItem {
                     selector_key: "q0".into(),
                     option_ids: vec!["0".into()],
                 },
-                RemoteElicitationFormSelection {
+                WeComFormItem {
                     selector_key: "q1".into(),
                     option_ids: vec!["1".into()],
                 },
             ],
-            form: Some(questions_form),
-            display_ref: Some(80),
-        };
+        );
         let update = action_response_request(
-            "callback-req-1",
-            &delivery.delivery_id,
-            ImMessageState::Handled,
+            &multiple_context,
+            &response_with(
+                ImActionResponseState::Handled,
+                Some(form_delivery(&questions_form)),
+            ),
             ImLocale::ZhCn,
-            None,
-            Some(&multiple_context),
         );
         let card = &update["body"]["template_card"];
         assert_eq!(card["card_type"], "multiple_interaction");
@@ -3765,6 +4077,7 @@ mod tests {
     fn flattened_sdk_type_shape_is_not_accepted_as_runtime_callback() {
         let action = WeComActionReference {
             delivery_id: "delivery-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
             action_index: 0,
         };
         let callback = json!({
@@ -3776,7 +4089,7 @@ mod tests {
                 "from": { "userid": "single-user" },
                 "event": {
                     "eventtype": "template_card_event",
-                    "event_key": format!("{}:{}", action.delivery_id, action.action_index),
+                    "event_key": format!("{}:{}", action.task_id, action.action_index),
                     "task_id": action.delivery_id
                 }
             }
@@ -3792,6 +4105,7 @@ mod tests {
     async fn invalid_private_callback_queues_original_card_failure_response() {
         let action = WeComActionReference {
             delivery_id: "delivery-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
             action_index: 0,
         };
         let callback = official_action_callback(
@@ -3810,20 +4124,25 @@ mod tests {
         match command_receiver.recv().await.unwrap() {
             WeComCommand::RespondToAction {
                 context,
-                state,
+                action_response,
                 deadline: _,
                 response: _,
             } => {
                 assert_eq!(
-                    context,
-                    ImActionResponseContext::WeCom {
-                        req_id: "callback-req-1".into(),
-                        task_id: "wrong-delivery".into(),
-                        vote_selection: None,
-                        form_selection: None,
-                    }
+                    handle_of(&context),
+                    &button_handle("callback-req-1", "wrong-delivery")
                 );
-                assert_eq!(state, ImMessageState::Failed);
+                assert_eq!(
+                    action_response,
+                    response_with(
+                        ImActionResponseState::Rejected(ImErrorCode::ProtocolInvalid),
+                        None
+                    )
+                );
+                assert_eq!(
+                    action_response.state.message_state(),
+                    ImMessageState::Failed
+                );
             }
             WeComCommand::Send { .. } => panic!("unexpected WeCom send command"),
         }
@@ -3960,6 +4279,90 @@ mod tests {
         assert!(connector.command_sender().is_err());
     }
 
+    #[test]
+    fn repeated_card_sends_have_distinct_platform_ids_but_one_delivery() {
+        use crate::app::intervention::{InterventionCommandResult, InterventionCommandStatus};
+        use crate::im::{ImInboundActionService, ImInboundOutcome, ImRepository};
+        let mut delivery = manual_check_delivery();
+        delivery.destination.destination_id = "single-user".into();
+        delivery.destination.conversation_id = "single-user".into();
+        delivery.destination.authorized_actor_id = "single-user".into();
+        delivery.refresh_id();
+        let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let repository = std::sync::Arc::new(ImRepository::new(
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("im.db")).unwrap(),
+        ));
+        repository.enqueue(&delivery, 0).unwrap();
+        let service = ImInboundActionService::new(repository, codec.clone());
+        let mut execution_count = 0;
+        let first = send_request("send-1", &delivery, &codec, ImLocale::ZhCn).unwrap();
+        let second = send_request("send-2", &delivery, &codec, ImLocale::ZhCn).unwrap();
+        let first_card = &first["body"]["template_card"];
+        let second_card = &second["body"]["template_card"];
+        assert_ne!(
+            first_card["task_id"], second_card["task_id"],
+            "WeCom rejects reused task_id with 42014, including sends with a lost ACK"
+        );
+        for (index, card) in [first_card, second_card].into_iter().enumerate() {
+            assert!(valid_wecom_task_id(card["task_id"].as_str().unwrap()));
+            assert_eq!(card["task_id"].as_str().unwrap().len(), 97);
+            let mut callback = official_vote_callback(
+                &delivery.delivery_id,
+                "0",
+                "callback-1",
+                &format!("msg-{index}"),
+                None,
+            );
+            callback["body"]["event"]["template_card_event"]["task_id"] = card["task_id"].clone();
+            callback["body"]["event"]["template_card_event"]["event_key"] =
+                card["submit_button"]["key"].clone();
+            let (envelope, context) = action_envelope(&callback).unwrap();
+            assert_eq!(envelope.delivery_id, delivery.delivery_id);
+            assert_eq!(
+                context
+                    .downcast_ref::<WeComResponseHandle>()
+                    .unwrap()
+                    .task_id,
+                card["task_id"].as_str().unwrap()
+            );
+            let result = service
+                .handle(&envelope, 1, |_| {
+                    execution_count += 1;
+                    Ok(InterventionCommandResult {
+                        status: InterventionCommandStatus::Accepted,
+                        canonical_state: "resolved".into(),
+                    })
+                })
+                .unwrap();
+            assert_eq!(
+                result.result.outcome,
+                if index == 0 {
+                    ImInboundOutcome::Accepted
+                } else {
+                    ImInboundOutcome::AlreadyApplied
+                }
+            );
+            let update = action_response_request(
+                context.downcast_ref::<WeComResponseHandle>().unwrap(),
+                &response_with(ImActionResponseState::Handled, Some(delivery.clone())),
+                ImLocale::ZhCn,
+            );
+            assert_eq!(update["body"]["template_card"]["task_id"], card["task_id"]);
+            assert_eq!(
+                update["body"]["template_card"]["submit_button"]["key"],
+                card["submit_button"]["key"]
+            );
+            callback["body"]["event"]["template_card_event"]["task_id"] =
+                json!(card_task_id(&delivery.delivery_id, "different-send"));
+            assert_eq!(
+                action_envelope(&callback).unwrap_err().reason,
+                WeComActionParseReason::TaskMismatch
+            );
+        }
+        assert_eq!(execution_count, 1);
+    }
+
     #[tokio::test]
     async fn permission_detail_ack_gates_the_vote_card() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4016,7 +4419,7 @@ mod tests {
             permission_option("cancel", "No", PermissionActionKind::RejectOnce),
         ]);
         let send_connector = std::sync::Arc::clone(&connector);
-        let send_task = tokio::spawn(async move { send_connector.send(delivery).await });
+        let send_task = tokio::spawn(async move { send_connector.send(delivery, None).await });
 
         let detail = server.next().await.unwrap().unwrap();
         let detail: Value = match detail {
@@ -4139,7 +4542,10 @@ mod tests {
         let send_connector = std::sync::Arc::clone(&connector);
         let send_task = tokio::spawn(async move {
             send_connector
-                .send(desktop_resolution_delivery(ImNotificationKind::Elicitation))
+                .send(
+                    desktop_resolution_delivery(ImNotificationKind::Elicitation),
+                    None,
+                )
                 .await
         });
         let request = server.next().await.unwrap().unwrap();
@@ -4179,7 +4585,7 @@ mod tests {
             PermissionActionKind::RejectOnce,
         )]);
         invalid_delivery.display_ref = None;
-        let error = connector.send(invalid_delivery).await.unwrap_err();
+        let error = connector.send(invalid_delivery, None).await.unwrap_err();
         assert_eq!(error.code, ImErrorCode::ProtocolInvalid);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), server.next())
@@ -4198,3 +4604,6 @@ mod tests {
         connect_task.await.unwrap().unwrap();
     }
 }
+
+#[cfg(test)]
+mod golden_tests;

@@ -1,3 +1,4 @@
+pub mod feishu;
 pub mod wecom;
 
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,9 @@ use crate::app::intervention::{
 };
 
 use super::{
+    INTERVENTION_NODE_FIELD, INTERVENTION_TASK_FIELD, INTERVENTION_WORKSPACE_FIELD,
     ImActionTokenClaims, ImActionTokenCodec, ImDelivery, ImDeliveryPayload, ImInboundError,
-    ImLocale, InterventionPresentation, InterventionQuestionKind,
+    ImLocale, InterventionPresentation, InterventionQuestionKind, is_intervention_context_field,
 };
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +76,21 @@ pub(crate) fn intervention_actions(
 }
 
 pub(crate) fn notification_markdown(delivery: &ImDelivery, locale: ImLocale) -> String {
+    notification_markdown_impl(delivery, locale, true)
+}
+
+pub(crate) fn notification_markdown_without_context(
+    delivery: &ImDelivery,
+    locale: ImLocale,
+) -> String {
+    notification_markdown_impl(delivery, locale, false)
+}
+
+fn notification_markdown_impl(
+    delivery: &ImDelivery,
+    locale: ImLocale,
+    include_context_fields: bool,
+) -> String {
     match &delivery.payload {
         ImDeliveryPayload::Intervention { presentation, .. } => {
             let mut text = format!(
@@ -86,6 +103,9 @@ pub(crate) fn notification_markdown(delivery: &ImDelivery, locale: ImLocale) -> 
                 text.push_str(&format!("\n\n{details}"));
             }
             for (key, value) in &presentation.fields {
+                if !include_context_fields && is_intervention_context_field(key) {
+                    continue;
+                }
                 if !value.trim().is_empty() {
                     text.push_str(&format!("\n\n- {}: {value}", localized(locale, key)));
                 }
@@ -107,9 +127,39 @@ pub(crate) fn notification_markdown(delivery: &ImDelivery, locale: ImLocale) -> 
                 .or(delivery.display_ref)
                 .map(|value| format!("{value:04}"))
                 .unwrap_or_else(|| "----".to_string());
-            localized(locale, "im.intervention.handledOnDesktop").replace("{ref}", &display_ref)
+            localized(locale, "im.intervention.handledOn")
+                .replace("{ref}", &display_ref)
+                .replace("{source}", resolved_by_copy(resolution.resolved_by, locale))
         }
     }
+}
+
+pub(crate) fn resolved_by_copy(resolved_by: super::ImResolvedBy, locale: ImLocale) -> &'static str {
+    use super::{ImChannelKind, ImResolvedBy};
+    let key = match resolved_by {
+        ImResolvedBy::Desktop => "im.intervention.resolvedBy.desktop",
+        ImResolvedBy::Channel(ImChannelKind::WeCom) => "im.intervention.resolvedBy.wecom",
+        ImResolvedBy::Channel(ImChannelKind::Feishu) => "im.intervention.resolvedBy.feishu",
+    };
+    localized(locale, key)
+}
+
+pub(crate) fn notification_context_markdown(delivery: &ImDelivery, locale: ImLocale) -> String {
+    let ImDeliveryPayload::Intervention { presentation, .. } = &delivery.payload else {
+        return String::new();
+    };
+    [
+        INTERVENTION_NODE_FIELD,
+        INTERVENTION_TASK_FIELD,
+        INTERVENTION_WORKSPACE_FIELD,
+    ]
+    .iter()
+    .filter_map(|key| {
+        let value = presentation.fields.get(*key)?;
+        (!value.trim().is_empty()).then(|| format!("- {}: {}", localized(locale, key), value))
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 pub(crate) fn presentation_detail_text(
@@ -191,7 +241,7 @@ pub(crate) fn message_state_label(locale: ImLocale, state: super::ImMessageState
     }
 }
 
-fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String {
+pub(crate) fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String {
     match action {
         InterventionAllowedAction::PermissionOption {
             option_id,
@@ -318,6 +368,26 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
             "请求详情见本消息，请在下一条权限审批卡片中选择。"
         }
         (ImLocale::ZhCn, "im.manualCheck.card.titleWithRef") => "人工检查（id={ref}）",
+        (ImLocale::ZhCn, "im.feishu.processing") => "处理中",
+        (ImLocale::ZhCn, "im.feishu.customAnswerMissing") => "请填写“其他”的内容",
+        (ImLocale::ZhCn, "im.feishu.textTooLong") => "内容超出长度限制",
+        (ImLocale::ZhCn, "im.feishu.invalidAnswer") => "回答无效，请修正后重试",
+        (ImLocale::ZhCn, "im.feishu.notActionable") => "这条消息不能在飞书处理",
+        (ImLocale::ZhCn, "im.feishu.result.submitted") => "表单已提交",
+        (ImLocale::ZhCn, "im.feishu.result.outcome") => "结果",
+        (ImLocale::ZhCn, "im.feishu.result.unavailable") => "已处理，结果详情不可用",
+        (ImLocale::ZhCn, "im.feishu.result.submission") => "提交内容",
+        (ImLocale::ZhCn, "im.feishu.result.empty") => "（空）",
+        (ImLocale::ZhCn, "im.feishu.result.source") => "处理端",
+        (ImLocale::ZhCn, "im.feishu.form.submit") => "提交",
+        (ImLocale::ZhCn, "im.feishu.form.select") => "请选择",
+        (ImLocale::ZhCn, "im.feishu.form.multiSelect") => "可多选",
+        (ImLocale::ZhCn, "im.feishu.form.input") => "请输入",
+        (ImLocale::ZhCn, "im.feishu.form.optional") => "选填",
+        (ImLocale::ZhCn, "im.feishu.form.other") => "其他（自行填写）",
+        (ImLocale::ZhCn, "im.intervention.resolvedBy.desktop") => "桌面端",
+        (ImLocale::ZhCn, "im.intervention.resolvedBy.wecom") => "企业微信",
+        (ImLocale::ZhCn, "im.intervention.resolvedBy.feishu") => "飞书",
         (ImLocale::ZhCn, "im.manualCheck.vote.linkedSubtitle") => {
             "模型输出见上一条消息，请选择检查结果后提交"
         }
@@ -346,7 +416,8 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
             "问题详情见本消息，请在下一条补充信息卡片中选择。"
         }
         (ImLocale::ZhCn, "im.elicitation.detail.context") => "前序模型输出",
-        (ImLocale::ZhCn, "im.intervention.handledOnDesktop") => "**id={ref} 已在桌面端处理**",
+        (ImLocale::ZhCn, "im.intervention.handledOn") => "**id={ref} 已在{source}处理**",
+        (ImLocale::ZhCn, "im.intervention.cancelled") => "已取消",
         (ImLocale::En, "im.notification.permission.title") => "Permission request",
         (ImLocale::En, "im.notification.permission.summary") => {
             "A task is waiting for your permission decision."
@@ -419,7 +490,28 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
             "This message contains the questions. Use the next information card to answer."
         }
         (ImLocale::En, "im.elicitation.detail.context") => "Previous model output",
-        (ImLocale::En, "im.intervention.handledOnDesktop") => "**id={ref} Handled on desktop**",
+        (ImLocale::En, "im.intervention.handledOn") => "**id={ref} Handled on {source}**",
+        (ImLocale::En, "im.intervention.cancelled") => "Cancelled",
+        (ImLocale::En, "im.feishu.processing") => "Processing",
+        (ImLocale::En, "im.feishu.customAnswerMissing") => "Enter the custom answer",
+        (ImLocale::En, "im.feishu.textTooLong") => "The answer exceeds the length limit",
+        (ImLocale::En, "im.feishu.invalidAnswer") => "Invalid answer. Correct it and try again",
+        (ImLocale::En, "im.feishu.notActionable") => "This message cannot be handled in Feishu",
+        (ImLocale::En, "im.feishu.result.submitted") => "Form submitted",
+        (ImLocale::En, "im.feishu.result.outcome") => "Result",
+        (ImLocale::En, "im.feishu.result.unavailable") => "Handled; result details unavailable",
+        (ImLocale::En, "im.feishu.result.submission") => "Submission",
+        (ImLocale::En, "im.feishu.result.empty") => "Empty",
+        (ImLocale::En, "im.feishu.result.source") => "Handled on",
+        (ImLocale::En, "im.feishu.form.submit") => "Submit",
+        (ImLocale::En, "im.feishu.form.select") => "Select an option",
+        (ImLocale::En, "im.feishu.form.multiSelect") => "Select options",
+        (ImLocale::En, "im.feishu.form.input") => "Enter text",
+        (ImLocale::En, "im.feishu.form.optional") => "Optional",
+        (ImLocale::En, "im.feishu.form.other") => "Other (enter text)",
+        (ImLocale::En, "im.intervention.resolvedBy.desktop") => "Desktop",
+        (ImLocale::En, "im.intervention.resolvedBy.wecom") => "WeCom",
+        (ImLocale::En, "im.intervention.resolvedBy.feishu") => "Feishu",
         _ => key,
     }
 }

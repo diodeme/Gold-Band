@@ -2545,24 +2545,42 @@
       "deleteDescription": "将停用连接并从系统凭据存储中删除 secret。待投递消息也会停止发送。",
       "confirmDelete": "删除",
       "scan": {
-        "title": "扫码接入企业微信",
-        "description": "使用手机企业微信扫码并确认授权。",
-        "notConfigured": "尚未接入企业微信。接入后可设置远程干预与通知。",
-        "botId": "机器人 ID：{{id}}",
+        "title": "扫码接入{{channel}}",
+        "description": "使用手机{{channel}}扫码并确认授权。",
+        "notConfigured": "尚未接入{{channel}}。接入后可设置远程干预与通知。",
         "connect": "扫码接入",
         "reauthorize": "重新授权",
         "generating": "正在生成二维码…",
-        "waiting": "请使用企业微信扫码并确认授权",
+        "waiting": "请使用{{channel}}扫码并确认授权",
         "expiresIn": "二维码将在 {{countdown}} 后过期",
         "waitingBinding": "授权完成，等待绑定接收账号",
-        "complete": "企业微信已可用",
-        "nextStep": "请在企业微信中给机器人发送一条消息，以完成一对一私聊绑定。",
+        "complete": "{{channel}}已可用",
+        "nextStep": "请在{{channel}}中给机器人发送一条消息，以完成一对一私聊绑定。",
         "retry": "重新生成",
-        "qrCodeLabel": "企业微信授权二维码"
+        "qrCodeLabel": "{{channel}}授权二维码"
       },
       "channels": {
-        "wecom": {
-          "title": "企业微信"
+        "weCom": {
+          "title": "企业微信",
+          "identity": "机器人 ID：{{id}}"
+        },
+        "feishu": {
+          "title": "飞书",
+          "identity": "App ID：{{id}}",
+          "singleDeviceHint": "一个机器人只连接一台设备，避免操作被其他设备接收。",
+          "permissions": {
+            "title": "接入需要以下权限",
+            "send": "向你发送消息",
+            "receive": "读取你发给机器人的私聊消息",
+            "update": "更新机器人发送的卡片",
+            "confirm": "同意并生成二维码"
+          },
+          "resetBinding": {
+            "action": "重新绑定接收账号",
+            "title": "重新绑定接收账号？",
+            "description": "将清除当前私聊绑定。请使用扫码授权的账号给机器人发送消息以重新绑定；如需更换授权账号，请重新授权。",
+            "confirm": "重新绑定"
+          }
         }
       },
       "status": {
@@ -2578,12 +2596,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "接入企业微信",
+          "title": "接入{{channel}}",
           "description": "扫码授权后，通过一对一私聊绑定接收账号。"
         },
         "waitingBinding": {
           "title": "绑定接收账号",
-          "description": "请在企业微信中给机器人发送一条消息。持久绑定完成后即可接收干预。"
+          "description": "请在{{channel}}中给机器人发送一条消息。持久绑定完成后即可接收干预。"
         },
         "connecting": {
           "title": "正在建立连接",
@@ -2598,7 +2616,7 @@
           "description": "自动恢复无法继续，请重新连接。"
         },
         "ready": {
-          "title": "企业微信可用",
+          "title": "{{channel}}可用",
           "description": "远程干预和已启用的通知会发送到已绑定私聊。"
         },
         "paused": {
@@ -2607,7 +2625,7 @@
         },
         "reauthorize": {
           "title": "需要重新授权",
-          "description": "当前凭据不可用，请重新扫码授权。"
+          "description": "请重新扫码确认授权。"
         },
         "conflict": {
           "title": "机器人正在其他客户端连接",
@@ -2657,10 +2675,12 @@
         "IM_SCAN_CANCELLED": "扫码授权已取消。",
         "IM_SCAN_EXPIRED": "二维码已过期，请重新生成。",
         "IM_SCAN_TIMEOUT": "扫码授权已超时，请重新生成。",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "暂时无法连接企业微信授权服务。",
-        "IM_SCAN_PROTOCOL_INVALID": "企业微信授权响应无效，请重新生成。",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "暂时无法连接授权服务。",
+        "IM_SCAN_PROTOCOL_INVALID": "授权响应无效，请重新生成。",
         "IM_SCAN_SESSION_INVALID": "扫码会话无效，请重新打开。",
         "IM_SCAN_SESSION_CONFLICT": "扫码授权正在处理中。",
+        "IM_SCAN_DENIED": "扫码授权被拒绝。",
+        "IM_SCOPE_MISSING": "应用缺少必需的权限，请重新授权。",
         "IM_STALE_GENERATION": "连接状态已更新，请根据最新状态重试。",
         "IM_RUNTIME_UNAVAILABLE": "IM 运行时尚未就绪。",
         "IM_CHANNEL_CLEANUP_PENDING": "配置已删除，本地清理将在后台自动重试。",

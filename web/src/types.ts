@@ -2163,7 +2163,7 @@ export interface ScheduledRuntimeSettingsInputVm {
   occurrenceRetentionDays: number;
 }
 
-export type ImChannelKind = 'weCom';
+export type ImChannelKind = 'weCom' | 'feishu';
 export type ImConnectionState = 'disabled' | 'connecting' | 'reconnecting' | 'connected' | 'authenticationRequired' | 'error';
 
 export interface ImNotificationPreferencesVm {
@@ -2189,11 +2189,28 @@ export interface ImObservedBindingVm {
   isPrivate: boolean;
 }
 
+export type ImMessageUpdateMode = 'none' | 'callbackOnly' | 'anytime';
+
+export type ImCustomAnswerSupportVm =
+  | { kind: 'unsupported' }
+  | { kind: 'supported'; maxChars: number };
+
+export interface ImInteractionCapabilitiesVm {
+  permissionMaxOptions: number;
+  maxQuestions: number;
+  singleChoiceMaxOptions: { singleQuestion: number; multiQuestion: number };
+  multiChoice: { maxOptions: number; withinMultiQuestion: boolean } | null;
+  freeText: { maxChars: number; multiline: boolean } | null;
+  customAnswer: ImCustomAnswerSupportVm;
+  decline: boolean;
+}
+
 export interface ImChannelCapabilitiesVm {
   proactiveDelivery: boolean;
   cardActions: boolean;
-  messageUpdate: boolean;
   privateChat: boolean;
+  messageUpdate: ImMessageUpdateMode;
+  interaction: ImInteractionCapabilitiesVm;
 }
 
 export interface ImConnectionIdentityVm {
@@ -2248,9 +2265,9 @@ export interface ImGenerationInputVm {
     expectedGeneration: number;
 }
 
-export interface WeComScanAuthorizationVm {
+export interface ImScanAuthorizationVm {
   sessionId: string;
-  authUrl: string;
+  qrUrl: string;
   expiresAtMs: number;
 }
 

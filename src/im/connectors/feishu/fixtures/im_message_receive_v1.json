@@ -1,0 +1,31 @@
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "evt_fixture_0001",
+    "event_type": "im.message.receive_v1",
+    "create_time": "1791773184328",
+    "token": "",
+    "app_id": "cli_fixture_app",
+    "tenant_key": "tenant_fixture"
+  },
+  "event": {
+    "sender": {
+      "sender_id": {
+        "open_id": "ou_fixture_owner",
+        "union_id": "on_fixture_owner",
+        "user_id": null
+      },
+      "sender_type": "user",
+      "tenant_key": "tenant_fixture"
+    },
+    "message": {
+      "chat_id": "oc_fixture_p2p",
+      "chat_type": "p2p",
+      "content": "{\"text\":\"hello\"}",
+      "create_time": "1791773183790",
+      "message_id": "om_fixture_0001",
+      "message_type": "text",
+      "update_time": "1791773183790"
+    }
+  }
+}

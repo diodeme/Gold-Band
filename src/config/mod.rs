@@ -33,6 +33,13 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .validate()
             .expect("embedded WeCom scan auth config is valid");
         config
+            .im
+            .as_ref()
+            .expect("embedded app-config.toml defines im")
+            .feishu_scan_auth
+            .validate()
+            .expect("embedded Feishu scan auth config is valid");
+        config
     })
 }
 
@@ -908,6 +915,14 @@ pub fn wecom_scan_auth_config() -> &'static WeComScanAuthConfig {
         .wecom_scan_auth
 }
 
+pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
+    &embedded_project_app_config()
+        .im
+        .as_ref()
+        .expect("embedded app-config.toml defines im")
+        .feishu_scan_auth
+}
+
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
 const USE_LOCAL_CLAUDE: bool = false;
 
@@ -1431,6 +1446,34 @@ pub struct ProjectAppConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ImAppConfig {
     pub wecom_scan_auth: WeComScanAuthConfig,
+    pub feishu_scan_auth: FeishuScanAuthConfig,
+}
+
+/// Feishu device-code registration presets: `source` tags the QR URL, and the
+/// app name/description prefill the self-built app created by the scan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeishuScanAuthConfig {
+    pub source: String,
+    pub app_name: String,
+    pub app_description: String,
+}
+
+impl FeishuScanAuthConfig {
+    fn validate(&self) -> Result<()> {
+        let source = self.source.trim();
+        if source.is_empty() || source.len() > 64 || !source.is_ascii() {
+            return Err(anyhow!(
+                "Feishu scan auth source must be non-empty ASCII with at most 64 bytes"
+            ));
+        }
+        if self.app_name.trim().is_empty() || self.app_description.trim().is_empty() {
+            return Err(anyhow!(
+                "Feishu scan auth app name and description must be non-empty"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3101,6 +3144,7 @@ mod tests {
     fn embedded_app_config_defines_wecom_scan_source() {
         assert_eq!(super::wecom_scan_auth_config().source, "maling");
         assert!(super::wecom_scan_auth_config().validate().is_ok());
+        assert!(super::feishu_scan_auth_config().validate().is_ok());
     }
 
     #[test]

@@ -42,7 +42,15 @@ function channelFixture(
       enabled: true,
       generation: 3,
       state,
-      capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
+      capabilities: {
+        proactiveDelivery: true, cardActions: true, messageUpdate: 'callbackOnly', privateChat: true,
+        interaction: {
+          permissionMaxOptions: 20, maxQuestions: 3,
+          singleChoiceMaxOptions: { singleQuestion: 20, multiQuestion: 10 },
+          multiChoice: { maxOptions: 20, withinMultiQuestion: false },
+          freeText: null, customAnswer: { kind: 'unsupported' }, decline: false,
+        },
+      },
       identity: { botId: 'bot-id', displayName: 'Bot' },
       binding: null,
       lastConnectedAtMs: null,
@@ -53,11 +61,24 @@ function channelFixture(
 }
 
 describe('IM settings boundary', () => {
-  it('exposes only WeCom with explicit quiet defaults', async () => {
+  it('exposes every supported channel with explicit quiet defaults', async () => {
     await browserApi.deleteImChannel('weCom');
     const settings = await browserApi.getImSettings();
-    expect(settings.channels).toHaveLength(1);
+    expect(settings.channels.map((channel) => channel.kind)).toEqual(['weCom', 'feishu']);
     expect(settings.channels[0]).toMatchObject({ kind: 'weCom', notifications: quietDefaults() });
+  });
+
+  it('configures Feishu through its own scan session without exposing credentials', async () => {
+    await browserApi.deleteImChannel('feishu');
+    const sessionId = crypto.randomUUID();
+    const authorization = await browserApi.startFeishuScanAuthorization(sessionId, false);
+    expect(authorization).toMatchObject({ sessionId });
+    expect(authorization.qrUrl).toBeTruthy();
+    const settings = await browserApi.completeFeishuScanAuthorization(sessionId);
+    const feishu = settings.channels.find((channel) => channel.kind === 'feishu');
+    expect(feishu).toMatchObject({ credentialConfigured: true });
+    expect(feishu?.publicIdentity).toBeTruthy();
+    expect(JSON.stringify(settings)).not.toContain('secret');
   });
 
   it('builds narrow commands without identity, binding, or credentials', () => {
@@ -65,6 +86,23 @@ describe('IM settings boundary', () => {
     expect(buildSaveImNotificationPreferencesInput('weCom', quietDefaults())).toEqual({
       kind: 'weCom',
       notifications: quietDefaults(),
+    });
+  });
+
+  it('keeps the browser capability limits aligned with each connector', async () => {
+    const feishuSessionId = crypto.randomUUID();
+    await browserApi.startFeishuScanAuthorization(feishuSessionId, false);
+    await browserApi.completeFeishuScanAuthorization(feishuSessionId);
+    const sessionId = crypto.randomUUID();
+    await browserApi.startWeComScanAuthorization(sessionId);
+    const settings = await browserApi.completeWeComScanAuthorization(sessionId);
+    const wecom = settings.channels.find((channel) => channel.kind === 'weCom');
+    const feishu = settings.channels.find((channel) => channel.kind === 'feishu');
+    expect(wecom?.connection?.capabilities).toMatchObject({
+      messageUpdate: 'callbackOnly', interaction: { maxQuestions: 3 },
+    });
+    expect(feishu?.connection?.capabilities).toMatchObject({
+      messageUpdate: 'anytime', interaction: { maxQuestions: 5 },
     });
   });
 
@@ -110,6 +148,12 @@ describe('IM settings boundary', () => {
       },
       connection: { ...channelFixture().connection!, binding: observed },
     })).status).toBe('waitingBinding');
+  });
+
+  it('routes missing Feishu scopes to reauthorization rather than reconnect', () => {
+    const channel = channelFixture({ kind: 'feishu' });
+    channel.connection = { ...channel.connection!, kind: 'feishu', state: 'error', lastErrorCode: 'IM_SCOPE_MISSING' };
+    expect(imChannelDisplayModel(channel)).toMatchObject({ status: 'reauthorize', recoveryAction: 'reauthorize' });
   });
 
   it('keeps notification editing available for every configured connection state', () => {
@@ -180,12 +224,36 @@ describe('IM settings boundary', () => {
     expect(events).toBe(1);
   });
 
+  it('keeps Feishu notification and enable writes isolated from WeCom', async () => {
+    const before = await browserApi.getImSettings();
+    const wecom = structuredClone(before.channels.find((c) => c.kind === 'weCom'));
+    const notifications = { ...quietDefaults(), runSuccess: true, elicitation: false };
+    await browserApi.saveImNotificationPreferences({ kind: 'feishu', notifications });
+    const paused = await browserApi.setImChannelEnabled({ kind: 'feishu', enabled: false });
+    expect(paused.channels.find((c) => c.kind === 'weCom')).toEqual(wecom);
+    expect(paused.channels.find((c) => c.kind === 'feishu')).toMatchObject({ enabled: false, notifications });
+  });
+
+  it('includes permission consent and rebinding copy in all seven catalogs', () => {
+    for (const language of ['zh-CN', 'zh-TW', 'en', 'ja-JP', 'ko-KR', 'pt-BR', 'es']) {
+      const catalog = JSON.parse(readFileSync(new URL(`../src/locales/${language}.json`, import.meta.url), 'utf8'));
+      const feishu = catalog.settings.im.channels.feishu;
+      for (const key of ['title', 'send', 'receive', 'update', 'confirm']) expect(feishu.permissions[key]).toBeTruthy();
+      expect(feishu.singleDeviceHint).toBeTruthy();
+      expect(feishu.resetBinding.description).toBeTruthy();
+    }
+  });
+
   it('has Chinese and English copy for statuses, actions, and stable errors', () => {
     for (const language of ['zh-CN', 'en']) {
       for (const status of ['notConfigured', 'waitingBinding', 'connecting', 'reconnecting', 'connectionFailed', 'ready', 'paused', 'reauthorize', 'conflict']) {
         expect(i18n.t(`settings.im.status.${status}`, { lng: language })).not.toContain('settings.im');
       }
-      for (const code of ['IM_CONNECTION_CONFLICT', 'IM_STORAGE_UNAVAILABLE', 'IM_STALE_GENERATION']) {
+      for (const kind of ['weCom', 'feishu']) {
+        expect(i18n.t(`settings.im.channels.${kind}.title`, { lng: language })).not.toContain('settings.im');
+        expect(i18n.t(`settings.im.channels.${kind}.identity`, { lng: language, id: 'x' })).not.toContain('settings.im');
+      }
+      for (const code of ['IM_CONNECTION_CONFLICT', 'IM_STORAGE_UNAVAILABLE', 'IM_STALE_GENERATION', 'IM_SCAN_DENIED', 'IM_SCOPE_MISSING']) {
         expect(i18n.t(`settings.im.errors.${code}`, { lng: language })).not.toContain('IM_');
       }
     }

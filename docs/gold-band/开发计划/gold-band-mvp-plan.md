@@ -2795,6 +2795,8 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 
 ## 2026-09-25 default 多语言更新日志发布链路
 
+- [x] 2026-10-17 发布契约测试修复：旧测试在整份 Workflow 中查找单语言生成命令，未同步多语言生成入口、工具目录及上传目录，导致 PR `Test release checksums` 误报缺少 `latest.json`。复用现有 `yaml` 依赖，分别解析两条 Workflow 的 `updater-json` 步骤，固定构建依赖、生成器参数、生成与上传顺序以及三类上传产物；清单内容继续由生成器接口测试验证。仅调整测试与验收文档，不增加运行时状态、依赖或发布 I/O，处理规模固定为两个小型 Workflow。
+- 验收：修复前 `npm run test:release-checksums` 稳定复现 2 项通过、1 项旧命令断言失败；修复后 4 项通过，发布产物生成、Release 配置与 macOS 安装脚本接口回归另 26 项通过。临时配置验证覆盖两个入口的空白与续行变化（2 项通过），以及缺构建依赖、缺生成步骤、旧入口、错误工具路径、上传乱序、缺三类上传产物或生成步骤移入其他 job（20 项均被拒绝）；临时资源已清理。未执行真实安装包构建或远程发布。
 - [x] 复用现有 manifest 生成器和两条 Release workflow，从 `release-notes/<version>/` 生成七语言 default manifests、英文兼容 `latest.json` 与中英 Draft Release body；不新增 Release Notes PR Check，当前版本目录或生成失败仅在发布 job 内失败。
 - [x] default updater 以持久化桌面语言选择 locale manifest，locale 资产不存在时最多回退一次英文 `latest.json`；`wb` 与自定义 URL 始终只请求原单 manifest。
 - [x] 接口回归覆盖七语言内容投影、双语正文、版本目录缺失、default URL 映射与回退、`wb`/自定义 URL 隔离。实现不新增依赖、状态机、缓存、队列或客户端全量加载；成功路径仍为一次 manifest 请求，只有 locale 文件缺失时增加一次有界回退。

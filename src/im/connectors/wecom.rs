@@ -30,8 +30,8 @@ use crate::im::{
     ImDeliveryReceipt, ImErrorCode, ImInboundEnvelope, ImIntegrationError,
     ImInteractionCapabilities, ImLocale, ImMessageState, ImMessageUpdateMode,
     ImMultiChoiceCapability, ImNotificationKind, ImObservedBinding, ImOptionLimit,
-    ImSubmittedAction, MAX_IM_PRESENTATION_BYTES, ResolvedImChannelConfig, deterministic_action_id,
-    is_intervention_context_field,
+    ImResolutionOutcome, ImSubmittedAction, MAX_IM_PRESENTATION_BYTES, ResolvedImChannelConfig,
+    deterministic_action_id, is_intervention_context_field,
 };
 
 pub const WECOM_WEBSOCKET_ENDPOINT: &str = "wss://openws.work.weixin.qq.com";
@@ -1238,7 +1238,8 @@ struct WeComFormItem {
 }
 
 /// Renders the clicked-card replacement. The delivery the click belongs to is
-/// the only source of option labels and the display ref.
+/// the only source of option labels and the display ref. Handled controls use
+/// the accepted outcome, never the (possibly losing) callback's draft.
 fn action_response_request(
     handle: &WeComResponseHandle,
     response: &ImActionResponse,
@@ -1270,6 +1271,16 @@ fn action_response_request(
                         _ => None,
                     })
             });
+            let accepted_selections;
+            let selections = if state == ImMessageState::Handled {
+                accepted_selections = accepted_form_selections(
+                    delivered_form.map(|(form, _)| form),
+                    response.outcome.as_ref(),
+                );
+                accepted_selections.as_slice()
+            } else {
+                selections.as_slice()
+            };
             return form_action_response_request(
                 req_id,
                 task_id,
@@ -1306,19 +1317,21 @@ fn action_response_request(
         }
     };
     let (vote_actions, display_ref) = match intervention {
-        Some((delivery, reference)) if selected_option_id.parse::<usize>().is_ok() => {
-            (reference.allowed_actions.as_slice(), delivery.display_ref)
-        }
+        Some((delivery, reference)) => (reference.allowed_actions.as_slice(), delivery.display_ref),
         _ => (&[][..], None),
     };
-    let selected_index = selected_vote_index(selected_option_id, vote_actions);
+    let selected_index = if state == ImMessageState::Handled {
+        accepted_vote_index(response.outcome.as_ref(), vote_actions)
+    } else {
+        selected_vote_index(selected_option_id, vote_actions)
+    };
     let selected_action = selected_index.and_then(|index| vote_actions.get(index));
     let mut options = if vote_actions.is_empty() {
         let fallback_index = selected_index.unwrap_or(0);
         vec![json!({
             "id": fallback_index.to_string(),
             "text": truncate_chars(message_state_label(locale, state), 11),
-            "is_checked": true,
+            "is_checked": state != ImMessageState::Handled,
         })]
     } else {
         vote_options(vote_actions, locale)
@@ -1349,7 +1362,7 @@ fn action_response_request(
                     "card_type": "vote_interaction",
                     "main_title": {
                         "title": truncate_chars(&title, 26),
-                        "desc": localized(locale, vote_card_summary_key(selected_action)),
+                        "desc": localized(locale, vote_card_summary_key(vote_actions)),
                     },
                 "checkbox": {
                     "question_key": WECOM_VOTE_QUESTION_KEY,
@@ -1367,12 +1380,79 @@ fn action_response_request(
     })
 }
 
-fn vote_card_summary_key(selected_action: Option<&InterventionAllowedAction>) -> &'static str {
-    match selected_action {
-        Some(
-            InterventionAllowedAction::ManualSuccess | InterventionAllowedAction::ManualFailure,
-        ) => "im.notification.manualCheck.summary",
-        _ => "im.permission.card.summary",
+fn accepted_vote_index(
+    outcome: Option<&ImResolutionOutcome>,
+    actions: &[InterventionAllowedAction],
+) -> Option<usize> {
+    actions.iter().position(|action| match (outcome, action) {
+        (
+            Some(ImResolutionOutcome::PermissionOption {
+                option_id: accepted,
+            }),
+            InterventionAllowedAction::PermissionOption { option_id, .. },
+        ) => accepted == option_id,
+        (
+            Some(ImResolutionOutcome::ManualCheck {
+                outcome: crate::domain::NodeOutcome::Success,
+            }),
+            InterventionAllowedAction::ManualSuccess,
+        )
+        | (
+            Some(ImResolutionOutcome::ManualCheck {
+                outcome: crate::domain::NodeOutcome::Failure,
+            }),
+            InterventionAllowedAction::ManualFailure,
+        ) => true,
+        _ => false,
+    })
+}
+
+fn accepted_form_selections(
+    form: Option<&RemoteElicitationForm>,
+    outcome: Option<&ImResolutionOutcome>,
+) -> Vec<WeComFormItem> {
+    let (Some(form), Some(ImResolutionOutcome::ElicitationSubmitted { content })) = (form, outcome)
+    else {
+        return Vec::new();
+    };
+    form.questions
+        .iter()
+        .map(|question| {
+            let answer = content.get(&question.question.field_name);
+            let option_ids = question
+                .question
+                .options
+                .iter()
+                .enumerate()
+                .filter_map(|(index, option)| {
+                    let selected = match question.question.question_kind {
+                        ElicitationQuestionKind::MultiSelect => answer
+                            .and_then(Value::as_array)
+                            .is_some_and(|values| values.contains(&option.value)),
+                        ElicitationQuestionKind::SingleSelect => answer == Some(&option.value),
+                        ElicitationQuestionKind::FreeText => false,
+                    };
+                    selected.then(|| index.to_string())
+                })
+                .collect();
+            WeComFormItem {
+                selector_key: question.selector_key.clone(),
+                option_ids,
+            }
+        })
+        .collect()
+}
+
+fn vote_card_summary_key(actions: &[InterventionAllowedAction]) -> &'static str {
+    if actions.iter().any(|action| {
+        matches!(
+            action,
+            InterventionAllowedAction::ManualSuccess | InterventionAllowedAction::ManualFailure
+        )
+    }) {
+        "im.notification.manualCheck.summary"
+    } else {
+        "im.permission.card.summary"
     }
 }
 
@@ -1488,7 +1568,7 @@ fn form_action_response_request(
             "card_type": "multiple_interaction",
             "select_list": questions.iter().map(|question| {
                 let selected = selected_form_option_ids(form_selection, &question.selector_key);
-                json!({
+                let mut selector = json!({
                     "question_key": question.selector_key,
                     "title": truncate_chars(&question.question.title, 13),
                     "disable": true,
@@ -1498,8 +1578,11 @@ fn form_action_response_request(
                             "text": truncate_chars(&option.label, 10),
                         })
                     }).collect::<Vec<_>>(),
-                    "selected_id": selected.first().cloned().unwrap_or_else(|| "0".into()),
-                })
+                });
+                if let Some(selected_id) = selected.first() {
+                    selector["selected_id"] = json!(selected_id);
+                }
+                selector
             }).collect::<Vec<_>>(),
         }),
         (WeComFormCardKind::VoteSingle | WeComFormCardKind::VoteMulti, None) => {
@@ -3873,7 +3956,12 @@ mod tests {
         delivery.display_ref = Some(80);
         let update = action_response_request(
             &vote_handle("0"),
-            &response_with(ImActionResponseState::Handled, Some(delivery)),
+            &ImActionResponse {
+                outcome: Some(ImResolutionOutcome::PermissionOption {
+                    option_id: "allow_once".into(),
+                }),
+                ..response_with(ImActionResponseState::Handled, Some(delivery))
+            },
             ImLocale::ZhCn,
         );
         let card = &update["body"]["template_card"];
@@ -3904,6 +3992,208 @@ mod tests {
     }
 
     #[test]
+    fn losing_click_must_render_the_accepted_permission() {
+        let delivery = permission_delivery(vec![
+            permission_option("allow_once", "Allow once", PermissionActionKind::AllowOnce),
+            permission_option("cancel", "Cancel", PermissionActionKind::RejectOnce),
+        ]);
+        let response = ImActionResponse {
+            state: ImActionResponseState::AlreadyHandled,
+            resolved_by: Some(crate::im::ImResolvedBy::Channel(ImChannelKind::Feishu)),
+            outcome: Some(crate::im::ImResolutionOutcome::PermissionOption {
+                option_id: "cancel".into(),
+            }),
+            delivery: Some(delivery),
+        };
+        let update = action_response_request(&vote_handle("0"), &response, ImLocale::En);
+        let options = update["body"]["template_card"]["checkbox"]["option_list"]
+            .as_array()
+            .unwrap();
+        let checked = options
+            .iter()
+            .find(|option| option["is_checked"] == true)
+            .unwrap();
+        assert_eq!(
+            checked["id"], "1",
+            "the accepted reject must win over the losing allow click"
+        );
+    }
+
+    #[test]
+    fn losing_manual_check_click_restores_the_winner() {
+        let delivery = permission_delivery(vec![
+            InterventionAllowedAction::ManualSuccess,
+            InterventionAllowedAction::ManualFailure,
+        ]);
+        let response = ImActionResponse {
+            outcome: Some(ImResolutionOutcome::ManualCheck {
+                outcome: crate::domain::NodeOutcome::Failure,
+            }),
+            resolved_by: Some(crate::im::ImResolvedBy::Desktop),
+            ..response_with(ImActionResponseState::AlreadyHandled, Some(delivery))
+        };
+        let update = action_response_request(&vote_handle("0"), &response, ImLocale::En);
+        let card = &update["body"]["template_card"];
+        assert_eq!(card["checkbox"]["disable"], true);
+        assert_eq!(card["checkbox"]["option_list"][0]["is_checked"], false);
+        assert_eq!(card["checkbox"]["option_list"][1]["is_checked"], true);
+        let unavailable = ImActionResponse {
+            outcome: Some(ImResolutionOutcome::ResultUnavailable),
+            ..response
+        };
+        let update = action_response_request(&vote_handle("0"), &unavailable, ImLocale::ZhCn);
+        let card = &update["body"]["template_card"];
+        assert_eq!(card["main_title"]["desc"], "任务正在等待人工检查结果。");
+        assert_eq!(card["checkbox"]["option_list"][0]["is_checked"], false);
+        assert_eq!(card["checkbox"]["option_list"][1]["is_checked"], false);
+    }
+
+    #[test]
+    fn unavailable_permission_result_never_marks_the_losing_draft() {
+        for state in [
+            ImActionResponseState::Handled,
+            ImActionResponseState::AlreadyHandled,
+        ] {
+            for outcome in [
+                None,
+                Some(ImResolutionOutcome::ResultUnavailable),
+                Some(ImResolutionOutcome::PermissionOption {
+                    option_id: "unknown".into(),
+                }),
+            ] {
+                let delivery = permission_delivery(vec![
+                    permission_option("allow", "Allow", PermissionActionKind::AllowOnce),
+                    permission_option("reject", "Reject", PermissionActionKind::RejectOnce),
+                ]);
+                let response = ImActionResponse {
+                    outcome,
+                    ..response_with(state, Some(delivery))
+                };
+                let update = action_response_request(&vote_handle("0"), &response, ImLocale::En);
+                let card = &update["body"]["template_card"];
+                assert!(
+                    card["checkbox"]["option_list"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|option| option["is_checked"] == false)
+                );
+                assert_eq!(card["main_title"]["title"], "id=0007 Handled");
+            }
+        }
+    }
+
+    #[test]
+    fn losing_form_click_restores_typed_answers_and_leaves_unanswered_fields_empty() {
+        let options = || {
+            vec![
+                ElicitationQuestionOption {
+                    value: json!(true),
+                    label: "Yes".into(),
+                    description: None,
+                },
+                ElicitationQuestionOption {
+                    value: json!(false),
+                    label: "No".into(),
+                    description: None,
+                },
+            ]
+        };
+        for kind in [
+            WeComFormCardKind::VoteSingle,
+            WeComFormCardKind::VoteMulti,
+            WeComFormCardKind::Multiple,
+        ] {
+            let multi = kind == WeComFormCardKind::VoteMulti;
+            let mut form = RemoteElicitationForm {
+                questions: vec![choice_question(
+                    "q0",
+                    "answer",
+                    if multi {
+                        ElicitationQuestionKind::MultiSelect
+                    } else {
+                        ElicitationQuestionKind::SingleSelect
+                    },
+                    options(),
+                    false,
+                )],
+                decline_allowed: false,
+            };
+            if kind == WeComFormCardKind::Multiple {
+                let mut optional = choice_question(
+                    "q1",
+                    "optional",
+                    ElicitationQuestionKind::SingleSelect,
+                    options(),
+                    true,
+                );
+                optional.constraints.required = false;
+                form.questions.push(optional);
+            }
+            let handle = WeComResponseHandle {
+                req_id: "callback".into(),
+                task_id: card_task_id("delivery-1", "req-1"),
+                selection: WeComCallbackSelection::Form {
+                    card_kind: kind,
+                    selections: form
+                        .questions
+                        .iter()
+                        .map(|question| WeComFormItem {
+                            selector_key: question.selector_key.clone(),
+                            option_ids: vec!["0".into()],
+                        })
+                        .collect(),
+                },
+            };
+            let delivery =
+                permission_delivery(vec![InterventionAllowedAction::ElicitationFixedForm {
+                    form,
+                }]);
+            for outcome in [
+                Some(ImResolutionOutcome::ElicitationSubmitted {
+                    content: json!({ "answer": if multi { json!([false]) } else { json!(false) } }),
+                }),
+                Some(ImResolutionOutcome::ElicitationSubmitted { content: json!({}) }),
+                Some(ImResolutionOutcome::ElicitationDeclined),
+                Some(ImResolutionOutcome::ResultUnavailable),
+                None,
+            ] {
+                let has_answer = matches!(&outcome, Some(ImResolutionOutcome::ElicitationSubmitted { content }) if content.get("answer").is_some());
+                let response = ImActionResponse {
+                    outcome,
+                    resolved_by: Some(crate::im::ImResolvedBy::Channel(ImChannelKind::Feishu)),
+                    ..response_with(
+                        ImActionResponseState::AlreadyHandled,
+                        Some(delivery.clone()),
+                    )
+                };
+                let update = action_response_request(&handle, &response, ImLocale::En);
+                let card = &update["body"]["template_card"];
+                assert_eq!(card["task_id"], handle.task_id);
+                assert_eq!(
+                    card["submit_button"]["key"],
+                    format!("{}:submit", handle.task_id)
+                );
+                if kind == WeComFormCardKind::Multiple {
+                    assert_eq!(card["select_list"][0]["disable"], true);
+                    assert_eq!(
+                        card["select_list"][0].get("selected_id"),
+                        has_answer.then_some(&json!("1"))
+                    );
+                    assert!(
+                        card["select_list"][1].get("selected_id").is_none(),
+                        "missing optional answers cannot select option zero"
+                    );
+                } else {
+                    assert_eq!(card["checkbox"]["disable"], true);
+                    assert_eq!(card["checkbox"]["option_list"][0]["is_checked"], false);
+                    assert_eq!(card["checkbox"]["option_list"][1]["is_checked"], has_answer);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn successful_manual_check_vote_update_keeps_selected_outcome() {
         let mut delivery = permission_delivery(vec![
             InterventionAllowedAction::ManualSuccess,
@@ -3912,7 +4202,12 @@ mod tests {
         delivery.display_ref = Some(80);
         let update = action_response_request(
             &vote_handle("1"),
-            &response_with(ImActionResponseState::Handled, Some(delivery)),
+            &ImActionResponse {
+                outcome: Some(ImResolutionOutcome::ManualCheck {
+                    outcome: crate::domain::NodeOutcome::Failure,
+                }),
+                ..response_with(ImActionResponseState::Handled, Some(delivery))
+            },
             ImLocale::ZhCn,
         );
         let card = &update["body"]["template_card"];
@@ -4000,10 +4295,15 @@ mod tests {
         );
         let update = action_response_request(
             &multi_context,
-            &response_with(
-                ImActionResponseState::Handled,
-                Some(form_delivery(&multi_form)),
-            ),
+            &ImActionResponse {
+                outcome: Some(ImResolutionOutcome::ElicitationSubmitted {
+                    content: json!({ "features": ["a", "b"] }),
+                }),
+                ..response_with(
+                    ImActionResponseState::Handled,
+                    Some(form_delivery(&multi_form)),
+                )
+            },
             ImLocale::ZhCn,
         );
         let card = &update["body"]["template_card"];
@@ -4052,10 +4352,15 @@ mod tests {
         );
         let update = action_response_request(
             &multiple_context,
-            &response_with(
-                ImActionResponseState::Handled,
-                Some(form_delivery(&questions_form)),
-            ),
+            &ImActionResponse {
+                outcome: Some(ImResolutionOutcome::ElicitationSubmitted {
+                    content: json!({ "q0": "a", "q1": "b" }),
+                }),
+                ..response_with(
+                    ImActionResponseState::Handled,
+                    Some(form_delivery(&questions_form)),
+                )
+            },
             ImLocale::ZhCn,
         );
         let card = &update["body"]["template_card"];

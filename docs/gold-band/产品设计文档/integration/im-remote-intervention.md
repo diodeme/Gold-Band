@@ -174,6 +174,7 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 - Runtime 仍是唯一业务事实源。终态 outbox 的 `ElicitationSubmitted { content }` 只保存已接受答案的投递快照（最大 8 KiB，随 outbox 7 天保留策略清理）；回包不再有独立瞬态 submission。答案不写日志，Debug 脱敏。旧终态没有保存答案时明确显示结果详情不可用。
 - payload v3 / IM schema v5 的一次性迁移保留源卡片、消息绑定、rowid/display_ref、终态及 tombstone；旧无答案终态转成 `ResultUnavailable`，不伪造空回答。新读取路径不兼容旧格式。处理来源仍仅由获得 Accepted 的一端写入。
 - 企微原投票卡/多题卡回调更新和跨端另发文本规则保持；本次授权的能力修正仅将多题选择器上限从 5 改为官方的 3。超过上限不拆卡、不分批提交，飞书和桌面端处理路径照常。
+- 企微 `Handled / AlreadyHandled` 原卡更新只从已接受的 `outcome` 恢复权限、人工检查及追问答案；回调携带的本次选择不能代替赢家结果。选项以稳定 option ID 或 schema 中的原始值匹配原 delivery；结果不可用、不匹配、拒绝回答或字段未回答时不勾选、不默认选择第一项。失败/过期回调保留原错误显示，不把它当作已接受结果。
 
 ### 6.4 三端终态通知矩阵
 
@@ -307,6 +308,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - 未发送干预在领域请求过期后直接标记 `expired`，不得迟到投递为可操作消息。
 - 企微网络错误使用带 jitter 的指数退避，1 秒起步、60 秒封顶并持续重试，直到连接成功、generation 被取消或出现鉴权失败、连接冲突、配置错误等永久错误；成功建立连接后重置退避。`ReconnectScheduled` 表示重试循环仍存活，`ConnectionFailed` 只表示终态，UI 不得根据错误码猜测二者。
 - 飞书按 endpoint 下发的 ReconnectInterval + Nonce 重连；待回包表由 generation 所有，回包、超时、断连即清理，读任务不执行业务。
+- 飞书 OpenAPI 发送与更新同属活动连接生命周期：使用连接 cancellation 的子令牌，断连清理、替换句柄和 generation 失效时取消旧句柄及其在途请求，包括等待/刷新 tenant token 的操作。取消返回现有可重试 `IM_NETWORK_UNAVAILABLE`，重试与删除后的清理由现有 outbox 承担；旧 generation 的迟到清理不得取消新连接。取消不能撤回平台已经接收的消息，不承诺远端事务回滚。
 - 平台限流遵守 `Retry-After` 或 SDK 返回的重试时间；单 channel 串行化同一消息更新，其他消息可受控并发。
 - `claim_due` 先用 due 索引只读确认当前 channel 是否存在到期或已过期 pending 行；确认完全为空时直接返回，不申请 SQLite writer lock。存在候选后才读取最多 32 条并在写事务前完成 typed 解析；有效行以 rowid、state、attempt count 做 CAS claim，单条损坏行原子转为 `dead_letter + IM_PAYLOAD_INVALID`，不得把同批健康行改为 sending 后再让整批解析失败。SQLite/锁/事务错误仍是批次级错误。
 - 企业微信单 session 最多保留 64 条 pending request。调用端创建的 15 秒总 deadline 随 command 进入 session，由同一 session 使用 `DelayQueue` 在 ACK、发送失败、断连、取消或超时时删除；linked-detail 两帧共享同一 deadline，迟到 ACK 不得重新匹配，达到上限返回 retryable `IM_QUEUE_CAPACITY_EXCEEDED`。

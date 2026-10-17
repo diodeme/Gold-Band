@@ -1000,3 +1000,27 @@ P3/P4 复核：复用 outcome、outbox、索引、长生命周期 ActionLocks �
 - 启动前端，通过独立 agent-browser 会话验证两渠道弹窗关闭后迟到授权响应不改变未接入状态；480px 窄窗口与恢复 1366px 均无横向溢出。浏览器使用模拟 API，凭据保存期间的取消竞态由 Rust 接口回归验证，未将其记为真实账号或 OS keyring 联调。
 - `cargo fmt --all -- --check` 与 `git diff --check` 通过；未修改或新增共享经验规则，现有状态生命周期与 Bug 修复验证规则已覆盖本次根因。
 - 全目标 CI Clippy 门禁 `cargo clippy --workspace --all-targets --locked -j 1 -- -A clippy::all -D clippy::disallowed_methods` 通过。沿用已有 `target/regression-fix-20261016/run-low-memory.ps1` 的单任务、无 debug/incremental 配置；完整参数、退出码和日志保存在同目录 `im-race-review-clippy.json` / `.log`，本次修改文件没有新增告警。
+
+## 25. 2026-10-17 PR #2 发送取消与企微终态修复
+
+基于 `feature_feishu_approve` 的 `ed0a5969` 复核。两项均属于既有生命周期与结果投影契约的实现缺口，不改变 Runtime 审批模型。
+
+- 修复前重新编译执行两个最小回归：在 token 响应返回前推进 generation 后，旧飞书句柄仍发起消息 POST；已接受拒绝但企微点击允许时，终态实际勾选索引 0，期望索引 1。两项均在业务断言处失败，不是 fixture 或编译环境失败。
+- 飞书 `ActiveApi` 持有当前连接 cancellation 的子令牌；slot 清理和替换统一取消旧句柄。发送和 PATCH 共用取消优先的请求边界，等待 token、刷新重试与请求响应期间均可取消，沿用既有可重试网络错误和 outbox 调度。
+- 企微 `Handled / AlreadyHandled` 投票和表单仅消费 `ImActionResponse.outcome`。权限按 option ID、人工检查按 outcome、追问按 schema 字段及原始 JSON 值恢复原卡控件；未知/缺失结果及未回答字段保持未选，不从后到草稿或默认第一项推断。消息类别说明由原 delivery 的动作类型派生，不因结果未知把人工检查误写为权限请求。
+- 回归覆盖发送/PATCH、generation 失效、断连、父令牌取消、同 generation 句柄替换、旧清理与新连接隔离，以及权限、人工检查、单选、多选、多题、原始布尔值、空答案和结果不可用的终态投影。平台卡片通过出站 JSON 的选中值、禁用态和 task/submit key 验收。
+- 既有成功回包测试补齐实际接受结果；golden 的输入从同一入站领域操作派生 outcome，不为通过测试恢复旧的草稿回显逻辑。逐字段比较快照仅删除 7 处缺失答案的 `selected_id: "0"`，涉及 optional/required omitted 的已处理、过期和失败卡片，其余内容与身份保持一致。
+
+过度设计复核：复用已有 Tokio CancellationToken、generation、outbox 和结构化结果；只补充运行期句柄的资源所有权及两个私有投影函数，没有新依赖、业务状态机、持久字段、缓存或队列。
+
+性能复核：取消仅注册在途请求的等待，网络操作不进入 slot 锁；恢复权限最多扫描 20 个选项，企微表单最多 3 题、每题最多 10 个选项（单题最多 20），多选匹配受同一上限约束。没有历史扫描、额外数据库/网络请求、轮询或前端订阅变化，无需新增 benchmark。已发送到平台的请求不能被本地取消撤回；真实平台与完整安装包不由本地 fixture 回归替代。
+
+最终验证（2026-10-17）：
+
+- 当前源码 `cargo test -p gold-band --lib im:: --no-fail-fast`：200/200 通过；同次编译的 `app::intervention::tests::`：26/26 通过。原先两个红测转绿，新增生命周期、结果缺失和类型化投影回归均通过。
+- 前端 IM 设置、设置 DOM、browser API 与 ElicitationCard 四个文件：67/67 通过；`npm run web:build`（含 TypeScript）通过，保留既有大 chunk/混合导入提示。
+- `cargo clippy -p gold-band --lib --tests --locked -j 1 -- -A clippy::all -D clippy::disallowed_methods`、`cargo fmt --all -- --check` 与 `git diff --check` 通过。
+- 启动本轮生产构建的独立预览服务，以 agent-browser 验证设置页、飞书权限确认到私聊绑定引导、企微二维码打开与关闭；480px 和恢复 1366px 的页面宽度均无横向溢出。浏览器使用预览 API，未连接真实飞书/企微账号；平台控件的值及禁用态由上述 Rust wire 测试固定。本次没有改动前端源码，不扩大为全仓、Tauri EXE 或真实平台端到端验收。
+- 日志保留在本地 `target/pr2-im-green.log`、`pr2-domain-tests.log`、`pr2-web-tests.log`、`pr2-web-build.log`、`pr2-clippy.log`，窄窗口截图为 `target/pr2-feishu-narrow.png`。测试浏览器和 1438 端口预览服务已关闭。
+
+验收时再次确认性能与过度设计结论保持上述边界，无新增 I/O、依赖、持久业务状态或无界容器。现有 `state-lifecycle-and-data-integrity.md` 与 `bug-fix-verification.md` 已覆盖资源生命周期、权威结果投影及红绿测试约束，本轮不重复新增经验规则。

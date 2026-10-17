@@ -91,10 +91,32 @@ struct GenerationApiSlot {
     active: Option<ActiveApi>,
 }
 
+impl GenerationApiSlot {
+    fn clear(&mut self) {
+        if let Some(active) = self.active.take() {
+            active.cancellation.cancel();
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ActiveApi {
     api: Arc<FeishuOpenApi>,
     locale: ImLocale,
+    cancellation: CancellationToken,
+}
+
+impl ActiveApi {
+    async fn request<T>(
+        &self,
+        request: impl std::future::Future<Output = Result<T, ImIntegrationError>>,
+    ) -> Result<T, ImIntegrationError> {
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(network_unavailable()),
+            result = request => result,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -175,9 +197,11 @@ impl FeishuConnector {
             .slot
             .lock()
             .expect("Feishu connector slot lock poisoned");
-        if slot.generation != generation {
+        if slot.generation != generation || active.cancellation.is_cancelled() {
+            active.cancellation.cancel();
             return false;
         }
+        slot.clear();
         slot.active = Some(active);
         true
     }
@@ -188,7 +212,7 @@ impl FeishuConnector {
             .lock()
             .expect("Feishu connector slot lock poisoned");
         if slot.generation == generation {
-            slot.active = None;
+            slot.clear();
         }
     }
 
@@ -268,6 +292,7 @@ impl FeishuConnector {
             ActiveApi {
                 api: Arc::clone(api),
                 locale,
+                cancellation: cancellation.child_token(),
             },
         ) {
             return Ok(());
@@ -519,7 +544,7 @@ impl ImConnector for FeishuConnector {
             .expect("Feishu connector slot lock poisoned");
         if generation >= slot.generation {
             slot.generation = generation;
-            slot.active = None;
+            slot.clear();
             self.pending_responses
                 .lock()
                 .expect("Feishu pending response lock poisoned")
@@ -627,13 +652,12 @@ impl ImConnector for FeishuConnector {
                 .map_err(|error| ImIntegrationError::permanent(error.code()))?,
         };
         active
-            .api
-            .create_message(
+            .request(active.api.create_message(
                 &delivery.destination.destination_id,
                 MSG_TYPE_INTERACTIVE,
                 &content,
                 &delivery.delivery_id,
-            )
+            ))
             .await
     }
 
@@ -665,8 +689,11 @@ impl ImConnector for FeishuConnector {
         let content =
             resolution_payload_card_content(payload, active.locale, source, &self.token_codec);
         active
-            .api
-            .patch_message(&binding.platform_message_id, &content)
+            .request(
+                active
+                    .api
+                    .patch_message(&binding.platform_message_id, &content),
+            )
             .await
     }
 }

@@ -175,7 +175,7 @@ describe('right workspace resource model', () => {
 
   it('isolates same-name message attachments by canonical path and every locator dimension', () => {
     const base = { ...locator('root'), outerNodeId: 'outer-node-1', outerAttemptId: 'outer-attempt-1' };
-    const path = `user-inputs/${'a'.repeat(64)}/image.png`;
+    const path = `user-inputs/${'a'.repeat(32)}/image.png`;
     const key = (scope: typeof base, canonicalPath = path) => conversationAssetWorkspaceResourceKey(
       'message-attachment', scope, 'image.png', canonicalPath,
     );
@@ -187,7 +187,7 @@ describe('right workspace resource model', () => {
       kind: 'conversation-asset', key: key(scope), scopeKey: 'draft:default', title: 'image.png', attention: false,
       assetKind: 'message-attachment', locator: scope, name: 'image.png', path,
     }));
-    const otherPath = `user-inputs/${'b'.repeat(64)}/image.png`;
+    const otherPath = `user-inputs/${'b'.repeat(32)}/image.png`;
     resources.push({ ...resources[0]!, key: key(base, otherPath), path: otherPath });
     let state = createInitialRightWorkspaceState();
     for (const resource of resources) state = rightWorkspaceReducer(state, { type: 'open', resource });
@@ -572,7 +572,7 @@ describe('right workspace resource model', () => {
       'message-attachment',
       { ...attempt, attemptId: 'attempt-2' },
       attachment.name,
-      `user-inputs/${'a'.repeat(64)}/${attachment.name}`,
+      `user-inputs/${'a'.repeat(32)}/${attachment.name}`,
     ))).toBeNull();
     expect(store.restore(conversation).tabs.filter((tab) => tab.kind === 'draft-attachment')).toHaveLength(2);
   });

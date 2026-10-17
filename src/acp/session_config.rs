@@ -49,27 +49,54 @@ pub fn align_overrides_to_live_catalog(
     strip_model_bound_overrides(catalog_before, catalog_after, overrides, false)
 }
 
+/// Explicit session configuration one ACP invocation asks the runtime to apply.
+/// `None` / empty means unspecified: the session keeps its live value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InvocationSessionConfig {
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub config_options: BTreeMap<String, String>,
+}
+
 /// Same-session continue must not re-merge frozen authoring leftovers onto a
 /// snapshot that already rolled them back. Direct follow-up avoids this by
 /// queuing prompts on the live session; AUTO / workflow continue rebuilds the
-/// invocation and must pass snapshot `configOptionOverrides` as the complete
-/// authority. New sessions still start from authoring, then silently retain
-/// against the selected model's last observed bound catalog so a later Gemini
-/// node does not re-notice `reasoning` after bootstrap already observed that
-/// the live table omits it.
-pub fn invocation_config_option_overrides(
+/// invocation and must pass the reused session snapshot (model, permission
+/// mode and `configOptionOverrides`) as the complete authority. Only an
+/// explicit invocation override (an in-session switch) replaces it. New
+/// sessions still start from authoring, then silently retain against the
+/// selected model's last observed bound catalog so a later Gemini node does
+/// not re-notice `reasoning` after bootstrap already observed that the live
+/// table omits it.
+pub fn invocation_session_config(
     reuse_session: bool,
-    authoring: BTreeMap<String, String>,
-    snapshot: BTreeMap<String, String>,
+    authoring: InvocationSessionConfig,
+    snapshot: InvocationSessionConfig,
+    explicit_model: Option<String>,
+    explicit_permission_mode: Option<String>,
     capabilities: Option<&Value>,
-    selected_model: Option<&str>,
-) -> BTreeMap<String, String> {
-    if reuse_session {
-        return snapshot;
+) -> InvocationSessionConfig {
+    let base = if reuse_session { snapshot } else { authoring };
+    let mut next = InvocationSessionConfig {
+        model: non_blank(explicit_model).or_else(|| non_blank(base.model)),
+        permission_mode: non_blank(explicit_permission_mode)
+            .or_else(|| non_blank(base.permission_mode)),
+        config_options: base.config_options,
+    };
+    if !reuse_session {
+        retain_authoring_model_bound_overrides(
+            &mut next.config_options,
+            capabilities,
+            next.model.as_deref(),
+        );
     }
-    let mut next = authoring;
-    retain_authoring_model_bound_overrides(&mut next, capabilities, selected_model);
     next
+}
+
+fn non_blank(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn authoring_config_options_for_model(
@@ -2258,12 +2285,12 @@ mod tests {
             ("context".into(), "500k".into()),
         ]);
         assert_eq!(
-            invocation_config_option_overrides(
+            invocation_options(
                 false,
                 overrides.clone(),
                 BTreeMap::new(),
                 Some(&capabilities),
-                Some("unobserved")
+                "unobserved"
             ),
             overrides
         );
@@ -2332,10 +2359,7 @@ mod tests {
     fn continue_does_not_reapply_authoring_bound_options_after_snapshot_rollback() {
         let authoring = BTreeMap::from([("reasoning".into(), "xhigh".into())]);
         let snapshot = BTreeMap::new();
-        assert!(
-            invocation_config_option_overrides(true, authoring, snapshot, None, Some("gemini"))
-                .is_empty()
-        );
+        assert!(invocation_options(true, authoring, snapshot, None, "gemini").is_empty());
     }
 
     #[test]
@@ -2343,9 +2367,82 @@ mod tests {
         let authoring = BTreeMap::from([("reasoning".into(), "xhigh".into())]);
         let snapshot = BTreeMap::from([("effort".into(), "high".into())]);
         assert_eq!(
-            invocation_config_option_overrides(true, authoring, snapshot, None, Some("gemini"),),
+            invocation_options(true, authoring, snapshot, None, "gemini"),
             BTreeMap::from([("effort".into(), "high".into())])
         );
+    }
+
+    fn invocation_options(
+        reuse_session: bool,
+        authoring: BTreeMap<String, String>,
+        snapshot: BTreeMap<String, String>,
+        capabilities: Option<&Value>,
+        model: &str,
+    ) -> BTreeMap<String, String> {
+        invocation_session_config(
+            reuse_session,
+            InvocationSessionConfig {
+                model: Some(model.to_string()),
+                config_options: authoring,
+                ..Default::default()
+            },
+            InvocationSessionConfig {
+                model: Some(model.to_string()),
+                config_options: snapshot,
+                ..Default::default()
+            },
+            None,
+            None,
+            capabilities,
+        )
+        .config_options
+    }
+
+    #[test]
+    fn continue_does_not_reapply_authoring_model_and_mode_after_snapshot_rollback() {
+        let authoring = InvocationSessionConfig {
+            model: Some("deepseek-flash".into()),
+            permission_mode: Some("bypassPermissions".into()),
+            config_options: BTreeMap::new(),
+        };
+        let resolved = invocation_session_config(
+            true,
+            authoring.clone(),
+            InvocationSessionConfig::default(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(resolved, InvocationSessionConfig::default());
+
+        let fresh = invocation_session_config(
+            false,
+            authoring.clone(),
+            InvocationSessionConfig::default(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(fresh, authoring);
+    }
+
+    #[test]
+    fn explicit_invocation_switch_wins_over_session_snapshot() {
+        let snapshot = InvocationSessionConfig {
+            model: Some("gpt-6-sol".into()),
+            permission_mode: Some("read-only".into()),
+            config_options: BTreeMap::new(),
+        };
+        let resolved = invocation_session_config(
+            true,
+            InvocationSessionConfig::default(),
+            snapshot,
+            Some(" gpt-6.1-sol ".into()),
+            Some(" ".into()),
+            None,
+        );
+        assert_eq!(resolved.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(resolved.permission_mode.as_deref(), Some("read-only"));
     }
 
     #[test]
@@ -2368,12 +2465,12 @@ mod tests {
             },
         ]));
         assert_eq!(
-            invocation_config_option_overrides(
+            invocation_options(
                 false,
                 authoring,
                 BTreeMap::new(),
                 Some(&capabilities),
-                Some("gemini-3.5-flash"),
+                "gemini-3.5-flash"
             )
             .get("reasoning")
             .map(String::as_str),
@@ -2390,12 +2487,12 @@ mod tests {
             json!({ "gemini-3.5-flash": [] }),
         );
         assert!(
-            invocation_config_option_overrides(
+            invocation_options(
                 false,
                 authoring,
                 BTreeMap::new(),
                 Some(&capabilities),
-                Some("gemini-3.5-flash"),
+                "gemini-3.5-flash"
             )
             .is_empty()
         );

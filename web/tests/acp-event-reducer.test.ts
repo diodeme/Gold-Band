@@ -148,6 +148,41 @@ describe("ACP event reducer", () => {
     });
   });
 
+  it("keeps the background token-totals gap once a live usage sample reports it", () => {
+    const current = {
+      usage: { used: 53_606, size: 1_000_000, totalTokens: 107_089 },
+    } as AcpSessionVm;
+    const marked = projectLatestAcpUsageUpdate(current, [
+      event({
+        id: "session-usage-session-1",
+        kind: "usageUpdate",
+        seq: 359,
+        raw: {
+          sessionUpdate: "usage_update",
+          used: 54_368,
+          size: 1_000_000,
+          _meta: { goldBandTokenTotalsExcludeBackground: true },
+        },
+      }),
+    ]);
+    expect(marked?.usage).toEqual({
+      used: 54_368,
+      size: 1_000_000,
+      totalTokens: 107_089,
+      tokenTotalsExcludeBackground: true,
+    });
+
+    const later = projectLatestAcpUsageUpdate(marked, [
+      event({
+        id: "session-usage-session-1",
+        kind: "usageUpdate",
+        seq: 400,
+        raw: { sessionUpdate: "usage_update", used: 55_000, size: 1_000_000 },
+      }),
+    ]);
+    expect(later?.usage?.tokenTotalsExcludeBackground).toBe(true);
+  });
+
   it("ignores zero usage transition samples when projecting live state", () => {
     const current = {
       usage: { used: 32_606, size: 1_000_000 },

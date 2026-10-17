@@ -1,5 +1,29 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-16 续接会话的模型与权限以会话快照为准
+
+- 根因：09-24 让 `session/new` 把不支持的模型、权限回滚为不指定，但同一会话再次构建调用（AI-DYNAMIC proposal repair、提交提醒、workflow continue）时，模型和权限仍从冻结的节点配置取值，只有 `config_options` 以 snapshot 为准。task-334 的 bootstrap 用 `deepseek-flash` 新建 Codex 会话并已回滚，proposal 因 `dynamic.fanout.workspace-dirty` 进入 repair 后又以 `continue` 发出 `deepseek-flash`，在已建立会话分支得到 `acp.session-config-value-unavailable`。属于「复用会话以 snapshot 为权威」契约只覆盖了配置项的设计缺口。
+- 实现：`invocation_config_option_overrides` 替换为 `invocation_session_config`，一次决定模型、权限和 `config_options`。复用会话以 `continue_ref.snapshotFile` 指向的被复用会话 snapshot 为准（sessionId 不符或不可读视为不指定），新建会话用作者态并按所选模型 retain；本次调用的显式切换优先。workflow `build_worker_invocation` 与 AI-DYNAMIC `build_dynamic_worker_invocation` 共用该入口，删除两处只读配置项的旧 reader。已建立会话收到用户显式非法值仍报 unavailable。
+- 验收：`dynamic_continue_takes_session_snapshot_after_new_session_rollback` 在修复前得到 `model = Some("deepseek-flash")`，修复后为不指定、权限不指定、`effort=high` 保留，显式切换仍生效；`continue_worker_invocation_takes_session_snapshot_after_new_session_rollback` 覆盖 workflow 节点及他会话 snapshot 不被采信；`session_config` 单测覆盖新旧会话与显式切换。
+- 过度设计与性能评审：不新增持久字段或状态，复用 snapshot 既有 `modelOverride / permissionModeOverride / configOptionOverrides`；每次续接调用只读一次被复用会话的 snapshot（只读、不回写），替换原先对当前 attempt snapshot 的一次读取。
+
+## 2026-10-15 追问附件路径长度预算
+
+- 根因：10-14 的内容寻址布局 `user-inputs/<64 位 BLAKE3>/<name>` 在 attempt 目录（默认数据目录下直连约 149 字符，动态节点再叠加 `dynamic/nodes/<AI 生成节点 ID>/attempt-NNN`）之上再加 65 个字符；原始文件名长度又由用户输入决定。task-326 追问附件的目标路径为 267 字符，超过 Windows MAX_PATH。`create_dir` 经 Rust 标准库自动加 `\\?\` 前缀成功，tempfile 的 `persist_noclobber` 直接调用 `MoveFileExW` 失败，返回 os error 3，留下空的摘要目录，并被兜底为 `app.unexpected`。属于布局没有路径预算的设计缺陷，不是单个调用缺少长路径前缀。持久路径还会交给 Agent、Shell 和预览，只给 tempfile 补前缀会让失败转移到下游。
+- 实现：摘要目录改为 128 位 BLAKE3 前缀（32 hex）。同一 attempt 作用域内碰撞概率可忽略，且复用前仍逐字节比对，碰撞会报错，不会混用内容。存储文件名在拷贝前按 259 个 UTF-16 单位的整路径预算，以及 255 个 UTF-16 单位/字节的单段上限截短主名并保留扩展名，同时去掉截短后尾部的点和空格；摘要目录已确定内容，截短不会让不同内容互相冒用。`AttachmentMeta.name` 保留原始文件名，`path` 仍是唯一读取定位。连「摘要目录 + 1 个字符 + 扩展名」都放不下时，在任何写入前返回结构化 `runtime.io.attachment-path-too-long`（`name`、`maxPathLength`），前端按错误码本地化，不再落到 `app.unexpected`。
+- 动态节点评估：默认数据目录下 41 字符节点 ID 的 attempt 目录约 205 字符，加上 `user-inputs/<32 hex>/` 后仍有约 20 字符留给文件名，常见文件名会被截短但能发送；节点 ID 没有长度上限，极端深度由上述结构化错误兜底。本次不限制节点 ID 长度。
+- 红绿证据：深度 160 的 attempt 加 UUID/长中文文件名用例，在原实现上稳定失败于 `系统找不到指定的路径。 (os error 3)`，与线上 `turnError` 一致；深度 240 用例原实现返回非结构化 IO 错误。修复后两项转绿，另加截短边界单测。
+- 性能与过度设计评审：只增加一次常数级长度计算和名称截短，不新增依赖、持久字段、缓存或状态；拷贝与哈希仍为单次流式处理。已经发布的 64 hex 历史附件路径仍按 metadata path 读取，不迁移。
+
+## 2026-10-14 分支与截断 Tooltip 打开生命周期修复
+
+- 根因：`useOverflowTooltip` 在 pointerenter 中提前打开，Radix 的 pointermove 延迟打开随后广播 `tooltip.open`，已挂载提示收到广播自行关闭；9 月 30 日焦点修复忽略后续 true，使关闭成为最终状态。属于受控 Tooltip 与组件库打开生命周期衔接不完整，不是 Git snapshot 刷新。
+- 实现：保留现有 shadcn/Radix Tooltip，让 Radix 成为唯一打开入口；共享 hook 仅在打开请求时判断溢出或 always 条件，非 `focus-visible` 的程序返焦在 focus 事件阶段阻止默认打开。分支、工作空间、ACP 单项/复合配置和文件名消费端删除手动 pointerenter 打开；工作空间 TooltipTrigger 改为整个控件，Select 保留自身 slot 与 open 状态投影。原鼠标关闭不返焦、键盘关闭返焦及紧凑分支 pointerdown→click 契约不变。
+- 红绿证据：普通/响应式分支的完整 pointerover→pointermove→零延迟定时器两项用例，在原实现上均因提示消失失败，修复后原用例转绿。共享生命周期测试覆盖溢出测量次数、图标态、延迟打开取消、互斥、触摸不触发、程序返焦不广播、键盘 focus/blur、滚动关闭与重入；分支另固定无关父级重渲染保留 DOM/提示及 Escape 关闭。受影响领域 18 个测试文件共 112 项通过，最终 TypeScript 检查与 Vite 生产构建通过。
+- 浏览器：生产预览 `/chat` 的隔离 browser mock 验证首次悬停、长分支 `fix/attachment-content-identity` 截断全文持续显示、Tooltip 已显示时单击打开菜单、鼠标选择后不残留提示/焦点、Tab→Enter→Escape 键盘返焦，以及 720px 图标态→1440px 拉宽、浅/深色主题和项目名提示。未操作真实 Git 分支，未打包验收 EXE；桌面端还需按下列清单实际回归。
+- 桌面回归：① 刚进入快速对话就首次 hover 长分支，停留并在按钮内移动应持续显示；② 移出、Escape、切换页面后提示清理，重新进入可再次显示；③ 提示显示时单击开分支菜单，测试仓库鼠标选择/点击外部关闭后无残留，键盘关闭仍归还焦点；④ 缩窄成图标再拉宽、浅/深色均正确；⑤ 单/多工作空间名称、ACP 模型/权限长值与文件工作区长名称的共用提示仍正常，普通未截断值不冗余显示，鼠标菜单返焦不弹出，键盘可访问全文。
+- 性能与过度设计评审：不新增依赖、状态、定时器、Observer、请求或缓存；删除重复打开入口，尺寸读取仍为单控件打开时 O(1)，普通 pointermove 不重复测量。复用原 canonical 业务数据与组件库生命周期，不扩大状态订阅或渲染范围。
+
 ## 2026-10-14 同名追问附件不可覆盖与预览身份
 
 - 根因：`user-inputs/<name>` 同时充当显示名和持久定位，不同图片在同一 attempt 内被原子替换；Tab 按完整 locator/path 去重仍会读到最后一张。发送后按文件名猜测草稿 alias 还会激活错误的旧预览。

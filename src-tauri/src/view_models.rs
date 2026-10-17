@@ -752,6 +752,10 @@ pub struct AcpUsageVm {
     pub cached_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    /// Token totals come from prompt responses only; background Agent work
+    /// happened in this session and is not included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub token_totals_exclude_background: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -814,6 +818,7 @@ pub struct AcpAgentExecutionVm {
     pub agent_execution_id: String,
     pub parent_agent_execution_id: Option<String>,
     pub execution_status: String,
+    pub provider_state_seq: Option<u64>,
     pub event_count: usize,
     pub tool_call_count: usize,
     pub read_file_count: usize,
@@ -4638,6 +4643,7 @@ fn indexed_timeline_page_to_scan(
         used: usage.used,
         size: usage.size,
         cost_amount_usd: usage.cost_amount_usd,
+        token_totals_exclude_background: usage.token_totals_exclude_background,
         ..AcpUsageVm::default()
     });
     Ok(AcpEventScan {
@@ -5743,15 +5749,22 @@ pub fn acp_compaction_summary_vm_for_attempt(
         anyhow::bail!("acp.compaction-summary-query-failed");
     }
     let item = gold_band::acp::timeline::read_indexed_timeline_item(&path, &query.event_id)?;
-    let mut summary = item.filter(|item| item.event.kind == "contextCompaction")
+    let mut summary = item
+        .filter(|item| item.event.kind == "contextCompaction")
         .and_then(|item| item.event.raw)
         .and_then(|mut raw| raw.get_mut("summary").map(serde_json::Value::take))
         .unwrap_or(serde_json::Value::Null);
     gold_band::acp::timeline::hydrate_timeline_value(&path, &mut summary)?;
-    let markdown = summary.as_array().map(|blocks| blocks.iter()
-        .filter(|block| block["type"] == "text")
-        .filter_map(|block| block["text"].as_str())
-        .collect::<String>()).filter(|text| !text.trim().is_empty());
+    let markdown = summary
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect::<String>()
+        })
+        .filter(|text| !text.trim().is_empty());
     Ok(AcpCompactionSummaryVm { markdown })
 }
 
@@ -6000,6 +6013,7 @@ fn agent_execution_vm(
         agent_execution_id: record.agent_execution_id.clone(),
         parent_agent_execution_id: record.parent_agent_execution_id.clone(),
         execution_status: record.status.clone(),
+        provider_state_seq: record.provider_state_seq,
         event_count: record.event_count,
         tool_call_count: record.tool_call_count,
         read_file_count: record.read_file_count,
@@ -6646,14 +6660,28 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
     if event.kind == "contextCompaction" {
-        if let Some(raw) = event.raw.as_mut().and_then(serde_json::Value::as_object_mut) {
-            let available = raw.get("summary").and_then(serde_json::Value::as_array)
-                .is_some_and(|blocks| blocks.iter().any(|block| {
-                    block["type"] == "text" && (block["text"].as_str().is_some_and(|text| !text.trim().is_empty())
-                        || block["text"].get("$goldBandBlob").is_some())
-                }));
+        if let Some(raw) = event
+            .raw
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            let available = raw
+                .get("summary")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block["type"] == "text"
+                            && (block["text"]
+                                .as_str()
+                                .is_some_and(|text| !text.trim().is_empty())
+                                || block["text"].get("$goldBandBlob").is_some())
+                    })
+                });
             raw.remove("summary");
-            raw.insert("compactionSummaryAvailable".into(), serde_json::Value::Bool(available));
+            raw.insert(
+                "compactionSummaryAvailable".into(),
+                serde_json::Value::Bool(available),
+            );
         }
     }
     let images = event
@@ -7339,7 +7367,10 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
         .collect::<Vec<_>>();
     AcpPromptInteractionVm::Permission {
         interaction_id: request_id,
-        session_id: raw.pointer("/_meta/goldBandConversation/sessionId").and_then(Value::as_str).map(str::to_string),
+        session_id: raw
+            .pointer("/_meta/goldBandConversation/sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         turn_id: raw
             .pointer("/_meta/goldBandConversation/turnId")
             .or_else(|| raw.get("turnId"))
@@ -7399,7 +7430,10 @@ fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
     AcpPromptInteractionVm::Elicitation {
         interaction_id: event.id.clone(),
-        session_id: raw.pointer("/_meta/goldBandConversation/sessionId").and_then(Value::as_str).map(str::to_string),
+        session_id: raw
+            .pointer("/_meta/goldBandConversation/sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         turn_id: raw
             .pointer("/_meta/goldBandConversation/turnId")
             .or_else(|| raw.get("turnId"))
@@ -8372,6 +8406,7 @@ mod tests {
             launch_tool_call_id: format!("launch-{agent_execution_id}"),
             session_id: "session-123".to_string(),
             status: status.to_string(),
+            provider_state_seq: None,
             title: Some(agent_execution_id.to_string()),
             description: None,
             started_at: "100Z".to_string(),
@@ -8465,6 +8500,27 @@ mod tests {
         let usage = usage.unwrap();
         assert_eq!(usage.used, Some(38_223));
         assert_eq!(usage.cost_amount_usd, Some(0.315532));
+    }
+
+    #[test]
+    fn usage_vm_serializes_the_background_token_totals_gap_only_when_present() {
+        let complete = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            ..Default::default()
+        })
+        .unwrap();
+        let partial = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            token_totals_exclude_background: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(complete.get("tokenTotalsExcludeBackground").is_none());
+        assert_eq!(
+            partial["tokenTotalsExcludeBackground"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -10289,44 +10345,115 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let markdown = format!("# Summary\n\n{}\nEND", "retained context\n".repeat(5_000));
-        let event = acp_event_at("compaction-1", "contextCompaction", Some("completed"), 1,
-            Some(json!({"summary":[{"type":"text","text":markdown},{"type":"text","text":"\nlast chunk"}]})));
+        let event = acp_event_at(
+            "compaction-1",
+            "contextCompaction",
+            Some("completed"),
+            1,
+            Some(
+                json!({"summary":[{"type":"text","text":markdown},{"type":"text","text":"\nlast chunk"}]}),
+            ),
+        );
         let core_event = serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
-        gold_band::acp::events::write_timeline_items(&attempt.join("acp.timeline.jsonl"), &[core_event]).unwrap();
-        let detail = acp_compaction_summary_vm_for_attempt(&attempt, AcpCompactionSummaryQueryInput {
-            branch_id: "root".into(), event_id: "compaction-1".into(),
-        }).unwrap();
-        assert_eq!(detail.markdown.as_deref(), Some(format!("{markdown}\nlast chunk").as_str()));
+        gold_band::acp::events::write_timeline_items(
+            &attempt.join("acp.timeline.jsonl"),
+            &[core_event],
+        )
+        .unwrap();
+        let detail = acp_compaction_summary_vm_for_attempt(
+            &attempt,
+            AcpCompactionSummaryQueryInput {
+                branch_id: "root".into(),
+                event_id: "compaction-1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            detail.markdown.as_deref(),
+            Some(format!("{markdown}\nlast chunk").as_str())
+        );
         let list = compact_event_for_session(event);
-        assert_eq!(list.raw.as_ref().unwrap()["compactionSummaryAvailable"], true);
+        assert_eq!(
+            list.raw.as_ref().unwrap()["compactionSummaryAvailable"],
+            true
+        );
         assert!(list.raw.as_ref().unwrap().get("summary").is_none());
         assert!(serde_json::to_string(&list).unwrap().len() < 2_000);
-        let missing = acp_compaction_summary_vm_for_attempt(&attempt, AcpCompactionSummaryQueryInput {
-            branch_id: "root".into(), event_id: "other-compaction".into(),
-        }).unwrap();
+        let missing = acp_compaction_summary_vm_for_attempt(
+            &attempt,
+            AcpCompactionSummaryQueryInput {
+                branch_id: "root".into(),
+                event_id: "other-compaction".into(),
+            },
+        )
+        .unwrap();
         assert!(missing.markdown.is_none());
-        assert!(acp_compaction_summary_vm_for_attempt(&attempt, AcpCompactionSummaryQueryInput {
-            branch_id: "../other".into(), event_id: "compaction-1".into(),
-        }).is_err());
+        assert!(
+            acp_compaction_summary_vm_for_attempt(
+                &attempt,
+                AcpCompactionSummaryQueryInput {
+                    branch_id: "../other".into(),
+                    event_id: "compaction-1".into(),
+                }
+            )
+            .is_err()
+        );
         let other_dir = tempfile::tempdir().unwrap();
         let other_attempt = Utf8PathBuf::from_path_buf(other_dir.path().to_path_buf()).unwrap();
-        let other = acp_event_at("compaction-1", "contextCompaction", Some("completed"), 1,
-            Some(json!({"summary":[{"type":"text","text":"other session"}]})));
+        let other = acp_event_at(
+            "compaction-1",
+            "contextCompaction",
+            Some("completed"),
+            1,
+            Some(json!({"summary":[{"type":"text","text":"other session"}]})),
+        );
         write_timeline_file(&other_attempt, "acp.timeline.jsonl", &[other]);
-        assert_eq!(acp_compaction_summary_vm_for_attempt(&other_attempt, AcpCompactionSummaryQueryInput {
-            branch_id: "root".into(), event_id: "compaction-1".into(),
-        }).unwrap().markdown.as_deref(), Some("other session"));
+        assert_eq!(
+            acp_compaction_summary_vm_for_attempt(
+                &other_attempt,
+                AcpCompactionSummaryQueryInput {
+                    branch_id: "root".into(),
+                    event_id: "compaction-1".into(),
+                }
+            )
+            .unwrap()
+            .markdown
+            .as_deref(),
+            Some("other session")
+        );
     }
 
     #[test]
     fn compaction_summary_projection_handles_absent_empty_and_blob_content() {
-        for summary in [serde_json::Value::Null, json!([]), json!([{"type":"text","text":"  "}]), json!([{"type":"image","data":"image"}])] {
-            let event = acp_event_at("cmp", "contextCompaction", Some("completed"), 1, Some(json!({"summary":summary})));
-            assert_eq!(compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"], false);
+        for summary in [
+            serde_json::Value::Null,
+            json!([]),
+            json!([{"type":"text","text":"  "}]),
+            json!([{"type":"image","data":"image"}]),
+        ] {
+            let event = acp_event_at(
+                "cmp",
+                "contextCompaction",
+                Some("completed"),
+                1,
+                Some(json!({"summary":summary})),
+            );
+            assert_eq!(
+                compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"],
+                false
+            );
         }
-        let event = acp_event_at("cmp", "contextCompaction", Some("completed"), 1,
-            Some(json!({"summary":[{"type":"text","text":{"$goldBandBlob":{"id":"blob"}}}]})));
-        assert_eq!(compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"], true);
+        let event = acp_event_at(
+            "cmp",
+            "contextCompaction",
+            Some("completed"),
+            1,
+            Some(json!({"summary":[{"type":"text","text":{"$goldBandBlob":{"id":"blob"}}}]})),
+        );
+        assert_eq!(
+            compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"],
+            true
+        );
     }
 
     #[test]
@@ -12059,6 +12186,7 @@ mod tests {
             agent_execution_id: "agent-internal".to_string(),
             parent_agent_execution_id: Some("agent-parent".to_string()),
             execution_status: "running".to_string(),
+            provider_state_seq: Some(12),
             event_count: 1,
             tool_call_count: 1,
             read_file_count: 0,
@@ -12070,6 +12198,7 @@ mod tests {
         };
         let value = serde_json::to_value(vm).unwrap();
         assert_eq!(value["agentExecutionId"], "agent-internal");
+        assert_eq!(value["providerStateSeq"], 12);
         assert!(value.get("toolCallId").is_none());
         assert!(value.get("parentToolCallId").is_none());
         assert!(value.get("launchStatus").is_none());

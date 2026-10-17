@@ -155,25 +155,45 @@ pub fn record_background_message(
 ) -> Result<(ConversationTerminalResultRecord, bool)> {
     let mut state = load_state(app)?;
     let task = state.tasks.entry(task_id.to_string()).or_default();
-    if task.background_message_cursor.as_ref().is_some_and(|(stream, seq)| stream == stream_key && *seq >= started_seq) {
-        return Ok((ConversationTerminalResultRecord { changed: false, unread_terminal_result: task.unread_terminal_result() }, false));
+    if task
+        .background_message_cursor
+        .as_ref()
+        .is_some_and(|(stream, seq)| stream == stream_key && *seq >= started_seq)
+    {
+        return Ok((
+            ConversationTerminalResultRecord {
+                changed: false,
+                unread_terminal_result: task.unread_terminal_result(),
+            },
+            false,
+        ));
     }
     // Prompt completion has its own notification. Only an unread reply matching
     // the existing background cursor can coalesce this background notification.
-    let notify = !task.background_message_cursor.as_ref().is_some_and(|(stream, seq)| {
-        task.unread_terminal_result().is_some_and(|previous| {
-            previous.event_id == background_message_event_id(stream, *seq)
-        })
-    });
+    let notify = !task
+        .background_message_cursor
+        .as_ref()
+        .is_some_and(|(stream, seq)| {
+            task.unread_terminal_result().is_some_and(|previous| {
+                previous.event_id == background_message_event_id(stream, *seq)
+            })
+        });
     task.background_message_cursor = Some((stream_key.to_owned(), started_seq));
     // Preserve unread errors/stops; advance the ACK token so a delayed read of
     // the previous reply cannot acknowledge a newer reply.
     if let Some(previous) = task.unread_terminal_result()
-        && matches!(previous.kind, ConversationTerminalResultKind::Failed | ConversationTerminalResultKind::Stopped) {
+        && matches!(
+            previous.kind,
+            ConversationTerminalResultKind::Failed | ConversationTerminalResultKind::Stopped
+        )
+    {
         result.kind = previous.kind;
     }
     task.latest_terminal_result = Some(result);
-    let record = ConversationTerminalResultRecord { changed: true, unread_terminal_result: task.unread_terminal_result() };
+    let record = ConversationTerminalResultRecord {
+        changed: true,
+        unread_terminal_result: task.unread_terminal_result(),
+    };
     save_state(app, &state)?;
     Ok((record, notify))
 }
@@ -224,41 +244,152 @@ mod tests {
 
     #[test]
     fn unread_prompt_result_does_not_suppress_first_background_reply() {
-        for kind in [ConversationTerminalResultKind::Completed, ConversationTerminalResultKind::Failed, ConversationTerminalResultKind::Stopped] {
+        for kind in [
+            ConversationTerminalResultKind::Completed,
+            ConversationTerminalResultKind::Failed,
+            ConversationTerminalResultKind::Stopped,
+        ] {
             let (_root, app) = app();
             record_terminal_result(&app, "task-001", result("prompt-done", kind)).unwrap();
-            let (record, notify) = record_background_message(&app, "task-001", "run/session", 135, result("background:run/session:135", ConversationTerminalResultKind::NewMessage)).unwrap();
-            assert!(notify, "an unread {kind:?} prompt result must not suppress background replies");
-            assert_eq!(record.unread_terminal_result.unwrap().kind, if kind == ConversationTerminalResultKind::Completed { ConversationTerminalResultKind::NewMessage } else { kind });
-            assert!(!record_background_message(&app, "task-001", "run/session", 140, result("background:run/session:140", ConversationTerminalResultKind::NewMessage)).unwrap().1);
+            let (record, notify) = record_background_message(
+                &app,
+                "task-001",
+                "run/session",
+                135,
+                result(
+                    "background:run/session:135",
+                    ConversationTerminalResultKind::NewMessage,
+                ),
+            )
+            .unwrap();
+            assert!(
+                notify,
+                "an unread {kind:?} prompt result must not suppress background replies"
+            );
+            assert_eq!(
+                record.unread_terminal_result.unwrap().kind,
+                if kind == ConversationTerminalResultKind::Completed {
+                    ConversationTerminalResultKind::NewMessage
+                } else {
+                    kind
+                }
+            );
+            assert!(
+                !record_background_message(
+                    &app,
+                    "task-001",
+                    "run/session",
+                    140,
+                    result(
+                        "background:run/session:140",
+                        ConversationTerminalResultKind::NewMessage
+                    )
+                )
+                .unwrap()
+                .1
+            );
         }
     }
 
     #[test]
     fn read_prompt_completion_allows_a_new_background_notification() {
         let (_root, app) = app();
-        record_terminal_result(&app, "task-001", result("prompt-done", ConversationTerminalResultKind::Completed)).unwrap();
-        assert!(acknowledge_terminal_result(&app, "task-001", "prompt-done").unwrap().acknowledged);
-        let (record, notify) = record_background_message(&app, "task-001", "run/session", 135, result("background-reply", ConversationTerminalResultKind::NewMessage)).unwrap();
+        record_terminal_result(
+            &app,
+            "task-001",
+            result("prompt-done", ConversationTerminalResultKind::Completed),
+        )
+        .unwrap();
+        assert!(
+            acknowledge_terminal_result(&app, "task-001", "prompt-done")
+                .unwrap()
+                .acknowledged
+        );
+        let (record, notify) = record_background_message(
+            &app,
+            "task-001",
+            "run/session",
+            135,
+            result(
+                "background-reply",
+                ConversationTerminalResultKind::NewMessage,
+            ),
+        )
+        .unwrap();
         assert!(notify);
-        assert_eq!(record.unread_terminal_result.unwrap().event_id, "background-reply");
-        assert!(!record_background_message(&app, "task-001", "run/session", 135, result("background-reply", ConversationTerminalResultKind::NewMessage)).unwrap().1);
+        assert_eq!(
+            record.unread_terminal_result.unwrap().event_id,
+            "background-reply"
+        );
+        assert!(
+            !record_background_message(
+                &app,
+                "task-001",
+                "run/session",
+                135,
+                result(
+                    "background-reply",
+                    ConversationTerminalResultKind::NewMessage
+                )
+            )
+            .unwrap()
+            .1
+        );
     }
 
     #[test]
     fn background_notifications_follow_unread_episodes_not_chunks_or_prompt_completions() {
         let (_root, app) = app();
-        let submit = |seq| record_background_message(&app, "task-001", "run/session", seq, result(&background_message_event_id("run/session", seq), ConversationTerminalResultKind::NewMessage)).unwrap();
+        let submit = |seq| {
+            record_background_message(
+                &app,
+                "task-001",
+                "run/session",
+                seq,
+                result(
+                    &background_message_event_id("run/session", seq),
+                    ConversationTerminalResultKind::NewMessage,
+                ),
+            )
+            .unwrap()
+        };
         assert!(submit(10).1);
         assert!(!submit(10).1);
         assert!(!submit(20).1);
-        assert!(!acknowledge_terminal_result(&app, "task-001", &background_message_event_id("run/session", 10)).unwrap().acknowledged);
-        assert!(acknowledge_terminal_result(&app, "task-001", &background_message_event_id("run/session", 20)).unwrap().acknowledged);
+        assert!(
+            !acknowledge_terminal_result(
+                &app,
+                "task-001",
+                &background_message_event_id("run/session", 10)
+            )
+            .unwrap()
+            .acknowledged
+        );
+        assert!(
+            acknowledge_terminal_result(
+                &app,
+                "task-001",
+                &background_message_event_id("run/session", 20)
+            )
+            .unwrap()
+            .acknowledged
+        );
         assert!(!submit(20).1);
         assert!(submit(30).1);
-        record_terminal_result(&app, "task-001", result("prompt-done", ConversationTerminalResultKind::Completed)).unwrap();
+        record_terminal_result(
+            &app,
+            "task-001",
+            result("prompt-done", ConversationTerminalResultKind::Completed),
+        )
+        .unwrap();
         assert!(submit(40).1);
-        assert_eq!(unread_terminal_result(&app, "task-001").unwrap().unwrap().event_id, background_message_event_id("run/session", 40));
+        assert_eq!(
+            unread_terminal_result(&app, "task-001")
+                .unwrap()
+                .unwrap()
+                .event_id,
+            background_message_event_id("run/session", 40)
+        );
     }
 
     fn app() -> (tempfile::TempDir, App) {

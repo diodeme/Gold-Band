@@ -183,6 +183,11 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
                 ))}
               </dl>
             ) : null}
+            {tokenRows.length > 0 && usage?.tokenTotalsExcludeBackground ? (
+              <p className="max-w-56 text-muted-foreground" data-acp-usage-excludes-background="true">
+                {t('acp.usagePanel.excludesBackground')}
+              </p>
+            ) : null}
           </div>
         </TooltipContent>
       </Tooltip>
@@ -353,7 +358,8 @@ function usageFieldsEqual(
     && previous?.outputTokens === next?.outputTokens
     && previous?.cachedReadTokens === next?.cachedReadTokens
     && previous?.cachedWriteTokens === next?.cachedWriteTokens
-    && previous?.totalTokens === next?.totalTokens;
+    && previous?.totalTokens === next?.totalTokens
+    && previous?.tokenTotalsExcludeBackground === next?.tokenTotalsExcludeBackground;
 }
 
 function formatElapsed(totalSeconds: number): string {

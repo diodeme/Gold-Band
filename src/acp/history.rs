@@ -1,6 +1,10 @@
+use std::collections::HashSet;
+
 use serde_json::{Value, json};
 
 use crate::acp::events::AcpUiEvent;
+
+pub(crate) const MAX_PENDING_AGENT_LAUNCHES: usize = 1024;
 
 pub const CLAUDE_REQUEST_INTERRUPTED: &str = "[Request interrupted by user]";
 pub const CLAUDE_TOOL_USE_INTERRUPTED: &str = "[Request interrupted by user for tool use]";
@@ -73,6 +77,7 @@ pub struct ProviderHistoryReplay {
     active_item_key: Option<String>,
     gap_turn_index: u64,
     pending_items: Vec<PendingReplayItem>,
+    pending_agent_launches: HashSet<(String, String)>,
 }
 
 impl ProviderHistoryReplay {
@@ -137,6 +142,7 @@ impl ProviderHistoryReplay {
             active_item_key: None,
             gap_turn_index: 0,
             pending_items: Vec::new(),
+            pending_agent_launches: HashSet::new(),
         }
     }
 
@@ -152,6 +158,18 @@ impl ProviderHistoryReplay {
         self.active_item_key = None;
         self.gap_turn_index = 0;
         self.pending_items.clear();
+        self.pending_agent_launches.clear();
+    }
+
+    /// Lightweight proof for native child binding while the original replay
+    /// turn is awaiting its next prompt anchor. No transcript scan or copy.
+    pub(crate) fn has_pending_agent_launch(&self, parent_branch: &str, tool_call_id: &str) -> bool {
+        self.pending_agent_launches
+            .contains(&(parent_branch.to_string(), tool_call_id.to_string()))
+    }
+
+    pub(crate) fn pending_agent_launch_capacity_reached(&self) -> bool {
+        self.pending_agent_launches.len() >= MAX_PENDING_AGENT_LAUNCHES
     }
 
     pub fn observe(&mut self, update: &Value) -> ReplayUpdateDecision {
@@ -170,6 +188,22 @@ impl ProviderHistoryReplay {
             return ReplayUpdateDecision::Suppress;
         }
 
+        if matches!(kind, "tool_call" | "tool_call_update")
+            && self.pending_agent_launches.len() < MAX_PENDING_AGENT_LAUNCHES
+        {
+            let event = crate::acp::events::normalize_session_update(
+                0,
+                Some(self.session_id.clone()),
+                update,
+            );
+            let route = crate::acp::branches::branch_route_for_event(&event);
+            if route.launched_agent_execution_id.is_some()
+                && let Some(tool_id) = event.tool_call_id
+            {
+                self.pending_agent_launches
+                    .insert((route.branch_id, tool_id));
+            }
+        }
         let logical_key = replay_item_key(kind, update);
         if self.active_item_key.as_deref() != Some(logical_key.as_str()) {
             self.item_index = self.item_index.saturating_add(1);
@@ -234,6 +268,7 @@ impl ProviderHistoryReplay {
     }
 
     fn flush_pending(&mut self, before_anchor_index: Option<usize>) -> Vec<ProviderHistoryImport> {
+        self.pending_agent_launches.clear();
         if self.pending_items.is_empty() {
             return Vec::new();
         }
@@ -402,7 +437,13 @@ fn replay_item_key(kind: &str, update: &Value) -> String {
 fn is_replay_content_update(kind: &str) -> bool {
     matches!(
         kind,
-        "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan" | "compaction_update" | "compaction_summary_chunk"
+        "agent_message_chunk"
+            | "agent_thought_chunk"
+            | "tool_call"
+            | "tool_call_update"
+            | "plan"
+            | "compaction_update"
+            | "compaction_summary_chunk"
     )
 }
 
@@ -495,9 +536,14 @@ mod tests {
         replay.begin("claude-acp", "session");
         replay.observe(&json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"external prompt"}}));
         replay.observe(&json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[{"type":"text","text":"summary"}]}));
-        let ReplayUpdateDecision::Import { items } = replay.finish() else { panic!("expected history") };
+        let ReplayUpdateDecision::Import { items } = replay.finish() else {
+            panic!("expected history")
+        };
         assert_eq!(items.len(), 2);
-        assert_eq!(items[1].update["providerHistoryItemId"], "context-compaction-id-cmp");
+        assert_eq!(
+            items[1].update["providerHistoryItemId"],
+            "context-compaction-id-cmp"
+        );
     }
 
     #[test]

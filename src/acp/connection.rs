@@ -33,6 +33,7 @@ const UNROUTED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 const EARLY_SESSION_FRAME_TTL: Duration = Duration::from_secs(5);
 const EARLY_SESSION_FRAME_MAX_BYTES: usize = 1024 * 1024;
 const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
+const SUBAGENT_ROUTE_MAX_CHILDREN: usize = 1_024;
 const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
@@ -2254,7 +2255,10 @@ fn route_inbound_frame(
 }
 
 impl AdapterConnection {
-    pub(crate) fn session_route_watermark(&self, session_id: &str) -> Option<SessionRouteWatermark> {
+    pub(crate) fn session_route_watermark(
+        &self,
+        session_id: &str,
+    ) -> Option<SessionRouteWatermark> {
         self.session_routes
             .lock()
             .ok()
@@ -2272,11 +2276,23 @@ fn register_session_route_state(
     let (tx, rx) = session_route_pair(adapter_id.to_string(), session_id.to_string());
     let (previous, buffered) = match session_routes.lock() {
         Ok(mut routes) => {
+            // Native children share their owner's pump, never a second consumer.
+            if routes
+                .get(session_id)
+                .is_some_and(|route| route.session_id != session_id)
+            {
+                tx.close();
+                return rx;
+            }
+            let previous = routes.insert(session_id.to_string(), tx.clone());
+            if let Some(previous) = &previous {
+                routes.retain(|_, route| route.inner.generation != previous.inner.generation);
+            }
             let buffered = early_session_frames
                 .lock()
                 .map(|mut frames| frames.take(session_id, Instant::now()))
                 .unwrap_or_default();
-            (routes.insert(session_id.to_string(), tx.clone()), buffered)
+            (previous, buffered)
         }
         Err(_) => {
             tx.close();
@@ -2287,7 +2303,14 @@ fn register_session_route_state(
         previous.close();
     }
     for frame in buffered {
-        if !tx.send_at(frame.value, frame.bytes, frame.received_at) {
+        if !route_or_buffer_session_frame(
+            session_routes,
+            early_session_frames,
+            session_id,
+            frame.value,
+            frame.bytes,
+            frame.received_at,
+        ) {
             break;
         }
     }
@@ -2308,6 +2331,15 @@ fn unregister_session_route_state(
             return false;
         }
         let route = routes.remove(session_id);
+        if let Some(owner) = &route {
+            if owner.session_id != session_id {
+                if let Ok(mut early_frames) = early_session_frames.lock() {
+                    early_frames.remove(session_id);
+                }
+                return true;
+            }
+            routes.retain(|_, child| child.inner.generation != owner.inner.generation);
+        }
         if let Ok(mut early_frames) = early_session_frames.lock() {
             early_frames.remove(session_id);
         }
@@ -2331,12 +2363,65 @@ fn route_or_buffer_session_frame(
     frame_bytes: usize,
     now: Instant,
 ) -> bool {
-    let Ok(routes) = session_routes.lock() else {
+    let Ok(mut routes) = session_routes.lock() else {
         return false;
     };
     if let Some(route) = routes.get(session_id).cloned() {
+        let mut early_child = None;
+        if value.get("method").and_then(Value::as_str) == Some("session/update")
+            && value
+                .pointer("/params/update/sessionUpdate")
+                .and_then(Value::as_str)
+                == Some("subagent_update")
+        {
+            if let Some(child_id) = value
+                .pointer("/params/update/sessionId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && *id != session_id)
+            {
+                if let Some(existing) = routes.get(child_id) {
+                    if existing.inner.generation != route.inner.generation {
+                        warn!(
+                            session_id,
+                            child_id, "ACP subagent announcement conflicts with an existing route"
+                        );
+                    }
+                } else if routes
+                    .values()
+                    .filter(|entry| entry.inner.generation == route.inner.generation)
+                    .count()
+                    > SUBAGENT_ROUTE_MAX_CHILDREN
+                {
+                    warn!(session_id, child_id, "ACP subagent route limit exceeded");
+                } else {
+                    routes.insert(child_id.to_string(), route.clone());
+                    let frames = early_session_frames
+                        .lock()
+                        .map(|mut frames| frames.take(child_id, now))
+                        .unwrap_or_default();
+                    early_child = Some((child_id.to_string(), frames));
+                }
+            }
+        }
         drop(routes);
-        return route.send_at(value, frame_bytes, now);
+        if !route.send_at(value, frame_bytes, now) {
+            return false;
+        }
+        if let Some((child_id, frames)) = early_child {
+            for frame in frames {
+                if !route_or_buffer_session_frame(
+                    session_routes,
+                    early_session_frames,
+                    &child_id,
+                    frame.value,
+                    frame.bytes,
+                    frame.received_at,
+                ) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
     let buffered = early_session_frames
         .lock()
@@ -3816,6 +3901,143 @@ mod tests {
 
         assert_eq!(receiver.try_recv().unwrap(), frame);
         assert_eq!(receiver.try_recv(), Err(SessionRouteTryRecvError::Empty));
+    }
+
+    #[test]
+    fn subagent_announcement_routes_child_frames_through_the_parent_queue() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let receiver =
+            register_session_route_state("test-adapter", "parent", &routes, &early_frames);
+        let now = std::time::Instant::now();
+        let announcement = json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "sessionId": "parent", "update": {
+                "sessionUpdate": "subagent_update", "sessionId": "child",
+                "state": { "state": "running" }
+            }}
+        });
+        let prompt = json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "sessionId": "child", "update": {
+                "sessionUpdate": "session_message", "messageId": "launch-1",
+                "senderSessionId": "parent", "recipientSessionId": "child",
+                "content": [{ "type": "text", "text": "Inspect the files" }]
+            }}
+        });
+        let permission = json!({
+            "jsonrpc": "2.0", "id": "permission-1", "method": "session/request_permission",
+            "params": { "sessionId": "child", "toolCall": { "toolCallId": "read-1" } }
+        });
+        for (session, frame) in [
+            ("parent", &announcement),
+            ("child", &prompt),
+            ("child", &permission),
+        ] {
+            assert!(route_or_buffer_session_frame(
+                &routes,
+                &early_frames,
+                session,
+                frame.clone(),
+                256,
+                now,
+            ));
+        }
+
+        assert_eq!(receiver.try_recv().unwrap(), announcement);
+        assert_eq!(receiver.try_recv(), Ok(prompt));
+        assert_eq!(receiver.try_recv(), Ok(permission));
+        assert_eq!(receiver.try_recv(), Err(SessionRouteTryRecvError::Empty));
+        assert_eq!(
+            routes.lock().unwrap()["parent"]
+                .watermark()
+                .unwrap()
+                .sequence(),
+            3
+        );
+    }
+
+    #[test]
+    fn nested_subagent_routes_close_with_their_owner_without_closing_other_sessions() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let receiver =
+            register_session_route_state("test-adapter", "parent", &routes, &early_frames);
+        let other = register_session_route_state("test-adapter", "other", &routes, &early_frames);
+        let now = std::time::Instant::now();
+        for (parent, child) in [("parent", "child"), ("child", "grandchild")] {
+            let frame = json!({
+                "method": "session/update", "params": { "sessionId": parent, "update": {
+                    "sessionUpdate": "subagent_update", "sessionId": child,
+                    "state": { "state": "running" }
+                }}
+            });
+            assert!(route_or_buffer_session_frame(
+                &routes,
+                &early_frames,
+                parent,
+                frame.clone(),
+                128,
+                now,
+            ));
+            assert_eq!(receiver.try_recv(), Ok(frame));
+        }
+        let generation = routes.lock().unwrap()["parent"]
+            .watermark()
+            .unwrap()
+            .route_generation();
+        assert!(unregister_session_route_state(
+            "parent",
+            Some(generation),
+            &routes,
+            &early_frames,
+        ));
+        assert_eq!(routes.lock().unwrap().len(), 1);
+        let frame = json!({ "method": "session/update", "params": { "sessionId": "other" } });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "other",
+            frame.clone(),
+            64,
+            now,
+        ));
+        assert_eq!(other.try_recv(), Ok(frame));
+    }
+
+    #[test]
+    fn subagent_announcement_cannot_take_over_another_root_route() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let parent = register_session_route_state("test-adapter", "parent", &routes, &early_frames);
+        let other = register_session_route_state("test-adapter", "other", &routes, &early_frames);
+        let now = std::time::Instant::now();
+        let announcement = json!({
+            "method": "session/update", "params": { "sessionId": "parent", "update": {
+                "sessionUpdate": "subagent_update", "sessionId": "other",
+                "state": { "state": "running" }
+            }}
+        });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "parent",
+            announcement.clone(),
+            128,
+            now,
+        ));
+        assert_eq!(parent.try_recv(), Ok(announcement));
+        let frame = json!({ "method": "session/update", "params": { "sessionId": "other" } });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "other",
+            frame.clone(),
+            64,
+            now,
+        ));
+        assert_eq!(other.try_recv(), Ok(frame));
+        assert_eq!(parent.try_recv(), Err(SessionRouteTryRecvError::Empty));
     }
 
     #[test]

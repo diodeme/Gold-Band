@@ -587,6 +587,7 @@
     "closeWorkspace": "Recolher espaço de trabalho à direita",
     "openNewTab": "Abrir nova aba",
     "closeTab": "Fechar aba",
+    "panelFailed": "Não foi possível exibir esta aba",
     "allTabs": "Todas as abas",
     "attention": "Precisa de atenção",
     "files": "Espaço de trabalho",
@@ -818,6 +819,12 @@
       "workspace-outside-project": "O worktree selecionado não pertence a este projeto.",
       "ref-changed": "A lista de alterações foi atualizada. Tente novamente.",
       "sync-ref-changed": "O branch mudou. Tente novamente.",
+      "push-upstream-invalid": "Não foi possível resolver o upstream do branch. Verifique a configuração de rastreamento e tente novamente.",
+      "push-upstream-unsupported": "Este branch rastreia um branch local. O push para um upstream local não é suportado.",
+      "push-branch-not-current": "O branch atual mudou. Abra novamente a confirmação de push.",
+      "push-remote-required": "Selecione um remote para publicar.",
+      "push-confirmation-required": "Confirme primeiro o branch de origem e o destino do push.",
+      "push-target-changed": "O branch de origem ou o destino do push mudou. Confirme novamente.",
       "repository-locked": "Outra operação de gravação no repositório está em execução.",
       "workspace-locked": "Outra operação de gravação no espaço de trabalho está em execução.",
       "operation-in-progress": "Um fluxo Git ainda está em andamento. Conclua ou aborte e tente novamente.",
@@ -926,6 +933,7 @@
       "turn-execution-failed": "Esta mensagem não pôde ser processada. Tente novamente.",
       "session-request-failed": "A sessão não pôde ser preparada. Tente novamente.",
       "missing-provider": "O nó atual não tem configuração de provider.",
+      "subagent-protocol-upgrade-required": "Atualize o Claude ACP para {{minimumVersion}} ou posterior e tente novamente.",
       "session-config-value-unavailable": "A configuração de sessão selecionada não está mais disponível. Escolha outro valor da lista mais recente.",
       "active-prompt-blocks-config-save": "Há uma sessão em execução. Interrompa-a antes de salvar a configuração.",
       "invalid-conversation-branch-id": "Este link de conversa do Agent é inválido ou não está mais disponível.",
@@ -996,7 +1004,8 @@
     "runtime": {
       "io": {
         "storage-full": "O disco está cheio e esta execução foi interrompida. Libere espaço antes de continuar.",
-        "permission-denied": "Não foi possível gravar os dados da sessão. Verifique as permissões de gravação do diretório."
+        "permission-denied": "Não foi possível gravar os dados da sessão. Verifique as permissões de gravação do diretório.",
+        "attachment-path-too-long": "Esta conversa está armazenada em uma pasta de dados muito profunda para salvar o anexo \"{{name}}\". Crie uma nova conversa e envie-o por lá."
       },
       "conversation-not-available": "O fluxo de trabalho está em execução, então uma mensagem normal ainda não pode ser enviada.",
       "continue-not-available": "Este nó não precisa mais ser continuado. Ele pode já estar ativo ou não ser mais retomável.",
@@ -1998,6 +2007,9 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "pushTargetRemote": "Remote de destino",
+    "pushPreparing": "Preparando destino do push…",
+    "pushSetUpstream": "Definir o branch de destino como upstream após a publicação bem-sucedida.",
     "remote": "Remote",
     "name": "Nome",
     "startPoint": "Ponto inicial",
@@ -2420,7 +2432,8 @@
       "output": "Saída",
       "cacheRead": "Leitura de cache",
       "cacheWrite": "Gravação de cache",
-      "total": "Total"
+      "total": "Total",
+      "excludesBackground": "Não inclui o uso de ativações em segundo plano"
     }
   },
   "graph": {

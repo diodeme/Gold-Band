@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  admitAcpSessionProjection,
   applyPendingInteractionEventsToSession,
   buildAcpTimeline,
   applyAgentBranchResultToSession,
@@ -637,6 +638,25 @@ describe('ACP chat event handling', () => {
     expect(
       reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingInteractions,
     ).toEqual([]);
+  });
+
+  it.each(['accept', 'cancel', 'decline'])('never readmits an older pending projection after %s', (action) => {
+    const pending = session({
+      pendingInteractions: [{ kind: 'elicitation', interactionId: 'settled', message: 'Choose', requestedSchema: { type: 'object' }, raw: {} }],
+      eventPage: { generation: 2, coveredRevision: 10, newestRevision: 10, loadedCount: 0, total: 0, hasOlder: true, hasNewer: false },
+    });
+    const settled = applyPendingInteractionEventsToSession(pending, [event({
+      id: 'response', seq: 11, kind: 'elicitationResponse', raw: { elicitationId: 'settled', action },
+    })])!;
+    settled.eventPage = { ...pending.eventPage, coveredRevision: 11, newestRevision: 11 };
+    settled.events = [];
+    expect(admitAcpSessionProjection(settled, pending)).toBe(settled);
+    const newPending = { ...pending, eventPage: { ...pending.eventPage, coveredRevision: 12, newestRevision: 12 } };
+    expect(admitAcpSessionProjection(newPending, settled)).toBe(newPending);
+    expect(admitAcpSessionProjection(settled, newPending)?.pendingInteractions).toEqual(pending.pendingInteractions);
+    expect(admitAcpSessionProjection(newPending, {
+      ...settled, eventPage: { ...settled.eventPage, generation: 1, coveredRevision: 100 },
+    })).toBe(newPending);
   });
 
   it('clears a pending elicitation when a newer authoritative projection omits the response event', () => {

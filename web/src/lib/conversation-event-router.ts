@@ -238,6 +238,7 @@ export interface ConversationBranchLiveSnapshot {
   contentRevision: number;
   acpRevision: number;
   status: string | null;
+  providerStateSeq?: number | null;
   attention: boolean;
   acp: ConversationAttemptLifecycleVm['acp'] | null;
   promptQueue: ConversationAttemptLifecycleVm['promptQueue'];
@@ -423,6 +424,33 @@ export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdated
       );
       if (!accepted) return;
       const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+      if (timelineEvent.kind === 'agentState') {
+        if (isNativeAgentState(timelineEvent) && timelineEvent.status) {
+          if (conversationEventPosition(timelineEvent) <= (current.providerStateSeq ?? -1)) return;
+          updateAgentBranchSnapshot(
+            key,
+            timelineEvent.status,
+            timelineEvent.status === 'waiting_permission',
+            conversationEventPosition(timelineEvent),
+          );
+        }
+        return;
+      }
+      if (current.providerStateSeq != null) {
+        const request = timelineEvent.kind === 'permissionRequest' || timelineEvent.kind === 'elicitationRequest';
+        const response = timelineEvent.kind === 'elicitationResponse';
+        const pending = request && (timelineEvent.status ?? 'pending') === 'pending';
+        const newerInteraction = conversationEventPosition(timelineEvent) > current.providerStateSeq;
+        updateBranchSnapshot(
+          key,
+          current.status,
+          newerInteraction && (request || response) && !isTerminalBranchStatus(current.status)
+            ? pending
+            : current.attention,
+          true,
+        );
+        return;
+      }
       if (isSyntheticAgentPrompt(timelineEvent)) {
         updateBranchSnapshot(key, current.status, current.attention, true);
         return;
@@ -481,7 +509,8 @@ export function reconcileConversationBranchSession(
       );
     } else {
       const projectedStatus = branchExecution?.executionStatus ?? session.status;
-      const authoritativeStatus = isTerminalSessionStatus(session.status)
+      const authoritativeStatus = branchExecution?.providerStateSeq == null
+        && isTerminalSessionStatus(session.status)
         && !isTerminalBranchStatus(projectedStatus)
         ? session.status
         : projectedStatus;
@@ -489,6 +518,7 @@ export function reconcileConversationBranchSession(
         branchKey,
         authoritativeStatus,
         branchExecution?.hasAttention ?? false,
+        branchExecution?.providerStateSeq,
       );
     }
 
@@ -499,10 +529,11 @@ export function reconcileConversationBranchSession(
       projectedBranchKeys.add(key);
       updateAgentBranchSnapshot(
         key,
-        branchTerminal && !isTerminalBranchStatus(agent.executionStatus)
+        branchTerminal && agent.providerStateSeq == null && !isTerminalBranchStatus(agent.executionStatus)
           ? 'interrupted'
           : agent.executionStatus,
-        branchTerminal ? false : agent.hasAttention,
+        branchTerminal && agent.providerStateSeq == null ? false : agent.hasAttention,
+        agent.providerStateSeq,
       );
     }
 
@@ -510,7 +541,7 @@ export function reconcileConversationBranchSession(
     const rootKey = `${prefix}root`;
     for (const [key, current] of branchSnapshots) {
       if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
-      if (isTerminalBranchStatus(current.status)) continue;
+      if (current.providerStateSeq != null || isTerminalBranchStatus(current.status)) continue;
       updateBranchSnapshot(key, 'interrupted', false);
     }
   } finally {
@@ -537,7 +568,7 @@ function reconcileConversationBranchLifecycle(
   );
   if (!status || !isTerminalSessionStatus(status)) return;
   for (const [key, current] of branchSnapshots) {
-    if (!key.startsWith(prefix) || key === rootKey || isTerminalBranchStatus(current.status)) continue;
+    if (!key.startsWith(prefix) || key === rootKey || current.providerStateSeq != null || isTerminalBranchStatus(current.status)) continue;
     updateBranchSnapshot(key, 'interrupted', false);
   }
 }
@@ -564,10 +595,23 @@ function branchStatusFromAcp(
 export function resolveConversationBranchDisplayStatus(
   persistedStatus: string | null | undefined,
   liveStatus: string | null | undefined,
+  persistedProviderStateSeq?: number | null,
+  liveProviderStateSeq?: number | null,
 ) {
+  if (persistedProviderStateSeq !== liveProviderStateSeq
+    && (persistedProviderStateSeq != null || liveProviderStateSeq != null)) {
+    return (liveProviderStateSeq ?? -1) > (persistedProviderStateSeq ?? -1)
+      ? liveStatus ?? persistedStatus ?? null
+      : persistedStatus ?? liveStatus ?? null;
+  }
   if (isTerminalBranchStatus(persistedStatus ?? null)) return persistedStatus ?? null;
   if (isTerminalBranchStatus(liveStatus ?? null)) return liveStatus ?? null;
   return liveStatus ?? persistedStatus ?? null;
+}
+
+function isNativeAgentState(event: AcpUiEventVm) {
+  if (!event.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return false;
+  return (event.raw as Record<string, unknown>).source === 'nativeSubagentState';
 }
 
 function isSyntheticAgentPrompt(event: AcpSessionUpdatedEventVm['event']) {
@@ -590,14 +634,17 @@ function updateBranchSnapshot(
     promptQueue: ConversationAttemptLifecycleVm['promptQueue'];
     executionError?: ConversationAttemptLifecycleVm['executionError'];
   },
+  providerStateSeq?: number | null,
 ) {
   const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+  const nextProviderStateSeq = providerStateSeq ?? current.providerStateSeq;
   const nextAcp = control?.acp ?? current.acp;
   const nextPromptQueue = control?.promptQueue ?? current.promptQueue;
   const executionError = mergeAcpExecutionError(nextAcp, control?.executionError, current.executionError);
   const nextAcpRevision = nextAcp?.revision ?? current.acpRevision;
   if (
     current.status === status
+    && current.providerStateSeq === nextProviderStateSeq
     && current.attention === attention
     && current.acpRevision === nextAcpRevision
     && current.acp === nextAcp
@@ -617,6 +664,7 @@ function updateBranchSnapshot(
     contentRevision: current.contentRevision + Number(contentChanged),
     acpRevision: nextAcpRevision,
     status,
+    providerStateSeq: nextProviderStateSeq,
     attention,
     acp: nextAcp,
     executionError,
@@ -629,8 +677,24 @@ function updateAgentBranchSnapshot(
   key: string,
   status: string,
   attention: boolean,
+  providerStateSeq?: number | null,
 ) {
   const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+  if (providerStateSeq != null || current.providerStateSeq != null) {
+    if (providerStateSeq == null || providerStateSeq < (current.providerStateSeq ?? -1)) return;
+    // State sequence orders lifecycle, not ancestor attention: a descendant
+    // permission can change snapshot attention without a new parent state event.
+    // Explicit close may settle at the same sequence, but cannot revive it.
+    if (providerStateSeq === current.providerStateSeq) {
+      const settledStatus = isTerminalBranchStatus(current.status)
+        ? current.status
+        : isTerminalBranchStatus(status) ? status : current.status ?? status;
+      updateBranchSnapshot(key, settledStatus, isTerminalBranchStatus(settledStatus) ? false : attention);
+      return;
+    }
+    updateBranchSnapshot(key, status, isTerminalBranchStatus(status) ? false : attention, false, undefined, providerStateSeq);
+    return;
+  }
   if (isTerminalBranchStatus(current.status) && !isTerminalBranchStatus(status)) {
     updateBranchSnapshot(key, current.status, current.attention);
     return;

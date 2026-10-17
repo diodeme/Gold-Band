@@ -34,6 +34,33 @@
 - 新增报告快照用于在没有 active turn 时恢复最近真实完成结果；有界文件 checkpoint 保存 journal 缺少的工具结果与采集预算，避免重建时扫描历史猜测成功。两者都不是新的用户回合或任务身份。
 - 通知每条逻辑消息最多一次持久判定；统计只在正常结束或实际 intervention 变化时运行，沿用已有串行有界 metrics worker。正常结束读取 usage journal 的量与既有实现相同；补报读取单个最近报告快照，不扫 timeline。文件计算在独立有界 worker，UI 只接收最新累计文件结果；状态锁不覆盖原生通知发送。
 
+## 2026-10-14：官方子会话状态接入
+
+- 现场：task-314 的子 Agent 已由 provider 明确通知完成，旧 ACP transcript 只落下报告正文，没有正式分支完成事实，父 prompt 结束后按旧推断显示 Interrupted。
+- 核查修正：正常同步路径没有被后台改动整体破坏。真实持久化入口回归“子正文先落盘并退出热状态，再收到同文同步正式结果两次”在原实现上通过；因此不修改该路径，不把热状态过滤或旧 schema 迁移的静态疑点当作此次根因。
+- 上游方案：使用官方 Claude ACP 0.90.0 的 ACP v1 subagents RFD，不伪装 AIR、不 fork adapter、不建立任务查询或轮询系统。此次仅隔离安装验证，不修改用户现有 adapter、EXE、配置或历史会话；使用新协议需要客户端代码与支持该能力的 adapter 同时具备。0.87.0 也接受同名 capability，但使用不兼容旧草案，因此正式 initialize 按真实 agentInfo 校验官方 Claude ACP ≥ 0.90.0，低版本返回结构化升级错误；其他 provider 不套用 Claude 版本规则，七语言升级文案测试通过。
+- 数据边界：child session 是传输地址，原根 session + launch tool ID 仍生成同一 canonical execution。连接 ingress 在公告时建立父 pump 别名，consumer 用 session_message 证明 launch 关联；别名随 owner/generation 清理，正文/权限仍归属原分支。待关联公告有界，不缓存全历史、不按名称猜测关系。
+- 状态边界：内容为空的 agentState 是现有 timeline 的官方状态事实；索引/实时视图读取最新状态及 sequence，明确 running 可以恢复同一 child。普通文本、异步启动回执和父 end_turn 均不代替子终态。省略 state 的更新保持原状态，显式 null/未知结束原因显示已有“状态未知”。真实父运行时关闭保留未完成子执行的中断收敛，已有完成不被覆盖。
+- RED/GREEN：旧 connection 在父公告之后收不到 child session_message（Err(Empty)）；旧分支投影把官方 running 覆盖成 interrupted；旧 client 只保存初始 Prompt 而没有 agentState。相同接口测试经路由、归一化和索引修复后转绿。额外分别复现并修复元数据更新清空官方状态、完整重放正文被再次追加；没有用普通文本猜完成。
+- 官方包探针：真实 ACP 0.90.0 + SDK 0.3.296 / CLI 2.1.296，通过 Gold Band AdapterConnection 和 localhost 模型 fixture 验证 capability-off 同步、capability-on、异步完成、取消、子权限、SendMessage、close→load replay 共 7 场景，13.16 秒、23 次本地 fixture 响应，无付费模型请求。取消/权限保留真实 child session ID；重放恢复原 child ID 和结束原因。该探针单独证明上游协议，不冒称生产 mapper 已集成。
+- 生产消费入口：将官方 on/async/cancel/resume/replay 五组真实抓帧送入 handle_session_update，再落盘冷读 canonical branch，验证最终状态、单次正文、父输出隔离及无 native 拒收诊断；该显式回放测试通过，补足协议探针不经过生产 mapper 的边界。原同步结果持久化回归保持通过。
+- 前端：复用原 Agent 卡片、Tab、未知文案和有界 live cache；providerStateSeq 只比较官方状态事实，不作为全部摘要字段的 revision，attention 仍独立消费未决交互。相关 6 文件 197 项通过；最终错误文案/i18n/router/chat/panel 五文件定向测试 177 项通过（与前述有重叠，不累加）；TypeScript 检查和最终生产构建通过。独立浏览器使用实际 ACPChatDialog 验证 completed→running→unknown→completed、父 end_turn 不覆盖 child、单卡片/DOM identity 不变、状态事实不显示为正文；390px 与 1100px 无横向溢出。验证进程、浏览器、临时页面及本次隔离安装的 adapter 已清理。
+- 最终 Rust 回归：启用正式 capability 和版本校验后，`cargo test -p gold-band --lib acp::` 为 650 通过、3 失败、7 忽略；新增 native 状态、路由、重放、版本边界及原同步回归均通过。失败一项是未变更模板的 checkout CRLF 与测试预期 LF 不同，同一 binary 定向重现；另两项 doctor 测试未在共享 deadline 内达到预期 fixture 阶段，同一 binary 单独及串行各重跑一次均通过，但未证实全量并发失败的精确原因，不能宣称全套通过。`cargo check -p gold-band-desktop` 通过；桌面 binary 的 `view_models::tests::agent_execution_vm_does_not_serialize_provider_tool_ids` 单测通过，确认 providerStateSeq 序列化且不泄漏 provider tool ID。
+- 已知验证边界：扩展前端重入测试有既有失败 `atomically rejoins the live head with replay received during the latest-page request`（期待 Editing · files）；隔离加载 HEAD 原源码也失败，非本次引入。未运行付费线上模型、真实 provider 嵌套子会话、父 idle 后后台子任务取消、跨进程重启子会话或修复 task-314 旧数据；官方重载后继续子会话的能力仍受上游实现限制。
+- 过度设计与性能复核：没有新依赖、任务数据库、独立执行器、状态机、历史扫描器或后台调度器。复用原消息队列、分支身份、timeline 和索引；每个状态增量只更新所属分支。子路由/绑定上限 1024、待关联公告 64 条且单条最多 16 KiB；已绑定正文按 ID 直接路由，新增别名容量核查和 owner 清理才扫描当前连接路由，未在逐 chunk 热路径增加历史 I/O、N+1 查询或无界缓存。必要映射是有界协议投影，不是平行 canonical state；未发现需新增专项 benchmark 的性能风险。
+
+## 2026-10-15：后台唤醒的计时、Token 说明与引用配套
+
+- 现场：task-105 的 prompt 实际 13 秒，约 10 分钟后定时唤醒工作 18 秒；时间线会话累计记为 658 秒（= 最后后台事件 − prompt 开始），`acp.snapshot.json` 仍是 13 秒、累计费用 $0.0761（raw 已到 $0.0945）。后台回复最后一条消息一直处于流式状态，不能引用或复制。
+- 根因一（设计缺陷，计时）：`AcpTimingState` 只有用户 prompt 一种计时单元，end_turn 不关闭本轮；后台事件照常推进上一轮最后活动时间，空闲间隔被并入，下一次 prompt 还会把它一次性折算进累计。修复：后台投递（`_meta.goldBandBackground`）先在上一轮自身最后活动处关闭该轮，再按独立后台片段计时；相邻后台活动间隔超过 `BACKGROUND_TIMING_IDLE_GAP_SECS`（10 秒）结束片段，in_progress 工具期间静默照算；新 prompt 与后台停止标记结算片段。片段状态进入 `AcpTimingStateSnapshot`（serde 默认值，旧快照不迁移）。合并条目的 `timestamp` 停在首个 chunk，活动时间统一取 `max(timestamp, endedAt)` 且只前进，修复 usage 合并条目把前台最后活动拉回的问题。
+- 根因二（实现缺口，快照）：快照只在 prompt 终态写入，后台没有终态。后台 usage_update 到达时用 `patch_session_metadata` 刷新快照的 usedTokens / contextWindowSize / totalCostUsd / timing；锁与生命周期 header 沿用既有事务。
+- Token：分项只来自 prompt 响应，后台无法补齐。runtime 观察到后台 Agent 工作（与后台活动窗口同一判断）后，在 usage_update `_meta.goldBandTokenTotalsExcludeBackground` 持久化该事实；index usage 投影只置位，VM `tokenTotalsExcludeBackground`，前端实时 reducer 同样只置位；tooltip 在 Token 分项下方显示“不含后台唤醒的消耗”，七语言同步。
+- 根因三（实现缺口，引用）：流式标记只在 `sessionActive` 变为 false 时结算，后台回复期间它一直为 false，结算永不触发。改为前台 turn 与后台活动（复用 `useDirectBackgroundActive`）都结束时结算。
+- RED → GREEN：计时 4 项（idle gap 800→31、下一轮折算 663→36、运行工具 720→93、快照往返 662→35）；Direct fixture 集成测试去掉修复后在标记断言失败；前端后台回复 10 秒窗口结束后仍 `data-streaming=true`。修复后全部转绿；task-105 真实时间线按到达顺序回放为 31 秒。
+- 回归：`cargo test -p gold-band --lib -- acp:: timeline personal_analytics` 674 通过，3 项失败与既有基线一致（提示词 CRLF 与两项 doctor 截止时间，后两项单独重跑通过）；前端相关 9 个文件 208 项通过，唯一失败为既有 `atomically rejoins the live head…`（去掉本次改动同样失败）；`tsc -p web/tsconfig.build.json` 与 `cargo check -p gold-band-desktop` 通过；桌面端 usage 相关 10 项（含新增 VM 序列化测试）通过。
+- 未覆盖：metrics 上报的 `timing` 仍沿用最近一次 prompt 终态快照，后台片段不单独补报（改动对外上报口径，留待确认）；未执行真实 Claude 定时唤醒端到端重跑；浏览器实测因 agent-browser 在本机打开/连接 CDP 均超时未完成，tooltip 与引用由 DOM 测试覆盖，测试进程、Chrome 与 1420 服务已清理。
+- 自评审：没有新增状态机、依赖或轮询；计时只增加常量规模字段，后台片段判断为 O(1)，工具集合按并行后台工具数有界。快照刷新只在后台 usage_update 时发生（task-105 后台 18 秒内 2 次），每次一次小 JSON 读写；index 投影只多一个布尔位。
+
 ## 目标与边界
 
 将 Direct 的消息消费生命周期提升到 ACP 会话层，支持 prompt 返回 `end_turn` 后继续接收自主输出、后台工具通知和交互请求。页面切换仅释放展示资源。Workflow、AUTO 的执行终局、后台能力限制及回收策略不变。

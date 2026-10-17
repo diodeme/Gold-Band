@@ -87,12 +87,10 @@ export interface AcpRuntimeComposerState {
 }
 
 export function shouldTreatAcpRuntimeErrorAsFallback(
-  isDirect: boolean,
   lifecycle: ConversationAttemptLifecycleVm | null | undefined,
 ) {
   return Boolean(
-    isDirect
-    && lifecycle?.control.mode === 'non-runtime-controlled'
+    lifecycle?.control.mode === 'non-runtime-controlled'
     && lifecycle.runtime.pauseReason === 'runtime-abnormal'
     && !lifecycle.runtimeDisplay.blockingError
   );

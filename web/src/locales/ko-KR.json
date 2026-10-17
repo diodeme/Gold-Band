@@ -587,6 +587,7 @@
     "closeWorkspace": "오른쪽 워크스페이스 접기",
     "openNewTab": "새 탭 열기",
     "closeTab": "탭 닫기",
+    "panelFailed": "이 탭을 표시할 수 없습니다",
     "allTabs": "모든 탭",
     "attention": "조치 필요",
     "files": "워크스페이스",
@@ -818,6 +819,12 @@
       "workspace-outside-project": "선택한 Worktree가 이 프로젝트에 속하지 않습니다.",
       "ref-changed": "변경 목록이 갱신되었습니다. 다시 시도해 주세요.",
       "sync-ref-changed": "브랜치가 변경되었습니다. 다시 시도해 주세요.",
+      "push-upstream-invalid": "브랜치의 업스트림을 확인할 수 없습니다. 추적 설정을 확인한 뒤 다시 시도해 주세요.",
+      "push-upstream-unsupported": "이 브랜치는 로컬 브랜치를 추적합니다. 로컬 업스트림으로의 푸시는 지원하지 않습니다.",
+      "push-branch-not-current": "현재 브랜치가 변경되었습니다. 푸시 확인 창을 다시 열어 주세요.",
+      "push-remote-required": "게시할 원격 저장소를 선택해 주세요.",
+      "push-confirmation-required": "먼저 소스 브랜치와 푸시 대상을 확인해 주세요.",
+      "push-target-changed": "소스 브랜치 또는 푸시 대상이 변경되었습니다. 다시 확인해 주세요.",
       "repository-locked": "저장소에서 다른 쓰기 작업이 실행 중입니다.",
       "workspace-locked": "현재 워크스페이스에서 다른 쓰기 작업이 실행 중입니다.",
       "operation-in-progress": "Git 절차가 아직 끝나지 않았습니다. 완료하거나 중단한 뒤 다시 시도하세요.",
@@ -926,6 +933,7 @@
       "turn-execution-failed": "이 메시지를 처리할 수 없습니다. 다시 시도해 주세요.",
       "session-request-failed": "세션을 준비할 수 없습니다. 다시 시도해 주세요.",
       "missing-provider": "현재 노드에 provider 구성이 없습니다.",
+      "subagent-protocol-upgrade-required": "Claude ACP를 {{minimumVersion}} 이상으로 업데이트한 후 다시 시도하세요.",
       "session-config-value-unavailable": "선택한 세션 구성을 더 이상 사용할 수 없습니다. 최신 목록에서 다른 값을 선택해 주세요.",
       "active-prompt-blocks-config-save": "현재 세션이 실행 중입니다. 세션을 중지한 후 구성을 저장해 주세요.",
       "invalid-conversation-branch-id": "이 Agent 대화 링크가 유효하지 않거나 더 이상 사용할 수 없습니다.",
@@ -996,7 +1004,8 @@
     "runtime": {
       "io": {
         "storage-full": "디스크 공간이 부족하여 실행이 중단되었습니다. 공간을 확보한 후 계속하세요.",
-        "permission-denied": "세션 데이터를 쓸 수 없습니다. 디렉터리 쓰기 권한을 확인하세요."
+        "permission-denied": "세션 데이터를 쓸 수 없습니다. 디렉터리 쓰기 권한을 확인하세요.",
+        "attachment-path-too-long": "이 대화의 데이터 폴더 경로가 너무 깊어 첨부 파일 \"{{name}}\"을(를) 저장할 수 없습니다. 새 대화를 만든 후 보내세요."
       },
       "conversation-not-available": "워크플로가 실행 중이어서 지금은 일반 메시지를 보낼 수 없습니다.",
       "continue-not-available": "이 노드는 계속할 필요가 없습니다. 이미 재개되었거나 더 이상 계속할 수 없습니다.",
@@ -1998,6 +2007,9 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "pushTargetRemote": "대상 원격 저장소",
+    "pushPreparing": "푸시 대상 준비 중…",
+    "pushSetUpstream": "게시가 완료되면 대상 브랜치를 업스트림으로 설정합니다.",
     "remote": "원격 저장소",
     "name": "이름",
     "startPoint": "시작 지점",
@@ -2420,7 +2432,8 @@
       "output": "출력",
       "cacheRead": "캐시 읽기",
       "cacheWrite": "캐시 쓰기",
-      "total": "합계"
+      "total": "합계",
+      "excludesBackground": "백그라운드 실행으로 사용된 양은 포함되지 않습니다"
     }
   },
   "graph": {

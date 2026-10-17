@@ -417,7 +417,10 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
             .pointer("/rawOutput/formatted_output")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let mut output: String = previous_output.chars().take(MAX_TERMINAL_OUTPUT_CHARS).collect();
+        let mut output: String = previous_output
+            .chars()
+            .take(MAX_TERMINAL_OUTPUT_CHARS)
+            .collect();
         let remaining = MAX_TERMINAL_OUTPUT_CHARS.saturating_sub(output.chars().count());
         output.extend(delta.chars().take(remaining));
         if previous_output.chars().count() > MAX_TERMINAL_OUTPUT_CHARS
@@ -432,7 +435,15 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
     else {
         return;
     };
-    for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
+    for key in [
+        "title",
+        "kind",
+        "status",
+        "rawInput",
+        "rawOutput",
+        "content",
+        "locations",
+    ] {
         merge_missing_json_field(incoming_object, previous_object, key);
     }
     if let Some(previous_tool_call) = previous_object.get("toolCall").and_then(Value::as_object) {
@@ -440,7 +451,15 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
             .entry("toolCall")
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
         if let Some(incoming_tool_call) = incoming_tool_call.as_object_mut() {
-            for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
+            for key in [
+                "title",
+                "kind",
+                "status",
+                "rawInput",
+                "rawOutput",
+                "content",
+                "locations",
+            ] {
                 merge_missing_json_field(incoming_tool_call, previous_tool_call, key);
             }
         }
@@ -574,7 +593,18 @@ pub struct AcpTimingStateSnapshot {
     pub pending_elicitation_ids: Vec<String>,
     pub user_wait_started_at: Option<u64>,
     pub user_wait_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_started_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_last_activity_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_running_tool_ids: Vec<String>,
 }
+
+/// Silence longer than this between Agent updates delivered outside a user
+/// prompt ends a background work segment, unless a tool is still running.
+/// Matches the default background activity window of retained Direct sessions.
+pub const BACKGROUND_TIMING_IDLE_GAP_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -608,6 +638,11 @@ pub struct AcpTimingState {
     pending_elicitation_ids: HashSet<String>,
     user_wait_started_at: Option<u64>,
     user_wait_seconds: u64,
+    /// Agent work delivered outside a user prompt (Direct background wake).
+    /// It is timed as its own segment; it never extends the prompt turn.
+    background_started_at: Option<u64>,
+    background_last_activity_at: Option<u64>,
+    background_running_tool_ids: HashSet<String>,
 }
 
 impl AcpTimingState {
@@ -624,7 +659,16 @@ impl AcpTimingState {
             .cloned()
             .collect::<Vec<_>>();
         pending_elicitation_ids.sort();
+        let mut background_running_tool_ids = self
+            .background_running_tool_ids
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        background_running_tool_ids.sort();
         AcpTimingStateSnapshot {
+            background_started_at: self.background_started_at,
+            background_last_activity_at: self.background_last_activity_at,
+            background_running_tool_ids,
             elapsed_seconds: self.elapsed_seconds,
             active_turn_started_at: self.active_turn_started_at,
             active_turn_last_activity_at: self.active_turn_last_activity_at,
@@ -648,6 +692,9 @@ impl AcpTimingState {
             pending_elicitation_ids: snapshot.pending_elicitation_ids.into_iter().collect(),
             user_wait_started_at: snapshot.user_wait_started_at,
             user_wait_seconds: snapshot.user_wait_seconds,
+            background_started_at: snapshot.background_started_at,
+            background_last_activity_at: snapshot.background_last_activity_at,
+            background_running_tool_ids: snapshot.background_running_tool_ids.into_iter().collect(),
         }
     }
 
@@ -678,6 +725,7 @@ impl AcpTimingState {
                 .max(timing_revision_for_event(event)),
         );
         if is_gold_band_user_prompt_event(event) {
+            self.close_background_segment();
             self.elapsed_seconds = self
                 .elapsed_seconds
                 .saturating_add(self.finish_current_turn(false, None));
@@ -690,6 +738,14 @@ impl AcpTimingState {
             self.saw_turn = self.active_turn_started_at.is_some();
             return;
         }
+        if is_background_cancel_marker(event) {
+            self.close_background_segment();
+            return;
+        }
+        if is_background_delivery_event(event) {
+            self.observe_background_event(event);
+            return;
+        }
         if self.active_turn_started_at.is_none() {
             return;
         }
@@ -699,7 +755,11 @@ impl AcpTimingState {
         self.observe_permission_event(event, timestamp);
         self.observe_elicitation_event(event, timestamp);
         if is_session_elapsed_progress_event(event) {
-            self.active_turn_last_activity_at = Some(timestamp);
+            let activity_at = event_activity_epoch(event).unwrap_or(timestamp);
+            self.active_turn_last_activity_at = Some(
+                self.active_turn_last_activity_at
+                    .map_or(activity_at, |last| last.max(activity_at)),
+            );
         }
     }
 
@@ -779,9 +839,12 @@ impl AcpTimingState {
         } else {
             self.finish_current_turn(false, None)
         };
+        let background_elapsed_seconds =
+            self.background_segment_seconds(if session_active { now } else { None });
         let session_elapsed_seconds = self
             .elapsed_seconds
-            .saturating_add(current_turn_elapsed_seconds);
+            .saturating_add(current_turn_elapsed_seconds)
+            .saturating_add(background_elapsed_seconds);
         Some(AcpSessionTiming {
             session_elapsed_seconds,
             revision,
@@ -841,6 +904,80 @@ impl AcpTimingState {
         self.user_wait_started_at
             .map(|started_at| end_at.saturating_sub(started_at))
             .unwrap_or_default()
+    }
+
+    fn observe_background_event(&mut self, event: &AcpUiEvent) {
+        if !self.saw_turn || !is_session_elapsed_progress_event(event) {
+            return;
+        }
+        let Some(timestamp) = event_activity_epoch(event) else {
+            return;
+        };
+        // Delivery outside a user prompt proves that prompt already ended at
+        // its own last activity; later work must not stretch it.
+        self.close_prompt_turn();
+        let running_tool = !self.background_running_tool_ids.is_empty();
+        match self.background_last_activity_at {
+            Some(last)
+                if running_tool
+                    || timestamp.saturating_sub(last) <= BACKGROUND_TIMING_IDLE_GAP_SECS =>
+            {
+                self.background_last_activity_at = Some(last.max(timestamp));
+            }
+            _ => {
+                self.close_background_segment();
+                self.background_started_at = Some(timestamp);
+                self.background_last_activity_at = Some(timestamp);
+            }
+        }
+        if let Some(tool_call_id) = event.tool_call_id.as_deref()
+            && matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate")
+        {
+            if event.status.as_deref() == Some("in_progress") {
+                self.background_running_tool_ids
+                    .insert(tool_call_id.to_string());
+            } else {
+                self.background_running_tool_ids.remove(tool_call_id);
+            }
+        }
+    }
+
+    fn close_prompt_turn(&mut self) {
+        if self.active_turn_started_at.is_none() {
+            return;
+        }
+        self.elapsed_seconds = self
+            .elapsed_seconds
+            .saturating_add(self.finish_current_turn(false, None));
+        self.active_turn_started_at = None;
+        self.active_turn_last_activity_at = None;
+        self.pending_permission_ids.clear();
+        self.pending_elicitation_ids.clear();
+        self.user_wait_started_at = None;
+        self.user_wait_seconds = 0;
+    }
+
+    fn background_segment_seconds(&self, now: Option<u64>) -> u64 {
+        let (Some(started_at), Some(last)) =
+            (self.background_started_at, self.background_last_activity_at)
+        else {
+            return 0;
+        };
+        // A running tool is still work even when the provider is silent.
+        let end_at = match now {
+            Some(now) if !self.background_running_tool_ids.is_empty() => last.max(now),
+            _ => last,
+        };
+        end_at.saturating_sub(started_at)
+    }
+
+    fn close_background_segment(&mut self) {
+        self.elapsed_seconds = self
+            .elapsed_seconds
+            .saturating_add(self.background_segment_seconds(None));
+        self.background_started_at = None;
+        self.background_last_activity_at = None;
+        self.background_running_tool_ids.clear();
     }
 
     fn observe_permission_event(&mut self, event: &AcpUiEvent, timestamp: u64) {
@@ -1032,6 +1169,27 @@ fn is_gold_band_user_prompt_event(event: &AcpUiEvent) -> bool {
             == Some("goldBandPrompt")
 }
 
+/// Latest activity time of a timeline item. Merged items (stream text, usage)
+/// keep their first timestamp; `endedAt` is what advances.
+fn event_activity_epoch(event: &AcpUiEvent) -> Option<u64> {
+    [Some(event.timestamp.as_str()), event.ended_at.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(parse_epoch_timestamp)
+        .max()
+}
+
+/// Client-owned provenance stamped at Direct ingress: delivered while no user
+/// prompt was active.
+fn is_background_delivery_event(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
 fn is_session_elapsed_progress_event(event: &AcpUiEvent) -> bool {
     let session_update = event
         .raw
@@ -1133,6 +1291,35 @@ pub fn read_attempt_metrics(session_path: &Utf8Path) -> AttemptMetrics {
         elapsed_ms: metadata
             .timing
             .map(|timing| timing.session_elapsed_seconds.saturating_mul(1000)),
+    }
+}
+
+/// Explicit configuration currently in force on the session a continue ref
+/// reuses, read from that session's own snapshot. A snapshot of another
+/// session or an unreadable one yields unspecified, never authoring values.
+pub fn read_continued_session_config(
+    continue_ref: Option<&Value>,
+) -> crate::acp::session_config::InvocationSessionConfig {
+    let Some(continue_ref) = continue_ref else {
+        return Default::default();
+    };
+    let session_id = continue_ref
+        .get("acpSessionId")
+        .or_else(|| continue_ref.get("sessionId"))
+        .and_then(Value::as_str);
+    let metadata = continue_ref
+        .get("snapshotFile")
+        .and_then(Value::as_str)
+        .and_then(|path| read_session_metadata_value(Utf8Path::new(path), None).ok())
+        .and_then(|value| serde_json::from_value::<AcpSessionMetadata>(value).ok())
+        .filter(|metadata| session_id.is_some() && metadata.session_id.as_deref() == session_id);
+    let Some(metadata) = metadata else {
+        return Default::default();
+    };
+    crate::acp::session_config::InvocationSessionConfig {
+        model: metadata.model_override,
+        permission_mode: metadata.permission_mode_override,
+        config_options: metadata.config_option_overrides,
     }
 }
 
@@ -3255,7 +3442,10 @@ pub fn normalize_session_update(
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let compaction_phase = context_compaction_phase(update);
-    let standard_compaction = matches!(provider_kind, "compaction_update" | "compaction_summary_chunk");
+    let standard_compaction = matches!(
+        provider_kind,
+        "compaction_update" | "compaction_summary_chunk"
+    );
     let mut raw_value = update.clone();
     normalize_agent_transcript_metadata(&mut raw_value);
     if let Some(phase) = compaction_phase
@@ -3874,6 +4064,17 @@ pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f6
     let size = raw.get("size").and_then(Value::as_u64);
     let cost_amount = raw.pointer("/cost/amount").and_then(Value::as_f64);
     (used, size, cost_amount)
+}
+
+/// usage_update `_meta` flag: Agent work ran outside a user prompt, so the
+/// attempt token totals (built only from prompt responses) do not cover it.
+pub const TOKEN_TOTALS_EXCLUDE_BACKGROUND_META_KEY: &str = "goldBandTokenTotalsExcludeBackground";
+
+pub fn usage_token_totals_exclude_background(raw: &Value) -> bool {
+    raw.get("_meta")
+        .and_then(|meta| meta.get(TOKEN_TOTALS_EXCLUDE_BACKGROUND_META_KEY))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 fn extract_status(value: &Value) -> Option<String> {
@@ -6477,6 +6678,114 @@ mod tests {
         assert_eq!(patch.active_turn_started_at.as_deref(), Some("100Z"));
         assert_eq!(patch.active_turn_last_activity_at.as_deref(), Some("112Z"));
         assert!(!patch.paused);
+    }
+
+    fn background_update_event_at(seq: u64, session_update: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = session_update_event_at(seq, session_update, timestamp);
+        event.raw = Some(json!({
+            "sessionUpdate": session_update,
+            "_meta": { "goldBandBackground": true },
+        }));
+        event
+    }
+
+    fn background_tool_event_at(
+        seq: u64,
+        tool_call_id: &str,
+        status: &str,
+        timestamp: u64,
+    ) -> AcpUiEvent {
+        let mut event = background_update_event_at(seq, "tool_call_update", timestamp);
+        event.kind = "toolCallUpdate".to_string();
+        event.tool_call_id = Some(tool_call_id.to_string());
+        event.status = Some(status.to_string());
+        event
+    }
+
+    /// task-105 shape: a 13 s prompt, a trailing usage sample after end_turn,
+    /// then a timer wake ten minutes later that works for 18 s.
+    fn timer_wake_timing_state() -> AcpTimingState {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 113));
+        state.observe_event(&background_update_event_at(3, "usage_update", 113));
+        state.observe_event(&background_update_event_at(4, "agent_thought_chunk", 740));
+        state.observe_event(&background_update_event_at(5, "agent_message_chunk", 750));
+        state.observe_event(&background_update_event_at(6, "usage_update", 758));
+        state
+    }
+
+    #[test]
+    fn acp_timing_background_wake_counts_work_but_not_the_idle_gap() {
+        let state = timer_wake_timing_state();
+
+        assert_eq!(
+            state
+                .terminal_snapshot_at(Some(900))
+                .unwrap()
+                .session_elapsed_seconds,
+            31
+        );
+        assert_eq!(
+            state
+                .snapshot_at(false, None)
+                .unwrap()
+                .session_elapsed_seconds,
+            31
+        );
+        // Per-event patches are what the timeline index and live UI read.
+        assert_eq!(
+            state
+                .patch_at(758, "active")
+                .unwrap()
+                .session_elapsed_seconds,
+            31
+        );
+    }
+
+    #[test]
+    fn acp_timing_next_prompt_does_not_fold_the_background_idle_gap() {
+        let mut state = timer_wake_timing_state();
+        state.observe_event(&prompt_event_at(7, 2_000));
+        state.observe_event(&session_update_event_at(8, "agent_message_chunk", 2_005));
+
+        assert_eq!(
+            state
+                .snapshot_at(false, None)
+                .unwrap()
+                .session_elapsed_seconds,
+            36
+        );
+    }
+
+    #[test]
+    fn acp_timing_background_running_tool_keeps_counting_through_silence() {
+        let mut state = timer_wake_timing_state();
+        state.observe_event(&background_tool_event_at(7, "tool-1", "in_progress", 760));
+        state.observe_event(&background_tool_event_at(8, "tool-1", "completed", 820));
+
+        assert_eq!(
+            state
+                .snapshot_at(false, None)
+                .unwrap()
+                .session_elapsed_seconds,
+            13 + 80
+        );
+    }
+
+    #[test]
+    fn acp_timing_background_state_survives_snapshot_round_trip() {
+        let state = timer_wake_timing_state();
+        let mut restored = AcpTimingState::from_state_snapshot(state.state_snapshot());
+        restored.observe_event(&background_update_event_at(7, "agent_message_chunk", 762));
+
+        assert_eq!(
+            restored
+                .snapshot_at(false, None)
+                .unwrap()
+                .session_elapsed_seconds,
+            35
+        );
     }
 
     #[test]

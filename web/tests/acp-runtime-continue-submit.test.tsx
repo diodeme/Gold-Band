@@ -24,6 +24,7 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 import { ACPChatDialog, createAcpEventWindowCacheKey } from '@/components/acp/ACPChatDialog';
 import { useAcpComposerDraft, type AcpComposerDraft } from '@/lib/acp-composer-draft';
 import { getRuntimeApi } from '@/api/client';
+import i18n from '@/i18n';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { RightWorkspaceProvider, useRightWorkspace } from '@/components/workspace/right-workspace-context';
 import { RightWorkspaceDock } from '@/components/workspace/RightWorkspaceDock';
@@ -219,6 +220,19 @@ function cancelledSession(id: string): AcpSessionVm {
   };
 }
 
+function readySessionHistory(): Pick<AcpSessionVm, 'events' | 'eventPage'> {
+  return {
+    events: [{
+      id: 'previous-response', seq: 1, timestamp: '10Z', kind: 'textDelta',
+      content: 'Previous response', status: 'completed', startedSeq: 1, endedSeq: 1,
+    }],
+    eventPage: {
+      loadedCount: 1, total: 1, oldestSeq: 1, newestSeq: 1,
+      hasOlder: false, hasNewer: false, oldestCursor: '1', newestCursor: '1',
+    },
+  };
+}
+
 async function renderPausedDialog(options: {
   initialDraft?: AcpComposerDraft;
   onSubmitManualCheck?: (outcome: 'success' | 'failure') => Promise<void>;
@@ -235,6 +249,7 @@ async function renderPausedDialog(options: {
   const id = String(fixtureIndex);
   const session = {
     ...cancelledSession(id),
+    ...readySessionHistory(),
     status: options.sessionStatus ?? 'cancelled',
     ...options.session,
   };
@@ -258,6 +273,7 @@ async function renderPausedDialog(options: {
     nextSession: AcpSessionVm = session,
     locator = session,
   ) => act(async () => {
+    apiMocks.getAcpSession.mockResolvedValue(nextSession);
     root.render(
       <TestProviders>
         <ACPChatDialog
@@ -320,6 +336,7 @@ async function renderActiveDirectDialog() {
       newestCursor: null,
     },
   } satisfies AcpSessionVm;
+  apiMocks.getAcpSession.mockResolvedValue(session);
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -540,7 +557,7 @@ describe('ACP runtime continue submission', () => {
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC',
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC',
     ].map((data) => `data:image/png;base64,${data}`);
-    const paths = ['a', 'b', 'c'].map((hash) => `user-inputs/${hash.repeat(64)}/image.png`);
+    const paths = ['a', 'b', 'c'].map((hash) => `user-inputs/${hash.repeat(32)}/image.png`);
     apiMocks.showConversationMessageAttachment.mockImplementation(async (...args: unknown[]) => {
       const index = paths.indexOf(args[7] as string);
       if (index < 0) throw new Error('Unexpected attachment path');
@@ -1244,6 +1261,178 @@ describe('ACP runtime continue submission', () => {
       await unmount(root);
     }
   });
+});
+
+describe('ACP error banner ownership', () => {
+  it.each(['starting', 'running', 'completed'] as const)(
+    'hides the old Workflow pause error during a manual follow-up (%s)',
+    async (phase) => {
+      const initial = runtimeAbnormalLifecycle();
+      const recovered = {
+        ...initial,
+        control: { mode: 'non-runtime-controlled' as const, transitionCause: 'manual-follow-up' as const },
+        acp: {
+          ...initial.acp,
+          revision: 2,
+          turnId: 'manual-follow-up',
+          operationId: 'follow-up-operation',
+          liveTurnActivity: phase === 'completed' ? 'idle' as const : phase,
+          latestTurnStatus: phase === 'completed' ? 'completed' as const : 'none' as const,
+          turnError: null,
+        },
+        displayStatus: phase,
+        runtimeDisplay: { ...initial.runtimeDisplay, code: phase, tone: phase === 'completed' ? 'neutral' : 'running' },
+      };
+      const result = await renderPausedDialog({
+        initialLifecycle: initial,
+        isOrchestrated: true,
+        runtimeError: 'old Workflow provider failure',
+        sessionStatus: 'failed',
+        session: readySessionHistory(),
+      });
+      try {
+        expect(result.container.textContent).toContain('old Workflow provider failure');
+        await result.render(recovered, { ...result.session, status: phase });
+        expect(result.container.textContent).not.toContain('old Workflow provider failure');
+        expect(recovered.runtime.status).toBe('paused');
+        expect(recovered.runtime.pauseReason).toBe('runtime-abnormal');
+        expect(apiMocks.continueConversationRuntime).not.toHaveBeenCalled();
+      } finally {
+        await unmount(result.root);
+      }
+    },
+  );
+
+  it('keeps the current follow-up failure instead of the old Workflow error', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.control.transitionCause = 'manual-follow-up';
+    lifecycle.acp = {
+      ...lifecycle.acp, turnId: 'new-failed-turn', operationId: 'new-operation',
+      turnError: {
+        code: { domain: 'internal', code: 'internal.unknown' },
+        domain: 'internal', recovery: 'manual', diagnostic: 'Current follow-up failed',
+      },
+    };
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, isOrchestrated: true, sessionStatus: 'failed',
+      runtimeError: 'old Workflow provider failure', session: readySessionHistory(),
+    });
+    try {
+      expect(result.container.textContent).toContain('Current follow-up failed');
+      expect(result.container.textContent).not.toContain('old Workflow provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('dismisses only the current banner without changing lifecycle or submitting a command', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp = {
+      ...lifecycle.acp, revision: 3, turnId: 'failed-turn', operationId: 'failed-operation',
+      turnError: {
+        code: { domain: 'internal', code: 'internal.unknown' },
+        domain: 'internal', recovery: 'manual', diagnostic: 'Dismissible provider failure',
+      },
+    };
+    const before = structuredClone(lifecycle);
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, sessionStatus: 'failed', session: readySessionHistory(),
+    });
+    try {
+      const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`);
+      expect(close).not.toBeNull();
+      await act(async () => close!.click());
+      expect(result.container.textContent).not.toContain('Dismissible provider failure');
+      await result.render({ ...lifecycle, acp: { ...lifecycle.acp, revision: 4 } });
+      expect(result.container.textContent).not.toContain('Dismissible provider failure');
+      expect(lifecycle).toEqual(before);
+      expect(apiMocks.continueConversationRuntime).not.toHaveBeenCalled();
+      expect(apiMocks.submitConversationPrompt).not.toHaveBeenCalled();
+      expect(apiMocks.stopActiveSession).not.toHaveBeenCalled();
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it.each(['turn', 'operation', 'session', 'scope'] as const)(
+    'shows identical error text again after the banner %s identity changes',
+    async (identity) => {
+      const lifecycle = runtimeAbnormalLifecycle();
+      lifecycle.acp = {
+        ...lifecycle.acp, revision: 3, turnId: 'failed-turn', operationId: 'failed-operation',
+        turnError: {
+          code: { domain: 'internal', code: 'internal.unknown' },
+          domain: 'internal', recovery: 'manual', diagnostic: 'Repeated provider failure',
+        },
+      };
+      const result = await renderPausedDialog({
+        initialLifecycle: lifecycle, sessionStatus: 'failed', session: readySessionHistory(),
+      });
+      try {
+        const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`);
+        expect(close).not.toBeNull();
+        await act(async () => close!.click());
+        expect(result.container.textContent).not.toContain('Repeated provider failure');
+        const nextSession = {
+          ...result.session,
+          sessionId: identity === 'session' ? 'another-session' : result.session.sessionId,
+          attemptId: identity === 'scope' ? 'another-attempt' : result.session.attemptId,
+        };
+        await result.render({
+          ...lifecycle,
+          acp: {
+            ...lifecycle.acp, revision: 4,
+            turnId: identity === 'turn' ? 'new-turn' : lifecycle.acp.turnId,
+            operationId: identity === 'operation' ? 'new-operation' : lifecycle.acp.operationId,
+          },
+        }, nextSession, nextSession);
+        expect(result.container.textContent).toContain('Repeated provider failure');
+      } finally {
+        await unmount(result.root);
+      }
+    },
+  );
+
+  it('keeps a dismissed runtime error hidden across ACP metadata updates but not a new runtime failure', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.control.mode = 'runtime-controlled';
+    lifecycle.runtime.revision = 7;
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, runtimeError: 'Runtime-owned failure', sessionStatus: 'failed',
+    });
+    try {
+      const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`)!;
+      expect(result.container.textContent).toContain('Runtime-owned failure');
+      await act(async () => close.click());
+      const refreshed = { ...lifecycle, acp: { ...lifecycle.acp, revision: 100 } };
+      await result.render(refreshed);
+      expect(result.container.textContent).not.toContain('Runtime-owned failure');
+      await result.render({ ...refreshed, runtime: { ...lifecycle.runtime, revision: 8 } });
+      expect(result.container.textContent).toContain('Runtime-owned failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('allows an unidentified failure to reappear after it has cleared', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp.turnError = {
+      code: { domain: 'internal', code: 'internal.unknown' },
+      domain: 'internal', recovery: 'manual', diagnostic: 'Unidentified failure',
+    };
+    const result = await renderPausedDialog({ initialLifecycle: lifecycle, sessionStatus: 'failed' });
+    try {
+      const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`)!;
+      await act(async () => close.click());
+      expect(result.container.textContent).not.toContain('Unidentified failure');
+      await result.render({ ...lifecycle, acp: { ...lifecycle.acp, latestTurnStatus: 'completed', turnError: null } });
+      await result.render(lifecycle);
+      expect(result.container.textContent).toContain('Unidentified failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
 });
 
 describe('ACP Direct queue submission', () => {

@@ -2665,7 +2665,23 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
             .expect("fanout branch workspace should remain in the catalog");
         assert!(workspace.checkpoint_commit.is_some());
         assert_eq!(workspace.status, WorkspaceStatus::Released);
-        assert!(!workspace.path.exists());
+        assert!(
+            workspace.path.is_dir(),
+            "released session cwd must remain available"
+        );
+        assert!(std::fs::read_dir(&workspace.path).unwrap().next().is_none());
+        let registered = fixture_git(&repo_root, &["worktree", "list", "--porcelain"]);
+        assert!(
+            !registered.lines().any(|line| {
+                line.strip_prefix("worktree ").is_some_and(|path| {
+                    path.replace('\\', "/") == workspace.path.as_str().replace('\\', "/")
+                })
+            }),
+            "released worktree must be removed from Git's catalog"
+        );
+        if let Some(branch) = &workspace.branch {
+            assert!(fixture_git(&repo_root, &["branch", "--list", branch]).is_empty());
+        }
     }
 
     let invocations = provider.invocations.lock().unwrap();

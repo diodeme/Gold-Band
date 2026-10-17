@@ -13,6 +13,7 @@ pub struct DirectBackgroundControl {
     pub session_id: String,
     pub connection_generation: u64,
     pub active_tools: usize,
+    /// Wall-clock projection for visibility; the target identity is session + generation.
     pub expires_at_ms: u64,
 }
 

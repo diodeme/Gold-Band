@@ -694,7 +694,7 @@ function browserCompletedConversationSession(): AcpSessionVm {
       ],
     },
   };
-  if (new URLSearchParams(window.location.search).get('attachmentIdentity') === '1') {
+  if (new URLSearchParams(search).get('attachmentIdentity') === '1') {
     session.events.push(...browserMessageImageFixtures.map((fixture, index) => ({
       id: `browser-user-image-${index + 1}`,
       seq: 6 + index,

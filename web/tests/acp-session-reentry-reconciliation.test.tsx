@@ -4935,7 +4935,7 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
-  it('atomically rejoins the live head with replay received during the latest-page request', async () => {
+  it.each(['running', 'completed'])('atomically rejoins the live head with a %s tool replayed during the latest-page request', async (toolStatus) => {
     const historical = session([
       event('historical-answer', 1, 'textDelta', '当前阅读的旧回复'),
     ]);
@@ -5020,7 +5020,7 @@ describe('ACP session re-entry reconciliation', () => {
           {
             title: 'Editing files',
             toolCallId: 'current-tool',
-            status: 'completed',
+            status: toolStatus,
             startedSeq: 3,
             endedSeq: 5,
           },
@@ -5036,12 +5036,19 @@ describe('ACP session re-entry reconciliation', () => {
 
       expect(container.textContent).toContain('replay 中的最终累计回复');
       expect(container.textContent).not.toContain('后端页中的旧累计回复');
-      expect(container.textContent).toContain('Editing · files');
+      const activityLabel = toolStatus === 'running' ? 'Editing · files' : '思考中';
+      expect(container.textContent).toContain(activityLabel);
       expect(container.textContent).not.toContain('Reading · files');
+      const loadedWindow = restoreAcpLoadedEventWindow(
+        createAcpEventWindowCacheKey({ ...locator, branchId: 'root' }), null, 30,
+      );
+      expect(loadedWindow.events.filter((item) => item.toolCallId === 'current-tool')).toEqual([
+        expect.objectContaining({ title: 'Editing files', status: toolStatus, endedSeq: 5 }),
+      ]);
       expect(container.querySelectorAll('[data-acp-item-key="textDelta-current-answer"]'))
         .toHaveLength(1);
       const activityTrigger = [...container.querySelectorAll<HTMLButtonElement>('button')]
-        .find((button) => button.textContent?.includes('Editing · files'));
+        .find((button) => button.textContent?.includes(activityLabel));
       expect(activityTrigger?.getAttribute('aria-expanded')).toBe('false');
       expect(getAcpActivityDetail).not.toHaveBeenCalled();
       expect([...container.querySelectorAll('[data-testid="markdown"]')]

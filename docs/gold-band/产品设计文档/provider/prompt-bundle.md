@@ -21,6 +21,8 @@
 4. 避免把大体积上下文直接塞进窗口。
 5. 保证 provider 只消费已经渲染好的 prompt bundle。
 
+内置提示词的 Markdown 与 JSON 资源统一使用 LF，由 `.gitattributes` 的 `src/prompts/**/*.md` 和 `src/prompts/**/*.json` 检出规则固定，避免 Windows 的 `core.autocrlf` 改变 `include_str!` 嵌入内容及最终 prompt。七种语言遵守同一规则，嵌入资源测试检查实际字节；不在各消费端做零散换行替换，也不改写用户输入、引用正文或模板变量中的换行。
+
 ---
 
 ## 3. system prompt 与 user prompt 的职责边界

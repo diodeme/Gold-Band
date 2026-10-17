@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { parse } from 'yaml';
 
 const script = path.resolve('scripts/generate-release-checksums.mjs');
 
@@ -58,16 +59,28 @@ test('fails when the release contains no supported platform artifacts', (t) => {
 });
 
 test('both release entry points publish the installer and checksums after the updater manifest', () => {
-  for (const workflow of ['.github/workflows/release.yml', '.github/workflows/release-please.yml']) {
-    const source = readFileSync(path.resolve(workflow), 'utf8');
-    const manifestIndex = source.indexOf('node scripts/generate-updater-json.mjs release-assets latest.json');
-    const checksumIndex = source.indexOf('node scripts/generate-release-checksums.mjs release-assets');
-    const uploadIndex = source.indexOf(
-      'gh release upload "${RELEASE_TAG}" latest.json scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber',
-    );
+  for (const [workflow, toolingRoot] of [
+    ['.github/workflows/release.yml', 'release-tools/'],
+    ['.github/workflows/release-please.yml', ''],
+  ]) {
+    const source = parse(readFileSync(path.resolve(workflow), 'utf8'));
+    const commands = source.jobs['updater-json'].steps.map((step) => step.run ?? '');
+    const manifestIndex = commands.findIndex((command) => command.includes(
+      `node ${toolingRoot}scripts/generate-release-assets.mjs release-assets release-output --version`,
+    ));
+    const checksumIndex = commands.findIndex((command) => command.includes(
+      `node ${toolingRoot}scripts/generate-release-checksums.mjs release-assets`,
+    ));
+    const uploadIndex = commands.findIndex((command) => command.includes(
+      'gh release upload "${RELEASE_TAG}" release-output/latest*.json '
+        + `${toolingRoot}scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber`,
+    ));
 
-    assert.notEqual(manifestIndex, -1, `${workflow} must generate latest.json`);
-    assert.ok(checksumIndex > manifestIndex, `${workflow} must generate checksums after latest.json`);
-    assert.ok(uploadIndex > checksumIndex, `${workflow} must upload the installer and generated checksums`);
+    assert.notEqual(manifestIndex, -1, `${workflow} must generate localized updater manifests`);
+    assert.ok(checksumIndex > manifestIndex, `${workflow} must generate checksums after updater manifests`);
+    assert.ok(
+      uploadIndex > checksumIndex,
+      `${workflow} must upload all localized manifests, the installer and generated checksums`,
+    );
   }
 });

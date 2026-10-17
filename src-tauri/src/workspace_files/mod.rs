@@ -810,7 +810,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "requires Windows symlink privilege or Developer Mode")]
+    #[cfg_attr(
+        windows,
+        ignore = "requires Windows symlink privilege or Developer Mode"
+    )]
     fn markdown_image_workspace_rejects_symlink_escape() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("workspace");

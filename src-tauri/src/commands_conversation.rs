@@ -1146,14 +1146,30 @@ pub async fn set_conversation_resident(
         let (workspace_path, project_id) = workspace_entry_for_project(&app_state, &project_id)
             .ok_or_else(|| CommandErrorVm::new("workspace.not-found", serde_json::json!({})))?;
         let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-        app.set_conversation_resident(&task_id, resident).map_err(|error| {
-            if let Some(error) = error.downcast_ref::<gold_band::app::ConversationResidencyError>() {
-                CommandErrorVm::new(error.code, serde_json::json!({}))
-            } else { command_error(error) }
-        })?;
-        let pin = app_state.conversation_pins.iter().find(|p| p.project_id == project_id && p.task_id == task_id);
-        crate::view_models_conversation::conversation_task_row_vm(&app, &project_id, &task_id, pin.is_some(), pin.map(|p| p.order)).map_err(command_error)
-    }).await
+        app.set_conversation_resident(&task_id, resident)
+            .map_err(|error| {
+                if let Some(error) =
+                    error.downcast_ref::<gold_band::app::ConversationResidencyError>()
+                {
+                    CommandErrorVm::new(error.code, serde_json::json!({}))
+                } else {
+                    command_error(error)
+                }
+            })?;
+        let pin = app_state
+            .conversation_pins
+            .iter()
+            .find(|p| p.project_id == project_id && p.task_id == task_id);
+        crate::view_models_conversation::conversation_task_row_vm(
+            &app,
+            &project_id,
+            &task_id,
+            pin.is_some(),
+            pin.map(|p| p.order),
+        )
+        .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]

@@ -371,7 +371,7 @@ export function appearanceWithQuality(preference: AppearancePreference, quality:
 export interface DesktopFontOption { id: string; labelKey: string; descriptionKey: string; preview: string }
 export const desktopFontOptions = [{ id:'app-default',labelKey:'settings.fontDefault',descriptionKey:'settings.fontDefaultDescription',preview:'Gold-Band / 优化 resume 会话 / 0123' }] as const satisfies readonly DesktopFontOption[];
 export const desktopEditorFontOptions = [{ id:'editor-default',labelKey:'settings.editorFontDefault',descriptionKey:'settings.editorFontDefaultDescription',preview:'const workflow = "AI";' }] as const satisfies readonly DesktopFontOption[];
-export const desktopTypography = { ui:{min:12,max:18,defaultValue:14},editor:{min:10,max:18,defaultValue:12} } as const;
+export const desktopTypography = { ui:{min:12,max:18,defaultValue:14},editor:{min:10,max:18,defaultValue:13} } as const;
 export function fontFamilyForStack(families: readonly string[], fallbackVariable = 'var(--gb-theme-ui-font-family)') { return serializeCustomFontStack(resolveRuntimeFontFamilies(families), fallbackVariable); }
 export function editorFontFamilyForStack(families: readonly string[]) { return serializeCustomFontStack(resolveRuntimeFontFamilies(families), 'var(--gb-theme-editor-font-family)'); }
 export function normalizeTypographySize(value:number,kind:keyof typeof desktopTypography) { const constraint=desktopTypography[kind]; if(!Number.isFinite(value))return constraint.defaultValue; return Math.min(constraint.max,Math.max(constraint.min,Math.round(value))); }

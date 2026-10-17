@@ -5,7 +5,7 @@
       "uiSize": 14,
       "uiLineHeight": 1.5,
       "editorStackId": "theme-editor",
-      "editorSize": 12,
+      "editorSize": 13,
       "editorLineHeight": 1.55,
       "weights": { "read": 400, "emphasize": 600, "announce": 700 }
     },
@@ -17,7 +17,7 @@
       "uiSize": 14,
       "uiLineHeight": 1.5,
       "editorStackId": "theme-editor",
-      "editorSize": 12,
+      "editorSize": 13,
       "editorLineHeight": 1.55,
       "weights": { "read": 400, "emphasize": 600, "announce": 700 }
     },

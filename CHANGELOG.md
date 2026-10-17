@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.20.0](https://github.com/diodeme/Gold-Band/compare/v0.19.1...v0.20.0) (2026-10-17)
+
+
+### Features
+
+* **acp:** track native Claude subagents and background Agent work ([bb3f075](https://github.com/diodeme/Gold-Band/commit/bb3f075923eb6944accf09bb0138455c2cb3c527))
+* **markdown:** let live preview fill the available panel width ([f058caa](https://github.com/diodeme/Gold-Band/commit/f058caaa593b3b69295e09b2dcbf364de5a6f1aa))
+* **source-control:** confirm push targets before pushing ([90be517](https://github.com/diodeme/Gold-Band/commit/90be517ed634140a40351601634363d48581a474))
+* **theme:** raise default editor font size to 13px ([bcb9f1f](https://github.com/diodeme/Gold-Band/commit/bcb9f1ff9fb90ae47c5ddb22e13cc513f2f46a6b))
+* **workspace:** isolate right workspace tab failures with an error boundary ([4aafe92](https://github.com/diodeme/Gold-Band/commit/4aafe92488a982fdf73b2dc42aab4ab80d46cf3b))
+
+
+### Bug Fixes
+
+* **acp:** take model and permission mode from session snapshot on continue ([4e9c9d2](https://github.com/diodeme/Gold-Band/commit/4e9c9d25cb21a014998b854aaaca16b4b15cd326))
+* **attachments:** fit stored attachment names within path length budget ([b2dfdd3](https://github.com/diodeme/Gold-Band/commit/b2dfdd394f8e802aa2da84cae25ee8704d7e8db2))
+* **attachments:** prevent same-name inputs from overwriting history ([6872f26](https://github.com/diodeme/Gold-Band/commit/6872f26efaea4cfe7fc4bde95aed019938705a17))
+* **chat:** track user scroll intent for history pagination ([6f21bc0](https://github.com/diodeme/Gold-Band/commit/6f21bc01d73e67ba3f5ea15c019dfcee143d7d87))
+* **markdown:** resolve local HTML links and image previews ([e364c95](https://github.com/diodeme/Gold-Band/commit/e364c953ecafeb690272a17243bf905f1b692d4f))
+* **source-control:** mark branches without upstream as new ([4578515](https://github.com/diodeme/Gold-Band/commit/457851590676b57237fd12a3a3e55961d750cf52))
+* **ui:** let Radix own overflow tooltip open lifecycle ([c3f9248](https://github.com/diodeme/Gold-Band/commit/c3f9248fa82a7026212eeaab9236ca7284bd9aa4))
+* **workspace:** share one react-dnd manager across workspace trees ([3cbfff7](https://github.com/diodeme/Gold-Band/commit/3cbfff7880614c5a1f2fab0c1ab00ad30d9a59dc))
+
 ## [0.19.1](https://github.com/diodeme/Gold-Band/compare/v0.19.0...v0.19.1) (2026-10-13)
 
 

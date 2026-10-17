@@ -22,7 +22,7 @@ use crate::prompts::{
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
-    normalize_provider_runtime_failure, runtime_error,
+    manual_runtime_error_info, normalize_provider_runtime_failure, runtime_error,
 };
 use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
@@ -1030,6 +1030,10 @@ pub fn resolve_user_input_attachments(
         &attempt_root.join(USER_INPUT_ATTACHMENT_PREFIX),
         &attempt_root,
     )?;
+    // `<user-inputs>/<digest>/<name>`: the digest directory has a fixed width, so the remaining
+    // budget for the stored name is known before any bytes are copied.
+    let name_budget = USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
+        .saturating_sub(path_utf16_units(&user_inputs_dir) + USER_INPUT_ATTACHMENT_DIGEST_LEN + 2);
     let mut resolved = Vec::with_capacity(paths.len());
     for path in paths {
         let source = std::path::Path::new(path);
@@ -1038,6 +1042,17 @@ pub fn resolve_user_input_attachments(
             .and_then(|name| name.to_str())
             .context("user input attachment requires a UTF-8 file name")?;
         validate_user_input_attachment_name(name)?;
+        let stored_name = fit_user_input_attachment_name(name, name_budget).ok_or_else(|| {
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::RuntimeIo,
+                USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE,
+                format!(
+                    "attachment `{name}` cannot be stored within {USER_INPUT_ATTACHMENT_PATH_MAX_UNITS} path units under {}",
+                    user_inputs_dir.display()
+                ),
+                json!({ "name": name, "maxPathLength": USER_INPUT_ATTACHMENT_PATH_MAX_UNITS }),
+            ))
+        })?;
         let mut source_file = std::fs::File::open(source)?;
         ensure!(
             source_file.metadata()?.is_file(),
@@ -1059,10 +1074,10 @@ pub fn resolve_user_input_attachments(
         }
         staged.flush()?;
         staged.as_file().sync_all()?;
-        let digest = hasher.finalize().to_hex().to_string();
+        let digest = hasher.finalize().to_hex()[..USER_INPUT_ATTACHMENT_DIGEST_LEN].to_string();
         let content_dir =
             user_input_attachment_directory(&user_inputs_dir.join(&digest), &user_inputs_dir)?;
-        let destination = content_dir.join(name);
+        let destination = content_dir.join(&stored_name);
         match staged.persist_noclobber(&destination) {
             Ok(_) => {}
             Err(mut error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1082,16 +1097,66 @@ pub fn resolve_user_input_attachments(
             }
             Err(error) => return Err(error.error.into()),
         }
-        resolved.push(resolved_attachment(
+        let mut attachment = resolved_attachment(
             &destination,
             &format!("{USER_INPUT_ATTACHMENT_PREFIX}/{digest}"),
             policy,
-        )?);
+        )?;
+        attachment.meta.name = name.to_string();
+        resolved.push(attachment);
     }
     Ok(resolved)
 }
 
+/// Fits a validated name into `max_units` and the file-name component limit by shortening its
+/// stem. The digest directory already identifies the bytes, so a shortened name cannot alias
+/// different content; `AttachmentMeta::name` keeps the original name for display.
+fn fit_user_input_attachment_name(name: &str, max_units: usize) -> Option<String> {
+    let max_units = max_units.min(USER_INPUT_ATTACHMENT_NAME_MAX_UNITS);
+    let fits = |units: usize, bytes: usize| {
+        units <= max_units && bytes <= USER_INPUT_ATTACHMENT_NAME_MAX_UNITS
+    };
+    if fits(name.encode_utf16().count(), name.len()) {
+        return Some(name.to_string());
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(index) if index > 0 => name.split_at(index),
+        _ => (name, ""),
+    };
+    let mut units = extension.encode_utf16().count();
+    let mut bytes = extension.len();
+    let mut fitted = String::new();
+    for character in stem.chars() {
+        if !fits(units + character.len_utf16(), bytes + character.len_utf8()) {
+            break;
+        }
+        units += character.len_utf16();
+        bytes += character.len_utf8();
+        fitted.push(character);
+    }
+    // Windows strips trailing dots and spaces, which would break the locator round-trip.
+    fitted.truncate(fitted.trim_end_matches([' ', '.']).len());
+    if fitted.is_empty() {
+        return None;
+    }
+    fitted.push_str(extension);
+    Some(fitted)
+}
+
+fn path_utf16_units(path: &std::path::Path) -> usize {
+    path.to_string_lossy().encode_utf16().count()
+}
+
 const USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES: usize = 64 * 1024;
+/// Windows MAX_PATH (260) minus the terminating NUL. Persisted attachment paths are handed to
+/// agents, shells and Win32 APIs (including tempfile's MoveFileExW) that do not opt into long paths.
+pub const USER_INPUT_ATTACHMENT_PATH_MAX_UNITS: usize = 259;
+pub const USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE: &str = "runtime.io.attachment-path-too-long";
+/// NTFS caps a component at 255 UTF-16 units and ext4/APFS at 255 bytes; both are enforced.
+const USER_INPUT_ATTACHMENT_NAME_MAX_UNITS: usize = 255;
+/// 128-bit BLAKE3 prefix in hex. Scope is one attempt, and reuse of an existing destination is
+/// byte-verified, so a prefix collision fails loudly instead of aliasing different content.
+const USER_INPUT_ATTACHMENT_DIGEST_LEN: usize = 32;
 
 fn validate_user_input_attachment_name(name: &str) -> Result<()> {
     // Attachment locators use portable slash-separated components. The preview interface
@@ -4038,6 +4103,10 @@ mod tests {
         );
     }
 
+    fn user_input_digest(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex()[..USER_INPUT_ATTACHMENT_DIGEST_LEN].to_string()
+    }
+
     fn assert_persisted_user_input(
         attempt_dir: &Utf8Path,
         attachment: &ResolvedAttachment,
@@ -4048,7 +4117,7 @@ mod tests {
         assert_eq!(attachment.meta.size, bytes.len() as u64);
         assert_eq!(
             attachment.meta.path,
-            format!("user-inputs/{}/{name}", blake3::hash(bytes))
+            format!("user-inputs/{}/{name}", user_input_digest(bytes))
         );
         let destination = attempt_dir.join(&attachment.meta.path);
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
@@ -4217,7 +4286,7 @@ mod tests {
         std::fs::write(&source, &bytes).unwrap();
         let content_dir = attempt_dir
             .join("user-inputs")
-            .join(blake3::hash(&bytes).to_hex().as_str());
+            .join(user_input_digest(&bytes));
         std::fs::create_dir_all(&content_dir).unwrap();
         let destination = content_dir.join("notes.txt");
         // Same size, with the mismatch beyond the first streaming buffer.
@@ -4274,6 +4343,116 @@ mod tests {
                 0
             );
         }
+    }
+
+    /// Creates an attempt directory whose canonical path has exactly `units` UTF-16 units.
+    fn attachment_test_attempt_dir_with_length(root: &Utf8Path, units: usize) -> Utf8PathBuf {
+        let mut path = Utf8PathBuf::from_path_buf(dunce::canonicalize(root.as_std_path()).unwrap())
+            .unwrap()
+            .join("attempt");
+        while path.as_str().encode_utf16().count() < units {
+            let remaining = units - path.as_str().encode_utf16().count() - 1;
+            path.push("a".repeat(remaining.clamp(1, 64)));
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn user_input_attachments_fit_windows_path_budget_in_deep_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        // Matches a real direct-agent attempt under the default data directory.
+        let attempt_dir = attachment_test_attempt_dir_with_length(&root, 160);
+        let long_name = format!("{}.png", "需求截圖".repeat(30));
+        for (index, name) in [
+            "24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg",
+            long_name.as_str(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = root.join(index.to_string()).join(name);
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            let bytes = test_png(2 + index as u32, 2);
+            std::fs::write(&source, &bytes).unwrap();
+            let resolved = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap()
+            .remove(0);
+            let destination = attempt_dir.join(&resolved.meta.path);
+            assert!(
+                destination.as_str().encode_utf16().count() <= USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
+            );
+            assert_eq!(resolved.meta.name, name);
+            assert_eq!(
+                destination.extension(),
+                std::path::Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+            );
+            assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn user_input_attachment_names_shorten_stem_and_keep_extension() {
+        assert_eq!(
+            fit_user_input_attachment_name("notes.txt", 64).as_deref(),
+            Some("notes.txt")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("abcdef.png", 7).as_deref(),
+            Some("abc.png")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("截圖截圖.png", 6).as_deref(),
+            Some("截圖.png")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("ab .cd.png", 8).as_deref(),
+            Some("ab.png"),
+            "trailing dots and spaces are dropped from the shortened stem"
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("README", 3).as_deref(),
+            Some("REA")
+        );
+        assert_eq!(fit_user_input_attachment_name("a.png", 4), None);
+        let long = format!("{}.png", "長".repeat(300));
+        let fitted = fit_user_input_attachment_name(&long, usize::MAX).unwrap();
+        assert!(fitted.len() <= 255 && fitted.ends_with(".png"));
+    }
+
+    #[test]
+    fn user_input_attachments_reject_attempts_too_deep_for_path_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("image.png");
+        std::fs::write(&source, test_png(2, 2)).unwrap();
+        let attempt_dir = attachment_test_attempt_dir_with_length(&root, 240);
+        let error = resolve_user_input_attachments(
+            &[source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap_err();
+        let info = &error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("structured runtime error")
+            .info;
+        assert_eq!(info.code_str(), USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE);
+        assert_eq!(info.params["name"], "image.png");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            0,
+            "no content directory or staging file may be left behind"
+        );
     }
 
     #[test]
@@ -4361,7 +4540,7 @@ mod tests {
         std::fs::write(&source, b"notes").unwrap();
         for (index, relative) in [
             "user-inputs".to_string(),
-            format!("user-inputs/{}", blake3::hash(b"notes")),
+            format!("user-inputs/{}", user_input_digest(b"notes")),
         ]
         .into_iter()
         .enumerate()
@@ -4402,7 +4581,7 @@ mod tests {
         std::fs::write(&source, b"notes").unwrap();
         let content_dir = attempt_dir
             .join("user-inputs")
-            .join(blake3::hash(b"notes").to_hex().as_str());
+            .join(user_input_digest(b"notes"));
         std::fs::create_dir_all(&content_dir).unwrap();
         let destination = content_dir.join("notes.txt");
         std::os::unix::fs::symlink(&source, &destination).unwrap();
@@ -4460,9 +4639,12 @@ mod tests {
                 "task-inputs/task-image.png".to_string(),
                 format!(
                     "user-inputs/{}/follow-up.png",
-                    blake3::hash(&follow_up_image_bytes)
+                    user_input_digest(&follow_up_image_bytes)
                 ),
-                format!("user-inputs/{}/notes.txt", blake3::hash(b"runtime notes")),
+                format!(
+                    "user-inputs/{}/notes.txt",
+                    user_input_digest(b"runtime notes")
+                ),
             ]
         );
         assert!(!attempt_dir.join("user-inputs/task-image.png").exists());

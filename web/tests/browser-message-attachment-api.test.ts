@@ -14,8 +14,8 @@ afterEach(() => window.history.replaceState(null, '', '/'));
 describe('browser message attachment fixtures', () => {
   it('serves three distinct PNG contents by persisted path, not display name', async () => {
     window.history.replaceState(null, '', '/?attachmentIdentity=1');
-    const run = await browserApi.getConversationRun(locator[0], locator[1], locator[2]);
-    const attachments = run.selectedSession!.events
+    const session = await browserApi.getAcpSession(...locator);
+    const attachments = session!.events
       .filter((event) => event.id.startsWith('browser-user-image-'))
       .flatMap((event) => event.raw.attachments as { name: string; path: string; size: number }[]);
     expect(attachments).toHaveLength(3);
@@ -38,8 +38,8 @@ describe('browser message attachment fixtures', () => {
 
   it('does not resolve an unknown path or a different attempt by filename', async () => {
     await expect(preview('user-inputs/image.png')).rejects.toMatchObject({ code: 'attachment.not-found' });
-    await expect(preview(`user-inputs/${'1'.repeat(64)}/image.png`, 'attempt-002')).rejects.toMatchObject({ code: 'attachment.not-found' });
-    await expect(browserApi.showConversationMessageAttachment('other-project', locator[1], locator[2], locator[3], locator[4], locator[5], 'image.png', `user-inputs/${'1'.repeat(64)}/image.png`))
+    await expect(preview(`user-inputs/${'1'.repeat(32)}/image.png`, 'attempt-002')).rejects.toMatchObject({ code: 'attachment.not-found' });
+    await expect(browserApi.showConversationMessageAttachment('other-project', locator[1], locator[2], locator[3], locator[4], locator[5], 'image.png', `user-inputs/${'1'.repeat(32)}/image.png`))
       .rejects.toMatchObject({ code: 'attachment.not-found' });
   });
 });

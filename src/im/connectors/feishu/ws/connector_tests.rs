@@ -18,6 +18,173 @@ fn test_codec() -> ImActionTokenCodec {
 }
 
 #[tokio::test]
+async fn retired_generation_must_not_send_after_token_refresh() {
+    assert_retired_request_is_cancelled(false, "generation").await;
+}
+
+#[tokio::test]
+async fn retired_connection_cancels_sends_and_updates_during_token_refresh() {
+    for retirement in ["generation", "disconnect", "cancellation", "replacement"] {
+        for patch in [false, true] {
+            assert_retired_request_is_cancelled(patch, retirement).await;
+        }
+    }
+}
+
+async fn assert_retired_request_is_cancelled(patch: bool, retirement: &str) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = reqwest::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let connector = Arc::new(FeishuConnector::for_test(
+        FeishuHostTable::for_test(url.clone(), url.clone()),
+        test_client(),
+        test_codec(),
+    ));
+    connector.advance_generation(1);
+    let cancellation = CancellationToken::new();
+    let api = Arc::new(FeishuOpenApi::new(test_client(), url, APP_ID, "old-secret"));
+    assert!(connector.install_api(
+        1,
+        ActiveApi {
+            api: Arc::clone(&api),
+            locale: ImLocale::En,
+            cancellation: cancellation.child_token(),
+        }
+    ));
+    let delivery = card::tests::delivery(
+        crate::im::ImNotificationKind::Permission,
+        vec![
+            crate::app::intervention::InterventionAllowedAction::PermissionOption {
+                option_id: "allow".into(),
+                name: "Allow".into(),
+                permission_kind: crate::app::intervention::PermissionActionKind::AllowOnce,
+            },
+        ],
+    );
+    let mut sending = tokio::spawn({
+        let connector = Arc::clone(&connector);
+        async move {
+            if patch {
+                let binding = ImDeliveryBinding {
+                    delivery_id: delivery.delivery_id.clone(),
+                    channel: ImChannelKind::Feishu,
+                    platform_message_id: "om_old".into(),
+                    platform_chat_id: "oc_old".into(),
+                    update_token_ref: None,
+                };
+                connector
+                    .update_message(&binding, &delivery.payload, Some(&delivery))
+                    .await
+            } else {
+                connector.send(delivery, None).await.map(|_| ())
+            }
+        }
+    });
+    let (mut token_socket, _) = listener.accept().await.unwrap();
+    let mut buffer = vec![0; 65536];
+    let read = token_socket.read(&mut buffer).await.unwrap();
+    assert!(String::from_utf8_lossy(&buffer[..read]).contains("tenant_access_token/internal"));
+    // Retire the connection after the token request starts, before any message
+    // request exists. Releasing the token must not resume the retired request.
+    match retirement {
+        "generation" => connector.advance_generation(2),
+        "disconnect" => connector.clear_api(1),
+        "cancellation" => cancellation.cancel(),
+        "replacement" => assert!(connector.install_api(
+            1,
+            ActiveApi {
+                api,
+                locale: ImLocale::En,
+                cancellation: cancellation.child_token(),
+            }
+        )),
+        _ => unreachable!(),
+    }
+    let token = json!({"code":0,"tenant_access_token":"old-token","expire":7200}).to_string();
+    // Cancellation may already have closed the client socket.
+    let _ = token_socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", token.len(), token).as_bytes()).await;
+    drop(token_socket);
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            result = &mut sending => result.unwrap(),
+            outgoing = listener.accept() => {
+                let (mut socket, _) = outgoing.unwrap();
+                let read = socket.read(&mut buffer).await.unwrap();
+                sending.abort();
+                panic!("retired credentials issued another request ({retirement}, patch={patch}): {}",
+                    String::from_utf8_lossy(&buffer[..read]));
+            }
+        }
+    }).await.expect("retired request must finish without waiting for the HTTP timeout");
+    let error = result.unwrap_err();
+    assert_eq!(error.code, ImErrorCode::NetworkUnavailable);
+    assert!(error.retryable);
+}
+
+#[tokio::test]
+async fn stale_cleanup_does_not_cancel_the_new_connection_or_its_requests() {
+    let (url, requests) = fixture_server(vec![
+        (
+            200,
+            json!({"code": 0, "tenant_access_token": "new-token", "expire": 7200}).to_string(),
+        ),
+        (
+            200,
+            json!({"code": 0, "data": {"message_id": "om_new", "chat_id": "oc_new"}}).to_string(),
+        ),
+        (200, json!({"code": 0, "data": {}}).to_string()),
+    ])
+    .await;
+    let connector = FeishuConnector::for_test(
+        FeishuHostTable::for_test(url.clone(), url.clone()),
+        test_client(),
+        test_codec(),
+    );
+    connector.advance_generation(2);
+    let parent = CancellationToken::new();
+    let active = ActiveApi {
+        api: Arc::new(FeishuOpenApi::new(test_client(), url, APP_ID, "new-secret")),
+        locale: ImLocale::En,
+        cancellation: parent.child_token(),
+    };
+    assert!(connector.install_api(2, active.clone()));
+    connector.clear_api(1);
+    connector.advance_generation(1);
+    let mut stale = active.clone();
+    stale.cancellation = parent.child_token();
+    assert!(!connector.install_api(1, stale.clone()));
+    assert!(stale.cancellation.is_cancelled());
+    assert!(!active.cancellation.is_cancelled());
+    assert!(!parent.is_cancelled());
+    let delivery = card::tests::delivery(
+        crate::im::ImNotificationKind::Permission,
+        vec![
+            crate::app::intervention::InterventionAllowedAction::PermissionOption {
+                option_id: "allow".into(),
+                name: "Allow".into(),
+                permission_kind: crate::app::intervention::PermissionActionKind::AllowOnce,
+            },
+        ],
+    );
+    let receipt = connector.send(delivery.clone(), None).await.unwrap();
+    let binding = ImDeliveryBinding {
+        delivery_id: delivery.delivery_id.clone(),
+        channel: ImChannelKind::Feishu,
+        platform_message_id: receipt.platform_message_id.unwrap(),
+        platform_chat_id: receipt.platform_chat_id,
+        update_token_ref: None,
+    };
+    connector
+        .update_message(&binding, &delivery.payload, Some(&delivery))
+        .await
+        .unwrap();
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].starts_with("POST /open-apis/im/v1/messages"));
+    assert!(requests[2].starts_with("PATCH /open-apis/im/v1/messages/om_new"));
+}
+
+#[tokio::test]
 async fn cancelling_transport_drops_its_pending_event_handler() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cancellation = CancellationToken::new();
@@ -626,6 +793,28 @@ async fn silent_connection_schedules_a_reconnect_and_drops_the_send_handle() {
     assert!(connector.active_api().is_err());
     cancellation.cancel();
     assert_eq!(task.await.unwrap(), Ok(()));
+}
+
+#[tokio::test]
+async fn connection_cancellation_revokes_borrowed_api_before_polling_requests() {
+    let (listener, connector, mut events, cancellation, task) = start(json!({}), 1, |_| {}).await;
+    let _server = accept(&listener).await;
+    assert!(matches!(
+        next_event(&mut events).await,
+        ImConnectorEvent::Connected { .. }
+    ));
+    let active = connector.active_api().unwrap();
+    cancellation.cancel();
+    assert!(active.cancellation.is_cancelled());
+    let result: Result<(), ImIntegrationError> = active
+        .request(async { panic!("an already cancelled connection must not poll another request") })
+        .await;
+    assert_eq!(result, Err(network_unavailable()));
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

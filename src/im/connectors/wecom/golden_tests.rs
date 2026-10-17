@@ -534,6 +534,7 @@ fn terminal_response(
     context: &ImActionResponseContext,
     delivery: Option<&ImDelivery>,
     state: ImActionResponseState,
+    outcome: Option<ImResolutionOutcome>,
 ) -> Value {
     let handle = context
         .downcast_ref::<WeComResponseHandle>()
@@ -543,7 +544,7 @@ fn terminal_response(
         &ImActionResponse {
             state,
             resolved_by: None,
-            outcome: None,
+            outcome,
             delivery: delivery.cloned(),
         },
         ImLocale::ZhCn,
@@ -564,12 +565,26 @@ const TERMINAL_STATES: [(&str, ImActionResponseState); 3] = [
 
 fn interaction_case(callback: &Value, delivery: &ImDelivery) -> Value {
     let (envelope, context) = action_envelope(callback).expect("golden callback must decode");
+    let inbound = inbound_outcome(&envelope, delivery);
+    let accepted = inbound
+        .get("action")
+        .and_then(|action| serde_json::from_value::<InterventionAction>(action.clone()).ok())
+        .map(|action| ImResolutionOutcome::from(&action));
     let responses = TERMINAL_STATES
         .iter()
         .map(|(name, state)| {
             (
                 (*name).to_owned(),
-                terminal_response(&context, Some(delivery), *state),
+                terminal_response(
+                    &context,
+                    Some(delivery),
+                    *state,
+                    if *state == ImActionResponseState::Handled {
+                        accepted.clone()
+                    } else {
+                        None
+                    },
+                ),
             )
         })
         .collect::<serde_json::Map<_, _>>();
@@ -582,12 +597,13 @@ fn interaction_case(callback: &Value, delivery: &ImDelivery) -> Value {
             "actorId": envelope.actor_id,
             "deliveryId": envelope.delivery_id,
         },
-        "inbound": inbound_outcome(&envelope, delivery),
+        "inbound": inbound,
         "responses": responses,
         "missingDeliveryFailure": terminal_response(
             &context,
             None,
             ImActionResponseState::Rejected(ImErrorCode::ActionProcessingFailed),
+            None,
         ),
     })
 }
@@ -599,6 +615,7 @@ fn invalid_case(callback: &Value) -> Value {
             context,
             None,
             ImActionResponseState::Rejected(ImErrorCode::ProtocolInvalid),
+            None,
         )
     });
     // Only private callbacks receive a failed-card update; anything else is

@@ -820,8 +820,7 @@
                     "id": "1",
                     "text": "新加坡"
                   }
-                ],
-                "selected_id": "0"
+                ]
               }
             ],
             "source": {
@@ -883,8 +882,7 @@
                     "id": "1",
                     "text": "新加坡"
                   }
-                ],
-                "selected_id": "0"
+                ]
               }
             ],
             "source": {
@@ -946,8 +944,7 @@
                     "id": "1",
                     "text": "新加坡"
                   }
-                ],
-                "selected_id": "0"
+                ]
               }
             ],
             "source": {
@@ -1047,8 +1044,7 @@
                     "id": "2",
                     "text": "SQLite"
                   }
-                ],
-                "selected_id": "0"
+                ]
               },
               {
                 "question_key": "q1",
@@ -1063,8 +1059,7 @@
                     "id": "1",
                     "text": "新加坡"
                   }
-                ],
-                "selected_id": "0"
+                ]
               }
             ],
             "source": {
@@ -1110,8 +1105,7 @@
                     "id": "2",
                     "text": "SQLite"
                   }
-                ],
-                "selected_id": "0"
+                ]
               },
               {
                 "question_key": "q1",
@@ -1173,8 +1167,7 @@
                     "id": "2",
                     "text": "SQLite"
                   }
-                ],
-                "selected_id": "0"
+                ]
               },
               {
                 "question_key": "q1",

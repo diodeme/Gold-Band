@@ -177,6 +177,8 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 
 `runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过显式“继续工作流”动作恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。暂停期间输入区继续提供 NonRuntime 普通对话，独立 continue action 才恢复 Runtime。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused UI snapshot 不得让输入区短暂降级。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
+后台失败收敛成功后，状态写入方返回本次已提交的暂停时间；错误事件与生命周期投影复用同一时间，不在发布时重新取时钟。迟到错误遇到已暂停的同一 attempt 时，沿用已存 `Run.updated_at`，不能把诊断时间当作新的状态转换。Direct 后台 Stop 的 `expiresAtMs` 是单调时钟活动窗口到壁钟的显示投影，session 与 connection generation 才是操作身份；分次读取按采样区间和毫秒舍入验证，不要求投影时间逐字相等。
+
 ### 8.1 用户停止优先级与 ACP 收尾
 
 用户停止是 attempt 生命周期中的持续事实，不是一次性的 `session/cancel` 边缘通知。Stop 在本地 attempt 创建后即可接受，不依赖 provider 先报告 active：prompt 尚未发出时直接终止 dispatch；prompt 已发出但 provider 尚未 active 时发送一次 cancel，并在后续观察到 `threadStatus=active` 且 prompt 尚未 terminal 时补发一次。两次投递分别通过 `before-provider-active / after-provider-active` 门闩去重，同一阶段不得重复发送。

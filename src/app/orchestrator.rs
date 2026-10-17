@@ -827,7 +827,7 @@ fn terminalize_background_drive_error_with_policy(
     };
 
     match convergence {
-        Ok(AttemptRuntimePauseResult::Converged) => {
+        Ok(AttemptRuntimePauseResult::Converged { paused_at }) => {
             app.finish_runtime_candidate_best_effort(
                 task_id,
                 &fallback_run.id,
@@ -839,19 +839,19 @@ fn terminalize_background_drive_error_with_policy(
                 fallback_run,
                 fallback_round,
                 fallback_node,
+                Some(&paused_at),
                 error,
             );
         }
         Ok(AttemptRuntimePauseResult::Superseded) => {
-            if policy == BackgroundDriveFailurePolicy::PausedManualCheck
-                || background_drive_attempt_is_partially_converged(
-                    app,
-                    task_id,
-                    fallback_run,
-                    fallback_round,
-                    fallback_node,
-                )
-            {
+            let paused_at = background_drive_pause_timestamp(
+                app,
+                task_id,
+                fallback_run,
+                fallback_round,
+                fallback_node,
+            );
+            if policy == BackgroundDriveFailurePolicy::PausedManualCheck || paused_at.is_some() {
                 if let Ok(run) = app.run_status(task_id, &fallback_run.id)
                     && run.status != RunStatus::Running
                 {
@@ -867,6 +867,7 @@ fn terminalize_background_drive_error_with_policy(
                     fallback_run,
                     fallback_round,
                     fallback_node,
+                    paused_at.as_deref(),
                     error,
                 );
             }
@@ -886,12 +887,20 @@ fn terminalize_background_drive_error_with_policy(
             let combined_error = anyhow!(
                 "{error:#}; runtime failure convergence also failed: {convergence_error:#}"
             );
+            let paused_at = background_drive_pause_timestamp(
+                app,
+                task_id,
+                fallback_run,
+                fallback_round,
+                fallback_node,
+            );
             emit_background_drive_error_from_fallback(
                 app,
                 task_id,
                 fallback_run,
                 fallback_round,
                 fallback_node,
+                paused_at.as_deref(),
                 &combined_error,
             );
         }
@@ -908,13 +917,9 @@ fn background_drive_execution_was_superseded(
     let Ok(run) = app.run_status(task_id, &fallback_run.id) else {
         return false;
     };
-    if background_drive_attempt_is_partially_converged(
-        app,
-        task_id,
-        fallback_run,
-        fallback_round,
-        fallback_node,
-    ) {
+    if background_drive_pause_timestamp(app, task_id, fallback_run, fallback_round, fallback_node)
+        .is_some()
+    {
         return false;
     }
     let locator_matches = run.current_round.as_deref() == Some(fallback_round.id.as_str())
@@ -936,20 +941,23 @@ fn background_drive_execution_was_superseded(
     node.runtime_execution_id != fallback_node.runtime_execution_id
 }
 
-fn background_drive_attempt_is_partially_converged(
+fn background_drive_pause_timestamp(
     app: &App,
     task_id: &str,
     fallback_run: &RunState,
     fallback_round: &RoundState,
     fallback_node: &NodeState,
-) -> bool {
-    app.run_status(task_id, &fallback_run.id).is_ok_and(|run| {
-        run.current_round.as_deref() == Some(fallback_round.id.as_str())
-            && run.current_node.as_deref() == Some(fallback_node.node_id.as_str())
-            && run.current_attempt.as_deref() == Some(fallback_node.attempt_id.as_str())
-            && run.status == RunStatus::Paused
-            && run.pause_reason == Some(PauseReason::RuntimeAbnormal)
-    })
+) -> Option<String> {
+    app.run_status(task_id, &fallback_run.id)
+        .ok()
+        .and_then(|run| {
+            (run.current_round.as_deref() == Some(fallback_round.id.as_str())
+                && run.current_node.as_deref() == Some(fallback_node.node_id.as_str())
+                && run.current_attempt.as_deref() == Some(fallback_node.attempt_id.as_str())
+                && run.status == RunStatus::Paused
+                && run.pause_reason == Some(PauseReason::RuntimeAbnormal))
+            .then_some(run.updated_at)
+        })
 }
 
 fn emit_background_drive_error_from_fallback(
@@ -958,12 +966,13 @@ fn emit_background_drive_error_from_fallback(
     fallback_run: &RunState,
     fallback_round: &RoundState,
     fallback_node: &NodeState,
+    paused_at: Option<&str>,
     error: &anyhow::Error,
 ) {
     let mut run = fallback_run.clone();
     let mut round = fallback_round.clone();
     let mut node = fallback_node.clone();
-    let now = now_rfc3339_like();
+    let now = paused_at.map_or_else(now_rfc3339_like, str::to_owned);
     run.status = RunStatus::Paused;
     run.outcome = None;
     run.pause_reason = Some(PauseReason::RuntimeAbnormal);
@@ -2622,7 +2631,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
             &outer_execution_id,
             PauseReason::ProcessInterrupted,
         );
-        if matches!(convergence, Ok(AttemptRuntimePauseResult::Converged)) {
+        if matches!(convergence, Ok(AttemptRuntimePauseResult::Converged { .. })) {
             let _ = app.emit_acp_session_update(AcpLiveEventContext {
                 task_id: task_id.to_string(),
                 task_uuid: initial_run.task_uuid.clone(),
@@ -2798,7 +2807,7 @@ fn drive_accepted_dynamic_inner_continue(
                 &target.outer_execution_id,
                 PauseReason::RuntimeAbnormal,
             ),
-            Ok(AttemptRuntimePauseResult::Converged)
+            Ok(AttemptRuntimePauseResult::Converged { .. })
         )
     };
     if converged || outer_converged {
@@ -18631,6 +18640,36 @@ mod tests {
         assert!(
             captured.is_empty(),
             "re-terminalizing an already committed pause must not publish lifecycle events"
+        );
+    }
+
+    #[test]
+    fn delayed_background_error_reuses_the_persisted_pause_timestamp() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_test_outer_attempt(&app, RunStatus::Paused, Some(PauseReason::RuntimeAbnormal));
+        let run = app.run_status("task-006", "run-001").unwrap();
+        let (round, node) = current_attempt_state(&app, "task-006", &run).unwrap();
+
+        terminalize_background_drive_error(
+            &app,
+            "task-006",
+            &run,
+            &round,
+            &node,
+            &anyhow!("delayed background failure"),
+        );
+
+        let journal =
+            std::fs::read_to_string(app.paths.run_events_file("task-006", "run-001")).unwrap();
+        let event: serde_json::Value =
+            serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+        assert_eq!(event["type"], "run_paused");
+        assert_eq!(event["timestamp"], run.updated_at);
+        assert_eq!(
+            serde_json::to_value(app.run_status("task-006", "run-001").unwrap()).unwrap(),
+            serde_json::to_value(run).unwrap(),
+            "error projection must not alter the committed pause",
         );
     }
 

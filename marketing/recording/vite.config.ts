@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { identitySensitiveDependencies } from '../../web/config/identity-sensitive-dependencies';
 import { afterRepositoryPlugin } from '../../scripts/after-repository.mjs';
+import { releaseNotesPlugin } from '../../web/config/release-notes-plugin';
 
 export default defineConfig({
   root: 'marketing/recording',
@@ -15,7 +16,7 @@ export default defineConfig({
         return normalizePath(resolve('marketing/recording/runtime.ts'));
       }
     },
-  }, afterRepositoryPlugin(), react(), tailwindcss()],
+  }, afterRepositoryPlugin(), react(), tailwindcss(), releaseNotesPlugin(resolve('.'))],
   resolve: { alias: { '@': resolve('web/src') }, dedupe: [...identitySensitiveDependencies] },
   server: { strictPort: true },
   build: { target: 'safari15.4', outDir: '../../.codex-temp/recording-dist', emptyOutDir: true },

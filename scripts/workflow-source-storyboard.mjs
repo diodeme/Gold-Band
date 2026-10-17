@@ -120,7 +120,7 @@ export function workflowSourceStoryboard({ browser, evaluate, screenshot, camera
   frameNode('continue'); camera('branch-continue-node'); hold(); screenshot('branch-continue-node'); hold();
   follow('branch-continue-follow', graphInSheet ? 'Close' : '关闭标签页');
   const snapshot = evaluate('window.goldBandPreview.snapshot()');
-  assert.equal(snapshot.selectedSession.nodeId, 'continue');
+  assert.equal(snapshot.sessionTree.selectedSessionKey, 'round-001/continue/attempt-001');
   assert.equal(snapshot.workflowGraph.nodes.find(node => node.current).nodeId, 'continue');
   return capture ? evaluate('window.goldBandPreview.stop()') : snapshot;
 }

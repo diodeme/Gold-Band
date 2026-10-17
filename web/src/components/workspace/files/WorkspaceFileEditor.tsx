@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { historyField } from '@codemirror/commands';
 import { foldGutter } from '@codemirror/language';
@@ -65,7 +65,6 @@ interface WorkspaceFileEditorProps {
   onLocationAdjusted?: (adjusted: boolean) => void;
   markdownMode?: MarkdownEditorMode | null;
   markdownLivePreviewAvailable?: boolean;
-  markdownContentWidth?: 'readable' | 'full';
   onMarkdownModeChange?: (mode: MarkdownEditorMode) => void;
   markdownImages?: ReadonlyMap<string, MarkdownImageState>;
   markdownHasTableImages?: boolean;
@@ -99,7 +98,6 @@ type MarkdownImagePreviewProfile = Required<MarkdownImagePreviewConfig>;
 
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
 const VIEWPORT_ANCHOR_INSET_PX = 1;
-const FULL_WIDTH_MARKDOWN_STYLE = { '--atomic-editor-measure': '100%' } as CSSProperties;
 
 function sameMarkdownImagePreviewProfile(
   left: MarkdownImagePreviewProfile | null,
@@ -285,7 +283,6 @@ export function WorkspaceFileEditor({
   onLocationAdjusted,
   markdownMode = null,
   markdownLivePreviewAvailable = true,
-  markdownContentWidth = 'readable',
   onMarkdownModeChange,
   markdownImages = EMPTY_MARKDOWN_IMAGES,
   markdownHasTableImages = false,
@@ -921,9 +918,6 @@ export function WorkspaceFileEditor({
         className={desiredEditorMode === 'live-preview'
           ? 'atomic-cm-editor workspace-markdown-live-preview h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'
           : 'h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'}
-        style={desiredEditorMode === 'live-preview' && markdownContentWidth === 'full'
-          ? FULL_WIDTH_MARKDOWN_STYLE
-          : undefined}
         aria-label="workspace-file-editor"
       />
       ) : (

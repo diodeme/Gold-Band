@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+Approved B editorial extension. Source: ../../README.md, architecture-analysis boundary.
+The requested goal/context/drift statement is preserved verbatim and visibly labeled
+as an architecture judgment, not a measured causal result of the Ruff experiment.
+Form: a large editorial thesis with a narrow explanatory margin, not a technical graph.
+Static, bounded content; no new abstraction, data model, dependency or live data.
+The coordinating agent owns browser, host scaling and PDF verification.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>上下文与漂移 · 架构判断</title>
+  <link rel="stylesheet" href="../assets/editorial.css">
+  <style>
+    body{overflow:visible}
+    .judgment{font-size:28px;font-weight:500;color:var(--blue);line-height:1.3}
+    .analysis{display:grid;grid-template-columns:1050px 1fr;gap:100px;margin-top:44px}
+    .thesis{border-top:2px solid var(--blue);padding-top:27px}
+    .thesis-quote{font-size:49px;line-height:1.65;letter-spacing:-.01em;font-weight:450;text-wrap:pretty}
+    .qualification{font-size:28px;line-height:1.7;color:var(--muted);margin-top:28px;max-width:1000px}
+    .mechanism{padding-left:36px;border-left:1px solid var(--rule)}
+    .mechanism h2{font-size:24px;font-weight:500;line-height:1.4;color:var(--muted);margin:0 0 17px}
+    .step{padding:19px 0 23px;border-top:1px solid var(--rule)}
+    .step dt{font-size:34px;line-height:1.35;font-weight:520}
+    .step dd{font-size:28px;line-height:1.6;margin-top:10px;letter-spacing:-.015em}
+    .step:last-child{padding-bottom:0}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band / 长任务分析</p>
+    <p class="judgment">架构判断</p>
+  </header>
+  <main>
+    <h1 class="headline">goal 解决续跑，<br>不解决上下文容量</h1>
+    <section class="analysis" aria-label="上下文约束的机制分析">
+      <div class="thesis">
+        <p class="thesis-quote">单体应用中持续使用 goal，会不断触碰到主编排会话的上下文窗口限制，导致漂移。</p>
+        <p class="qualification">goal 约束「何时算完成」；长程执行还需要把任务状态、交接证据和验收边界放到会话之外管理。</p>
+      </div>
+      <aside class="mechanism" aria-labelledby="mechanism-title">
+        <h2 id="mechanism-title">风险如何形成</h2>
+        <dl>
+          <div class="step"><dt>主会话持续累积</dt><dd>需求、历史与决策不断叠加。</dd></div>
+          <div class="step"><dt>触顶后压缩历史</dt><dd>goal 不会扩大上下文窗口。</dd></div>
+          <div class="step"><dt>待办与验收约束漂移</dt><dd>约束可能在压缩与续跑中弱化。</dd></div>
+        </dl>
+      </aside>
+    </section>
+    <p class="conclusion"><span>继续执行的条件，与长期保留约束的能力，需要分别解决。</span></p>
+  </main>
+  <script src="../assets/slide.js"></script>
+</body>
+</html>

@@ -12,7 +12,7 @@ test('real graph Close transfers camera before the stable reading hold', () => {
     evaluate(code) {
       if (code.includes('return {node:')) return { node: { x: 100, y: 100, width: 180, height: 100 }, pane: { x: 0, y: 0, width: 320, height: 780, bottom: 780 } };
       if (code.includes('workflowGraph.edges.findIndex')) return 'review-repair-0';
-      if (code === 'window.goldBandPreview.snapshot()') return { selectedSession: { nodeId: 'continue' }, workflowGraph: { nodes: [{ current: true, nodeId: 'continue' }] } };
+      if (code === 'window.goldBandPreview.snapshot()') return { sessionTree: { selectedSessionKey: 'round-001/continue/attempt-001' }, workflowGraph: { nodes: [{ current: true, nodeId: 'continue' }] } };
       return true;
     },
     camera(stepId, options) { operations.push(['camera', stepId, options]); },

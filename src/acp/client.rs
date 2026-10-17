@@ -16,7 +16,14 @@ use tracing::{debug, info};
 
 #[path = "client_direct.rs"]
 mod direct;
-pub use direct::{DirectBackgroundControl, direct_background_control, direct_background_control_under, cancel_retained_direct_session, close_direct_conversation, register_direct_session, set_direct_session_resident};
+#[path = "client_subagents.rs"]
+mod subagents;
+pub use direct::{
+    DirectBackgroundControl, cancel_retained_direct_session, close_direct_conversation,
+    direct_background_control, direct_background_control_under, register_direct_session,
+    set_direct_session_resident,
+};
+use subagents::{NativeSubagents, canonical_tool_item_id, native_tool_branch};
 
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
@@ -158,6 +165,10 @@ struct AcpUsageState {
     latest_prompt: AcpPromptTokenUsage,
     attempt_totals: AcpAttemptTokenTotals,
     compaction: Option<AcpContextCompactionState>,
+    /// Agent work observed outside a user prompt by this runtime. Token totals
+    /// only accumulate prompt responses, so they no longer cover all work.
+    /// Durable stickiness lives in the timeline usage projection.
+    background_work_observed: bool,
 }
 
 impl AcpUsageState {
@@ -186,6 +197,7 @@ impl AcpUsageState {
                 total_tokens: prior.attempt_total_tokens,
             },
             compaction,
+            background_work_observed: false,
         }
     }
 
@@ -326,6 +338,17 @@ impl AcpUsageState {
                 object.remove("size");
             }
         }
+        if self.background_work_observed {
+            let meta = object
+                .entry("_meta")
+                .or_insert_with(|| Value::Object(Default::default()));
+            if let Some(meta) = meta.as_object_mut() {
+                meta.insert(
+                    crate::acp::events::TOKEN_TOTALS_EXCLUDE_BACKGROUND_META_KEY.to_string(),
+                    Value::Bool(true),
+                );
+            }
+        }
     }
 }
 
@@ -384,11 +407,10 @@ use crate::acp::permission::{
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
-    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, RolledBackSessionConfig,
-    ModelBoundCatalogs, live_catalog_model_id,
-    observe_session_model_bound_catalog, plan_explicit_session_scalar,
-    reconcile_session_config_overrides, retarget_live_model_bound_catalog,
-    rolled_back_session_config_params,
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, ModelBoundCatalogs,
+    RolledBackSessionConfig, live_catalog_model_id, observe_session_model_bound_catalog,
+    plan_explicit_session_scalar, reconcile_session_config_overrides,
+    retarget_live_model_bound_catalog, rolled_back_session_config_params,
 };
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
@@ -636,6 +658,7 @@ fn initialize_params() -> Value {
     json!({
         "protocolVersion": 1,
         "clientCapabilities": {
+            "subagents": {},
             "session": { "compaction": {} },
             "_meta": {
                 (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true,
@@ -2024,6 +2047,7 @@ struct AttachedSessionRuntime {
     external_session_sync_enabled: bool,
     sync_required: bool,
     usage: AcpUsageState,
+    native_subagents: NativeSubagents,
     last_activity_at: Instant,
     foreground_lease_until: Instant,
     active: bool,
@@ -2493,6 +2517,7 @@ struct AcpRuntime<'a> {
     branch_timeline_stores: HashMap<String, TimelineStore>,
     timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
+    native_subagents: NativeSubagents,
     prompt_output: AcpPromptOutputAccumulator,
     prompt_terminal: AcpPromptTerminalState,
     session_update_phase: SessionUpdatePhase,
@@ -3347,6 +3372,7 @@ fn run_prompt_inner(
                 );
             }
             runtime.control.mark_stopped();
+            runtime.settle_foreground_turn_tools();
             // The outer lifecycle guard commits failure and its reason together.
             // A metadata-only failed write here would close its owner revision.
             runtime.shutdown();
@@ -3385,6 +3411,7 @@ fn run_prompt_inner(
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
     runtime.control.mark_stopped();
+    runtime.settle_foreground_turn_tools();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
         let _ = session_update();
@@ -4207,6 +4234,7 @@ impl<'a> AcpRuntime<'a> {
             branch_timeline_stores,
             timeline_items,
             session_id: None,
+            native_subagents: NativeSubagents::default(),
             prompt_output: AcpPromptOutputAccumulator::default(),
             prompt_terminal: AcpPromptTerminalState::default(),
             session_update_phase: SessionUpdatePhase::Live,
@@ -4405,6 +4433,7 @@ impl<'a> AcpRuntime<'a> {
                 initialize_params(),
                 timeout,
             )?;
+            subagents::validate_initialize_result(&result)?;
             Ok(result
                 .get("agentCapabilities")
                 .cloned()
@@ -4740,6 +4769,7 @@ impl<'a> AcpRuntime<'a> {
         self.model_bound_catalogs = entry.model_bound_catalogs.clone();
         self.config_catalog_observed_at = entry.config_catalog_observed_at.clone();
         self.usage = entry.usage.clone();
+        self.native_subagents = entry.native_subagents.clone();
         self.attempt_usage_ready = true;
         self.provider_freshness = entry.provider_freshness.clone();
         self.sync_required = attached_sync_required(
@@ -4840,6 +4870,9 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn set_session_id(&mut self, session_id: String) {
+        if self.session_id.as_deref() != Some(session_id.as_str()) {
+            self.native_subagents = NativeSubagents::default();
+        }
         if let Some(existing) = self.session_id.take() {
             if let Some(event_pump) = self.rx.as_ref() {
                 self.connection.unregister_session_route_if_generation(
@@ -6216,6 +6249,11 @@ impl<'a> AcpRuntime<'a> {
             .map(str::to_string);
         let mut update = params.get("update").cloned().unwrap_or(params);
 
+        // Binding recovery is control-plane processing, independent of whether
+        // the caller permits importing external historical message bodies.
+        if self.handle_native_session_update(session_id.as_deref(), &update)? {
+            return Ok(());
+        }
         if self.session_update_phase == SessionUpdatePhase::RestoringWithoutReplay {
             if let Some(commands) = parse_available_commands(&update) {
                 self.available_commands = Some(commands);
@@ -6289,11 +6327,14 @@ impl<'a> AcpRuntime<'a> {
         if let Some(direct) = &self.direct {
             // Client-owned provenance: this describes delivery outside a user prompt,
             // not the provider's task identity or a task-completion signal.
+            let background = self.active_prompt_turn.is_none();
             if !update.get("_meta").is_some_and(Value::is_object) {
                 update["_meta"] = json!({});
             }
-            update["_meta"]["goldBandBackground"] = json!(self.active_prompt_turn.is_none());
-            direct.observe_update(&update);
+            update["_meta"]["goldBandBackground"] = json!(background);
+            if direct.observe_update(&update, background) {
+                self.usage.background_work_observed = true;
+            }
         }
         self.seq += 1;
         let event = normalize_session_update(self.seq, session_id, &update);
@@ -6328,6 +6369,41 @@ impl<'a> AcpRuntime<'a> {
         if let Some(used) = usage_after_compaction {
             self.maybe_persist_context_compaction_usage(used)?;
         }
+        if event.kind == "usageUpdate" && self.direct.is_some() && self.active_prompt_turn.is_none()
+        {
+            self.persist_background_usage_snapshot()?;
+        }
+        Ok(())
+    }
+
+    /// Prompt terminals write the session snapshot; background work has no
+    /// terminal, so its usage sample refreshes the snapshot's usage and
+    /// timing projection (read by reloads and analytics).
+    fn persist_background_usage_snapshot(&self) -> Result<()> {
+        if !self.paths.snapshot.exists() {
+            return Ok(());
+        }
+        let observed_at = current_timestamp();
+        let timing = self.timing_state.terminal_snapshot_at_with_revision(
+            parse_event_epoch_seconds(&observed_at),
+            Some(self.next_timing_revision()),
+            Some(observed_at),
+        );
+        crate::acp::events::patch_session_metadata(&self.paths.snapshot, |metadata| {
+            if let Some(used) = self.usage.context.confirmed_used {
+                metadata["usedTokens"] = json!(used);
+            }
+            if let Some(size) = self.usage.context.window_size {
+                metadata["contextWindowSize"] = json!(size);
+            }
+            if let Some(cost) = self.usage.total_cost_usd {
+                metadata["totalCostUsd"] = json!(cost);
+            }
+            if let Some(timing) = &timing {
+                metadata["timing"] = serde_json::to_value(timing)?;
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -6335,10 +6411,8 @@ impl<'a> AcpRuntime<'a> {
     /// executions without later activity project as interrupted from it.
     pub(super) fn persist_background_cancel_marker(&mut self) -> Result<()> {
         self.seq = self.seq.saturating_add(1);
-        let event = crate::acp::events::background_cancel_marker_event(
-            self.seq,
-            self.session_id.clone(),
-        );
+        let event =
+            crate::acp::events::background_cancel_marker_event(self.seq, self.session_id.clone());
         self.persist_event(&event)
     }
 
@@ -6356,14 +6430,23 @@ impl<'a> AcpRuntime<'a> {
         if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
             return Ok(());
         }
-        if self.turn_file_worker.is_none() && self.direct.is_some() && self.active_prompt_turn.is_none()
+        if self.turn_file_worker.is_none()
+            && self.direct.is_some()
+            && self.active_prompt_turn.is_none()
         {
             let metadata = load_session_metadata(&self.paths.snapshot, self.session_id.clone())?;
             if let (Some(turn), Some(prompt)) = (metadata.turn_id, metadata.prompt_event_id) {
-                self.turn_file_worker = Some(crate::acp::turn_files::TurnFileWorker::start_background(
-                    crate::acp::turn_files::TurnFileStore::new(self.paths.attempt_dir.clone(), self.runtime_policy.turn_file_capture),
-                    self.turn_file_workspace.clone(), turn, prompt, current_timestamp(),
-                )?);
+                self.turn_file_worker =
+                    Some(crate::acp::turn_files::TurnFileWorker::start_background(
+                        crate::acp::turn_files::TurnFileStore::new(
+                            self.paths.attempt_dir.clone(),
+                            self.runtime_policy.turn_file_capture,
+                        ),
+                        self.turn_file_workspace.clone(),
+                        turn,
+                        prompt,
+                        current_timestamp(),
+                    )?);
             }
         }
         let (Some(worker), Some(tool_call_id), Some(raw)) = (
@@ -6387,6 +6470,15 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
+    /// The foreground prompt turn owns its tool lifecycle: when the prompt
+    /// returns, tools without a provider terminal update are settled by the
+    /// turn boundary instead of waiting for the provider.
+    fn settle_foreground_turn_tools(&self) {
+        if let Some(direct) = &self.direct {
+            direct.settle_tools_owned_by(direct::ActiveToolOwner::ForegroundTurn);
+        }
+    }
+
     fn finalize_turn_file_changes(
         &mut self,
         _turn: &AcpPromptTurnIdentity,
@@ -6402,15 +6494,25 @@ impl<'a> AcpRuntime<'a> {
 
     fn flush_background_file_changes(&mut self, finish: bool) -> Result<()> {
         let sets = if finish {
-            self.turn_file_worker.take().map(|worker| worker.finish()).transpose()?
+            self.turn_file_worker
+                .take()
+                .map(|worker| worker.finish())
+                .transpose()?
         } else {
-            self.turn_file_worker.as_ref().and_then(|worker| worker.take_updates())
+            self.turn_file_worker
+                .as_ref()
+                .and_then(|worker| worker.take_updates())
         };
-        if let Some(sets) = sets { self.persist_file_change_sets(sets)?; }
+        if let Some(sets) = sets {
+            self.persist_file_change_sets(sets)?;
+        }
         Ok(())
     }
 
-    fn persist_file_change_sets(&mut self, sets: Vec<crate::acp::turn_files::TurnFileChangeSet>) -> Result<()> {
+    fn persist_file_change_sets(
+        &mut self,
+        sets: Vec<crate::acp::turn_files::TurnFileChangeSet>,
+    ) -> Result<()> {
         for change_set in sets {
             self.seq = self.seq.saturating_add(1);
             let event = turn_file_change_set_event(
@@ -6581,32 +6683,43 @@ impl<'a> AcpRuntime<'a> {
         if let Some(direct) = &self.direct {
             direct.touch();
         }
+        // Captured when the request frame arrived, so a background stop
+        // accepted anywhere after that settles this waiter.
+        let background_epoch = self.background_interaction_epoch();
         let rpc_id = value
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP permission request missing JSON-RPC id"))?;
         let request_id = rpc_id_to_string(&rpc_id);
-        let interaction_identity = if self.direct.is_some() {
-            AcpPromptInteractionIdentity::for_session(
-                request_id.clone(),
-                AcpPromptInteractionKind::Permission,
+        let session_id = if self.direct.is_some() {
+            Some(
                 self.session_id
                     .clone()
                     .ok_or_else(|| anyhow!("acp.session-missing"))?,
             )
-        } else if let Some(prompt_turn) = &self.active_prompt_turn {
-            AcpPromptInteractionIdentity::new(
+        } else {
+            None
+        };
+        let interaction_identity = if let Some(prompt_turn) = &self.active_prompt_turn {
+            AcpPromptInteractionIdentity::for_turn_and_session(
                 request_id.clone(),
                 AcpPromptInteractionKind::Permission,
                 prompt_turn.id.clone(),
                 prompt_turn.prompt_event_id.clone(),
+                session_id,
+            )
+        } else if let Some(session_id) = session_id {
+            AcpPromptInteractionIdentity::for_session(
+                request_id.clone(),
+                AcpPromptInteractionKind::Permission,
+                session_id,
             )
         } else {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
         };
         self.session_update_phase = SessionUpdatePhase::Live;
-        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
-        if self.is_prompt_cancel_requested() {
+        let mut params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        if !self.annotate_native_interaction(&mut params) || self.is_prompt_cancel_requested() {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
         }
         self.seq += 1;
@@ -6659,7 +6772,10 @@ impl<'a> AcpRuntime<'a> {
         let response = wait_for_permission_response_until_cancelled(
             &self.paths.attempt_dir,
             &request_id,
-            || self.is_prompt_cancel_requested(),
+            || {
+                self.is_prompt_cancel_requested()
+                    || self.background_stop_settles_interactions(background_epoch)
+            },
         )?;
         let settled =
             crate::acp::timeline::read_indexed_timeline_item(&timeline_path, &permission_item_id)?
@@ -6674,14 +6790,22 @@ impl<'a> AcpRuntime<'a> {
             )?;
         } else {
             self.seq += 1;
-            let decision_event = permission_decision_timeline_event(
+            let mut decision_event = permission_decision_timeline_event(
                 self.seq,
                 &request_id,
                 &permission_item_id,
                 &response,
                 self.timeline_items.get(&permission_item_id),
             );
-            self.persist_event(&decision_event)?;
+            // The decision updates an interaction-owned item; it must carry
+            // the interaction identity even when the hot cache missed the
+            // pending item.
+            if branch_id != ROOT_BRANCH_ID {
+                decision_event.session_id = self.session_id.clone();
+                decision_event.raw.get_or_insert_with(|| json!({}))["_meta"]["goldBandConversation"] =
+                    json!({"branchId": branch_id});
+            }
+            self.persist_event_inner(&decision_event, true, Some(&interaction_identity))?;
         }
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
@@ -6772,6 +6896,22 @@ impl<'a> AcpRuntime<'a> {
                 .is_some_and(RuntimeStopProbe::is_stopped)
     }
 
+    /// Epoch an interaction waiter observed when it started waiting. A Direct
+    /// background stop accepted after that point settles this waiter.
+    fn background_interaction_epoch(&self) -> Option<u64> {
+        self.direct
+            .as_ref()
+            .map(|direct| direct.background_cancel_epoch())
+    }
+
+    fn background_stop_settles_interactions(&self, epoch: Option<u64>) -> bool {
+        epoch.is_some_and(|epoch| {
+            self.direct
+                .as_ref()
+                .is_some_and(|direct| direct.background_cancel_epoch() != epoch)
+        })
+    }
+
     fn observe_prompt_cancel_request(&mut self) -> Result<()> {
         if self.session_id.is_some() {
             self.send_cancel_notification_best_effort();
@@ -6824,37 +6964,51 @@ impl<'a> AcpRuntime<'a> {
         if let Some(direct) = &self.direct {
             direct.touch();
         }
+        // Captured when the request frame arrived, so a background stop
+        // accepted anywhere after that settles this waiter.
+        let background_epoch = self.background_interaction_epoch();
         let rpc_id = value
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
         let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
-        let interaction_identity = if self.direct.is_some() {
-            AcpPromptInteractionIdentity::for_session(
-                elicitation_id.clone(),
-                AcpPromptInteractionKind::Elicitation,
+        let session_id = if self.direct.is_some() {
+            Some(
                 self.session_id
                     .clone()
                     .ok_or_else(|| anyhow!("acp.session-missing"))?,
             )
-        } else if let Some(prompt_turn) = &self.active_prompt_turn {
-            AcpPromptInteractionIdentity::new(
+        } else {
+            None
+        };
+        let interaction_identity = if let Some(prompt_turn) = &self.active_prompt_turn {
+            AcpPromptInteractionIdentity::for_turn_and_session(
                 elicitation_id.clone(),
                 AcpPromptInteractionKind::Elicitation,
                 prompt_turn.id.clone(),
                 prompt_turn.prompt_event_id.clone(),
+                session_id,
+            )
+        } else if let Some(session_id) = session_id {
+            AcpPromptInteractionIdentity::for_session(
+                elicitation_id.clone(),
+                AcpPromptInteractionKind::Elicitation,
+                session_id,
             )
         } else {
-            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+            return self.send_cancelled_elicitation_response(rpc_id, &elicitation_id);
         };
         self.session_update_phase = SessionUpdatePhase::Live;
         if self.is_prompt_cancel_requested() {
-            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+            return self.send_cancelled_elicitation_response(rpc_id, &elicitation_id);
         }
-        let params = value
+        let mut params = value
             .get("params")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing params"))?;
+        if !self.annotate_native_interaction(&mut params) {
+            return self.send_cancelled_elicitation_response(rpc_id, &elicitation_id);
+        }
         let request = serde_json::from_value::<
             agent_client_protocol_schema::v1::CreateElicitationRequest,
         >(params)
@@ -6904,7 +7058,10 @@ impl<'a> AcpRuntime<'a> {
             &self.paths.attempt_dir,
             &elicitation_id,
             ELICITATION_DEFAULT_TIMEOUT,
-            || self.is_prompt_cancel_requested(),
+            || {
+                self.is_prompt_cancel_requested()
+                    || self.background_stop_settles_interactions(background_epoch)
+            },
         )?;
         // 4. 构造 JSON-RPC response 并发送
         let result = elicitation_response_result(&response);
@@ -6923,15 +7080,21 @@ impl<'a> AcpRuntime<'a> {
         .is_none()
         {
             self.seq += 1;
-            let response_event = crate::acp::events::elicitation_response_event(
+            let mut response_event = crate::acp::events::elicitation_response_event(
                 self.seq,
                 elicitation_id.clone(),
                 match response.action {
                     crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
                     crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+                    crate::acp::elicitation::ElicitationAction::Cancel => "cancel".to_string(),
                 },
                 response.content.clone(),
             );
+            if branch_id != ROOT_BRANCH_ID {
+                response_event.session_id = self.session_id.clone();
+                response_event.raw.get_or_insert_with(|| json!({}))["_meta"]["goldBandConversation"] =
+                    json!({"branchId": branch_id});
+            }
             self.persist_event(&response_event)?;
         }
         let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
@@ -6939,14 +7102,14 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
-    fn send_declined_elicitation_response(
+    fn send_cancelled_elicitation_response(
         &self,
         rpc_id: Value,
         elicitation_id: &str,
     ) -> Result<()> {
         let response = crate::acp::elicitation::ElicitationResponseState {
             elicitation_id: elicitation_id.to_string(),
-            action: ElicitationAction::Decline,
+            action: ElicitationAction::Cancel,
             content: None,
             decided_at: current_timestamp(),
         };
@@ -7525,7 +7688,16 @@ impl<'a> AcpRuntime<'a> {
         event: &crate::acp::events::AcpUiEvent,
         identity: &AcpPromptInteractionIdentity,
     ) -> Result<()> {
-        self.persist_event_inner(event, true, Some(identity))
+        let mut event = event.clone();
+        if event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/goldBandNativeSessionId"))
+            .is_some()
+        {
+            event.session_id = self.session_id.clone();
+        }
+        self.persist_event_inner(&event, true, Some(identity))
     }
 
     fn persist_event_inner(
@@ -7592,7 +7764,10 @@ impl<'a> AcpRuntime<'a> {
                 let Some(tool) = event.tool_call_id.as_deref() else {
                     return Ok(());
                 };
-                (format!("tool-call-{tool}"), None)
+                (
+                    canonical_tool_item_id(tool, native_tool_branch(event.raw.as_ref())),
+                    None,
+                )
             }
             _ => return Ok(()),
         };
@@ -7665,14 +7840,17 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         let agent_prompt = agent_prompt_event(&timeline_item);
-        let agent_result = agent_result_event(&timeline_item).filter(|result| {
-            !self.timeline_items.values().any(|existing| {
-                event_branch_id(existing) == event_branch_id(result)
-                    && existing.kind == "textDelta"
-                    && existing.content.as_deref().map(str::trim)
-                        == result.content.as_deref().map(str::trim)
-            })
-        });
+        let agent_result = (!self.native_subagents.owns_launch(&timeline_item))
+            .then(|| agent_result_event(&timeline_item))
+            .flatten()
+            .filter(|result| {
+                !self.timeline_items.values().any(|existing| {
+                    event_branch_id(existing) == event_branch_id(result)
+                        && existing.kind == "textDelta"
+                        && existing.content.as_deref().map(str::trim)
+                            == result.content.as_deref().map(str::trim)
+                })
+            });
         annotate_event_branch(&mut timeline_item);
         if let Some(identity) = prompt_interaction {
             annotate_prompt_interaction_identity(&mut timeline_item, identity);
@@ -8215,7 +8393,8 @@ impl<'a> AcpRuntime<'a> {
         let mut item = event.clone();
         if matches!(item.kind.as_str(), "toolCall" | "toolCallUpdate") {
             if let Some(tool_call_id) = item.tool_call_id.as_deref() {
-                item.id = format!("tool-call-{tool_call_id}");
+                item.id =
+                    canonical_tool_item_id(tool_call_id, native_tool_branch(item.raw.as_ref()));
             }
             if let Some(previous) = self.timeline_items.get(&item.id) {
                 merge_tool_revision(&mut item, previous);
@@ -8277,7 +8456,13 @@ impl<'a> AcpRuntime<'a> {
                 item.id = item
                     .session_id
                     .as_deref()
-                    .map(|session_id| format!("session-usage-{session_id}"))
+                    .map(|session_id| {
+                        if branch_id == ROOT_BRANCH_ID {
+                            format!("session-usage-{session_id}")
+                        } else {
+                            format!("session-usage-{session_id}-{branch_id}")
+                        }
+                    })
                     .unwrap_or_else(|| "session-usage-current".to_string());
                 Self::finalize_non_streaming_event(
                     (&mut streams.text, &mut streams.thought, &mut streams.plan),
@@ -8403,6 +8588,7 @@ impl<'a> AcpRuntime<'a> {
             external_session_sync_enabled: self.runtime_policy.external_session_sync_enabled,
             sync_required: self.sync_required,
             usage: self.usage.clone(),
+            native_subagents: self.native_subagents.clone(),
             last_activity_at: now,
             foreground_lease_until: now + self.runtime_policy.foreground_lease_ttl,
             active: true,
@@ -9467,6 +9653,11 @@ mod tests {
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
 
+    /// Direct fixture tests share the process-wide session registry and each
+    /// spawn an adapter subprocess; serializing them keeps their timing
+    /// budgets deterministic under the parallel test load.
+    static DIRECT_FIXTURE_ORDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     use crate::domain::{SessionMode, TurnControlMode};
 
     use super::{
@@ -9506,6 +9697,940 @@ mod tests {
         timeline_position_for_live_event, turn_file_change_set_event, unregister_provider_control,
         unsupported_client_inbound_reply, validate_session_restore_target,
     };
+
+    #[test]
+    fn native_subagent_state_reaches_existing_branch() {
+        use crate::acp::branches::{branch_timeline_path, stable_agent_execution_id};
+        use crate::acp::events::load_timeline_items;
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "native-subagent-fixture",
+            &doctor_fixture_config("none"),
+            cwd,
+            attempt.clone(),
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        runtime.session_id = Some("parent".into());
+        runtime.session_update_phase = SessionUpdatePhase::Live;
+        for (session, update) in [
+            (
+                "parent",
+                json!({"sessionUpdate":"tool_call", "toolCallId":"launch",
+                "title":"Agent", "status":"in_progress", "rawInput":{"prompt":"inspect"},
+                "_meta":{"claudeCode":{"toolName":"Agent"}}}),
+            ),
+            (
+                "parent",
+                json!({"sessionUpdate":"subagent_update", "sessionId":"child",
+                "title":"general-purpose", "description":"inspect", "state":{"state":"running"}}),
+            ),
+            (
+                "child",
+                json!({"sessionUpdate":"session_message", "messageId":"launch",
+                "senderSessionId":"parent", "recipientSessionId":"child",
+                "content":[{"type":"text", "text":"inspect"}]}),
+            ),
+            (
+                "parent",
+                json!({"sessionUpdate":"subagent_update", "sessionId":"child",
+                "state":{"state":"idle", "stopReason":"end_turn"}}),
+            ),
+        ] {
+            runtime
+                .handle_session_update(json!({"method":"session/update",
+                "params":{"sessionId":session, "update":update}}))
+                .unwrap();
+        }
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch = stable_agent_execution_id("parent", "launch");
+        let events = load_timeline_items(&branch_timeline_path(&attempt, &branch)).unwrap();
+        assert!(
+            events.iter().any(|event| event.kind == "agentState"
+                && event.status.as_deref() == Some("completed")
+                && event.content.is_none()),
+            "official idle/end_turn must persist a content-free branch state; branch events: {events:?}"
+        );
+        runtime.shutdown();
+    }
+
+    fn native_subagent_fixture() -> (tempfile::TempDir, AcpRuntime<'static>) {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "native-subagent-fixture",
+            &doctor_fixture_config("none"),
+            cwd,
+            attempt,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        runtime.session_id = Some("parent".into());
+        runtime.session_update_phase = SessionUpdatePhase::Live;
+        (root, runtime)
+    }
+
+    fn native_update(runtime: &mut AcpRuntime<'_>, session: &str, update: Value) {
+        runtime
+            .handle_session_update(json!({"method":"session/update",
+            "params":{"sessionId":session,"update":update}}))
+            .unwrap();
+    }
+
+    fn native_launch(runtime: &mut AcpRuntime<'_>, parent: &str, child: &str, launch: &str) {
+        native_update(
+            runtime,
+            parent,
+            json!({"sessionUpdate":"tool_call", "toolCallId":launch,
+            "title":"Agent", "status":"in_progress", "rawInput":{"prompt":"inspect"},
+            "_meta":{"claudeCode":{"toolName":"Agent"}}}),
+        );
+        native_update(
+            runtime,
+            parent,
+            json!({"sessionUpdate":"subagent_update", "sessionId":child,
+            "title":"general-purpose", "description":"inspect", "state":{"state":"running"}}),
+        );
+        native_update(
+            runtime,
+            child,
+            json!({"sessionUpdate":"session_message", "messageId":launch,
+            "senderSessionId":parent,"recipientSessionId":child,
+            "content":[{"type":"text","text":"inspect"}]}),
+        );
+    }
+
+    fn native_branch_items(
+        runtime: &mut AcpRuntime<'_>,
+        launch: &str,
+    ) -> Vec<crate::acp::events::AcpUiEvent> {
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch = crate::acp::branches::stable_agent_execution_id("parent", launch);
+        crate::acp::events::load_timeline_items(&crate::acp::branches::branch_timeline_path(
+            &runtime.paths.attempt_dir,
+            &branch,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn native_subagent_children_send_message_and_nested_launch_are_isolated() {
+        use crate::acp::branches::{
+            event_branch_id, indexed_agent_index, stable_agent_execution_id,
+        };
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_launch(&mut runtime, "parent", "two", "launch-two");
+        for (child, text) in [("one", "answer one"), ("two", "answer two")] {
+            native_update(
+                &mut runtime,
+                child,
+                json!({"sessionUpdate":"agent_message_chunk",
+                "messageId":"same-provider-message-id", "content":{"type":"text","text":text}}),
+            );
+        }
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"session_message", "messageId":"send-again",
+            "senderSessionId":"parent", "recipientSessionId":"one", "content":[{"type":"text","text":"follow up"}]}),
+        );
+        native_launch(&mut runtime, "one", "nested", "nested-launch");
+        native_update(
+            &mut runtime,
+            "nested",
+            json!({"sessionUpdate":"agent_message_chunk",
+            "messageId":"nested-answer", "content":{"type":"text","text":"nested answer"}}),
+        );
+        let one = native_branch_items(&mut runtime, "launch-one");
+        let two = native_branch_items(&mut runtime, "launch-two");
+        let nested = native_branch_items(&mut runtime, "nested-launch");
+        assert!(
+            one.iter()
+                .any(|event| event.content.as_deref() == Some("answer one"))
+        );
+        assert!(
+            two.iter()
+                .any(|event| event.content.as_deref() == Some("answer two"))
+        );
+        assert!(
+            nested
+                .iter()
+                .any(|event| event.content.as_deref() == Some("nested answer"))
+        );
+        assert!(
+            !one.iter()
+                .any(|event| event.content.as_deref() == Some("answer two"))
+        );
+        assert_eq!(
+            one.iter()
+                .filter(|event| event.kind == "userTextDelta")
+                .count(),
+            2,
+            "one original prompt plus one SendMessage, no duplicate initial prompt"
+        );
+        assert!(
+            one.iter()
+                .any(|event| event.content.as_deref() == Some("follow up"))
+        );
+        assert!(
+            one.iter()
+                .chain(&two)
+                .chain(&nested)
+                .all(|event| event.session_id.as_deref() == Some("parent"))
+        );
+        let nested_launch = one
+            .iter()
+            .find(|event| event.tool_call_id.as_deref() == Some("nested-launch"))
+            .unwrap();
+        assert_eq!(
+            event_branch_id(nested_launch),
+            stable_agent_execution_id("parent", "launch-one")
+        );
+        let index = indexed_agent_index(&runtime.paths.attempt_dir, "running").unwrap();
+        assert_eq!(index.len(), 3, "SendMessage does not create a fourth Agent");
+        assert_eq!(
+            index
+                .iter()
+                .find(|agent| agent.launch_tool_call_id == "nested-launch")
+                .unwrap()
+                .parent_agent_execution_id
+                .as_deref(),
+            Some(stable_agent_execution_id("parent", "launch-one").as_str())
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_child_output_usage_config_and_compaction_do_not_mutate_parent() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"usage_update", "used":23,"size":1000}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"agent_message_chunk",
+            "messageId":"parent-answer", "content":{"type":"text","text":"parent only"}}),
+        );
+        let original_output = runtime.prompt_output.output.clone();
+        let original_usage = runtime.usage.context.confirmed_used;
+        let original_config = runtime.config_options.clone();
+        for update in [
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"child-answer", "content":{"type":"text","text":"child only"}}),
+            json!({"sessionUpdate":"usage_update", "used":999, "size":2000}),
+            json!({"sessionUpdate":"config_option_update", "configOptions":[{"id":"model", "currentValue":"child"}]}),
+            json!({"sessionUpdate":"compaction_update", "status":"in_progress"}),
+            json!({"sessionUpdate":"available_commands_update", "availableCommands":[{"name":"child-command"}]}),
+        ] {
+            native_update(&mut runtime, "one", update);
+        }
+        assert_eq!(runtime.prompt_output.output, original_output);
+        assert_eq!(runtime.usage.context.confirmed_used, original_usage);
+        assert_eq!(runtime.config_options, original_config);
+        assert!(runtime.usage.compaction.is_none());
+        assert!(runtime.available_commands.is_none());
+        let child = native_branch_items(&mut runtime, "launch-one");
+        assert!(child.iter().any(|event| event.kind == "usageUpdate"));
+        assert!(
+            child
+                .iter()
+                .any(|event| event.content.as_deref() == Some("child only"))
+        );
+        let root_items = crate::acp::events::load_timeline_items(&runtime.paths.timeline).unwrap();
+        assert!(
+            !root_items
+                .iter()
+                .any(|event| event.content.as_deref() == Some("child only"))
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_state_transitions_preserve_facts_without_synthetic_result() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        for (state, reason) in [
+            ("requires_action", None),
+            ("idle", Some("end_turn")),
+            ("running", None),
+            ("idle", Some("cancelled")),
+            ("idle", Some("error")),
+            ("idle", None),
+            ("unknown", None),
+        ] {
+            let mut update = json!({"sessionUpdate":"subagent_update", "sessionId":"one", "state":{"state":state}});
+            if let Some(reason) = reason {
+                update["state"]["stopReason"] = json!(reason);
+            }
+            native_update(&mut runtime, "parent", update);
+        }
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"tool_call_update", "toolCallId":"launch-one",
+            "status":"completed", "_meta":{"claudeCode":{"toolName":"Agent"},
+            "agentTranscript":{"agentLaunch":true,"toolOutput":"must not synthesize a result"}}}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let states = events
+            .iter()
+            .filter(|event| event.kind == "agentState")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states
+                .iter()
+                .map(|event| event.status.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "running",
+                "waiting_permission",
+                "completed",
+                "running",
+                "interrupted",
+                "failed",
+                "unknown",
+                "unknown"
+            ]
+        );
+        assert!(states.iter().all(|event| event.content.is_none()
+            && event.raw.as_ref().unwrap()["source"] == "nativeSubagentState"));
+        assert!(
+            states
+                .windows(2)
+                .all(|events| events[0].seq < events[1].seq && events[0].id != events[1].id)
+        );
+        assert!(!events.iter().any(|event| {
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("source"))
+                .and_then(Value::as_str)
+                == Some("agentBranchResult")
+        }));
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_unknown_and_conflicting_children_never_fall_back_to_root() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_launch(&mut runtime, "parent", "two", "launch-two");
+        let seq = runtime.seq;
+        native_update(
+            &mut runtime,
+            "unknown",
+            json!({"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"reject unknown"}}),
+        );
+        native_update(
+            &mut runtime,
+            "two",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one", "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"session_message", "messageId":"launch-two",
+            "senderSessionId":"parent", "recipientSessionId":"one", "content":[{"type":"text","text":"reject conflict"}]}),
+        );
+        assert_eq!(
+            runtime.seq, seq,
+            "rejected frames produce diagnostics, not root/child canonical events"
+        );
+        let diagnostics = std::fs::read_to_string(&runtime.paths.diagnostics).unwrap();
+        for code in [
+            "unknown-child-session",
+            "conflicting-parent",
+            "conflicting-launch-binding",
+        ] {
+            assert!(diagnostics.contains(code));
+        }
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_official_replay_binds_pending_launch_without_history_scan() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+        runtime.runtime_policy.external_session_sync_enabled = true;
+        runtime.provider_history_replay.begin("claude", "parent");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"user_message_chunk", "content":{"type":"text","text":"external turn"}}),
+        );
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        assert!(
+            runtime
+                .provider_history_replay
+                .has_pending_agent_launch("root", "launch-one")
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"replayed-answer",
+            "content":{"type":"text","text":"official replay answer"}}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        runtime
+            .finish_provider_history_replay(Some("parent".into()))
+            .unwrap();
+        assert!(
+            !runtime
+                .provider_history_replay
+                .has_pending_agent_launch("root", "launch-one")
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.content.as_deref() == Some("official replay answer"))
+        );
+        assert!(events.iter().any(
+            |event| event.kind == "agentState" && event.status.as_deref() == Some("completed")
+        ));
+        assert!(runtime.prompt_output.output.visible_text.is_empty());
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_restore_without_external_import_recovers_binding_only() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"ongoing",
+            "content":{"type":"text","text":"prefix"}}),
+        );
+        native_branch_items(&mut runtime, "launch-one");
+        runtime.native_subagents = Default::default();
+        runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+        runtime.runtime_policy.external_session_sync_enabled = false;
+        let seq_before = runtime.seq;
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"available_commands_update",
+            "availableCommands":[{"name":"root-command","description":"root"}]}),
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"available_commands_update",
+            "availableCommands":[{"name":"child-command","description":"child"}]}),
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"ongoing",
+            "content":{"type":"text","text":"historical body must not append"}}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        native_launch(&mut runtime, "parent", "external", "unrecorded-launch");
+        assert_eq!(
+            runtime.seq, seq_before,
+            "disabled external import must not write replay body/state/launches"
+        );
+        runtime.session_update_phase = SessionUpdatePhase::Live;
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"ongoing",
+            "content":{"type":"text","text":" suffix"}}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event.kind == "textDelta")
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("prefix suffix"),
+            "official control-plane replay must restore binding without clearing the retained stream"
+        );
+        assert_eq!(
+            runtime.available_commands.as_ref().unwrap()[0].name,
+            "root-command"
+        );
+        let before_unknown = runtime.seq;
+        native_update(
+            &mut runtime,
+            "external",
+            json!({"sessionUpdate":"agent_message_chunk",
+            "content":{"type":"text","text":"must stay rejected"}}),
+        );
+        assert_eq!(
+            runtime.seq, before_unknown,
+            "unrecorded external launch must not become a binding"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_child_local_tool_ids_do_not_share_revisions() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_launch(&mut runtime, "parent", "two", "launch-two");
+        for (child, command) in [("one", "A"), ("two", "B")] {
+            native_update(
+                &mut runtime,
+                child,
+                json!({"sessionUpdate":"tool_call", "toolCallId":"t",
+                "title":"Bash", "status":"in_progress", "rawInput":{"command":command}}),
+            );
+        }
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"tool_call_update", "toolCallId":"t", "status":"completed"}),
+        );
+        let one = native_branch_items(&mut runtime, "launch-one");
+        let two = native_branch_items(&mut runtime, "launch-two");
+        let a = one
+            .iter()
+            .find(|event| event.tool_call_id.as_deref() == Some("t"))
+            .unwrap();
+        assert_eq!(
+            a.raw.as_ref().unwrap()["rawInput"]["command"],
+            "A",
+            "A status-only revision must not inherit B input"
+        );
+        let b = two
+            .iter()
+            .find(|event| event.tool_call_id.as_deref() == Some("t"))
+            .expect("B tool stays in its own branch");
+        assert_eq!(b.raw.as_ref().unwrap()["rawInput"]["command"], "B");
+        assert_eq!(a.status.as_deref(), Some("completed"));
+        assert_eq!(b.status.as_deref(), Some("in_progress"));
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.raw.as_ref().unwrap()["toolCallId"], "t");
+        assert_eq!(b.raw.as_ref().unwrap()["toolCallId"], "t");
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_attached_binding_clone_preserves_child_routing() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        let attached_binding = runtime.native_subagents.clone();
+        runtime.native_subagents = Default::default();
+        // Foreground/background handoff shares the retained root binding facts,
+        // not a fresh name-based reconstruction or provider-log scan.
+        runtime.native_subagents = attached_binding;
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"after-handoff",
+            "content":{"type":"text","text":"retained child"}}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.content.as_deref() == Some("retained child"))
+        );
+        assert!(runtime.prompt_output.output.visible_text.is_empty());
+        runtime.shutdown();
+    }
+
+    #[test]
+    #[ignore = "requires read-only official ACP captures in GOLD_BAND_NATIVE_TRACE_DIR"]
+    fn native_subagent_official_captures_reach_canonical_branches() {
+        use crate::acp::branches::{branch_timeline_path, indexed_agent_index};
+        use crate::acp::events::load_timeline_items;
+        let captures = Utf8PathBuf::from(
+            std::env::var("GOLD_BAND_NATIVE_TRACE_DIR")
+                .expect("set GOLD_BAND_NATIVE_TRACE_DIR to the official probe capture directory"),
+        );
+        for (case, expected_state) in [
+            ("on", "completed"),
+            ("async", "completed"),
+            ("cancel", "interrupted"),
+            ("resume", "completed"),
+            ("replay", "completed"),
+        ] {
+            let lines = std::fs::read_to_string(captures.join(format!("{case}.ndjson"))).unwrap();
+            let frames = lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            let root_id = frames
+                .iter()
+                .filter(|entry| entry["direction"] == "adapter")
+                .find_map(|entry| {
+                    entry
+                        .pointer("/frame/result/sessionId")
+                        .and_then(Value::as_str)
+                })
+                .unwrap()
+                .to_string();
+            let (_root, mut runtime) = native_subagent_fixture();
+            runtime.session_id = Some(root_id.clone());
+            let mut child_texts = std::collections::BTreeMap::<String, String>::new();
+            for entry in frames {
+                let frame = &entry["frame"];
+                if entry["direction"] == "client" && frame["method"] == "session/load" {
+                    runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+                    runtime.runtime_policy.external_session_sync_enabled = true;
+                    runtime.provider_history_replay.begin("claude", &root_id);
+                    child_texts.clear();
+                }
+                if entry["direction"] != "adapter" || frame["method"] != "session/update" {
+                    continue;
+                }
+                let params = &frame["params"];
+                if params["sessionId"] != root_id
+                    && params["update"]["sessionUpdate"] == "agent_message_chunk"
+                {
+                    let id = params["update"]["messageId"]
+                        .as_str()
+                        .expect("official fixture stable message identity");
+                    let text = params["update"]["content"]["text"].as_str().unwrap();
+                    child_texts
+                        .entry(id.to_string())
+                        .or_default()
+                        .push_str(text);
+                }
+                runtime.handle_session_update(frame.clone()).unwrap();
+            }
+            if runtime.session_update_phase == SessionUpdatePhase::ReplayingHistory {
+                runtime
+                    .finish_provider_history_replay(Some(root_id.clone()))
+                    .unwrap();
+            }
+            runtime.flush_pending_timeline_patches(None).unwrap();
+            let agents = indexed_agent_index(&runtime.paths.attempt_dir, "stopped").unwrap();
+            assert_eq!(
+                agents.len(),
+                1,
+                "{case}: official child creates exactly one launch card"
+            );
+            assert_eq!(
+                agents[0].status, expected_state,
+                "{case}: official final state is authoritative"
+            );
+            let events = load_timeline_items(&branch_timeline_path(
+                &runtime.paths.attempt_dir,
+                &agents[0].agent_execution_id,
+            ))
+            .unwrap();
+            let actual = events
+                .iter()
+                .filter(|event| event.kind == "textDelta")
+                .map(|event| event.content.clone().unwrap_or_default())
+                .collect::<std::collections::BTreeSet<_>>();
+            let expected = child_texts
+                .values()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                actual, expected,
+                "{case}: no synthetic or duplicate child report"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == "textDelta")
+                    .count(),
+                child_texts.len(),
+                "{case}: one canonical message per official message ID"
+            );
+            for text in child_texts.values().filter(|text| !text.is_empty()) {
+                assert!(
+                    !runtime.prompt_output.output.visible_text.contains(text),
+                    "{case}: child output contaminated parent"
+                );
+            }
+            let diagnostics =
+                std::fs::read_to_string(&runtime.paths.diagnostics).unwrap_or_default();
+            assert!(
+                !diagnostics.contains("acp.native-subagent-frame-rejected"),
+                "{case}: official frames were rejected: {diagnostics}"
+            );
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
+    fn native_subagent_pending_announcements_are_bounded_and_root_scoped() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        for index in 0..=super::subagents::MAX_PENDING_NATIVE_ANNOUNCEMENTS {
+            native_update(
+                &mut runtime,
+                "parent",
+                json!({"sessionUpdate":"subagent_update",
+                "sessionId":format!("unbound-{index}"),"state":{"state":"running"}}),
+            );
+        }
+        assert_eq!(
+            runtime.seq, 0,
+            "announcements alone do not create Agent cards or branch states"
+        );
+        let diagnostics = std::fs::read_to_string(&runtime.paths.diagnostics).unwrap();
+        assert!(diagnostics.contains("announcement-capacity"));
+        runtime.set_session_id("replacement".to_string());
+        native_launch(&mut runtime, "replacement", "child", "launch-new-root");
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch =
+            crate::acp::branches::stable_agent_execution_id("replacement", "launch-new-root");
+        let events = crate::acp::events::load_timeline_items(
+            &crate::acp::branches::branch_timeline_path(&runtime.paths.attempt_dir, &branch),
+        )
+        .unwrap();
+        assert!(events.iter().any(|event| event.kind == "agentState"
+            && event.session_id.as_deref() == Some("replacement")));
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_metadata_only_update_does_not_clear_state() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "title":"renamed", "description":"updated description"}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let states = events
+            .iter()
+            .filter(|event| event.kind == "agentState")
+            .collect::<Vec<_>>();
+        assert_eq!(states.len(), 2, "omitted state is not a new unknown state");
+        assert_eq!(states.last().unwrap().status.as_deref(), Some("completed"));
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one", "state":null}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "agentState")
+                .last()
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("unknown")
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_replay_replaces_stream_instead_of_appending_history_twice() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        let answer = json!({"sessionUpdate":"agent_message_chunk", "messageId":"answer",
+            "content":{"type":"text","text":"answer"}});
+        native_update(&mut runtime, "one", answer.clone());
+        native_branch_items(&mut runtime, "launch-one");
+        runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+        runtime.runtime_policy.external_session_sync_enabled = true;
+        runtime.provider_history_replay.begin("claude", "parent");
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(&mut runtime, "one", answer);
+        runtime
+            .finish_provider_history_replay(Some("parent".into()))
+            .unwrap();
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let texts = events
+            .iter()
+            .filter(|event| event.kind == "textDelta")
+            .collect::<Vec<_>>();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(
+            texts[0].content.as_deref(),
+            Some("answer"),
+            "official replay is not a live continuation delta"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_permission_keeps_rpc_child_and_canonical_root_identity() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        runtime.auto_accept = true;
+        runtime.active_prompt_turn = Some(super::AcpPromptTurnIdentity {
+            id: "turn".into(),
+            prompt_event_id: "prompt".into(),
+            usage_transaction_id: "usage".into(),
+            usage_transaction_seq: 1,
+            started_at: "1Z".into(),
+            event: crate::acp::events::normalize_session_update(
+                1,
+                Some("parent".into()),
+                &json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"prompt"}}),
+            ),
+        });
+        runtime
+            .handle_permission_request(json!({"jsonrpc":"2.0", "id":"permission-one",
+            "method":"session/request_permission", "params":{"sessionId":"one",
+                "toolCall":{"toolCallId":"child-tool","title":"Bash"},
+                "options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}))
+            .unwrap();
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let permission = events
+            .iter()
+            .find(|event| event.kind == "permissionRequest")
+            .unwrap();
+        assert_eq!(permission.session_id.as_deref(), Some("parent"));
+        assert_eq!(permission.status.as_deref(), Some("selected"));
+        assert_eq!(
+            permission.raw.as_ref().unwrap()["sessionId"],
+            "one",
+            "RPC payload must retain child identity"
+        );
+        assert_eq!(
+            permission.raw.as_ref().unwrap()["requestId"],
+            "permission-one"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn synchronous_agent_result_records_completion_after_stream_body_released() {
+        use crate::acp::branches::{
+            branch_timeline_path, indexed_agent_index, stable_agent_execution_id,
+        };
+        use crate::acp::events::{load_timeline_items, normalize_session_update};
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "sync-agent-result-fixture",
+            &doctor_fixture_config("none"),
+            cwd,
+            attempt.clone(),
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        let launch = normalize_session_update(
+            1,
+            Some("session-sync".into()),
+            &json!({
+                "sessionUpdate": "tool_call", "toolCallId": "child",
+                "title": "Agent", "status": "in_progress",
+                "rawInput": {"prompt": "inspect"},
+                "_meta": {"agentTranscript": {"agentLaunch": true}}
+            }),
+        );
+        runtime.persist_event(&launch).unwrap();
+        let text = normalize_session_update(
+            2,
+            Some("session-sync".into()),
+            &json!({
+                "sessionUpdate": "agent_message_chunk", "messageId": "child-answer",
+                "content": {"type": "text", "text": "verified final answer"},
+                "_meta": {"agentTranscript": {"parentToolCallId": "child"}}
+            }),
+        );
+        runtime.persist_event(&text).unwrap();
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch_id = stable_agent_execution_id("session-sync", "child");
+        let path = branch_timeline_path(&attempt, &branch_id);
+        let before = load_timeline_items(&path).unwrap();
+        let original = before
+            .iter()
+            .find(|event| event.kind == "textDelta")
+            .unwrap();
+        assert!(
+            runtime
+                .timeline_items
+                .values()
+                .all(|event| event.kind != "textDelta")
+        );
+        let completed = normalize_session_update(
+            3,
+            Some("session-sync".into()),
+            &json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "child",
+                "status": "completed",
+                "_meta": {"agentTranscript": {
+                    "agentLaunch": true, "toolOutput": "verified final answer"
+                }}
+            }),
+        );
+        for _ in 0..2 {
+            runtime.persist_event(&completed).unwrap();
+            runtime.flush_pending_timeline_patches(None).unwrap();
+            let events = load_timeline_items(&path).unwrap();
+            let results = events
+                .iter()
+                .filter(|event| {
+                    event
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.get("source"))
+                        .and_then(Value::as_str)
+                        == Some("agentBranchResult")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results.len(),
+                1,
+                "repeated synchronous results retain one formal completion"
+            );
+            let result = results[0];
+            assert_eq!(result.content, original.content);
+            assert_eq!(result.ended_seq, Some(3));
+            assert_eq!(result.status.as_deref(), Some("completed"));
+            assert_eq!(
+                indexed_agent_index(&attempt, "running").unwrap()[0].status,
+                "completed"
+            );
+            assert_eq!(
+                indexed_agent_index(&attempt, "stopped").unwrap()[0].status,
+                "completed"
+            );
+        }
+        runtime.shutdown();
+    }
 
     const DOCTOR_FIXTURE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
     const DOCTOR_FIXTURE_RESCUE_DELAY: Duration = Duration::from_secs(10);
@@ -9795,6 +10920,49 @@ mod tests {
                     json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":frame["params"]["update"]}})
                 );
                 json!({"result":{}})
+            } else if stall_method == "direct-foreground-tool"
+                && frame["method"] == "session/prompt"
+            {
+                // A tool starts inside the foreground turn and the prompt
+                // returns without any terminal update for it.
+                println!(
+                    "{}",
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":{
+                        "sessionUpdate":"tool_call", "toolCallId":"fg-never-ends", "status":"pending", "kind":"execute", "title":"Never settles"
+                    }}})
+                );
+                std::io::stdout().flush().unwrap();
+                json!({"result": {"stopReason": "end_turn"}})
+            } else if stall_method == "direct-in-turn-interaction"
+                && frame["method"] == "session/prompt"
+            {
+                // Server-raised interactions delivered while the prompt is
+                // still in flight, before the prompt result.
+                println!(
+                    "{}",
+                    json!({
+                        "jsonrpc": "2.0", "id": "in-turn-permission", "method": "session/request_permission",
+                        "params": {
+                            "sessionId": "doctor-fixture-session",
+                            "toolCall": {"toolCallId": "in-turn-edit", "title": "Edit file", "kind": "edit"},
+                            "options": [{"optionId": "allow-once", "name": "Yes", "kind": "allow_once"}]
+                        }
+                    })
+                );
+                println!(
+                    "{}",
+                    json!({
+                        "jsonrpc": "2.0", "id": "in-turn-question", "method": "elicitation/create",
+                        "params": {
+                            "sessionId": "doctor-fixture-session",
+                            "mode": "form",
+                            "message": "In-turn question",
+                            "requestedSchema": {"type": "object", "properties": {"answer": {"type": "string"}}}
+                        }
+                    })
+                );
+                std::io::stdout().flush().unwrap();
+                json!({"result": {"stopReason": "end_turn"}})
             } else if stall_method.starts_with("upgraded-acp")
                 && frame["method"] == "session/prompt"
             {
@@ -10378,6 +11546,10 @@ mod tests {
     #[test]
     fn initialize_requests_nested_agent_transcripts_at_the_adapter_boundary() {
         let params = initialize_params();
+        assert_eq!(
+            params.pointer("/clientCapabilities/subagents"),
+            Some(&json!({}))
+        );
         let meta = params.pointer("/clientCapabilities/_meta");
 
         assert_eq!(
@@ -12090,6 +13262,9 @@ mod tests {
 
     #[test]
     fn direct_retained_session_delivers_continuation_after_end_turn() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         use crate::acp::events::{
             AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
         };
@@ -12183,10 +13358,20 @@ mod tests {
         loop {
             let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
             if events.iter().any(|event| event.kind == "fileChangeSet") {
-                assert!(events.iter().any(|event| event.kind == "textDelta" && event.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")) == Some(&json!(true))));
+                assert!(events.iter().any(|event| {
+                    event.kind == "textDelta"
+                        && event
+                            .raw
+                            .as_ref()
+                            .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+                            == Some(&json!(true))
+                }));
                 break;
             }
-            assert!(Instant::now() < deadline, "background file changes publish before any next prompt");
+            assert!(
+                Instant::now() < deadline,
+                "background file changes publish before any next prompt"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         // Prompt completion must not cancel a new session-owned permission.
@@ -12283,23 +13468,56 @@ mod tests {
         // retention identity; the pin applies to the active session as well.
         super::set_direct_session_resident("test", "direct", true);
         assert!(entry.direct.as_ref().unwrap().protected());
-        let control = super::direct_background_control(&attempt).expect("background control available after end_turn");
+        let control = super::direct_background_control(&attempt)
+            .expect("background control available after end_turn");
         let task_root = attempt.parent().unwrap();
-        assert!(super::prompt_activity_under(task_root).is_none(), "the prompt turn is idle");
-        assert_eq!(super::direct_background_control_under(task_root).as_ref(), Some(&control), "task activity sees the busy background");
-        assert!(super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture")).unwrap());
-        assert!(super::direct_background_control(&attempt).is_none(), "accepted background stop ends the Stop window");
+        assert!(
+            super::prompt_activity_under(task_root).is_none(),
+            "the prompt turn is idle"
+        );
+        assert_eq!(
+            super::direct_background_control_under(task_root).as_ref(),
+            Some(&control),
+            "task activity sees the busy background"
+        );
+        assert!(
+            super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))
+                .unwrap()
+        );
+        assert!(
+            super::direct_background_control(&attempt).is_none(),
+            "accepted background stop ends the Stop window"
+        );
         assert!(super::direct_background_control_under(task_root).is_none());
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
-            if let Some(marker) = events.iter().find(|event| crate::acp::events::is_background_cancel_marker(event)) {
+            if let Some(marker) = events
+                .iter()
+                .find(|event| crate::acp::events::is_background_cancel_marker(event))
+            {
                 // Provider frames only; interaction responses are written by their own owners.
-                let last_provider_frame = events.iter().filter(|event| matches!(event.kind.as_str(), "textDelta" | "toolCall" | "fileChangeSet")).map(|event| event.ended_seq.unwrap_or(event.seq)).max().unwrap();
-                assert!(marker.seq > last_provider_frame, "stop is recorded after frames received before it");
+                let last_provider_frame = events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind.as_str(),
+                            "textDelta" | "toolCall" | "fileChangeSet"
+                        )
+                    })
+                    .map(|event| event.ended_seq.unwrap_or(event.seq))
+                    .max()
+                    .unwrap();
+                assert!(
+                    marker.seq > last_provider_frame,
+                    "stop is recorded after frames received before it"
+                );
                 break;
             }
-            assert!(Instant::now() < deadline, "accepted background stop is recorded on the canonical timeline");
+            assert!(
+                Instant::now() < deadline,
+                "accepted background stop is recorded on the canonical timeline"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let submission = AcpPromptSubmission {
@@ -12313,7 +13531,11 @@ mod tests {
         else {
             panic!("follow-up ownership")
         };
-        assert!(!super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture")).unwrap(), "old background cancellation cannot reach a newer prompt");
+        assert!(
+            !super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))
+                .unwrap(),
+            "old background cancellation cannot reach a newer prompt"
+        );
         super::run_prompt(
             "upgraded-acp",
             &doctor_fixture_config("upgraded-acp"),
@@ -12369,6 +13591,665 @@ mod tests {
                 .is_some_and(|text| text.starts_with("before after continued"))),
             "retained live update must extend its existing provider message: {items:?}"
         );
+    }
+
+    #[test]
+    fn direct_in_turn_interactions_are_bound_to_the_active_prompt_turn() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-in-turn".into(),
+            operation_id: "op".into(),
+            adapter_id: "direct-in-turn-interaction".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                // Unique ids: close_direct_conversation scopes by them, so
+                // this teardown must never touch other tests' sessions.
+                project_id: "test".into(),
+                task_id: "direct-in-turn".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        let prompt_cwd = cwd.clone();
+        let prompt_attempt = attempt.clone();
+        let handle = std::thread::spawn(move || {
+            super::run_prompt(
+                "direct-in-turn-interaction",
+                &doctor_fixture_config("direct-in-turn-interaction"),
+                prompt_cwd.clone(),
+                prompt_cwd.clone(),
+                prompt_attempt.clone(),
+                &non_runtime_control_test_prompt("turn-in-turn"),
+                SessionMode::New,
+                None,
+                false,
+                None,
+                Default::default(),
+                None,
+                false,
+                false,
+                false,
+                1_000_000,
+                500_000,
+                AcpRuntimePolicy::default(),
+                owner,
+                None,
+                &[],
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let permission_path =
+            crate::acp::permission::pending_permission_file(&attempt, "in-turn-permission");
+        loop {
+            if permission_path.exists() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "permission must be raised while the prompt turn is active"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pending: crate::acp::permission::PendingPermissionState =
+            crate::storage::read_json(&permission_path).unwrap();
+        assert_eq!(pending.identity.turn_id.as_deref(), Some("turn-in-turn"));
+        assert!(
+            pending.identity.prompt_event_id.is_some(),
+            "in-turn permission must reference its prompt event"
+        );
+        assert_eq!(
+            pending.identity.session_id.as_deref(),
+            Some("doctor-fixture-session")
+        );
+        // The pending timeline item must already carry the owning turn id.
+        let deadline_pending_item = Instant::now() + Duration::from_secs(5);
+        loop {
+            let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            let pending_item = items
+                .iter()
+                .find(|item| item.kind == "permissionRequest")
+                .filter(|item| item.status.as_deref() == Some("pending"));
+            if let Some(item) = pending_item {
+                assert_eq!(
+                    item.raw
+                        .as_ref()
+                        .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+                    Some(&json!("turn-in-turn")),
+                    "pending permission timeline item must carry the owning turn id: {:?}",
+                    item.raw
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline_pending_item,
+                "pending permission timeline item must exist"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            crate::acp::permission::write_permission_response_if_pending(
+                &attempt,
+                "in-turn-permission",
+                Some("allow-once".into()),
+                false,
+                super::current_timestamp(),
+            )
+            .unwrap()
+        );
+        let pending_elicitation = loop {
+            let found = std::fs::read_dir(&attempt)
+                .unwrap()
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    if !path
+                        .file_name()?
+                        .to_str()?
+                        .starts_with("acp.elicitation-request.")
+                    {
+                        return None;
+                    }
+                    let pending: crate::acp::elicitation::PendingElicitationState =
+                        serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                    pending.timeline_identity.is_some().then_some(pending)
+                })
+                .next();
+            if let Some(pending) = found {
+                break pending;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "in-turn question must be raised while the prompt turn is active"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            pending_elicitation.identity.turn_id.as_deref(),
+            Some("turn-in-turn")
+        );
+        assert!(
+            pending_elicitation.identity.prompt_event_id.is_some(),
+            "in-turn question must reference its prompt event"
+        );
+        assert_eq!(
+            pending_elicitation.identity.session_id.as_deref(),
+            Some("doctor-fixture-session")
+        );
+        assert!(
+            crate::acp::elicitation::write_elicitation_response_if_pending(
+                &attempt,
+                &pending_elicitation.identity.interaction_id,
+                crate::acp::elicitation::ElicitationAction::Accept,
+                Some(json!({"answer": "ok"})),
+                super::current_timestamp(),
+            )
+            .unwrap()
+        );
+        handle.join().unwrap();
+        let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+        let permission_event = items
+            .iter()
+            .find(|item| item.kind == "permissionRequest")
+            .expect("in-turn permission timeline item");
+        assert_eq!(
+            permission_event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+            Some(&json!("turn-in-turn")),
+            "in-turn permission event must carry the owning turn id: {:?}",
+            permission_event.raw
+        );
+        let question_event = items
+            .iter()
+            .find(|item| item.kind == "elicitationRequest")
+            .expect("in-turn question timeline item");
+        assert_eq!(
+            question_event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+            Some(&json!("turn-in-turn")),
+            "in-turn question event must carry the owning turn id: {:?}",
+            question_event.raw
+        );
+        super::close_direct_conversation("test", "direct-in-turn").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    fn background_stop_settles_a_pending_session_interaction() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-bg-stop".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                // Unique ids: close_direct_conversation scopes by them, so
+                // this teardown must never touch other tests' sessions.
+                project_id: "test".into(),
+                task_id: "direct-bg-stop".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-bg-stop"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let entry = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        // The tool call that asks the question opens the background activity
+        // window first; the elicitation request itself does not.
+        let tool_update = entry
+            .connection
+            .begin_request(
+                "test/wake",
+                json!({"sessionId":"doctor-fixture-session","update":{
+                    "sessionUpdate":"tool_call", "toolCallId":"bg-ask-stop", "status":"pending", "kind":"execute", "title":"Asking for your input"
+                }}),
+            )
+            .unwrap();
+        tool_update.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if super::direct_background_control(&attempt)
+                .is_some_and(|control| control.active_tools > 0)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background tool activity must open the stop window"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A session-owned question arrives after end_turn and stays pending.
+        let question = entry
+            .connection
+            .begin_request(
+                "test/request",
+                json!({"request":{
+                    "jsonrpc":"2.0", "id":"background-question-stop", "method":"elicitation/create",
+                    "params":{"sessionId":"doctor-fixture-session","mode":"form","message":"Choose","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}}}}
+                }}),
+            )
+            .unwrap();
+        question.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let pending = std::fs::read_dir(&attempt).unwrap().any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("acp.elicitation-request."))
+            });
+            if pending {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background question must be pending"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let control = super::direct_background_control(&attempt)
+            .expect("background control available while the question is pending");
+        assert!(
+            super::cancel_retained_direct_session(&attempt, &control, Some("turn-bg-stop"))
+                .unwrap(),
+            "background stop must be accepted while a session-owned question is pending"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let raw = std::fs::read_to_string(attempt.join("acp.raw.jsonl")).unwrap_or_default();
+            if raw.contains("background-question-stop") && raw.contains("\"action\":\"cancel\"") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background stop must settle the pending question with action=cancel"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let still_pending = std::fs::read_dir(&attempt).unwrap().any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("acp.elicitation-request."))
+            });
+            if !still_pending {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "settled question must release its pending request file; diagnostics: {}",
+                std::fs::read_to_string(attempt.join("acp.diagnostics.jsonl"))
+                    .unwrap_or_default()
+                    .lines()
+                    .rev()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            if events
+                .iter()
+                .any(|event| crate::acp::events::is_background_cancel_marker(event))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "accepted background stop is recorded on the canonical timeline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The provider never sent a terminal update for `bg-ask-stop`; the
+        // accepted stop owns that episode and must settle its tools, or the
+        // sidebar keeps showing an active background forever.
+        let settled = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            settled.direct.as_ref().unwrap().active_tool_count(),
+            0,
+            "accepted background stop settles tools without a provider terminal update"
+        );
+        super::close_direct_conversation("test", "direct-bg-stop").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    fn direct_turn_end_settles_foreground_tools_without_terminal_updates() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fg-tool".into(),
+            operation_id: "op".into(),
+            adapter_id: "direct-foreground-tool".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                // Unique ids: close_direct_conversation scopes by them, so
+                // this teardown must never touch other tests' sessions.
+                project_id: "test".into(),
+                task_id: "direct-fg-tool".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "direct-foreground-tool",
+            &doctor_fixture_config("direct-foreground-tool"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fg-tool"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // The prompt returned end_turn without any terminal update for
+        // `fg-never-ends`; the turn boundary is the tool lifecycle authority,
+        // so the retained session must not carry it as running forever.
+        let settled = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            settled.direct.as_ref().unwrap().active_tool_count(),
+            0,
+            "a returned prompt turn settles its tools without provider terminal updates"
+        );
+        super::close_direct_conversation("test", "direct-fg-tool").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    fn direct_background_usage_marks_token_totals_and_refreshes_snapshot() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-bg-usage".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                project_id: "test".into(),
+                task_id: "direct-bg-usage".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-bg-usage"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let snapshot_path = attempt.join("acp.snapshot.json");
+        let timeline_path = attempt.join("acp.timeline.jsonl");
+        let foreground_usage =
+            crate::acp::timeline::read_indexed_timeline_page(&timeline_path, None, None, None, 1)
+                .unwrap()
+                .usage;
+        assert!(
+            !foreground_usage.is_some_and(|usage| usage.token_totals_exclude_background),
+            "a prompt-only session has complete token totals"
+        );
+        let entry = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        let send = |update: Value| {
+            let response = entry
+                .connection
+                .begin_request(
+                    "test/wake",
+                    json!({"sessionId":"doctor-fixture-session","update":update}),
+                )
+                .unwrap()
+                .recv_timeout_with_session_route_watermark(Duration::from_secs(5))
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !entry
+                .event_pump
+                .has_consumed(response.session_route_watermark.unwrap())
+            {
+                assert!(Instant::now() < deadline, "background frame consumed");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        send(
+            json!({"sessionUpdate":"agent_message_chunk","messageId":"wake","content":{"type":"text","text":"timer fired"}}),
+        );
+        send(
+            json!({"sessionUpdate":"usage_update","used":4_321,"size":200_000,"cost":{"amount":1.25,"currency":"USD"}}),
+        );
+
+        let usage =
+            crate::acp::timeline::read_indexed_timeline_page(&timeline_path, None, None, None, 1)
+                .unwrap()
+                .usage
+                .unwrap();
+        assert!(usage.token_totals_exclude_background);
+        assert_eq!(usage.cost_amount_usd, Some(1.25));
+        let snapshot: Value = crate::storage::read_json(&snapshot_path).unwrap();
+        assert_eq!(snapshot["totalCostUsd"], json!(1.25));
+        // This fixture compacts context, so `used` follows the compaction
+        // gauge rules; the snapshot must match the canonical index gauge.
+        assert_eq!(snapshot["usedTokens"].as_u64(), usage.used);
+        assert_eq!(snapshot["contextWindowSize"], json!(200_000));
+        assert!(snapshot["timing"]["sessionElapsedSeconds"].is_u64());
+        super::close_direct_conversation("test", "direct-bg-usage").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
     }
 
     #[test]

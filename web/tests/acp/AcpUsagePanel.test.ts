@@ -173,6 +173,25 @@ describe("AcpUsagePanel", () => {
     expect(html).toContain("acp.usagePanel.total");
   });
 
+  it("notes below the token rows that background wake consumption is not included", () => {
+    const usage = { used: 54_368, size: 1_000_000, totalTokens: 107_089 };
+    const complete = renderToStaticMarkup(createElement(AcpUsagePanel, { usage }));
+    const partial = renderToStaticMarkup(
+      createElement(AcpUsagePanel, { usage: { ...usage, tokenTotalsExcludeBackground: true } }),
+    );
+    const withoutRows = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: { used: 54_368, size: 1_000_000, tokenTotalsExcludeBackground: true },
+      }),
+    );
+
+    expect(complete).not.toContain("acp.usagePanel.excludesBackground");
+    expect(partial.indexOf("acp.usagePanel.excludesBackground"))
+      .toBeGreaterThan(partial.indexOf("acp.usagePanel.total"));
+    // Without token rows there is no total for the note to qualify.
+    expect(withoutRows).not.toContain("acp.usagePanel.excludesBackground");
+  });
+
   it("does not present a transient zero as confirmed context usage", () => {
     const html = renderToStaticMarkup(
       createElement(AcpUsagePanel, {

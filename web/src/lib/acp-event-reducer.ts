@@ -7,6 +7,9 @@ import { isAcpTextStreamEventKind, mergeAcpLiveStreamEvent } from "@/lib/acp-liv
 
 type RawObject = Record<string, unknown>;
 
+/** usage_update `_meta` flag stamped by the backend once background work ran. */
+const TOKEN_TOTALS_EXCLUDE_BACKGROUND_META_KEY = "goldBandTokenTotalsExcludeBackground";
+
 export function projectLatestAcpUsageUpdate(
   session: AcpSessionVm | null,
   events: AcpUiEventVm[],
@@ -24,6 +27,10 @@ export function projectLatestAcpUsageUpdate(
     if (used !== null) patch.used = used;
     if (size !== null) patch.size = size;
     if (cost !== null) patch.costAmountUsd = cost;
+    // Only ever set: merging over session.usage keeps an earlier true.
+    if (rawObject(raw._meta)?.[TOKEN_TOTALS_EXCLUDE_BACKGROUND_META_KEY] === true) {
+      patch.tokenTotalsExcludeBackground = true;
+    }
     if (Object.keys(patch).length === 0) continue;
     if (!latest || event.seq >= latest.seq) latest = { seq: event.seq, patch };
   }

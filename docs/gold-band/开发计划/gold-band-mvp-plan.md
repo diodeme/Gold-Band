@@ -1,5 +1,37 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-16 续接会话的模型与权限以会话快照为准
+
+- 根因：09-24 让 `session/new` 把不支持的模型、权限回滚为不指定，但同一会话再次构建调用（AI-DYNAMIC proposal repair、提交提醒、workflow continue）时，模型和权限仍从冻结的节点配置取值，只有 `config_options` 以 snapshot 为准。task-334 的 bootstrap 用 `deepseek-flash` 新建 Codex 会话并已回滚，proposal 因 `dynamic.fanout.workspace-dirty` 进入 repair 后又以 `continue` 发出 `deepseek-flash`，在已建立会话分支得到 `acp.session-config-value-unavailable`。属于「复用会话以 snapshot 为权威」契约只覆盖了配置项的设计缺口。
+- 实现：`invocation_config_option_overrides` 替换为 `invocation_session_config`，一次决定模型、权限和 `config_options`。复用会话以 `continue_ref.snapshotFile` 指向的被复用会话 snapshot 为准（sessionId 不符或不可读视为不指定），新建会话用作者态并按所选模型 retain；本次调用的显式切换优先。workflow `build_worker_invocation` 与 AI-DYNAMIC `build_dynamic_worker_invocation` 共用该入口，删除两处只读配置项的旧 reader。已建立会话收到用户显式非法值仍报 unavailable。
+- 验收：`dynamic_continue_takes_session_snapshot_after_new_session_rollback` 在修复前得到 `model = Some("deepseek-flash")`，修复后为不指定、权限不指定、`effort=high` 保留，显式切换仍生效；`continue_worker_invocation_takes_session_snapshot_after_new_session_rollback` 覆盖 workflow 节点及他会话 snapshot 不被采信；`session_config` 单测覆盖新旧会话与显式切换。
+- 过度设计与性能评审：不新增持久字段或状态，复用 snapshot 既有 `modelOverride / permissionModeOverride / configOptionOverrides`；每次续接调用只读一次被复用会话的 snapshot（只读、不回写），替换原先对当前 attempt snapshot 的一次读取。
+
+## 2026-10-15 追问附件路径长度预算
+
+- 根因：10-14 的内容寻址布局 `user-inputs/<64 位 BLAKE3>/<name>` 在 attempt 目录（默认数据目录下直连约 149 字符，动态节点再叠加 `dynamic/nodes/<AI 生成节点 ID>/attempt-NNN`）之上再加 65 个字符；原始文件名长度又由用户输入决定。task-326 追问附件的目标路径为 267 字符，超过 Windows MAX_PATH。`create_dir` 经 Rust 标准库自动加 `\\?\` 前缀成功，tempfile 的 `persist_noclobber` 直接调用 `MoveFileExW` 失败，返回 os error 3，留下空的摘要目录，并被兜底为 `app.unexpected`。属于布局没有路径预算的设计缺陷，不是单个调用缺少长路径前缀。持久路径还会交给 Agent、Shell 和预览，只给 tempfile 补前缀会让失败转移到下游。
+- 实现：摘要目录改为 128 位 BLAKE3 前缀（32 hex）。同一 attempt 作用域内碰撞概率可忽略，且复用前仍逐字节比对，碰撞会报错，不会混用内容。存储文件名在拷贝前按 259 个 UTF-16 单位的整路径预算，以及 255 个 UTF-16 单位/字节的单段上限截短主名并保留扩展名，同时去掉截短后尾部的点和空格；摘要目录已确定内容，截短不会让不同内容互相冒用。`AttachmentMeta.name` 保留原始文件名，`path` 仍是唯一读取定位。连「摘要目录 + 1 个字符 + 扩展名」都放不下时，在任何写入前返回结构化 `runtime.io.attachment-path-too-long`（`name`、`maxPathLength`），前端按错误码本地化，不再落到 `app.unexpected`。
+- 动态节点评估：默认数据目录下 41 字符节点 ID 的 attempt 目录约 205 字符，加上 `user-inputs/<32 hex>/` 后仍有约 20 字符留给文件名，常见文件名会被截短但能发送；节点 ID 没有长度上限，极端深度由上述结构化错误兜底。本次不限制节点 ID 长度。
+- 红绿证据：深度 160 的 attempt 加 UUID/长中文文件名用例，在原实现上稳定失败于 `系统找不到指定的路径。 (os error 3)`，与线上 `turnError` 一致；深度 240 用例原实现返回非结构化 IO 错误。修复后两项转绿，另加截短边界单测。
+- 性能与过度设计评审：只增加一次常数级长度计算和名称截短，不新增依赖、持久字段、缓存或状态；拷贝与哈希仍为单次流式处理。已经发布的 64 hex 历史附件路径仍按 metadata path 读取，不迁移。
+
+## 2026-10-14 分支与截断 Tooltip 打开生命周期修复
+
+- 根因：`useOverflowTooltip` 在 pointerenter 中提前打开，Radix 的 pointermove 延迟打开随后广播 `tooltip.open`，已挂载提示收到广播自行关闭；9 月 30 日焦点修复忽略后续 true，使关闭成为最终状态。属于受控 Tooltip 与组件库打开生命周期衔接不完整，不是 Git snapshot 刷新。
+- 实现：保留现有 shadcn/Radix Tooltip，让 Radix 成为唯一打开入口；共享 hook 仅在打开请求时判断溢出或 always 条件，非 `focus-visible` 的程序返焦在 focus 事件阶段阻止默认打开。分支、工作空间、ACP 单项/复合配置和文件名消费端删除手动 pointerenter 打开；工作空间 TooltipTrigger 改为整个控件，Select 保留自身 slot 与 open 状态投影。原鼠标关闭不返焦、键盘关闭返焦及紧凑分支 pointerdown→click 契约不变。
+- 红绿证据：普通/响应式分支的完整 pointerover→pointermove→零延迟定时器两项用例，在原实现上均因提示消失失败，修复后原用例转绿。共享生命周期测试覆盖溢出测量次数、图标态、延迟打开取消、互斥、触摸不触发、程序返焦不广播、键盘 focus/blur、滚动关闭与重入；分支另固定无关父级重渲染保留 DOM/提示及 Escape 关闭。受影响领域 18 个测试文件共 112 项通过，最终 TypeScript 检查与 Vite 生产构建通过。
+- 浏览器：生产预览 `/chat` 的隔离 browser mock 验证首次悬停、长分支 `fix/attachment-content-identity` 截断全文持续显示、Tooltip 已显示时单击打开菜单、鼠标选择后不残留提示/焦点、Tab→Enter→Escape 键盘返焦，以及 720px 图标态→1440px 拉宽、浅/深色主题和项目名提示。未操作真实 Git 分支，未打包验收 EXE；桌面端还需按下列清单实际回归。
+- 桌面回归：① 刚进入快速对话就首次 hover 长分支，停留并在按钮内移动应持续显示；② 移出、Escape、切换页面后提示清理，重新进入可再次显示；③ 提示显示时单击开分支菜单，测试仓库鼠标选择/点击外部关闭后无残留，键盘关闭仍归还焦点；④ 缩窄成图标再拉宽、浅/深色均正确；⑤ 单/多工作空间名称、ACP 模型/权限长值与文件工作区长名称的共用提示仍正常，普通未截断值不冗余显示，鼠标菜单返焦不弹出，键盘可访问全文。
+- 性能与过度设计评审：不新增依赖、状态、定时器、Observer、请求或缓存；删除重复打开入口，尺寸读取仍为单控件打开时 O(1)，普通 pointermove 不重复测量。复用原 canonical 业务数据与组件库生命周期，不扩大状态订阅或渲染范围。
+
+## 2026-10-14 同名追问附件不可覆盖与预览身份
+
+- 根因：`user-inputs/<name>` 同时充当显示名和持久定位，不同图片在同一 attempt 内被原子替换；Tab 按完整 locator/path 去重仍会读到最后一张。发送后按文件名猜测草稿 alias 还会激活错误的旧预览。
+- 实现：沿用 AttachmentMeta、完整 attempt locator、现有预览与 Tab 模型，原始文件边拷贝边计算 BLAKE3，以 `user-inputs/<完整摘要>/<name>` 通过 tempfile 不覆盖发布；相同目标验证字节与安全边界后复用，冲突不覆盖。删除追问附件的名称别名，草稿独立 Object URL 生命周期不变。
+- 验证：Rust 跨轮同名最小测试先稳定失败于两次都返回 `user-inputs/image.png`；前端真实 ACP DOM 测试先复现提交新同名附件后点击旧消息误激活 `draft-attachment`，两项均在修复后转绿。Provider 75 项、桌面附件读取/路径穿越 3 项、联合前端 7 文件 72 项通过，双 crate `cargo check --locked`、TypeScript 与生产构建通过。Unix 专属文件 symlink/非法名称文件系统用例未在 Windows 执行；Windows junction 拒绝用例已实测。
+- 浏览器：生产构建 deep link 以三张同名、不同路径和内容的 PNG 验证真实缩略图→工作区链路，逐次打开得到 1/2/3 个 Tab，像素分别为红/绿/蓝；重复第一张回到红图且仍为 3 个 Tab。1800→720→1800 宽度往返仍显示选中的绿图，无横向溢出或浏览器错误。验证使用隔离 browser fixture，不冒充真实任务文件或 EXE 验收；测试浏览器及服务已清理。
+- 性能与过度设计评审：复用已有 BLAKE3/tempfile、DTO 和作用域，不新增持久字段、缓存、队列或运行时状态机。单次持久化按文件字节线性处理、固定缓冲，重复文件仅流式比较；不扫描历史。真实历史附件不自动修复，恢复必须另行确认并备份。
+
 ## 2026-10-09 已获取的模型配置不再随 Doctor 失败丢失
 
 - 根因：`modelBoundCatalogs` 存在 Doctor 健康快照的 capabilities 里，后台每 60 秒的 Doctor 探测失败时整份替换快照，该 Agent 所有模型的已观测配置被一起清空，菜单重新出现「尚未获取此模型的配置」。本机日志中 claude-acp 当天 3 次 `available=false` 后只剩 haiku / opus 两份目录。属于生命周期不同的两类数据共用同一记录的设计缺陷。
@@ -191,7 +223,7 @@
 ## 2026-09-23 发送成功后消息图片复用已打开的预览
 
 - 根因：输入框预览的标签键是附件 id，消息图片的键是落盘路径。发送成功后点消息图片会再开一个标签，并把文件读成 base64。已打开的内存预览不该被换成第二次读取。
-- 实现：发送成功时用当前会话作用域和附件 id 找到已打开的 `draft-attachment`，把消息预览键记成 `previewAliasKey`。新会话用 `task-inputs/文件名`，追问用当前 attempt 的 `user-inputs/文件名`。点击消息图片时先按这个别名激活原标签。没打开过预览、标签已关闭，或应用重启后，仍读取持久文件。别名只留在当前进程的工作区标签上。
+- 实现：新会话发送成功时用当前会话作用域和附件 id 找到已打开的 `draft-attachment`，把 `task-inputs/文件名` 对应的消息预览键记成 `previewAliasKey`。追问附件不再按文件名构造别名：2026-10-14 起使用后端提供的 `user-inputs/<原始文件 BLAKE3 摘要>/<name>` 定位持久资源，草稿 Tab 保留独立预览生命周期。没打开过预览、标签已关闭，或应用重启后，仍读取持久文件。别名只留在当前进程的工作区标签上。
 - 验收：`right-workspace.test.ts` 固定新建会话提升后，按附件 id 记上任务输入别名，查到的仍是原来的内存预览；另一个 attempt 的同名路径查不到；未打开的 id 不加别名。
 - 过度设计与性能评审：不新增持久字段、图片 id 或文件读取。别名是已打开标签上的一个字符串。点击时只扫描当前会话已打开的标签。
 
@@ -2970,3 +3002,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 验收及评审：复用现有组件和事件，不新增依赖、恢复按钮、轮询或无界积压。每 attempt 一条错误、最多 128 条，诊断和参数各限 16 KiB；常规加载不增加正文读取，锁内不执行 I/O。浏览器通过临时测试页面挂载实际 ACPChatDialog 验证，完成后移除测试入口。
 
 - [x] 验证结果：ACP lifecycle 118 项、RuntimeError 11 项、桌面错误 envelope 1 项、Web 相关 229 项测试通过；桌面端 `cargo check --tests`、前端 TypeScript 检查与 Vite 生产构建通过。浏览器在 480px 窄窗验证错误通知、停止处理、未确认工具、回复/草稿保留及切走重入。生产构建保留既有 chunk 大小与混合导入警告。
+
+## 2026-10-13 复合模型二级菜单在窄会话栏内原地展开
+
+- 根因：会话栏浮层以会话栏为碰撞边界，复合菜单的二级菜单固定 22rem 侧向弹出。会话栏变窄后左右两侧都放不下，Radix 翻到左侧并把宽度压到剩余空间，但定位仍按原宽度计算，菜单被挤到窗口最左边并覆盖侧边栏。
+- 实现：`portal-container` 新增纯函数 `overlayFitsBeside` / `overlayCollisionRect`；`AcpModelThoughtSelects` 把模型与配置分区收成同一个 `CompositeConfigSection`，`openSection` 统一记录 `{ id, presentation: flyout | inline }`。每次尝试打开时测量主菜单与边界：放得下走原有 Radix 侧弹；放不下时悬停不弹出，点击 / Enter / Space / → 在主菜单内原地展开，← 收起。
+- 证据：`web/tests/acp-model-thought-submenu-placement.test.tsx` 在修复前因窄边界下仍打开侧向菜单而失败，修复后与相关菜单、碰撞边界测试全部通过；浏览器 harness 验证 480px 会话栏原地展开且不越界，900px 会话栏保持悬停侧弹。
+- 过度设计与性能评审：只在打开二级菜单时读一次 `getBoundingClientRect`，无常驻监听、缓存或新的持久状态；两种载体共用同一份单选列表。

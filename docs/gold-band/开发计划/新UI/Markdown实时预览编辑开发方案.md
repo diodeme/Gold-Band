@@ -69,7 +69,7 @@ type MarkdownEditorMode = 'live-preview' | 'source'
 ```
 
 - `.md`、`.markdown` 默认 `live-preview`。
-- `live-preview`：隐藏行号和折叠 gutter，使用文档阅读宽度；光标进入结构时显露编辑所需标记。
+- `live-preview`：隐藏行号和折叠 gutter，正文随面板可用宽度伸缩；光标进入结构时显露编辑所需标记。
 - `source`：沿用当前 CodeMirror 源码编辑体验、行号、语法高亮和查找。
 - 模式按打开文件的 resource key 保存在 `FileContentStore` 运行期状态，不写入 Tab，不持久化到磁盘。
 - 超过实时预览字符阈值时强制源码模式，并展示可理解的降级提示。
@@ -130,10 +130,18 @@ interface MarkdownRuntimeState {
 ```rust
 pub struct ResolveMarkdownImageInput {
     pub project_id: String,
-    pub markdown_canonical_path: String,
-    pub markdown_external_access_token: Option<String>,
+    pub workspace_path: Option<String>,
+    pub source: MarkdownImageSource,
     pub raw_src: String,
-    pub approved_external_targets: Vec<String>,
+}
+
+pub enum MarkdownImageSource {
+    Workspace,
+    Document {
+        canonical_path: String,
+        external_access_token: Option<String>,
+        approved_external_targets: Vec<String>,
+    },
 }
 
 pub struct WorkspaceFilePreviewGrantVm {
@@ -160,7 +168,7 @@ pub enum MarkdownImagePreviewVm {
 }
 ```
 
-前端只能提交 `projectId + markdownCanonicalPath + rawSrc + 当前文档授权集合`。最终路径解析、canonicalize、symlink 边界、格式识别和授权判断全部由 Rust 权威执行。
+前端提交 `projectId + workspacePath + source + rawSrc`，`source` 使用 camelCase 判别联合：文档为 `{ kind: 'document', canonicalPath, externalAccessToken, approvedExternalTargets }`，ACP 会话为 `{ kind: 'workspace' }`。文档来源仍必须验证真实 Markdown 文件及其授权，workspace 来源不能伪造 Markdown 文件，且只自动读取 canonical workspace/worktree root 内图片。rawSrc 按 Markdown URL 语义先分离 query/fragment、再解码一次（`file:` 使用 URL 库转换），编码后的 UNC/危险协议在文件 I/O 前再次拒绝。最终路径解析、canonicalize、symlink 边界、格式识别和授权判断全部由 Rust 权威执行。
 
 ## 8. Atomic Editor 接入
 
@@ -191,11 +199,11 @@ CodeMirror markdown language（GFM）
 ### 8.2 样式适配
 
 - 内容颜色、muted、border、primary、code background 全部映射 Gold Band CSS variables。
-- 实时预览正文使用 UI 字体和约 `65–75ch` 阅读宽度；代码块和行内代码使用 mono 字体。
+- 实时预览正文与代码继承编辑器字体和字号偏好；内置主题明暗方案的默认编辑器字号统一为 `13px`，不覆盖用户自定义字号。
 - Markdown 标题接近正文，通过字重、轻量间距和细分隔表达层级，不使用文档页大标题样式。
 - 深色主题避免多层黑色卡片和强边框。
 - CodeMirror 虚拟滚动要求通过 line padding 表达垂直节奏，不对 `.cm-line` 使用会破坏高度测量的 margin。
-- 正文固定使用稳定的 Gold Band 阅读字体栈、14px 基准字号和约 78ch 阅读宽度；标题、表格和内容 padding 使用紧凑相对层级，不继承可能用于代码的展示型自定义字体。
+- 共享样式将 `--atomic-editor-measure` 设为 `100%`，正文保留左右各 `1rem` 留白，不保留固定字符行宽、逐入口宽度参数或尺寸监听状态；面板收窄及重新拉宽时由 CSS 自动重排。标题、表格和内容 padding 使用紧凑相对层级。回归覆盖默认全宽 DOM/CSS 契约、两套内置主题明暗方案默认 `13px`、自定义字号不变，并在浏览器验证正常、窄和重新拉宽的正文及长文本表格。
 
 ### 8.3 README 安全 HTML 子集
 

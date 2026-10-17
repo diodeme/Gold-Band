@@ -587,6 +587,7 @@
     "closeWorkspace": "收起右侧工作区",
     "openNewTab": "打开新标签页",
     "closeTab": "关闭标签页",
+    "panelFailed": "此标签页无法显示",
     "allTabs": "所有标签页",
     "attention": "需要处理",
     "files": "工作空间",
@@ -818,6 +819,12 @@
       "workspace-outside-project": "所选 Worktree 不属于当前项目。",
       "ref-changed": "更改列表已更新，请再试一次。",
       "sync-ref-changed": "分支已变化，请再试一次。",
+      "push-upstream-invalid": "无法解析此分支的上游，请检查上游配置后重试。",
+      "push-upstream-unsupported": "此分支跟踪的是本地分支，暂不支持向该上游推送。",
+      "push-branch-not-current": "当前分支已变化，请重新打开推送确认。",
+      "push-remote-required": "请选择发布到哪个远程仓库。",
+      "push-confirmation-required": "请先确认推送的源分支和目标。",
+      "push-target-changed": "推送的源分支或目标已变化，请重新确认。",
       "repository-locked": "仓库正在执行其他写操作。",
       "workspace-locked": "当前工作空间正在执行其他写操作。",
       "operation-in-progress": "当前 Git 流程尚未结束，请完成或中止后重试。",
@@ -926,6 +933,7 @@
       "turn-execution-failed": "本次消息处理失败，请重试。",
       "session-request-failed": "会话准备失败，请重试。",
       "missing-provider": "当前节点缺少 provider 配置。",
+      "subagent-protocol-upgrade-required": "请将 Claude ACP 升级至 {{minimumVersion}} 或更高版本后重试。",
       "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
       "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
       "invalid-conversation-branch-id": "该 Agent 会话链接无效或已失效。",
@@ -996,7 +1004,8 @@
     "runtime": {
       "io": {
         "storage-full": "磁盘空间不足，本次执行已中断。释放空间后可继续。",
-        "permission-denied": "无法写入会话数据，请检查目录的写入权限。"
+        "permission-denied": "无法写入会话数据，请检查目录的写入权限。",
+        "attachment-path-too-long": "当前会话的数据目录层级过深，无法保存附件「{{name}}」。请新建会话后再发送。"
       },
       "conversation-not-available": "工作流正在运行，暂时不能发送普通消息。",
       "continue-not-available": "当前节点不需要继续，可能已经恢复或不再可继续。",
@@ -1998,6 +2007,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "目标远程仓库",
+    "pushPreparing": "正在准备推送目标…",
+    "pushSetUpstream": "发布成功后，将目标分支设为上游。",
     "remote": "远程仓库",
     "name": "名称",
     "startPoint": "起点",
@@ -2420,7 +2433,8 @@
       "output": "输出",
       "cacheRead": "缓存读取",
       "cacheWrite": "缓存写入",
-      "total": "总计"
+      "total": "总计",
+      "excludesBackground": "不含后台唤醒的消耗"
     }
   },
   "graph": {

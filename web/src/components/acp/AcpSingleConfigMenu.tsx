@@ -96,8 +96,7 @@ export function AcpSingleConfigMenu({
   const {
     valueRef,
     tooltipOpen,
-    showTooltipIfOverflowing,
-    showTooltipOnKeyboardFocus,
+    handleTooltipFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useAcpComposerConfigOverflowTooltip();
@@ -110,10 +109,9 @@ export function AcpSingleConfigMenu({
             disabled={disabled}
             className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
             data-acp-auto-accept-overlay={onAutoAcceptChange ? 'true' : undefined}
-            onPointerEnter={showTooltipIfOverflowing}
             onPointerLeave={hideTooltip}
             onPointerDown={hideTooltip}
-            onFocus={showTooltipOnKeyboardFocus}
+            onFocus={handleTooltipFocus}
             onBlur={hideTooltip}
           >
             <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createDemoApi } from '../../marketing/demo/api';
 import { DEMO_PREFERENCES_KEY } from '../../marketing/demo/preferences';
 import { browserApi } from '../src/api/browser';
@@ -7,6 +8,12 @@ import { mcpAgentSupportStatus } from '../src/lib/mcp-agent-compatibility';
 import { configuredSkillAgents, skillSourceAgents } from '../src/lib/skill-agent-display';
 
 describe('public demo runtime', () => {
+  it('passes the selected locator to ACP without loading session bodies in the demo shell', () => {
+    const source = readFileSync('marketing/demo/DemoApp.tsx', 'utf8');
+    expect(source).toContain('next.sessionTree.selectedSessionKey =');
+    expect(source).not.toContain('browserApi.getAcpSession(');
+    expect(source).not.toMatch(/next\.selectedSession\b/);
+  });
   it('exposes multiple workflow runs and rounds without crossing session identities', async () => {
     const api = createDemoApi();
     const row = demoSidebar('en').tasksByWorkspace.default.find((task) => task.taskId === 'demo-review')!;
@@ -17,6 +24,7 @@ describe('public demo runtime', () => {
     for (const summary of row.runs) {
       const run = await api.getConversationRun('default', row.taskId, summary.runId);
       expect(run.runId).toBe(summary.runId);
+      expect(run).not.toHaveProperty('selectedSession');
       expect(run.sessionTree.rounds.map((round) => round.roundId)).toEqual(['round-001', 'round-002']);
       for (const round of run.sessionTree.rounds) {
         for (const node of round.nodes) {
@@ -127,17 +135,30 @@ describe('public demo runtime', () => {
       expect(run.activeSessions).toEqual([]);
       const nodeId = taskId === 'demo-review' ? 'accept' : 'dev';
       expect(run.runMode).toBe(taskId === 'demo-review' ? 'workflow' : 'direct');
-      const session = await api.getAcpSession('default', taskId, DEMO_RUN_ID, run.selectedSession!.roundId!, nodeId, 'attempt-001');
-      expect(session).toEqual(run.selectedSession);
+      expect(run).not.toHaveProperty('selectedSession');
+      const leaf = run.sessionTree.rounds.flatMap((round) => round.nodes.flatMap((node) => node.attempts))
+        .find((attempt) => `${attempt.roundId}/${attempt.nodeId}/${attempt.attemptId}` === run.sessionTree.selectedSessionKey)!;
+      expect(leaf.nodeId).toBe(nodeId);
+      const locator = [row.projectId, taskId, DEMO_RUN_ID, leaf.roundId, leaf.nodeId, leaf.attemptId] as const;
+      const session = await api.getAcpSession(...locator);
+      expect(session).toMatchObject({ roundId: leaf.roundId, nodeId, attemptId: leaf.attemptId, sessionId: leaf.sessionId });
       session!.events[0].content = 'visitor change';
-      expect((await api.getConversationRun('default', taskId, DEMO_RUN_ID)).selectedSession!.events[0].content).not.toBe('visitor change');
+      expect((await api.getAcpSession(...locator))!.events[0].content).not.toBe('visitor change');
+      expect(await api.getConversationRun(row.projectId, taskId, DEMO_RUN_ID)).toEqual(run);
+      for (let index = 0; index < locator.length; index++) {
+        const unknown: [string, string, string, string, string, string] = [...locator];
+        unknown[index] = 'missing';
+        await expect(api.getAcpSession(...unknown)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+      }
     }
     await expect(api.getConversationRun('another-project', 'mock-task', DEMO_RUN_ID)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
     const diagram = await api.getConversationRun('default', 'demo-diagram', DEMO_RUN_ID);
     expect(diagram.runMode).toBe('direct');
-    expect(diagram.selectedSession!.events.at(-1)!.content).toContain('```mermaid');
-    expect(diagram.selectedSession!.events.at(-1)!.content).toContain('subgraph workspace');
-    expect(diagram.selectedSession!.events.at(-1)!.content).toContain('源码管理');
+    const [diagramRound, diagramNode, diagramAttempt] = diagram.sessionTree.selectedSessionKey!.split('/');
+    const diagramResult = (await api.getAcpSession('default', 'demo-diagram', DEMO_RUN_ID, diagramRound, diagramNode, diagramAttempt))!.events.at(-1)!.content;
+    expect(diagramResult).toContain('```mermaid');
+    expect(diagramResult).toContain('subgraph workspace');
+    expect(diagramResult).toContain('源码管理');
   });
 
   it('serves distinct workflow node sessions with matching identities and content', async () => {

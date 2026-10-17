@@ -293,9 +293,7 @@ fn probe_agent_diagnostics(
         .into_iter()
         .map(|agent_id| {
             let doctor = app.provider_doctor(agent_id)?;
-            let capabilities = doctor
-                .capabilities
-                .map(doctor_authoring_capabilities);
+            let capabilities = doctor.capabilities.map(doctor_authoring_capabilities);
             Ok((
                 agent_id.to_string(),
                 ProviderDiagnosticSnapshot {

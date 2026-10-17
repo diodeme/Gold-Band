@@ -130,6 +130,8 @@ interface SessionRuntime {
   catalogLoadedRevision: number;
   statisticsPromise: Promise<void> | null;
   remotesPromise: Promise<void> | null;
+  /** Config revision the published remotes (or their failure) settled at; null until settled for this repository. */
+  remotesRevision: string | null;
   monitorStarted: boolean;
   monitorStartPromise: Promise<void> | null;
   invalidationTimer: ReturnType<typeof setTimeout> | null;
@@ -226,7 +228,7 @@ export class SourceControlStore {
   }
 
   retryRemotes(projectId: string, workspacePath?: string | null) {
-    return this.loadRemotes(this.runtime(projectId, workspacePath));
+    return this.syncRemotes(this.runtime(projectId, workspacePath), { force: true });
   }
 
   async initializeRepository(projectId: string, workspacePath?: string | null) {
@@ -279,6 +281,7 @@ export class SourceControlStore {
       .then((catalog) => {
         if (runtime.catalogRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
         runtime.catalogLoadedRevision = revision;
+        runtime.remotesRevision = catalog.repository.remotesRevision;
         const snapshot = runtime.snapshot.snapshot;
         this.update(runtime, {
           ...runtime.snapshot,
@@ -329,22 +332,49 @@ export class SourceControlStore {
     runtime.statisticsPromise = request;
   }
 
-  private loadRemotes(runtime: SessionRuntime, loadId?: string): Promise<void> {
-    if (!this.api.getRemotes || !runtime.snapshot.snapshot) return Promise.resolve();
+  /**
+   * Remotes belong to the shared repository config, not to workspace or ref
+   * snapshots. A snapshot keeps the remotes of the same repository and drops
+   * them only when the repository itself changes.
+   */
+  private adoptRepositoryRemotes(runtime: SessionRuntime, repository: GitSourceControlSnapshotVm['repository']) {
+    const current = runtime.snapshot.snapshot?.repository;
+    if (current && sameWorkspacePath(current.commonDir, repository.commonDir)) {
+      return {
+        remotes: current.remotes,
+        remotesLoading: runtime.snapshot.remotesLoading,
+        remotesError: runtime.snapshot.remotesError,
+      };
+    }
+    runtime.remotesRevision = null;
+    return { remotes: repository.remotes, remotesLoading: Boolean(this.api.getRemotes), remotesError: null };
+  }
+
+  private syncRemotes(runtime: SessionRuntime, options: { force?: boolean; loadId?: string } = {}): Promise<void> {
+    const repository = runtime.snapshot.snapshot?.repository;
+    if (!this.api.getRemotes || !repository) return Promise.resolve();
+    // At most one read in flight; settling re-checks the latest config revision.
     if (runtime.remotesPromise) return runtime.remotesPromise;
-    const revision = runtime.repositoryRequestRevision;
-    if (!runtime.snapshot.remotesLoading || runtime.snapshot.remotesError) {
+    const revision = repository.remotesRevision;
+    if (!options.force && runtime.remotesRevision === revision) return Promise.resolve();
+    const commonDir = repository.commonDir;
+    // Known remotes stay usable while revalidating; only missing or failed data shows progress.
+    const showProgress = runtime.remotesRevision === null || runtime.snapshot.remotesError !== null;
+    if (showProgress && (!runtime.snapshot.remotesLoading || runtime.snapshot.remotesError)) {
       this.update(runtime, { ...runtime.snapshot, remotesLoading: true, remotesError: null });
     }
+    const sameRepository = () => this.sessions.get(runtime.storageKey) === runtime
+      && runtime.snapshot.snapshot !== null
+      && sameWorkspacePath(runtime.snapshot.snapshot.repository.commonDir, commonDir);
     const request = this.api.getRemotes(
       runtime.snapshot.projectId,
       runtime.snapshot.requestedWorkspacePath,
-      loadId,
+      options.loadId,
     ).then((remotes) => {
-      if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
-      const snapshot = runtime.snapshot.snapshot;
+      if (!sameRepository()) return;
+      runtime.remotesRevision = revision;
+      const snapshot = runtime.snapshot.snapshot!;
       const catalog = runtime.snapshot.catalog;
-      if (!snapshot) return;
       this.update(runtime, {
         ...runtime.snapshot,
         snapshot: { ...snapshot, repository: { ...snapshot.repository, remotes } },
@@ -355,17 +385,16 @@ export class SourceControlStore {
         remotesError: null,
       });
     }).catch((reason) => {
-      if (runtime.repositoryRequestRevision !== revision || this.sessions.get(runtime.storageKey) !== runtime) return;
+      if (!sameRepository()) return;
+      runtime.remotesRevision = revision;
       this.update(runtime, {
         ...runtime.snapshot,
         remotesLoading: false,
         remotesError: structuredErrorFrom(reason, 'git.status-failed'),
       });
     }).finally(() => {
-      if (runtime.remotesPromise === request) runtime.remotesPromise = null;
-      if (runtime.repositoryRequestRevision !== revision && this.sessions.get(runtime.storageKey) === runtime) {
-        void this.loadRemotes(runtime);
-      }
+      runtime.remotesPromise = null;
+      if (this.sessions.get(runtime.storageKey) === runtime) void this.syncRemotes(runtime);
     });
     runtime.remotesPromise = request;
     return request;
@@ -750,9 +779,11 @@ export class SourceControlStore {
       await this.ensureSubscriptions();
       const activeOperation = await this.api.startOperation(projectId, workspaceScopePath, {
         ...input,
-        expectedRevision: operationUsesSyncRevision(input.kind)
-          ? snapshot.repository.syncRevision
-          : snapshot.repository.revision,
+        expectedRevision: input.kind === 'push'
+          ? input.expectedRevision
+          : operationUsesSyncRevision(input.kind)
+            ? snapshot.repository.syncRevision
+            : snapshot.repository.revision,
       });
       const latestOperation = this.earlyOperationUpdates.get(activeOperation.operationId) ?? activeOperation;
       this.earlyOperationUpdates.delete(activeOperation.operationId);
@@ -938,9 +969,7 @@ export class SourceControlStore {
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       const currentRepository = runtime.snapshot.snapshot?.repository;
-      const remotes = currentRepository?.commonDir === snapshot.repository.commonDir
-        ? currentRepository.remotes
-        : snapshot.repository.remotes;
+      const { remotes, remotesLoading, remotesError } = this.adoptRepositoryRemotes(runtime, snapshot.repository);
       const publishedSnapshot = {
         ...snapshot,
         status: retainVisibleWorkspaceStatistics(runtime.snapshot.snapshot, snapshot),
@@ -957,8 +986,8 @@ export class SourceControlStore {
           && sameWorkspacePath(currentRepository.commonDir, publishedSnapshot.repository.commonDir)
           && sameWorkspacePath(currentRepository.workspacePath, publishedSnapshot.repository.workspacePath)
           ? runtime.snapshot.catalog : null,
-        remotesLoading: Boolean(this.api.getRemotes),
-        remotesError: null,
+        remotesLoading,
+        remotesError,
         history: includeHistory ? history : runtime.snapshot.history,
         historyLoading: includeHistory ? false : runtime.snapshot.historyLoading,
         refreshing: null,
@@ -968,7 +997,7 @@ export class SourceControlStore {
       diagnostic.finish(outcome);
       this.applyWorkspaceProjection(runtime, publishedSnapshot.status);
       this.loadVisibleDetails(runtime);
-      void this.loadRemotes(runtime, diagnostic.loadId);
+      void this.syncRemotes(runtime, { loadId: diagnostic.loadId });
       this.loadStatistics(runtime, diagnostic.loadId);
       if (!resetNavigation && includeHistory && runtime.snapshot.activeTab === 'history') {
         const selectedOids = [...runtime.snapshot.selectedCommitOids];
@@ -1219,15 +1248,11 @@ export class SourceControlStore {
       // changed Git revision invalidates catalog writes; retain visible data.
       const statusChanged = repositoryChanged || currentRepository?.revision !== snapshot.repository.revision;
       if (statusChanged) runtime.catalogRequestRevision += 1;
+      const { remotes, remotesLoading, remotesError } = this.adoptRepositoryRemotes(runtime, snapshot.repository);
       const publishedSnapshot = {
         ...snapshot,
         status: retainVisibleWorkspaceStatistics(runtime.snapshot.snapshot, snapshot),
-        repository: {
-          ...snapshot.repository,
-          remotes: currentRepository?.commonDir === snapshot.repository.commonDir
-            ? currentRepository.remotes
-            : snapshot.repository.remotes,
-        },
+        repository: { ...snapshot.repository, remotes },
       };
       this.registerCanonicalAlias(runtime, publishedSnapshot.repository.workspacePath);
       this.update(runtime, {
@@ -1235,11 +1260,13 @@ export class SourceControlStore {
         canonicalWorkspacePath: publishedSnapshot.repository.workspacePath,
         snapshot: publishedSnapshot,
         catalog: repositoryChanged ? null : runtime.snapshot.catalog,
+        remotesLoading,
+        remotesError,
         refreshing: null,
       });
       this.applyWorkspaceProjection(runtime, publishedSnapshot.status);
       this.loadVisibleDetails(runtime);
-      if (repositoryChanged) void this.loadRemotes(runtime);
+      void this.syncRemotes(runtime);
       this.loadStatistics(runtime);
     }).catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
@@ -1345,6 +1372,7 @@ export class SourceControlStore {
         catalogLoadedRevision: -1,
         statisticsPromise: null,
         remotesPromise: null,
+        remotesRevision: null,
         monitorStarted: false,
         monitorStartPromise: null,
         invalidationTimer: null,
@@ -1551,7 +1579,7 @@ function isOperationPending(operation: GitOperationVm) {
 }
 
 const SYNC_OPERATION_KINDS = new Set<GitOperationRequestVm['kind']>(['fetch', 'pull', 'push', 'push-tag']);
-const REVISION_CHANGED_CODES = new Set(['git.ref-changed', 'git.sync-ref-changed']);
+const REVISION_CHANGED_CODES = new Set(['git.ref-changed', 'git.sync-ref-changed', 'git.push-target-changed', 'git.push-branch-not-current']);
 
 function operationUsesSyncRevision(kind: GitOperationRequestVm['kind']) {
   return SYNC_OPERATION_KINDS.has(kind);

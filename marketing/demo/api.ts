@@ -135,17 +135,13 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       if (projectId !== 'default' || !DEMO_TASKS.includes(taskId as typeof DEMO_TASKS[number]) || !demoRunIds(taskId).includes(runId)) {
         throw { code: 'demo.resource-not-found', params: { projectId, taskId, runId } };
       }
-      const run = demoRun(await previewApi.getConversationRun('default', 'mock-task', DEMO_RUN_ID), taskId, state.getPreferences().language, runId);
-      if (run.selectedSession) run.selectedSession = pageSession(run.selectedSession);
-      return run;
+      return demoRun(await previewApi.getConversationRun('default', 'mock-task', DEMO_RUN_ID), taskId, state.getPreferences().language, runId);
     },
     async getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
       if (projectId === REAL_PROJECT_ID) return history.api.getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId);
       if (outerNodeId || outerAttemptId) missing({ outerNodeId, outerAttemptId });
       const run = await overrides.getConversationRun!(projectId ?? 'default', taskId, runId);
-      const leaf = run.sessionTree.rounds.find((round) => round.roundId === roundId)?.nodes.find((node) => node.nodeId === nodeId)?.attempts.find((attempt) => attempt.attemptId === attemptId);
-      if (!leaf) throw { code: 'demo.resource-not-found', params: { roundId, nodeId, attemptId } };
-      return pageSession(demoSessionForNode(run, roundId, nodeId, state.getPreferences().language), query);
+      return pageSession(demoSessionForNode(run, roundId, nodeId, attemptId, state.getPreferences().language), query);
     },
     async getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
       if (projectId === REAL_PROJECT_ID) return history.api.getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);

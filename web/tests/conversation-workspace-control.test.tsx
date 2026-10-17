@@ -10,6 +10,8 @@ import {
   GitBranchPickerSnapshotStore,
 } from '@/components/git/GitBranchPickerSnapshotContext';
 
+import { hoverTooltip } from './helpers/tooltip';
+
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const workspaces = [
@@ -98,12 +100,11 @@ describe('quick conversation workspace control', () => {
       scrollWidth: { configurable: true, value: 340 },
     });
 
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
-    });
+    await hoverTooltip(trigger);
 
-    expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent)
-      .toBe('A very long workspace name that must be truncated');
+    const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
+    expect(tooltip?.textContent).toBe('A very long workspace name that must be truncated');
+    expect(trigger.getAttribute('aria-describedby')).toBe(tooltip?.id);
   });
 
   it('does not show a redundant tooltip when the workspace name fits', async () => {
@@ -163,6 +164,8 @@ describe('quick conversation workspace control', () => {
       trigger!.focus();
       dispatchPointerEvent(trigger!, 'pointerdown');
     });
+    expect(trigger!.dataset.state).toBe('open');
+    expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
     const item = Array.from(document.body.querySelectorAll<HTMLElement>('[data-slot="select-item"]'))
       .find((candidate) => candidate.textContent?.includes('A very long workspace name'));
     expect(item).not.toBeNull();

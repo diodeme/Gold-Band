@@ -170,6 +170,11 @@ pub(crate) fn browser_display_url(url: &Url) -> Url {
     local_path_for_url(url)
         .ok()
         .and_then(|path| Url::from_file_path(path).ok())
+        .map(|mut display| {
+            display.set_query(url.query());
+            display.set_fragment(url.fragment());
+            display
+        })
         .unwrap_or_else(|| url.clone())
 }
 

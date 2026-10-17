@@ -184,16 +184,13 @@ function DemoConversation({ page, parameters, bootstrap, title }: { page: Extrac
     let active = true;
     setRun(null);
     setFailed(false);
-    browserApi.getConversationRun(projectId, taskId, runId).then(async (next) => {
+    browserApi.getConversationRun(projectId, taskId, runId).then((next) => {
       const leaves = next.sessionTree.rounds.flatMap((round) => round.nodes.flatMap((node) => [...node.attempts, ...(node.outerNodes ?? []).flatMap((outer) => outer.attempts)]));
       const explicit = ['round', 'node', 'attempt', 'outerNode', 'outerAttempt'].some((key) => parameters.has(key));
       const key = (leaf: typeof leaves[number]) => leaf.outerNodeId ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}` : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
       const leaf = explicit ? leaves.find((leaf) => (!parameters.has('round') || leaf.roundId === parameters.get('round')) && (!parameters.has('node') || leaf.nodeId === parameters.get('node')) && (!parameters.has('attempt') || leaf.attemptId === parameters.get('attempt')) && (leaf.outerNodeId ?? null) === parameters.get('outerNode') && (leaf.outerAttemptId ?? null) === parameters.get('outerAttempt')) : leaves.find((leaf) => key(leaf) === next.sessionTree.selectedSessionKey);
       if (!leaf) missing({ taskId, runId });
-      if (leaf) {
-        next.selectedSession = await browserApi.getAcpSession(projectId, taskId, runId, leaf.roundId, leaf.nodeId, leaf.attemptId, undefined, undefined, leaf.outerNodeId, leaf.outerAttemptId);
-        next.sessionTree.selectedSessionKey = key(leaf);
-      }
+      if (leaf) next.sessionTree.selectedSessionKey = key(leaf);
       if (active) setRun(next);
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };

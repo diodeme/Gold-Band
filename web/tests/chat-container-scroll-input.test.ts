@@ -34,8 +34,10 @@ async function mount() {
   const root = createRoot(host);
   const context = React.createRef<ChatContainerContext>();
   const changes = vi.fn();
+  const userScrolls = vi.fn();
   await act(async () => root.render(React.createElement(ChatContainerRoot, {
-    contextRef: context, onFollowIntentChange: changes, resize: 'instant', initial: 'instant',
+    contextRef: context, onFollowIntentChange: changes, onViewportUserScroll: userScrolls,
+    resize: 'instant', initial: 'instant',
   }, React.createElement(ChatContainerContent, { scrollClassName: 'overflow-y-auto' },
     React.createElement('div', { 'data-detail': true, style: { overflowY: 'auto' } }, 'tool output'),
     React.createElement('textarea', { 'aria-label': 'answer' }),
@@ -60,10 +62,46 @@ async function mount() {
     scrollHeight: { configurable: true, value: 200 },
   });
   detail.scrollTop = 60;
-  return { root, host, context, changes, viewport, detail };
+  return { root, host, context, changes, userScrolls, viewport, detail };
 }
 
 describe('chat scroll input ownership', () => {
+  it('reports a scrollbar press without direction or detaching before movement', async () => {
+    const { root, context, viewport, userScrolls } = await mount();
+    try {
+      await act(async () => viewport.dispatchEvent(pointer('pointerdown')));
+      expect(userScrolls.mock.calls).toEqual([[viewport, null]]);
+      expect(context.current!.isAtBottom).toBe(true);
+      expect(viewport.scrollTop).toBe(199);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it.each([
+    ['wheel-up', 'up'], ['wheel-down', 'down'], ['PageUp', 'up'], ['Home', 'up'],
+    ['ArrowUp', 'up'], ['shift-space', 'up'], ['PageDown', 'down'], ['End', 'down'],
+    ['ArrowDown', 'down'], ['space', 'down'],
+  ] as const)('reports %s direction even when the viewport cannot scroll', async (input, direction) => {
+    const { root, context, viewport, userScrolls, host } = await mount();
+    try {
+      Object.defineProperties(viewport, {
+        scrollHeight: { configurable: true, value: 100 },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+      await act(async () => {
+        viewport.dispatchEvent(input.startsWith('wheel')
+          ? new WheelEvent('wheel', { deltaY: direction === 'up' ? -30 : 30, bubbles: true })
+          : new KeyboardEvent('keydown', {
+              key: input === 'space' || input === 'shift-space' ? ' ' : input,
+              shiftKey: input === 'shift-space', bubbles: true,
+            }));
+      });
+      expect(userScrolls.mock.calls).toEqual([[viewport, direction]]);
+      expect(context.current!.isAtBottom).toBe(true);
+      expect(viewport.scrollTop).toBe(0);
+      expect(host.textContent).toContain('tool output');
+    } finally { await act(async () => root.unmount()); }
+  });
+
   it.each([
     ['ltr', 5, true], ['ltr', 295, false],
     ['rtl', 5, false], ['rtl', 295, true],
@@ -127,7 +165,7 @@ describe('chat scroll input ownership', () => {
 
   it.each(['wheel', 'key', 'contained-edge', 'editable', 'zoom', 'prevented'] as const)(
     'does not detach the conversation for %s input owned elsewhere', async (scenario) => {
-      const { root, context, viewport, detail, host, changes } = await mount();
+      const { root, context, viewport, detail, host, changes, userScrolls } = await mount();
       try {
         if (scenario === 'contained-edge') {
           detail.scrollTop = 0;
@@ -146,6 +184,7 @@ describe('chat scroll input ownership', () => {
         });
         expect(context.current!.isAtBottom).toBe(true);
         expect(changes.mock.calls.filter(([following]) => !following)).toEqual([]);
+        expect(userScrolls).not.toHaveBeenCalled();
         expect(viewport.scrollTop).toBe(199);
       } finally { await act(async () => root.unmount()); }
     },

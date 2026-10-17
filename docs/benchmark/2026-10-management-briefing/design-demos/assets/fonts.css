@@ -1,0 +1,18 @@
+@font-face {
+  font-family: 'GB Inter';
+  src: url('./inter-latin-variable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: 'GB MiSans';
+  src: url('./misans-vf.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 250 520;
+  font-display: block;
+}
+:root {
+  --font-brand: 'GB Inter', 'GB MiSans', sans-serif;
+  font-synthesis: none;
+}

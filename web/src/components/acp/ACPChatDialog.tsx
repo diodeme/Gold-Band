@@ -33,6 +33,7 @@ import {
   Search,
   ShieldQuestion,
   Terminal,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { BrandLoadingState } from "@/components/BrandLoadingState";
@@ -70,6 +71,7 @@ import {
   type ChatContainerContentExpansionToken,
   type ChatContainerContext,
   type ChatContainerFollowIntentCause,
+  type ChatContainerUserScrollDirection,
   useOptionalChatContainerContentExpansion,
   useChatContainerDisclosure,
 } from "@/components/prompt-kit/chat-container";
@@ -81,6 +83,7 @@ import {
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
+import { MarkdownLocalImageProvider } from '@/components/prompt-kit/markdown-local-images';
 import { compactionSummaryEventId, hasCompactionSummary } from '@/lib/acp-compaction-summary';
 import {
   Message,
@@ -102,7 +105,6 @@ import {
   createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
   createCompactionSummaryWorkspaceResource,
-  sentAttachmentPreviewAliasKey,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
@@ -235,6 +237,7 @@ import {
   isTerminalAcpLifecycle,
   isTerminalLifecycleForTurn,
   shouldHidePendingAcpInteractions,
+  routesAcpStopToBackgroundControl,
   mergeConversationAttemptLifecycle,
   mergeConversationAttemptLiveControlFacets,
   shouldSettleAcpComposerTransientState,
@@ -335,15 +338,7 @@ import type {
   ConversationAttemptLifecycleVm,
 } from "@/types";
 
-export type AcpLifecycleSnapshot = {
-  taskId: string;
-  runId: string;
-  roundId: string;
-  nodeId: string;
-  attemptId: string;
-  outerNodeId?: string | null;
-  outerAttemptId?: string | null;
-  session?: AcpSessionVm | null;
+export type AcpLifecycleSnapshot = import('@/lib/conversation-run-snapshot').ConversationSessionRuntimeSnapshot & {
   lifecycle: ConversationAttemptLifecycleVm;
 };
 
@@ -498,6 +493,7 @@ type AcpAgentLink = {
   title?: string | null;
   toolCallId?: string | null;
   agentExecutionId: string;
+  providerStateSeq?: number | null;
   attemptId?: string | null;
   parentAgentExecutionId?: string | null;
   attention: boolean;
@@ -720,6 +716,7 @@ const hiddenSessionUpdates = new Set([
 ]);
 
 const hiddenEventKinds = new Set([
+  "agentState",
   "availableCommands",
   "usageUpdate",
   "sessionInfo",
@@ -861,6 +858,8 @@ export function restoreAcpSession(sessionKey: string) {
 // cached event window, which live updates keep current; caching a second copy
 // here would let an older snapshot shadow the window on remount.
 export function storeAcpSession(sessionKey: string, session: AcpSessionVm) {
+  const previous = acpResourceStore.peek(sessionKey)?.session;
+  if (hasOlderAcpTimelineProjection(previous, session)) return;
   storeAcpResourcePart(sessionKey, { session: { ...session, events: [] } });
 }
 
@@ -1351,6 +1350,41 @@ function hasOlderAcpTimelineProjection(
     && nextRevision < previousRevision;
 }
 
+// Version admission and display reconciliation are separate contracts: the
+// latter preserves display metadata, but must never admit an older projection.
+export function admitAcpSessionProjection(
+  previous: AcpSessionVm | null | undefined,
+  incoming: AcpSessionVm | null | undefined,
+): AcpSessionVm | null {
+  if (!incoming || hasOlderAcpTimelineProjection(previous, incoming)) return previous ?? null;
+  return reconcileAcpSessionForDisplay(previous, incoming);
+}
+
+function acpSessionMatchesLocator(
+  session: AcpSessionVm | null | undefined,
+  locator: Pick<AcpAttemptWorkspaceLocator, 'roundId' | 'nodeId' | 'attemptId' | 'branchId' | 'outerNodeId' | 'outerAttemptId'>,
+) {
+  return Boolean(session
+    && session.roundId === locator.roundId
+    && session.nodeId === locator.nodeId
+    && session.attemptId === locator.attemptId
+    && (session.outerNodeId ?? null) === (locator.outerNodeId ?? null)
+    && (session.outerAttemptId ?? null) === (locator.outerAttemptId ?? null)
+    && session.branchId === locator.branchId);
+}
+
+function canRestoreAcpPendingInteractions(
+  session: AcpSessionVm | null,
+  replay: ReturnType<typeof readConversationBranchReplaySnapshot>,
+) {
+  if (!session?.pendingInteractions.length) return true;
+  if (!replay.sessionId || replay.sessionId !== session.sessionId || replay.requiresCatchUp) return false;
+  const generation = session.eventPage.generation ?? 0;
+  if (generation !== replay.timelineGeneration) return generation > replay.timelineGeneration;
+  return replay.headRevision > 0
+    && (session.eventPage.coveredRevision ?? session.eventPage.newestRevision ?? 0) >= replay.headRevision;
+}
+
 export type AcpSessionPaginationUpdateMode = "replace" | "append-newer";
 
 export function reconcileAcpEventPageForUpdate(
@@ -1547,11 +1581,37 @@ export function ACPChatDialog(
       addQuoteFromWorkspaceRef.current(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
     addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
   }), [addWorkspaceFile, workspaceFileReferenceBridge]);
-  const restoredSession = session ?? restoreAcpSession(eventWindowKey);
+  const sessionSeed = acpSessionMatchesLocator(session, attemptWorkspaceLocator) ? session : null;
+  const cachedSessionSeed = restoreAcpSession(eventWindowKey);
+  const restoredSession = admitAcpSessionProjection(cachedSessionSeed, sessionSeed);
+  const restoredWindowSeed = sessionSeed && !hasOlderAcpTimelineProjection(cachedSessionSeed, sessionSeed)
+    ? restoredSession : null;
+  // This is the entry watermark, not another mutable session projection. It
+  // distinguishes genuinely new live questions from unverified restored ones.
+  const restoredInteractionWatermark = useMemo(() => ({
+    generation: Math.max(restoredSession?.eventPage.generation ?? 0,
+      readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId).timelineGeneration),
+    seq: Math.max(restoredSession?.eventPage.newestSeq ?? 0,
+      readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId).headSeq),
+    trustedSeedReady: Boolean(restoredWindowSeed && (
+      restoredWindowSeed.pendingInteractions.length > 0
+      || restoredWindowSeed.branchExecution
+      || (readOnly && (restoredWindowSeed.events.length > 0 || isSessionTerminalStatus(restoredWindowSeed.status)))
+    )),
+    needsVerification: Boolean(cachedSessionSeed?.pendingInteractions.length)
+      && !(sessionSeed && cachedSessionSeed && hasAdvancedCanonicalAcpSessionRevision(cachedSessionSeed, sessionSeed))
+      && !canRestoreAcpPendingInteractions(
+        restoredSession,
+        readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId),
+      ),
+  }), [eventWindowKey]);
   const canRestoreSessionContent = useCallback(() => canRestoreAcpSessionContent(
     eventWindowKey,
     readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId),
   ), [attemptWorkspaceLocator, branchId, eventWindowKey]);
+  const canRestoreSessionReadiness = useCallback(() => canRestoreSessionContent()
+    && !restoredInteractionWatermark.needsVerification,
+  [canRestoreSessionContent, restoredInteractionWatermark]);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
   const restoredOptimisticEvents = readStoredOptimisticEvents(
@@ -1572,7 +1632,7 @@ export function ACPChatDialog(
       eventWindowKey,
       ...restoreAcpLoadedEventWindow(
         eventWindowKey,
-        session,
+        restoredWindowSeed,
         effectiveLoadedEventBufferLimit,
         hasStoredExplicitHistoricalTimelineIntent(restoredBranchViewState),
       ),
@@ -1637,11 +1697,12 @@ export function ACPChatDialog(
   const [initialSessionQueryState, setInitialSessionQueryState] = useState<
     AcpInitialSessionQueryState
   >(() => (
-    !isTauriRuntime() || canRestoreSessionContent()
+    canRestoreSessionReadiness()
       ? "success"
       : "loading"
   ));
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
+  const [sessionQueryRetry, setSessionQueryRetry] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [returnToLatestPending, setReturnToLatestPending] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
@@ -2182,11 +2243,12 @@ export function ACPChatDialog(
     const identityChanged = sessionPropSyncIdentityRef.current !== eventWindowKey;
     sessionPropSyncIdentityRef.current = eventWindowKey;
     const previousCanonicalSession = identityChanged
-      ? null
+      ? restoreAcpSession(eventWindowKey)
       : latestSessionRef.current;
+    const session = admitAcpSessionProjection(previousCanonicalSession, sessionSeed);
     if (
       !identityChanged
-      && hasOlderAcpTimelineProjection(previousCanonicalSession, session)
+      && hasOlderAcpTimelineProjection(previousCanonicalSession, sessionSeed)
     ) {
       return;
     }
@@ -2214,9 +2276,9 @@ export function ACPChatDialog(
         latestSessionRef.current = previous;
         return previous;
       }
-      const reconciled = reconcileAcpSessionForDisplay(
-        identityChanged ? null : previous,
-        session ?? null,
+      const reconciled = admitAcpSessionProjection(
+        identityChanged ? restoreAcpSession(eventWindowKey) : previous,
+        session,
       );
       const next = settlePendingAcpInteractionsForLifecycle(
         reconciled,
@@ -2226,7 +2288,7 @@ export function ACPChatDialog(
       if (next) storeAcpSession(eventWindowKey, next);
       return next;
     });
-    if (!session && identityChanged) {
+    if ((!sessionSeed || hasOlderAcpTimelineProjection(previousCanonicalSession, sessionSeed)) && identityChanged) {
       const restored = restoreAcpLoadedEventWindow(
         eventWindowKey,
         null,
@@ -2243,7 +2305,7 @@ export function ACPChatDialog(
       );
       return;
     }
-    if (!session) return;
+    if (!session || !sessionSeed) return;
     settleOptimisticPromptAdmissions(session.events);
     resumePendingCanonicalHeadRecoveryForSnapshot(
       previousCanonicalSession,
@@ -2306,7 +2368,7 @@ export function ACPChatDialog(
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
     sessionResetIdentityRef.current = eventWindowKey;
-    const cachedSession = session ?? restoreAcpSession(eventWindowKey);
+    const cachedSession = admitAcpSessionProjection(restoreAcpSession(eventWindowKey), sessionSeed);
     const storedOptimisticEvents = readStoredOptimisticEvents(
       sessionKey,
       effectiveLoadedEventBufferLimit,
@@ -2314,7 +2376,7 @@ export function ACPChatDialog(
     const storedBranchViewState = restoreAcpBranchViewState(eventWindowKey);
     const storedLoadedEventWindow = restoreAcpLoadedEventWindow(
       eventWindowKey,
-      session,
+      restoredWindowSeed,
       effectiveLoadedEventBufferLimit,
       hasStoredExplicitHistoricalTimelineIntent(storedBranchViewState),
     );
@@ -2327,7 +2389,7 @@ export function ACPChatDialog(
         return previous;
       }
       const next = settlePendingAcpInteractionsForLifecycle(
-        reconcileAcpSessionForDisplay(
+        admitAcpSessionProjection(
           identityChanged ? null : previous,
           cachedSession,
         ),
@@ -2338,7 +2400,7 @@ export function ACPChatDialog(
       return next;
     });
     setInitialSessionQueryState(
-      !isTauriRuntime() || canRestoreSessionContent()
+      canRestoreSessionReadiness()
         ? "success"
         : "loading",
     );
@@ -2394,7 +2456,7 @@ export function ACPChatDialog(
       && storedLoadedEventWindow.sessionId != null) {
       requestCanonicalHeadRecoveryRef.current?.(true);
     }
-  }, [canRestoreSessionContent, commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
+  }, [canRestoreSessionReadiness, commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
     if (branchId !== 'root') return;
@@ -2450,7 +2512,9 @@ export function ACPChatDialog(
     );
   }, [eventWindowKey]);
 
-  const baseSession = currentSession ?? session;
+  const baseSession = sessionPropSyncIdentityRef.current === eventWindowKey
+    ? currentSession
+    : restoredSession;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
   const runtimeActiveFromContextRef = useRef(runtimeActiveFromContext);
@@ -2573,6 +2637,11 @@ export function ACPChatDialog(
   const mentionLabels = useMentionMenuLabels();
   // Prompt file references resolve against the session's work location.
   const mentionWorkLocation = effective?.workLocation;
+  const imageWorkLocationKind = effective?.workLocation?.kind;
+  const imageWorkspacePath = worktreePathOfLocation(effective?.workLocation);
+  const markdownImageRoot = useMemo(() => projectId && imageWorkLocationKind && imageWorkLocationKind !== 'unavailable'
+    ? workspaceRootRef(projectId, imageWorkspacePath)
+    : null, [projectId, imageWorkLocationKind, imageWorkspacePath]);
   const mentionRoot = useMemo(
     () => (projectId && mentionWorkLocation?.kind !== 'unavailable'
       ? workspaceRootRef(projectId, worktreePathOfLocation(mentionWorkLocation))
@@ -2628,6 +2697,20 @@ export function ACPChatDialog(
     !hasResponseAfterActiveTurn;
   const localSubmissionPending = promptCommandPending || sending || waitingForOptimisticPrompt;
   const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
+  const pendingInteractionReplay = restoredInteractionWatermark.needsVerification
+    && initialSessionQueryState !== "success"
+    ? readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId)
+    : null;
+  const verifiedLiveInteractionIds = pendingInteractionReplay
+    && pendingInteractionReplay.sessionId === effective?.sessionId
+    && pendingInteractionReplay.timelineGeneration >= restoredInteractionWatermark.generation
+    ? new Set(reducePendingInteractions([], pendingInteractionReplay.events.filter(event => (
+        pendingInteractionReplay.timelineGeneration > restoredInteractionWatermark.generation
+        || (event.endedSeq ?? event.seq) > restoredInteractionWatermark.seq
+      ))).map(request => request.interactionId))
+    : null;
+  const canDisplayPendingInteraction = (interactionId: string) => !pendingInteractionReplay
+    || Boolean(verifiedLiveInteractionIds?.has(interactionId));
   const canInferPendingPermission = canInferPendingInteractionFromWindow(
     effective,
     hasNewerEvents,
@@ -2637,7 +2720,8 @@ export function ACPChatDialog(
     effective?.pendingInteractions?.find(
       (request): request is AcpPermissionRequestVm =>
         request.kind === "permission"
-        && !dismissedPermissionIds.has(request.interactionId),
+        && !dismissedPermissionIds.has(request.interactionId)
+        && canDisplayPendingInteraction(request.interactionId),
     ) ?? (canInferPendingPermission
       ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
       : null);
@@ -2650,7 +2734,7 @@ export function ACPChatDialog(
     pendingPermissionCandidate?.sessionId,
   );
   const pendingPermission =
-    hidePendingPermission
+    hidePendingPermission || (pendingPermissionCandidate && !canDisplayPendingInteraction(pendingPermissionCandidate.interactionId))
       ? null
       : pendingPermissionCandidate;
   const hidePendingElicitation = shouldHidePendingAcpInteractions(
@@ -2668,7 +2752,8 @@ export function ACPChatDialog(
     : effective?.pendingInteractions.find(
         (request): request is AcpElicitationRequestVm =>
           request.kind === "elicitation"
-          && !answeredElicitations.has(request.interactionId),
+          && !answeredElicitations.has(request.interactionId)
+          && canDisplayPendingInteraction(request.interactionId),
       );
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
@@ -2722,7 +2807,7 @@ export function ACPChatDialog(
   ]);
   const timelineSurfaceState = resolveAcpTimelineSurfaceState({
     hasTimelineItems: timeline.length > 0,
-    initialSessionLoading: initialSessionQueryState === "loading",
+    initialSessionLoading: initialSessionQueryState === "loading" && !canRestoreSessionContent(),
     runtimeActive: initializationLifecycleActive,
     sending,
   });
@@ -3012,17 +3097,21 @@ export function ACPChatDialog(
     setStreamingMarkdownItemKey(target.key);
   }, [normalizeEventUpdate, settleLiveStreamingMarkdown]);
 
+  // Live output ends when neither a user turn nor retained background work is
+  // active; a background wake reply has no turn terminal to settle it.
+  const liveOutputActive = sessionActive || backgroundActive;
   useEffect(() => {
-    if (!sessionActive) settleLiveStreamingMarkdown();
-  }, [sessionActive, settleLiveStreamingMarkdown]);
+    if (!liveOutputActive) settleLiveStreamingMarkdown();
+  }, [liveOutputActive, settleLiveStreamingMarkdown]);
 
   const applySessionUpdate = useCallback((
     updated: AcpSessionVm | null,
     source = "session-update",
     paginationMode: AcpSessionPaginationUpdateMode = "replace",
   ) => {
-    if (sessionIdentityRef.current !== eventWindowKey) return;
+    if (sessionIdentityRef.current !== eventWindowKey) return false;
     const incoming = normalizeSessionUpdate(updated);
+    if (incoming && !acpSessionMatchesLocator(incoming, attemptWorkspaceLocator)) return false;
     const pendingInteractionNeedsVisibleConvergence = Boolean(
       incoming
       && !liveUpdatesPausedRef.current
@@ -3047,8 +3136,8 @@ export function ACPChatDialog(
         incoming,
       ) !== "different-session");
     const previous = latestSessionRef.current;
-    if (hasOlderAcpTimelineProjection(previous, incoming)) return;
-    const reconciled = reconcileAcpSessionForDisplay(previous, incoming);
+    if (hasOlderAcpTimelineProjection(previous, incoming)) return false;
+    const reconciled = admitAcpSessionProjection(previous, incoming);
     const paginated = reconciled
       ? {
           ...reconciled,
@@ -3087,7 +3176,7 @@ export function ACPChatDialog(
     setCurrentSession((current) =>
       sessionsEquivalent(current, normalized) ? current : normalized,
     );
-    if (!normalized) return;
+    if (!normalized) return false;
     settleOptimisticPromptAdmissions(normalized.events);
     if (preserveVisibleTimeline) {
       const timelineBeyondVisibleWindow = acpSessionHasTimelineBeyondLoadedWindow(
@@ -3108,7 +3197,7 @@ export function ACPChatDialog(
         markCanonicalHeadRecovery(true);
       }
       resumePendingCanonicalHeadRecoveryForSnapshot(previous, normalized);
-      return;
+      return true;
     }
     commitHasNewerEvents(normalized.eventPage.hasNewer);
     const currentWindow = loadedEventWindowRef.current;
@@ -3148,7 +3237,8 @@ export function ACPChatDialog(
       ),
       events: limited,
     });
-  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, resumePendingCanonicalHeadRecoveryForSnapshot, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+    return true;
+  }, [attemptId, attemptWorkspaceLocator, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, resumePendingCanonicalHeadRecoveryForSnapshot, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -3172,8 +3262,11 @@ export function ACPChatDialog(
   }, [applySessionUpdate, attemptId, branchId, effectiveEventPageSize, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId]);
 
   const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
-    if (!lifecycle) return;
+    if (!lifecycle || !projectId || !taskUuid) return;
+    const summary = sessionSnapshot ?? latestSessionRef.current;
     onLifecycleSnapshot?.({
+      projectId,
+      taskUuid,
       taskId,
       runId,
       roundId,
@@ -3181,13 +3274,13 @@ export function ACPChatDialog(
       attemptId,
       outerNodeId,
       outerAttemptId,
-      session: normalizeSessionUpdate(sessionSnapshot ?? latestSessionRef.current),
+      sessionId: summary?.sessionId ?? null,
+      sessionStartedAt: summary?.sessionStartedAt ?? null,
       lifecycle,
     });
   }, [
     attemptId,
     nodeId,
-    normalizeSessionUpdate,
     onLifecycleSnapshot,
     outerAttemptId,
     outerNodeId,
@@ -3195,6 +3288,7 @@ export function ACPChatDialog(
     roundId,
     runId,
     taskId,
+    taskUuid,
   ]);
 
   const patchSessionConfig = useCallback((patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
@@ -3440,13 +3534,11 @@ export function ACPChatDialog(
           latest && (!current || shouldPreferAcpSessionMetadata(latest, current))
             ? latest
             : (current ?? latest);
-        const reconciled = reconcileAcpSessionForDisplay(
+        const reconciled = projectLiveAcpEventBatch(
           latest,
-          projectAcpSessionControlEvents(
-            base,
-            normalizedEvents,
-            lifecycleProjectionRef.current,
-          ),
+          base,
+          normalizedEvents,
+          lifecycleProjectionRef.current,
         );
         latestSessionRef.current = reconciled;
         if (reconciled) storeAcpSession(eventWindowKey, reconciled);
@@ -3621,17 +3713,14 @@ export function ACPChatDialog(
     flushOrSchedulePendingLiveEvents();
   }, [flushOrSchedulePendingLiveEvents]);
 
-  const handleLiveStreamUserInteraction = useCallback(() => {
-    deferPendingLiveFlush();
-  }, [deferPendingLiveFlush]);
-
   const handleFollowIntentChange = useCallback((
     following: boolean,
     cause: ChatContainerFollowIntentCause,
   ) => {
     if (following) {
       viewportManualIntentRef.current = false;
-      if (cause !== "external-scroll-to-bottom" && hasNewerEventsRef.current) {
+      if (cause !== "external-scroll-to-bottom"
+        && (hasNewerEventsRef.current || paginationDirectionRef.current === "older")) {
         clearCanonicalHeadRecoveryRetry();
         requestCanonicalHeadRecoveryRef.current?.(true);
       }
@@ -3645,8 +3734,11 @@ export function ACPChatDialog(
     ) {
       viewportManualIntentRef.current = true;
       clearCanonicalHeadRecoveryRetry();
+      // A queued rejoin was cancelled by renewed history input. Keep its gap
+      // facts, but do not leave the retry control disabled without an active read.
+      if (!canonicalHeadHandoffInFlightRef.current) commitReturnToLatestPending(false);
     }
-  }, [clearCanonicalHeadRecoveryRetry]);
+  }, [clearCanonicalHeadRecoveryRetry, commitReturnToLatestPending]);
 
   const canResumeFollowingAfterDisclosure = useCallback(() => (
     !viewportManualIntentRef.current
@@ -3720,7 +3812,7 @@ export function ACPChatDialog(
       canonicalHeadHandoffTrailingIntentRef.current,
       requestedIntent,
     );
-    if (liveUpdatesPausedRef.current) {
+    if (liveUpdatesPausedRef.current || paginationDirectionRef.current === "older") {
       canonicalHeadHandoffTrailingIntentRef.current = intent;
       return;
     }
@@ -3983,6 +4075,7 @@ export function ACPChatDialog(
     if (!pending || !scroller) return;
     pendingBranchViewRestoreRef.current = null;
     if (pending.atBottom) {
+      alignChatContainerViewportToBottomBeforePaint(scroller);
       chatContainerContextRef.current?.scrollToBottom({ animation: "instant" });
       return;
     }
@@ -4072,11 +4165,7 @@ export function ACPChatDialog(
       setInitialSessionQueryState("success");
       return;
     }
-    if (!isTauriRuntime()) {
-      setInitialSessionQueryState("success");
-      return;
-    }
-    const restoredHydratedContent = canRestoreSessionContent();
+    const restoredHydratedContent = canRestoreSessionReadiness();
     setInitialSessionQueryState(restoredHydratedContent ? "success" : "loading");
     setSessionLoadError(null);
     let active = true;
@@ -4282,7 +4371,9 @@ export function ACPChatDialog(
           ) {
             markAcpSessionContentHydrated(eventWindowKey);
             setSessionLoadError(null);
-            setInitialSessionQueryState("success");
+            if (!restoredInteractionWatermark.needsVerification || initialFetchSucceeded) {
+              setInitialSessionQueryState("success");
+            }
           }
           if (acceptedForVisibleGeneration && !hasExplicitHistoricalTimelineIntent()) {
             observeLiveStreamingEvent(event.event);
@@ -4383,7 +4474,7 @@ export function ACPChatDialog(
           ) {
             return;
           }
-          applySessionUpdate(incoming, "subscription-session");
+          if (!applySessionUpdate(incoming, "subscription-session")) return;
           // Subscription session snapshots may advance the visible canonical
           // projection, but only full-head/delta query responses prove replay
           // coverage. Keep their sequence/revision out of the ACK watermark.
@@ -4455,9 +4546,9 @@ export function ACPChatDialog(
             }
             lastLoadError = null;
             setSessionLoadError(null);
-            applySessionUpdate(updated, "initial-fetch");
-            reconcileCanonicalQueryWatermark(updated.eventPage);
-            if (isAcpSessionReadyForInitialDisplay(updated)) {
+            const accepted = applySessionUpdate(updated, "initial-fetch");
+            if (accepted) reconcileCanonicalQueryWatermark(updated.eventPage);
+            if (accepted && isAcpSessionReadyForInitialDisplay(updated)) {
               markAcpSessionContentHydrated(eventWindowKey);
               initialFetchSucceeded = true;
               setInitialSessionQueryState("success");
@@ -4484,7 +4575,7 @@ export function ACPChatDialog(
         if (!initialFetchSucceeded) {
           if (
             restoredHydratedContent
-            || canRestoreSessionContent()
+            || canRestoreSessionReadiness()
           ) {
             setInitialSessionQueryState("success");
             return;
@@ -4882,7 +4973,9 @@ export function ACPChatDialog(
     attemptId,
     branchId,
     cancelledDirectAttemptShell,
-    canRestoreSessionContent,
+    canRestoreSessionReadiness,
+    restoredInteractionWatermark,
+    sessionQueryRetry,
     enqueueLiveEventUpdate,
     eventWindowKey,
     effectiveEventPageSize,
@@ -5558,8 +5651,16 @@ export function ACPChatDialog(
         effectiveLoadedEventBufferLimit,
       );
       setHasOlderEvents(updated.eventPage.hasOlder);
+      // A history page observes the canonical index watermark but does not
+      // cover its newer body. Compare against the window at response commit,
+      // not the request's starting coverage, and defer recovery to user rejoin.
+      if (createAcpTimelineWatermark(updated.eventPage).coveredRevision > activeWindow.coveredRevision) {
+        markCanonicalHeadRecovery(false);
+      }
       commitHasNewerEvents(
-        updated.eventPage.hasNewer
+        // The older page's newer items are already in the active window.
+        // Only an existing window gap, tail trimming or replay loss creates one.
+        hasNewerEventsRef.current
           || limited.length < merged.length
           || replayHasUncoveredNewerEvents(updated.eventPage),
       );
@@ -5568,7 +5669,14 @@ export function ACPChatDialog(
         events: limited,
       });
     } finally {
-      if (finishPaginationRequest(requestToken)) setLoadingOlder(false);
+      if (finishPaginationRequest(requestToken)) {
+        setLoadingOlder(false);
+        // A downward rejoin can arrive while this older read owns pagination.
+        // Resume the existing coordinator only if the user still wants latest.
+        if (!viewportManualIntentRef.current && canonicalHeadRecoveryAutoHandoffRef.current) {
+          requestCanonicalHeadRecoveryRef.current?.(true);
+        }
+      }
     }
   };
 
@@ -5741,7 +5849,7 @@ export function ACPChatDialog(
     viewportManualIntentRef.current = false;
     clearCanonicalHeadRecoveryRetry();
     chatContainerContextRef.current?.stopScroll();
-    if (!hasNewerEventsRef.current) {
+    if (!hasNewerEventsRef.current && paginationDirectionRef.current !== "older") {
       void chatContainerContextRef.current?.scrollToBottom({
         animation: "instant",
       });
@@ -5749,21 +5857,15 @@ export function ACPChatDialog(
     }
     commitReturnToLatestPending(true);
     requestCanonicalHeadHandoff(
-      canonicalHeadRecoveryPendingRef.current ? "recovery" : "ordinary",
+      canonicalHeadRecoveryPendingRef.current || paginationDirectionRef.current === "older"
+        ? "recovery"
+        : "ordinary",
       true,
     );
   };
 
   const releaseSubmittedAttachments = (attachments: AttachmentItem[]) => {
-    if (rightWorkspace?.scopeKey) {
-      for (const attachment of attachments) {
-        rightWorkspace.aliasOpenDraftAttachment(attachment.id, sentAttachmentPreviewAliasKey({
-          assetKind: 'message-attachment',
-          locator: attemptWorkspaceLocator,
-          name: attachment.name,
-        }));
-      }
-    }
+    // Open drafts own detached URLs; sent previews use the backend's canonical path.
     revokeAttachmentPreviewUrls(attachments);
   };
 
@@ -6181,7 +6283,7 @@ export function ACPChatDialog(
 
   const stopSession = async () => {
     if (!canStopSession || stopCommandInFlight || backgroundCancelPending) return;
-    if (!composerState.canStop && backgroundControl) {
+    if (routesAcpStopToBackgroundControl(composerState, backgroundControl)) {
       const scope = eventWindowKey;
       setBackgroundCancelPending(true);
       setCancelError(null);
@@ -6538,7 +6640,9 @@ export function ACPChatDialog(
     // Scroll events also come from streaming layout. Follow intent is changed
     // only by user input and explicit pagination/restore boundaries.
     const scrollTop = scroller.scrollTop;
-    if (scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
+    if (viewportManualIntentRef.current && scrollTop < HISTORY_LOAD_THRESHOLD_PX) {
+      void loadOlderEvents();
+    }
     const distanceFromBottom =
       scroller.scrollHeight - scrollTop - scroller.clientHeight;
     commitShowReturnToLatest(
@@ -6553,7 +6657,11 @@ export function ACPChatDialog(
       "viewport-scroll",
       scroller,
     );
-    if (distanceFromBottom < NEWER_PAGE_LOAD_THRESHOLD_PX && hasNewerEvents) {
+    if (
+      distanceFromBottom < NEWER_PAGE_LOAD_THRESHOLD_PX
+      && hasNewerEvents
+      && (!viewportManualIntentRef.current || chatContainerContextRef.current?.hasUserScrollResumeIntent())
+    ) {
       void loadNewerEvents();
     }
     storeAcpBranchViewState(eventWindowKey, captureAcpBranchScrollState(
@@ -6571,14 +6679,28 @@ export function ACPChatDialog(
     });
   }, []);
 
+  const handleViewportUserScroll = useCallback((
+    scroller: HTMLDivElement,
+    direction: ChatContainerUserScrollDirection,
+  ) => {
+    deferPendingLiveFlush();
+    if (direction !== "up" || !hasOlderEventsRef.current || preservingScrollRef.current
+      || scroller.scrollTop >= HISTORY_LOAD_THRESHOLD_PX) return;
+    // Let the shared viewport record user detachment before this RAF runs,
+    // including short windows that cannot emit a native scroll event.
+    handleScroll(scroller);
+    return true;
+  }, [deferPendingLiveFlush, handleScroll]);
+
   const sessionShellState = resolveAcpSessionShellState({
     hasBaseSession: Boolean(baseSession),
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     hasEstablishedSessionShell: Boolean(establishedSessionShell),
     hasSettledAttemptShell: cancelledDirectAttemptShell,
-    initialSessionLoading: initialSessionQueryState === "loading",
-    initialSessionLoadFailed: initialSessionQueryState === "error",
+    initialSessionLoading: initialSessionQueryState === "loading"
+      && !canRestoreSessionContent() && !restoredInteractionWatermark.trustedSeedReady,
+    initialSessionLoadFailed: initialSessionQueryState === "error" && !canRestoreSessionContent(),
     initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
@@ -6631,10 +6753,7 @@ export function ACPChatDialog(
   // A failed provider attempt can be followed by an automatic retry. Until
   // the runtime reaches its final terminal state, the retry progress is the
   // user-facing state; showing a terminal banner here is contradictory.
-  const localLifecycleUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
-    !(runtimeComposerContext?.isOrchestrated ?? true),
-    localLifecycle,
-  );
+  const localLifecycleUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(localLifecycle);
   const bannerRuntimeError = localLifecycleUsesRuntimeErrorFallback
     ? null
     : runtimeComposerContext?.runtimeError;
@@ -6642,9 +6761,10 @@ export function ACPChatDialog(
     ? runtimeComposerContext?.runtimeError ?? runtimeComposerContext?.runtimeErrorFallback
     : runtimeComposerContext?.runtimeErrorFallback;
   const executionError = currentAcpExecutionError(localLifecycle);
-  const visibleError = executionError ? acpRuntimeErrorBannerCopy(t, executionError.error) : runtimeActive
-    ? null
-    : visibleAcpBannerError(
+  const executionErrorReason = executionError ? acpRuntimeErrorBannerCopy(t, executionError.error) : null;
+  const visibleError: AcpBannerError | null = executionError
+    ? (executionErrorReason ? { source: 'execution', reason: executionErrorReason } : null)
+    : runtimeActive ? null : selectAcpBannerError(
       bannerRuntimeError,
       effective,
       effectiveEvents,
@@ -6654,6 +6774,7 @@ export function ACPChatDialog(
     );
 
   return (
+    <MarkdownLocalImageProvider scopeKey={eventWindowKey} root={markdownImageRoot}>
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <TurnAttachmentCardPreviewLimitContext.Provider value={turnAttachmentCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
@@ -6685,6 +6806,8 @@ export function ACPChatDialog(
           status={resolveConversationBranchDisplayStatus(
             effective.branchExecution.executionStatus || effective.status,
             branchLiveSnapshot.status,
+            effective.branchExecution.providerStateSeq,
+            branchLiveSnapshot.providerStateSeq,
           ) ?? effective.status}
           elapsedSeconds={effective.timing?.sessionElapsedSeconds ?? effective.sessionElapsedSeconds}
         />
@@ -6695,12 +6818,12 @@ export function ACPChatDialog(
         options={systemPromptOptions}
         onOpenChange={setSystemPromptOpen}
       />
-      {visibleError ? (
-        <AcpErrorBanner
-          reason={visibleError}
-          title={bannerRuntimeError ? runtimeComposerContext?.runtimeErrorTitle ?? undefined : undefined}
-        />
-      ) : null}
+      <AcpSessionErrorBanner
+        key={JSON.stringify([eventWindowKey, effective.sessionId])}
+        error={visibleError}
+        identity={acpBannerErrorIdentity(visibleError, localLifecycle, effective)}
+        title={visibleError?.source === 'runtime' ? runtimeComposerContext?.runtimeErrorTitle ?? undefined : undefined}
+      />
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">
@@ -6721,7 +6844,7 @@ export function ACPChatDialog(
             canResumeFollowingAfterDisclosure={canResumeFollowingAfterDisclosure}
             onFollowIntentChange={handleFollowIntentChange}
             onViewportScroll={handleScroll}
-            onViewportUserScroll={handleLiveStreamUserInteraction}
+            onViewportUserScroll={handleViewportUserScroll}
           >
               {loadingOlder ? (
                 <AcpListLoading label={t("acp.loadingOlderEvents")} />
@@ -6790,6 +6913,26 @@ export function ACPChatDialog(
                     title={t(localLifecycle?.continueKind === 'recover-completed-attempt' ? "acp.recoverWorkflowFailed" : "acp.continueWorkflowFailed")}
                     reason={runtimeContinueError}
                   />
+                ) : null}
+                {restoredInteractionWatermark.needsVerification && initialSessionQueryState === "loading" ? (
+                  <div role="status" className="text-sm text-muted-foreground">{t("common.loading")}</div>
+                ) : null}
+                {sessionLoadError ? (
+                  <div className="space-y-2">
+                    <AcpErrorBanner reason={sessionLoadError} />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-acp-session-query-retry="true"
+                      onClick={() => {
+                        setSessionLoadError(null);
+                        setInitialSessionQueryState("loading");
+                        setSessionQueryRetry(value => value + 1);
+                      }}
+                    >
+                      {t("common.retry")}
+                    </Button>
+                  </div>
                 ) : null}
                 {permissionError ? (
                   <AcpErrorBanner reason={permissionError} />
@@ -6988,6 +7131,7 @@ export function ACPChatDialog(
     </AcpBranchLocatorContext.Provider>
     </TurnAttachmentCardPreviewLimitContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
+    </MarkdownLocalImageProvider>
   );
 }
 
@@ -7344,14 +7488,49 @@ function AcpChatSkeleton() {
   );
 }
 
-function AcpErrorBanner({ reason, title }: { reason: string; title?: string }) {
+function AcpSessionErrorBanner({ error, identity, title }: {
+  error: AcpBannerError | null;
+  identity: string | null;
+  title?: string;
+}) {
+  const [dismissed, setDismissed] = useState<{ source: AcpBannerError['source']; identity: string | null } | null>(null);
+  if (!error) {
+    // Unidentified errors can only be dismissed for this visible occurrence.
+    if (dismissed && dismissed.identity === null) setDismissed(null);
+    return null;
+  }
+  if (dismissed?.source === error.source && dismissed.identity === identity) return null;
+  return <AcpErrorBanner
+    reason={error.reason}
+    title={title}
+    onDismiss={() => setDismissed({ source: error.source, identity })}
+  />;
+}
+
+function AcpErrorBanner({ reason, title, onDismiss }: {
+  reason: string;
+  title?: string;
+  onDismiss?: () => void;
+}) {
   const { t } = useTranslation();
   return (
-    <div className="shrink-0 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm">
-      <span className="font-semibold text-destructive">
-        {title ?? t("acp.sessionFailed")}
-      </span>
-      <span className="ml-2 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</span>
+    <div className="flex shrink-0 items-start gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <span className="font-semibold text-destructive">
+          {title ?? t("acp.sessionFailed")}
+        </span>
+        <span className="ml-2 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</span>
+      </div>
+      {onDismiss ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" className="-mr-1 -mt-1 size-7 shrink-0" aria-label={t("common.close")} onClick={onDismiss}>
+              <X className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("common.close")}</TooltipContent>
+        </Tooltip>
+      ) : null}
     </div>
   );
 }
@@ -8205,7 +8384,9 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   const description = event.description ?? input.description;
   const label = description || event.title;
   const metricsSummary = agentExecutionMetricsSummary(event, t);
-  const displayedStatus = resolveConversationBranchDisplayStatus(event.status, liveSnapshot.status);
+  const displayedStatus = resolveConversationBranchDisplayStatus(
+    event.status, liveSnapshot.status, event.providerStateSeq, liveSnapshot.providerStateSeq,
+  );
   const attention = liveSnapshot.revision > 0 ? liveSnapshot.attention : event.attention;
   const statusTone = toolStatusTone(displayedStatus);
   const statusLabel = childAgentStatusLabel(displayedStatus, t);
@@ -8766,7 +8947,7 @@ const ActivityAuditEvent = memo(function ActivityAuditEvent({
 });
 
 function isVisibleActivityAuditEvent(event: Pick<AcpUiEventVm, "kind">) {
-  return event.kind !== "permissionRequest" && event.kind !== "activitySummary";
+  return event.kind !== "permissionRequest" && event.kind !== "activitySummary" && event.kind !== "agentState";
 }
 
 function hasCompleteLocalActivityDetail(event: AcpActivityBatch) {
@@ -9038,6 +9219,7 @@ function childAgentStatusLabel(
   status: string | null | undefined,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
+  if (status === "unknown") return t("acp.subAgentStatusUnknown");
   if (status === "queued") return t("acp.subAgentQueued");
   if (status === "waiting_permission") return t("acp.subAgentWaitingPermission");
   if (status === "interrupted") return t("acp.subAgentInterrupted");
@@ -10803,36 +10985,67 @@ export function pendingElicitationFromEvents(
   return null;
 }
 
-export function visibleAcpBannerError(
+interface AcpBannerError {
+  source: 'execution' | 'runtime' | 'turn' | 'diagnostic';
+  reason: string;
+}
+
+function selectAcpBannerError(
   runtimeError: string | null | undefined,
   session: AcpSessionVm,
   events: AcpUiEventVm[],
   runtimeErrorFallback?: string | null,
   latestTurnStatus?: ConversationAttemptLifecycleVm['acp']['latestTurnStatus'],
   canonicalTurnError?: AcpSessionVm['turnError'],
-) {
-  if (runtimeError) return runtimeError;
+): AcpBannerError | null {
+  if (runtimeError) return { source: 'runtime', reason: runtimeError };
   if (latestTurnStatus === 'completed') return null;
-  // A run-level runtime-abnormal error is only a fallback for sessions that
-  // have no current turn result. Once the lifecycle projection identifies the
-  // current turn as running, cancelled, or otherwise non-failed, an older run
-  // error must not reappear in the banner.
+  // Once control is released, an older run error cannot override a new ACP turn.
   if (latestTurnStatus !== undefined && latestTurnStatus !== 'failed') return null;
   const failed = latestTurnStatus === 'failed'
     || (latestTurnStatus == null && session.status === 'failed');
   const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
   if (failed && error) {
-    return acpRuntimeErrorBannerCopy(i18n.t, error) ?? i18n.t('errors.acp.turn-execution-failed');
+    return { source: 'turn', reason: acpRuntimeErrorBannerCopy(i18n.t, error) ?? i18n.t('errors.acp.turn-execution-failed') };
   }
   if (failed && canonicalTurnError !== undefined) {
-    return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
+    return { source: 'turn', reason: runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed') };
   }
   if (session.diagnostics.lastError) {
     const diagnostic = visibleSessionError(session, events);
-    if (diagnostic || !failed) return diagnostic;
+    if (diagnostic || !failed) return diagnostic ? { source: 'diagnostic', reason: diagnostic } : null;
   }
-  if (failed) return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
-  return runtimeErrorFallback ?? null;
+  if (failed) return { source: 'turn', reason: runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed') };
+  return runtimeErrorFallback ? { source: 'runtime', reason: runtimeErrorFallback } : null;
+}
+
+export function visibleAcpBannerError(
+  ...args: Parameters<typeof selectAcpBannerError>
+) {
+  return selectAcpBannerError(...args)?.reason ?? null;
+}
+
+function acpBannerErrorIdentity(
+  error: AcpBannerError | null,
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  session: AcpSessionVm,
+): string | null {
+  if (!error) return null;
+  switch (error.source) {
+    case 'execution': {
+      const owner = currentAcpExecutionError(lifecycle)?.owner;
+      return owner ? JSON.stringify([owner.turnId, owner.operationId]) : null;
+    }
+    case 'runtime':
+      return lifecycle?.runtime.revision != null ? String(lifecycle.runtime.revision) : null;
+    case 'turn':
+      if (lifecycle?.acp.turnId || lifecycle?.acp.operationId) {
+        return JSON.stringify([lifecycle.acp.turnId, lifecycle.acp.operationId]);
+      }
+      return session.diagnostics.lastErrorTimestamp ?? null;
+    case 'diagnostic':
+      return session.diagnostics.lastErrorTimestamp ?? null;
+  }
 }
 
 export function acpSessionLoadErrorReason(
@@ -10974,6 +11187,7 @@ function stabilizeTimelineItem(
       next.attention === previous.attention &&
       next.description === previous.description &&
       next.agentExecutionId === previous.agentExecutionId &&
+      next.providerStateSeq === previous.providerStateSeq &&
       next.attemptId === previous.attemptId &&
       stabilizeTimelineItem(next.toolEvent, previous.toolEvent) ===
         previous.toolEvent
@@ -11232,6 +11446,7 @@ function projectAgentLinks(
       title: event.title,
       toolCallId: event.toolCallId,
       agentExecutionId,
+      providerStateSeq: persisted?.providerStateSeq,
       attemptId: persisted?.attemptId ?? eventAttemptId,
       parentAgentExecutionId: persisted?.parentAgentExecutionId,
       attention: persisted?.hasAttention ?? false,
@@ -11721,6 +11936,22 @@ export function projectAcpSessionControlEvents(
     projected = applyPendingInteractionEventsToSession(projected, events);
   }
   return settlePendingAcpInteractionsForLifecycle(projected, lifecycle);
+}
+
+/**
+ * Reconcile the display snapshot first, then apply the live control-event
+ * projection on top: the live batch is the newest fact, so snapshot-
+ * preservation rules must not roll back its interaction settlements. Matches
+ * the replay catch-up order.
+ */
+export function projectLiveAcpEventBatch(
+  latest: AcpSessionVm | null | undefined,
+  base: AcpSessionVm | null | undefined,
+  events: AcpUiEventVm[],
+  lifecycle?: ConversationAttemptLifecycleVm | null,
+): AcpSessionVm | null {
+  const reconciledBase = reconcileAcpSessionForDisplay(latest, base) ?? base ?? null;
+  return projectAcpSessionControlEvents(reconciledBase, events, lifecycle);
 }
 
 function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) {

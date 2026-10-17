@@ -1,0 +1,12 @@
+{
+  "name": "gold-band-benchmark-editorial-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "export": "node export-pdf.mjs --slides ../slides --out ../Gold-Band-Benchmark.pdf"
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1",
+    "playwright": "1.64.0"
+  }
+}

@@ -886,7 +886,10 @@ mod tests {
             .and_then(|stat| super::proc_stat_state_and_group(&stat))
             .is_none_or(|(state, _)| state != 'Z')
         {
-            assert!(std::time::Instant::now() < deadline, "member never became a zombie");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "member never became a zombie"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(unsafe { libc::kill(-(group_id as i32), 0) }, 0);

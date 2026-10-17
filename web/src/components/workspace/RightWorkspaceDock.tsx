@@ -1,5 +1,6 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, Workflow, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, TriangleAlert, Workflow, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ErrorBoundary, type FallbackProps } from 'react-error-boundary';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -111,24 +112,37 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
         ) : null}
       </div> : null}
       <div className="flex min-h-0 flex-1 flex-col">
-        {active?.kind === 'agent-transcript' ? (
-          <AgentConversationPanel
-            key={active.key}
-            resource={active}
-            eventPageSize={acpChatEventPageSize}
-            eventWindowPageCount={acpChatEventWindowPageCount}
-          />
-        ) : null}
-        {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
-        {!active ? (
-          <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">
-            <WorkspaceEntryOptions presentation="empty" />
-          </div>
-        ) : null}
+        <ErrorBoundary FallbackComponent={RightWorkspacePanelFallback} resetKeys={[active?.key]}>
+          {active?.kind === 'agent-transcript' ? (
+            <AgentConversationPanel
+              key={active.key}
+              resource={active}
+              eventPageSize={acpChatEventPageSize}
+              eventWindowPageCount={acpChatEventWindowPageCount}
+            />
+          ) : null}
+          {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
+          {!active ? (
+            <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">
+              <WorkspaceEntryOptions presentation="empty" />
+            </div>
+          ) : null}
+        </ErrorBoundary>
       </div>
     </section>
   );
 });
+
+function RightWorkspacePanelFallback({ resetErrorBoundary }: FallbackProps) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center" role="alert" data-right-workspace-panel-error="true">
+      <TriangleAlert className="size-5 text-destructive" aria-hidden="true" />
+      <p className="text-sm text-muted-foreground">{t('workspace.panelFailed')}</p>
+      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={resetErrorBoundary}>{t('common.retry')}</Button>
+    </div>
+  );
+}
 
 type WorkspaceEntryOption = {
   id: 'file-browser' | 'source-control' | 'conversation-directory' | 'browser';

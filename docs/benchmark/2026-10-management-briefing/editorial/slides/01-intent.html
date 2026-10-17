@@ -1,0 +1,73 @@
+<!-- Approved B editorial direction, 2026-10-14. Source: ../../direction-approved.md.
+Adapted from the user-selected reference showcase; benchmark facts remain unchanged.
+Fixed 1920x1080 page; the shared deck host owns navigation and scaling. -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>测试意图 · Gold Band</title>
+  <link rel="stylesheet" href="../assets/fonts.css">
+  <style>
+    :root{--paper:#F0F1EE;--ink:#101112;--muted:#525954;--rule:#CCD0C9;--blue:#244892}
+    *{box-sizing:border-box}
+    html{margin:0;width:1920px;height:1080px;background:var(--paper)}
+    body{margin:0;width:1920px;height:1080px;padding:64px 96px 54px;background:var(--paper);color:var(--ink);font-family:var(--font-brand);font-weight:400;overflow:hidden;-webkit-font-smoothing:antialiased}
+    p,h1,h2,dl,dt,dd{margin:0}
+    .masthead{height:64px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid var(--ink)}
+    .publication{display:flex;align-items:center;gap:16px;font-size:24px;font-weight:520;letter-spacing:.01em}
+    .publication img{width:32px;height:32px;object-fit:contain}
+    .stage{padding-top:2px;font-size:22px;color:var(--muted)}
+    main{display:grid;grid-template-columns:1100px 1fr;column-gap:74px;padding-top:58px}
+    .lead{min-width:0}
+    h1{font-size:108px;font-weight:520;letter-spacing:-.035em;line-height:1.2;text-wrap:balance}
+    h1 span{display:block}
+    h1 .question{color:var(--blue)}
+    .intro{margin-top:38px;font-size:34px;line-height:1.65;letter-spacing:-.02em;max-width:1080px;text-wrap:pretty}
+    .criteria{padding-left:44px;border-left:1px solid var(--rule);padding-top:9px;min-width:0}
+    .criteria h2{font-size:22px;font-weight:500;letter-spacing:.05em;color:var(--muted);margin-bottom:29px}
+    .criterion{padding:24px 0 30px;border-top:1px solid var(--rule)}
+    .criterion:first-of-type{border-top:2px solid var(--blue)}
+    .criterion dt{font-size:38px;line-height:1.35;font-weight:520;letter-spacing:-.02em;margin-bottom:14px}
+    .criterion dd{font-size:30px;line-height:1.65;letter-spacing:-.02em;text-wrap:pretty}
+    .comparison{margin-top:53px;display:grid;grid-template-columns:1fr 1fr;column-gap:48px;border-top:1px solid var(--rule);padding-top:25px}
+    .identity{display:flex;gap:23px;align-items:center;min-width:0}
+    .identity img{width:65px;height:65px;object-fit:contain;flex:none}
+    .identity-name{font-size:35px;line-height:1.3;letter-spacing:-.02em;font-weight:520;white-space:nowrap}
+    .identity-mode{font-size:24px;line-height:1.4;margin-top:7px;color:var(--muted);white-space:nowrap}
+    footer{position:absolute;left:96px;right:96px;bottom:51px;padding-top:22px;border-top:1px solid var(--rule);font-size:22px;line-height:1.5;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band <span aria-hidden="true">/</span> Benchmark</p>
+    <p class="stage">阶段性结果 · 2026.10.13</p>
+  </header>
+  <main>
+    <section class="lead" aria-labelledby="intent-title">
+      <h1 id="intent-title"><span>什么时候值得</span><span>让多个 Agent</span><span class="question">协作？</span></h1>
+      <p class="intro">从单体执行到工作流与 AUTO，<br>我们测的是：质量收益能否覆盖<br>额外的 token 和时间。</p>
+      <div class="comparison" aria-label="执行框架对照">
+        <div class="identity">
+          <img src="../assets/claude-code.svg" alt="Claude Code 标志">
+          <div><p class="identity-name">Claude Code</p><p class="identity-mode">单主会话（允许分发 subagent）</p></div>
+        </div>
+        <div class="identity">
+          <img src="../assets/gold-band.svg" alt="Gold Band 标志">
+          <div><p class="identity-name">Gold Band</p><p class="identity-mode">工作流 / AUTO</p></div>
+        </div>
+      </div>
+    </section>
+    <aside class="criteria" aria-labelledby="criteria-title">
+      <h2 id="criteria-title">判断依据</h2>
+      <dl>
+        <div class="criterion"><dt>质量</dt><dd>是否通过独立测试<br>与整体验收。</dd></div>
+        <div class="criterion"><dt>成本</dt><dd>token 与<br>端到端耗时。</dd></div>
+        <div class="criterion"><dt>适用边界</dt><dd>从局部问题<br>到长程工程。</dd></div>
+      </dl>
+    </aside>
+  </main>
+  <footer>执行框架对照，不是模型能力排名。</footer>
+<script src="../assets/slide.js"></script>
+</body>
+</html>

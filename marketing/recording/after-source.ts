@@ -1,6 +1,6 @@
 import type { RuntimeApi } from '@/api/client';
 import type { GitSourceControlSnapshotVm, TurnFileLocatorVm } from '@/types';
-import { createPreviewRun, taskTitle } from '../shared/fixture';
+import { createPreviewRun, createPreviewSession, taskTitle } from '../shared/fixture';
 import { createWorkflowSource } from './workflow-source';
 import type { Language } from '../site/content';
 
@@ -39,20 +39,20 @@ export function createAfterSource(base: RuntimeApi, language: Language): Partial
     await source.advance('result-true'); await source.advance('branch');
     const value = await source.snapshot();
     const completed = createPreviewRun(value, language);
-    Object.assign(value, { runStatus: 'completed', runOutcome: 'success', activeSessions: [], selectedSession: completed.selectedSession });
-    value.selectedSession!.events = value.selectedSession!.events.map(event => event.kind === 'fileChangeSet' ? { ...event, raw: { ...event.raw as object, attachmentCount: 1 } } : event);
-    value.selectedSession!.events = value.selectedSession!.events.filter(event => event.id !== 'site-plan').map((event, index) => ({ ...event, seq: index + 1,
+    const final = createPreviewSession((await source.api.getAcpSession!('default', 'mock-task', 'run-052', 'round-001', 'continue', 'attempt-001'))!, language);
+    Object.assign(value, { runStatus: 'completed', runOutcome: 'success', activeSessions: [] });
+    final.events = final.events.map(event => event.kind === 'fileChangeSet' ? { ...event, raw: { ...event.raw as object, attachmentCount: 1 } } : event);
+    final.events = final.events.filter(event => event.id !== 'site-plan').map((event, index) => ({ ...event, seq: index + 1,
       ...(event.id === 'site-user' ? { content: language === 'zh' ? '完善工作区配置与说明，保留文件快照。' : 'Update workspace configuration and docs; retain file snapshots.' } : {}),
       ...(event.id === 'site-result' ? { content: language === 'zh' ? '配置与说明已更新，请审阅报告和文件变更。' : 'Configuration and docs updated. Review the report and file changes.' } : {}) }));
-    const count = value.selectedSession!.events.length;
-    Object.assign(value.selectedSession!.eventPage, { loadedCount: count, total: count, newestSeq: count });
-    value.selectedSession!.diagnostics.eventCount = count;
-    value.selectedSession!.worktreePath = null; value.selectedSession!.worktreeBranch = null;
+    const count = final.events.length;
+    Object.assign(final.eventPage, { loadedCount: count, total: count, newestSeq: count });
+    final.diagnostics.eventCount = count;
     const round = value.sessionTree.rounds[0];
-    const final = round.nodes.find(node => node.nodeId === 'continue')!;
+    const finalNode = round.nodes.find(node => node.nodeId === 'continue')!;
     const terminal = completed.sessionTree.rounds[0].nodes.find(node => node.nodeId === 'continue')!;
-    Object.assign(final, { status: terminal.status, runtimeDisplay: terminal.runtimeDisplay });
-    Object.assign(final.attempts[0], terminal.attempts[0], { current: false, attachmentCount: 1 });
+    Object.assign(finalNode, { status: terminal.status, runtimeDisplay: terminal.runtimeDisplay });
+    Object.assign(finalNode.attempts[0], terminal.attempts[0], { current: false, attachmentCount: 1 });
     for (const node of round.nodes) for (const attempt of node.attempts) {
       attempt.current = false; attempt.lifecycle!.runtime.current = false; attempt.lifecycle!.runtime.active = false;
     }
@@ -61,22 +61,22 @@ export function createAfterSource(base: RuntimeApi, language: Language): Partial
       ? { ...node, status: 'completed', outcome: 'success', runtimeDisplay: terminal.runtimeDisplay, current: false, attachmentCount: 1 }
       : { ...node, current: false });
     source.dispose();
-    return value;
+    return { run: value, final };
   })();
   const run = async (selected?: string | null) => {
-    const value = structuredClone(await ready);
+    const value = structuredClone((await ready).run);
     if (selected && selected !== value.sessionTree.selectedSessionKey) {
-      const node = value.sessionTree.rounds[0].nodes.find(node => selected === `round-001/${node.nodeId}/attempt-001`);
-      if (!node) return fail('locator-invalid');
-      value.selectedSession = await source.api.getAcpSession!('default', 'mock-task', 'run-052', 'round-001', node.nodeId, 'attempt-001');
+      if (!value.sessionTree.rounds[0].nodes.some(node => selected === `round-001/${node.nodeId}/attempt-001`)) return fail('locator-invalid');
       value.sessionTree.selectedSessionKey = selected;
     }
     return value;
   };
+  // The completed continue session is replaced by the curated review story; earlier nodes keep their recorded bodies.
   const session = async (p: string | null | undefined, t: string, r: string, round: string, node: string, attempt?: string | null, outer?: string | null, outerAttempt?: string | null) => {
     validate(p ?? '', t, r);
     if (round !== 'round-001' || (attempt && attempt !== 'attempt-001') || outer || outerAttempt) return fail('locator-invalid');
-    return (await run(`round-001/${node}/attempt-001`)).selectedSession!;
+    if (node === 'continue') return structuredClone((await ready).final);
+    return (await source.api.getAcpSession!('default', 'mock-task', 'run-052', 'round-001', node, 'attempt-001'))!;
   };
   async function sourceSnapshot(): Promise<GitSourceControlSnapshotVm> {
     const [template, actual] = await Promise.all([base.getSourceControlSnapshot('default', null), call<Repository>({ action: 'snapshot' })]);
@@ -94,10 +94,10 @@ export function createAfterSource(base: RuntimeApi, language: Language): Partial
     async getAcpToolDetail(p, t, r, round, node, attempt, query, outer, outerAttempt) { return { event: (await session(p, t, r, round, node, attempt, outer, outerAttempt)).events.find(event => event.toolCallId === query.toolCallId) ?? null }; },
     getWorkflow: source.api.getWorkflow,
     showArtifact: source.api.showArtifact,
-    async getConversationTaskPage(projectId) { validate(projectId); const value = await run(); return { projectId, tasks: [{ projectId, taskId: value.taskId, taskUuid: value.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'workflow', lastActivityAt: value.selectedSession!.sessionUpdatedAt!, runs: [], runHistoryStatus: 'ready-empty', runsNextCursor: null, pinned: false }], nextCursor: null, errors: [] }; },
+    async getConversationTaskPage(projectId) { validate(projectId); const value = await run(); return { projectId, tasks: [{ projectId, taskId: value.taskId, taskUuid: value.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'workflow', lastActivityAt: (await ready).final.sessionUpdatedAt!, runs: [], runHistoryStatus: 'ready', runsNextCursor: null, pinned: false }], nextCursor: null, errors: [] }; },
     async getTurnFileChangeSet(locator, id) {
       validateFiles(locator, id); const data = await seed();
-      return { id, turnId: 'site-tool', promptEventId: 'site-user', branchId: 'root', status: 'finalized', startedAt: (await run()).selectedSession!.sessionStartedAt!, finishedAt: null,
+      return { id, turnId: 'site-tool', promptEventId: 'site-user', branchId: 'root', status: 'finalized', startedAt: (await ready).final.sessionStartedAt!, finishedAt: null,
         summary: { fileCount: 2, addedFiles: 1, modifiedFiles: 1, deletedFiles: 0, addedLines: 5, deletedLines: 1 },
         changes: files.map((path, index) => ({ id: path, changeKind: index ? 'added' : 'modified', logicalPath: path, text: true, addedLines: index ? 4 : 1, deletedLines: index ? 0 : 1 })),
         attachments: [{ id: 'review-report', relativePath: 'review.md', name: 'review.md', byteLength: new TextEncoder().encode(data.report).length }], limitationCodes: [] };
@@ -107,9 +107,10 @@ export function createAfterSource(base: RuntimeApi, language: Language): Partial
       return { changeSetId: id, changeId: path, path, stats: { addedLines: before ? 1 : 4, deletedLines: before ? 1 : 0 }, before: before ? { content: before, version: version(before) } : null, after: { content: after, version: version(after) }, limitationCode: null };
     },
     async resolveTurnAttachmentFile(locator, id, attachment) { validateFiles(locator, id); if (attachment !== 'review-report') fail('path-invalid'); return { locator: { projectId: 'default', canonicalPath: reportPath, relativePath: 'review.md', scope: 'workspace' }, target: null, externalAccessGrant: null }; },
-    async listWorkspaceDirectory(project, path = '') { validate(project); if (!['', 'src', 'docs'].includes(path)) fail('path-invalid');
+    async listWorkspaceDirectory(root, path = '') { validate(root.projectId); if (!['', 'src', 'docs'].includes(path)) fail('path-invalid');
       return (path ? files.filter(file => file.startsWith(`${path}/`)) : ['src', 'docs']).map(file => ({ name: file.split('/').at(-1)!, relativePath: file, canonicalPath: `/default/${file}`, kind: path ? 'file' : 'directory', hasChildren: !path, byteLength: null, modifiedAtNs: null })); },
-    async readFileResource(project, canonicalPath) {
+    async readFileResource(root, canonicalPath) {
+      const project = root.projectId;
       validate(project); const report = canonicalPath === reportPath;
       const data = report ? { content: (await seed()).report, revision: { byteLength: new TextEncoder().encode((await seed()).report).length, modifiedAtNs: '0', contentHash: 'report' } } : await call<{ content: string; revision: { contentHash: string; byteLength: number; modifiedAtNs: string } }>({ action: 'read', path: filePath(canonicalPath) });
       return { kind: 'text', locator: { projectId: project, canonicalPath, relativePath: canonicalPath.slice('/default/'.length), scope: 'workspace' }, name: canonicalPath.split('/').at(-1)!, ...data, encoding: 'utf-8', language: canonicalPath.endsWith('.json') ? 'json' : 'markdown', lineEnding: 'lf', editable: !report, limitationCode: null, externalAccessGrant: null };

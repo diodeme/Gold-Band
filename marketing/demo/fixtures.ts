@@ -1,6 +1,6 @@
 import type { ConversationRunVm, ConversationSidebarVm, ConversationTaskRowVm, DesktopLanguage, RuntimeDisplayVm } from '@/types';
-import { createPreviewRun } from '../shared/fixture';
-import { mockWorkflowTemplates } from '@/mockData';
+import { createPreviewRun, createPreviewSession } from '../shared/fixture';
+import { mockErrorBlockedConversationSession, mockWorkflowTemplates } from '@/mockData';
 import { demoAgentRegistry, demoProfiles } from './catalog';
 import { demoDevelopmentFiles } from './turn-files';
 import { DEMO_RUN_ID, DEMO_WORKFLOW_ROUNDS, demoWorkflowRuns } from './scenarios';
@@ -23,8 +23,61 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
   run.runId = runId;
   run.runMode = demoRunMode(taskId);
   run.activeSessions = [];
-  const session = run.selectedSession!;
-  session.title = demoTitle(taskId, language);
+  if (run.runMode === 'workflow') {
+    const template = mockWorkflowTemplates.templates.find((item) => item.id === 'default-lightweight')!;
+    const profiles = demoProfiles(language);
+    const seedRound = run.sessionTree.rounds[0];
+    const seed = seedRound.nodes[0];
+    const scenario = demoWorkflowRuns.find((scenario) => scenario.runId === runId)!;
+    run.workflowTemplateId = template.id;
+    run.workflowJson = JSON.stringify(template.workflow);
+    run.workflowStatus = 'valid';
+    run.sessionTree.rounds = DEMO_WORKFLOW_ROUNDS.map((roundId, index) => ({ ...seedRound, roundId, index: index + 1, label: roundId,
+      nodes: template.workflow.nodes.map((node) => {
+      const label = node.type === 'worker' ? profiles.find((profile) => profile.id === node.profile)?.name ?? node.id : node.id;
+      const attempt = structuredClone(seed.attempts[0]);
+      attempt.roundId = roundId;
+      attempt.nodeId = node.id;
+      attempt.pathLabel = `${node.id}/${attempt.attemptId}`;
+      attempt.sessionId = `demo-${taskId}-${runId}-${roundId}-${node.id}`;
+      attempt.current = index === DEMO_WORKFLOW_ROUNDS.length - 1 && node.id === 'accept';
+      const startedAt = Date.parse(scenario.startedAt) + index * 6 * 60_000 + template.workflow.nodes.indexOf(node) * 2 * 60_000;
+      attempt.startedAt = new Date(startedAt).toISOString();
+      attempt.finishedAt = new Date(startedAt + 60_000).toISOString();
+      attempt.attachmentCount = node.id === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0;
+      const needsRevision = index === 0 && node.id === 'accept';
+      attempt.outcome = needsRevision ? 'failure' : 'success';
+      const display: RuntimeDisplayVm = needsRevision ? { ...attempt.runtimeDisplay, code: 'failure', tone: 'danger', icon: 'error' } : attempt.runtimeDisplay;
+      attempt.runtimeDisplay = display;
+      if (attempt.lifecycle) {
+        attempt.lifecycle.runtime.current = attempt.current;
+        attempt.lifecycle.runtime.outcome = attempt.outcome;
+        attempt.lifecycle.runtimeDisplay = display;
+        attempt.lifecycle.displayStatus = needsRevision ? 'failure' : 'success';
+        attempt.lifecycle.composer.lockInput = true;
+      }
+      return { ...seed, nodeId: node.id, label, runtimeDisplay: display, attempts: [attempt] };
+    }) }));
+    const round = run.sessionTree.rounds.at(-1)!;
+    run.workflowGraph = {
+      nodes: round.nodes.map((node) => ({ id: node.nodeId, nodeId: node.nodeId, label: node.label,
+        nodeType: node.nodeType, status: 'completed', outcome: 'success', runtimeDisplay: node.runtimeDisplay,
+        attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0, current: false })),
+      edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
+      groups: [],
+    };
+    run.sessionTree.selectedSessionKey = `${round.roundId}/accept/${round.nodes[0].attempts[0].attemptId}`;
+  }
+  return run;
+}
+
+export function demoSessionForNode(run: ConversationRunVm, roundId: string, nodeId: string, attemptId: string, language: DesktopLanguage) {
+  const round = run.sessionTree.rounds.find((round) => round.roundId === roundId);
+  const node = round?.nodes.find((node) => node.nodeId === nodeId);
+  const leaf = node?.attempts.find((attempt) => attempt.attemptId === attemptId);
+  if (!node || !round || !leaf) throw { code: 'demo.resource-not-found', params: { roundId, nodeId, attemptId } };
+  const session = createPreviewSession(mockErrorBlockedConversationSession, language === 'en' ? 'en' : 'zh');
+  session.title = demoTitle(run.taskId, language);
   session.events = session.events.filter((event) => event.kind !== 'fileChangeSet');
   const en = language === 'en';
   session.events[0].content = en ? 'Inspect the workspace configuration and prepare a project guide.' : '请检查工作区配置，并整理一份项目说明。';
@@ -32,11 +85,11 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
   const tool = session.events.find((event) => event.kind === 'toolCall')!;
   tool.title = en ? 'Read workspace files' : '读取工作区文件';
   tool.raw = { toolCallId: tool.toolCallId, title: tool.title, status: 'completed' };
-  if (taskId === 'demo-review') {
+  if (run.taskId === 'demo-review') {
     session.events[0].content = en ? 'Review the project structure and summarize the responsibilities of each module.' : '请检查项目结构，整理各模块的职责和后续审阅重点。';
     session.events[1].content = en ? 'I will read the project notes and inspect the entry points.' : '我会先阅读项目说明，再检查各模块的入口与依赖关系。';
   }
-  if (taskId === 'demo-diagram') {
+  if (run.taskId === 'demo-diagram') {
     session.events[0].content = en
       ? 'Draw how a session, the harness, agents and the workspace fit together.'
       : '把会话、Harness、Agent 和工作区的关系画出来。';
@@ -128,7 +181,7 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
       ? `A message leaves the composer, enters the timeline, and the run mode hands it to Direct, Workflow or AUTO. AUTO can enter Workflow, and a failed check can loop back through repair. Agents change files and diffs through tools, then return to source control.\n\n\`\`\`mermaid\n${diagram}\n\`\`\``
       : `消息从输入框进入时间线，运行模式再把它交给 Direct、Workflow 或 AUTO。AUTO 可以进入 Workflow，验收失败会走修正再回到流程。Agent 通过工具改文件、看 Diff，然后回到源码管理。\n\n\`\`\`mermaid\n${diagram}\n\`\`\``;
   }
-  if (taskId !== 'demo-diagram') {
+  if (run.taskId !== 'demo-diagram') {
     session.events.at(-1)!.content = en
       ? '## Review result\n\nThe workspace keeps configuration and application logic separate.\n\n- [README.md](/default/README.md): project notes\n- [src/config.json](/default/src/config.json): configuration\n\nThe next review can focus on input validation and regression coverage.'
       : '## 审阅结果\n\n工作区将配置与应用逻辑分开管理。\n\n- [README.md](/default/README.md)：项目说明\n- [src/config.json](/default/src/config.json)：配置内容\n\n后续可以重点检查输入校验和回归测试覆盖。';
@@ -136,64 +189,6 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
   session.events.forEach((event, index) => { event.seq = index + 1; });
   session.eventPage = { loadedCount: session.events.length, total: session.events.length, oldestSeq: 1, newestSeq: session.events.length, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null };
   session.diagnostics.eventCount = session.events.length;
-  if (run.runMode === 'workflow') {
-    const template = mockWorkflowTemplates.templates.find((item) => item.id === 'default-lightweight')!;
-    const profiles = demoProfiles(language);
-    const seedRound = run.sessionTree.rounds[0];
-    const seed = seedRound.nodes[0];
-    const scenario = demoWorkflowRuns.find((scenario) => scenario.runId === runId)!;
-    run.workflowTemplateId = template.id;
-    run.workflowJson = JSON.stringify(template.workflow);
-    run.workflowStatus = 'valid';
-    run.sessionTree.rounds = DEMO_WORKFLOW_ROUNDS.map((roundId, index) => ({ ...seedRound, roundId, index: index + 1, label: roundId,
-      nodes: template.workflow.nodes.map((node) => {
-      const label = node.type === 'worker' ? profiles.find((profile) => profile.id === node.profile)?.name ?? node.id : node.id;
-      const attempt = structuredClone(seed.attempts[0]);
-      attempt.roundId = roundId;
-      attempt.nodeId = node.id;
-      attempt.pathLabel = `${node.id}/${attempt.attemptId}`;
-      attempt.sessionId = `demo-${taskId}-${runId}-${roundId}-${node.id}`;
-      attempt.current = index === DEMO_WORKFLOW_ROUNDS.length - 1 && node.id === 'accept';
-      const startedAt = Date.parse(scenario.startedAt) + index * 6 * 60_000 + template.workflow.nodes.indexOf(node) * 2 * 60_000;
-      attempt.startedAt = new Date(startedAt).toISOString();
-      attempt.finishedAt = new Date(startedAt + 60_000).toISOString();
-      attempt.attachmentCount = node.id === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0;
-      const needsRevision = index === 0 && node.id === 'accept';
-      attempt.outcome = needsRevision ? 'failure' : 'success';
-      const display: RuntimeDisplayVm = needsRevision ? { ...attempt.runtimeDisplay, code: 'failure', tone: 'danger', icon: 'error' } : attempt.runtimeDisplay;
-      attempt.runtimeDisplay = display;
-      if (attempt.lifecycle) {
-        attempt.lifecycle.runtime.current = attempt.current;
-        attempt.lifecycle.runtime.outcome = attempt.outcome;
-        attempt.lifecycle.runtimeDisplay = display;
-        attempt.lifecycle.displayStatus = needsRevision ? 'failure' : 'success';
-        attempt.lifecycle.composer.lockInput = true;
-      }
-      return { ...seed, nodeId: node.id, label, runtimeDisplay: display, attempts: [attempt] };
-    }) }));
-    const round = run.sessionTree.rounds.at(-1)!;
-    run.workflowGraph = {
-      nodes: round.nodes.map((node) => ({ id: node.nodeId, nodeId: node.nodeId, label: node.label,
-        nodeType: node.nodeType, status: 'completed', outcome: 'success', runtimeDisplay: node.runtimeDisplay,
-        attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0, current: false })),
-      edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
-      groups: [],
-    };
-    run.selectedSession = demoSessionForNode(run, round.roundId, 'accept', language);
-    run.sessionTree.selectedSessionKey = `${round.roundId}/accept/${round.nodes[0].attempts[0].attemptId}`;
-  } else {
-    run.selectedSession = demoSessionForNode(run, run.sessionTree.rounds[0].roundId, run.sessionTree.rounds[0].nodes[0].nodeId, language);
-  }
-  return run;
-}
-
-export function demoSessionForNode(run: ConversationRunVm, roundId: string, nodeId: string, language: DesktopLanguage) {
-  const round = run.sessionTree.rounds.find((round) => round.roundId === roundId);
-  const node = round?.nodes.find((node) => node.nodeId === nodeId);
-  if (!node || !round) throw { code: 'demo.resource-not-found', params: { nodeId } };
-  const session = structuredClone(run.selectedSession!);
-  session.events = session.events.filter((event) => event.kind !== 'fileChangeSet');
-  const leaf = node.attempts[0];
   Object.assign(session, { roundId: round.roundId, nodeId, attemptId: leaf.attemptId, sessionId: leaf.sessionId ?? session.sessionId });
   if (run.runMode === 'workflow') {
     session.sessionStartedAt = leaf.startedAt;

@@ -138,7 +138,7 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
   return merged;
 }
 
-describe('Direct runtime error ownership', () => {
+describe('ACP runtime error ownership after control is released', () => {
   it('keeps the old run banner hidden from completion through follow-up and stop', () => {
     const oldRunError = 'OLD_RUN_FAILURE';
     const session = { status: 'running', diagnostics: { errorCount: 0 } } as AcpSessionVm;
@@ -152,7 +152,7 @@ describe('Direct runtime error ownership', () => {
         composer: { submitTarget },
         acp: { latestTurnStatus, turnError: null },
       });
-      const fallback = shouldTreatAcpRuntimeErrorAsFallback(true, current);
+      const fallback = shouldTreatAcpRuntimeErrorAsFallback(current);
       expect(visibleAcpBannerError(
         fallback ? null : oldRunError, session, [], fallback ? oldRunError : null,
         current.acp.latestTurnStatus, current.acp.turnError,
@@ -167,18 +167,17 @@ describe('Direct runtime error ownership', () => {
         runtimeDisplay: runtimeAbnormalDisplay,
         composer: { submitTarget },
       });
-      expect(shouldTreatAcpRuntimeErrorAsFallback(true, current)).toBe(true);
-      expect(shouldTreatAcpRuntimeErrorAsFallback(false, current)).toBe(false);
-      expect(shouldTreatAcpRuntimeErrorAsFallback(true, {
+      expect(shouldTreatAcpRuntimeErrorAsFallback(current)).toBe(true);
+      expect(shouldTreatAcpRuntimeErrorAsFallback({
         ...current, runtimeDisplay: { ...runtimeAbnormalDisplay, blockingError: true },
       })).toBe(false);
-      expect(shouldTreatAcpRuntimeErrorAsFallback(true, {
+      expect(shouldTreatAcpRuntimeErrorAsFallback({
         ...current, control: { mode: 'runtime-controlled' },
       })).toBe(false);
     },
   );
   it('does not classify process-interrupted as a runtime abnormal error', () => {
-    expect(shouldTreatAcpRuntimeErrorAsFallback(true, lifecycle({
+    expect(shouldTreatAcpRuntimeErrorAsFallback(lifecycle({
       runtime: { status: 'paused', pauseReason: 'process-interrupted' },
       runtimeDisplay: pausedDisplay,
     }))).toBe(false);

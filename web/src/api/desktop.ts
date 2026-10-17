@@ -97,6 +97,9 @@ export const desktopApi: RuntimeApi = {
   getGitComparison(projectId, source) {
     return invokeCommand('get_git_comparison', { projectId, source });
   },
+  prepareGitPush(projectId, workspacePath, input) {
+    return invokeCommand('prepare_git_push', { projectId, workspacePath, input });
+  },
   startGitOperation(projectId, workspacePath, input) {
     return invokeCommand('start_git_operation', { projectId, workspacePath, input });
   },

@@ -1294,12 +1294,7 @@ impl ScheduledRuntime {
                 let pending_guard_joins = self.pending_guard_joins.clone();
                 let join = tauri::async_runtime::spawn(async move {
                     entry.guard.stop().await;
-                    finish_lifecycle_occurrence(
-                        app_handle,
-                        occurrence_id,
-                        entry.metadata,
-                        event,
-                    );
+                    finish_lifecycle_occurrence(app_handle, occurrence_id, entry.metadata, event);
                 });
                 if let Ok(mut pending) = pending_guard_joins.lock() {
                     pending.push(join);

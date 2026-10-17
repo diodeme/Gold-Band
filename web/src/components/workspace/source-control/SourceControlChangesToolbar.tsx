@@ -38,10 +38,13 @@ import type {
   GitSourceControlOverviewVm,
 } from '@/types';
 import { rememberPreferredGitRemote, resolvePreferredGitRemote } from './source-control-preferences';
+import { SourceControlPushConfirmation } from './SourceControlPushConfirmation';
 
 type ChangesActionKind = 'fetch' | 'pull' | 'push' | 'stash-create';
 
-export function SourceControlSyncActions({ snapshot, busyActionKind, locked, remotesLoading, remotesError, onRetryRemotes, onOperation }: {
+export function SourceControlSyncActions({ projectId, workspacePath, snapshot, busyActionKind, locked, remotesLoading, remotesError, onRetryRemotes, onOperation }: {
+  projectId: string;
+  workspacePath?: string | null;
   snapshot: GitSourceControlOverviewVm;
   busyActionKind: string | null;
   locked: boolean;
@@ -76,11 +79,6 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, rem
   const submit = () => {
     if (action === 'fetch') onOperation({ kind: 'fetch', remote: remote || null, prune: flag });
     if (action === 'pull') onOperation({ kind: 'pull', remote: null, branch: null, strategy: pullStrategy });
-    if (action === 'push') {
-      const branch = snapshot.repository.currentBranch;
-      if (!branch || !remote) return;
-      onOperation({ kind: 'push', remote, branch, setUpstream: !snapshot.repository.upstream });
-    }
     setAction(null);
   };
   const valid = action === 'pull' || Boolean(action && remote && (action !== 'push' || snapshot.repository.currentBranch));
@@ -104,7 +102,7 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, rem
           <Button type="button" size="xs" variant="ghost" className="gap-1 px-1 text-muted-foreground" disabled={busy || locked || remotesLoading || remotesError || !canSync} aria-label={syncLabel} onClick={() => openAction(syncAction)}>
             {busyActionKind === syncAction ? <LoaderCircle className="size-3 animate-spin" /> : null}
             {behind > 0 ? <span className="tabular-nums" aria-hidden="true">↓{behind}</span> : null}
-            {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑</span>}
+            {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑{t('sourceControl.newBranchIndicator')}</span>}
           </Button>
         </TooltipTrigger>
         <TooltipContent>{remoteStateLabel ?? syncLabel}</TooltipContent>
@@ -121,7 +119,17 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, rem
         </TooltipTrigger>
         <TooltipContent>{remoteStateLabel ?? t('sourceControl.fetch')}</TooltipContent>
       </Tooltip>
-      <ChangesActionDialog action={action} message="" flag={flag} remote={remote} pullStrategy={pullStrategy} remotes={remoteNames} onMessage={() => undefined} onFlag={setFlag} onRemote={selectRemote} onPullStrategy={setPullStrategy} onClose={() => setAction(null)} onSubmit={submit} valid={valid} />
+      {action === 'push' && snapshot.repository.currentBranch ? (
+        <Dialog open onOpenChange={(open) => { if (!open) setAction(null); }}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md" aria-describedby={undefined}>
+            <DialogHeader>
+              <DialogTitle className="text-base">{t('sourceControl.actions.push.title')}</DialogTitle>
+            </DialogHeader>
+            <SourceControlPushConfirmation projectId={projectId} workspacePath={workspacePath} commonDir={snapshot.repository.commonDir} intent={{ kind: 'upstream-sync', branch: snapshot.repository.currentBranch, remote: remote || null }} remotes={remoteNames} busy={busy || locked} onCancel={() => setAction(null)} onConfirm={(prepared) => { onOperation({ kind: 'push', ...prepared }); setAction(null); }} />
+          </DialogContent>
+        </Dialog>
+      ) : null}
+      <ChangesActionDialog action={action === 'push' ? null : action} message="" flag={flag} remote={remote} pullStrategy={pullStrategy} remotes={remoteNames} onMessage={() => undefined} onFlag={setFlag} onRemote={selectRemote} onPullStrategy={setPullStrategy} onClose={() => setAction(null)} onSubmit={submit} valid={valid} />
     </>
   );
 }
@@ -209,7 +217,7 @@ export function SourceControlChangesToolbar({
 }
 
 function ChangesActionDialog({ action, message, flag, remote, pullStrategy, remotes, onMessage, onFlag, onRemote, onPullStrategy, onClose, onSubmit, valid }: {
-  action: ChangesActionKind | null;
+  action: Exclude<ChangesActionKind, 'push'> | null;
   message: string;
   flag: boolean;
   remote: string;
@@ -225,7 +233,7 @@ function ChangesActionDialog({ action, message, flag, remote, pullStrategy, remo
 }) {
   const { t } = useTranslation();
   if (!action) return null;
-  const showRemote = action === 'fetch' || action === 'push';
+  const showRemote = action === 'fetch';
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="sm:max-w-md">

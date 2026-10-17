@@ -3,6 +3,7 @@ import {
   beginConversationSessionSelection,
   canonicalizeConversationPageIdentity,
   conversationPageForSession,
+  conversationPageForRun,
   conversationPageForIntervention,
   conversationPageMatchesRun,
   conversationPageTargetsTask,
@@ -237,25 +238,22 @@ describe('conversation navigation presentation transaction', () => {
     )).toBe('project-last-session');
   });
 
-  it('commits a selected session locator immediately and clears stale session content', () => {
-    const selectedSession = { sessionId: 'old-session' } as ConversationRunVm['selectedSession'];
+  it('commits only the selected session locator immediately without adding content state', () => {
     const run = {
       ...oldRun,
-      selectedSession,
       sessionTree: { rounds: [], selectedSessionKey: 'round-1/node-1/attempt-1' },
     } as ConversationRunVm;
 
     const next = beginConversationSessionSelection(run, 'round-2/node-2/attempt-2');
 
     expect(next.sessionTree.selectedSessionKey).toBe('round-2/node-2/attempt-2');
-    expect(next.selectedSession).toBeNull();
-    expect(run.selectedSession).toBe(selectedSession);
+    expect(next).not.toHaveProperty('selectedSession');
+    expect(run.sessionTree.selectedSessionKey).toBe('round-1/node-1/attempt-1');
   });
 
-  it('keeps loaded content when the selected session locator does not change', () => {
+  it('keeps the run projection when the selected session locator does not change', () => {
     const run = {
       ...oldRun,
-      selectedSession: { sessionId: 'current-session' },
       sessionTree: { rounds: [], selectedSessionKey: 'round-1/node-1/attempt-1' },
     } as ConversationRunVm;
 
@@ -330,6 +328,20 @@ describe('conversation navigation presentation transaction', () => {
     expect(findConversationLeafForPage(tree, page)).toBe(dynamicLeaf);
   });
 
+  it('uses only the run worktree summary when no navigation leaf is available', () => {
+    const run = {
+      ...oldRun,
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      worktree: { path: 'D:/repo/worktrees/run', branch: 'run-branch', forkCommit: 'head' },
+    } as ConversationRunVm;
+    const page = conversationPageForRun(run);
+
+    expect(conversationWorkLocation(page, run)).toEqual({
+      kind: 'worktree', path: run.worktree!.path, branch: 'run-branch',
+    });
+    expect(conversationWorkLocation(page, { ...run, worktree: null })).toEqual({ kind: 'main' });
+  });
+
   it('projects the selected session work location instead of its source branch workspace', () => {
     const worker = { kind: 'worktree', path: 'D:/repo/.gold-band/worktrees/worker', branch: 'gb-worker' } as const;
     const mainLeaf = {
@@ -357,7 +369,6 @@ describe('conversation navigation presentation transaction', () => {
           nodes: [{ attempts: [mainLeaf], outerNodes: [{ attempts: [dynamicLeaf] }] }],
         }],
       },
-      selectedSession: null,
       worktree: null,
     } as ConversationRunVm;
     const dynamicPage = conversationPageForSession(run, dynamicLeaf);

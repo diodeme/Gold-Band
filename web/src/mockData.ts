@@ -323,7 +323,6 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
       }],
     }],
   },
-  selectedSession: mockErrorBlockedConversationSession,
   activeSessions: [],
   inputAttachments: [],
   workflowStatus: 'valid',

@@ -744,10 +744,13 @@ export class FileContentStore {
           const result = await resolveMarkdownImage({
             projectId: entry.resource.projectId,
             workspacePath: entry.resource.workspacePath,
-            markdownCanonicalPath: entry.resource.locator.canonicalPath,
-            markdownExternalAccessToken: runtime.externalAccessGrant?.token ?? null,
+            source: {
+              kind: 'document',
+              canonicalPath: entry.resource.locator.canonicalPath,
+              externalAccessToken: runtime.externalAccessGrant?.token ?? null,
+              approvedExternalTargets: [...runtime.approvedMarkdownImageTargets],
+            },
             rawSrc,
-            approvedExternalTargets: [...runtime.approvedMarkdownImageTargets],
           });
           next = { ...result, rawSrc };
         } catch (reason) {

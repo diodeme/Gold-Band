@@ -38,7 +38,7 @@ import {
 } from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
 import type { ResidentPinToggleProps } from '@/components/conversation/ResidentPin';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
+import type { AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -51,23 +51,6 @@ function activeSessionKey(session: {
     return `${session.roundId}/${session.outerNodeId}/${session.outerAttemptId}/${session.nodeId}/${session.attemptId}`;
   }
   return `${session.roundId}/${session.nodeId}/${session.attemptId}`;
-}
-
-export function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
-  if (!session || !leaf) return true;
-  if (session.roundId && session.nodeId && session.attemptId) {
-    return session.roundId === leaf.roundId &&
-      session.nodeId === leaf.nodeId &&
-      session.attemptId === leaf.attemptId &&
-      (session.outerNodeId ?? null) === (leaf.outerNodeId ?? null) &&
-      (session.outerAttemptId ?? null) === (leaf.outerAttemptId ?? null);
-  }
-  if (!session.cwd) return true;
-  const cwd = normalizeSessionPath(session.cwd);
-  const expected = leaf.outerNodeId && leaf.outerAttemptId
-    ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)
-    : normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.nodeId}/${leaf.attemptId}`);
-  return cwd.endsWith(expected);
 }
 
 export function resolveConversationContentQueryState(
@@ -85,10 +68,6 @@ export function shouldShowConversationContentLoadingState(
   selectedLeaf: Pick<ConversationSessionLeafVm, 'current'> | null,
 ) {
   return queryState === 'loading' && !selectedLeaf?.current;
-}
-
-function normalizeSessionPath(path: string) {
-  return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
 }
 
 interface ConversationRunPageProps {
@@ -524,14 +503,9 @@ export function ConversationRunPage({
     }
   };
 
-  const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
-  const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
-  const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
-    isDirect,
-    selectedLeaf?.lifecycle,
-  );
+  const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(selectedLeaf?.lifecycle);
   const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
   ) && !selectedSessionUsesRuntimeErrorFallback
@@ -540,7 +514,7 @@ export function ConversationRunPage({
   const selectedSessionRuntimeErrorFallback = selectedSessionUsesRuntimeErrorFallback
     ? runtimeControlErrorBase
     : null;
-  const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
+  const selectedSessionErrorDetails = run.runtimeErrorMessage ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedSessionRuntimeError = selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionErrorBlocked;
@@ -671,7 +645,6 @@ export function ConversationRunPage({
             key={selectedContentIdentity}
             readOnly={readOnly}
             showDisabledComposer={readOnly}
-            session={selectedSession}
             agentRegistry={agentRegistry}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}

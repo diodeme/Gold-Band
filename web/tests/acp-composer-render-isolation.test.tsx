@@ -609,7 +609,7 @@ describe('ACP composer render isolation', () => {
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={{ ...completedSession(), sessionElapsedSeconds: 62 }}
               projectId="project-render"
@@ -625,7 +625,7 @@ describe('ACP composer render isolation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 

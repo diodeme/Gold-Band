@@ -103,6 +103,8 @@ pub struct AgentExecutionRecord {
     pub launch_tool_call_id: String,
     pub session_id: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_state_seq: Option<u64>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub started_at: String,
@@ -188,19 +190,33 @@ fn prompt_turn_is_terminal(
         .unwrap_or(!session_active)
 }
 
-fn background_launch_is_live(launch: &AcpUiEvent, launches: &HashMap<String, AcpUiEvent>, session_status: &str) -> bool {
+fn background_launch_is_live(
+    launch: &AcpUiEvent,
+    launches: &HashMap<String, AcpUiEvent>,
+    session_status: &str,
+) -> bool {
     if matches!(session_status, "failed" | "stopped" | "cancelled" | "error") {
         return false;
     }
     let mut current = launch;
     let mut visited = HashSet::new();
     loop {
-        if current.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")).and_then(Value::as_bool) == Some(true) {
+        if current
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
             return true;
         }
         let parent = event_branch_id(current);
-        if !visited.insert(parent.clone()) { return false; }
-        let Some(next) = launches.get(&parent) else { return false; };
+        if !visited.insert(parent.clone()) {
+            return false;
+        }
+        let Some(next) = launches.get(&parent) else {
+            return false;
+        };
         current = next;
     }
 }
@@ -1248,9 +1264,41 @@ pub fn rebuild_agent_index(
             let owning_turn_terminal = background_stopped
                 || !background_live
                     && prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
-            let has_attention =
-                branch_has_pending_interaction(&branch_events) && !owning_turn_terminal;
-            let status = if failed {
+            let provider_state = branch_events
+                .iter()
+                .filter(|event| event.kind == "agentState")
+                .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+                .map(|event| crate::acp::timeline::TimelineAgentStateProjection {
+                    seq: event.ended_seq.unwrap_or(event.seq),
+                    timestamp: event
+                        .ended_at
+                        .clone()
+                        .unwrap_or_else(|| event.timestamp.clone()),
+                    status: event
+                        .status
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            let provider_status = provider_state.as_ref().map(|state| {
+                native_agent_status(
+                    state,
+                    session_status,
+                    latest_seq,
+                    latest_background_cancel.as_ref(),
+                )
+            });
+            let has_attention = provider_status
+                .map(|status| {
+                    !matches!(status, "completed" | "failed" | "interrupted")
+                        && (status == "waiting_permission"
+                            || branch_has_pending_interaction(&branch_events))
+                })
+                .unwrap_or_else(|| {
+                    branch_has_pending_interaction(&branch_events) && !owning_turn_terminal
+                });
+            let status = if let Some(status) = provider_status {
+                status
+            } else if failed {
                 "failed"
             } else if has_agent_completion_evidence(&execution_events) {
                 "completed"
@@ -1270,15 +1318,20 @@ pub fn rebuild_agent_index(
                 .and_then(|input| input.get("description"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let updated_at = (status == "interrupted")
-                .then(|| {
-                    if background_stopped {
-                        latest_background_cancel.as_ref().map(|(_, at)| at.clone())
-                    } else {
-                        prompt_turn_ended_at(owning_turn, &prompt_turns)
-                    }
+            let updated_at = provider_state
+                .as_ref()
+                .map(|state| state.timestamp.clone())
+                .or_else(|| {
+                    (status == "interrupted")
+                        .then(|| {
+                            if background_stopped {
+                                latest_background_cancel.as_ref().map(|(_, at)| at.clone())
+                            } else {
+                                prompt_turn_ended_at(owning_turn, &prompt_turns)
+                            }
+                        })
+                        .flatten()
                 })
-                .flatten()
                 .or(latest_timestamp)
                 .unwrap_or_else(|| {
                     launch
@@ -1295,6 +1348,7 @@ pub fn rebuild_agent_index(
                 launch_tool_call_id,
                 session_id,
                 status,
+                provider_state_seq: provider_state.as_ref().map(|state| state.seq),
                 title,
                 description,
                 started_at: launch
@@ -1324,6 +1378,24 @@ pub fn rebuild_agent_index(
     }
     cache_agent_index(attempt_dir, source_signature, records.clone());
     Ok(records)
+}
+
+fn native_agent_status<'a>(
+    state: &'a crate::acp::timeline::TimelineAgentStateProjection,
+    session_status: &str,
+    latest_activity: Option<u64>,
+    background_cancel: Option<&(u64, String)>,
+) -> &'a str {
+    if matches!(state.status.as_str(), "running" | "waiting_permission")
+        && (matches!(session_status, "stopped" | "closed" | "interrupted")
+            || background_cancel.is_some_and(|(seq, _)| {
+                *seq >= state.seq && latest_activity.is_none_or(|latest| *seq >= latest)
+            }))
+    {
+        "interrupted"
+    } else {
+        state.status.as_str()
+    }
 }
 
 /// Builds the Agent list from per-branch materialized projections. Unlike the
@@ -1408,10 +1480,30 @@ pub fn indexed_agent_index(
             let owning_turn_terminal = background_stopped
                 || !background_live
                     && prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
-            let has_attention = projection
-                .is_some_and(|projection| projection.has_pending_interaction)
-                && !owning_turn_terminal;
-            let status = if failed {
+            let provider_state =
+                projection.and_then(|projection| projection.latest_agent_state.as_ref());
+            let provider_status = provider_state.map(|state| {
+                native_agent_status(
+                    state,
+                    session_status,
+                    projection.and_then(|projection| projection.latest_seq),
+                    root.latest_background_cancel.as_ref(),
+                )
+            });
+            let has_attention = provider_status
+                .map(|status| {
+                    !matches!(status, "completed" | "failed" | "interrupted")
+                        && (status == "waiting_permission"
+                            || projection
+                                .is_some_and(|projection| projection.has_pending_interaction))
+                })
+                .unwrap_or_else(|| {
+                    projection.is_some_and(|projection| projection.has_pending_interaction)
+                        && !owning_turn_terminal
+                });
+            let status = if let Some(status) = provider_status {
+                status
+            } else if failed {
                 "failed"
             } else if projection.is_some_and(|projection| projection.has_completion_evidence) {
                 "completed"
@@ -1426,15 +1518,21 @@ pub fn indexed_agent_index(
             }
             .to_string();
             let input = launch.raw.as_ref().and_then(tool_raw_input);
-            let updated_at = (status == "interrupted")
-                .then(|| {
-                    if background_stopped {
-                        root.latest_background_cancel.as_ref().map(|(_, at)| at.clone())
-                    } else {
-                        prompt_turn_ended_at(owning_turn, &prompt_turns)
-                    }
+            let updated_at = provider_state
+                .map(|state| state.timestamp.clone())
+                .or_else(|| {
+                    (status == "interrupted")
+                        .then(|| {
+                            if background_stopped {
+                                root.latest_background_cancel
+                                    .as_ref()
+                                    .map(|(_, at)| at.clone())
+                            } else {
+                                prompt_turn_ended_at(owning_turn, &prompt_turns)
+                            }
+                        })
+                        .flatten()
                 })
-                .flatten()
                 .or_else(|| projection.and_then(|projection| projection.latest_timestamp.clone()))
                 .unwrap_or_else(|| {
                     launch
@@ -1451,6 +1549,7 @@ pub fn indexed_agent_index(
                 launch_tool_call_id,
                 session_id,
                 status,
+                provider_state_seq: provider_state.map(|state| state.seq),
                 title: launch.title.clone(),
                 description: input
                     .and_then(|input| input.get("description"))
@@ -2527,41 +2626,111 @@ mod tests {
     #[test]
     fn agent_launched_after_end_turn_is_not_interrupted_by_that_turn() {
         let attempt = temp_attempt("after-end-turn");
-        let mut launch = event_at("launch", 10, "toolCall", Some("provider-child"), Some("pending"), json!({"agentLaunch": true}), Some(json!({"prompt":"inspect"})));
+        let mut launch = event_at(
+            "launch",
+            10,
+            "toolCall",
+            Some("provider-child"),
+            Some("pending"),
+            json!({"agentLaunch": true}),
+            Some(json!({"prompt":"inspect"})),
+        );
         launch.raw.as_mut().unwrap()["_meta"]["goldBandBackground"] = json!(true);
-        let text = event_at("child", 11, "thoughtDelta", None, None, json!({"parentToolCallId":"provider-child"}), None);
-        persist_partitioned(&attempt, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch, text]);
-        assert_eq!(rebuild_agent_index(&attempt, "completed").unwrap()[0].status, "running");
-        assert_eq!(indexed_agent_index(&attempt, "completed").unwrap()[0].status, "running");
-        assert_eq!(indexed_agent_index(&attempt, "cancelled").unwrap()[0].status, "interrupted");
+        let text = event_at(
+            "child",
+            11,
+            "thoughtDelta",
+            None,
+            None,
+            json!({"parentToolCallId":"provider-child"}),
+            None,
+        );
+        persist_partitioned(
+            &attempt,
+            vec![
+                prompt_turn_event("first", 1, Some(("completed", 5))),
+                launch,
+                text,
+            ],
+        );
+        assert_eq!(
+            rebuild_agent_index(&attempt, "completed").unwrap()[0].status,
+            "running"
+        );
+        assert_eq!(
+            indexed_agent_index(&attempt, "completed").unwrap()[0].status,
+            "running"
+        );
+        assert_eq!(
+            indexed_agent_index(&attempt, "cancelled").unwrap()[0].status,
+            "interrupted"
+        );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
     #[test]
     fn accepted_background_stop_interrupts_background_agent_until_it_continues() {
         let launch = || {
-            let mut launch = event_at("launch", 10, "toolCall", Some("provider-child"), Some("pending"), json!({"agentLaunch": true}), Some(json!({"prompt":"inspect"})));
+            let mut launch = event_at(
+                "launch",
+                10,
+                "toolCall",
+                Some("provider-child"),
+                Some("pending"),
+                json!({"agentLaunch": true}),
+                Some(json!({"prompt":"inspect"})),
+            );
             launch.raw.as_mut().unwrap()["_meta"]["goldBandBackground"] = json!(true);
             launch
         };
-        let child = |id: &str, seq| event_at(id, seq, "thoughtDelta", None, None, json!({"parentToolCallId":"provider-child"}), None);
+        let child = |id: &str, seq| {
+            event_at(
+                id,
+                seq,
+                "thoughtDelta",
+                None,
+                None,
+                json!({"parentToolCallId":"provider-child"}),
+                None,
+            )
+        };
         let stop = crate::acp::events::background_cancel_marker_event(12, Some("session".into()));
         let status = |attempt: &Utf8Path| {
             let rebuilt = rebuild_agent_index(attempt, "completed").unwrap()[0].clone();
             let indexed = indexed_agent_index(attempt, "completed").unwrap()[0].clone();
-            assert_eq!(rebuilt.status, indexed.status, "full rebuild and index projection agree");
+            assert_eq!(
+                rebuilt.status, indexed.status,
+                "full rebuild and index projection agree"
+            );
             indexed
         };
 
         let stopped = temp_attempt("background-stop");
-        persist_partitioned(&stopped, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch(), child("child", 11), stop.clone()]);
+        persist_partitioned(
+            &stopped,
+            vec![
+                prompt_turn_event("first", 1, Some(("completed", 5))),
+                launch(),
+                child("child", 11),
+                stop.clone(),
+            ],
+        );
         let record = status(&stopped);
         assert_eq!(record.status, "interrupted");
         assert_eq!(record.ended_at.as_deref(), Some(stop.timestamp.as_str()));
         std::fs::remove_dir_all(stopped.as_std_path()).unwrap();
 
         let ignored = temp_attempt("background-stop-ignored");
-        persist_partitioned(&ignored, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch(), child("child", 11), stop, child("child-after-stop", 13)]);
+        persist_partitioned(
+            &ignored,
+            vec![
+                prompt_turn_event("first", 1, Some(("completed", 5))),
+                launch(),
+                child("child", 11),
+                stop,
+                child("child-after-stop", 13),
+            ],
+        );
         assert_eq!(status(&ignored).status, "running");
         std::fs::remove_dir_all(ignored.as_std_path()).unwrap();
     }
@@ -2787,6 +2956,108 @@ mod tests {
         assert_eq!(rebuilt[0].status, "interrupted");
         assert_eq!(rebuilt[0].ended_at.as_deref(), Some("3Z"));
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn native_subagent_state_is_authoritative_and_can_resume_after_parent_turn_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let branch_id = stable_agent_execution_id("session-1", "provider-child");
+        let mut events = vec![
+            prompt_turn_event("turn-1", 1, Some(("completed", 10))),
+            event_at(
+                "launch",
+                2,
+                "toolCall",
+                Some("provider-child"),
+                Some("completed"),
+                json!({ "agentLaunch": true }),
+                Some(json!({ "description": "child" })),
+            ),
+        ];
+        for (seq, status) in [
+            (3, "running"),
+            (4, "completed"),
+            (11, "running"),
+            (12, "waiting_permission"),
+            (13, "failed"),
+            (14, "running"),
+            (15, "interrupted"),
+            (16, "unknown"),
+            (17, "completed"),
+        ] {
+            let mut state = event_at(
+                &format!("native-state-{seq}"),
+                seq,
+                "agentState",
+                None,
+                Some(status),
+                json!({}),
+                None,
+            );
+            state.raw = Some(json!({ "source": "nativeSubagentState" }));
+            annotate_event_branch_override(&mut state, &branch_id);
+            events.push(state);
+            persist_partitioned(&attempt, events.clone());
+            let indexed = indexed_agent_index(&attempt, "completed").unwrap();
+            assert_eq!(indexed[0].status, status, "latest official state at {seq}");
+            assert_eq!(indexed[0].provider_state_seq, Some(seq));
+            assert_eq!(indexed, rebuild_agent_index(&attempt, "completed").unwrap());
+            if matches!(status, "running" | "waiting_permission") {
+                assert_eq!(
+                    indexed_agent_index(&attempt, "stopped").unwrap()[0].status,
+                    "interrupted"
+                );
+            }
+        }
+        assert_eq!(
+            indexed_agent_index(&attempt, "stopped").unwrap()[0].status,
+            "completed"
+        );
+    }
+
+    #[test]
+    fn native_agent_pending_permission_keeps_attention_before_provider_state_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let branch_id = stable_agent_execution_id("session-1", "provider-child");
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            None,
+        );
+        let mut state = event_at(
+            "state",
+            2,
+            "agentState",
+            None,
+            Some("running"),
+            json!({}),
+            None,
+        );
+        state.raw = Some(json!({ "source": "nativeSubagentState" }));
+        annotate_event_branch_override(&mut state, &branch_id);
+        let permission = event_at(
+            "permission",
+            3,
+            "permissionRequest",
+            Some("tool"),
+            Some("pending"),
+            json!({ "parentToolCallId": "provider-child" }),
+            None,
+        );
+        persist_partitioned(&attempt, vec![launch, state, permission]);
+        let indexed = indexed_agent_index(&attempt, "completed").unwrap();
+        assert_eq!(indexed[0].status, "running");
+        assert!(
+            indexed[0].has_attention,
+            "pending permission is an independent canonical fact"
+        );
+        assert_eq!(indexed, rebuild_agent_index(&attempt, "completed").unwrap());
     }
 
     #[test]

@@ -86,7 +86,6 @@ export function conversationWorkLocation(
   const selectedLeaf = findConversationLeafByKey(run.sessionTree, run.sessionTree.selectedSessionKey)
     ?? findConversationLeafForPage(run.sessionTree, page);
   if (selectedLeaf) return selectedLeaf.workLocation;
-  if (run.selectedSession) return run.selectedSession.workLocation;
   return run.worktree ? { kind: 'worktree', path: run.worktree.path, branch: run.worktree.branch } : { kind: 'main' };
 }
 
@@ -125,7 +124,6 @@ export function beginConversationSessionSelection(
   if (run.sessionTree.selectedSessionKey === selectedSessionKey) return run;
   return {
     ...run,
-    selectedSession: null,
     sessionTree: {
       ...run.sessionTree,
       selectedSessionKey,

@@ -73,6 +73,25 @@ impl AcpPromptInteractionIdentity {
             session_id: Some(session_id),
         }
     }
+
+    /// An interaction raised while a prompt turn owns the conversation. In
+    /// Direct mode it additionally carries the session id so retention can
+    /// still route it, but only its own settlement or turn terminal closes it.
+    pub fn for_turn_and_session(
+        interaction_id: String,
+        kind: AcpPromptInteractionKind,
+        turn_id: String,
+        prompt_event_id: String,
+        session_id: Option<String>,
+    ) -> Self {
+        Self {
+            interaction_id,
+            kind,
+            turn_id: Some(turn_id),
+            prompt_event_id: Some(prompt_event_id),
+            session_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

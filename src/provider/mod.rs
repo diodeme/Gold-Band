@@ -22,9 +22,9 @@ use crate::prompts::{
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
-    normalize_provider_runtime_failure, runtime_error,
+    manual_runtime_error_info, normalize_provider_runtime_failure, runtime_error,
 };
-use crate::storage::{active_storage_path_config, atomic_write_file, read_json, write_json};
+use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use image::codecs::jpeg::JpegEncoder;
@@ -34,7 +34,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek, Write};
 use std::str::FromStr;
 use tracing::debug;
 pub use workspace_files::{
@@ -1024,8 +1024,16 @@ pub fn resolve_user_input_attachments(
         return Ok(Vec::new());
     }
 
-    let user_inputs_dir = attempt_dir.join(USER_INPUT_ATTACHMENT_PREFIX);
-    std::fs::create_dir_all(user_inputs_dir.as_std_path())?;
+    std::fs::create_dir_all(attempt_dir)?;
+    let attempt_root = dunce::canonicalize(attempt_dir)?;
+    let user_inputs_dir = user_input_attachment_directory(
+        &attempt_root.join(USER_INPUT_ATTACHMENT_PREFIX),
+        &attempt_root,
+    )?;
+    // `<user-inputs>/<digest>/<name>`: the digest directory has a fixed width, so the remaining
+    // budget for the stored name is known before any bytes are copied.
+    let name_budget = USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
+        .saturating_sub(path_utf16_units(&user_inputs_dir) + USER_INPUT_ATTACHMENT_DIGEST_LEN + 2);
     let mut resolved = Vec::with_capacity(paths.len());
     for path in paths {
         let source = std::path::Path::new(path);
@@ -1033,26 +1041,178 @@ pub fn resolve_user_input_attachments(
             .file_name()
             .and_then(|name| name.to_str())
             .context("user input attachment requires a UTF-8 file name")?;
-        let destination = user_inputs_dir.join(name);
-        let same_file = destination.exists()
-            && std::fs::canonicalize(source)
-                .ok()
-                .zip(std::fs::canonicalize(destination.as_std_path()).ok())
-                .is_some_and(|(source, destination)| source == destination);
-        if !same_file {
-            let mut source_file = std::fs::File::open(source)?;
-            atomic_write_file(destination.as_std_path(), |file| -> Result<()> {
-                std::io::copy(&mut source_file, file)?;
-                Ok(())
-            })?;
+        validate_user_input_attachment_name(name)?;
+        let stored_name = fit_user_input_attachment_name(name, name_budget).ok_or_else(|| {
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::RuntimeIo,
+                USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE,
+                format!(
+                    "attachment `{name}` cannot be stored within {USER_INPUT_ATTACHMENT_PATH_MAX_UNITS} path units under {}",
+                    user_inputs_dir.display()
+                ),
+                json!({ "name": name, "maxPathLength": USER_INPUT_ATTACHMENT_PATH_MAX_UNITS }),
+            ))
+        })?;
+        let mut source_file = std::fs::File::open(source)?;
+        ensure!(
+            source_file.metadata()?.is_file(),
+            "attachment source is not a regular file"
+        );
+
+        // Hash exactly the original bytes being copied, not the source on a second read or
+        // the bounded image derivative. Staging on the same filesystem permits atomic publish.
+        let mut staged = tempfile::NamedTempFile::new_in(&user_inputs_dir)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES];
+        loop {
+            let count = source_file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            staged.write_all(&buffer[..count])?;
+            hasher.update(&buffer[..count]);
         }
-        resolved.push(resolved_attachment(
-            destination.as_std_path(),
-            USER_INPUT_ATTACHMENT_PREFIX,
+        staged.flush()?;
+        staged.as_file().sync_all()?;
+        let digest = hasher.finalize().to_hex()[..USER_INPUT_ATTACHMENT_DIGEST_LEN].to_string();
+        let content_dir =
+            user_input_attachment_directory(&user_inputs_dir.join(&digest), &user_inputs_dir)?;
+        let destination = content_dir.join(&stored_name);
+        match staged.persist_noclobber(&destination) {
+            Ok(_) => {}
+            Err(mut error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // A retry or concurrent publisher may have won. Reuse only a regular in-root
+                // file whose bytes match; even a corrupt digest destination is never replaced.
+                let metadata = std::fs::symlink_metadata(&destination)?;
+                ensure!(
+                    metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && dunce::canonicalize(&destination)?.starts_with(&user_inputs_dir),
+                    "attachment destination is not a regular in-root file"
+                );
+                ensure!(
+                    user_input_attachment_matches(error.file.as_file_mut(), &destination)?,
+                    "attachment content-addressed destination conflicts with copied bytes"
+                );
+            }
+            Err(error) => return Err(error.error.into()),
+        }
+        let mut attachment = resolved_attachment(
+            &destination,
+            &format!("{USER_INPUT_ATTACHMENT_PREFIX}/{digest}"),
             policy,
-        )?);
+        )?;
+        attachment.meta.name = name.to_string();
+        resolved.push(attachment);
     }
     Ok(resolved)
+}
+
+/// Fits a validated name into `max_units` and the file-name component limit by shortening its
+/// stem. The digest directory already identifies the bytes, so a shortened name cannot alias
+/// different content; `AttachmentMeta::name` keeps the original name for display.
+fn fit_user_input_attachment_name(name: &str, max_units: usize) -> Option<String> {
+    let max_units = max_units.min(USER_INPUT_ATTACHMENT_NAME_MAX_UNITS);
+    let fits = |units: usize, bytes: usize| {
+        units <= max_units && bytes <= USER_INPUT_ATTACHMENT_NAME_MAX_UNITS
+    };
+    if fits(name.encode_utf16().count(), name.len()) {
+        return Some(name.to_string());
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(index) if index > 0 => name.split_at(index),
+        _ => (name, ""),
+    };
+    let mut units = extension.encode_utf16().count();
+    let mut bytes = extension.len();
+    let mut fitted = String::new();
+    for character in stem.chars() {
+        if !fits(units + character.len_utf16(), bytes + character.len_utf8()) {
+            break;
+        }
+        units += character.len_utf16();
+        bytes += character.len_utf8();
+        fitted.push(character);
+    }
+    // Windows strips trailing dots and spaces, which would break the locator round-trip.
+    fitted.truncate(fitted.trim_end_matches([' ', '.']).len());
+    if fitted.is_empty() {
+        return None;
+    }
+    fitted.push_str(extension);
+    Some(fitted)
+}
+
+fn path_utf16_units(path: &std::path::Path) -> usize {
+    path.to_string_lossy().encode_utf16().count()
+}
+
+const USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES: usize = 64 * 1024;
+/// Windows MAX_PATH (260) minus the terminating NUL. Persisted attachment paths are handed to
+/// agents, shells and Win32 APIs (including tempfile's MoveFileExW) that do not opt into long paths.
+pub const USER_INPUT_ATTACHMENT_PATH_MAX_UNITS: usize = 259;
+pub const USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE: &str = "runtime.io.attachment-path-too-long";
+/// NTFS caps a component at 255 UTF-16 units and ext4/APFS at 255 bytes; both are enforced.
+const USER_INPUT_ATTACHMENT_NAME_MAX_UNITS: usize = 255;
+/// 128-bit BLAKE3 prefix in hex. Scope is one attempt, and reuse of an existing destination is
+/// byte-verified, so a prefix collision fails loudly instead of aliasing different content.
+const USER_INPUT_ATTACHMENT_DIGEST_LEN: usize = 32;
+
+fn validate_user_input_attachment_name(name: &str) -> Result<()> {
+    // Attachment locators use portable slash-separated components. The preview interface
+    // normalizes backslashes and trims the locator; reject names it cannot read back exactly.
+    ensure!(
+        !name.is_empty()
+            && !matches!(name, "." | "..")
+            && name.trim_end() == name
+            && !name.chars().any(|character| {
+                matches!(character, '/' | '\\' | ':') || character.is_control()
+            }),
+        "user input attachment requires a safe file name"
+    );
+    Ok(())
+}
+
+/// Storage components are owned directories, never symlink aliases into another location.
+fn user_input_attachment_directory(
+    path: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    let canonical = dunce::canonicalize(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink() && canonical.starts_with(root),
+        "attachment directory is not an in-root directory"
+    );
+    Ok(canonical)
+}
+
+fn user_input_attachment_matches(
+    staged: &mut std::fs::File,
+    destination: &std::path::Path,
+) -> Result<bool> {
+    let mut existing = std::fs::File::open(destination)?;
+    if staged.metadata()?.len() != existing.metadata()?.len() {
+        return Ok(false);
+    }
+    staged.rewind()?;
+    let mut staged_buffer = [0_u8; USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES];
+    let mut existing_buffer = [0_u8; USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES];
+    loop {
+        let count = staged.read(&mut staged_buffer)?;
+        if count == 0 {
+            return Ok(existing.read(&mut existing_buffer[..1])? == 0);
+        }
+        existing.read_exact(&mut existing_buffer[..count])?;
+        if staged_buffer[..count] != existing_buffer[..count] {
+            return Ok(false);
+        }
+    }
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -3906,6 +4066,549 @@ mod tests {
     }
 
     #[test]
+    fn user_input_attachments_preserve_same_named_images_across_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let first_source = root.join("first/image.png");
+        let second_source = root.join("second/image.png");
+        let first_bytes = test_png(2, 2);
+        let second_bytes = test_png(3, 2);
+        std::fs::create_dir_all(first_source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second_source.parent().unwrap()).unwrap();
+        std::fs::write(&first_source, &first_bytes).unwrap();
+        std::fs::write(&second_source, &second_bytes).unwrap();
+
+        let first = resolve_user_input_attachments(
+            &[first_source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
+        let second = resolve_user_input_attachments(
+            &[second_source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
+
+        assert_ne!(first[0].meta.path, second[0].meta.path);
+        assert_eq!(
+            std::fs::read(attempt_dir.join(&first[0].meta.path)).unwrap(),
+            first_bytes
+        );
+        assert_eq!(
+            std::fs::read(attempt_dir.join(&second[0].meta.path)).unwrap(),
+            second_bytes
+        );
+    }
+
+    fn user_input_digest(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex()[..USER_INPUT_ATTACHMENT_DIGEST_LEN].to_string()
+    }
+
+    fn assert_persisted_user_input(
+        attempt_dir: &Utf8Path,
+        attachment: &ResolvedAttachment,
+        name: &str,
+        bytes: &[u8],
+    ) {
+        assert_eq!(attachment.meta.name, name);
+        assert_eq!(attachment.meta.size, bytes.len() as u64);
+        assert_eq!(
+            attachment.meta.path,
+            format!("user-inputs/{}/{name}", user_input_digest(bytes))
+        );
+        let destination = attempt_dir.join(&attachment.meta.path);
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        assert_eq!(
+            attachment.block.file().uri(),
+            url::Url::from_file_path(&destination).unwrap().as_str()
+        );
+        assert_eq!(attachment.block.file().size, bytes.len() as u64);
+    }
+
+    #[test]
+    fn user_input_attachments_same_call_isolates_names_and_reuses_identical_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let bytes = [test_png(2, 2), test_png(3, 2), test_png(2, 2)];
+        let paths = bytes
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                let source = root.join(index.to_string()).join("image.png");
+                std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+                std::fs::write(&source, bytes).unwrap();
+                source.to_string()
+            })
+            .collect::<Vec<_>>();
+        let resolved = resolve_user_input_attachments(
+            &paths,
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
+        for (attachment, bytes) in resolved.iter().zip(&bytes) {
+            assert_persisted_user_input(&attempt_dir, attachment, "image.png", bytes);
+            assert!(matches!(&attachment.block, AcpContentBlock::Image(image)
+                if image.data == base64_encode(bytes)));
+        }
+        assert_ne!(resolved[0].meta.path, resolved[1].meta.path);
+        assert_eq!(resolved[0].meta.path, resolved[2].meta.path);
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn user_input_attachments_retry_and_changed_source_preserve_originals() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("notes.txt");
+        let attempt_dir = root.join("attempt-001");
+        std::fs::write(&source, b"first notes").unwrap();
+        let resolve = |path: String| {
+            resolve_user_input_attachments(
+                &[path],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let first = resolve(source.to_string());
+        let saved = attempt_dir.join(&first.meta.path);
+        let modified = saved.metadata().unwrap().modified().unwrap();
+        let retry = resolve(source.to_string());
+        let already_persisted = resolve(saved.to_string());
+        assert_eq!(first.meta.path, retry.meta.path);
+        assert_eq!(first.meta.path, already_persisted.meta.path);
+        assert_eq!(saved.metadata().unwrap().modified().unwrap(), modified);
+        std::fs::write(&source, b"later notes").unwrap();
+        let changed = resolve(source.to_string());
+        assert_ne!(first.meta.path, changed.meta.path);
+        assert_persisted_user_input(&attempt_dir, &first, "notes.txt", b"first notes");
+        assert_persisted_user_input(&attempt_dir, &changed, "notes.txt", b"later notes");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn user_input_attachments_hash_originals_before_bounded_image_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("image.png");
+        let attempt_dir = root.join("attempt-001");
+        let bytes = test_png(256, 256);
+        std::fs::write(&source, &bytes).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 8 * 1024,
+            inline_image_max_dimension: 64,
+        };
+        let resolved =
+            resolve_user_input_attachments(&[source.to_string()], &attempt_dir, policy).unwrap();
+        assert_persisted_user_input(&attempt_dir, &resolved[0], "image.png", &bytes);
+        assert!(matches!(&resolved[0].block, AcpContentBlock::Image(image)
+            if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
+                && image.data.len() <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
+                && image.data != base64_encode(&bytes)));
+    }
+
+    #[test]
+    fn user_input_attachments_concurrent_publication_is_no_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let bytes = [vec![b'a'; 150_000], vec![b'b'; 150_000]];
+        let paths = bytes
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                let source = root.join(index.to_string()).join("notes.txt");
+                std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+                std::fs::write(&source, bytes).unwrap();
+                source.to_string()
+            })
+            .collect::<Vec<_>>();
+        let barrier = std::sync::Barrier::new(8);
+        let resolved = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|index| {
+                    let barrier = &barrier;
+                    let paths = &paths;
+                    let attempt_dir = &attempt_dir;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        resolve_user_input_attachments(
+                            &[paths[index % 2].clone()],
+                            attempt_dir,
+                            test_attachment_projection_policy(),
+                        )
+                        .unwrap()
+                        .remove(0)
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for (index, attachment) in resolved.iter().enumerate() {
+            assert_persisted_user_input(&attempt_dir, attachment, "notes.txt", &bytes[index % 2]);
+        }
+        let content_dirs = std::fs::read_dir(attempt_dir.join("user-inputs"))
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(content_dirs.len(), 2, "staging files must be removed");
+        for entry in content_dirs {
+            assert_eq!(std::fs::read_dir(entry.unwrap().path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn user_input_attachments_conflicts_and_publish_failures_clean_up_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("notes.txt");
+        let attempt_dir = root.join("attempt-001");
+        let bytes = vec![b'a'; 150_000];
+        std::fs::write(&source, &bytes).unwrap();
+        let content_dir = attempt_dir
+            .join("user-inputs")
+            .join(user_input_digest(&bytes));
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let destination = content_dir.join("notes.txt");
+        // Same size, with the mismatch beyond the first streaming buffer.
+        let mut conflicting_bytes = bytes.clone();
+        *conflicting_bytes.last_mut().unwrap() = b'b';
+        std::fs::write(&destination, &conflicting_bytes).unwrap();
+        let resolve = || {
+            resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+        };
+        let error = resolve().unwrap_err();
+        assert!(error.to_string().contains("conflicts with copied bytes"));
+        assert_eq!(std::fs::read(&destination).unwrap(), conflicting_bytes);
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(
+            resolve().is_err(),
+            "a directory must never be replaced by a file"
+        );
+        assert!(destination.is_dir());
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(std::fs::read_dir(&content_dir).unwrap().count(), 1);
+        std::fs::remove_dir(&destination).unwrap();
+        let recovered = resolve().unwrap();
+        assert_persisted_user_input(&attempt_dir, &recovered[0], "notes.txt", &bytes);
+    }
+
+    #[test]
+    fn user_input_attachments_source_failures_do_not_publish_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        for source in [root.join("missing.txt"), root.clone()] {
+            assert!(
+                resolve_user_input_attachments(
+                    &[source.to_string()],
+                    &attempt_dir,
+                    test_attachment_projection_policy(),
+                )
+                .is_err()
+            );
+            assert_eq!(
+                std::fs::read_dir(attempt_dir.join("user-inputs"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    /// Creates an attempt directory whose canonical path has exactly `units` UTF-16 units.
+    fn attachment_test_attempt_dir_with_length(root: &Utf8Path, units: usize) -> Utf8PathBuf {
+        let mut path = Utf8PathBuf::from_path_buf(dunce::canonicalize(root.as_std_path()).unwrap())
+            .unwrap()
+            .join("attempt");
+        while path.as_str().encode_utf16().count() < units {
+            let remaining = units - path.as_str().encode_utf16().count() - 1;
+            path.push("a".repeat(remaining.clamp(1, 64)));
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn user_input_attachments_fit_windows_path_budget_in_deep_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        // Matches a real direct-agent attempt under the default data directory.
+        let attempt_dir = attachment_test_attempt_dir_with_length(&root, 160);
+        let long_name = format!("{}.png", "需求截圖".repeat(30));
+        for (index, name) in [
+            "24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg",
+            long_name.as_str(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = root.join(index.to_string()).join(name);
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            let bytes = test_png(2 + index as u32, 2);
+            std::fs::write(&source, &bytes).unwrap();
+            let resolved = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap()
+            .remove(0);
+            let destination = attempt_dir.join(&resolved.meta.path);
+            assert!(
+                destination.as_str().encode_utf16().count() <= USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
+            );
+            assert_eq!(resolved.meta.name, name);
+            assert_eq!(
+                destination.extension(),
+                std::path::Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+            );
+            assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn user_input_attachment_names_shorten_stem_and_keep_extension() {
+        assert_eq!(
+            fit_user_input_attachment_name("notes.txt", 64).as_deref(),
+            Some("notes.txt")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("abcdef.png", 7).as_deref(),
+            Some("abc.png")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("截圖截圖.png", 6).as_deref(),
+            Some("截圖.png")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("ab .cd.png", 8).as_deref(),
+            Some("ab.png"),
+            "trailing dots and spaces are dropped from the shortened stem"
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("README", 3).as_deref(),
+            Some("REA")
+        );
+        assert_eq!(fit_user_input_attachment_name("a.png", 4), None);
+        let long = format!("{}.png", "長".repeat(300));
+        let fitted = fit_user_input_attachment_name(&long, usize::MAX).unwrap();
+        assert!(fitted.len() <= 255 && fitted.ends_with(".png"));
+    }
+
+    #[test]
+    fn user_input_attachments_reject_attempts_too_deep_for_path_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("image.png");
+        std::fs::write(&source, test_png(2, 2)).unwrap();
+        let attempt_dir = attachment_test_attempt_dir_with_length(&root, 240);
+        let error = resolve_user_input_attachments(
+            &[source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap_err();
+        let info = &error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("structured runtime error")
+            .info;
+        assert_eq!(info.code_str(), USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE);
+        assert_eq!(info.params["name"], "image.png");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            0,
+            "no content directory or staging file may be left behind"
+        );
+    }
+
+    #[test]
+    fn user_input_attachment_names_round_trip_as_portable_locator_components() {
+        for name in [
+            "image.png",
+            "截圖.png",
+            "my image.png",
+            " leading.png",
+            "~image.png",
+        ] {
+            validate_user_input_attachment_name(name).unwrap();
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b.png",
+            "a\\b.png",
+            "a:b.png",
+            "image.png ",
+            "image.png\t",
+            "a\nb.png",
+            "a\u{7f}b.png",
+        ] {
+            let error = validate_user_input_attachment_name(name).unwrap_err();
+            assert!(error.to_string().contains("safe file name"), "{name:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn user_input_attachments_reject_unreadable_unix_names_before_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        for name in ["a\\b.png", "a:b.png", "image.png ", "a\nb.png"] {
+            let source = root.join(name);
+            std::fs::write(&source, test_png(2, 2)).unwrap();
+            let error = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("safe file name"));
+            assert_eq!(
+                std::fs::read_dir(attempt_dir.join("user-inputs"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn attachment_test_directory_link(target: &Utf8Path, link: &Utf8Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            // Junctions exercise reparse-point escape rejection without symlink privileges.
+            let result = crate::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link.as_str().replace('/', "\\"))
+                .arg(target.as_str().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn user_input_attachments_reject_directory_link_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let external = root.join("external");
+        std::fs::create_dir(&external).unwrap();
+        let source = root.join("notes.txt");
+        std::fs::write(&source, b"notes").unwrap();
+        for (index, relative) in [
+            "user-inputs".to_string(),
+            format!("user-inputs/{}", user_input_digest(b"notes")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let attempt_dir = root.join(format!("attempt-{index}"));
+            let link = attempt_dir.join(relative);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            attachment_test_directory_link(&external, &link);
+            let result = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            );
+            assert!(result.is_err(), "must reject directory escape: {link}");
+            assert_eq!(std::fs::read_dir(&external).unwrap().count(), 0);
+            #[cfg(windows)]
+            std::fs::remove_dir(&link).unwrap();
+            #[cfg(unix)]
+            std::fs::remove_file(&link).unwrap();
+            if index == 1 {
+                assert_eq!(
+                    std::fs::read_dir(attempt_dir.join("user-inputs"))
+                        .unwrap()
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn user_input_attachments_reject_existing_file_symlink_even_when_bytes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("notes.txt");
+        let attempt_dir = root.join("attempt-001");
+        std::fs::write(&source, b"notes").unwrap();
+        let content_dir = attempt_dir
+            .join("user-inputs")
+            .join(user_input_digest(b"notes"));
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let destination = content_dir.join("notes.txt");
+        std::os::unix::fs::symlink(&source, &destination).unwrap();
+        assert!(
+            resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .is_err()
+        );
+        assert!(
+            std::fs::symlink_metadata(&destination)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"notes");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn prompt_bundle_preserves_task_inputs_and_persists_user_inputs_by_scope() {
         let dir = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
@@ -3933,31 +4636,37 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "task-inputs/task-image.png",
-                "user-inputs/follow-up.png",
-                "user-inputs/notes.txt",
+                "task-inputs/task-image.png".to_string(),
+                format!(
+                    "user-inputs/{}/follow-up.png",
+                    user_input_digest(&follow_up_image_bytes)
+                ),
+                format!(
+                    "user-inputs/{}/notes.txt",
+                    user_input_digest(b"runtime notes")
+                ),
             ]
         );
         assert!(!attempt_dir.join("user-inputs/task-image.png").exists());
         assert_eq!(
-            std::fs::read(attempt_dir.join("user-inputs/follow-up.png").as_std_path()).unwrap(),
+            std::fs::read(attempt_dir.join(paths[1])).unwrap(),
             follow_up_image_bytes
         );
         assert_eq!(
-            std::fs::read_to_string(attempt_dir.join("user-inputs/notes.txt").as_std_path())
-                .unwrap(),
+            std::fs::read_to_string(attempt_dir.join(paths[2])).unwrap(),
             "runtime notes"
         );
         assert!(matches!(
             &prompt.content_blocks[1],
             AcpContentBlock::Image(image)
-                if image.file.uri().contains("/attempt-001/user-inputs/follow-up.png")
+                if image.data == base64_encode(&follow_up_image_bytes)
+                    && image.file.uri() == url::Url::from_file_path(attempt_dir.join(paths[1])).unwrap().as_str()
         ));
         assert!(matches!(
             &prompt.content_blocks[2],
             AcpContentBlock::Resource(resource)
                 if resource.text == "runtime notes"
-                    && resource.file.uri().contains("/attempt-001/user-inputs/notes.txt")
+                    && resource.file.uri() == url::Url::from_file_path(attempt_dir.join(paths[2])).unwrap().as_str()
         ));
     }
 

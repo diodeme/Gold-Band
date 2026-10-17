@@ -38,7 +38,9 @@ export type ChatContainerContentExpansionController = {
 }
 
 export type ChatContainerContext = StickToBottomContext &
-  ChatContainerContentExpansionController
+  ChatContainerContentExpansionController & {
+    hasUserScrollResumeIntent: () => boolean
+  }
 
 export type ChatContainerFollowIntentCause =
   | "user-wheel-down"
@@ -78,6 +80,8 @@ export function useChatContainerDisclosure() {
   return changeDisclosure
 }
 
+export type ChatContainerUserScrollDirection = "up" | "down" | null
+
 export type ChatContainerRootProps = {
   children: React.ReactNode
   className?: string
@@ -94,7 +98,12 @@ export type ChatContainerRootProps = {
     cause: ChatContainerFollowIntentCause,
   ) => void
   onViewportScroll?: (viewport: HTMLDivElement) => void
-  onViewportUserScroll?: (viewport: HTMLDivElement) => void
+  // Null marks a scrollbar press, not a directional scrolling intent.
+  // Return true when upward input reveals history even without overflow.
+  onViewportUserScroll?: (
+    viewport: HTMLDivElement,
+    direction: ChatContainerUserScrollDirection,
+  ) => boolean | void
 } & React.HTMLAttributes<HTMLDivElement>
 
 export type ChatContainerContentProps = {
@@ -518,6 +527,10 @@ function ChatContainerLifecycle({
     recordScrollTrace("follow-resume-eligible", () => ({ cause }))
   }, [recordScrollTrace])
 
+  const hasUserScrollResumeIntent = useCallback(() => (
+    resumeFollowFromUserInputRef.current !== null
+  ), [])
+
   const completeFollowResumeFromUserInput = useCallback(() => {
     const cause = resumeFollowFromUserInputRef.current
     if (!cause || isFollowingRef.current) return
@@ -630,6 +643,7 @@ function ChatContainerLifecycle({
     compensateContentAnchor,
     positionContentExpansion,
     getContentExpansionFollowIntent,
+    hasUserScrollResumeIntent,
     isAtBottom: isFollowing,
     escapedFromLock: !isFollowing,
     state: stickContext.state,
@@ -645,6 +659,7 @@ function ChatContainerLifecycle({
     endContentExpansion,
     isFollowing,
     getContentExpansionFollowIntent,
+    hasUserScrollResumeIntent,
     positionContentExpansion,
     scrollToBottom,
     stickContext,
@@ -783,7 +798,7 @@ function ChatContainerLifecycle({
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey
         || event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)
         || isNestedScrollInput(viewport, event.target, event.deltaY)) return
-      if (event.deltaX !== 0 || event.deltaY !== 0) onViewportUserScroll?.(viewport)
+      const requestsHistory = onViewportUserScroll?.(viewport, event.deltaY < 0 ? "up" : "down") === true
       const createWheelDetails = () => ({
         deltaX: roundChatScrollDiagnostic(event.deltaX),
         deltaY: roundChatScrollDiagnostic(event.deltaY),
@@ -798,12 +813,14 @@ function ChatContainerLifecycle({
         stopScrollForCause("content-expansion-user-scroll")
       } else if (
         event.deltaY < 0 &&
-        viewport.scrollHeight > viewport.clientHeight
+        (requestsHistory || viewport.scrollHeight > viewport.clientHeight)
       ) {
         stopScrollForCause("user-wheel-up")
       }
       if (event.deltaY > 0) {
         requestFollowResumeFromUserInput("user-wheel-down")
+        // No native scroll/scrollend can arrive when the whole window fits.
+        if (viewport.scrollHeight <= viewport.clientHeight) completeFollowResumeFromUserInput()
       }
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -816,7 +833,7 @@ function ChatContainerLifecycle({
       const scrollsDown = CHAT_CONTAINER_SCROLL_DOWN_KEYS.has(event.key)
         || (event.key === " " && !event.shiftKey)
       if (isNestedScrollInput(viewport, event.target, scrollsUp ? -1 : 1, true)) return
-      onViewportUserScroll?.(viewport)
+      const requestsHistory = onViewportUserScroll?.(viewport, scrollsUp ? "up" : "down") === true
       const createKeyDetails = () => ({
         key: event.key,
         shiftKey: event.shiftKey,
@@ -831,10 +848,13 @@ function ChatContainerLifecycle({
         CHAT_CONTAINER_SCROLL_KEYS.has(event.key)
       ) {
         stopScrollForCause("content-expansion-user-scroll")
-      } else if (scrollsUp && viewport.scrollHeight > viewport.clientHeight) {
+      } else if (scrollsUp && (requestsHistory || viewport.scrollHeight > viewport.clientHeight)) {
         stopScrollForCause("user-key-up")
       }
-      if (scrollsDown) requestFollowResumeFromUserInput("user-key-down")
+      if (scrollsDown) {
+        requestFollowResumeFromUserInput("user-key-down")
+        if (viewport.scrollHeight <= viewport.clientHeight) completeFollowResumeFromUserInput()
+      }
     }
     const handlePointerDown = (event: PointerEvent) => {
       if (!isScrollbarPointerDown(viewport, event)) return
@@ -844,7 +864,7 @@ function ChatContainerLifecycle({
         pointerType: event.pointerType,
         targetIsViewport: event.target === viewport,
       }))
-      onViewportUserScroll?.(viewport)
+      onViewportUserScroll?.(viewport, null)
     }
     const handlePointerEnd = (event: PointerEvent) => {
       if (event.pointerId !== scrollbarPointerIdRef.current) return

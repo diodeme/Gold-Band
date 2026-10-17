@@ -1,0 +1,91 @@
+<!doctype html>
+<!--
+Approved B editorial extension. Source: ../../README.md, architecture responsibilities.
+The model proposes single/fanout and successor routing. Runtime validates and maintains
+its execution graph/state/scheduling; an acceptance Agent checks the merged result.
+The diagram is a conceptual responsibility view, not a claim that all tasks fan out,
+that planning has no model involvement, or that Runtime guarantees business correctness.
+Form: a restrained program-boundary diagram with editorial explanation at the right.
+Only shared local assets and host bridge; no new libraries, live requests or model calls.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>AUTO 的编排边界 · Gold Band</title>
+  <link rel="stylesheet" href="../assets/editorial.css">
+  <style>
+    body{overflow:visible}
+    .architecture{display:grid;grid-template-columns:1000px 1fr;gap:88px;margin-top:40px}
+    .responsibility-map{margin:0}
+    .proposal{display:grid;grid-template-columns:145px 1fr;align-items:center;border-top:2px solid var(--blue);padding:22px 0}
+    .proposal h2{font-size:34px;font-weight:520;line-height:1.4}
+    .proposal p{font-size:28px;line-height:1.5}
+    .runtime{border:1px solid var(--rule);padding:22px 26px 25px;margin-top:12px}
+    .runtime-title{display:flex;align-items:baseline;justify-content:space-between;gap:24px}
+    .runtime-title h3{font-size:34px;font-weight:520;line-height:1.4}
+    .runtime-title p{font-size:28px;line-height:1.5;color:var(--muted)}
+    .fanout{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:24px;padding-top:20px;border-top:1px solid var(--rule)}
+    .agent{text-align:center}
+    .agent+.agent{border-left:1px solid var(--rule)}
+    .agent h4{font-size:30px;font-weight:520;line-height:1.4}
+    .agent p{font-size:28px;line-height:1.5;margin-top:7px;color:var(--muted)}
+    .handoff{font-size:28px;line-height:1.5;text-align:center;margin-top:21px;color:var(--muted)}
+    .acceptance{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--ink);border-bottom:1px solid var(--rule);padding:18px 0;margin-top:16px;gap:24px}
+    .acceptance p{font-size:30px;line-height:1.5}
+    .acceptance .return{font-size:28px;color:var(--muted)}
+    figcaption{font-size:22px;line-height:1.5;color:var(--muted);margin-top:15px}
+    .explanation{padding-top:14px}
+    .explanation h2{font-size:38px;font-weight:520;line-height:1.4}
+    .explanation p{font-size:30px;line-height:1.65;margin-top:15px}
+    .explanation section+section{border-top:1px solid var(--rule);padding-top:22px;margin-top:25px}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band / AUTO</p>
+    <p class="stage">架构职责 · 模型与 Runtime</p>
+  </header>
+  <main>
+    <h1 class="headline">模型提出拆分，程序持续编排</h1>
+    <section class="architecture" aria-label="AUTO 的模型与程序职责">
+      <figure class="responsibility-map">
+        <div class="proposal">
+          <h2>模型</h2>
+          <p>理解任务，提出 single / fanout 与后继路由</p>
+        </div>
+        <section class="runtime" aria-labelledby="runtime-title">
+          <div class="runtime-title">
+            <h3 id="runtime-title">Runtime</h3>
+            <p>校验运行图 · 维护状态 · 调度</p>
+          </div>
+          <div class="fanout" aria-label="fanout 时各 Agent 承载局部上下文">
+            <div class="agent"><h4>Agent A</h4><p>局部上下文</p></div>
+            <div class="agent"><h4>Agent B</h4><p>局部上下文</p></div>
+            <div class="agent"><h4>Agent C</h4><p>局部上下文</p></div>
+          </div>
+        </section>
+        <p class="handoff">分工执行 ↓ 合并产物</p>
+        <div class="acceptance">
+          <p>验收 Agent · 整体检查</p>
+          <p class="return">未通过 → 返工路由</p>
+        </div>
+        <figcaption>职责示意；采用 single 还是 fanout，由模型根据任务提出。</figcaption>
+      </figure>
+      <aside class="explanation" aria-label="编排价值与保证边界">
+        <section>
+          <h2>把上下文分担出去</h2>
+          <p>各 Agent 处理局部任务。程序维护状态与调度，不靠一个主模型会话持续承载全部执行历史。</p>
+        </section>
+        <section>
+          <h2>合并后仍需整体验收</h2>
+          <p>验收 Agent 对照原始目标检查最终产物；发现遗漏时，交给后继任务修复并复验。</p>
+        </section>
+      </aside>
+    </section>
+    <p class="conclusion"><span>模型参与计划与判断；Runtime 承接运行状态与持续调度。</span></p>
+  </main>
+  <footer>来源：汇报 README · 架构分析；对应 AI-DYNAMIC 设计与 Workflow DSL。示意图不代表性能测量。</footer>
+  <script src="../assets/slide.js"></script>
+</body>
+</html>

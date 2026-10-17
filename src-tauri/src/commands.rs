@@ -4225,6 +4225,30 @@ pub async fn get_git_comparison(
 }
 
 #[tauri::command]
+pub async fn prepare_git_push(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitPushIntent,
+) -> CommandResult<gold_band::git::GitPreparedPush> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .prepare_push(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn start_git_operation(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -4909,11 +4933,32 @@ pub async fn stop_active_session(
 ) -> CommandResult<ActiveSessionStopVm> {
     if let Some(expected) = background_control {
         let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-        let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, outer_node_id, outer_attempt_id);
+        let locator = AttemptLocator::new(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
         let accepted = spawn_blocking_command(move || {
-            client::cancel_retained_direct_session(&locator.attempt_dir(&app), &expected, expected_turn_id.as_deref()).map_err(command_error)
-        }).await?;
-        return Ok(ActiveSessionStopVm { operation_id: Uuid::new_v4().to_string(), status: if accepted { "accepted" } else { "no-op" }.into(), kind: "background-cancel-requested".into(), run: None, session: None, lifecycle: None });
+            client::cancel_retained_direct_session(
+                &locator.attempt_dir(&app),
+                &expected,
+                expected_turn_id.as_deref(),
+            )
+            .map_err(command_error)
+        })
+        .await?;
+        return Ok(ActiveSessionStopVm {
+            operation_id: Uuid::new_v4().to_string(),
+            status: if accepted { "accepted" } else { "no-op" }.into(),
+            kind: "background-cancel-requested".into(),
+            run: None,
+            session: None,
+            lifecycle: None,
+        });
     }
     let log_project_id = project_id.clone();
     let log_task_id = task_id.clone();
@@ -5747,17 +5792,33 @@ pub(crate) fn acp_live_update_emitter(
     let last_background_message = std::sync::Mutex::new(None::<(Option<String>, String)>);
     Arc::new(move |context, mut event, timeline_position| {
         if event.kind == "textDelta"
-            && event.content.as_ref().is_some_and(|text| !text.trim().is_empty())
-            && event.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")).and_then(serde_json::Value::as_bool) == Some(true)
+            && event
+                .content
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+            && event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
         {
             let identity = (event.session_id.clone(), event.id.clone());
-            let already_observed = last_background_message.lock().unwrap_or_else(|p| p.into_inner()).as_ref() == Some(&identity);
+            let already_observed = last_background_message
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                == Some(&identity);
             if !already_observed {
                 if let Some(app) = notification_app.as_ref() {
-                    if let Err(error) = record_direct_background_reply(&app_handle, app, &context, &event) {
+                    if let Err(error) =
+                        record_direct_background_reply(&app_handle, app, &context, &event)
+                    {
                         tracing::warn!(code = "acp.background-notification.failed", %error);
                     } else {
-                        *last_background_message.lock().unwrap_or_else(|p| p.into_inner()) = Some(identity);
+                        *last_background_message
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner()) = Some(identity);
                     }
                 }
             }
@@ -5867,7 +5928,13 @@ fn record_direct_background_reply(
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
 ) -> anyhow::Result<()> {
-    let attempt = app.paths.attempt_dir(&context.task_id, &context.run_id, &context.round_id, &context.node_id, &context.attempt_id);
+    let attempt = app.paths.attempt_dir(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+        &context.node_id,
+        &context.attempt_id,
+    );
     // Recheck at delivery: a newly admitted user prompt owns its own notification.
     if client::prompt_activity(&attempt).is_some() {
         tracing::info!(code = "acp.background-notification.decision", project_id = %app.paths.project_id, task_id = %context.task_id, run_id = %context.run_id, message_id = %event.id, reason = "active-prompt");
@@ -5875,24 +5942,55 @@ fn record_direct_background_reply(
     }
     let state = app_handle.state::<DesktopState>();
     let guard = state.conversation_attention_write_guard()?;
-    let stream = format!("{}/{}/{}/{}/{}", context.run_id, context.round_id, context.node_id, context.attempt_id, event.session_id.as_deref().unwrap_or_default());
-    let event_id = crate::conversation_attention::background_message_event_id(&stream, event.started_seq.unwrap_or(event.seq));
+    let stream = format!(
+        "{}/{}/{}/{}/{}",
+        context.run_id,
+        context.round_id,
+        context.node_id,
+        context.attempt_id,
+        event.session_id.as_deref().unwrap_or_default()
+    );
+    let event_id = crate::conversation_attention::background_message_event_id(
+        &stream,
+        event.started_seq.unwrap_or(event.seq),
+    );
     let (record, notify) = crate::conversation_attention::record_background_message(
-        app, &context.task_id, &stream, event.started_seq.unwrap_or(event.seq),
-        ConversationTerminalResultVm { event_id: event_id.clone(), run_id: context.run_id.clone(), kind: ConversationTerminalResultKind::NewMessage, occurred_at: event.timestamp.clone() },
+        app,
+        &context.task_id,
+        &stream,
+        event.started_seq.unwrap_or(event.seq),
+        ConversationTerminalResultVm {
+            event_id: event_id.clone(),
+            run_id: context.run_id.clone(),
+            kind: ConversationTerminalResultKind::NewMessage,
+            occurred_at: event.timestamp.clone(),
+        },
     )?;
     drop(guard);
     tracing::info!(code = "acp.background-notification.decision", project_id = %app.paths.project_id, task_id = %context.task_id, event_id = %event_id, changed = record.changed, notify, reason = if !record.changed { "already-observed" } else if notify { "new-unread-episode" } else { "existing-unread-episode" });
-    if record.changed && let Some(unread_terminal_result) = record.unread_terminal_result {
+    if record.changed
+        && let Some(unread_terminal_result) = record.unread_terminal_result
+    {
         // Persist activity before emitting so the event and any refetch it triggers agree on order.
-        crate::view_models_conversation::touch_conversation_activity_at(app, &context.task_id, &event.timestamp)?;
-        app_handle.emit(CONVERSATION_TERMINAL_RESULT_EVENT, ConversationTerminalResultUpdatedEventVm {
-            project_id: app.paths.project_id.clone(), task_id: context.task_id.clone(), unread_terminal_result,
-            task_activity_at: Some(event.timestamp.clone()),
-        })?;
+        crate::view_models_conversation::touch_conversation_activity_at(
+            app,
+            &context.task_id,
+            &event.timestamp,
+        )?;
+        app_handle.emit(
+            CONVERSATION_TERMINAL_RESULT_EVENT,
+            ConversationTerminalResultUpdatedEventVm {
+                project_id: app.paths.project_id.clone(),
+                task_id: context.task_id.clone(),
+                unread_terminal_result,
+                task_activity_at: Some(event.timestamp.clone()),
+            },
+        )?;
     }
     if notify {
-        crate::notifications::send_background_message_notification(app_handle, app, context, &event_id);
+        crate::notifications::send_background_message_notification(
+            app_handle, app, context, &event_id,
+        );
     }
     Ok(())
 }
@@ -6359,7 +6457,16 @@ fn emit_acp_update(
     activity: Option<ConversationTaskActivityVm>,
 ) {
     let activity_app_control = control_app.and_then(|app| {
-        let path = resolve_acp_attempt_dir(app, task_id, run_id, round_id, node_id, attempt_id, outer_node_id.as_deref(), outer_attempt_id.as_deref());
+        let path = resolve_acp_attempt_dir(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id.as_deref(),
+            outer_attempt_id.as_deref(),
+        );
         client::direct_background_control(&path)
     });
     let branch_id = event
@@ -6962,32 +7069,53 @@ pub async fn get_acp_compaction_summary(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<crate::view_models::AcpCompactionSummaryVm> {
     for part in [&task_id, &run_id, &round_id, &node_id, &attempt_id]
-        .into_iter().chain(outer_node_id.iter()).chain(outer_attempt_id.iter())
+        .into_iter()
+        .chain(outer_node_id.iter())
+        .chain(outer_attempt_id.iter())
     {
         let mut components = Path::new(part).components();
         if !matches!(components.next(), Some(Component::Normal(_)))
-            || components.next().is_some() || part.contains(['/', '\\', ':'])
+            || components.next().is_some()
+            || part.contains(['/', '\\', ':'])
         {
-            return Err(CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({})));
+            return Err(CommandErrorVm::new(
+                "acp.compaction-summary-query-failed",
+                serde_json::json!({}),
+            ));
         }
     }
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let attempt_dir = resolve_acp_attempt_dir(
-        &app, &task_id, &run_id, &round_id, &node_id, &attempt_id,
-        outer_node_id.as_deref(), outer_attempt_id.as_deref(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
     );
     let runtime_root = app.paths.runtime_root.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let root = fs::canonicalize(runtime_root)
-            .map_err(|error| acp_storage_query_error(error.into(), "acp.compaction-summary-query-failed"))?;
-        let canonical = fs::canonicalize(&attempt_dir)
-            .map_err(|error| acp_storage_query_error(error.into(), "acp.compaction-summary-query-failed"))?;
+        let root = fs::canonicalize(runtime_root).map_err(|error| {
+            acp_storage_query_error(error.into(), "acp.compaction-summary-query-failed")
+        })?;
+        let canonical = fs::canonicalize(&attempt_dir).map_err(|error| {
+            acp_storage_query_error(error.into(), "acp.compaction-summary-query-failed")
+        })?;
         if !canonical.starts_with(root) {
-            return Err(CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({})));
+            return Err(CommandErrorVm::new(
+                "acp.compaction-summary-query-failed",
+                serde_json::json!({}),
+            ));
         }
         crate::view_models::acp_compaction_summary_vm_for_attempt(&attempt_dir, query)
             .map_err(|error| acp_storage_query_error(error, "acp.compaction-summary-query-failed"))
-    }).await.map_err(|_| CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({})))?
+    })
+    .await
+    .map_err(|_| {
+        CommandErrorVm::new("acp.compaction-summary-query-failed", serde_json::json!({}))
+    })?
 }
 
 #[tauri::command]
@@ -11683,7 +11811,10 @@ mod tests {
         assert_eq!(value["taskActivityAt"], "2026-10-10T06:00:00Z");
         assert_eq!(value["unreadTerminalResult"]["kind"], "new-message");
 
-        let without_activity = ConversationTerminalResultUpdatedEventVm { task_activity_at: None, ..event };
+        let without_activity = ConversationTerminalResultUpdatedEventVm {
+            task_activity_at: None,
+            ..event
+        };
         assert!(serde_json::to_value(&without_activity).unwrap()["taskActivityAt"].is_null());
     }
 

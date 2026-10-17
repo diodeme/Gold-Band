@@ -73,6 +73,8 @@ export interface AcpRuntimeComposerState {
   sessionActive: boolean;
   acpActive: boolean;
   runtimeActive: boolean;
+  /** A turn is owned by the backend or still being submitted locally. */
+  foregroundTurnOwned: boolean;
   composerLocked: boolean;
   showExternalState: boolean;
   externalKind: 'invalid-workflow' | 'runtime-error' | null;
@@ -85,12 +87,10 @@ export interface AcpRuntimeComposerState {
 }
 
 export function shouldTreatAcpRuntimeErrorAsFallback(
-  isDirect: boolean,
   lifecycle: ConversationAttemptLifecycleVm | null | undefined,
 ) {
   return Boolean(
-    isDirect
-    && lifecycle?.control.mode === 'non-runtime-controlled'
+    lifecycle?.control.mode === 'non-runtime-controlled'
     && lifecycle.runtime.pauseReason === 'runtime-abnormal'
     && !lifecycle.runtimeDisplay.blockingError
   );
@@ -237,6 +237,7 @@ export function deriveAcpRuntimeComposerState(
     sessionActive,
     acpActive,
     runtimeActive,
+    foregroundTurnOwned: acpActive || runtimeActive || sending || waitingForOptimisticPrompt || awaitingResponse,
     composerLocked,
     showExternalState,
     externalKind: externalKindForMode(mode),
@@ -348,6 +349,20 @@ export function shouldHidePendingAcpInteractions(
     return terminalTurnId === interactionTurnId;
   }
   return !localTurnId || terminalTurnId === localTurnId;
+}
+
+/**
+ * Stop routing is an ownership decision, not a display-state decision: with
+ * no foreground turn owned (backend-active or locally in submission), Stop
+ * must reach the Direct background control path even while a session-owned
+ * interaction keeps the composer in an interaction-waiting state. `canStop`
+ * only gates the button.
+ */
+export function routesAcpStopToBackgroundControl(
+  composer: Pick<AcpRuntimeComposerState, 'foregroundTurnOwned'>,
+  backgroundControl: unknown,
+) {
+  return Boolean(backgroundControl) && !composer.foregroundTurnOwned;
 }
 
 /**

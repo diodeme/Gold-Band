@@ -334,7 +334,7 @@ describe('source control session store', () => {
     });
   });
 
-  it('does not let stale remotes overwrite a refreshed session', async () => {
+  it('converges remotes to the latest repository config revision', async () => {
     const api = fakeApi();
     const initial = repositorySnapshot('D:/repo', 'revision-1');
     const staleRemotes = deferred<import('@/types').GitRemoteVm[]>();
@@ -352,15 +352,108 @@ describe('source control session store', () => {
     });
 
     await store.ensureLoaded('project-1', 'D:/repo');
-    api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-2'));
+    api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-2', 'sync-revision-1', 'remotes-2'));
     await store.refresh('project-1', 'D:/repo');
     staleRemotes.resolve([{ name: 'old-origin', fetchUrls: [], pushUrls: [] }]);
 
     await vi.waitFor(() => expect(getRemotes).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').remotesLoading).toBe(false));
-    expect(store.session('project-1', 'D:/repo').snapshot?.repository).toMatchObject({
-      revision: 'revision-2',
-      remotes: [{ name: 'new-origin' }],
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').snapshot?.repository.remotes[0]?.name).toBe('new-origin'));
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      remotesLoading: false,
+      snapshot: { repository: { revision: 'revision-2' } },
+    });
+  });
+
+  it('keeps loaded remotes usable while repository metadata revalidates', async () => {
+    vi.useFakeTimers();
+    const events = eventApi();
+    const getRemotes = vi.fn(async () => [{ name: 'origin', fetchUrls: [], pushUrls: [] }]);
+    const store = new SourceControlStore({ ...events.api, startMonitor: undefined, getRemotes });
+    try {
+      await store.ensureLoaded('project-1', 'D:/repo');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.session('project-1', 'D:/repo').remotesLoading).toBe(false);
+      const visible: boolean[] = [];
+      const unsubscribe = store.subscribe('project-1', 'D:/repo', () => visible.push(store.session('project-1', 'D:/repo').remotesLoading));
+      events.api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-2', 'sync-revision-2'));
+      events.emitState({ projectId: 'project-1', repositoryCommonDir: 'D:/repo/.git', workspacePath: 'D:/repo', reason: 'metadata' });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(store.session('project-1', 'D:/repo').snapshot?.repository).toMatchObject({
+        revision: 'revision-2',
+        remotes: [{ name: 'origin' }],
+      });
+      expect(visible).not.toContain(true);
+      expect(getRemotes).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    } finally { store.clear('project-1', 'D:/repo'); vi.useRealTimers(); }
+  });
+
+  it('settles in-flight remotes while workspace refreshes keep arriving', async () => {
+    vi.useFakeTimers();
+    const events = eventApi();
+    const remotes = deferred<import('@/types').GitRemoteVm[]>();
+    const getRemotes = vi.fn()
+      .mockReturnValueOnce(remotes.promise)
+      .mockReturnValue(new Promise(() => undefined));
+    const store = new SourceControlStore({ ...events.api, startMonitor: undefined, getRemotes });
+    try {
+      await store.ensureLoaded('project-1', 'D:/repo');
+      expect(getRemotes).toHaveBeenCalledTimes(1);
+      events.emitWorkspace('D:/repo/src/edited.ts');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      remotes.resolve([{ name: 'origin', fetchUrls: [], pushUrls: [] }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.session('project-1', 'D:/repo')).toMatchObject({
+        remotesLoading: false,
+        remotesError: null,
+        snapshot: { repository: { remotes: [{ name: 'origin' }] } },
+      });
+      expect(getRemotes).toHaveBeenCalledTimes(1);
+    } finally { store.clear('project-1', 'D:/repo'); vi.useRealTimers(); }
+  });
+
+  it('refetches remotes in the background only when the repository config revision changes', async () => {
+    vi.useFakeTimers();
+    const events = eventApi();
+    const getRemotes = vi.fn()
+      .mockResolvedValueOnce([{ name: 'origin', fetchUrls: [], pushUrls: [] }])
+      .mockResolvedValueOnce([{ name: 'upstream', fetchUrls: [], pushUrls: [] }]);
+    const store = new SourceControlStore({ ...events.api, startMonitor: undefined, getRemotes });
+    try {
+      await store.ensureLoaded('project-1', 'D:/repo');
+      await vi.advanceTimersByTimeAsync(0);
+      const visible: boolean[] = [];
+      const unsubscribe = store.subscribe('project-1', 'D:/repo', () => visible.push(store.session('project-1', 'D:/repo').remotesLoading));
+      events.api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-1', 'sync-revision-1', 'remotes-2'));
+      events.emitState({ projectId: 'project-1', repositoryCommonDir: 'D:/repo/.git', workspacePath: 'D:/repo', reason: 'metadata' });
+      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getRemotes).toHaveBeenCalledTimes(2);
+      expect(store.session('project-1', 'D:/repo').snapshot?.repository.remotes).toEqual([{ name: 'upstream', fetchUrls: [], pushUrls: [] }]);
+      expect(visible).not.toContain(true);
+      unsubscribe();
+    } finally { store.clear('project-1', 'D:/repo'); vi.useRealTimers(); }
+  });
+
+  it('does not retry failed remotes on unrelated refreshes but retries on request', async () => {
+    const api = fakeApi();
+    const getRemotes = vi.fn()
+      .mockRejectedValueOnce(new Error('remote unavailable'))
+      .mockResolvedValueOnce([{ name: 'origin', fetchUrls: [], pushUrls: [] }]);
+    const store = new SourceControlStore({ ...api, getRemotes });
+    await store.ensureLoaded('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').remotesError).not.toBeNull());
+    api.getSnapshot.mockResolvedValueOnce(repositorySnapshot('D:/repo', 'revision-2'));
+    await store.refresh('project-1', 'D:/repo');
+    expect(getRemotes).toHaveBeenCalledTimes(1);
+    expect(store.session('project-1', 'D:/repo').remotesError?.code).toBe('git.status-failed');
+    await store.retryRemotes('project-1', 'D:/repo');
+    expect(getRemotes).toHaveBeenCalledTimes(2);
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      remotesLoading: false,
+      remotesError: null,
+      snapshot: { repository: { remotes: [{ name: 'origin' }] } },
     });
   });
 
@@ -946,7 +1039,7 @@ describe('source control session store', () => {
     const store = new SourceControlStore(events.api);
     await store.ensureLoaded('project-1', 'D:/repo');
 
-    await store.startOperation('project-1', 'D:/repo', { kind: 'push', remote: 'origin', branch: 'main', setUpstream: true });
+    await store.startOperation('project-1', 'D:/repo', { kind: 'push', intent: { kind: 'upstream-sync', remote: 'origin', branch: 'main' }, target: { remote: 'origin', branch: 'main', remoteBranch: 'main', sourceOid: 'confirmed-head', setUpstream: true }, expectedRevision: 'confirmed-sync-rev' });
     events.emitOperation({
       ...queued,
       status: 'failed',
@@ -1338,7 +1431,7 @@ describe('source control session store', () => {
     }
   });
 
-  it('pushes with the sync revision and reloads the snapshot when the branch moved', async () => {
+  it.each(['git.sync-ref-changed', 'git.push-target-changed', 'git.push-branch-not-current'])('preserves the confirmed push revision even after the snapshot moves and reloads on %s', async (code) => {
     const events = eventApi();
     events.api.getSnapshot.mockImplementation(async (_projectId: string, workspacePath?: string | null) => (
       repositorySnapshot(workspacePath ?? 'D:/repo', 'workspace-rev', 'sync-rev')
@@ -1346,21 +1439,23 @@ describe('source control session store', () => {
     const store = new SourceControlStore(events.api);
     await store.ensureLoaded('project-1', 'D:/repo');
     events.api.getSnapshot.mockClear();
-    events.api.startOperation.mockRejectedValueOnce({ code: 'git.sync-ref-changed', params: {} });
+    events.api.startOperation.mockRejectedValueOnce({ code, params: {} });
 
     await store.startOperation('project-1', 'D:/repo', {
       kind: 'push',
-      remote: 'origin',
-      branch: 'main',
-      setUpstream: false,
+      intent: { kind: 'upstream-sync', branch: 'release/financeagent', remote: 'fork' },
+      target: { remote: 'origin', branch: 'release/financeagent', remoteBranch: 'main', sourceOid: 'confirmed-head', setUpstream: false },
+      expectedRevision: 'confirmed-sync-rev',
     });
 
     expect(events.api.startOperation).toHaveBeenCalledWith('project-1', 'D:/repo', expect.objectContaining({
       kind: 'push',
-      expectedRevision: 'sync-rev',
+      intent: { kind: 'upstream-sync', branch: 'release/financeagent', remote: 'fork' },
+      target: { remote: 'origin', branch: 'release/financeagent', remoteBranch: 'main', sourceOid: 'confirmed-head', setUpstream: false },
+      expectedRevision: 'confirmed-sync-rev',
     }));
     await vi.waitFor(() => expect(events.api.getSnapshot).toHaveBeenCalled());
-    expect(store.session('project-1', 'D:/repo').error?.code).toBe('git.sync-ref-changed');
+    expect(store.session('project-1', 'D:/repo').error?.code).toBe(code);
     expect(store.session('project-1', 'D:/repo').snapshot?.repository.syncRevision).toBe('sync-rev');
   });
 
@@ -1494,6 +1589,7 @@ function repositorySnapshot(
   workspacePath: string,
   revision = 'revision-1',
   syncRevision = 'sync-revision-1',
+  remotesRevision = 'remotes-1',
 ): GitSourceControlSnapshotVm {
   return {
     catalogRevision: revision,
@@ -1508,6 +1604,7 @@ function repositorySnapshot(
       unborn: false,
       upstream: null,
       remotes: [],
+      remotesRevision,
       lock: { locked: false, owner: null, operation: null },
       revision,
       syncRevision,

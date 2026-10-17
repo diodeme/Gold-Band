@@ -5,11 +5,8 @@ export function isOverflowing(element: HTMLElement | null) {
 }
 
 /**
- * Measure only when the user asks for the complete value via hover or keyboard focus.
- *
- * The hook owns every open decision: Radix also opens on any trigger focus, including the
- * programmatic focus restored after a menu closes, so its open requests are ignored and only
- * its dismissals (Escape, click, blur, scroll) are honored.
+ * Let Radix own opening, timing and dismissal; only gate whether the value needs a tooltip.
+ * Filter restored pointer focus before Radix starts opening, not in its open callback.
  */
 export function useOverflowTooltip<TElement extends HTMLElement = HTMLSpanElement>({
   always = false,
@@ -17,22 +14,18 @@ export function useOverflowTooltip<TElement extends HTMLElement = HTMLSpanElemen
   const valueRef = useRef<TElement>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
-  const showTooltipIfOverflowing = useCallback(() => {
-    setTooltipOpen(always || isOverflowing(valueRef.current));
-  }, [always]);
-  const showTooltipOnKeyboardFocus = useCallback((event: FocusEvent<HTMLElement>) => {
-    if (event.currentTarget.matches(':focus-visible')) showTooltipIfOverflowing();
-  }, [showTooltipIfOverflowing]);
+  const handleTooltipFocus = useCallback((event: FocusEvent<HTMLElement>) => {
+    if (!event.currentTarget.matches(':focus-visible')) event.preventDefault();
+  }, []);
   const hideTooltip = useCallback(() => setTooltipOpen(false), []);
   const handleTooltipOpenChange = useCallback((open: boolean) => {
-    if (!open) setTooltipOpen(false);
-  }, []);
+    setTooltipOpen(open && (always || isOverflowing(valueRef.current)));
+  }, [always]);
 
   return {
     valueRef,
     tooltipOpen,
-    showTooltipIfOverflowing,
-    showTooltipOnKeyboardFocus,
+    handleTooltipFocus,
     hideTooltip,
     handleTooltipOpenChange,
   };

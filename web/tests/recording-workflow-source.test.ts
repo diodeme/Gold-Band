@@ -6,7 +6,8 @@ describe('workflow recording source', () => {
     const api = createRecordingApi({ scene: 'during', language: 'zh' });
     const run = await api.getConversationRun('default', 'mock-task', 'run-052');
     expect(run.runMode).toBe('workflow');
-    expect(run.selectedSession?.branchId).toBe('root');
+    expect(run).not.toHaveProperty('selectedSession');
+    expect((await api.getAcpSession('default', 'mock-task', 'run-052', 'round-001', 'review', 'attempt-001'))?.branchId).toBe('root');
     expect(run.workflowGraph.nodes.map(node => node.id)).toEqual(['review', 'repair', 'continue']);
     expect(JSON.parse(run.workflowJson!).nodes[0].success_condition.expression).toBe('$.result == true');
   });
@@ -29,7 +30,7 @@ describe('workflow recording source', () => {
     expect(JSON.parse((await api.showArtifact(...locator, 'result.json')).content).result).toBe(false);
     await advance('branch');
     const repair = await api.scenario!.snapshot();
-    expect(repair.selectedSession?.nodeId).toBe('repair');
+    expect(repair.sessionTree.selectedSessionKey).toBe('round-001/repair/attempt-001');
     expect(repair.workflowGraph.nodes.find(node => node.current)?.id).toBe('repair');
     expect(repair.workflowGraph.nodes[0].outcome).toBe('failure');
     await expect(api.respondAcpPermission(...locator, 'write-config', 'allow-once')).rejects.toMatchObject({ code: 'recording.interaction-stale' });
@@ -57,13 +58,14 @@ describe('workflow recording source', () => {
     });
     await api.scenario!.advance('streaming');
     await Promise.all(reads);
-    const partial = await api.scenario!.snapshot();
+    const review = () => api.getAcpSession('default', 'mock-task', 'run-052', 'round-001', 'review', 'attempt-001');
+    const partial = (await review())!;
     unsubscribe();
     await api.scenario!.advance('streaming');
-    const complete = await api.scenario!.snapshot();
-    expect(complete.selectedSession!.events[1].id).toBe(partial.selectedSession!.events[1].id);
-    expect(complete.selectedSession!.events[1].content).toContain(partial.selectedSession!.events[1].content);
-    expect(complete.selectedSession!.eventPage.coveredRevision).toBeGreaterThan(partial.selectedSession!.eventPage.coveredRevision!);
+    const complete = (await review())!;
+    expect(complete.events[1].id).toBe(partial.events[1].id);
+    expect(complete.events[1].content).toContain(partial.events[1].content);
+    expect(complete.eventPage.coveredRevision).toBeGreaterThan(partial.eventPage.coveredRevision!);
     await expect(api.getAcpSession('default','mock-task','run-052','round-001','review','attempt-001',{branchId:'foreign'})).rejects.toMatchObject({code:'recording.locator-invalid'});
   });
 });

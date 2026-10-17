@@ -587,6 +587,7 @@
     "closeWorkspace": "Collapse right workspace",
     "openNewTab": "Open new tab",
     "closeTab": "Close tab",
+    "panelFailed": "This tab couldn't be displayed",
     "allTabs": "All tabs",
     "attention": "Needs attention",
     "files": "Workspace",
@@ -818,6 +819,12 @@
       "workspace-outside-project": "The selected worktree does not belong to this project.",
       "ref-changed": "The change list was updated. Try again.",
       "sync-ref-changed": "The branch changed. Try again.",
+      "push-upstream-invalid": "The branch's upstream could not be resolved. Check its tracking configuration and try again.",
+      "push-upstream-unsupported": "This branch tracks a local branch. Pushing to a local upstream is not supported.",
+      "push-branch-not-current": "The current branch changed. Reopen the push confirmation.",
+      "push-remote-required": "Select a remote to publish to.",
+      "push-confirmation-required": "Confirm the source branch and push target first.",
+      "push-target-changed": "The source branch or push target changed. Confirm again.",
       "repository-locked": "Another repository write operation is running.",
       "workspace-locked": "Another workspace write operation is running.",
       "operation-in-progress": "A Git operation is still in progress. Complete or abort it and try again.",
@@ -926,6 +933,7 @@
       "turn-execution-failed": "This message could not be processed. Try again.",
       "session-request-failed": "The session could not be prepared. Try again.",
       "missing-provider": "The current node is missing provider configuration.",
+      "subagent-protocol-upgrade-required": "Update Claude ACP to {{minimumVersion}} or later, then try again.",
       "session-config-value-unavailable": "The selected session configuration is no longer available. Choose another value from the latest list.",
       "active-prompt-blocks-config-save": "A session is currently running. Stop it before saving the configuration.",
       "invalid-conversation-branch-id": "This Agent conversation link is invalid or no longer available.",
@@ -996,7 +1004,8 @@
     "runtime": {
       "io": {
         "storage-full": "The disk is full and this execution was interrupted. Free up space before continuing.",
-        "permission-denied": "Unable to write session data. Check the directory write permissions."
+        "permission-denied": "Unable to write session data. Check the directory write permissions.",
+        "attachment-path-too-long": "This conversation is stored too deep in the data folder to save the attachment \"{{name}}\". Start a new conversation and send it there."
       },
       "conversation-not-available": "The workflow is running, so a normal message cannot be sent yet.",
       "continue-not-available": "This node does not need to continue. It may already have resumed, or it may no longer be resumable.",
@@ -1998,6 +2007,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "Target remote",
+    "pushPreparing": "Preparing push target…",
+    "pushSetUpstream": "Set the target branch as upstream after publishing successfully.",
     "remote": "Remote",
     "name": "Name",
     "startPoint": "Start point",
@@ -2420,7 +2433,8 @@
       "output": "Output",
       "cacheRead": "Cache Read",
       "cacheWrite": "Cache Write",
-      "total": "Total"
+      "total": "Total",
+      "excludesBackground": "Excludes usage from background wake-ups"
     }
   },
   "graph": {

@@ -204,8 +204,8 @@ import {
   shouldCommitConversationNavigation,
   shouldSurfaceConversationNavigationError,
 } from '@/lib/conversation-navigation';
-import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
 import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
+import { sameConversationRunEntity } from '@/lib/conversation-run-identity';
 import {
   applyConversationTaskSnapshot,
   findConversationTask,
@@ -1330,17 +1330,11 @@ export function App() {
     conversationNavigationRequestRef.current = requestId;
     let cancelled = false;
     getConversationRun(projectId, taskId, runId, requestedSelectedSessionKey)
-      .then(async (run) => {
-        if (!roundId) return { run, explicitSelectedSessionKey: null };
-        const leaf = findConversationLeafForPage(run.sessionTree, conversationPage);
-        if (!leaf) return { run, explicitSelectedSessionKey: null };
-        const selectedSessionKey = conversationSessionKeyFromParts(leaf);
-        if (run.sessionTree.selectedSessionKey === selectedSessionKey && run.selectedSession) {
-          return { run, explicitSelectedSessionKey: selectedSessionKey };
-        }
+      .then((run) => {
+        const leaf = roundId ? findConversationLeafForPage(run.sessionTree, conversationPage) : null;
         return {
-          run: await getConversationRun(projectId, taskId, runId, selectedSessionKey),
-          explicitSelectedSessionKey: selectedSessionKey,
+          run,
+          explicitSelectedSessionKey: leaf ? conversationSessionKeyFromParts(leaf) : null,
         };
       })
       .then(({ run, explicitSelectedSessionKey }) => {
@@ -1390,7 +1384,6 @@ export function App() {
           selectedSessionKey: selectionPlan.selectedSessionKey,
           preserveSelectedSession: selectionPlan.preserveSelectedSession,
         });
-        void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -1609,16 +1602,30 @@ export function App() {
         ).length ?? 0,
         followPending,
       });
+      const runtimeSnapshot = {
+        projectId: event.projectId,
+        taskId: event.taskId,
+        taskUuid: event.taskUuid,
+        runId: event.runId,
+        roundId: event.roundId,
+        nodeId: event.nodeId,
+        attemptId: event.attemptId,
+        outerNodeId: event.outerNodeId,
+        outerAttemptId: event.outerAttemptId,
+        sessionId: event.session?.sessionId,
+        sessionStartedAt: event.session?.sessionStartedAt,
+        lifecycle: event.lifecycle,
+      };
       if (hasRuntimeSnapshot && updatePlan.patchSelectedSession) {
         setConversationRun((current) => {
-          const patched = applyConversationSelectedSessionSnapshot(current, event);
+          const patched = applyConversationSelectedSessionSnapshot(current, runtimeSnapshot);
           conversationRunRef.current = patched;
           return patched;
         });
       }
       if (hasRuntimeSnapshot && updatePlan.patchBackgroundSession) {
         setConversationRun((current) => {
-          const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, event);
+          const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, runtimeSnapshot);
           conversationRunRef.current = patched;
           return patched;
         });
@@ -2957,8 +2964,9 @@ export function App() {
             });
           }}
           onLifecycleSnapshot={(snapshot) => {
+            if (!sameConversationRunEntity(conversationPage, snapshot)) return;
             applyConversationLifecycleSnapshotToSidebar(
-              conversationPage.projectId,
+              snapshot.projectId,
               snapshot.taskId,
               snapshot.runId,
               snapshot.lifecycle,

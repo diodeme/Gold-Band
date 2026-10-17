@@ -587,6 +587,7 @@
     "closeWorkspace": "收起右側工作區",
     "openNewTab": "開啟新分頁",
     "closeTab": "關閉分頁",
+    "panelFailed": "此分頁無法顯示",
     "allTabs": "所有分頁",
     "attention": "需要處理",
     "files": "工作區",
@@ -818,6 +819,12 @@
       "workspace-outside-project": "所選 Worktree 不屬於目前專案。",
       "ref-changed": "變更清單已更新，請再試一次。",
       "sync-ref-changed": "分支已變化，請再試一次。",
+      "push-upstream-invalid": "無法解析此分支的上游，請檢查上游設定後重試。",
+      "push-upstream-unsupported": "此分支追蹤的是本機分支，目前不支援向該上游推送。",
+      "push-branch-not-current": "目前分支已變更，請重新開啟推送確認。",
+      "push-remote-required": "請選擇要發布到哪個遠端儲存庫。",
+      "push-confirmation-required": "請先確認推送的來源分支與目標。",
+      "push-target-changed": "推送的來源分支或目標已變更，請重新確認。",
       "repository-locked": "儲存庫正在執行其他寫操作。",
       "workspace-locked": "目前工作區正在執行其他寫操作。",
       "operation-in-progress": "目前 Git 流程尚未結束，請完成或中止後重試。",
@@ -926,6 +933,7 @@
       "turn-execution-failed": "本次訊息處理失敗，請重試。",
       "session-request-failed": "工作階段準備失敗，請重試。",
       "missing-provider": "目前節點缺少 provider 設定。",
+      "subagent-protocol-upgrade-required": "請將 Claude ACP 升級至 {{minimumVersion}} 或更新版本後重試。",
       "session-config-value-unavailable": "所選工作階段設定已不可用，請從最新清單中重新選擇。",
       "active-prompt-blocks-config-save": "目前有工作階段正在執行，請先停止工作階段再儲存設定。",
       "invalid-conversation-branch-id": "該 Agent 工作階段連結無效或已失效。",
@@ -996,7 +1004,8 @@
     "runtime": {
       "io": {
         "storage-full": "磁碟空間不足，本次執行已中斷。釋放空間後可繼續。",
-        "permission-denied": "無法寫入工作階段資料，請檢查目錄的寫入權限。"
+        "permission-denied": "無法寫入工作階段資料，請檢查目錄的寫入權限。",
+        "attachment-path-too-long": "目前對話的資料目錄層級過深，無法儲存附件「{{name}}」。請建立新對話後再傳送。"
       },
       "conversation-not-available": "工作流正在執行，暫時不能傳送普通訊息。",
       "continue-not-available": "目前節點不需要繼續，可能已經還原或不再可繼續。",
@@ -1998,6 +2007,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "目標遠端儲存庫",
+    "pushPreparing": "正在準備推送目標…",
+    "pushSetUpstream": "發布成功後，將目標分支設為上游。",
     "remote": "遠端儲存庫",
     "name": "名稱",
     "startPoint": "起點",
@@ -2420,7 +2433,8 @@
       "output": "輸出",
       "cacheRead": "快取讀取",
       "cacheWrite": "快取寫入",
-      "total": "總計"
+      "total": "總計",
+      "excludesBackground": "不含背景喚醒的用量"
     }
   },
   "graph": {

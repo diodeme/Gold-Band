@@ -378,13 +378,21 @@ export type WorkspaceFileSnapshotVm =
   | ImageFileSnapshotVm
   | UnsupportedFileSnapshotVm;
 
+export type MarkdownImageSource =
+  | { kind: 'workspace' }
+  | {
+      kind: 'document';
+      canonicalPath: string;
+      externalAccessToken?: string | null;
+      approvedExternalTargets?: string[];
+    };
+
 export interface ResolveMarkdownImageInput {
   projectId: string;
   workspacePath: string | null;
-  markdownCanonicalPath: string;
-  markdownExternalAccessToken: string | null;
+  source: MarkdownImageSource;
+  /** Markdown URL syntax: query/fragment are excluded, percent encoding is decoded once. */
   rawSrc: string;
-  approvedExternalTargets: string[];
 }
 
 export type MarkdownImagePreviewVm =
@@ -561,6 +569,8 @@ export interface AcpUsageVm {
   cachedReadTokens?: number | null;
   cachedWriteTokens?: number | null;
   totalTokens?: number | null;
+  /** Token totals cover prompt responses only; background Agent work ran too. */
+  tokenTotalsExcludeBackground?: boolean;
 }
 
 export interface AgentEnvEntryVm {
@@ -875,6 +885,8 @@ export interface GitRepositorySnapshotVm {
   unborn: boolean;
   upstream?: GitUpstreamVm | null;
   remotes: GitRemoteVm[];
+  /** Repository config identity; remotes are refetched only when it changes. */
+  remotesRevision: string;
   lock: GitLockVm;
   revision: string;
   syncRevision: string;
@@ -1130,10 +1142,28 @@ export type GitMutationResultVm =
 
 export type GitPullStrategyVm = 'fast-forward-only' | 'merge' | 'rebase';
 
+export type GitPushIntentVm =
+  | { kind: 'upstream-sync'; branch: string; remote: string | null }
+  | { kind: 'publish-head'; branch: string; remote: string };
+
+export interface GitPushTargetVm {
+  branch: string;
+  sourceOid: string;
+  remote: string;
+  remoteBranch: string;
+  setUpstream: boolean;
+}
+
+export interface GitPreparedPushVm {
+  intent: GitPushIntentVm;
+  target: GitPushTargetVm;
+  expectedRevision: string;
+}
+
 export type GitOperationInputVm =
   | { kind: 'fetch'; remote?: string | null; prune: boolean }
   | { kind: 'pull'; remote?: string | null; branch?: string | null; strategy: GitPullStrategyVm }
-  | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
+  | { kind: 'push'; intent: GitPushIntentVm; target: GitPushTargetVm }
   | { kind: 'push-tag'; remote: string; tag: string }
   | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
   | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean }
@@ -1176,7 +1206,7 @@ export interface GitStateChangedEventVm {
   projectId: string;
   repositoryCommonDir: string;
   workspacePath: string;
-  reason: 'workspace' | 'metadata' | 'operation';
+  reason: 'metadata';
 }
 
 export type GitHubCapabilityStatusVm = 'not-installed' | 'not-authenticated' | 'repository-unresolved' | 'ready';
@@ -2672,6 +2702,8 @@ export interface AcpAgentExecutionVm {
   parentAgentExecutionId?: string | null;
   attemptId?: string | null;
   executionStatus: string;
+  /** Latest canonical native Agent state event sequence, not the last content sequence. */
+  providerStateSeq?: number | null;
   eventCount: number;
   toolCallCount: number;
   readFileCount: number;
@@ -3021,7 +3053,6 @@ export interface ConversationRunVm {
   runStatus: string;
   runOutcome?: string | null;
   sessionTree: ConversationSessionTreeVm;
-  selectedSession?: AcpSessionVm | null;
   activeSessions: ConversationActiveSessionVm[];
   inputAttachments: AssetItemVm[];
   workflowStatus: string;

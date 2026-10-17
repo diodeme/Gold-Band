@@ -1,0 +1,65 @@
+<!doctype html>
+<!--
+Approved B editorial extension. Source: ../../README.md, summary and architecture analysis.
+This is the ninth and final slide: a use-case decision table, not an additional claim of
+statistical superiority. Ruff remains unfinished; task-specific costs and timing still apply.
+Form: three aligned editorial rows make the selection boundary comparable at a glance.
+No new assets, dependencies, state, external requests, benchmark operations or product code.
+Host navigation, browser/PDF checks and integration are owned by the coordinating agent.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>使用建议 · Gold Band</title>
+  <link rel="stylesheet" href="../assets/editorial.css">
+  <style>
+    body{overflow:visible}
+    .selection{margin-top:38px;border-top:2px solid var(--blue);table-layout:fixed}
+    .selection col.mode{width:280px}
+    .selection col.task{width:880px}
+    .selection thead th{font-size:23px;line-height:1.4;font-weight:400;color:var(--muted);padding:16px 0;border-bottom:1px solid var(--ink)}
+    .selection tbody th{font-size:39px;line-height:1.4;font-weight:520;letter-spacing:-.02em}
+    .selection tbody td{font-size:30px;line-height:1.5}
+    .selection tbody th,.selection tbody td{padding:16px 0;border-bottom:1px solid var(--rule)}
+    .selection tbody td:last-child{padding-left:26px}
+    .selection thead th:last-child{padding-left:26px}
+    .synthesis{font-size:34px;line-height:1.55;letter-spacing:-.01em;margin-top:26px;max-width:1720px}
+    .synthesis strong{font-weight:550;color:var(--blue)}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band / 使用建议</p>
+    <p class="stage">从阶段结果，到选型边界</p>
+  </header>
+  <main>
+    <h1 class="headline">按任务形态，选择执行模式</h1>
+    <table class="selection" aria-label="Direct、工作流与 AUTO 的使用建议">
+      <colgroup><col class="mode"><col class="task"><col></colgroup>
+      <thead><tr><th scope="col">执行模式</th><th scope="col">适用任务</th><th scope="col">选择重点</th></tr></thead>
+      <tbody>
+        <tr>
+          <th scope="row">Direct</th>
+          <td>中短任务，目标集中<br>单 Agent 能覆盖主要工作</td>
+          <td>减少额外协调，<br>优先控制 token 与时间。</td>
+        </tr>
+        <tr>
+          <th scope="row">工作流</th>
+          <td>步骤可以预定义<br>重复流程与固定质量关口</td>
+          <td>把稳定步骤固化，<br>在明确关口检查质量。</td>
+        </tr>
+        <tr>
+          <th scope="row">AUTO</th>
+          <td>目标明确，路径动态<br>跨模块长任务，需要拆分与整体验收</td>
+          <td>按任务动态分工，<br>合并后检查整体交付。</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="synthesis">题目越长、越需要分工和整体验收，<strong>工作流与 AUTO 的优势越明显</strong>：<br>质量更完整，token 差距缩小甚至占优。</p>
+    <p class="conclusion"><span>把协作成本，花在单个 Agent 难以完整覆盖的任务上。</span></p>
+  </main>
+  <footer>参考建议：预计新增/修改超过 5 万行、或上下文压缩 3 次及以上的任务，优先工作流 / AUTO；其余优先 Direct。</footer>
+  <script src="../assets/slide.js"></script>
+</body>
+</html>

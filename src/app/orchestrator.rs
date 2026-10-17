@@ -5786,34 +5786,26 @@ fn dynamic_config_options_for_invocation(
 fn resolve_dynamic_invocation_model(
     dynamic: &AiDynamicNode,
     node: &DynamicNodeState,
-    model_override: Option<String>,
 ) -> Option<String> {
-    model_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            if node.id == DYNAMIC_BOOTSTRAP_NODE_ID {
-                return node.model.clone().or_else(|| {
-                    dynamic
-                        .bootstrap_model()
-                        .map(str::trim)
-                        .filter(|model| !model.is_empty())
-                        .map(str::to_string)
-                });
-            }
-            match node.kind {
-                DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
-                    dynamic_acceptance_model(dynamic)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| node.model.clone())
-                }
-                _ => node
-                    .provider
-                    .as_deref()
-                    .and_then(|provider| dynamic_model_for_provider(dynamic, provider))
-                    .or_else(|| node.model.clone()),
-            }
-        })
+    if node.id == DYNAMIC_BOOTSTRAP_NODE_ID {
+        return node.model.clone().or_else(|| {
+            dynamic
+                .bootstrap_model()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        });
+    }
+    match node.kind {
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => dynamic_acceptance_model(dynamic)
+            .map(ToOwned::to_owned)
+            .or_else(|| node.model.clone()),
+        _ => node
+            .provider
+            .as_deref()
+            .and_then(|provider| dynamic_model_for_provider(dynamic, provider))
+            .or_else(|| node.model.clone()),
+    }
 }
 
 fn dynamic_acceptance_model(dynamic: &AiDynamicNode) -> Option<&str> {
@@ -13008,7 +13000,6 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let snapshot_config_options = dynamic_acp_config_option_overrides(&runtime_context.attempt_dir);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -13108,7 +13099,6 @@ fn build_dynamic_worker_invocation(
     );
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
-    let model = resolve_dynamic_invocation_model(ctx.dynamic, node, model_override);
     let diagnostics = ctx.app.provider_diagnostics();
     let capabilities = node
         .provider
@@ -13117,13 +13107,20 @@ fn build_dynamic_worker_invocation(
         .or(Some(dynamic_control_provider(ctx.dynamic)))
         .and_then(|provider| diagnostics.get(provider))
         .and_then(|snapshot| snapshot.capabilities.as_ref());
-    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+    let session_config = crate::acp::session_config::invocation_session_config(
         session_mode == SessionMode::Continue,
-        dynamic_config_options_for_invocation(ctx.dynamic, node),
-        snapshot_config_options,
+        crate::acp::session_config::InvocationSessionConfig {
+            model: resolve_dynamic_invocation_model(ctx.dynamic, node),
+            permission_mode: node.permission_mode.clone(),
+            config_options: dynamic_config_options_for_invocation(ctx.dynamic, node),
+        },
+        crate::acp::events::read_continued_session_config(continue_ref.as_ref()),
+        model_override,
+        permission_mode_override,
         capabilities,
-        model.as_deref(),
     );
+    let model = session_config.model;
+    let config_options = session_config.config_options;
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -13180,10 +13177,7 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "permission_mode");
-    let permission_mode = permission_mode_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| node.permission_mode.clone());
+    let permission_mode = session_config.permission_mode;
     let auto_accept = node.auto_accept;
     dynamic_invocation_build_step_end(
         ctx,
@@ -13332,22 +13326,6 @@ fn build_dynamic_worker_invocation(
         }),
     );
     Ok(invocation)
-}
-
-fn dynamic_acp_config_option_overrides(attempt_dir: &Utf8Path) -> BTreeMap<String, String> {
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-    let path = if snapshot_path.exists() {
-        snapshot_path
-    } else if session_path.exists() {
-        session_path
-    } else {
-        return BTreeMap::new();
-    };
-    crate::acp::events::load_session_metadata(&path, None)
-        .ok()
-        .map(|metadata| metadata.config_option_overrides)
-        .unwrap_or_default()
 }
 
 fn dynamic_builtin_profile(
@@ -18268,7 +18246,7 @@ mod tests {
         bootstrap.model = Some("gpt-5.6-sol".to_string());
 
         assert_eq!(
-            resolve_dynamic_invocation_model(&dynamic, &bootstrap, None).as_deref(),
+            resolve_dynamic_invocation_model(&dynamic, &bootstrap).as_deref(),
             Some("gpt-5.6-sol")
         );
         assert_eq!(
@@ -18287,7 +18265,7 @@ mod tests {
         worker.provider = Some("codex-acp".to_string());
         worker.model = Some("gpt-5.5".to_string());
         assert_eq!(
-            resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
+            resolve_dynamic_invocation_model(&dynamic, &worker).as_deref(),
             Some("gpt-5.4")
         );
         assert_eq!(
@@ -18299,7 +18277,7 @@ mod tests {
 
         worker.kind = DynamicNodeKind::Acceptance;
         assert_eq!(
-            resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
+            resolve_dynamic_invocation_model(&dynamic, &worker).as_deref(),
             Some("gpt-5.6-sol")
         );
         assert_eq!(
@@ -20762,6 +20740,75 @@ mod tests {
 
         let resumed = build(SessionMode::Continue, UserPromptRenderMode::WorkflowResume);
         assert!(resumed.task_prompt_input.is_empty());
+    }
+
+    #[test]
+    fn dynamic_continue_takes_session_snapshot_after_new_session_rollback() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("leaf");
+        node.model = Some("deepseek-flash".to_string());
+        node.permission_mode = Some("bypassPermissions".to_string());
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+        let attempt_id = dynamic_attempt_id(&node);
+        let snapshot = dynamic_runtime_context(&ctx, &node.id, &attempt_id)
+            .attempt_dir
+            .join("acp.snapshot.json");
+        // `session/new` rolled model and mode back to unspecified, so the
+        // snapshot keeps only the bound option that the live catalog accepted.
+        write_json(
+            &snapshot,
+            &serde_json::json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": app.paths.repo_root.as_str(),
+                "sessionId": "session-1",
+                "createdAt": "1792113902Z",
+                "updatedAt": "1792113940Z",
+                "restored": false,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "configOptionOverrides": { "effort": "high" },
+            }),
+        )
+        .unwrap();
+        let continue_ref = serde_json::json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot.as_str(),
+        });
+        let build = |model_override: Option<String>| {
+            build_dynamic_worker_invocation(
+                &ctx,
+                &graph,
+                &node,
+                &attempt_id,
+                None,
+                SessionMode::Continue,
+                Some(continue_ref.clone()),
+                Some("继续".to_string()),
+                "test-turn".to_string(),
+                None,
+                PromptVisibility::Visible,
+                UserPromptRenderMode::WorkflowResume,
+                Vec::new(),
+                model_override,
+                None,
+            )
+            .unwrap()
+        };
+
+        let resumed = build(None);
+        assert_eq!(resumed.model, None);
+        assert_eq!(resumed.permission_mode, None);
+        assert_eq!(
+            resumed.config_options,
+            BTreeMap::from([("effort".to_string(), "high".to_string())])
+        );
+
+        let switched = build(Some("gpt-6-sol".to_string()));
+        assert_eq!(switched.model.as_deref(), Some("gpt-6-sol"));
     }
 
     #[test]

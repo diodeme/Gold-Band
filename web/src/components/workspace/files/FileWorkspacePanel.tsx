@@ -44,14 +44,13 @@ interface FileWorkspacePanelProps {
 
 /** Single-line text that reveals its full value on hover, only when it is actually truncated. */
 function TruncatedText({ text, className, contentClassName }: { text: string; className?: string; contentClassName?: string }) {
-  const { valueRef, tooltipOpen, showTooltipIfOverflowing, hideTooltip, handleTooltipOpenChange } = useOverflowTooltip();
+  const { valueRef, tooltipOpen, hideTooltip, handleTooltipOpenChange } = useOverflowTooltip();
   return (
     <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
       <TooltipTrigger asChild>
         <span
           ref={valueRef}
           className={cn('truncate', className)}
-          onPointerEnter={showTooltipIfOverflowing}
           onPointerLeave={hideTooltip}
         >
           {text}

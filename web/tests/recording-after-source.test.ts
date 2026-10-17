@@ -19,8 +19,10 @@ describe('after recording source', () => {
     expect(run.runStatus).toBe('completed');
     expect(run.runOutcome).toBe('success');
     expect(run.activeSessions).toEqual([]);
-    expect(run.selectedSession?.nodeId).toBe('continue');
-    expect(run.selectedSession?.events.some(event => event.kind === 'fileChangeSet')).toBe(true);
+    expect(run).not.toHaveProperty('selectedSession');
+    expect(run.sessionTree.selectedSessionKey).toBe('round-001/continue/attempt-001');
+    const final = await api.getAcpSession('default', 'mock-task', 'run-052', 'round-001', 'continue', 'attempt-001');
+    expect(final?.events.some(event => event.kind === 'fileChangeSet')).toBe(true);
     for (const node of run.sessionTree.rounds[0].nodes) {
       const session = await api.getAcpSession('default', 'mock-task', 'run-052', 'round-001', node.nodeId, 'attempt-001');
       expect(session?.nodeId).toBe(node.nodeId);

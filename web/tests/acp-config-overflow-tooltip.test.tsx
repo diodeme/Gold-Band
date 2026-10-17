@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { hoverTooltip } from './helpers/tooltip';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -60,9 +61,7 @@ describe('ACP config overflow tooltip', () => {
       scrollWidth: { configurable: true, value: 220 },
     });
 
-    await act(async () => {
-      button.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
-    });
+    await hoverTooltip(button);
 
     const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
     expect(tooltip?.textContent).toBe('Agent full access');

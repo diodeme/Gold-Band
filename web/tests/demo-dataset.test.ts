@@ -39,7 +39,7 @@ describe.skipIf(!process.env.DEMO_DATASET_PATH)('exported source reader', () => 
     expect(data.source).toMatchObject({ revision: 118, status: 'paused', outcome: null, pauseReason: 'process-interrupted' });
     const run = await reader.api.getConversationRun(data.projectId, data.taskId, data.runId);
     expect(run.workflowGraph.nodes).toHaveLength(58);
-    expect(run.selectedSession).toBeNull();
+    expect(run).not.toHaveProperty('selectedSession');
     expect(requested).toHaveLength(2);
   });
   it('keeps the resource catalog lightweight instead of loading every filename', async () => {

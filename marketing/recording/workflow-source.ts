@@ -22,12 +22,16 @@ export function createWorkflowSource(baseApi: RuntimeApi, language: Language) {
   const sessionListeners = new Set<(event: AcpSessionUpdatedEventVm) => void>();
   const runListeners = new Set<(event: ConversationRunStateUpdatedEventVm) => void>();
   const definition = workflowDefinition();
-  const ready = baseApi.getConversationRun(IDS.projectId, IDS.taskId, IDS.runId).then(base => {
+  const ready = baseApi.getConversationRun(IDS.projectId, IDS.taskId, IDS.runId).then(async base => {
+    const seedLeaf = base.sessionTree.rounds.flatMap(round => round.nodes.flatMap(node => node.attempts))
+      .find(leaf => `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}` === base.sessionTree.selectedSessionKey);
+    if (!seedLeaf) fail('locator-invalid');
+    const seedSession = (await baseApi.getAcpSession(base.projectId, base.taskId, base.runId, seedLeaf!.roundId, seedLeaf!.nodeId, seedLeaf!.attemptId))!;
     const sessions = Object.fromEntries(NODE_IDS.map(nodeId => {
-      const session = structuredClone(base.selectedSession!);
+      const session = structuredClone(seedSession);
       Object.assign(session, { ...IDS, nodeId, branchId: 'root', sessionId: `recording-${nodeId}`, title: labels[nodeId],
         status: nodeId === 'review' ? 'running' : 'pending', readOnly: false, events: [], pendingInteractions: [], timelineProjection: null,
-        stopReason: null, systemPromptAppend: null, timing: null, usage: null, config: null, worktreePath: null, worktreeBranch: null,
+        stopReason: null, systemPromptAppend: null, timing: null, usage: null, config: null,
         cwd: '/default', providerCwd: '/default', sessionStartedAt: new Date().toISOString(), sessionElapsedSeconds: 0 });
       return [nodeId, session];
     })) as Record<NodeId, AcpSessionVm>;
@@ -59,7 +63,7 @@ export function createWorkflowSource(baseApi: RuntimeApi, language: Language) {
       const display: RuntimeDisplayVm = { code, tone: done ? outcome === 'success' ? 'success' : 'danger' : current ? 'running' : 'muted', icon: done ? 'check' : 'dot', terminal: done, resumable: false, blockingError: false };
       const leaf = { ...structuredClone(seed.attempts[0]), ...IDS, nodeId, current, status, outcome, runtimeDisplay: display,
         sessionId: s.sessions[nodeId].sessionId, sessionEstablished: status !== 'pending', pathLabel: `${nodeId}/${IDS.attemptId}`,
-        artifactCount: s.outputs[nodeId] ? 1 : 0, attachmentCount: 0, manualCheckPending: false, startedAt: s.sessions[nodeId].sessionStartedAt, worktreePath: null, worktreeBranch: null, finishedAt: done ? s.sessions[nodeId].sessionUpdatedAt : null,
+        artifactCount: s.outputs[nodeId] ? 1 : 0, attachmentCount: 0, manualCheckPending: false, startedAt: s.sessions[nodeId].sessionStartedAt, finishedAt: done ? s.sessions[nodeId].sessionUpdatedAt : null,
         lifecycle: { runtime: { status, outcome, current, active: current, continuable: false, resumable: false, phase: status, revision: s.revision },
           control: { mode: 'runtime-controlled' as const }, acp: { revision: s.revision, sessionAvailability: status === 'pending' ? 'unavailable' as const : 'established' as const, liveTurnActivity: done || status === 'pending' ? 'idle' as const : 'running' as const, latestTurnStatus: done ? 'completed' as const : 'none' as const, stopping: false },
           displayStatus: code, runtimeDisplay: display, continueKind: null,
@@ -72,7 +76,7 @@ export function createWorkflowSource(baseApi: RuntimeApi, language: Language) {
     if (!selectedNode) fail('locator-invalid');
     Object.assign(run, { ...IDS, runMode: 'workflow', runStatus: 'running', runOutcome: null, pauseReason: null, resumable: false, runtimeError: null, runtimeErrorMessage: null,
       worktree: null, directConfig: null, workflowTemplateId: definition.id, workflowJson: JSON.stringify(definition), workflowStatus: 'valid', workflowValid: true, workflowError: null,
-      sessionTree: { rounds: [round], selectedSessionKey: key }, selectedSession: session(s, selectedNode!.nodeId as NodeId),
+      sessionTree: { rounds: [round], selectedSessionKey: key },
       activeSessions: [round.nodes.find(node => node.nodeId === s.current)!.attempts[0]],
       workflowGraph: { nodes: round.nodes.map(node => ({ id: node.nodeId, nodeId: node.nodeId, label: node.label, nodeType: node.nodeType, status: node.status, outcome: node.attempts[0].outcome, runtimeDisplay: node.runtimeDisplay, attemptId: IDS.attemptId, artifactCount: node.attempts[0].artifactCount, attachmentCount: 0, current: node.nodeId === s.current })), edges: definition.edges.filter(edge => !edge.to.startsWith('$')).map(edge => ({ from: edge.from, to: edge.to, label: edge.on })) } });
     return run;
@@ -179,7 +183,7 @@ export function createWorkflowSource(baseApi: RuntimeApi, language: Language) {
     },
     async getConversationTaskPage(projectId) {
       validate(projectId, IDS.taskId, IDS.runId);
-      return { projectId, tasks: [{ projectId, taskId: IDS.taskId, taskUuid: (await ready).base.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'workflow', lastActivityAt: new Date().toISOString(), runs: [], runHistoryStatus: 'ready-empty', runsNextCursor: null, pinned: false }], nextCursor: null, errors: [] };
+      return { projectId, tasks: [{ projectId, taskId: IDS.taskId, taskUuid: (await ready).base.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'workflow', lastActivityAt: new Date().toISOString(), runs: [], runHistoryStatus: 'ready', runsNextCursor: null, pinned: false }], nextCursor: null, errors: [] };
     },
     async subscribeAcpSessionUpdates(listener) { sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; },
     async subscribeConversationRunStateUpdates(listener) { runListeners.add(listener); return () => { runListeners.delete(listener); }; },

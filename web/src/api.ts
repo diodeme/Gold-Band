@@ -312,6 +312,10 @@ export function getGitComparison(projectId: string, source: Parameters<ReturnTyp
   return getRuntimeApi().getGitComparison(projectId, source);
 }
 
+export function prepareGitPush(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['prepareGitPush']>[2]) {
+  return getRuntimeApi().prepareGitPush(projectId, workspacePath, input);
+}
+
 export function startGitOperation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['startGitOperation']>[2]) {
   return getRuntimeApi().startGitOperation(projectId, workspacePath, input);
 }

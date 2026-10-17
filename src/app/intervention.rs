@@ -1190,9 +1190,9 @@ fn elicitation_prompt_and_actions(
     let custom_answer_targets = properties
         .into_iter()
         .flat_map(|properties| {
-            properties.iter().filter_map(|(name, schema)| {
-                custom_answer_target(name, schema, properties)
-            })
+            properties
+                .iter()
+                .filter_map(|(name, schema)| custom_answer_target(name, schema, properties))
         })
         .collect::<std::collections::BTreeSet<_>>();
     let questions = properties
@@ -1580,7 +1580,7 @@ fn canonical_elicitation_response_is_valid(
     content: Option<&Value>,
 ) -> Result<bool, InterventionError> {
     match action {
-        ElicitationAction::Decline => Ok(content.is_none()),
+        ElicitationAction::Decline | ElicitationAction::Cancel => Ok(content.is_none()),
         ElicitationAction::Accept => {
             if content.is_some_and(|content| !content.is_object()) {
                 return Ok(false);
@@ -2581,12 +2581,16 @@ mod tests {
                 "question_0":{"type":"string","enum":["MySQL","PostgreSQL"]},
                 "question_0_custom":{"type":"string"}
             }}
-        })).unwrap();
+        }))
+        .unwrap();
         let (prompt, actions) = super::elicitation_prompt_and_actions(&request).unwrap();
         assert_eq!(prompt.questions.len(), 1);
         assert!(prompt.questions[0].allows_custom_answer);
         assert!(!prompt.requires_desktop);
-        assert!(matches!(actions[0], InterventionAllowedAction::ElicitationFixedForm { .. }));
+        assert!(matches!(
+            actions[0],
+            InterventionAllowedAction::ElicitationFixedForm { .. }
+        ));
     }
 
     #[test]

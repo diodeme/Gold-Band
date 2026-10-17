@@ -587,6 +587,7 @@
     "closeWorkspace": "右側のワークスペースを折りたたむ",
     "openNewTab": "新しいタブを開く",
     "closeTab": "タブを閉じる",
+    "panelFailed": "このタブを表示できません",
     "allTabs": "すべてのタブ",
     "attention": "注意が必要です",
     "files": "ワークスペース",
@@ -818,6 +819,12 @@
       "workspace-outside-project": "選択した worktree はこのプロジェクトに属していません。",
       "ref-changed": "変更一覧が更新されました。もう一度お試しください。",
       "sync-ref-changed": "ブランチが変わりました。もう一度お試しください。",
+      "push-upstream-invalid": "ブランチの上流を解決できません。追跡設定を確認して再試行してください。",
+      "push-upstream-unsupported": "このブランチはローカルブランチを追跡しています。ローカルの上流へのプッシュはサポートされていません。",
+      "push-branch-not-current": "現在のブランチが変わりました。プッシュの確認を開き直してください。",
+      "push-remote-required": "公開先のリモートを選択してください。",
+      "push-confirmation-required": "先に送信元ブランチとプッシュ先を確認してください。",
+      "push-target-changed": "送信元ブランチまたはプッシュ先が変わりました。もう一度確認してください。",
       "repository-locked": "別のリポジトリ書き込み操作が実行中です。",
       "workspace-locked": "別のワークスペース書き込み操作が実行中です。",
       "operation-in-progress": "Git ワークフローはまだ進行中です。完了するか中止して、再試行してください。",
@@ -926,6 +933,7 @@
       "turn-execution-failed": "このメッセージは処理できませんでした。もう一度やり直してください。",
       "session-request-failed": "セッションを準備できませんでした。もう一度やり直してください。",
       "missing-provider": "現在のノードには provider の構成がありません。",
+      "subagent-protocol-upgrade-required": "Claude ACP を {{minimumVersion}} 以降に更新してから、もう一度お試しください。",
       "session-config-value-unavailable": "選択したセッション設定は使えなくなりました。最新の一覧から選び直してください。",
       "active-prompt-blocks-config-save": "セッションが実行中です。セッションを停止してから設定を保存してください。",
       "invalid-conversation-branch-id": "このAgentの会話リンクは無効であるか、使用できなくなりました。",
@@ -996,7 +1004,8 @@
     "runtime": {
       "io": {
         "storage-full": "ディスク容量が不足したため、実行が中断されました。空き容量を確保してから続行してください。",
-        "permission-denied": "セッションデータを書き込めません。ディレクトリの書き込み権限を確認してください。"
+        "permission-denied": "セッションデータを書き込めません。ディレクトリの書き込み権限を確認してください。",
+        "attachment-path-too-long": "この会話のデータフォルダーの階層が深すぎるため、添付ファイル「{{name}}」を保存できません。新しい会話を作成してから送信してください。"
       },
       "conversation-not-available": "ワークフローが実行中であるため、通常のメッセージはまだ送信できません。",
       "continue-not-available": "このノードを継続する必要はなくなりました。すでにアクティブになっているか、再開できなくなっている可能性があります。",
@@ -1998,6 +2007,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "送信先リモート",
+    "pushPreparing": "プッシュ先を準備中…",
+    "pushSetUpstream": "公開に成功したら、送信先ブランチを上流に設定します。",
     "remote": "リモート",
     "name": "名前",
     "startPoint": "開始点",
@@ -2420,7 +2433,8 @@
       "output": "出力",
       "cacheRead": "キャッシュ読み取り",
       "cacheWrite": "キャッシュ書き込み",
-      "total": "合計"
+      "total": "合計",
+      "excludesBackground": "バックグラウンド起動による使用量は含まれません"
     }
   },
   "graph": {

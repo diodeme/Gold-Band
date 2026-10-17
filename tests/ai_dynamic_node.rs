@@ -2458,7 +2458,9 @@ fn ai_dynamic_foreground_continue_resumes_paused_leaf_until_run_settles() {
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.status, RunStatus::Paused);
 
-    let run = app.run_continue_foreground(task_id, "run-001", false).unwrap();
+    let run = app
+        .run_continue_foreground(task_id, "run-001", false)
+        .unwrap();
 
     assert_eq!(run.status, RunStatus::Completed);
     assert_eq!(run.outcome, Some(RunOutcome::Success));
@@ -2494,7 +2496,8 @@ fn ai_dynamic_foreground_continue_rejects_settled_run() {
     write_task_file(&app, task_id);
     write_dynamic_workflow(&app, task_id, &profile, "[]");
     app.run_start(task_id, None).unwrap();
-    app.run_continue_foreground(task_id, "run-001", false).unwrap();
+    app.run_continue_foreground(task_id, "run-001", false)
+        .unwrap();
 
     let error = app
         .run_continue_foreground(task_id, "run-001", false)
@@ -2523,7 +2526,9 @@ fn ai_dynamic_foreground_continue_resumes_every_paused_leaf_until_run_settles() 
         .collect::<Vec<_>>();
     assert_eq!(paused, ["branch-a", "branch-b"]);
 
-    let run = app.run_continue_foreground(task_id, "run-001", false).unwrap();
+    let run = app
+        .run_continue_foreground(task_id, "run-001", false)
+        .unwrap();
 
     assert_eq!(run.status, RunStatus::Completed);
     assert_eq!(run.outcome, Some(RunOutcome::Success));

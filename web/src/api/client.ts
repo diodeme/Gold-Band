@@ -115,6 +115,8 @@ import type {
   GitMutationRequestVm,
   GitMutationResultVm,
   GitOperationRequestVm,
+  GitPushIntentVm,
+  GitPreparedPushVm,
   GitOperationVm,
   GitStateChangedEventVm,
   GitHubCapabilityVm,
@@ -416,6 +418,7 @@ export interface RuntimeApi {
   getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: GitCommitReachabilityQueryVm): Promise<GitCommitReachabilityVm>;
   executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
   getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;
+  prepareGitPush(projectId: string, workspacePath: string | null | undefined, input: GitPushIntentVm): Promise<GitPreparedPushVm>;
   startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;
   getGitOperation(operationId: string): Promise<GitOperationVm>;
   cancelGitOperation(operationId: string): Promise<GitOperationVm>;

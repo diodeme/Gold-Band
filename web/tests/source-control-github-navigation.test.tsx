@@ -11,6 +11,9 @@ const api = vi.hoisted(() => ({
   listGitHubIssues: vi.fn(),
   getGitHubIssue: vi.fn(),
   openExternalUrl: vi.fn(),
+  prepareGitPush: vi.fn(),
+  preflightGitHubPullRequest: vi.fn(),
+  startGitHubPullRequestCreate: vi.fn(),
 }));
 
 const browser = vi.hoisted(() => ({
@@ -20,10 +23,8 @@ const browser = vi.hoisted(() => ({
 vi.mock('@/api', () => ({
   ...api,
   cancelGitHubOperation: vi.fn(),
-  preflightGitHubPullRequest: vi.fn(),
   subscribeGitHubOperationUpdates: vi.fn().mockResolvedValue(() => undefined),
   startGitHubLogin: vi.fn(),
-  startGitHubPullRequestCreate: vi.fn(),
 }));
 
 vi.mock('@/components/workspace/browser/browser-workspace-hooks', () => ({
@@ -37,16 +38,13 @@ vi.mock('react-i18next', () => ({
 vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
   WorkspaceFileEditor: ({
     value,
-    markdownContentWidth,
     onMarkdownModeChange,
   }: {
     value: string;
-    markdownContentWidth?: string;
     onMarkdownModeChange?: (mode: 'live-preview' | 'source') => void;
   }) => (
     <div
       data-workspace-file-editor
-      data-workspace-file-editor-width={markdownContentWidth}
       data-workspace-file-editor-mode-owned={onMarkdownModeChange ? 'true' : 'false'}
     >
       {value}
@@ -57,11 +55,12 @@ vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
 import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import { SourceControlGitHubView } from '@/components/workspace/source-control/SourceControlGitHubView';
 import { githubDataStore, githubRepositorySessionKey } from '@/components/workspace/source-control/github-data-store';
-import type { GitHubPullRequestDetailVm, GitSourceControlSnapshotVm } from '@/types';
+import type { GitHubPullRequestDetailVm, GitPreparedPushVm, GitSourceControlSnapshotVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = () => {};
   githubDataStore.clear();
   vi.clearAllMocks();
 });
@@ -71,6 +70,67 @@ afterEach(() => {
 });
 
 describe('source control GitHub navigation', () => {
+  it.each([true, false])('confirms explicit non-current PR head publication in the existing dialog (set upstream: %s)', async (setUpstream) => {
+    const branch = 'release/financeagent';
+    api.getGitHubCapability.mockResolvedValue({ status: 'ready', host: 'github.com', repository: 'acme/widgets', remote: 'origin', defaultBranch: 'main' });
+    api.listGitHubPullRequests.mockResolvedValue([]);
+    api.preflightGitHubPullRequest.mockResolvedValue({ remote: 'fork', head: branch, base: 'main', aheadBy: 2, headPublished: false, existingPullRequest: null });
+    const request = deferred<GitPreparedPushVm>();
+    api.prepareGitPush.mockReturnValue(request.promise);
+    const prepared: GitPreparedPushVm = {
+      intent: { kind: 'publish-head', remote: 'fork', branch },
+      target: { remote: 'fork', branch, remoteBranch: branch, sourceOid: 'selected-head', setUpstream },
+      expectedRevision: 'confirmed-pr-revision',
+    };
+    const snapshot = sourceControlSnapshot();
+    snapshot.repository.remotes = [{ name: 'origin', fetchUrls: [], pushUrls: [] }, { name: 'fork', fetchUrls: [], pushUrls: [] }];
+    snapshot.repository.upstream = { name: 'origin/main', ahead: 0, behind: 0 };
+    snapshot.refs = [
+      { fullName: 'refs/heads/main', shortName: 'main', kind: 'local-branch', targetOid: 'current-head', peeledOid: null, upstream: 'origin/main', ahead: 0, behind: 0, checkedOutWorktreePaths: ['D:/repo'] },
+      { fullName: `refs/heads/${branch}`, shortName: branch, kind: 'local-branch', targetOid: 'selected-head', peeledOid: null, upstream: setUpstream ? null : 'origin/main', ahead: 2, behind: 0, checkedOutWorktreePaths: [] },
+    ];
+    const onPush = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent === label)!;
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlGitHubView projectId="project-1" workspacePath="D:/repo" snapshot={snapshot} busy={false} onPush={onPush} /></RightWorkspaceProvider>));
+      expect(api.prepareGitPush).not.toHaveBeenCalled();
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="sourceControl.createPullRequest"]')!.click());
+      const dialog = document.querySelector('[role="dialog"]');
+      const head = dialog!.querySelector<HTMLButtonElement>('[role="combobox"]')!;
+      await act(async () => head.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })));
+      await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent === branch)!.click());
+      const title = dialog!.querySelector<HTMLInputElement>('#github-pr-title')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(title, 'Publish selected branch');
+        title.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => button('sourceControl.checkAndCreatePullRequest').click());
+      expect(api.preflightGitHubPullRequest).toHaveBeenCalledWith('project-1', 'D:/repo', expect.objectContaining({ head: branch, base: 'main' }));
+      await act(async () => button('sourceControl.pushHeadFirst').click());
+      expect(api.prepareGitPush).toHaveBeenCalledExactlyOnceWith('project-1', 'D:/repo', prepared.intent);
+      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+      expect(button('common.confirm').disabled).toBe(true);
+      expect(onPush).not.toHaveBeenCalled();
+      await act(async () => request.resolve(prepared));
+      expect(document.querySelector('[data-push-source-branch]')?.textContent).toBe(branch);
+      expect(document.querySelector('[data-push-target-remote]')?.textContent).toBe('fork');
+      expect(document.querySelector('[data-push-target-branch]')?.textContent).toBe(branch);
+      expect(dialog!.querySelector('[role="combobox"]')).toBeNull();
+      expect(dialog!.textContent?.includes('sourceControl.pushSetUpstream')).toBe(setUpstream);
+      await act(async () => button('common.confirm').click());
+      expect(onPush).toHaveBeenCalledExactlyOnceWith(prepared);
+      expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+      expect(dialog!.querySelector<HTMLInputElement>('#github-pr-title')?.value).toBe('Publish selected branch');
+      await act(async () => button('sourceControl.checkAndCreatePullRequest').click());
+      expect(api.preflightGitHubPullRequest).toHaveBeenCalledTimes(2);
+      expect(api.startGitHubPullRequestCreate).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); }
+  });
+
   it('fills the PR overview width and opens the remote PR in the built-in browser', async () => {
     const detail = pullRequestDetail();
     api.getGitHubCapability.mockResolvedValue({
@@ -87,7 +147,7 @@ describe('source control GitHub navigation', () => {
       const row = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes(detail.title));
       await act(async () => row?.click());
 
-      expect(container.querySelector('[data-workspace-file-editor-width="full"]')).not.toBeNull();
+      expect(container.querySelector('[data-workspace-file-editor]')).not.toBeNull();
       expect(container.querySelector('[data-workspace-file-editor-mode-owned="false"]')).not.toBeNull();
       expect(container.querySelector('[data-workspace-file-editor-mode-owned="true"]')).toBeNull();
       const overview = container.querySelector('[data-source-control-github-detail="true"] [data-slot="tabs-content"][data-state="active"]');

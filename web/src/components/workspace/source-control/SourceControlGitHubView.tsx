@@ -28,12 +28,15 @@ import type {
   GitHubPullRequestDetailVm,
   GitHubPullRequestSummaryVm,
   GitSourceControlSnapshotVm,
+  GitPreparedPushVm,
+  GitPushIntentVm,
 } from '@/types';
 import { WorkspaceFileEditor } from '../files/WorkspaceFileEditor';
 import { type MarkdownEditorMode } from '../files/file-content-store';
 import { useOpenWebTarget } from '../browser/browser-workspace-hooks';
 import { gitDiffReviewWorkspaceResourceKey, useRightWorkspace } from '../right-workspace-context';
 import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
+import { SourceControlPushConfirmation } from './SourceControlPushConfirmation';
 import { diffReviewStore, gitComparisonReviewItemId } from './diff-review-store';
 import { githubOperationEventStore } from './github-operation-store';
 import {
@@ -56,7 +59,7 @@ export function SourceControlGitHubView({
   workspacePath?: string | null;
   snapshot: GitSourceControlSnapshotVm;
   busy: boolean;
-  onPush: (remote: string, branch: string) => void;
+  onPush: (prepared: GitPreparedPushVm) => void;
 }) {
   const { t } = useTranslation();
   const sessionKey = githubRepositorySessionKey(
@@ -117,7 +120,7 @@ export function SourceControlGitHubView({
 
 type GitHubSelection = { kind: 'pr'; detail: GitHubPullRequestDetailVm } | { kind: 'issue'; detail: GitHubIssueDetailVm };
 
-function GitHubReadyView({ sessionKey, projectId, workspacePath, capability, snapshot, busy, onPush }: { sessionKey: string; projectId: string; workspacePath?: string | null; capability: GitHubCapabilityVm; snapshot: GitSourceControlSnapshotVm; busy: boolean; onPush: (remote: string, branch: string) => void }) {
+function GitHubReadyView({ sessionKey, projectId, workspacePath, capability, snapshot, busy, onPush }: { sessionKey: string; projectId: string; workspacePath?: string | null; capability: GitHubCapabilityVm; snapshot: GitSourceControlSnapshotVm; busy: boolean; onPush: (prepared: GitPreparedPushVm) => void }) {
   const { t } = useTranslation();
   const { scopeKey, openResource } = useRightWorkspace();
   const openInBrowser = useOpenWebTarget();
@@ -264,7 +267,7 @@ function CreatePullRequestDialog({
   capability: GitHubCapabilityVm;
   snapshot: GitSourceControlSnapshotVm;
   busy: boolean;
-  onPush: (remote: string, branch: string) => void;
+  onPush: (prepared: GitPreparedPushVm) => void;
   onCreated: () => void;
 }) {
   const { t } = useTranslation();
@@ -280,6 +283,7 @@ function CreatePullRequestDialog({
   const [markdownMode, setMarkdownMode] = useState<MarkdownEditorMode>('live-preview');
   const [checking, setChecking] = useState(false);
   const [preflight, setPreflight] = useState<GitHubPullRequestPreflightVm | null>(null);
+  const [publishIntent, setPublishIntent] = useState<GitPushIntentVm | null>(null);
   const [operation, setOperation] = useState<GitHubOperationVm | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [notifiedOperationId, setNotifiedOperationId] = useState<string | null>(null);
@@ -298,6 +302,7 @@ function CreatePullRequestDialog({
     setOperation(null);
     setErrorCode(null);
     setNotifiedOperationId(null);
+    setPublishIntent(null);
   }, [defaultBase, defaultHead, open]);
 
   useEffect(() => githubOperationEventStore.subscribe((next) => {
@@ -350,12 +355,22 @@ function CreatePullRequestDialog({
 
   const disabled = checking || operationRunning;
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!operationRunning) onOpenChange(next); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!operationRunning) { if (!next) setPublishIntent(null); onOpenChange(next); } }}>
       <DialogContent className="flex h-[min(82vh,760px)] max-w-3xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b border-border/50 px-5 py-4">
           <DialogTitle>{t('sourceControl.createPullRequest')}</DialogTitle>
           <DialogDescription>{t('sourceControl.createPullRequestDescription')}</DialogDescription>
         </DialogHeader>
+        {publishIntent ? <div className="min-h-0 overflow-y-auto px-5 py-4"><SourceControlPushConfirmation
+          projectId={projectId}
+          workspacePath={workspacePath}
+          commonDir={snapshot.repository.commonDir}
+          intent={publishIntent}
+          remotes={snapshot.repository.remotes.map((remote) => remote.name)}
+          busy={busy}
+          onCancel={() => setPublishIntent(null)}
+          onConfirm={(prepared) => { onPush(prepared); setPublishIntent(null); setPreflight(null); }}
+        /></div> : <>
         <div className="grid shrink-0 grid-cols-2 gap-3 border-b border-border/40 px-5 py-3">
           <div className="grid gap-1.5">
             <Label>{t('sourceControl.headBranch')}</Label>
@@ -381,7 +396,7 @@ function CreatePullRequestDialog({
         </div>
         <div className="shrink-0 border-t border-border/50 px-5 py-3">
           {errorCode ? <div className="mb-2 text-xs text-destructive">{t(`errors.${errorCode}`, { defaultValue: t('sourceControl.operationFailed') })}</div> : null}
-          {preflight && !preflight.headPublished ? <div className="mb-2 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400"><span className="min-w-0 flex-1">{t('sourceControl.pullRequestHeadNotPublished', { head: preflight.head, remote: preflight.remote })}</span><Button size="xs" variant="outline" disabled={busy} onClick={() => { onPush(preflight.remote, preflight.head); setPreflight(null); }}>{t('sourceControl.pushHeadFirst')}</Button></div> : null}
+          {preflight && !preflight.headPublished ? <div className="mb-2 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400"><span className="min-w-0 flex-1">{t('sourceControl.pullRequestHeadNotPublished', { head: preflight.head, remote: preflight.remote })}</span><Button size="xs" variant="outline" disabled={busy} onClick={() => setPublishIntent({ kind: 'publish-head', remote: preflight.remote, branch: preflight.head })}>{t('sourceControl.pushHeadFirst')}</Button></div> : null}
           {preflight?.existingPullRequest ? <div className="mb-2 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400"><span className="min-w-0 flex-1">{t('sourceControl.pullRequestAlreadyExists', { number: preflight.existingPullRequest.number })}</span><Button size="xs" variant="outline" onClick={() => void openExternalUrl(preflight.existingPullRequest!.url)}>{t('sourceControl.openOnGitHub')}</Button></div> : null}
           {operationRunning ? <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('sourceControl.creatingPullRequest')}</div> : null}
           {operation?.status === 'succeeded' && operation.resultUrl ? <div className="mb-2 flex items-center gap-2 text-xs text-emerald-600"><span className="min-w-0 flex-1">{t('sourceControl.pullRequestCreated')}</span><Button size="xs" variant="outline" onClick={() => void openExternalUrl(operation.resultUrl!)}>{t('sourceControl.openOnGitHub')}</Button></div> : null}
@@ -390,6 +405,7 @@ function CreatePullRequestDialog({
             {operation?.status !== 'succeeded' ? <Button disabled={disabled || busy || !head || !base || !title.trim()} onClick={() => void create()}>{checking ? <LoaderCircle className="size-3.5 animate-spin" /> : <GitPullRequest className="size-3.5" />}{t('sourceControl.checkAndCreatePullRequest')}</Button> : null}
           </DialogFooter>
         </div>
+        </>}
       </DialogContent>
     </Dialog>
   );
@@ -420,7 +436,7 @@ function GitHubDetail({
     const url = githubMarkdownUrl(href, host, repository, selection.kind === 'pr' ? selection.detail.headRefName : 'HEAD');
     if (url) void openExternalUrl(url);
   };
-  const body = <WorkspaceFileEditor documentKey={`github:${repository}:${selection.kind}:${detail.number}`} value={detail.body || t('sourceControl.noDescription')} editable={false} language="markdown" highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} markdownMode="live-preview" markdownLivePreviewAvailable markdownContentWidth="full" onMarkdownLinkClick={openMarkdownLink} />;
+  const body = <WorkspaceFileEditor documentKey={`github:${repository}:${selection.kind}:${detail.number}`} value={detail.body || t('sourceControl.noDescription')} editable={false} language="markdown" highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} markdownMode="live-preview" markdownLivePreviewAvailable onMarkdownLinkClick={openMarkdownLink} />;
   return (
     <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden" data-source-control-github-detail="true">
       <div className="flex min-h-10 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-border/50 px-2">

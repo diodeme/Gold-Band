@@ -205,12 +205,16 @@ interface GitRepositorySnapshotVm {
   unborn: boolean;
   upstream: GitUpstreamVm | null;
   remotes: GitRemoteVm[];
+  remotesRevision: string;
   lock: GitLockVm;
   revision: string;
+  syncRevision: string;
 }
 ```
 
 `revision` 是 opaque token，由 HEAD、index、refs 与 workspace state 共同派生。前端只比较是否变化，不解析内容。
+
+`remotesRevision` 是共享仓库 `config` 内容的 opaque 摘要，只随 remote 定义变化；overview 不读取 remotes（需要 1 + 2N 次 Git 进程），前端仅在该值与已加载 remotes 的 revision 不同时独立读取 remotes。
 
 ### 6.2 工作区状态
 
@@ -530,9 +534,19 @@ Merge/Rebase 状态机的 marker 语义不同：`MERGE_HEAD` 可判定 Merge 进
 - 允许用户现有 GUI credential helper、GCM、SSH agent/askpass 正常工作。
 - pull 默认 `ff-only`。
 - merge/rebase 必须用户显式选择。
-- push 不提供 force；首次 push 可显式勾选 set-upstream。
+- 普通 Push 已有 upstream 时同步到 Git 配置的真实 remote/branch；未配置 upstream 时首次发布到所选 remote 的同名分支，并在成功后设置 upstream。不提供 force。
 - non-fast-forward 返回结构化错误，不自动 pull/rebase。
-- 用户选择的 remote 以规范化 repository common-dir 为作用域写入带版本号、有容量上限的用户偏好；默认值依次取仍有效的偏好、upstream remote、第一项 remote，禁止每次打开对话框重置为第一项。
+- Fetch、首次发布和 Push Tag 使用规范化 repository common-dir 作用域下带版本号、有容量上限的 remote 偏好；默认值依次取仍有效的偏好、upstream remote、第一项 remote。普通 Push 已有 upstream 时目标只读，偏好不得覆盖同步目标。
+- 打开 Push 确认时才调用只读 `prepare_git_push`，返回 intent、source OID、真实目标和现有 syncRevision；不增加 overview/bootstrap 查询。`upstream-sync` 对应当前分支同步，`publish-head` 对应 PR 所选分支显式发布。使用 Git 原生 upstream remote/ref 元数据，不拆分显示名称；配置存在但不可解析或不支持的本地 upstream 返回结构化错误，禁止回落到同名发布。
+- Push 请求区分本地 source branch 与 remoteBranch；确认框只用 `本地分支 → remote/目标分支` 一行表达推送方向，不堆叠字段标签或重复说明，长 ref 允许换行；首次发布额外保留 remote 选择及设置上游提示。准备中立即显示局部 loading 并禁用确认。Store 保留确认时的 expectedRevision；进程启动前在现有 repository 写锁内重新检查修订、源 OID、目标与 set-upstream 行为，变化后要求重新确认，不静默改目标或自动重试。
+
+#### Push 目标契约验收（2026-10-14）
+
+- 先在临时本地仓库和 bare remote 复现：旧实现 Push 成功但 `main` 未前进、ahead 仍为 2；修复后同一测试转绿。Store 确认修订覆盖、紧凑方向展示和浏览器首次发布投影也分别保留了失败再通过的证据。
+- `cargo test -p gold-band --lib -j 2 git::source_control::tests::`：71 项通过；包括原首屏 4/5 次 Git 调用预算。`cargo check -p gold-band-desktop -j 2` 通过，既有未改动代码仍有警告。
+- 前端源码管理、GitHub 导航、浏览器 API、文案与加载相关 10 个测试文件共 137 项通过；前端类型检查和生产构建通过。
+- 生产构建浏览器验证：普通同步显示 `release/financeagent → origin/main`，成功后显示禁用的 `↑0`；首次发布提供 remote 选择与上游提示，认证失败保留恢复信息；PR 显式发布显示 `release/financeagent → origin/release/financeagent`，始终只有一个 Dialog。紧凑布局在 1440px、1024px 及恢复宽度下验证，长分支名无横向溢出；480px 时应用按既有规则收起右侧工作区并结束该确认，恢复后可重新打开。
+- 性能/过度设计复核：无新依赖、持久状态、缓存、轮询或首屏调用；只在确认和执行前读取单分支有界元数据，复用现有 revision、协调锁与操作事件。测试只向本地临时 remote 写入，未修改 FinanceAgent 的配置或真实远端。
 
 ### 8.10 Stash
 
@@ -625,6 +639,7 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 - 长操作结束后立即刷新 snapshot/history。
 - `GitStateMonitor` 事件使对应 repository/workspace 会话失效，不允许由每个组件自行轮询。
 - snapshot/history/detail 分别维护请求 revision；旧请求完成后不得覆盖较新刷新或操作结果。
+- remotes 归属共享仓库 config，生命周期独立于 workspace snapshot：同一 `commonDir` 的 snapshot 刷新保留已加载 remotes，只有 `remotesRevision` 变化才后台重读；已有 remotes 时重读不显示加载态、不禁用同步按钮。remotes 请求只在 `commonDir` 变化时作废；读取失败按该 revision 记为已结算，不随无关刷新重试，只由用户显式重试。
 - 缓存最多保留 24 个非活跃会话，使用 LRU 淘汰；有订阅或正在执行 Git 操作的会话不可淘汰。
 
 ### 10.2 GitHub 查询缓存与 PR Diff identity
@@ -641,7 +656,7 @@ GitHub 数据不得保存在 `SourceControlGitHubView` 的组件本地生命周�
 
 `GitHubPullRequestDetailVm` 返回 `baseRefOid/headRefOid`。点击文件时把这两个稳定 revision 写入 typed comparison locator；后端校验 40/64 位十六进制 OID 和 repo-relative path，只并行执行 base/head 两次 raw content 请求。旧的每文件 `gh pr diff --name-only` 与 `gh pr view --json baseRefOid,headRefOid,files` 消费路径删除。
 
-GitHub PR/Issue 列表和详情的宽度链从领域根容器贯穿 Tabs、TabsContent、ScrollArea 到单行，统一使用 `min-w-0 / overflow-hidden / max-w-full` 限制在右侧面板内。填充剩余高度的 TabsContent 必须是 column flex，避免默认 row flex 把 Atomic `78ch` 阅读栏变成半栏固有宽度。line Tabs 的 `w-full` 只画底边，Trigger 跟随标签宽度。标题、账号、head/base 分支、label 与文件路径是可压缩省略列；导航按钮、状态和增删统计为固定列，长远端文本不得改变客户端宽度或生成横向滚动。PR/Issue 正文给 `WorkspaceFileEditor` 传递语义化的全宽 Markdown 契约，使 Atomic 的正文 measure 使用 `100%`；默认文档仍保留既有阅读宽度，不能全局修改共享编辑器样式。编辑器根节点同时使用 `w-full min-w-0`，防止任意 flex 父级再次 shrink-wrap。
+GitHub PR/Issue 列表和详情的宽度链从领域根容器贯穿 Tabs、TabsContent、ScrollArea 到单行，统一使用 `min-w-0 / overflow-hidden / max-w-full` 限制在右侧面板内。填充剩余高度的 TabsContent 必须是 column flex，避免默认 row flex 把 Atomic `78ch` 阅读栏变成半栏固有宽度。line Tabs 的 `w-full` 只画底边，Trigger 跟随标签宽度。标题、账号、head/base 分支、label 与文件路径是可压缩省略列；导航按钮、状态和增删统计为固定列，长远端文本不得改变客户端宽度或生成横向滚动。PR/Issue 正文与普通文件共用 `WorkspaceFileEditor` 的自适应宽度契约，共享样式统一将 Atomic 正文 measure 设为 `100%`，保留左右各 `1rem` 留白；不再保留逐入口的 readable/full 参数和固定阅读栏。编辑器根节点同时使用 `w-full min-w-0`，防止任意 flex 父级再次 shrink-wrap。
 
 ## 11. 提交历史与多选关系
 
@@ -744,7 +759,7 @@ type FileComparisonSource =
 
 ### 12.5 更改区
 
-仓库标题右侧使用动态同步按钮：`behind > 0` 时显示 `↓behind ↑ahead` 并执行 Pull，否则显示 `↑ahead` 并执行 Push；同步为零时禁用，未设置 upstream 时允许首次 Push。Fetch 保持独立，用于联网更新 remote refs。Push non-fast-forward 不自动触发 Pull，只展示结构化失败，由用户显式 Fetch、Pull、Push。按钮打开原有 typed 对话框，复用 repository-scoped remote 偏好和统一 operation 状态。更改区工具栏不再重复展示同步文字按钮，仅保留右侧 `…`，承载全部暂存、全部取消暂存和保存为 stash。terminal operation 结果保留在 repository/workspace 会话中，跨 Tab 可见，直到用户关闭或下一次 operation 替换。
+仓库标题右侧使用动态同步按钮：`behind > 0` 时显示 `↓behind ↑ahead` 并执行 Pull，否则显示 `↑ahead` 并执行 Push；同步为零时禁用，未设置 upstream 时允许首次 Push。Fetch 保持独立，用于联网更新 remote refs。Push non-fast-forward 不自动触发 Pull，只展示结构化失败，由用户显式 Fetch、Pull、Push。按钮打开 typed 对话框并复用统一 operation 状态；Push 先按需解析目标，显示源分支与真实 remote/branch，只有没有 upstream 的首次发布才允许 remote 偏好决定目标。更改区工具栏不再重复展示同步文字按钮，仅保留右侧 `…`，承载全部暂存、全部取消暂存和保存为 stash。terminal operation 结果保留在 repository/workspace 会话中，跨 Tab 可见，直到用户关闭或下一次 operation 替换。
 
 Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移除远端已删除的分支记录”，并明确说明不会删除本地分支或工作区文件；接口仍使用 typed `prune: boolean`，不从文案反推行为。
 
@@ -931,7 +946,7 @@ PR 列表项点击时先写入 `selected(kind, number)` locator 并显示详情 
 
 不得让 `gh pr create` 进入交互式提问或自行决定 push/fork。
 
-当前实现以独立 typed preflight 返回 mapped remote、ahead 数、head 发布状态和已有 open PR。UI 未发布分支只提供显式 typed push 入口；创建开始前后端重新执行相同预检。`gh pr create` 复用通用 `GitHubOperation`/`ManagedProcessGroup`，支持取消，PR body 由可编辑 `WorkspaceFileEditor` 生成并只经 stdin 传入，成功后返回结构化 `resultUrl`。
+当前实现以独立 typed preflight 返回 mapped remote、ahead 数、head 发布状态和已有 open PR。UI 未发布分支使用 `publish-head` 显式发布到 mapped remote 的同名 head，在原 PR 流程内显示源与目标并确认，不叠加 Dialog，也不沿用普通 Push 的 upstream 目标。head 可以不是当前分支，是否设置 upstream 必须读取所选源分支的配置；已有 tracking 不变。创建开始前后端重新执行相同预检，不能把一次 Push 成功当作 head 已发布的证明。`gh pr create` 复用通用 `GitHubOperation`/`ManagedProcessGroup`，支持取消，PR body 由可编辑 `WorkspaceFileEditor` 生成并只经 stdin 传入，成功后返回结构化 `resultUrl`。
 
 ### 14.6 Issue 查询
 
@@ -1039,7 +1054,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 - [x] operation event subscription，替换完成状态轮询。
 - [x] lock/restriction/error UI 基础状态。
 - [x] Git command 失败原因的结构化透传、credential 脱敏和本地化恢复建议。
-- [x] Fetch/Push/Push Tag remote 的 repository-scoped 持久偏好与合法性回退。
+- [x] Fetch/首次发布/Push Tag remote 的 repository-scoped 持久偏好与合法性回退；已有 upstream 的普通 Push 不受 remote 偏好覆盖。
 
 ### 阶段 5：右侧源码管理
 
@@ -1274,3 +1289,11 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 - 回归：DOM 测试先确认旧实现的 spinner 不在文件行内而失败；修复后验证 spinner 和 +1/-0 同时存在于行内，21 项相关前端测试通过。浏览器 440px 长路径场景中统计右边界 404px、操作区左边界 410px，间隔 6px，无横向溢出。
 - Windows 诊断：临时仓库 data.csv 持有 FileShare.ReadWrite（无 Delete）句柄时，git restore --source=HEAD --staged --worktree 返回 unable to unlink old data.csv: Invalid argument，退出码 255；释放句柄后同一命令返回 0。该实验证明占用可产生截图中的错误，不能据此指定用户现场的占用进程；不通过覆盖写入或强杀进程绕过占用。
 - 设计与性能评审：复用现有行和 pending action，无新增依赖、状态、I/O 或列表计算；仅调整 spinner 所属布局位置。
+
+## 24. 同步按钮持续加载（2026-10-17）
+
+- 根因：remotes 的生命周期错误挂在 workspace snapshot 上。每次 repository 刷新都把 `remotesLoading` 置为 true 并重读 remotes；remotes 请求又以 `repositoryRequestRevision` 判断过期，而任意工作区文件变化都会推进该值，导致 remotes 结果持续被丢弃、重发，Push/Fetch 按钮一直转圈。HEAD、index、refs 变化本身也不会改变 remotes。
+- 修复：后端 repository snapshot 新增 `remotesRevision`（共享 `config` 内容 blake3 摘要；metadata monitor 已通过 `.git/` 非递归监听覆盖 config 变化）。前端 Store 以 `commonDir + remotesRevision` 管理 remotes：revision 不变不重读，变化时后台重读并保留现有数据；请求只在仓库变化时作废，single-flight 结算后对最新 revision 复核。删除 `GitStateChangedEventVm.reason` 中从未发出的 `workspace / operation` 枚举。
+- 验收：先观察 4 项 Store 测试在旧实现上分别因可见 `remotesLoading=true`、remotes 结果被丢弃和无关刷新重试失败；修复后同测试通过。Rust 测试固定 worktree/index/branch 变化不改变 `remotesRevision`、`remote add / set-url` 会改变。
+- 已知边界：`remotesRevision` 只覆盖仓库本地 config；全局 config 的 `url.insteadOf`、include 文件或 `config.worktree` 中定义的 remote 变化不会自动刷新，可通过重新打开会话对账。
+- 过度设计与性能评审：仅新增一个 snapshot 字段和一个运行期 revision，无新增依赖、事件类型、缓存或队列；每次 overview 多读一次数 KB 的 config 文件，同时消除了每次 metadata 事件 1 + 2N 次 Git 进程的 remotes 重读。

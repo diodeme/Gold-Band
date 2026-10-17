@@ -606,6 +606,9 @@ pub struct GitRepositorySnapshot {
     pub unborn: bool,
     pub upstream: Option<GitUpstream>,
     pub remotes: Vec<GitRemote>,
+    /// Content identity of the repository config that defines `remotes`.
+    /// Remotes are read separately; readers refetch only when this changes.
+    pub remotes_revision: String,
     pub lock: GitLockSnapshot,
     pub revision: String,
     /// Branch, HEAD, upstream, and ahead/behind. Sync operations compare this
@@ -1081,6 +1084,41 @@ pub enum GitOperationKind {
     rename_all = "kebab-case",
     rename_all_fields = "camelCase"
 )]
+pub enum GitPushIntent {
+    UpstreamSync {
+        branch: String,
+        remote: Option<String>,
+    },
+    PublishHead {
+        branch: String,
+        remote: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushTarget {
+    pub branch: String,
+    pub source_oid: String,
+    pub remote: String,
+    pub remote_branch: String,
+    pub set_upstream: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPreparedPush {
+    pub intent: GitPushIntent,
+    pub target: GitPushTarget,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum GitOperationInput {
     Fetch {
         remote: Option<String>,
@@ -1092,9 +1130,8 @@ pub enum GitOperationInput {
         strategy: GitPullStrategy,
     },
     Push {
-        remote: String,
-        branch: String,
-        set_upstream: bool,
+        intent: GitPushIntent,
+        target: GitPushTarget,
     },
     PushTag {
         remote: String,
@@ -1644,6 +1681,7 @@ impl GitSourceControlService {
                 behind: status.branch.behind,
             }),
             remotes,
+            remotes_revision: remotes_revision(&identity.common_dir),
             lock,
             revision,
             sync_revision,
@@ -2994,6 +3032,170 @@ impl GitSourceControlService {
         Ok(GitMutationResult::Repository)
     }
 
+    /// Resolve only the selected source ref; never infer a remote from a display name.
+    pub fn prepare_push(&self, cwd: &Utf8Path, intent: &GitPushIntent) -> Result<GitPreparedPush> {
+        let branch = match intent {
+            GitPushIntent::UpstreamSync { branch, .. }
+            | GitPushIntent::PublishHead { branch, .. } => branch,
+        };
+        self.validate_branch_name(cwd, branch)?;
+        let full_name = format!("refs/heads/{branch}");
+        if is_runtime_branch(&full_name) {
+            return Err(GitServiceError::new(
+                "git.runtime-branch-push-forbidden",
+                serde_json::json!({ "branch": branch }),
+            )
+            .into());
+        }
+        let header = self.branch_header(cwd)?;
+        if matches!(intent, GitPushIntent::UpstreamSync { .. })
+            && header.head.as_deref() != Some(branch.as_str())
+        {
+            return Err(GitServiceError::new(
+                "git.push-branch-not-current",
+                serde_json::json!({ "branch": branch }),
+            )
+            .into());
+        }
+        let output = self.runner.require(cwd, &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)%00",
+            "--count=1",
+            full_name.as_str(),
+        ], "git.refs-query-failed")?;
+        // for-each-ref scopes also match descendants: only the exact ref is a source.
+        let record = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .find(|record| record.split(|byte| *byte == 0).next() == Some(full_name.as_bytes()))
+            .ok_or_else(|| {
+                GitServiceError::new(
+                    "git.branch-not-found",
+                    serde_json::json!({ "branch": branch }),
+                )
+            })?;
+        let fields = record.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() != 5 || fields[1].is_empty() {
+            return Err(
+                GitServiceError::new("git.refs-query-failed", serde_json::json!({})).into(),
+            );
+        }
+        let source_oid = text(fields[1]);
+        let native_remote = text(fields[2]);
+        let native_remote_ref = text(fields[3]);
+        let invalid_upstream = || {
+            GitServiceError::new(
+                "git.push-upstream-invalid",
+                serde_json::json!({ "branch": branch }),
+            )
+        };
+        // Empty native upstream fields can mean missing *or broken* configuration.
+        // Query literal keys (not a branch-derived regex), retaining empty/multiple values.
+        let config_values = |suffix: &str| -> Result<Vec<String>> {
+            let key = format!("branch.{branch}.{suffix}");
+            let output = self
+                .runner
+                .run(cwd, &["config", "--null", "--get-all", &key])?;
+            if output.success {
+                Ok(text(&output.stdout)
+                    .split_terminator('\0')
+                    .map(str::to_string)
+                    .collect())
+            } else if output.exit_code == Some(1) {
+                Ok(Vec::new())
+            } else {
+                Err(invalid_upstream().into())
+            }
+        };
+        let configured_remotes = config_values("remote")?;
+        let configured_merges = config_values("merge")?;
+        let upstream = match (configured_remotes.as_slice(), configured_merges.as_slice()) {
+            ([], []) if native_remote.is_empty() && native_remote_ref.is_empty() => None,
+            ([remote], _) if remote == "." => {
+                return Err(GitServiceError::new(
+                    "git.push-upstream-unsupported",
+                    serde_json::json!({ "branch": branch, "remote": remote }),
+                )
+                .into());
+            }
+            ([remote], [merge])
+                if !remote.is_empty()
+                    && *remote == native_remote
+                    && *merge == native_remote_ref
+                    && native_remote_ref.starts_with("refs/heads/") =>
+            {
+                Some((
+                    native_remote,
+                    native_remote_ref["refs/heads/".len()..].to_string(),
+                ))
+            }
+            _ => return Err(invalid_upstream().into()),
+        };
+        let (remote, remote_branch, set_upstream) = match intent {
+            GitPushIntent::UpstreamSync { remote, .. } => match upstream {
+                Some((remote, remote_branch)) => (remote, remote_branch, false),
+                None => (
+                    remote.clone().ok_or_else(|| {
+                        GitServiceError::new(
+                            "git.push-remote-required",
+                            serde_json::json!({ "branch": branch }),
+                        )
+                    })?,
+                    branch.clone(),
+                    true,
+                ),
+            },
+            GitPushIntent::PublishHead { remote, .. } => {
+                (remote.clone(), branch.clone(), upstream.is_none())
+            }
+        };
+        self.validate_remote(cwd, &remote)?;
+        self.validate_branch_name(cwd, &remote_branch)?;
+        if is_runtime_branch(&format!("refs/heads/{remote_branch}")) {
+            return Err(GitServiceError::new(
+                "git.runtime-branch-push-forbidden",
+                serde_json::json!({ "branch": remote_branch }),
+            )
+            .into());
+        }
+        Ok(GitPreparedPush {
+            intent: intent.clone(),
+            target: GitPushTarget {
+                branch: branch.clone(),
+                source_oid,
+                remote,
+                remote_branch,
+                set_upstream,
+            },
+            expected_revision: history_revision(&header),
+        })
+    }
+
+    fn validate_push_confirmation(
+        &self,
+        cwd: &Utf8Path,
+        request: &GitOperationRequest,
+    ) -> Result<()> {
+        let GitOperationInput::Push { intent, target } = &request.operation else {
+            return Ok(());
+        };
+        let expected_revision = request.expected_revision.as_deref().ok_or_else(|| {
+            GitServiceError::new("git.push-confirmation-required", serde_json::json!({}))
+        })?;
+        let current = self.prepare_push(cwd, intent)?;
+        if expected_revision != current.expected_revision {
+            return Err(GitServiceError::new("git.sync-ref-changed", serde_json::json!({
+                "expectedRevision": expected_revision, "actualRevision": current.expected_revision,
+            })).into());
+        }
+        if *target != current.target {
+            return Err(
+                GitServiceError::new("git.push-target-changed", serde_json::json!({})).into(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn start_operation(
         &self,
         cwd: &Utf8Path,
@@ -3009,7 +3211,9 @@ impl GitSourceControlService {
         update_sink: Option<GitOperationUpdateSink>,
     ) -> Result<GitOperation> {
         let identity = self.repository_identity(cwd)?;
-        if let Some(expected_revision) = request.expected_revision.as_deref() {
+        if matches!(request.operation, GitOperationInput::Push { .. }) {
+            self.validate_push_confirmation(cwd, request)?;
+        } else if let Some(expected_revision) = request.expected_revision.as_deref() {
             let (code, actual_revision) = if operation_uses_sync_revision(request.operation.kind())
             {
                 let branch = self.branch_header(cwd)?;
@@ -3057,8 +3261,8 @@ impl GitSourceControlService {
                 GitServiceError::new("git.operation-registry-poisoned", serde_json::json!({}))
             })?
             .insert(operation.operation_id.clone(), cell.clone());
-        let input = request.operation.clone();
-        thread::spawn(move || run_git_operation(identity, input, cell));
+        let request = request.clone();
+        thread::spawn(move || run_git_operation(identity, request, cell));
         Ok(operation)
     }
 
@@ -3122,27 +3326,8 @@ impl GitSourceControlService {
                     validate_revision(branch)?;
                 }
             }
-            GitOperationInput::Push { remote, branch, .. } => {
-                self.validate_remote(cwd, remote)?;
-                self.validate_branch_name(cwd, branch)?;
-                let full_name = format!("refs/heads/{branch}");
-                if is_runtime_branch(&full_name) {
-                    return Err(GitServiceError::new(
-                        "git.runtime-branch-push-forbidden",
-                        serde_json::json!({ "branch": branch }),
-                    )
-                    .into());
-                }
-                if !self.refs(cwd)?.iter().any(|git_ref| {
-                    git_ref.kind == GitRefKind::LocalBranch && git_ref.short_name == *branch
-                }) {
-                    return Err(GitServiceError::new(
-                        "git.branch-not-found",
-                        serde_json::json!({ "branch": branch }),
-                    )
-                    .into());
-                }
-            }
+            // Push validates its complete prepared contract in admission and under the write lock.
+            GitOperationInput::Push { .. } => {}
             GitOperationInput::PushTag { remote, tag } => {
                 self.validate_remote(cwd, remote)?;
                 self.validate_tag_name(cwd, tag)?;
@@ -3229,7 +3414,12 @@ impl GitSourceControlService {
             )
             .into());
         }
-        if self.remotes(cwd)?.iter().any(|item| item.name == remote) {
+        // get-url requires a configured named remote; do not enumerate every remote's URLs.
+        if self
+            .runner
+            .run(cwd, &["remote", "get-url", remote])?
+            .success
+        {
             Ok(())
         } else {
             Err(GitServiceError::new(
@@ -3834,7 +4024,7 @@ fn operation_timestamp() -> String {
 
 fn run_git_operation(
     identity: GitRepositoryIdentity,
-    input: GitOperationInput,
+    request: GitOperationRequest,
     cell: Arc<GitOperationCell>,
 ) {
     if cell.cancel_requested.load(Ordering::SeqCst) {
@@ -3851,8 +4041,15 @@ fn run_git_operation(
     if let Some(operation) = running {
         emit_operation_update(&cell, operation);
     }
+    let input = &request.operation;
     let kind = input.kind();
-    let action = || execute_managed_git_operation(&identity.workspace_path, &input, &cell);
+    let action = || {
+        // Admission precedes the worker: confirmed refs/config must still match while locked,
+        // before any managed push process is created. Never replace the confirmed revision.
+        GitSourceControlService::default()
+            .validate_push_confirmation(&identity.workspace_path, &request)?;
+        execute_managed_git_operation(&identity.workspace_path, input, &cell)
+    };
     let result = match kind {
         GitOperationKind::Fetch | GitOperationKind::Push | GitOperationKind::PushTag => {
             GitCoordinationService.try_with_user_repository_write(
@@ -4082,19 +4279,18 @@ fn operation_args(input: &GitOperationInput) -> Vec<String> {
             }
             args
         }
-        GitOperationInput::Push {
-            remote,
-            branch,
-            set_upstream,
-        } => {
+        GitOperationInput::Push { target, .. } => {
             let mut args = vec!["push".to_string(), "--porcelain".to_string()];
-            if *set_upstream {
+            if target.set_upstream {
                 args.push("--set-upstream".to_string());
             }
             args.extend([
                 "--".to_string(),
-                remote.clone(),
-                format!("refs/heads/{branch}:refs/heads/{branch}"),
+                target.remote.clone(),
+                format!(
+                    "refs/heads/{}:refs/heads/{}",
+                    target.branch, target.remote_branch
+                ),
             ]);
             args
         }
@@ -5084,6 +5280,22 @@ fn operation_uses_sync_revision(kind: GitOperationKind) -> bool {
     )
 }
 
+/// Remotes live in the shared repository config, which the metadata monitor
+/// already observes. Hashing its few-KB content is cheaper than one `git` call.
+fn remotes_revision(common_dir: &Utf8Path) -> String {
+    let mut hasher = blake3::Hasher::new();
+    match std::fs::read(common_dir.join("config")) {
+        Ok(content) => {
+            hasher.update(b"config");
+            hasher.update(&content);
+        }
+        Err(_) => {
+            hasher.update(b"unreadable");
+        }
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 fn history_revision(branch: &GitBranchStatus) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(branch.oid.as_deref().unwrap_or_default().as_bytes());
@@ -5671,6 +5883,62 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn remotes_revision_tracks_remote_config_but_not_worktree_or_refs() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "base");
+        let runner = GitCommandRunner;
+        let service = GitSourceControlService::default();
+        let identity = service.repository_identity(&root).unwrap();
+        let initial = service.overview_with_identity("test", &identity).unwrap();
+
+        std::fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+        assert!(runner.run(&root, &["add", "tracked.txt"]).unwrap().success);
+        assert!(runner.run(&root, &["branch", "side"]).unwrap().success);
+        let unrelated = service.overview_with_identity("test", &identity).unwrap();
+        assert_ne!(unrelated.repository.revision, initial.repository.revision);
+        assert_eq!(
+            unrelated.repository.remotes_revision,
+            initial.repository.remotes_revision
+        );
+
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &["remote", "add", "origin", "https://example.com/repo.git"]
+                )
+                .unwrap()
+                .success
+        );
+        let added = service.overview_with_identity("test", &identity).unwrap();
+        assert_ne!(
+            added.repository.remotes_revision,
+            initial.repository.remotes_revision
+        );
+        let catalog = service.snapshot("test", &root).unwrap();
+        assert_eq!(
+            catalog.repository.remotes_revision,
+            added.repository.remotes_revision
+        );
+        assert_eq!(catalog.repository.remotes[0].name, "origin");
+
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &["remote", "set-url", "origin", "https://example.com/moved.git"]
+                )
+                .unwrap()
+                .success
+        );
+        let moved = service.overview_with_identity("test", &identity).unwrap();
+        assert_ne!(
+            moved.repository.remotes_revision,
+            added.repository.remotes_revision
+        );
     }
 
     #[test]
@@ -7715,6 +7983,689 @@ mod tests {
         assert_eq!(restored.status.untracked[0].path, "untracked.txt");
     }
 
+    fn push_test_git(root: &Utf8Path, args: &[&str]) -> String {
+        let output = GitCommandRunner.run(root, args).unwrap();
+        assert!(output.success, "git {args:?}: {output:?}");
+        output.stdout
+    }
+
+    fn push_repository() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Utf8PathBuf,
+        Utf8PathBuf,
+    ) {
+        let (temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "base\n", "base");
+        push_test_git(&root, &["branch", "-M", "main"]);
+        let bare_temp = tempfile::tempdir().unwrap();
+        let bare = Utf8PathBuf::from_path_buf(bare_temp.path().join("remote.git")).unwrap();
+        push_test_git(&root, &["init", "--bare", bare.as_str()]);
+        push_test_git(&root, &["remote", "add", "origin", bare.as_str()]);
+        push_test_git(&root, &["push", "--set-upstream", "origin", "main"]);
+        (temp, bare_temp, root, bare)
+    }
+
+    fn prepared_push_request(prepared: GitPreparedPush) -> GitOperationRequest {
+        GitOperationRequest {
+            expected_revision: Some(prepared.expected_revision),
+            operation: GitOperationInput::Push {
+                intent: prepared.intent,
+                target: prepared.target,
+            },
+        }
+    }
+
+    #[test]
+    fn prepare_push_resolves_native_slash_names_and_custom_fetch_mapping() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+        push_test_git(&root, &["remote", "rename", "origin", "team/origin"]);
+        push_test_git(
+            &root,
+            &[
+                "config",
+                "remote.team/origin.fetch",
+                "+refs/heads/*:refs/remotes/custom/*",
+            ],
+        );
+        push_test_git(
+            &root,
+            &[
+                "push",
+                "team/origin",
+                "refs/heads/main:refs/heads/integration/main",
+            ],
+        );
+        push_test_git(
+            &root,
+            &["config", "branch.main.merge", "refs/heads/integration/main"],
+        );
+        push_test_git(&root, &["fetch", "team/origin"]);
+        let head = commit_file(&root, "tracked.txt", "next\n", "next");
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: Some("stale-remembered-remote".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            prepared.target,
+            GitPushTarget {
+                branch: "main".into(),
+                source_oid: head.clone(),
+                remote: "team/origin".into(),
+                remote_branch: "integration/main".into(),
+                set_upstream: false,
+            }
+        );
+        let request = prepared_push_request(prepared);
+        assert_eq!(
+            operation_args(&request.operation),
+            [
+                "push",
+                "--porcelain",
+                "--",
+                "team/origin",
+                "refs/heads/main:refs/heads/integration/main"
+            ]
+        );
+        let operation = service.start_operation(&root, &request).unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(
+            finished.status,
+            GitOperationStatus::Succeeded,
+            "{finished:?}"
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/integration/main"]),
+            head
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            base
+        );
+        assert_eq!(service.branch_header(&root).unwrap().ahead, 0);
+    }
+
+    #[test]
+    fn prepare_push_absent_upstream_requires_a_named_remote() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        push_test_git(&root, &["branch", "--unset-upstream"]);
+        let service = GitSourceControlService::default();
+        for (remote, code) in [
+            (None, "git.push-remote-required"),
+            (Some("missing".into()), "git.remote-not-found"),
+            (Some(bare.to_string()), "git.remote-not-found"),
+            (Some("-bad".into()), "git.invalid-remote"),
+        ] {
+            let error = service
+                .prepare_push(
+                    &root,
+                    &GitPushIntent::UpstreamSync {
+                        branch: "main".into(),
+                        remote,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.downcast_ref::<GitServiceError>().unwrap().code, code);
+        }
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: Some("origin".into()),
+                },
+            )
+            .unwrap();
+        assert!(prepared.target.set_upstream);
+        assert_eq!(prepared.target.remote_branch, "main");
+        let operation = service
+            .start_operation(&root, &prepared_push_request(prepared))
+            .unwrap();
+        assert_eq!(
+            wait_operation(&service, &operation.operation_id).status,
+            GitOperationStatus::Succeeded
+        );
+        assert_eq!(
+            push_test_git(&root, &["config", "branch.main.merge"]),
+            "refs/heads/main"
+        );
+    }
+
+    #[test]
+    fn prepare_push_rejects_broken_and_local_upstream_without_fallback() {
+        for (args, expected) in [
+            (
+                vec!["config", "--unset-all", "branch.main.merge"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "--unset-all", "branch.main.remote"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "branch.main.remote", "missing"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "branch.main.remote", "."],
+                "git.push-upstream-unsupported",
+            ),
+            (
+                vec!["config", "branch.main.merge", ""],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "--unset-all", "remote.origin.fetch"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "--add", "branch.main.merge", "refs/heads/other"],
+                "git.push-upstream-invalid",
+            ),
+        ] {
+            let (_temp, _bare_temp, root, _bare) = push_repository();
+            push_test_git(&root, &args);
+            for intent in [
+                GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: Some("origin".into()),
+                },
+                GitPushIntent::PublishHead {
+                    branch: "main".into(),
+                    remote: "origin".into(),
+                },
+            ] {
+                let error = GitSourceControlService::default()
+                    .prepare_push(&root, &intent)
+                    .unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<GitServiceError>().unwrap().code,
+                    expected,
+                    "config {args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepare_push_requires_exact_source_current_sync_and_nonruntime_refs() {
+        let (_temp, _bare_temp, root, _bare) = push_repository();
+        push_test_git(&root, &["branch", "--no-track", "feature/parent/child"]);
+        push_test_git(&root, &["branch", "--no-track", "codex/runtime"]);
+        let service = GitSourceControlService::default();
+        for (intent, expected) in [
+            (
+                GitPushIntent::PublishHead {
+                    branch: "feature/parent".into(),
+                    remote: "origin".into(),
+                },
+                "git.branch-not-found",
+            ),
+            (
+                GitPushIntent::UpstreamSync {
+                    branch: "feature/parent/child".into(),
+                    remote: Some("origin".into()),
+                },
+                "git.push-branch-not-current",
+            ),
+            (
+                GitPushIntent::PublishHead {
+                    branch: "codex/runtime".into(),
+                    remote: "origin".into(),
+                },
+                "git.runtime-branch-push-forbidden",
+            ),
+        ] {
+            let error = service.prepare_push(&root, &intent).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<GitServiceError>().unwrap().code,
+                expected
+            );
+        }
+        push_test_git(
+            &root,
+            &["config", "branch.main.merge", "refs/heads/codex/runtime"],
+        );
+        let error = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<GitServiceError>().unwrap().code,
+            "git.runtime-branch-push-forbidden"
+        );
+    }
+
+    #[test]
+    fn managed_push_publish_noncurrent_head_preserves_existing_tracking() {
+        for existing_tracking in [false, true] {
+            let (_temp, _bare_temp, root, bare) = push_repository();
+            let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+            push_test_git(&root, &["checkout", "--no-track", "-b", "feature/head"]);
+            let head = commit_file(&root, "tracked.txt", "feature\n", "feature");
+            if existing_tracking {
+                push_test_git(&root, &["branch", "--set-upstream-to", "origin/main"]);
+            }
+            push_test_git(&root, &["checkout", "main"]);
+            let service = GitSourceControlService::default();
+            let prepared = service
+                .prepare_push(
+                    &root,
+                    &GitPushIntent::PublishHead {
+                        branch: "feature/head".into(),
+                        remote: "origin".into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(prepared.target.source_oid, head);
+            assert_eq!(prepared.target.remote_branch, "feature/head");
+            assert_eq!(prepared.target.set_upstream, !existing_tracking);
+            let operation = service
+                .start_operation(&root, &prepared_push_request(prepared))
+                .unwrap();
+            let finished = wait_operation(&service, &operation.operation_id);
+            assert_eq!(
+                finished.status,
+                GitOperationStatus::Succeeded,
+                "{finished:?}"
+            );
+            assert_eq!(
+                push_test_git(&bare, &["rev-parse", "refs/heads/feature/head"]),
+                head
+            );
+            assert_eq!(
+                push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+                base
+            );
+            assert_eq!(push_test_git(&root, &["branch", "--show-current"]), "main");
+            assert_eq!(
+                push_test_git(&root, &["config", "branch.feature/head.merge"]),
+                if existing_tracking {
+                    "refs/heads/main"
+                } else {
+                    "refs/heads/feature/head"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn managed_push_revalidates_noncurrent_source_and_tracking_after_admission() {
+        for change_source in [true, false] {
+            let (_temp, _bare_temp, root, bare) = push_repository();
+            push_test_git(&root, &["branch", "--no-track", "feature/head"]);
+            let new_oid = push_test_git(
+                &root,
+                &[
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-p",
+                    "HEAD",
+                    "-m",
+                    "alternate",
+                ],
+            );
+            let service = GitSourceControlService::default();
+            let prepared = service
+                .prepare_push(
+                    &root,
+                    &GitPushIntent::PublishHead {
+                        branch: "feature/head".into(),
+                        remote: "origin".into(),
+                    },
+                )
+                .unwrap();
+            let before_revision = prepared.expected_revision.clone();
+            let callback_root = root.clone();
+            let sink: GitOperationUpdateSink = Arc::new(move |operation| {
+                // Running is published after admission and before entering the write action.
+                if operation.status == GitOperationStatus::Running {
+                    if change_source {
+                        push_test_git(
+                            &callback_root,
+                            &["update-ref", "refs/heads/feature/head", &new_oid],
+                        );
+                    } else {
+                        push_test_git(
+                            &callback_root,
+                            &["config", "branch.feature/head.remote", "origin"],
+                        );
+                        push_test_git(
+                            &callback_root,
+                            &["config", "branch.feature/head.merge", "refs/heads/main"],
+                        );
+                    }
+                }
+            });
+            let operation = service
+                .start_operation_with_update_sink(
+                    &root,
+                    &prepared_push_request(prepared),
+                    Some(sink),
+                )
+                .unwrap();
+            let finished = wait_operation(&service, &operation.operation_id);
+            assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+            assert_eq!(finished.error.unwrap().code, "git.push-target-changed");
+            assert_eq!(
+                history_revision(&service.branch_header(&root).unwrap()),
+                before_revision,
+                "current HEAD revision cannot detect noncurrent source changes"
+            );
+            assert!(
+                !GitCommandRunner
+                    .run(&bare, &["show-ref", "--verify", "refs/heads/feature/head"])
+                    .unwrap()
+                    .success
+            );
+        }
+    }
+
+    #[test]
+    fn managed_push_revalidates_destination_even_when_sync_revision_is_unchanged() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+        push_test_git(&bare, &["update-ref", "refs/heads/other", &base]);
+        commit_file(&root, "tracked.txt", "next\n", "next");
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let before_revision = prepared.expected_revision.clone();
+        let callback_root = root.clone();
+        let sink: GitOperationUpdateSink = Arc::new(move |operation| {
+            if operation.status == GitOperationStatus::Running {
+                // Keep the same upstream display ref/OID, but change its native remote destination.
+                push_test_git(
+                    &callback_root,
+                    &[
+                        "config",
+                        "remote.origin.fetch",
+                        "+refs/heads/other:refs/remotes/origin/main",
+                    ],
+                );
+                push_test_git(
+                    &callback_root,
+                    &["config", "branch.main.merge", "refs/heads/other"],
+                );
+            }
+        });
+        let operation = service
+            .start_operation_with_update_sink(&root, &prepared_push_request(prepared), Some(sink))
+            .unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+        assert_eq!(finished.error.unwrap().code, "git.push-target-changed");
+        assert_eq!(
+            history_revision(&service.branch_header(&root).unwrap()),
+            before_revision
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            base
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/other"]),
+            base
+        );
+    }
+
+    #[test]
+    fn managed_push_revalidates_sync_revision_after_admission() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let callback_root = root.clone();
+        let sink: GitOperationUpdateSink = Arc::new(move |operation| {
+            if operation.status == GitOperationStatus::Running {
+                commit_file(&callback_root, "tracked.txt", "late\n", "late");
+            }
+        });
+        let operation = service
+            .start_operation_with_update_sink(&root, &prepared_push_request(prepared), Some(sink))
+            .unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+        assert_eq!(finished.error.unwrap().code, "git.sync-ref-changed");
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            base
+        );
+    }
+
+    #[test]
+    fn prepared_push_rejects_missing_revision_and_modified_confirmation() {
+        let (_temp, _bare_temp, root, _bare) = push_repository();
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        for (field, expected) in [
+            ("revision", "git.push-confirmation-required"),
+            ("stale", "git.sync-ref-changed"),
+            ("target", "git.push-target-changed"),
+            ("source", "git.push-target-changed"),
+        ] {
+            let mut request = prepared_push_request(prepared.clone());
+            match field {
+                "revision" => request.expected_revision = None,
+                "stale" => request.expected_revision = Some("stale".into()),
+                _ => {
+                    if let GitOperationInput::Push { target, .. } = &mut request.operation {
+                        if field == "target" {
+                            target.remote_branch = "other".into();
+                        } else {
+                            target.source_oid = "unconfirmed".into();
+                        }
+                    }
+                }
+            }
+            let error = service.start_operation(&root, &request).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<GitServiceError>().unwrap().code,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn managed_push_non_fast_forward_is_not_forced() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        push_test_git(&root, &["checkout", "--no-track", "-b", "other"]);
+        let remote_head = commit_file(&root, "tracked.txt", "remote\n", "remote");
+        push_test_git(
+            &root,
+            &["push", "origin", "refs/heads/other:refs/heads/main"],
+        );
+        push_test_git(&root, &["checkout", "main"]);
+        commit_file(&root, "tracked.txt", "local\n", "local");
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let request = prepared_push_request(prepared);
+        assert_eq!(
+            operation_args(&request.operation),
+            [
+                "push",
+                "--porcelain",
+                "--",
+                "origin",
+                "refs/heads/main:refs/heads/main"
+            ]
+        );
+        let operation = service.start_operation(&root, &request).unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+        assert_eq!(finished.error.unwrap().code, "git.non-fast-forward");
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            remote_head
+        );
+    }
+
+    #[test]
+    fn prepared_push_wire_contract_has_no_legacy_fallback() {
+        let prepared: GitPreparedPush = serde_json::from_value(serde_json::json!({
+            "intent": { "kind": "upstream-sync", "branch": "release/test", "remote": null },
+            "target": { "branch": "release/test", "sourceOid": "abc", "remote": "origin", "remoteBranch": "main", "setUpstream": false },
+            "expectedRevision": "confirmed",
+        })).unwrap();
+        let request = prepared_push_request(prepared);
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["kind"], "push");
+        assert_eq!(json["expectedRevision"], "confirmed");
+        assert_eq!(json["target"]["remoteBranch"], "main");
+        assert_eq!(
+            serde_json::from_value::<GitOperationRequest>(json).unwrap(),
+            request
+        );
+        assert!(
+            serde_json::from_value::<GitOperationRequest>(serde_json::json!({
+                "kind": "push", "remote": "origin", "branch": "main", "setUpstream": true,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_push_syncs_different_name_upstream() {
+        let (_temp, root) = initialized_repository();
+        let runner = GitCommandRunner;
+        let base = commit_file(&root, "tracked.txt", "base\n", "base");
+        assert!(
+            runner
+                .run(&root, &["branch", "-M", "main"])
+                .unwrap()
+                .success
+        );
+        let bare_temp = tempfile::tempdir().unwrap();
+        let bare = Utf8PathBuf::from_path_buf(bare_temp.path().join("remote.git")).unwrap();
+        assert!(
+            runner
+                .run(&root, &["init", "--bare", bare.as_str()])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&root, &["remote", "add", "origin", bare.as_str()])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&root, &["push", "origin", "main"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &[
+                        "checkout",
+                        "-b",
+                        "release/financeagent",
+                        "--track",
+                        "origin/main"
+                    ]
+                )
+                .unwrap()
+                .success
+        );
+        commit_file(&root, "tracked.txt", "one\n", "one");
+        let head = commit_file(&root, "tracked.txt", "two\n", "two");
+        let service = GitSourceControlService::default();
+        assert_eq!(service.branch_header(&root).unwrap().ahead, 2);
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "release/financeagent".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let push = service
+            .start_operation(
+                &root,
+                &GitOperationRequest {
+                    expected_revision: Some(prepared.expected_revision),
+                    operation: GitOperationInput::Push {
+                        intent: prepared.intent,
+                        target: prepared.target,
+                    },
+                },
+            )
+            .unwrap();
+        let operation = wait_operation(&service, &push.operation_id);
+        assert_eq!(
+            operation.status,
+            GitOperationStatus::Succeeded,
+            "{operation:?}"
+        );
+        let remote_main = runner
+            .run(&bare, &["rev-parse", "refs/heads/main"])
+            .unwrap()
+            .stdout;
+        let status = service.branch_header(&root).unwrap();
+        assert_eq!(
+            remote_main, head,
+            "Push succeeded but upstream main did not advance: base={base}, ahead={}, behind={}",
+            status.ahead, status.behind
+        );
+        assert_eq!((status.ahead, status.behind), (0, 0));
+        assert!(
+            !runner
+                .run(
+                    &bare,
+                    &["show-ref", "--verify", "refs/heads/release/financeagent"]
+                )
+                .unwrap()
+                .success
+        );
+    }
+
     #[test]
     fn managed_push_fetch_and_ff_only_pull_use_typed_arguments() {
         let (_temp, root) = initialized_repository();
@@ -7739,15 +8690,24 @@ mod tests {
             .unwrap()
             .stdout;
         let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: branch.clone(),
+                    remote: Some("origin".into()),
+                },
+            )
+            .unwrap();
+        assert!(prepared.target.set_upstream);
         let push = service
             .start_operation(
                 &root,
                 &GitOperationRequest {
-                    expected_revision: None,
+                    expected_revision: Some(prepared.expected_revision),
                     operation: GitOperationInput::Push {
-                        remote: "origin".to_string(),
-                        branch: branch.clone(),
-                        set_upstream: true,
+                        intent: prepared.intent,
+                        target: prepared.target,
                     },
                 },
             )

@@ -212,6 +212,9 @@ function SourceControlRootPanel({ resource, workspacePath }: { resource: SourceC
           <GitBranch className="size-4 shrink-0 text-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
           <SourceControlSyncActions
+            key={`${resource.projectId}:${workspacePath}`}
+            projectId={resource.projectId}
+            workspacePath={workspacePath}
             snapshot={snapshot}
             busyActionKind={busyActionKind}
             locked={writeLocked}
@@ -341,16 +344,12 @@ function SourceControlRootPanel({ resource, workspacePath }: { resource: SourceC
 
         <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
           {session.catalog ? <SourceControlGitHubView
+            key={`${resource.projectId}:${workspacePath}`}
             projectId={resource.projectId}
             workspacePath={workspacePath}
             snapshot={{ ...session.catalog, ...snapshot }}
             busy={busy}
-            onPush={(remote, branch) => startOperation({
-              kind: 'push',
-              remote,
-              branch,
-              setUpstream: branch === snapshot.repository.currentBranch && !snapshot.repository.upstream,
-            })}
+            onPush={(prepared) => startOperation({ kind: 'push', ...prepared })}
           /> : <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={session.catalogError ? t('sourceControl.loadFailed') : t('sourceControl.loading')} action={session.catalogError ? <Button onClick={() => changeTab('github')}>{t('sourceControl.checkAgain')}</Button> : undefined} />}
         </TabsContent>
       </Tabs>

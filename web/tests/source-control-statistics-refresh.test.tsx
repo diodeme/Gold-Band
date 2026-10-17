@@ -11,7 +11,7 @@ it('keeps the surviving row and its +/- DOM throughout watcher statistics revali
   const row = { path: 'keep.ts', kind: 'modified' as const, binary: false, submodule: false, addedLines: 9, deletedLines: 2 };
   const snapshot: GitSourceControlSnapshotVm = {
     catalogRevision: 'one',
-    repository: { projectId: 'p', repoRoot: 'D:/repo', workspacePath: 'D:/repo', commonDir: 'D:/repo/.git', headOid: 'head', currentBranch: 'main', detached: false, unborn: false, remotes: [], lock: { locked: false }, revision: 'one', syncRevision: 'one' },
+    repository: { projectId: 'p', repoRoot: 'D:/repo', workspacePath: 'D:/repo', commonDir: 'D:/repo/.git', headOid: 'head', currentBranch: 'main', detached: false, unborn: false, remotes: [], remotesRevision: 'one', lock: { locked: false }, revision: 'one', syncRevision: 'one' },
     status: { snapshotRevision: 'one', branch: { oid: 'head', head: 'main', ahead: 0, behind: 0 }, staged: [], unstaged: [row], untracked: [], conflicts: [] },
     refs: [], worktrees: [], stashes: [],
   };

@@ -1,0 +1,83 @@
+<!doctype html>
+<!--
+Approved B editorial grammar. Source: ../../README.md, MirrorCode / mailauth.
+Form: equally weighted paired round tables prevent cherry-picking the first round.
+All hidden-test counts, total token and Eval times remain visible. Close quality
+scores are not exaggerated by charts, cropped axes or win/loss coloring.
+Token includes cache reads; displayed minutes use source-approved rounding.
+Source exact times: R1 AUTO 3:54:37 / CC 2:42:06; R2 AUTO 8:09:05 / CC 2:29:52.
+Static, bounded evidence; no new state, dependencies, network requests or caches.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>mailauth 两轮对照 · Gold Band Benchmark</title>
+  <link rel="stylesheet" href="../assets/editorial.css">
+  <style>
+    body{overflow:visible}
+    .headline{font-size:76px;white-space:nowrap}
+    .rounds{display:grid;grid-template-columns:1fr 1fr;gap:70px;margin-top:34px}
+    .round-heading{display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--blue);padding-top:18px}
+    .round-heading h2{font-size:38px;font-weight:520;letter-spacing:-.025em;line-height:1.4}
+    .round-heading p{font-size:22px;color:var(--muted)}
+    .round-table{table-layout:fixed;margin-top:18px}
+    .round-table col.metric{width:192px}
+    .round-table thead th{font-size:27px;font-weight:500;height:73px;border-bottom:1px solid var(--ink);padding:0}
+    .round-table thead th:first-child{font-size:22px;font-weight:400;color:var(--muted)}
+    .round-table .identity{gap:10px;white-space:nowrap}
+    .round-table .identity img{height:34px;width:34px}
+    .round-table tbody tr{height:84px;border-bottom:1px solid var(--rule)}
+    .round-table tbody th{font-size:28px;font-weight:400;color:var(--muted);padding:0}
+    .round-table td{font-size:35px;font-weight:450;white-space:nowrap;letter-spacing:-.025em;padding:0}
+    .round-table td:last-child{font-weight:520}
+    .quality td{font-size:41px}
+    .round-readout{font-size:28px;line-height:1.5;margin-top:20px;letter-spacing:-.025em}
+    .round-readout strong{font-weight:550}
+    .conclusion strong{font-weight:600}
+    .conclusion .decision{white-space:nowrap}
+    footer{font-size:21px}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band <span aria-hidden="true">/</span> Benchmark</p>
+    <p class="stage">mailauth · Python 重写邮件认证模块</p>
+  </header>
+  <main>
+    <h1 class="headline">mailauth：质量接近，AUTO 开销更高</h1>
+    <p class="lede">与 Claude Code 相比，两轮 AUTO 均未稳定拉开质量差距，token 与 Eval 耗时却都更高。</p>
+    <section class="rounds" aria-label="mailauth 两轮完整对照">
+      <article aria-labelledby="round-one">
+        <div class="round-heading"><h2 id="round-one">第一轮</h2><p>2026.10.07 完成</p></div>
+        <table class="round-table" aria-label="第一轮隐藏测试、总 token、Eval 耗时">
+          <colgroup><col class="metric"><col><col></colgroup>
+          <thead><tr><th scope="col">验收与开销</th><th scope="col"><span class="identity"><img src="../assets/claude-code.svg" alt="">Claude Code</span></th><th scope="col"><span class="identity"><img src="../assets/gold-band.svg" alt="Gold Band">AUTO</span></th></tr></thead>
+          <tbody>
+            <tr class="quality"><th scope="row">隐藏测试</th><td>684 / 702</td><td>694 / 702</td></tr>
+            <tr><th scope="row">总 token</th><td>336.6M</td><td>407.9M</td></tr>
+            <tr><th scope="row">Eval 耗时</th><td>2h 42m</td><td>3h 55m</td></tr>
+          </tbody>
+        </table>
+        <p class="round-readout">AUTO 多通过 10 项；<br>token 约 <strong>1.21×</strong>，耗时约 <strong>1.45×</strong>。</p>
+      </article>
+      <article aria-labelledby="round-two">
+        <div class="round-heading"><h2 id="round-two">第二轮</h2><p>2026.10.08 完成</p></div>
+        <table class="round-table" aria-label="第二轮隐藏测试、总 token、Eval 耗时">
+          <colgroup><col class="metric"><col><col></colgroup>
+          <thead><tr><th scope="col">验收与开销</th><th scope="col"><span class="identity"><img src="../assets/claude-code.svg" alt="">Claude Code</span></th><th scope="col"><span class="identity"><img src="../assets/gold-band.svg" alt="Gold Band">AUTO</span></th></tr></thead>
+          <tbody>
+            <tr class="quality"><th scope="row">隐藏测试</th><td>702 / 702</td><td>701 / 702</td></tr>
+            <tr><th scope="row">总 token</th><td>397.6M</td><td>699.5M</td></tr>
+            <tr><th scope="row">Eval 耗时</th><td>2h 30m</td><td>8h 09m</td></tr>
+          </tbody>
+        </table>
+        <p class="round-readout">两边几乎满分；<br>token 约 <strong>1.76×</strong>，耗时约 <strong>3.26×</strong>。</p>
+      </article>
+    </section>
+    <p class="conclusion"><span>协作开销，尚未换来稳定的质量收益。</span><span class="decision">中短任务，<strong>Direct 优先</strong>。</span></p>
+  </main>
+  <footer>全部运行可见测试均为 851/851。总 token 含缓存读取，不等于金额；Eval 耗时取整至分钟。来源：阶段汇报 README。</footer>
+  <script src="../assets/slide.js"></script>
+</body>
+</html>

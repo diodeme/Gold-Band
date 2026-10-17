@@ -1,0 +1,82 @@
+<!-- Approved B editorial direction, 2026-10-14. Source: ../../direction-approved.md.
+Adapted from the user-selected reference showcase; benchmark facts remain unchanged.
+Fixed 1920x1080 page; the shared deck host owns navigation and scaling. -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>重量级已完成案例 · Gold Band</title>
+  <link rel="stylesheet" href="../assets/fonts.css">
+  <style>
+    :root{--paper:#F0F1EE;--ink:#101112;--muted:#525954;--rule:#CCD0C9;--blue:#244892}
+    *{box-sizing:border-box}
+    html{margin:0;width:1920px;height:1080px;background:var(--paper)}
+    body{margin:0;width:1920px;height:1080px;padding:64px 96px 49px;background:var(--paper);color:var(--ink);font-family:var(--font-brand);font-weight:400;overflow:hidden;-webkit-font-smoothing:antialiased}
+    p,h1,h2,figure{margin:0}
+    .masthead{height:64px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid var(--ink)}
+    .case{display:flex;align-items:center;gap:16px;font-size:24px;font-weight:520;letter-spacing:.005em}
+    .case img{height:36px;width:36px;object-fit:contain;margin-top:-3px}
+    .task{padding-top:2px;font-size:22px;color:var(--muted)}
+    h1{margin-top:43px;font-size:90px;font-weight:520;letter-spacing:-.035em;line-height:1.22;text-wrap:balance}
+    h1 span{display:block}
+    .evidence{display:grid;grid-template-columns:760px 1fr;column-gap:70px;margin-top:51px;align-items:start}
+    .headline-figure{padding-top:16px}
+    .figure-label{font-size:24px;letter-spacing:.03em;color:var(--muted)}
+    .hero-value{font-size:264px;font-weight:500;line-height:1.12;letter-spacing:-.065em;font-variant-numeric:proportional-nums;margin-top:1px;margin-left:-12px}
+    .hero-caption{font-size:31px;line-height:1.55;letter-spacing:-.02em;margin-top:11px}
+    .hero-caption strong{font-weight:520;border-bottom:3px solid var(--blue);padding-bottom:5px}
+    .hero-denominator{font-size:24px;line-height:1.5;color:var(--muted);margin-top:15px}
+    table{width:100%;border-collapse:collapse;table-layout:fixed;font-variant-numeric:tabular-nums;border-top:2px solid var(--blue)}
+    col.metric{width:170px}
+    th,td{padding:0;text-align:left;vertical-align:middle}
+    thead th{height:118px;border-bottom:1px solid var(--ink);font-weight:500}
+    .column-identity{display:flex;align-items:center;gap:14px;white-space:nowrap;font-size:29px;letter-spacing:-.02em}
+    .column-identity img{width:42px;height:42px;object-fit:contain;flex:none}
+    .column-mode{font-size:20px;color:var(--muted);margin-top:5px;letter-spacing:0}
+    tbody tr{height:99px;border-bottom:1px solid var(--rule)}
+    tbody th{font-size:28px;line-height:1.4;font-weight:400;color:var(--muted)}
+    tbody td{font-size:33px;line-height:1.4;font-weight:450;letter-spacing:-.03em;white-space:nowrap}
+    tbody td:last-child{font-weight:520}
+    .unit{font-size:25px;font-weight:400;margin-left:5px}
+    .conclusion{position:absolute;left:96px;right:96px;top:924px;padding-top:22px;border-top:2px solid var(--ink);font-size:36px;line-height:1.4;letter-spacing:-.02em;font-weight:500;display:flex;justify-content:space-between;gap:40px}
+    .conclusion strong{font-weight:600}
+    .tradeoff{white-space:nowrap}
+    footer{position:absolute;left:96px;right:96px;bottom:35px;font-size:22px;line-height:1.5;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="case"><img src="../assets/kubernetes.svg" alt="Kubernetes 标志">SWE-Marathon / Kubernetes</p>
+    <p class="task">Rust 重写 Kubernetes</p>
+  </header>
+  <main>
+    <h1><span>长任务中，完整验收</span><span>开始体现编排价值</span></h1>
+    <section class="evidence" aria-label="同题复测结果">
+      <figure class="headline-figure">
+        <p class="figure-label">整体验收 · Gold Band AUTO</p>
+        <p class="hero-value">1,407</p>
+        <figcaption class="hero-caption">项通过 / 共 1,407 项<br><strong>完整通过</strong></figcaption>
+      </figure>
+      <table aria-label="Claude Code 与 Gold Band AUTO 的测试、token 和耗时对照">
+        <colgroup><col class="metric"><col><col></colgroup>
+        <thead>
+          <tr>
+            <th scope="col"><span style="font-size:22px;color:var(--muted)">同题对照</span></th>
+            <th scope="col"><div class="column-identity"><img src="../assets/claude-code.svg" alt=""><div>Claude Code</div></div></th>
+            <th scope="col"><div class="column-identity"><img src="../assets/gold-band.svg" alt=""><div>Gold Band<p class="column-mode">AUTO</p></div></div></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">通过测试</th><td>1,405 / 1,407</td><td>1,407 / 1,407</td></tr>
+          <tr><th scope="row">记录 token</th><td>约 325.8M</td><td>约 173M</td></tr>
+          <tr><th scope="row">Agent 耗时</th><td>97<span class="unit">分钟</span></td><td>165<span class="unit">分钟</span></td></tr>
+        </tbody>
+      </table>
+    </section>
+    <p class="conclusion"><span>AUTO 完整通过，记录 token 约少 <strong>47%</strong>。</span><span class="tradeoff">耗时仍更长。</span></p>
+  </main>
+  <footer>加入整体验收规则后的单次同题复测；token 不是账单金额。</footer>
+<script src="../assets/slide.js"></script>
+</body>
+</html>

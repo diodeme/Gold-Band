@@ -1,0 +1,77 @@
+<!--
+assumptions: 轮盘方向，31 % 20 + 1 = 12；图谱箭头企业版 / Diagram-Driven Isotype。事实仅来自共同 design-spec.md，品牌仅来自共同 brand-spec.md。
+reasoning: form 来自「两条执行路径必须经过同一整体验收出口」。将 token、耗时并列在各自路径上，右侧统一验收栏保留不同通过数；完整通过的 1,407 是视觉重心。箭头只表达验收关系，不编码时长、token 或质量差值，不将概念路径冒充实测时间轴。
+五问：重量级已完成案例；会议投屏；清楚且克制；两方、三指标、一个取舍；从分工到整体验收的收敛是母题。
+数据：Claude Code 1,405 / 1,407，约 325.8M token，97 分钟；Gold Band AUTO 1,407 / 1,407，约 173M token，165 分钟。约少 47% 源自 (325.84−173)/325.84；不是账单节省，也不是质量提升幅度。
+边界：加入整体验收规则后的单次同题复测；token 不是账单金额。无新数据、趋势图、导航或页码；真实 logo、本地字体，无外部依赖。
+过度设计与性能：静态两行事实对照，语义表格与单色概念线；没有状态、交互组件、绘图库或持续动画。浏览器验证由主 agent 统一执行。
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, initial-scale=1">
+<title>SWE-Marathon / Kubernetes — 完整验收与编排价值</title>
+<link rel="stylesheet" href="../assets/fonts.css">
+<style>
+:root{--paper:#F0F1EE;--ink:#101112;--blue:#244892;--muted:#525954;--rule:#CCD0C9}
+*{box-sizing:border-box}
+html{margin:0;background:var(--paper)}
+body{position:relative;width:1920px;height:1080px;margin:0;overflow:hidden;background:var(--paper);color:var(--ink);font-family:var(--font-brand);font-size:30px;font-weight:400;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+h1,h2,p{margin:0}h1,h2{font-weight:520}img{display:block;object-fit:contain}
+.top{position:absolute;left:88px;right:88px;top:53px;display:flex;justify-content:space-between;align-items:center}
+.task{display:flex;align-items:center;gap:19px;font-size:26px;letter-spacing:-.015em}.task img{width:51px;height:51px}.brand{display:flex;align-items:center;gap:15px;font-size:22px;font-weight:600;letter-spacing:-.025em}.brand img{width:48px;height:48px}
+h1{position:absolute;left:88px;top:149px;font-size:94px;line-height:1.2;letter-spacing:-.03em;text-wrap:balance}h1 span{display:block}
+.task-description{position:absolute;left:94px;top:394px;font-size:31px;letter-spacing:-.02em}
+.facts{position:absolute;left:88px;top:471px;width:1744px;height:389px}
+.facts-header{position:absolute;top:0;left:0;width:1190px;display:grid;grid-template-columns:492px 356px 342px;border-bottom:1px solid var(--rule);padding-bottom:18px;font-size:23px;color:var(--muted)}
+.facts-row{position:absolute;left:0;width:1190px;display:grid;grid-template-columns:492px 356px 342px;align-items:center;height:122px}
+.claude-row{top:75px}.gold-row{top:255px}
+.identity{display:flex;align-items:center;gap:22px;font-size:34px;font-weight:520;letter-spacing:-.03em;white-space:nowrap}.identity img{width:62px;height:62px}
+.number{font-size:64px;line-height:1.15;font-weight:500;letter-spacing:-.055em;white-space:nowrap}.number .approx{font-size:28px;letter-spacing:0;margin-right:10px}.number .unit{font-size:29px;letter-spacing:0;margin-left:13px}
+.route-line{position:absolute;left:0;top:215px;width:1190px;height:1px;background:var(--rule)}
+.connector{position:absolute;left:1100px;width:117px;height:3px;background:var(--blue)}.connector::after{content:"";position:absolute;right:0;top:-7px;width:15px;height:15px;border-right:3px solid var(--blue);border-top:3px solid var(--blue);transform:rotate(45deg)}.connector.first{top:138px}.connector.second{top:317px}
+.acceptance{position:absolute;left:1234px;top:-33px;width:510px;height:453px;border:3px solid var(--blue);border-top-width:10px;background:var(--paper)}
+.acceptance h2{position:absolute;top:20px;left:30px;font-size:26px;color:var(--blue);letter-spacing:-.01em}
+.acceptance .separator{position:absolute;top:202px;left:29px;right:29px;height:1px;background:var(--rule)}
+.pass-claude{position:absolute;left:28px;top:89px;display:flex;align-items:baseline;gap:15px;white-space:nowrap}.pass-claude strong{font-size:79px;font-weight:500;letter-spacing:-.055em}.pass-claude span{font-size:27px;letter-spacing:-.025em}
+.pass-gold{position:absolute;left:27px;top:225px}.pass-gold strong{display:block;font-size:180px;line-height:.9;font-weight:550;letter-spacing:-.067em}.pass-gold span{display:block;margin-top:19px;font-size:28px;letter-spacing:-.02em}
+.takeaway{position:absolute;left:88px;right:88px;top:917px;display:flex;align-items:baseline;justify-content:space-between;gap:35px;border-top:3px solid var(--blue);padding-top:24px;font-size:37px;line-height:1.3;letter-spacing:-.025em}.takeaway strong{font-weight:600}.takeaway .tradeoff{font-weight:520}
+.note{position:absolute;left:88px;bottom:35px;font-size:22px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<header class="top">
+<div class="task"><img src="../assets/kubernetes.svg" alt="Kubernetes 标志"><span>SWE-Marathon / Kubernetes</span></div>
+<div class="brand"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><span>Gold Band</span></div>
+</header>
+<main>
+<h1><span>长任务中，完整验收</span><span>开始体现编排价值</span></h1>
+<p class="task-description">Rust 重写 Kubernetes</p>
+<div class="facts" role="table" aria-label="单次同题复测：Claude Code 与 Gold Band AUTO 的 token、耗时和通过项数对照">
+<div class="facts-header" role="row"><span role="columnheader">执行框架</span><span role="columnheader">记录 token</span><span role="columnheader">Agent 耗时</span></div>
+<div class="facts-row claude-row" role="row">
+<div class="identity" role="rowheader"><img src="../assets/claude-code.svg" alt="Claude Code 标志"><span>Claude Code</span></div>
+<p class="number" role="cell"><span class="approx">约</span>325.8M</p>
+<p class="number" role="cell">97<span class="unit">分钟</span></p>
+</div>
+<div class="route-line" aria-hidden="true"></div>
+<div class="facts-row gold-row" role="row">
+<div class="identity" role="rowheader"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><span>Gold Band AUTO</span></div>
+<p class="number" role="cell"><span class="approx">约</span>173M</p>
+<p class="number" role="cell">165<span class="unit">分钟</span></p>
+</div>
+<div class="connector first" aria-hidden="true"></div>
+<div class="connector second" aria-hidden="true"></div>
+<div class="acceptance" role="group" aria-label="整体验收结果">
+<h2>独立测试 · 整体验收</h2>
+<p class="pass-claude" aria-label="Claude Code，1,405 / 1,407 项通过"><strong>1,405</strong><span>/ 1,407 项通过</span></p>
+<div class="separator" aria-hidden="true"></div>
+<p class="pass-gold" aria-label="Gold Band AUTO，1,407 / 1,407 项通过，完整通过"><strong>1,407</strong><span>/ 1,407 项通过 · 完整通过</span></p>
+</div>
+</div>
+<div class="takeaway"><p>AUTO 记录 token 约少 <strong>47%</strong></p><p class="tradeoff">完整通过，耗时仍更长</p></div>
+</main>
+<footer class="note">加入整体验收规则后的单次同题复测；token 不是账单金额。</footer>
+</body>
+</html>

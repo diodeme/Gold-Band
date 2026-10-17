@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+assumptions: Independent 1920×1080 conference slide, not an application. The enclosing
+showcase owns scaling/navigation. Only the shared design-spec.md and brand-spec.md
+supply facts and assets. Browser verification is performed by the coordinating agent.
+reasoning: Inspired by Pentagram's editorial information design and typography as
+composition; no authorship, endorsement, or reproduction of a specific work is claimed.
+The question occupies the stage; two execution routes meet one acceptance boundary.
+The lines are a conceptual comparison, NOT a measured time axis or a performance plot.
+Form comes from the report's actual question: does division of work converge into a
+complete delivery at acceptable token/time cost? No placeholder facts or imagery.
+Overdesign/performance: native semantic HTML/CSS and one inline semantic SVG only;
+shared local fonts/logos; no scripts, dependencies, network requests or animation.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, initial-scale=1">
+<title>什么时候值得让多个 Agent 协作？ · Studio</title>
+<link rel="stylesheet" href="../assets/fonts.css">
+<style>
+:root{--charcoal:#101112;--paper:#F0F1EE;--gold:#E4CB79;--muted:#A2A8A6;--rule:#343839}
+*{box-sizing:border-box}html,body{width:1920px;height:1080px;margin:0;overflow:hidden}
+body{position:relative;background:var(--charcoal);color:var(--paper);font-family:var(--font-brand);font-weight:400;-webkit-font-smoothing:antialiased}
+p,h1,h2{margin:0}img{display:block;object-fit:contain}h1,h2{font-weight:520;text-wrap:balance}
+.stage-note{position:absolute;left:84px;top:52px;font-size:22px;letter-spacing:.035em;color:var(--muted)}
+.brand{position:absolute;right:84px;top:43px;display:flex;align-items:center;gap:15px;font-size:25px;font-weight:600}
+.brand img{width:46px;height:46px}
+h1{position:absolute;left:78px;top:121px;font-size:110px;line-height:1.2;letter-spacing:-.045em}
+h1 span{display:block}h1 .gold{color:var(--gold)}
+.premise{position:absolute;left:89px;top:428px;width:1080px;font-size:31px;line-height:1.62;letter-spacing:-.015em;text-wrap:pretty}
+.premise .muted{color:var(--muted)}
+.execution{position:absolute;left:88px;top:616px;width:420px}
+.execution.second{top:787px}
+.identity{display:flex;align-items:center;gap:17px;font-size:32px;font-weight:600;line-height:1.2}
+.identity img{width:48px;height:48px}
+.execution p{font-size:28px;color:var(--muted);margin:15px 0 0 65px}
+.converge{position:absolute;left:510px;top:605px;width:650px;height:280px;overflow:visible}
+.destination{position:absolute;left:1202px;top:574px;height:326px;padding-left:47px;border-left:8px solid var(--gold)}
+.destination .eyebrow{font-size:25px;color:var(--gold);letter-spacing:.08em}
+.destination h2{font-size:112px;line-height:1.15;letter-spacing:-.04em;margin-top:15px}
+.destination .end-note{font-size:27px;line-height:1.45;margin-top:19px;color:var(--muted)}
+.criteria{position:absolute;left:616px;top:635px;width:440px;font-size:28px;line-height:1.5}
+.criteria p{margin-bottom:17px}.criteria strong{font-weight:520;color:var(--gold);margin-right:15px}
+.criteria .detail{display:block;font-size:25px;color:var(--muted);margin-left:71px}
+.footer{position:absolute;left:88px;bottom:46px;font-size:22px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main aria-label="测试意图">
+<p class="stage-note">阶段性结果 · 2026.10.13</p>
+<div class="brand"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><span>Gold Band</span></div>
+<h1><span>什么时候值得让</span><span class="gold">多个 Agent 协作？</span></h1>
+<p class="premise">从单体执行到工作流与 AUTO，<br><span class="muted">质量收益能否覆盖额外的 token 和时间？</span></p>
+<div class="execution">
+<div class="identity"><img src="../assets/claude-code.svg" alt="Claude Code 标志"><span>Claude Code</span></div>
+<p>单体执行</p>
+</div>
+<div class="execution second">
+<div class="identity"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><span>Gold Band</span></div>
+<p>工作流 / AUTO</p>
+</div>
+<svg class="converge" viewBox="0 0 650 280" role="img" aria-label="两种执行框架最终都以完整验收为共同判断边界。连接线不代表耗时或数据规模。">
+<path d="M0 40 H43 V3 H555 L637 143" fill="none" stroke="#A2A8A6" stroke-width="2"/>
+<path d="M0 211 H43 V275 H555 L637 143" fill="none" stroke="#E4CB79" stroke-width="3"/>
+<path d="M637 143 H686" fill="none" stroke="#E4CB79" stroke-width="3"/>
+</svg>
+<div class="criteria" aria-label="判断标准">
+<p><strong>质量</strong>独立测试<span class="detail">与整体验收</span></p>
+<p><strong>成本</strong>token 与端到端耗时</p>
+<p><strong>边界</strong>从局部问题到长程工程</p>
+</div>
+<div class="destination">
+<p class="eyebrow">分工之后，仍要收敛到</p>
+<h2>完整<br>交付</h2>
+</div>
+<p class="footer">执行框架对照，不是模型能力排名。</p>
+</main>
+</body>
+</html>

@@ -22,6 +22,7 @@ import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
 import { composerWorkspaceFileRefFromEntry } from '@/lib/workspace-file-reference';
 import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
+import { workspaceTreeDndManager } from './workspace-tree-dnd';
 import {
   type AddWorkspaceFileRefResult,
   useWorkspaceFileReferenceCommands,
@@ -602,6 +603,7 @@ export function WorkspaceFileTree({ root, selectedPath, onOpenFile }: WorkspaceF
               childrenAccessor={(entry) => entry.kind === 'directory' ? (entry.children ?? []) : null}
               initialOpenState={treeOpenState(treeNodes, snapshot.expanded)}
               openByDefault={false}
+              dndManager={workspaceTreeDndManager}
               disableDrag
               disableDrop
               disableEdit

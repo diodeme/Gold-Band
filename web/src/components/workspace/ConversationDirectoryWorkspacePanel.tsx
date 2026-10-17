@@ -13,6 +13,7 @@ import { conversationDirectoryWorkspaceDataKey, type ConversationDirectoryWorksp
 import { WorkspaceFileEditor } from './files/WorkspaceFileEditor';
 import { FileWorkspaceSplitLayout } from './files/FileWorkspacePanel';
 import { WorkspaceDirectoryContextMenu } from './files/WorkspaceDirectoryContextMenu';
+import { workspaceTreeDndManager } from './files/workspace-tree-dnd';
 import { isMarkdownDocumentPath } from './files/markdown-document';
 import { ReadonlyMarkdownWorkspaceViewer } from './files/ReadonlyMarkdownWorkspaceViewer';
 import { isBrowserDocumentPath } from './browser/web-target';
@@ -170,7 +171,7 @@ function ConversationDirectoryTree({
       {actionFailure ? <div className="pointer-events-none absolute right-2 top-2 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-ui-caption text-destructive shadow-sm">{t(actionFailure === 'copy' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.fileManagerOpenFailed')}</div> : null}
       {loading ? <div className="flex items-center gap-2 p-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loading')}</div> : (
         <ConversationDirectoryTreeRowContext.Provider value={rowContext}>
-          <Tree<Node> data={roots} width="100%" height={treeHeight} rowHeight={32} indent={14} idAccessor="id" childrenAccessor={(node) => node.children} openByDefault={false} disableDrag disableDrop disableEdit>
+          <Tree<Node> data={roots} width="100%" height={treeHeight} rowHeight={32} indent={14} idAccessor="id" childrenAccessor={(node) => node.children} openByDefault={false} dndManager={workspaceTreeDndManager} disableDrag disableDrop disableEdit>
             {ConversationDirectoryTreeRow}
           </Tree>
         </ConversationDirectoryTreeRowContext.Provider>

@@ -218,6 +218,48 @@ describe('conversation directory responsive tree lifecycle', () => {
     }
   });
 
+  it('shares one drag-and-drop manager across directory trees through StrictMode replays and remounts', async () => {
+    // react-dnd's implicit global manager is ref-counted by provider effects; StrictMode replays and
+    // layout remounts reset it while rows still hold registrations, so a second HTML5 backend can start.
+    const implicitManagerKey = Symbol.for('__REACT_DND_CONTEXT_INSTANCE__');
+    const implicitManagers = new Set<unknown>();
+    let implicitManager: unknown = null;
+    Object.defineProperty(globalThis, implicitManagerKey, {
+      configurable: true,
+      get: () => implicitManager,
+      set: (value: unknown) => {
+        if (value) implicitManagers.add(value);
+        implicitManager = value;
+      },
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const renderPanels = (keys: string[]) => root.render(
+      <React.StrictMode>
+        <RightWorkspaceProvider initialWidth={397}>
+          {keys.map((key) => <ConversationDirectoryWorkspacePanel key={key} resource={resource} layout={layout} />)}
+        </RightWorkspaceProvider>
+      </React.StrictMode>,
+    );
+
+    try {
+      await act(async () => renderPanels(['first']));
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => renderPanels(['first', 'second']));
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => renderPanels(['replacement', 'second']));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(container.querySelectorAll('[role="tree"]')).toHaveLength(2);
+      expect(container.textContent?.split(artifact.name)).toHaveLength(3);
+      expect(implicitManagers.size).toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+      Reflect.deleteProperty(globalThis, implicitManagerKey);
+    }
+  });
+
   it('keeps the canonical right workspace width when the run directory opens', async () => {
     const container = document.createElement('div');
     document.body.append(container);

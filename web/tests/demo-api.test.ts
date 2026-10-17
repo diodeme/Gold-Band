@@ -62,7 +62,7 @@ describe('public demo runtime', () => {
       expect((await api.getFileComparison(locator, id, change.id)).after?.content).toBeTruthy();
     }
     const file = await api.resolveTurnAttachmentFile(locator, id, manifest.attachments[0].id);
-    const snapshot = await api.readFileResource(locator.projectId, file.locator.canonicalPath);
+    const snapshot = await api.readFileResource({ projectId: locator.projectId, workspacePath: null }, file.locator.canonicalPath);
     expect(snapshot).toMatchObject({ kind: 'text', editable: false });
     if (snapshot.kind === 'text') expect(new TextEncoder().encode(snapshot.content).length).toBe(manifest.attachments[0].byteLength);
     await expect(api.getTurnFileChangeSet({ ...locator, nodeId: 'accept' }, id)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
@@ -133,6 +133,11 @@ describe('public demo runtime', () => {
       expect((await api.getConversationRun('default', taskId, DEMO_RUN_ID)).selectedSession!.events[0].content).not.toBe('visitor change');
     }
     await expect(api.getConversationRun('another-project', 'mock-task', DEMO_RUN_ID)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+    const diagram = await api.getConversationRun('default', 'demo-diagram', DEMO_RUN_ID);
+    expect(diagram.runMode).toBe('direct');
+    expect(diagram.selectedSession!.events.at(-1)!.content).toContain('```mermaid');
+    expect(diagram.selectedSession!.events.at(-1)!.content).toContain('subgraph workspace');
+    expect(diagram.selectedSession!.events.at(-1)!.content).toContain('源码管理');
   });
 
   it('serves distinct workflow node sessions with matching identities and content', async () => {
@@ -153,7 +158,7 @@ describe('public demo runtime', () => {
 
   it('reuses file reading while advertising readonly content and serving Skill bodies', async () => {
     const api = createDemoApi();
-    const snapshot = await api.readFileResource('default', '/default/README.md');
+    const snapshot = await api.readFileResource({ projectId: 'default', workspacePath: null }, '/default/README.md');
     expect(snapshot).toMatchObject({ kind: 'text', editable: false });
     const { global: skills } = await api.listSkills();
     expect(skills).toHaveLength(1);

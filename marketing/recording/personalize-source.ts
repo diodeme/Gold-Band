@@ -19,7 +19,7 @@ export function personalizeSource(base: RuntimeApi): Partial<RuntimeApi> {
     async saveDesktopAvatarShape(kind, shape) {
       const current = (await base.getAppBootstrap()).preferences;
       current.personalization.avatars[kind].shape = shape === null ? { source: 'theme' } : { source: 'custom', value: shape };
-      return project(await base.saveDesktopPreferences(current.appearance, current.personalization, current.language, current.useLocalClaude, current.verboseLogging));
+      return project(await base.saveDesktopPreferences(current.appearance, current.personalization, current.language, current.useLocalClaude, current.verboseLogging, current.browser));
     },
   };
 }

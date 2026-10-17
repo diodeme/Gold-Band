@@ -7,11 +7,10 @@ import { createPreviewRun } from '../../marketing/shared/fixture';
 import { mockErrorBlockedConversationRun } from '../src/mockData';
 
 describe('website motion', () => {
-  it('keeps chapter playback and page motion when the system reduces motion', () => {
+  it('does not stop the public page when the system reduces motion', () => {
     const siteRoot = resolve('marketing/site');
     const main = readFileSync(resolve(siteRoot, 'main.tsx'), 'utf8');
     const style = readFileSync(resolve(siteRoot, 'style.css'), 'utf8');
-    expect(main).toContain('autoPlay');
     expect(main).not.toContain('prefers-reduced-motion');
     expect(main).not.toContain('reducedMotion');
     expect(style).toContain('scroll-behavior: smooth');
@@ -28,6 +27,10 @@ describe('website routing and bilingual content', () => {
     expect(parseRoute('/')).toEqual({ language: 'zh', page: 'home' });
     expect(pageHref('en', 'documentation', '/product/')).toBe('/product/en/documentation');
     expect(parseRoute('/', 'en')).toEqual({ language: 'en', page: 'home' });
+    expect(copy.zh.homeTitle).toBe('敬请期待');
+    expect(copy.en.homeTitle).toBe('Coming soon');
+    expect(copy.zh.placeholder).toBe('正在准备中');
+    expect(copy.en.placeholder).toBe('Coming soon');
   });
   it('keeps the same four chapters in both languages', () => {
     for (const language of ['zh', 'en'] as const) expect(copy[language].chapters.map(chapter => chapter.id)).toEqual(CHAPTER_IDS);

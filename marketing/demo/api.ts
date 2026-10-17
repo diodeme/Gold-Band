@@ -71,7 +71,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       if (input.projectId === REAL_PROJECT_ID) return history.api.readConversationDirectoryFile(input);
       await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId, undefined, undefined, input.outerNodeId, input.outerAttemptId);
       if (input.relativePath !== 'reports/review.md') throw { code: 'demo.resource-not-found', params: { path: input.relativePath } };
-      const snapshot = await overrides.readFileResource!('default', DEMO_REPORT_PATH);
+      const snapshot = await overrides.readFileResource!({ projectId: 'default', workspacePath: null }, DEMO_REPORT_PATH);
       return { ...snapshot, name: 'review.md', locator: { projectId: 'default', canonicalPath: `/demo/runs/${input.taskId}/${input.runId}/${input.roundId}/${input.nodeId}/reports/review.md`, relativePath: 'reports/review.md', scope: 'workspace' } };
     },
     async getTurnFileChangeSet(locator, changeSetId) {
@@ -168,8 +168,8 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       return { event };
     },
     async getAppBootstrap() { return { ...state.getAppBootstrap(), repoRoot: '/default', recentWorkspaces: ['/default'] }; },
-    async saveDesktopPreferences(appearance, personalization, language) {
-      const next = state.setPreferences({ ...state.getPreferences(), appearance, personalization, language });
+    async saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging, browser) {
+      const next = state.setPreferences({ ...state.getPreferences(), appearance, personalization, language, useLocalClaude, verboseLogging, browser });
       writeDemoPreferences(storage, next);
       return next;
     },
@@ -191,17 +191,17 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       return content;
     },
     async getSkillSyncStatus() { return demoAgentRegistry.agents.map((agent) => ({ agentType: agent.agentType, isSynced: true })); },
-    async readFileResource(...args) {
-      if (args[0] === REAL_PROJECT_ID) return history.api.readFileResource(...args);
-      if (args[0] !== 'default') missing({ projectId: args[0] });
-      if (args[0] === 'default' && args[1] === DEMO_REPORT_PATH) {
+    async readFileResource(root, canonicalPath, externalAccessToken = null, preferSource = false) {
+      if (root.projectId === REAL_PROJECT_ID) return history.api.readFileResource(root, canonicalPath, externalAccessToken, preferSource);
+      if (root.projectId !== 'default') missing({ projectId: root.projectId });
+      if (canonicalPath === DEMO_REPORT_PATH) {
         const content = demoReportContent(state.getPreferences().language);
         return { kind: 'text', locator: { projectId: 'default', canonicalPath: DEMO_REPORT_PATH, relativePath: 'demo-report.md', scope: 'workspace' },
           name: 'demo-report.md', content, encoding: 'utf-8', language: 'markdown', lineEnding: 'lf', editable: false, limitationCode: null,
           revision: { contentHash: `demo-report-${state.getPreferences().language}`, byteLength: new TextEncoder().encode(content).length, modifiedAtNs: '1788249660000000000' }, externalAccessGrant: null };
       }
-      const snapshot = await previewApi.readFileResource(...args);
-      if (snapshot.kind === 'text' && args[1] === '/default/README.md') {
+      const snapshot = await previewApi.readFileResource(root, canonicalPath, externalAccessToken, preferSource);
+      if (snapshot.kind === 'text' && canonicalPath === '/default/README.md') {
         const content = state.getPreferences().language === 'en'
           ? '# Workspace notes\n\n## Project structure\n\n| File | Purpose |\n| --- | --- |\n| src/main.rs | Application entry point |\n| src/config.json | Workspace configuration |\n| assets/logo.svg | Product identity |\n\n## Review checklist\n\n- Validate configuration defaults.\n- Keep changes scoped to the requested modules.\n- Add regression coverage for behavior changes.\n\n## Acceptance\n\nThe application starts successfully and reads the expected configuration.\n'
           : '# 工作区说明\n\n## 项目结构\n\n| 文件 | 职责 |\n| --- | --- |\n| src/main.rs | 应用入口 |\n| src/config.json | 工作区配置 |\n| assets/logo.svg | 产品标识 |\n\n## 审阅清单\n\n- 检查配置字段的默认值。\n- 将修改限定在本次需求涉及的模块。\n- 为行为变化补充回归测试。\n\n## 验收\n\n应用正常启动，并读取预期的配置内容。\n';

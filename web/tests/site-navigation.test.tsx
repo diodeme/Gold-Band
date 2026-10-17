@@ -41,4 +41,21 @@ describe('embedded website demo navigation', () => {
     expect(host.querySelector('iframe')).not.toBeNull();
     expect(location.pathname).toBe('/en/demo');
   });
+  it('opens the embedded demo on the session named in the page hash', () => {
+    history.replaceState(null, '', '/zh/demo#task-025?project=ji&run=run-001');
+    act(() => root.render(<App />));
+    const src = host.querySelector('iframe')?.src ?? '';
+    expect(src).toContain('language=zh-cn');
+    expect(src).toContain('#task-025?project=ji&run=run-001');
+  });
+  it('shows a coming-soon home and keeps documentation in preparation', () => {
+    history.replaceState(null, '', '/zh/');
+    act(() => root.render(<App />));
+    expect(host.querySelector('h1')?.textContent).toBe('敬请期待');
+    expect([...host.querySelectorAll('a')].some((anchor) => anchor.getAttribute('href') === '/zh/demo' && anchor.textContent?.includes('打开 Demo'))).toBe(true);
+    act(() => host.querySelector<HTMLAnchorElement>('nav a[href="/zh/documentation"]')!.click());
+    expect(host.querySelector('h1')?.textContent).toBe('文档');
+    expect(host.textContent).toContain('正在准备中');
+    expect(host.querySelector('iframe')).toBeNull();
+  });
 });

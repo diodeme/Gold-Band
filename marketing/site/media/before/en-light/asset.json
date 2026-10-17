@@ -5,10 +5,10 @@
   "theme": "light",
   "rrwebVersion": "2.1.1",
   "eventsUrl": "/media/before/en-light/events.json",
-  "sha256": "7ff54837ae405a1ffd242d9739e5671a0347d31830ca9df34c62cfeff6a85c48",
-  "byteLength": 867052,
-  "eventCount": 181,
-  "durationMs": 37435,
+  "sha256": "937ff83ed4fa540b03515d47118cc44c594ef0bc0545b23e4fc63d7d13532b2f",
+  "byteLength": 904408,
+  "eventCount": 189,
+  "durationMs": 48000,
   "width": 1440,
   "height": 900,
   "poster": "/media/before/en-light/establish.png",
@@ -16,43 +16,43 @@
     {
       "stepId": "establish",
       "startMs": 0,
-      "endMs": 3815,
+      "endMs": 3879,
       "poster": "/media/before/en-light/establish.png"
     },
     {
       "stepId": "agent",
-      "startMs": 3815,
-      "endMs": 8803,
+      "startMs": 3879,
+      "endMs": 12337,
       "poster": "/media/before/en-light/agent.png"
     },
     {
       "stepId": "roles-skills",
-      "startMs": 8803,
-      "endMs": 20831,
+      "startMs": 12337,
+      "endMs": 30008,
       "poster": "/media/before/en-light/roles-skills.png"
     },
     {
       "stepId": "direct",
-      "startMs": 20831,
-      "endMs": 24884,
+      "startMs": 30008,
+      "endMs": 34431,
       "poster": "/media/before/en-light/direct.png"
     },
     {
       "stepId": "workflow",
-      "startMs": 24884,
-      "endMs": 29374,
+      "startMs": 34431,
+      "endMs": 39311,
       "poster": "/media/before/en-light/workflow.png"
     },
     {
       "stepId": "auto",
-      "startMs": 29374,
-      "endMs": 33557,
+      "startMs": 39311,
+      "endMs": 43425,
       "poster": "/media/before/en-light/auto.png"
     },
     {
       "stepId": "workflow-ready",
-      "startMs": 33557,
-      "endMs": 37435,
+      "startMs": 43425,
+      "endMs": 48000,
       "poster": "/media/before/en-light/workflow-ready.png"
     }
   ],
@@ -70,7 +70,7 @@
         "transitionMs": 0
       },
       {
-        "timeMs": 3310,
+        "timeMs": 3302,
         "rect": {
           "x": 0.37922092013888886,
           "y": 0.5805555555555556,
@@ -81,7 +81,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 6845,
+        "timeMs": 6786,
         "rect": {
           "x": 0,
           "y": 0,
@@ -92,7 +92,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 8309,
+        "timeMs": 7851,
+        "rect": {
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 11746,
         "rect": {
           "x": 0.5034722222222222,
           "y": 0.3,
@@ -103,29 +114,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 11102,
+        "timeMs": 16133,
         "rect": {
-          "x": 0,
-          "y": 0,
-          "width": 1,
-          "height": 1
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
         },
         "zoom": 1,
         "transitionMs": 450
       },
       {
-        "timeMs": 12253,
-        "rect": {
-          "x": 0.19652777777777777,
-          "y": 0.28888888888888886,
-          "width": 0.27106119791666666,
-          "height": 0.2311111111111111
-        },
-        "zoom": 1,
-        "transitionMs": 450
-      },
-      {
-        "timeMs": 15568,
+        "timeMs": 20332,
         "rect": {
           "x": 0.19652777777777777,
           "y": 0.28888888888888886,
@@ -136,7 +136,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 19023,
+        "timeMs": 24024,
+        "rect": {
+          "x": 0.19652777777777777,
+          "y": 0.28888888888888886,
+          "width": 0.27106119791666666,
+          "height": 0.2311111111111111
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 27967,
         "rect": {
           "x": 0,
           "y": 0,
@@ -147,7 +158,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 20334,
+        "timeMs": 29428,
         "rect": {
           "x": 0.36880425347222223,
           "y": 0.3616666666666667,
@@ -158,7 +169,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 23275,
+        "timeMs": 32469,
         "rect": {
           "x": 0,
           "y": 0,
@@ -169,7 +180,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 24391,
+        "timeMs": 33803,
         "rect": {
           "x": 0.34305555555555556,
           "y": 0.6255555555555555,
@@ -180,7 +191,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 27569,
+        "timeMs": 37164,
         "rect": {
           "x": 0,
           "y": 0,
@@ -191,7 +202,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 28876,
+        "timeMs": 38719,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.4866666666666667,
@@ -202,7 +213,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 32217,
+        "timeMs": 41867,
         "rect": {
           "x": 0,
           "y": 0,
@@ -213,7 +224,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 33051,
+        "timeMs": 42833,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.3616666666666667,
@@ -224,7 +235,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 35565,
+        "timeMs": 45513,
         "rect": {
           "x": 0,
           "y": 0,
@@ -248,7 +259,7 @@
         "transitionMs": 0
       },
       {
-        "timeMs": 3310,
+        "timeMs": 3302,
         "rect": {
           "x": 0.37922092013888886,
           "y": 0.5805555555555556,
@@ -259,7 +270,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 6845,
+        "timeMs": 6786,
         "rect": {
           "x": 0,
           "y": 0,
@@ -270,7 +281,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 8309,
+        "timeMs": 7851,
+        "rect": {
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 11746,
         "rect": {
           "x": 0.5034722222222222,
           "y": 0.3,
@@ -281,29 +303,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 11102,
+        "timeMs": 16133,
         "rect": {
-          "x": 0,
-          "y": 0,
-          "width": 1,
-          "height": 1
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
         },
         "zoom": 1,
         "transitionMs": 450
       },
       {
-        "timeMs": 12253,
-        "rect": {
-          "x": 0.19652777777777777,
-          "y": 0.28888888888888886,
-          "width": 0.27106119791666666,
-          "height": 0.2311111111111111
-        },
-        "zoom": 1,
-        "transitionMs": 450
-      },
-      {
-        "timeMs": 15568,
+        "timeMs": 20332,
         "rect": {
           "x": 0.19652777777777777,
           "y": 0.28888888888888886,
@@ -314,7 +325,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 19023,
+        "timeMs": 24024,
+        "rect": {
+          "x": 0.19652777777777777,
+          "y": 0.28888888888888886,
+          "width": 0.27106119791666666,
+          "height": 0.2311111111111111
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 27967,
         "rect": {
           "x": 0,
           "y": 0,
@@ -325,7 +347,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 20334,
+        "timeMs": 29428,
         "rect": {
           "x": 0.36880425347222223,
           "y": 0.3616666666666667,
@@ -336,7 +358,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 23275,
+        "timeMs": 32469,
         "rect": {
           "x": 0,
           "y": 0,
@@ -347,7 +369,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 24391,
+        "timeMs": 33803,
         "rect": {
           "x": 0.34305555555555556,
           "y": 0.6255555555555555,
@@ -358,7 +380,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 27569,
+        "timeMs": 37164,
         "rect": {
           "x": 0,
           "y": 0,
@@ -369,7 +391,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 28876,
+        "timeMs": 38719,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.4866666666666667,
@@ -380,7 +402,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 32217,
+        "timeMs": 41867,
         "rect": {
           "x": 0,
           "y": 0,
@@ -391,7 +413,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 33051,
+        "timeMs": 42833,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.3616666666666667,
@@ -402,7 +424,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 35565,
+        "timeMs": 45513,
         "rect": {
           "x": 0,
           "y": 0,
@@ -417,43 +439,43 @@
   "pace": [
     {
       "startMs": 0,
-      "endMs": 3815,
+      "endMs": 3879,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 3815,
-      "endMs": 8803,
+      "startMs": 3879,
+      "endMs": 12337,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 8803,
-      "endMs": 20831,
+      "startMs": 12337,
+      "endMs": 30008,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 20831,
-      "endMs": 24884,
+      "startMs": 30008,
+      "endMs": 34431,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 24884,
-      "endMs": 29374,
+      "startMs": 34431,
+      "endMs": 39311,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 29374,
-      "endMs": 33557,
+      "startMs": 39311,
+      "endMs": 43425,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 33557,
-      "endMs": 37435,
+      "startMs": 43425,
+      "endMs": 48000,
       "fromRate": 1,
       "toRate": 1
     }

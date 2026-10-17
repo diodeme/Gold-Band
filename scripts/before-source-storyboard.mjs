@@ -16,12 +16,17 @@ export function beforeSourceStoryboard({ browser, evaluate, screenshot, camera =
   const settle = () => browser('wait', '--fn', `document.getAnimations().every(a => a.playState !== 'running' || a.effect?.getComputedTiming().iterations === Infinity)`);
   const click = (role, name) => { settle(); browser('find', 'role', role, 'click', '--name', name, '--exact'); };
   const transition = () => { camera('overview', { overview: true }); browser('wait', String(BEFORE_CAMERA_TRANSITION_MS)); };
-  const mark = (stepId, { secondary = false } = {}) => {
+  const mark = (stepId, { secondary = false, readMs = 1600 } = {}) => {
     settle(); camera(stepId);
     browser('wait', String(BEFORE_CAMERA_TRANSITION_MS));
     if (capture && !secondary) evaluate(`window.goldBandPreview.marker(${JSON.stringify(stepId)})`);
     screenshot(stepId);
-    browser('wait', '1600');
+    browser('wait', String(readMs));
+  };
+  // Stay zoomed. An overview between these beats pulls back to the full window and the selection flashes past.
+  const frame = (stepId, readMs) => {
+    settle(); camera(stepId);
+    browser('wait', String(BEFORE_CAMERA_TRANSITION_MS + readMs));
   };
   const navigate = (name, route) => {
     transition();
@@ -37,17 +42,20 @@ export function beforeSourceStoryboard({ browser, evaluate, screenshot, camera =
   browser('wait', '--text', 'Codex');
   mark('agent');
   navigate(text('上下文', 'Context'), '/chat/contexts');
+  frame('role-tab', 2400);
   click('tab', text('自定义角色', 'Custom Roles'));
   click('button', text('详情', 'Detail'));
   browser('wait', '--text', text('检查相关实现', 'Inspect the relevant implementation'));
   browser('scrollintoview', '[data-slot="sheet-content"] [data-slot="card"]:last-child');
-  mark('roles-skills');
-  transition(); browser('press', 'Escape');
+  mark('roles-skills', { readMs: 2400 });
+  browser('press', 'Escape');
+  frame('skill-tab', 2400);
   click('tab', text('SKILL 管理', 'SKILLs'));
   browser('wait', '--text', 'project-review');
-  mark('skills', { secondary: true });
+  browser('wait', '800');
+  mark('skills', { secondary: true, readMs: 2400 });
   browser('hover', `button[aria-label=${JSON.stringify(text('取消同步 Claude', 'Stop syncing to Claude'))}]`);
-  mark('skill-sync', { secondary: true });
+  mark('skill-sync', { secondary: true, readMs: 2000 });
   navigate(text('快速对话', 'New Chat'), '/chat');
   click('tab', 'Direct');
   browser('click', '[role="tab"][id$="trigger-claude-acp"]');
@@ -79,7 +87,10 @@ export function measureBeforeCamera(stepId) {
   const size = { width: innerWidth, height: innerHeight };
   if (stepId === 'overview' || stepId === 'establish') return { ...size, desktop: full, mobile: full };
   let element;
-  if (stepId === 'roles-skills') element = document.querySelector('[data-slot="sheet-content"] [data-slot="card"]:last-child');
+  if (stepId === 'role-tab' || stepId === 'skill-tab') {
+    const labels = stepId === 'role-tab' ? ['Role', '角色管理', '角色'] : ['SKILLs', 'SKILL 管理'];
+    element = [...document.querySelectorAll('[role="tab"]')].find(node => labels.includes(node.textContent.trim()))?.closest('[role="tablist"]');
+  } else if (stepId === 'roles-skills') element = document.querySelector('[data-slot="sheet-content"] [data-slot="card"]:last-child');
   else if (stepId.startsWith('skill')) element = document.querySelector('#workspace-center button[aria-label] img[src$="/claude.svg"]')?.closest('[data-slot="card"]');
   else if (stepId === 'direct') element = document.querySelector('[data-slot="dropdown-menu-content"]');
   else if (stepId === 'workflow') element = document.querySelector('[role="listbox"]');

@@ -16,6 +16,8 @@ function parseArguments(argv) {
     toolOutputChars: Number(process.env.DEMO_SLIM_TOOL_OUTPUT_CHARS ?? 600),
     toolDetail: process.env.DEMO_SLIM_TOOL_DETAIL ?? 'none',
     activityRows: (process.env.DEMO_SLIM_ACTIVITY ?? 'rows') === 'rows',
+    dropNodeId: process.env.DEMO_SLIM_DROP_NODE ?? null,
+    dropUserText: process.env.DEMO_SLIM_DROP_USER_TEXT ?? null,
   };
   for (let index = 0; index < argv.length; index += 2) {
     const [flag, value] = [argv[index], argv[index + 1]];
@@ -25,11 +27,14 @@ function parseArguments(argv) {
     else if (flag === '--tool-output-chars') options.toolOutputChars = Number(value);
     else if (flag === '--tool-detail') options.toolDetail = value;
     else if (flag === '--activity') options.activityRows = value === 'rows';
+    else if (flag === '--drop-node') options.dropNodeId = value;
+    else if (flag === '--drop-user-text') options.dropUserText = value;
     else throw new Error(`Unknown argument: ${flag}`);
   }
   if (!options.source) throw new Error('A source dataset is required: pass --source <dir> or set DEMO_SLIM_SOURCE.');
   if (!Number.isSafeInteger(options.toolOutputChars) || options.toolOutputChars < 0) throw new Error('--tool-output-chars must be a non-negative integer.');
   if (options.toolDetail !== 'none' && options.toolDetail !== 'preview') throw new Error('--tool-detail must be none or preview.');
+  if (Boolean(options.dropNodeId) !== Boolean(options.dropUserText)) throw new Error('--drop-node and --drop-user-text must be set together.');
   return { ...options, source: resolve(options.source), out: resolve(options.out) };
 }
 
@@ -107,8 +112,33 @@ function activityRow(event) {
   return row;
 }
 
+function followUpCutoff(events, text) {
+  return events.find((event) => event?.kind === 'userTextDelta' && typeof event.content === 'string' && event.content.includes(text)) ?? null;
+}
+
+function blocksBeforeFollowUp(blocks, eventsById, cutoffSeq, text) {
+  const kept = [];
+  for (const block of blocks) {
+    if (block.summary) {
+      const seq = block.summary.seq ?? block.oldestSeq;
+      const content = block.summary.content;
+      if (seq >= cutoffSeq || (typeof content === 'string' && content.includes(text))) continue;
+      kept.push(block);
+      continue;
+    }
+    const itemIds = (block.itemIds ?? []).filter((id) => {
+      const event = eventsById.get(id);
+      return event && (event.seq ?? event.startedSeq) < cutoffSeq;
+    });
+    if (itemIds.length === 0) continue;
+    const seqs = itemIds.map((id) => eventsById.get(id).seq ?? eventsById.get(id).startedSeq);
+    kept.push({ ...block, itemIds, oldestSeq: Math.min(...seqs), newestSeq: Math.max(...seqs) });
+  }
+  return kept;
+}
+
 async function main() {
-  const { source, out, toolOutputChars, toolDetail, activityRows } = parseArguments(process.argv.slice(2));
+  const { source, out, toolOutputChars, toolDetail, activityRows, dropNodeId, dropUserText } = parseArguments(process.argv.slice(2));
   const stats = { truncated: 0, removedChars: 0, sessions: 0, events: 0, droppedFiles: 0 };
 
   const publish = async (path, bytes) => {
@@ -126,7 +156,10 @@ async function main() {
   await mkdir(out, { recursive: true });
 
   const dataset = JSON.parse(await readFile(join(source, 'dataset.json'), 'utf8'));
-  const rootResources = JSON.parse(await readFile(join(source, 'resources.json'), 'utf8'));
+  const rootResources = await exists(join(source, 'resources.json'))
+    ? JSON.parse(await readFile(join(source, 'resources.json'), 'utf8'))
+    : { sessions: {} };
+  rootResources.sessions ??= {};
 
   const run = await copyThrough('run.json');
   const task = await copyThrough('task.json');
@@ -136,6 +169,7 @@ async function main() {
   const emptyDirectory = await publishJson('empty-directory.json', []);
 
   const keptSessions = [];
+  let droppedFollowUp = false;
   for (const reference of dataset.sessions) {
     const sessionDirectory = dirname(reference.path);
     const index = JSON.parse(await readFile(join(source, reference.path), 'utf8'));
@@ -150,15 +184,42 @@ async function main() {
       }
     }
 
-    const pageRefs = [];
     const pagesDirectory = join(sourceIndexDirectory, 'pages');
+    const sourcePages = [];
     if (await exists(pagesDirectory)) {
       const names = (await readdir(pagesDirectory)).sort((left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10));
-      for (const name of names) {
-        const path = `${sessionDirectory}/pages/${name}`;
-        const events = JSON.parse(await readFile(join(source, path), 'utf8'));
-        pageRefs.push(await publishJson(path, events.map((event) => event?.kind === 'toolCall' ? withoutToolDetail(event) : event)));
+      for (const name of names) sourcePages.push(JSON.parse(await readFile(join(pagesDirectory, name), 'utf8')));
+    }
+    const preparedPages = sourcePages.map((events) => events.map((event) => event?.kind === 'toolCall' ? withoutToolDetail(event) : event));
+    const shouldDropFollowUp = dropNodeId && dropUserText && reference.nodeId === dropNodeId && reference.branchId === 'root';
+    let publishedPages = preparedPages;
+    let publishedBlocks = index.blocks;
+    let followUpSeq = null;
+    if (shouldDropFollowUp) {
+      const cutoff = followUpCutoff(preparedPages.flat(), dropUserText);
+      if (!cutoff) throw new Error(`User follow-up was not found in ${reference.nodeId}`);
+      followUpSeq = cutoff.seq ?? cutoff.startedSeq;
+      const keptEvents = preparedPages.flat().filter((event) => (event.seq ?? event.startedSeq) < followUpSeq);
+      const eventsById = new Map(keptEvents.map((event) => [event.id, event]));
+      publishedBlocks = blocksBeforeFollowUp(index.blocks, eventsById, followUpSeq, dropUserText);
+      publishedPages = [];
+      for (let offset = 0; offset < publishedBlocks.length; offset += 50) {
+        const events = [];
+        for (const block of publishedBlocks.slice(offset, offset + 50)) {
+          if (block.summary) events.push(block.summary);
+          else for (const id of block.itemIds) {
+            const event = eventsById.get(id);
+            if (!event) throw new Error(`Missing semantic item after follow-up cut: ${id}`);
+            events.push(event);
+          }
+        }
+        publishedPages.push(events);
       }
+      droppedFollowUp = true;
+    }
+    const pageRefs = [];
+    for (const [page, events] of publishedPages.entries()) {
+      pageRefs.push(await publishJson(`${sessionDirectory}/pages/${page}.json`, events));
     }
 
     const eventRefs = {};
@@ -166,11 +227,18 @@ async function main() {
     const activityDirectory = join(sourceIndexDirectory, 'activity');
     if (activityRows && await exists(activityDirectory)) {
       const names = (await readdir(activityDirectory)).sort((left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10));
+      const activityEvents = [];
       for (const name of names) {
-        const page = Number.parseInt(name, 10);
         const events = JSON.parse(await readFile(join(activityDirectory, name), 'utf8'));
-        const rows = events.map(activityRow);
-        activityPages.push(await publishJson(`${sessionDirectory}/activity/${name}`, rows));
+        activityEvents.push(...events);
+      }
+      const visibleActivity = followUpSeq == null
+        ? activityEvents
+        : activityEvents.filter((event) => (event.seq ?? event.startedSeq) < followUpSeq);
+      for (let offset = 0; offset < visibleActivity.length; offset += 50) {
+        const page = activityPages.length;
+        const rows = visibleActivity.slice(offset, offset + 50).map(activityRow);
+        activityPages.push(await publishJson(`${sessionDirectory}/activity/${page}.json`, rows));
         for (const row of rows) {
           eventRefs[row.id] = {
             id: row.id,
@@ -204,18 +272,37 @@ async function main() {
       : {};
     const sessionResources = await publishJson(sessionResourcesPath, { changes, directory: emptyDirectory });
 
+    const session = followUpSeq == null ? index.session : {
+      ...index.session,
+      eventPage: {
+        ...index.session.eventPage,
+        loadedCount: 0,
+        total: publishedBlocks.length,
+        hasOlder: publishedBlocks.length > 0,
+        hasNewer: false,
+      },
+    };
     const slimIndex = {
-      session: index.session,
-      blocks: index.blocks,
+      session,
+      blocks: publishedBlocks,
       eventRefs,
-      pages: pageRefs.length === index.pages.length ? pageRefs : index.pages,
+      pages: pageRefs,
       activityPages,
     };
     const indexEntry = await publishJson(reference.path, slimIndex);
-    keptSessions.push({ ...reference, ...indexEntry, path: reference.path });
+    keptSessions.push({
+      ...reference,
+      ...indexEntry,
+      path: reference.path,
+      ...(followUpSeq == null ? {} : {
+        logicalCount: publishedBlocks.length,
+        eventCount: publishedPages.flat().length,
+      }),
+    });
     rootResources.sessions[sessionDirectory] = { ...sessionResources, path: sessionResourcesPath };
     stats.sessions += 1;
   }
+  if (dropNodeId && !droppedFollowUp) throw new Error(`User follow-up was not removed from ${dropNodeId}`);
 
   const slimDataset = {
     ...dataset,

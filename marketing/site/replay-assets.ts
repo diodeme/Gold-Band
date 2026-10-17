@@ -1,5 +1,5 @@
 import type { eventWithTime } from '@rrweb/types';
-import { sha256Hex } from '@/lib/sha256';
+import { sha256Hex } from '../shared/sha256';
 import { SceneAssetSchema, SceneManifestSchema, type SceneAsset } from './replay-model';
 
 export async function loadSceneEvents(asset: SceneAsset, signal: AbortSignal): Promise<eventWithTime[]> {

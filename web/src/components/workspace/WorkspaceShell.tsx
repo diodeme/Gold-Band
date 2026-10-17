@@ -868,7 +868,7 @@ function WorkspaceShellLayout({
           ref={compactSheetContentRef}
           side="right"
           tabIndex={-1}
-          className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 focus:outline-none sm:max-w-none"
+          className="flex w-[min(92%,44rem)] flex-col gap-0 p-0 focus:outline-none sm:max-w-none"
           overlayProps={{ [overlayOwnerAttribute]: rightWorkspaceOverlayOwner }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();

@@ -4,7 +4,6 @@ import { dirname, resolve, relative, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createGzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
-import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { blake3 } from '@noble/hashes/blake3.js';
 
@@ -58,20 +57,22 @@ export async function archiveSourceFile(path, target, counts = {}) {
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { text = null; }
     const projected = text != null && !text.includes('\0') ? sanitize(text, counts) : bytes;
     await pipeline([projected], createGzip(), createWriteStream(target));
+  } else if (textFile) {
+    const bytes = await readFile(path);
+    hash.update(bytes);
+    const lines = bytes.toString('utf8').split('\n');
+    let privateKey = false;
+    const redacted = lines.map((line) => {
+      if (/^-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----$/.test(line.trim())) { privateKey = true; counts['private-key'] = (counts['private-key'] ?? 0) + 1; return '[REDACTED_PRIVATE_KEY]'; }
+      if (privateKey) { if (/^-----END (?:[A-Z]+ )?PRIVATE KEY-----$/.test(line.trim())) privateKey = false; return ''; }
+      return sanitize(line, counts);
+    });
+    if (privateKey) throw new Error('Unterminated private key in source');
+    await pipeline([redacted.join('\n')], createGzip(), createWriteStream(target));
   } else {
-    const stream = createReadStream(path); stream.on('data', (data) => hash.update(data));
-    if (textFile) {
-      async function* redacted() {
-        let privateKey = false;
-        for await (const line of createInterface({ input: stream, crlfDelay: Infinity })) {
-          if (/^-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----$/.test(line.trim())) { privateKey = true; counts['private-key'] = (counts['private-key'] ?? 0) + 1; yield '[REDACTED_PRIVATE_KEY]\n'; }
-          else if (privateKey) { if (/^-----END (?:[A-Z]+ )?PRIVATE KEY-----$/.test(line.trim())) privateKey = false; }
-          else yield sanitize(line, counts) + '\n';
-        }
-        if (privateKey) throw new Error('Unterminated private key in source');
-      }
-      await pipeline(redacted(), createGzip(), createWriteStream(target));
-    } else await pipeline(stream, createGzip(), createWriteStream(target));
+    const stream = createReadStream(path);
+    stream.on('data', (data) => hash.update(data));
+    await pipeline(stream, createGzip(), createWriteStream(target));
   }
   const after = await stat(path);
   if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) throw new Error('Source changed during archive');
@@ -82,7 +83,7 @@ export async function exportHistory(source, output) {
   const root = dirname(source);
   const runBytes = await readFile(source);
   const run = JSON.parse(runBytes);
-  if (run.task_uuid !== '92900d5e127a4bc79239514a7e561a46' || run.uuid !== 'fb981f32d074405aad5321c9daed98eb' || run.execution.revision !== 118 || run.status !== 'paused' || run.outcome !== null || run.pause_reason !== 'process-interrupted') throw new Error('Source identity/revision mismatch');
+  if (run.task_uuid !== 'd760a4b3841040f1bc4016d39e81ee7a' || run.uuid !== 'd5bd47f82373410e9e7cd251f7331370' || run.execution.revision !== 32 || run.status !== 'completed' || run.outcome !== 'success' || run.pause_reason != null) throw new Error('Source identity/revision mismatch');
   const projectId = 'e-projects-code-ai-ji--a40d4379';
   const task = await json(join(root, '../../task.json'));
   const manifest = { version: 1, projectId, taskId: run.task_id, taskUuid: run.task_uuid, runId: run.id, title: task.title, source: { runSha256: digest(runBytes), revision: run.execution.revision, status: run.status, outcome: run.outcome, pauseReason: run.pause_reason, startedAt: run.started_at, updatedAt: run.updated_at }, sessions: [], files: [], missing: [], externalDependencies: [], redactions: {} };

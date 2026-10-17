@@ -402,7 +402,8 @@ function browserAgentIdentity(agentType: string) {
 }
 
 function browserCompletedConversationRun(): ConversationRunVm {
-  const compactionStatus = new URLSearchParams(window.location.search).get('compactionStatus') ?? 'completed';
+  const search = typeof window === 'undefined' ? '' : window.location.search;
+  const compactionStatus = new URLSearchParams(search).get('compactionStatus') ?? 'completed';
   const compactionRunning = compactionStatus === 'in_progress';
   const run = structuredClone(mockErrorBlockedConversationRun);
   const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';

@@ -8,7 +8,8 @@ import { ConversationRunPage } from '@/pages/ConversationRunPage';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
 import { applyAppearance, applyPersonalization } from '@/theme';
-import i18n, { i18nLanguage } from '@/i18n';
+import { i18nLanguage } from '@/i18n';
+import { loadDemoLanguage } from './i18n';
 import type { AppBootstrapVm, ConversationPage, ConversationRunVm, ConversationRunModeVm, PreferencesVm } from '@/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Languages, AlertCircle, RotateCw } from 'lucide-react';
@@ -19,7 +20,7 @@ import { DemoFrame } from './DemoFrame';
 import { demoAgentRegistry, demoProfiles, demoWorkflowTemplates } from './catalog';
 import { browserApi } from './runtime';
 import { demoSidebar, demoTitle, DEMO_PROJECT_ID } from './fixtures';
-import { demoPageFromHash, demoLinkParameters, demoRunModeFromHash, demoHashForPage } from './routes';
+import { demoPageFromHash, demoLinkParameters, demoRunModeFromHash, demoHashForPage, publishEmbeddedDemoHash } from './routes';
 import { createDatasetReader, type DemoDataset } from './dataset';
 import { missing } from './history-query';
 
@@ -81,8 +82,10 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       if (mode === 'auto' || mode === 'workflow' || mode === 'direct' || template) {
         setRunMode(demoRunModeFromHash(location.hash));
       }
+      publishEmbeddedDemoHash(location.hash);
     };
     window.addEventListener('hashchange', changed);
+    publishEmbeddedDemoHash(location.hash);
     return () => window.removeEventListener('hashchange', changed);
   }, []);
   function navigate(next: ConversationPage) {
@@ -99,15 +102,16 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   function updatePreferences(next: PreferencesVm) {
     applyAppearance(next.appearance);
     applyPersonalization(next.personalization);
-    void i18n.changeLanguage(i18nLanguage(next.language));
+    void loadDemoLanguage(next.language);
     document.documentElement.lang = i18nLanguage(next.language);
     setPreferences(next);
   }
   return <AvatarPreferencesProvider preferences={preferences.avatars}>
     <DemoFrame clientRef={clientRef}>
     <ConversationComposerDraftBoundary><WorkspaceShell
+      browserPreferences={preferences.browser}
       titleBarTrailingContent={<Select value={preferences.language} onValueChange={(language) => {
-        void browserApi.saveDesktopPreferences(preferences.appearance, preferences.personalization, language as PreferencesVm['language'], preferences.useLocalClaude, preferences.verboseLogging).then(updatePreferences);
+        void browserApi.saveDesktopPreferences(preferences.appearance, preferences.personalization, language as PreferencesVm['language'], preferences.useLocalClaude, preferences.verboseLogging, preferences.browser).then(updatePreferences);
       }}><SelectTrigger aria-label={t('settings.language')} className="demo-language mr-2 h-7 w-auto gap-2 border-0 bg-transparent shadow-none"><Languages className="size-3.5" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="zh-cn">简体中文</SelectItem><SelectItem value="en">English</SelectItem></SelectContent></Select>}
       appName="Gold Band" platform={null} windowFrameStyle="native-compositor"
       feedbackEnabled={false} appConfig={bootstrap.appConfig} vm={sidebar} active={page}
@@ -119,7 +123,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       activeWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID} defaultExpandedWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID}
       conversationTaskUuid={page.kind === 'conversation-run' ? page.projectId === history?.projectId ? history.taskUuid : `demo-${page.taskId}` : null}
       conversationWorkspaceStore={store}
-      sourceControlWorkspacePath={page.kind === 'conversation-run' && page.projectId !== DEMO_PROJECT_ID ? undefined : '/default'}
+      showMulticaTaskManagement={false}
     >
       <Suspense fallback={<div className="p-5 text-sm text-muted-foreground">{t('common.loading')}</div>}>
         {historyState.status === 'error' ? <Alert variant="destructive" className="rounded-none border-0"><AlertCircle /><AlertDescription className="flex flex-wrap items-center gap-2">{t('demo.historyLoadFailed')}<Button variant="ghost" size="sm" onClick={() => setHistoryRequest((value) => value + 1)}><RotateCw className="size-4" />{t('common.retry')}</Button></AlertDescription></Alert> : null}
@@ -147,7 +151,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
           : page.kind === 'settings' ? <SettingsPage
             preferences={preferences} appInfo={bootstrap.appInfo} updaterSettings={bootstrap.updaterSettings}
             updateStatus={bootstrap.updateStatus} showAdvancedUpdateDot={false} showUpdatesSectionDot={false}
-            downloadProgress={null} clientVersion={bootstrap.clientVersion} busy={false}
+            clientVersion={bootstrap.clientVersion} busy={false}
             onSave={(...args) => { void browserApi.saveDesktopPreferences(...args).then(updatePreferences); }}
             onSaveAvatar={unusedAction} onSelectRecentAvatar={unusedAction} onSaveAvatarShape={unusedAction}
             onClearAvatar={unusedAction} onImportWallpaper={unusedAction} onSelectRecentWallpaper={unusedAction}
@@ -159,9 +163,10 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
     </WorkspaceShell></ConversationComposerDraftBoundary>
     </DemoFrame>
     <Sheet open={navigationOpen} onOpenChange={setNavigationOpen}>
-      <SheetContent side="left" className="w-[min(85vw,320px)] gap-0 p-0" closeLabel={t('common.close')}>
+      <SheetContent side="left" className="w-[min(100%,320px)] gap-0 p-0" closeLabel={t('common.close')}>
         <SheetHeader className="px-4 py-3"><SheetTitle>Gold Band</SheetTitle></SheetHeader>
         <ConversationSidebar vm={sidebar} active={page} defaultExpandedWorkspaceId={DEMO_PROJECT_ID}
+          showMulticaTaskManagement={false}
           onSelect={navigate} onNewConversation={() => navigate({ kind: 'conversation-home' })} onSearch={noop} onPinTask={noop} onUnpinTask={noop}
           onRenameTask={noop} onDeleteTask={noop} onRetryBootstrap={noop} onRequestWorkspaceTasks={noop}
           onRequestPinnedTasks={noop} onRequestTaskRuns={noop} />

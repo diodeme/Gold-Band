@@ -27,9 +27,9 @@ interface AppTitleBarProps {
 }
 
 export const APP_TITLE_BAR_LAYOUT = {
-  rootClassName: 'app-titlebar-drag-region @container/titlebar flex h-9 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground',
+  rootClassName: 'app-titlebar-drag-region flex h-9 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground',
   brandMarkClassName: 'grid size-7 shrink-0 place-items-center rounded-[7px] border border-titlebar-border bg-background/55 p-0.5',
-  brandTitleClassName: 'hidden min-w-0 truncate text-base font-[700] tracking-[0.01em] text-titlebar-foreground @sm/titlebar:block',
+  brandTitleClassName: 'text-base font-[700] tracking-[0.01em] text-titlebar-foreground',
   helpActionClassName: 'flex h-7 items-center rounded-md px-2.5 text-sm font-medium text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground',
 } as const;
 
@@ -128,9 +128,9 @@ export function AppTitleBar({
       data-theme-role="titlebar"
       data-window-occludes-desktop={windowState.maximized || windowState.fullscreen}
     >
-      <div className="flex min-w-0 items-center px-2.5">
+      <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
-        <div data-tauri-drag-region data-titlebar-brand="true" aria-label={appName} className="flex h-full min-w-0 items-center gap-2 pr-3">
+        <div data-tauri-drag-region data-titlebar-brand="true" className="flex h-full items-center gap-2 pr-3">
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandMarkClassName}>
             <img src={`${import.meta.env.BASE_URL}logo.svg`} alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
           </span>

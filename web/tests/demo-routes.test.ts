@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { demoLinkParameters, demoPageFromHash, demoRunModeFromHash } from '../../marketing/demo/routes';
 
 describe('demo deep links', () => {
@@ -24,5 +25,10 @@ describe('demo deep links', () => {
     expect(demoLinkParameters('#contexts?tab=mcp').get('tab')).toBe('mcp');
     expect(demoLinkParameters('#run-mode-management?template=default-lightweight').get('template')).toBe('default-lightweight');
     expect(demoPageFromHash('#unknown')).toMatchObject({ taskId: 'unknown' });
+  });
+  it('hides requirements management the same way as the default channel', () => {
+    const source = readFileSync('marketing/demo/DemoApp.tsx', 'utf8');
+    const flags = source.match(/showMulticaTaskManagement=\{false\}/g) ?? [];
+    expect(flags).toHaveLength(2);
   });
 });

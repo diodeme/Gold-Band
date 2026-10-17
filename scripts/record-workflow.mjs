@@ -30,7 +30,9 @@ const transitionMs = before ? BEFORE_CAMERA_TRANSITION_MS : after ? AFTER_CAMERA
 function browser(...args) {
   const path = resolve(attachments, 'browser-response.json');
   const fd = openSync(path, 'w');
-  try { execFileSync(process.env.AGENT_BROWSER_BIN || 'agent-browser', ['--session', session, '--json', ...args], { windowsHide: true, timeout: 30000, stdio: ['ignore', fd, 'inherit'] }); }
+  const bin = process.env.AGENT_BROWSER_BIN || 'agent-browser';
+  const nodeScript = bin.endsWith('.js');
+  try { execFileSync(nodeScript ? process.execPath : bin, [...(nodeScript ? [bin] : []), '--session', session, '--json', ...args], { windowsHide: true, timeout: 30000, stdio: ['ignore', fd, 'inherit'] }); }
   catch (error) { throw new Error(`Browser command ${JSON.stringify(args)} failed: ${readFileSync(path, 'utf8')}`, { cause: error }); }
   finally { closeSync(fd); }
   const response = JSON.parse(readFileSync(path, 'utf8'));

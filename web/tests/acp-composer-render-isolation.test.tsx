@@ -602,6 +602,42 @@ describe('ACP composer render isolation', () => {
     }
   });
 
+  it('joins the read-only demo composer to the visible session info tab', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={{ ...completedSession(), sessionElapsedSeconds: 62 }}
+              projectId="project-render"
+              taskId="task-render"
+              runId="run-render"
+              roundId="round-render"
+              nodeId="node-render"
+              attemptId="attempt-render"
+              readOnly
+              showDisabledComposer
+              showBranchControl={false}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+      });
+
+      expect(container.querySelector('[data-acp-session-info="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-acp-session-info-connector="true"]')).not.toBeNull();
+      const promptInput = container.querySelector('[data-slot="prompt-input"]');
+      expect(promptInput?.classList.contains('rounded-tl-none')).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps the conversation shell mounted when an established session payload is temporarily absent', async () => {
     const container = document.createElement('div');
     document.body.append(container);

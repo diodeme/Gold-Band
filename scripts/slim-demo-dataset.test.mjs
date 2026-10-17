@@ -61,6 +61,16 @@ test('sessions advertise an empty workspace listing instead of dropped file tree
   }
 });
 
+test('the final acceptance node omits the later user follow-up', () => {
+  const dataset = read('dataset.json');
+  const session = dataset.sessions.find((item) => item.nodeId === 'd18-chapter-final-accept' && item.branchId === 'root');
+  assert.ok(session, 'expected the final acceptance session');
+  const phrase = '现在用户想要使用的流程是怎样的？';
+  const pages = read(session.path).pages.flatMap((page) => read(page.path));
+  assert.equal(pages.some((event) => typeof event.content === 'string' && event.content.includes(phrase)), false);
+  assert.ok(pages.length > 0);
+});
+
 test('message pages carry the tool card titles the demo shows without event payloads', () => {
   const dataset = read('dataset.json');
   const pages = dataset.sessions.flatMap((session) => read(session.path).pages.map((page) => read(page.path)));

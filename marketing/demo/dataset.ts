@@ -2,7 +2,7 @@ import type { RuntimeApi } from '@/api/client';
 import type { AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, ConversationRunVm, ConversationSessionTargetVm, TurnFileChangeSetVm, FileComparisonVm, WorkspaceFileSnapshotVm } from '@/types';
 import { cursorSequence, missing, pageLimit, pageSession, sessionIdentity } from './history-query';
 import { includesDemoSession, selectDemoSessions } from './session-selection';
-import { sha256Hex } from '@/lib/sha256';
+import { sha256Hex } from '../shared/sha256';
 
 export const REAL_PROJECT_ID = 'e-projects-code-ai-ji--a40d4379';
 type Resource = { path: string; byteLength: number; sha256: string };
@@ -161,8 +161,8 @@ export function createDatasetReader(base: string, fetcher: typeof fetch = fetch)
       const entry = await findAttachment(locator, `attachments/${attachment.relativePath}`);
       return { locator: { projectId: locator.projectId, canonicalPath: entry.canonicalPath, relativePath: attachment.relativePath, scope: 'workspace' }, target: null, externalAccessGrant: null };
     },
-    async readFileResource(projectId, path) {
-      if (projectId !== (await dataset()).projectId) missing({ projectId });
+    async readFileResource(root, path) {
+      if (root.projectId !== (await dataset()).projectId) missing({ projectId: root.projectId });
       const match = /^\/demo-history\/(sessions\/[a-f0-9]{24})\/files\/(.+)$/.exec(path);
       if (!match) missing({ path });
       const entry = await attachment((await sessionResources(match[1])).directory, match[2]);

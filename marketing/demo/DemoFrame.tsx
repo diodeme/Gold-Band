@@ -10,7 +10,10 @@ export function DemoFrame({ children, clientRef }: { children: ReactNode; client
       <ResizablePanel id="demo-left-margin" defaultSize="2%" minSize={0} />
       <ResizableHandle aria-label={t('demo.resizeWindow')} className="demo-window-edge" />
       <ResizablePanel id="demo-client" defaultSize="96%" minSize="320px">
-        <div ref={clientRef} className="demo-client" data-demo-client="true">{children}</div>
+        <div ref={clientRef} className="demo-client" data-demo-client="true">
+          {children}
+          <div id="gold-band-overlay-portal-host" data-overlay-portal-host="true" />
+        </div>
       </ResizablePanel>
       <ResizableHandle aria-label={t('demo.resizeWindow')} className="demo-window-edge" />
       <ResizablePanel id="demo-right-margin" defaultSize="2%" minSize={0} />

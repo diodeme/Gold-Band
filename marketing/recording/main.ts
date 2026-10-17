@@ -11,7 +11,7 @@ const options = new URLSearchParams(location.search);
 const language: Language = options.get('language') === 'en' ? 'en' : 'zh';
 const scene = options.get('scene') || 'after';
 const preferences = (await browserApi.getAppBootstrap()).preferences;
-await browserApi.saveDesktopPreferences({ ...preferences.appearance, colorScheme: options.get('theme') === 'light' ? 'light' : 'dark' }, preferences.personalization, language === 'en' ? 'en' : 'zh-cn', preferences.useLocalClaude, preferences.verboseLogging);
+await browserApi.saveDesktopPreferences({ ...preferences.appearance, colorScheme: options.get('theme') === 'light' ? 'light' : 'dark' }, preferences.personalization, language === 'en' ? 'en' : 'zh-cn', preferences.useLocalClaude, preferences.verboseLogging, preferences.browser);
 let advance: (step: number | WorkflowCue) => void | Promise<void> = step => browserApi.scenario!.advance(step as WorkflowCue);
 if (scene !== 'during' && scene !== 'after') {
 const base = await browserApi.getConversationRun('default', 'mock-task', 'run-052');

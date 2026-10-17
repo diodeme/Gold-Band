@@ -168,5 +168,6 @@
 - 主题 recipe 生成的展示声明必须位于 CSS `components` layer，作为主题 role 的组件默认值；不得使用未分层的高优先级选择器或 `!important` 越过组件显式 utility/variant。桌面端、官网和内部 rrweb 演示都不读取系统 `prefers-reduced-motion`。主题 motion token 只决定过渡时长，不能因系统关闭窗口动画把 role 的 animation 或 transition 压成 0。页面隐藏时暂停回放不受此限制。
 - 组件覆盖只用于真实变体、交互状态和组件拓扑，例如 focus ring、单边 separator、joined control、透明 variant，以及显式声明的阴影、圆角和动效；禁止在组件中按 `themeId` 特判视觉样式。
 - 迁移现有主题时，必须由各主题 recipe 明确声明需要保持的边框、圆角、阴影、颜色、材质、状态和动效，不得把旧主题外观硬编码回共享组件。
-- 模态浮层挂载到 `body` 下不裁剪、不建立新定位上下文的专用 host；菜单的定位节点只负责定位和交互，视觉动画放在内部视觉层。契约见 `web/tests/overlay-portal-and-menu-motion.test.ts`。
+- Dialog、Sheet、AlertDialog 必须 Portal 到专用 overlay host；host 不得包含非 `none` 的 `transform`、`filter`、`backdrop-filter`、`contain`，也不得使用会裁剪后代的 `overflow`。桌面端 host 在 `body`。官网内嵌 Demo 的 host 在客户端窗口内，由该窗口承担 fixed 包含块，抽屉和菜单停在窗口里。抽屉宽度、上限和拖拽按这个包含块测量，不用 `window.innerWidth` 或 `vw`。契约见 `web/tests/overlay-portal-and-menu-motion.test.ts`。
+- Dropdown Menu、Context Menu 的 Radix Content/SubContent 定位节点只负责定位、焦点和外部交互事件；位移、缩放、淡入淡出、材质、圆角和内容裁剪必须放在其内部视觉层，禁止在定位节点上施加开合 transform 动画或 filter。
 - 验收时必须检查生成 CSS 的 layer 与顺序，并至少在两个主题下通过 computed style 覆盖代表性静态态、hover/focus 态、outline 按钮、input 和 joined/split control，确认主题默认值生效且组件显式变体可覆盖。

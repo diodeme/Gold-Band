@@ -1,4 +1,5 @@
-import type { ConversationPage, ConversationRunModeVm, ConversationSessionTargetVm } from '@/types';
+import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
+import type { ConversationPage, ConversationRunModeVm } from '@/types';
 import { DEMO_PROJECT_ID, DEMO_RUN_ID, DEMO_TASKS } from './fixtures';
 
 export function demoPageFromHash(hash: string): ConversationPage {
@@ -16,7 +17,7 @@ export function demoLinkParameters(hash: string) {
   return new URLSearchParams(hash.split('?')[1] ?? '');
 }
 
-export function demoHashForPage(page: ConversationPage, session?: ConversationSessionTargetVm) {
+export function demoHashForPage(page: ConversationPage, session?: ConversationSessionLocator) {
   if (page.kind === 'conversation-run') {
     const params = new URLSearchParams({ project: page.projectId, run: page.runId });
     if (session) {
@@ -28,6 +29,22 @@ export function demoHashForPage(page: ConversationPage, session?: ConversationSe
   }
   if (page.kind === 'scheduled-task-detail') return `${page.kind}?${new URLSearchParams({ id: page.scheduledTaskId })}`;
   return page.kind;
+}
+
+export function embeddedDemoParentHref(parentHref: string, demoHash: string): string | null {
+  const url = new URL(parentHref);
+  if (!url.pathname.replace(/\/+$/, '').endsWith('/demo')) return null;
+  const hash = demoHash.startsWith('#') ? demoHash : `#${demoHash}`;
+  return `${url.origin}${url.pathname}${url.search}${hash}`;
+}
+
+export function publishEmbeddedDemoHash(demoHash: string) {
+  if (typeof window === 'undefined' || window.parent === window) return;
+  let parentHref: string;
+  try { parentHref = window.parent.location.href; } catch { return; }
+  const next = embeddedDemoParentHref(parentHref, demoHash);
+  if (!next || next === parentHref) return;
+  window.parent.history.replaceState(null, '', next);
 }
 
 export function demoRunModeFromHash(hash: string): ConversationRunModeVm {

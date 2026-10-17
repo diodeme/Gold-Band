@@ -5,18 +5,23 @@ import { Loader2, Pause, Play, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { copy, type ChapterId, type Language } from './content';
-import { cameraAt, ReplayController, type ReplayView } from './replay-controller';
+import { cameraAt, replayFramePaint, replayMouseTransform, replayStagePaint, ReplayController, type ReplayView } from './replay-controller';
+import { watchReplayIcons } from './replay-icons';
 import { loadSceneEvents, loadSceneManifest } from './replay-assets';
 import { MOBILE_REPLAY_WIDTH, playbackPosition, selectSceneAsset, type SceneAsset } from './replay-model';
 import 'rrweb/dist/style.css';
 
 export function createSceneEngine(data: unknown, source: SceneAsset, root: HTMLDivElement) {
   // Virtual fast-forward drops reused nodes when these scenes return to chat.
-  return new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
+  const replayer = new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
     insertStyleRules: source.scene === 'before' ? ['html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]), html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]) * { animation: none !important; }']
       : source.scene === 'after' ? ['html.rrweb-paused :is([data-slot="sheet-content"], [data-slot="sheet-overlay"])[data-state="open"] { animation: none !important; }']
       : source.scene === 'personalize' ? ['html.rrweb-paused [data-slot="popover-content"][data-state="open"] { animation: none !important; }'] : [],
   });
+  // Recorded agent icons are 16px PNG snapshots. Draw the original SVG instead.
+  const sharpen = () => watchReplayIcons(replayer.iframe);
+  replayer.on('fullsnapshot-rebuilded', sharpen);
+  return replayer;
 }
 type Props = { language: Language; chapter: ChapterId; autoPlay: boolean; theme?: 'dark' | 'light' };
 export default function Replay(props: Props) {
@@ -44,7 +49,29 @@ function SceneReplay({ language, chapter, autoPlay, theme = 'dark' }: Props) {
       paint(source, rawMs, reduced) {
         root.style.width = `${source.width}px`; root.style.height = `${source.height}px`;
         const camera = cameraAt(source, rawMs, size.width, size.height, size.width < MOBILE_REPLAY_WIDTH, reduced);
-        root.style.transform = `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`;
+        root.style.transform = replayStagePaint(camera).transform;
+        root.style.removeProperty('zoom');
+        const scale = camera.scale || 1;
+        const frame = replayFramePaint(source.width, source.height, scale);
+        const wrapper = root.querySelector<HTMLElement>('.replayer-wrapper');
+        const iframe = root.querySelector('iframe');
+        if (wrapper) {
+          wrapper.style.width = frame.width;
+          wrapper.style.height = frame.height;
+          wrapper.style.overflow = 'visible';
+        }
+        if (iframe) {
+          iframe.style.width = frame.width;
+          iframe.style.height = frame.height;
+          iframe.style.transform = 'none';
+          iframe.style.zoom = frame.zoom;
+          iframe.contentDocument?.documentElement.style.removeProperty('zoom');
+        }
+        const mouse = root.querySelector<HTMLElement>('.replayer-mouse');
+        if (mouse) {
+          mouse.style.transformOrigin = '0 0';
+          mouse.style.transform = replayMouseTransform(mouse.style.left, mouse.style.top, scale);
+        }
         container.dataset.rawMs = String(rawMs);
         container.dataset.step = playbackPosition(source, rawMs).stepId;
         container.dataset.language = source.language; container.dataset.theme = source.theme;

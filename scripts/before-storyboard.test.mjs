@@ -3,6 +3,43 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { measureBeforeCamera, beforeNavigationVisible, beforeSourceStoryboard } from './before-source-storyboard.mjs';
 
+test('role and skill stay zoomed: tab, then content, then the other tab', () => {
+  const log = [];
+  beforeSourceStoryboard({
+    language: 'en', capture: false,
+    browser: (...args) => log.push(['browser', ...args]),
+    evaluate: () => true, screenshot: () => {},
+    camera: (id) => log.push(['camera', id]),
+  });
+  const cameraAt = id => log.findIndex(entry => entry[0] === 'camera' && entry[1] === id);
+  const clickAt = label => log.findIndex(entry => entry[0] === 'browser' && entry[1] === 'find' && entry[6] === label);
+  const roleTab = cameraAt('role-tab');
+  const roleBody = cameraAt('roles-skills');
+  const skillTab = cameraAt('skill-tab');
+  const skillBody = cameraAt('skills');
+  assert(roleTab >= 0 && roleTab < clickAt('Custom Roles') && clickAt('Custom Roles') < roleBody);
+  assert(roleBody < skillTab && skillTab < clickAt('SKILLs') && clickAt('SKILLs') < skillBody);
+  assert(!log.slice(roleBody + 1, skillTab).some(entry => entry[0] === 'camera' && entry[1] === 'overview'));
+});
+
+test('role and skill tabs frame the tab list, not the whole management page', () => {
+  const dom = new JSDOM('<div id="page"><div role="tablist" id="tabs"><button role="tab" id="role">Role</button><button role="tab" id="skill">SKILLs</button></div><div id="panel"></div></div>');
+  const rectangle = (id, x, y, width, height) => {
+    dom.window.document.getElementById(id).getBoundingClientRect = () => ({ x, y, width, height, right: x + width, bottom: y + height });
+  };
+  rectangle('page', 240, 40, 1160, 820);
+  rectangle('tabs', 260, 72, 280, 36);
+  rectangle('role', 260, 72, 64, 36);
+  rectangle('skill', 400, 72, 72, 36);
+  Object.assign(globalThis, { document: dom.window.document, innerWidth: 1440, innerHeight: 900 });
+  try {
+    const role = measureBeforeCamera('role-tab').desktop;
+    const skill = measureBeforeCamera('skill-tab').desktop;
+    assert(role.width < 0.3 && skill.width < 0.3, 'The tab list must stay zoomed instead of framing the whole page');
+    assert.equal(role.x, skill.x);
+  } finally { dom.window.close(); delete globalThis.document; delete globalThis.innerWidth; delete globalThis.innerHeight; }
+});
+
 test('before storyboard selects the actual localized Skill tab in both languages', () => {
   for (const [language, label] of [['zh', 'SKILL 管理'], ['en', 'SKILLs']]) {
     const actions = [];

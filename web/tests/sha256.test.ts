@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sha256Hex } from '@/lib/sha256';
+import { sha256Hex } from '../../marketing/shared/sha256';
 
 const ABC = new TextEncoder().encode('abc').buffer as ArrayBuffer;
 const ABC_SHA256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';

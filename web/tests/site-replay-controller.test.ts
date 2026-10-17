@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cameraAt, paceAt, ReplayController, type ReplayEngine } from '../../marketing/site/replay-controller';
+import { cameraAt, paceAt, replayFramePaint, replayStagePaint, REPLAY_PACE_SCALE, ReplayController, type ReplayEngine } from '../../marketing/site/replay-controller';
 import { SceneAssetSchema } from '../../marketing/site/replay-model';
 
 function asset(theme: 'light' | 'dark' = 'dark') {
@@ -31,7 +31,7 @@ describe('independent replay lifetime', () => {
     expect(h.dependencies.create).toHaveBeenCalledWith({}, asset());
     h.setTime(250); h.tick();
     expect(h.dependencies.paint).toHaveBeenLastCalledWith(asset(), 250, false);
-    expect(h.engines[0].setConfig).toHaveBeenLastCalledWith({ speed: 1.25 });
+    expect(h.engines[0].setConfig).toHaveBeenLastCalledWith({ speed: 1.25 * REPLAY_PACE_SCALE });
     h.controller.setPlaying(false); h.controller.setEnvironment({ hidden: true }); h.controller.setEnvironment({ hidden: false });
     expect(h.frames.size).toBe(0);
     h.controller.setPlaying(true); expect(h.frames.size).toBe(1);
@@ -83,7 +83,10 @@ describe('camera and pace tracks', () => {
     const middle = cameraAt(source, 700, 720, 450, false, false);
     const end = cameraAt(source, 900, 720, 450, false, false);
     expect(start.scale).toBe(0.5); expect(end.scale).toBe(1); expect(middle.scale).toBe(0.75);
-    expect(end.x).toBe(-720); expect(paceAt(source, 500)).toBe(1.5);
+    expect(end.x).toBe(-720); expect(paceAt(source, 500)).toBe(1.5 * REPLAY_PACE_SCALE);
+    expect(replayStagePaint(end)).toEqual({ transform: 'translate(-720px, 0px)' });
+    expect(replayFramePaint(1440, 900, 0.5)).toEqual({ width: '1440px', height: '900px', zoom: '0.5' });
+    expect(replayFramePaint(1440, 900, start.scale).zoom).toBe('0.5');
     expect(cameraAt(source, 500, 720, 450, false, true)).toEqual(end);
   });
 });

@@ -13,9 +13,31 @@ type Transform = { x: number; y: number; scale: number };
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const mix = (a: number, b: number, fraction: number) => a + (b - a) * fraction;
 
+// Storyboard rates stay relative. This one factor speeds every chapter together.
+export const REPLAY_PACE_SCALE = 1.5;
+
 export function paceAt(asset: SceneAsset, rawMs: number) {
   const segment = asset.pace.find(point => rawMs < point.endMs) ?? asset.pace.at(-1)!;
-  return mix(segment.fromRate, segment.toRate, clamp((rawMs - segment.startMs) / (segment.endMs - segment.startMs), 0, 1));
+  const rate = mix(segment.fromRate, segment.toRate, clamp((rawMs - segment.startMs) / (segment.endMs - segment.startMs), 0, 1));
+  return rate * REPLAY_PACE_SCALE;
+}
+
+// The stage only moves. Zoom lives on the iframe element so the recorded
+// viewport stays width×height; resizing that viewport and zooming the document
+// scales the page height a second time and leaves an empty band.
+export function replayStagePaint(camera: Transform) {
+  return { transform: `translate(${camera.x}px, ${camera.y}px)` };
+}
+
+export function replayFramePaint(width: number, height: number, scale: number) {
+  const safe = scale || 1;
+  return { width: `${width}px`, height: `${height}px`, zoom: String(safe) };
+}
+
+export function replayMouseTransform(left: string, top: string, scale: number) {
+  const x = Number.parseFloat(left) || 0;
+  const y = Number.parseFloat(top) || 0;
+  return `translate(${(scale - 1) * x}px, ${(scale - 1) * y}px) scale(${scale})`;
 }
 
 function frameTransform(frame: CameraKeyframe, asset: SceneAsset, width: number, height: number): Transform {

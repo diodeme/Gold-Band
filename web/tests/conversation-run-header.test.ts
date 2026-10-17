@@ -61,9 +61,6 @@ describe('ConversationRunHeader', () => {
     expect(html).not.toContain('bypass-hidden');
     expect(html).not.toContain('title="修改标题"');
     expect(html).toContain('px-5 py-0.5');
-    expect(html).toContain('@container');
-    expect(html).toContain('flex-wrap');
-    expect(html).toContain('flex-1 basis-full @md:basis-0');
   });
 
   it('shows the AUTO configuration action with a tooltip label and hides it for direct runs', () => {

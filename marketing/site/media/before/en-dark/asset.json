@@ -5,10 +5,10 @@
   "theme": "dark",
   "rrwebVersion": "2.1.1",
   "eventsUrl": "/media/before/en-dark/events.json",
-  "sha256": "35071561898838701afccbf42ad479129d3020e0138cf8ee82d673acc016be01",
-  "byteLength": 866702,
-  "eventCount": 179,
-  "durationMs": 38637,
+  "sha256": "b4d359f7daab4448d466c4e6d7222a69369ec0453b8a93e5321ac267b6d92f57",
+  "byteLength": 903934,
+  "eventCount": 186,
+  "durationMs": 48712,
   "width": 1440,
   "height": 900,
   "poster": "/media/before/en-dark/establish.png",
@@ -16,43 +16,43 @@
     {
       "stepId": "establish",
       "startMs": 0,
-      "endMs": 3806,
+      "endMs": 3944,
       "poster": "/media/before/en-dark/establish.png"
     },
     {
       "stepId": "agent",
-      "startMs": 3806,
-      "endMs": 9230,
+      "startMs": 3944,
+      "endMs": 13031,
       "poster": "/media/before/en-dark/agent.png"
     },
     {
       "stepId": "roles-skills",
-      "startMs": 9230,
-      "endMs": 21804,
+      "startMs": 13031,
+      "endMs": 30559,
       "poster": "/media/before/en-dark/roles-skills.png"
     },
     {
       "stepId": "direct",
-      "startMs": 21804,
-      "endMs": 25926,
+      "startMs": 30559,
+      "endMs": 34668,
       "poster": "/media/before/en-dark/direct.png"
     },
     {
       "stepId": "workflow",
-      "startMs": 25926,
-      "endMs": 30362,
+      "startMs": 34668,
+      "endMs": 39368,
       "poster": "/media/before/en-dark/workflow.png"
     },
     {
       "stepId": "auto",
-      "startMs": 30362,
-      "endMs": 34555,
+      "startMs": 39368,
+      "endMs": 43602,
       "poster": "/media/before/en-dark/auto.png"
     },
     {
       "stepId": "workflow-ready",
-      "startMs": 34555,
-      "endMs": 38637,
+      "startMs": 43602,
+      "endMs": 48712,
       "poster": "/media/before/en-dark/workflow-ready.png"
     }
   ],
@@ -70,7 +70,7 @@
         "transitionMs": 0
       },
       {
-        "timeMs": 3301,
+        "timeMs": 3363,
         "rect": {
           "x": 0.37922092013888886,
           "y": 0.5805555555555556,
@@ -81,7 +81,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 6823,
+        "timeMs": 7047,
         "rect": {
           "x": 0,
           "y": 0,
@@ -92,7 +92,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 8722,
+        "timeMs": 8271,
+        "rect": {
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 12358,
         "rect": {
           "x": 0.5034722222222222,
           "y": 0.3,
@@ -103,29 +114,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 12066,
+        "timeMs": 16390,
         "rect": {
-          "x": 0,
-          "y": 0,
-          "width": 1,
-          "height": 1
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
         },
         "zoom": 1,
         "transitionMs": 450
       },
       {
-        "timeMs": 13261,
-        "rect": {
-          "x": 0.19652777777777777,
-          "y": 0.28888888888888886,
-          "width": 0.27106119791666666,
-          "height": 0.2311111111111111
-        },
-        "zoom": 1,
-        "transitionMs": 450
-      },
-      {
-        "timeMs": 16552,
+        "timeMs": 20665,
         "rect": {
           "x": 0.19652777777777777,
           "y": 0.28888888888888886,
@@ -136,7 +136,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 19984,
+        "timeMs": 24338,
+        "rect": {
+          "x": 0.19652777777777777,
+          "y": 0.28888888888888886,
+          "width": 0.27106119791666666,
+          "height": 0.2311111111111111
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 28265,
         "rect": {
           "x": 0,
           "y": 0,
@@ -147,7 +158,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 21298,
+        "timeMs": 29975,
         "rect": {
           "x": 0.36880425347222223,
           "y": 0.3616666666666667,
@@ -158,7 +169,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 24281,
+        "timeMs": 32768,
         "rect": {
           "x": 0,
           "y": 0,
@@ -169,7 +180,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 25422,
+        "timeMs": 34056,
         "rect": {
           "x": 0.34305555555555556,
           "y": 0.6255555555555555,
@@ -180,7 +191,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 28557,
+        "timeMs": 37295,
         "rect": {
           "x": 0,
           "y": 0,
@@ -191,7 +202,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 29858,
+        "timeMs": 38778,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.4866666666666667,
@@ -202,7 +213,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 33232,
+        "timeMs": 42008,
         "rect": {
           "x": 0,
           "y": 0,
@@ -213,7 +224,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 34065,
+        "timeMs": 43006,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.3616666666666667,
@@ -224,7 +235,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 36584,
+        "timeMs": 46209,
         "rect": {
           "x": 0,
           "y": 0,
@@ -248,7 +259,7 @@
         "transitionMs": 0
       },
       {
-        "timeMs": 3301,
+        "timeMs": 3363,
         "rect": {
           "x": 0.37922092013888886,
           "y": 0.5805555555555556,
@@ -259,7 +270,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 6823,
+        "timeMs": 7047,
         "rect": {
           "x": 0,
           "y": 0,
@@ -270,7 +281,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 8722,
+        "timeMs": 8271,
+        "rect": {
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 12358,
         "rect": {
           "x": 0.5034722222222222,
           "y": 0.3,
@@ -281,29 +303,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 12066,
+        "timeMs": 16390,
         "rect": {
-          "x": 0,
-          "y": 0,
-          "width": 1,
-          "height": 1
+          "x": 0.18472222222222223,
+          "y": 0.09888888888888887,
+          "width": 0.1428493923611111,
+          "height": 0.07555555555555556
         },
         "zoom": 1,
         "transitionMs": 450
       },
       {
-        "timeMs": 13261,
-        "rect": {
-          "x": 0.19652777777777777,
-          "y": 0.28888888888888886,
-          "width": 0.27106119791666666,
-          "height": 0.2311111111111111
-        },
-        "zoom": 1,
-        "transitionMs": 450
-      },
-      {
-        "timeMs": 16552,
+        "timeMs": 20665,
         "rect": {
           "x": 0.19652777777777777,
           "y": 0.28888888888888886,
@@ -314,7 +325,18 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 19984,
+        "timeMs": 24338,
+        "rect": {
+          "x": 0.19652777777777777,
+          "y": 0.28888888888888886,
+          "width": 0.27106119791666666,
+          "height": 0.2311111111111111
+        },
+        "zoom": 1,
+        "transitionMs": 450
+      },
+      {
+        "timeMs": 28265,
         "rect": {
           "x": 0,
           "y": 0,
@@ -325,7 +347,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 21298,
+        "timeMs": 29975,
         "rect": {
           "x": 0.36880425347222223,
           "y": 0.3616666666666667,
@@ -336,7 +358,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 24281,
+        "timeMs": 32768,
         "rect": {
           "x": 0,
           "y": 0,
@@ -347,7 +369,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 25422,
+        "timeMs": 34056,
         "rect": {
           "x": 0.34305555555555556,
           "y": 0.6255555555555555,
@@ -358,7 +380,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 28557,
+        "timeMs": 37295,
         "rect": {
           "x": 0,
           "y": 0,
@@ -369,7 +391,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 29858,
+        "timeMs": 38778,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.4866666666666667,
@@ -380,7 +402,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 33232,
+        "timeMs": 42008,
         "rect": {
           "x": 0,
           "y": 0,
@@ -391,7 +413,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 34065,
+        "timeMs": 43006,
         "rect": {
           "x": 0.31145833333333334,
           "y": 0.3616666666666667,
@@ -402,7 +424,7 @@
         "transitionMs": 450
       },
       {
-        "timeMs": 36584,
+        "timeMs": 46209,
         "rect": {
           "x": 0,
           "y": 0,
@@ -417,43 +439,43 @@
   "pace": [
     {
       "startMs": 0,
-      "endMs": 3806,
+      "endMs": 3944,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 3806,
-      "endMs": 9230,
+      "startMs": 3944,
+      "endMs": 13031,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 9230,
-      "endMs": 21804,
+      "startMs": 13031,
+      "endMs": 30559,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 21804,
-      "endMs": 25926,
+      "startMs": 30559,
+      "endMs": 34668,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 25926,
-      "endMs": 30362,
+      "startMs": 34668,
+      "endMs": 39368,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 30362,
-      "endMs": 34555,
+      "startMs": 39368,
+      "endMs": 43602,
       "fromRate": 1,
       "toRate": 1
     },
     {
-      "startMs": 34555,
-      "endMs": 38637,
+      "startMs": 43602,
+      "endMs": 48712,
       "fromRate": 1,
       "toRate": 1
     }

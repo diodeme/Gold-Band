@@ -601,7 +601,6 @@ export function ConversationRunPage({
             canViewWorkflow={canViewWorkflow}
             canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
-            readOnly={readOnly}
             onEditWorkflow={handleEditWorkflow}
             onConfigureAuto={readOnly ? undefined : handleConfigureAuto}
             readOnly={readOnly}

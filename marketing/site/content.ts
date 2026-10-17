@@ -30,7 +30,8 @@ export const copy = {
     play: '播放演示', loading: '正在加载演示', retry: '重新加载', error: '演示暂时无法加载',
     interactive: '亲手试试', recording: '观看演示', preview: '交互预览', resize: '调整预览宽度',
     dark: '深色', light: '浅色', system: '跟随系统', appearance: '外观', openDemo: '打开 Demo', font: '字体', defaultFont: '默认', monoFont: '等宽', reset: '重置预览',
-    placeholder: '正在准备中', docsText: '文档正在整理，当前可在 GitHub 查看安装与使用说明。', demoText: '更多示例正在准备中。首页可查看产品演示。',
+    homeTitle: '敬请期待', homeText: '产品页面正在准备。可以先打开 Demo。',
+    placeholder: '正在准备中', docsText: '文档正在整理，当前可在 GitHub 查看安装与使用说明。', demoText: '更多示例正在准备中。可以打开 Demo 查看会话。',
     back: '返回首页', missing: '页面不存在',
     chapters: [
       { id: 'before', eyebrow: '会话前', title: '配置你的 Harness。', body: '选择 Agent，组合角色与 Skill，让 Direct、Workflow 或 AUTO 适合这次任务。', points: ['Agent、角色与 Skill', '多 Agent 管理与同步', 'Direct / Workflow / AUTO'] },
@@ -47,7 +48,8 @@ export const copy = {
     play: 'Play demo', loading: 'Loading demo', retry: 'Retry', error: 'Demo could not be loaded',
     interactive: 'Try it yourself', recording: 'Watch demo', preview: 'Interactive preview', resize: 'Resize preview',
     dark: 'Dark', light: 'Light', system: 'System', appearance: 'Appearance', openDemo: 'Open Demo', font: 'Font', defaultFont: 'Default', monoFont: 'Monospace', reset: 'Reset preview',
-    placeholder: 'Coming soon', docsText: 'Documentation is being prepared. Installation and usage instructions are available on GitHub.', demoText: 'More examples are on the way. Explore the product on the home page.',
+    homeTitle: 'Coming soon', homeText: 'The product pages are being prepared. The demo is available now.',
+    placeholder: 'Coming soon', docsText: 'Documentation is being prepared. Installation and usage instructions are available on GitHub.', demoText: 'More examples are on the way. Open the demo to look at a session.',
     back: 'Back to home', missing: 'Page not found',
     chapters: [
       { id: 'before', eyebrow: 'Before the session', title: 'Configure your harness.', body: 'Choose an agent, combine roles and skills, and use Direct, Workflow or AUTO for the task.', points: ['Agents, roles and skills', 'Multi-agent management and sync', 'Direct / Workflow / AUTO'] },

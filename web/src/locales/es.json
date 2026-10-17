@@ -2007,6 +2007,7 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
     "pushTargetRemote": "Remoto de destino",
     "pushPreparing": "Preparando el destino del envío…",
     "pushSetUpstream": "Establecer la rama de destino como upstream tras publicarla correctamente.",

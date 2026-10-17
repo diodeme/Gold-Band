@@ -102,7 +102,7 @@ export function SourceControlSyncActions({ projectId, workspacePath, snapshot, b
           <Button type="button" size="xs" variant="ghost" className="gap-1 px-1 text-muted-foreground" disabled={busy || locked || remotesLoading || remotesError || !canSync} aria-label={syncLabel} onClick={() => openAction(syncAction)}>
             {busyActionKind === syncAction ? <LoaderCircle className="size-3 animate-spin" /> : null}
             {behind > 0 ? <span className="tabular-nums" aria-hidden="true">↓{behind}</span> : null}
-            {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑</span>}
+            {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑{t('sourceControl.newBranchIndicator')}</span>}
           </Button>
         </TooltipTrigger>
         <TooltipContent>{remoteStateLabel ?? syncLabel}</TooltipContent>

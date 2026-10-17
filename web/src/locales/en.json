@@ -2007,6 +2007,7 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
     "pushTargetRemote": "Target remote",
     "pushPreparing": "Preparing push target…",
     "pushSetUpstream": "Set the target branch as upstream after publishing successfully.",

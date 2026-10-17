@@ -2007,6 +2007,7 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
     "pushTargetRemote": "目標遠端儲存庫",
     "pushPreparing": "正在準備推送目標…",
     "pushSetUpstream": "發布成功後，將目標分支設為上游。",

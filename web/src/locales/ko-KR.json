@@ -2007,6 +2007,7 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
     "pushTargetRemote": "대상 원격 저장소",
     "pushPreparing": "푸시 대상 준비 중…",
     "pushSetUpstream": "게시가 완료되면 대상 브랜치를 업스트림으로 설정합니다.",

@@ -2007,6 +2007,7 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
     "pushTargetRemote": "送信先リモート",
     "pushPreparing": "プッシュ先を準備中…",
     "pushSetUpstream": "公開に成功したら、送信先ブランチを上流に設定します。",

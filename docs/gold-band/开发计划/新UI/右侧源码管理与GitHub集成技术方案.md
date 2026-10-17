@@ -759,7 +759,7 @@ type FileComparisonSource =
 
 ### 12.5 更改区
 
-仓库标题右侧使用动态同步按钮：`behind > 0` 时显示 `↓behind ↑ahead` 并执行 Pull，否则显示 `↑ahead` 并执行 Push；同步为零时禁用，未设置 upstream 时允许首次 Push。Fetch 保持独立，用于联网更新 remote refs。Push non-fast-forward 不自动触发 Pull，只展示结构化失败，由用户显式 Fetch、Pull、Push。按钮打开 typed 对话框并复用统一 operation 状态；Push 先按需解析目标，显示源分支与真实 remote/branch，只有没有 upstream 的首次发布才允许 remote 偏好决定目标。更改区工具栏不再重复展示同步文字按钮，仅保留右侧 `…`，承载全部暂存、全部取消暂存和保存为 stash。terminal operation 结果保留在 repository/workspace 会话中，跨 Tab 可见，直到用户关闭或下一次 operation 替换。
+仓库标题右侧使用动态同步按钮：`behind > 0` 时显示 `↓behind ↑ahead` 并执行 Pull，否则显示 `↑ahead` 并执行 Push；同步为零时禁用，未设置 upstream 时显示 `↑new` 并按原有可用条件允许首次 Push。`new` 由七语言共用的文案 key 提供且保持原文，不新增计数查询或状态。Fetch 保持独立，用于联网更新 remote refs。Push non-fast-forward 不自动触发 Pull，只展示结构化失败，由用户显式 Fetch、Pull、Push。按钮打开 typed 对话框并复用统一 operation 状态；Push 先按需解析目标，显示源分支与真实 remote/branch，只有没有 upstream 的首次发布才允许 remote 偏好决定目标。更改区工具栏不再重复展示同步文字按钮，仅保留右侧 `…`，承载全部暂存、全部取消暂存和保存为 stash。terminal operation 结果保留在 repository/workspace 会话中，跨 Tab 可见，直到用户关闭或下一次 operation 替换。
 
 Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移除远端已删除的分支记录”，并明确说明不会删除本地分支或工作区文件；接口仍使用 typed `prune: boolean`，不从文案反推行为。
 

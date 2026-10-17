@@ -707,6 +707,19 @@ describe('source control history cache presentation', () => {
 });
 
 describe('push target confirmation', () => {
+  it.each([
+    [false, '↑sourceControl.newBranchIndicator'],
+    [true, '↑2'],
+  ] as const)('shows the correct push indicator with upstream=%s without changing availability', async (upstream, indicator) => {
+    const view = await renderPushActions(upstream);
+    try {
+      const button = document.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.push"]')!;
+      expect(button.textContent).toBe(indicator);
+      expect(button.disabled).toBe(false);
+      expect(pushRuntime.prepare).not.toHaveBeenCalled();
+    } finally { await view.unmount(); }
+  });
+
   it('prepares only on demand, ignores remembered remote for upstream, and submits the exact confirmation', async () => {
     const request = deferredPush();
     pushRuntime.prepare.mockReturnValue(request.promise);

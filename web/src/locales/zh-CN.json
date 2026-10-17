@@ -2007,6 +2007,7 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
     "pushTargetRemote": "目标远程仓库",
     "pushPreparing": "正在准备推送目标…",
     "pushSetUpstream": "发布成功后，将目标分支设为上游。",

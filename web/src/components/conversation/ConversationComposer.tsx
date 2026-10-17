@@ -145,8 +145,7 @@ export function ConversationWorkspaceControl({
   const {
     valueRef,
     tooltipOpen,
-    showTooltipIfOverflowing,
-    showTooltipOnKeyboardFocus,
+    handleTooltipFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>({ always: variant === 'info' });
@@ -157,7 +156,6 @@ export function ConversationWorkspaceControl({
     ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
     : 'hover:bg-gold-surface-high/55 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55';
   const triggerEvents = {
-    onPointerEnter: showTooltipIfOverflowing,
     onPointerLeave: hideTooltip,
     onPointerDown: () => {
       selectionUsedPointerRef.current = true;
@@ -166,22 +164,20 @@ export function ConversationWorkspaceControl({
     onKeyDown: () => {
       selectionUsedPointerRef.current = false;
     },
-    onFocus: showTooltipOnKeyboardFocus,
+    onFocus: handleTooltipFocus,
     onBlur: hideTooltip,
   };
   const value = (
-    <TooltipTrigger asChild>
-      <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
-        <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
-        <span
-          ref={valueRef}
-          data-conversation-workspace-value="true"
-          className={cn('min-w-0 truncate', variant === 'info' && 'hidden @xs/conversation-context:inline')}
-        >
-          {selectedWorkspaceName}
-        </span>
+    <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
+      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
+      <span
+        ref={valueRef}
+        data-conversation-workspace-value="true"
+        className={cn('min-w-0 truncate', variant === 'info' && 'hidden @xs/conversation-context:inline')}
+      >
+        {selectedWorkspaceName}
       </span>
-    </TooltipTrigger>
+    </span>
   );
 
   return (
@@ -196,15 +192,19 @@ export function ConversationWorkspaceControl({
               hideTooltip();
             }}
           >
-            <SelectTrigger
-              ref={selectTriggerRef}
-              {...triggerEvents}
-              aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
-              data-context-control={variant === 'info' ? 'workspace' : undefined}
-              className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
-            >
-              {value}
-            </SelectTrigger>
+            <TooltipTrigger asChild>
+              <SelectTrigger
+                ref={selectTriggerRef}
+                data-slot="select-trigger"
+                data-state={selectOpen ? 'open' : 'closed'}
+                {...triggerEvents}
+                aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
+                data-context-control={variant === 'info' ? 'workspace' : undefined}
+                className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
+              >
+                {value}
+              </SelectTrigger>
+            </TooltipTrigger>
             <SelectContent
               position="popper"
               align="start"
@@ -227,15 +227,17 @@ export function ConversationWorkspaceControl({
             </SelectContent>
           </Select>
         ) : (
-          <div
-            {...triggerEvents}
-            tabIndex={0}
-            aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
-            data-context-control={variant === 'info' ? 'workspace' : undefined}
-            className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
-          >
-            {value}
-          </div>
+          <TooltipTrigger asChild>
+            <div
+              {...triggerEvents}
+              tabIndex={0}
+              aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
+              data-context-control={variant === 'info' ? 'workspace' : undefined}
+              className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
+            >
+              {value}
+            </div>
+          </TooltipTrigger>
         )}
         <TooltipContent
           side="top"

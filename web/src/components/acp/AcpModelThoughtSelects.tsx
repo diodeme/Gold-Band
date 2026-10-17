@@ -206,8 +206,7 @@ function AcpModelThoughtSelectsControl({
   const {
     valueRef,
     tooltipOpen,
-    showTooltipIfOverflowing,
-    showTooltipOnKeyboardFocus,
+    handleTooltipFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useAcpComposerConfigOverflowTooltip();
@@ -274,10 +273,9 @@ function AcpModelThoughtSelectsControl({
           <DropdownMenuTrigger
             disabled={disabled}
             className={cn(triggerClass, triggerClassName)}
-            onPointerEnter={showTooltipIfOverflowing}
             onPointerLeave={hideTooltip}
             onPointerDown={hideTooltip}
-            onFocus={showTooltipOnKeyboardFocus}
+            onFocus={handleTooltipFocus}
             onBlur={hideTooltip}
           >
             <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>

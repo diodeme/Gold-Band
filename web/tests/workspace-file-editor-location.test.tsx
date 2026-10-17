@@ -48,7 +48,10 @@ function markdownModeToggle(container: HTMLElement) {
 }
 
 describe('WorkspaceFileEditor target intent', () => {
-  it('lets document surfaces opt into the full available Markdown width', async () => {
+  it('uses the full available Markdown width by default', async () => {
+    const styles = readFileSync('web/src/styles.css', 'utf8');
+    const previewStyles = styles.match(/\.workspace-markdown-live-preview\s*\{([^}]+)\}/u)?.[1];
+    expect(previewStyles).toMatch(/--atomic-editor-measure:\s*100%;/u);
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -71,14 +74,15 @@ describe('WorkspaceFileEditor target intent', () => {
     try {
       await act(async () => root.render(
         <TooltipProvider>
-          <WorkspaceFileEditor {...props} markdownContentWidth="full" />
+          <WorkspaceFileEditor {...props} />
         </TooltipProvider>,
       ));
       await vi.waitFor(() => expect(container.querySelector('.workspace-markdown-live-preview')).not.toBeNull(), { timeout: 5_000 });
 
       const editor = container.querySelector<HTMLElement>('.workspace-markdown-live-preview');
       const editorRoot = container.querySelector<HTMLElement>('[data-theme-role="editor"]');
-      expect(editor?.style.getPropertyValue('--atomic-editor-measure')).toBe('100%');
+      expect(editor).not.toBeNull();
+      expect(editor?.style.getPropertyValue('--atomic-editor-measure')).toBe('');
       expect(editorRoot?.classList.contains('w-full')).toBe(true);
       expect(editorRoot?.classList.contains('min-w-0')).toBe(true);
       expect(markdownModeToggle(container)).toBeNull();

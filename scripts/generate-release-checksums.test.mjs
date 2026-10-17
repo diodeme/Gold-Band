@@ -58,29 +58,46 @@ test('fails when the release contains no supported platform artifacts', (t) => {
   assert.match(result.stderr, /No supported release assets/);
 });
 
-test('both release entry points publish the installer and checksums after the updater manifest', () => {
-  for (const [workflow, toolingRoot] of [
-    ['.github/workflows/release.yml', 'release-tools/'],
-    ['.github/workflows/release-please.yml', ''],
-  ]) {
-    const source = parse(readFileSync(path.resolve(workflow), 'utf8'));
-    const commands = source.jobs['updater-json'].steps.map((step) => step.run ?? '');
-    const manifestIndex = commands.findIndex((command) => command.includes(
-      `node ${toolingRoot}scripts/generate-release-assets.mjs release-assets release-output --version`,
-    ));
-    const checksumIndex = commands.findIndex((command) => command.includes(
-      `node ${toolingRoot}scripts/generate-release-checksums.mjs release-assets`,
-    ));
-    const uploadIndex = commands.findIndex((command) => command.includes(
-      'gh release upload "${RELEASE_TAG}" release-output/latest*.json '
-        + `${toolingRoot}scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber`,
-    ));
+for (const [workflow, toolingRoot] of [
+  ['.github/workflows/release.yml', 'release-tools/'],
+  ['.github/workflows/release-please.yml', ''],
+]) {
+  test(`${workflow} publishes localized manifests, installer, and checksums in order`, () => {
+    const config = parse(readFileSync(path.resolve(workflow), 'utf8'));
+    const job = config.jobs['updater-json'];
+    assert.ok(job, `${workflow} must have an updater-json job`);
+    assert.ok([job.needs].flat().includes('build'), `${workflow} must wait for release builds`);
+    const commands = job.steps.map((step) => (step.run ?? '').replace(/\\\r?\n/g, ' ').trim());
 
-    assert.notEqual(manifestIndex, -1, `${workflow} must generate localized updater manifests`);
-    assert.ok(checksumIndex > manifestIndex, `${workflow} must generate checksums after updater manifests`);
-    assert.ok(
-      uploadIndex > checksumIndex,
-      `${workflow} must upload all localized manifests, the installer and generated checksums`,
+    function commandIndex(pattern, description) {
+      const index = commands.findIndex((command) => pattern.test(command));
+      assert.notEqual(index, -1, `${workflow} must ${description}`);
+      return index;
+    }
+
+    const manifestIndex = commandIndex(
+      new RegExp(String.raw`^node\s+${toolingRoot}scripts/generate-release-assets\.mjs\s+release-assets\s+release-output\s+--version\s+"\$\{RELEASE_TAG#v\}"\s*$`),
+      'generate localized manifests in release-output for the release version',
     );
-  }
-});
+    const checksumIndex = commandIndex(
+      new RegExp(String.raw`^node\s+${toolingRoot}scripts/generate-release-checksums\.mjs\s+release-assets\s*$`),
+      'generate checksums for release-assets',
+    );
+    const uploadIndex = commandIndex(
+      /^gh\s+release\s+upload\s+"\$\{RELEASE_TAG\}"\s+[^\r\n]+$/,
+      'upload assets to the release tag',
+    );
+
+    assert.ok(checksumIndex > manifestIndex, `${workflow} must generate checksums after manifests`);
+    assert.ok(uploadIndex > checksumIndex, `${workflow} must upload assets after checksums`);
+    const uploadArgs = commands[uploadIndex].split(/\s+/);
+    for (const asset of [
+      'release-output/latest*.json',
+      `${toolingRoot}scripts/install-gold-band-macos.sh`,
+      'release-assets/*.sha256',
+      '--clobber',
+    ]) {
+      assert.ok(uploadArgs.includes(asset), `${workflow} upload must include ${asset}`);
+    }
+  });
+}

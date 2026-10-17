@@ -12,8 +12,16 @@ function run(index: number): ConversationRunVm {
     taskId: `task-${index}`,
     taskUuid: `task-uuid-${index}`,
     runId: `run-${index}`,
+    runMode: 'direct',
+    runStatus: 'completed',
     sessionTree: { rounds: [], selectedSessionKey: null },
-  } as ConversationRunVm;
+    activeSessions: [],
+    inputAttachments: [],
+    workflowStatus: 'valid',
+    workflowValid: true,
+    workflowGraph: { nodes: [], edges: [], groups: [] },
+    resumable: false,
+  };
 }
 
 describe('ConversationRunCache', () => {
@@ -70,6 +78,7 @@ describe('ConversationRunCache', () => {
     } as ConversationRunVm & { title: string; autoTitle: boolean });
 
     const restored = cache.restoreEntry(run(1));
+    expect(restored?.run).not.toHaveProperty('selectedSession');
     expect(restored?.run).not.toHaveProperty('title');
     expect(restored?.run).not.toHaveProperty('autoTitle');
     expect(restored?.viewState).toEqual({

@@ -1,6 +1,6 @@
 import type { ConversationRunVm, ConversationSidebarVm, ConversationTaskRowVm, DesktopLanguage, RuntimeDisplayVm } from '@/types';
-import { createPreviewRun } from '../site/fixture';
-import { mockWorkflowTemplates } from '@/mockData';
+import { createPreviewRun, createPreviewSession } from '../site/fixture';
+import { mockErrorBlockedConversationSession, mockWorkflowTemplates } from '@/mockData';
 import { demoAgentRegistry, demoProfiles } from './catalog';
 import { demoDevelopmentFiles } from './turn-files';
 import { DEMO_RUN_ID, DEMO_WORKFLOW_ROUNDS, demoWorkflowRuns } from './scenarios';
@@ -23,25 +23,6 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
   run.runId = runId;
   run.runMode = demoRunMode(taskId);
   run.activeSessions = [];
-  const session = run.selectedSession!;
-  session.title = demoTitle(taskId, language);
-  session.events = session.events.filter((event) => event.kind !== 'fileChangeSet');
-  const en = language === 'en';
-  session.events[0].content = en ? 'Inspect the workspace configuration and prepare a project guide.' : '请检查工作区配置，并整理一份项目说明。';
-  session.events[1].content = en ? 'I will check the configuration defaults and summarize the project structure.' : '我会先检查配置默认值，再整理项目结构与审阅清单。';
-  const tool = session.events.find((event) => event.kind === 'toolCall')!;
-  tool.title = en ? 'Read workspace files' : '读取工作区文件';
-  tool.raw = { toolCallId: tool.toolCallId, title: tool.title, status: 'completed' };
-  if (taskId === 'demo-review') {
-    session.events[0].content = en ? 'Review the project structure and summarize the responsibilities of each module.' : '请检查项目结构，整理各模块的职责和后续审阅重点。';
-    session.events[1].content = en ? 'I will read the project notes and inspect the entry points.' : '我会先阅读项目说明，再检查各模块的入口与依赖关系。';
-  }
-  session.events.at(-1)!.content = en
-    ? '## Review result\n\nThe workspace keeps configuration and application logic separate.\n\n- [README.md](/default/README.md): project notes\n- [src/config.json](/default/src/config.json): configuration\n\nThe next review can focus on input validation and regression coverage.'
-    : '## 审阅结果\n\n工作区将配置与应用逻辑分开管理。\n\n- [README.md](/default/README.md)：项目说明\n- [src/config.json](/default/src/config.json)：配置内容\n\n后续可以重点检查输入校验和回归测试覆盖。';
-  session.events.forEach((event, index) => { event.seq = index + 1; });
-  session.eventPage = { loadedCount: session.events.length, total: session.events.length, oldestSeq: 1, newestSeq: session.events.length, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null };
-  session.diagnostics.eventCount = session.events.length;
   if (run.runMode === 'workflow') {
     const template = mockWorkflowTemplates.templates.find((item) => item.id === 'default-lightweight')!;
     const profiles = demoProfiles(language);
@@ -85,21 +66,35 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
       edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
       groups: [],
     };
-    run.selectedSession = demoSessionForNode(run, round.roundId, 'accept', language);
     run.sessionTree.selectedSessionKey = `${round.roundId}/accept/${round.nodes[0].attempts[0].attemptId}`;
-  } else {
-    run.selectedSession = demoSessionForNode(run, run.sessionTree.rounds[0].roundId, run.sessionTree.rounds[0].nodes[0].nodeId, language);
   }
   return run;
 }
 
-export function demoSessionForNode(run: ConversationRunVm, roundId: string, nodeId: string, language: DesktopLanguage) {
+export function demoSessionForNode(run: ConversationRunVm, roundId: string, nodeId: string, attemptId: string, language: DesktopLanguage) {
   const round = run.sessionTree.rounds.find((round) => round.roundId === roundId);
   const node = round?.nodes.find((node) => node.nodeId === nodeId);
-  if (!node || !round) throw { code: 'demo.resource-not-found', params: { nodeId } };
-  const session = structuredClone(run.selectedSession!);
+  const leaf = node?.attempts.find((attempt) => attempt.attemptId === attemptId);
+  if (!node || !round || !leaf) throw { code: 'demo.resource-not-found', params: { roundId, nodeId, attemptId } };
+  const session = createPreviewSession(mockErrorBlockedConversationSession, language === 'en' ? 'en' : 'zh');
+  session.title = demoTitle(run.taskId, language);
   session.events = session.events.filter((event) => event.kind !== 'fileChangeSet');
-  const leaf = node.attempts[0];
+  const en = language === 'en';
+  session.events[0].content = en ? 'Inspect the workspace configuration and prepare a project guide.' : '请检查工作区配置，并整理一份项目说明。';
+  session.events[1].content = en ? 'I will check the configuration defaults and summarize the project structure.' : '我会先检查配置默认值，再整理项目结构与审阅清单。';
+  const tool = session.events.find((event) => event.kind === 'toolCall')!;
+  tool.title = en ? 'Read workspace files' : '读取工作区文件';
+  tool.raw = { toolCallId: tool.toolCallId, title: tool.title, status: 'completed' };
+  if (run.taskId === 'demo-review') {
+    session.events[0].content = en ? 'Review the project structure and summarize the responsibilities of each module.' : '请检查项目结构，整理各模块的职责和后续审阅重点。';
+    session.events[1].content = en ? 'I will read the project notes and inspect the entry points.' : '我会先阅读项目说明，再检查各模块的入口与依赖关系。';
+  }
+  session.events.at(-1)!.content = en
+    ? '## Review result\n\nThe workspace keeps configuration and application logic separate.\n\n- [README.md](/default/README.md): project notes\n- [src/config.json](/default/src/config.json): configuration\n\nThe next review can focus on input validation and regression coverage.'
+    : '## 审阅结果\n\n工作区将配置与应用逻辑分开管理。\n\n- [README.md](/default/README.md)：项目说明\n- [src/config.json](/default/src/config.json)：配置内容\n\n后续可以重点检查输入校验和回归测试覆盖。';
+  session.events.forEach((event, index) => { event.seq = index + 1; });
+  session.eventPage = { loadedCount: session.events.length, total: session.events.length, oldestSeq: 1, newestSeq: session.events.length, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null };
+  session.diagnostics.eventCount = session.events.length;
   Object.assign(session, { roundId: round.roundId, nodeId, attemptId: leaf.attemptId, sessionId: leaf.sessionId ?? session.sessionId });
   if (run.runMode === 'workflow') {
     session.sessionStartedAt = leaf.startedAt;

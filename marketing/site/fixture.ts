@@ -1,4 +1,4 @@
-import type { AcpUiEventVm, ConversationRunVm, RuntimeDisplayVm } from '@/types';
+import type { AcpSessionVm, AcpUiEventVm, ConversationRunVm, RuntimeDisplayVm } from '@/types';
 import type { Language } from './content';
 
 export const PREVIEW_ROUTE = '/chat/projects/default/tasks/mock-task/runs/run-052';
@@ -40,7 +40,13 @@ export function createPreviewRun(base: ConversationRunVm, language: Language, st
       }
     }
   }
-  const session = run.selectedSession!;
+  return run;
+}
+
+export function createPreviewSession(base: AcpSessionVm, language: Language, step = 5): AcpSessionVm {
+  const session = structuredClone(base);
+  const done = step >= 5;
+  const status = done ? 'completed' : 'running';
   session.title = taskTitle(language);
   session.status = status;
   session.stopReason = done ? 'end_turn' : null;
@@ -52,5 +58,5 @@ export function createPreviewRun(base: ConversationRunVm, language: Language, st
   session.sessionStartedAt = sessionStartedAt;
   session.sessionUpdatedAt = sessionStartedAt;
   session.sessionElapsedSeconds = 62;
-  return run;
+  return session;
 }

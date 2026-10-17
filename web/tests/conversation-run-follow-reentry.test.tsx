@@ -153,7 +153,6 @@ describe('ConversationRunPage follow mode reentry', () => {
       runStatus: 'completed',
       runMode: 'workflow',
       activeSessions: [],
-      selectedSession: null,
       sessionTree: { rounds: [], selectedSessionKey: null },
       workflowGraph: { nodes: [], edges: [] },
     } as unknown as ConversationRunVm;
@@ -214,7 +213,6 @@ describe('ConversationRunPage follow mode reentry', () => {
       runMode: 'auto',
       activeSessions: [],
       inputAttachments: [],
-      selectedSession: null,
       sessionTree: {
         selectedSessionKey: selectedKey,
         rounds: [{
@@ -267,11 +265,11 @@ describe('ConversationRunPage follow mode reentry', () => {
       expect.objectContaining({
         worktreePath: 'D:/repo/.gold-band/worktrees/child',
         managedWorktreeBranch: 'gb-dynamic-child',
-        session: null,
         agentRegistry: registry,
       }),
       undefined,
     );
+    expect(chatMocks.render.mock.calls.at(-1)?.at(0)).not.toHaveProperty('session');
 
     await act(async () => root.unmount());
   });
@@ -344,7 +342,6 @@ describe('ConversationRunPage follow mode reentry', () => {
       runtimeErrorMessage: 'old provider failure',
       activeSessions: [],
       inputAttachments: [],
-      selectedSession: null,
       sessionTree: {
         selectedSessionKey: selectedKey,
         rounds: [{
@@ -520,7 +517,6 @@ function terminalDynamicRun() {
     runMode: 'auto',
     activeSessions: [],
     inputAttachments: [],
-    selectedSession: null,
     sessionTree: {
       selectedSessionKey: selectedKey,
       rounds: [{

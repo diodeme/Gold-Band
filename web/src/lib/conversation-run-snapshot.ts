@@ -1,5 +1,4 @@
 import type {
-  AcpSessionVm,
   ConversationAttemptLifecycleVm,
   ConversationRunVm,
   ConversationSessionLeafVm,
@@ -37,23 +36,26 @@ export interface ConversationRunSnapshotMergeOptions {
   preserveSelectedSession?: boolean;
 }
 
+export interface ConversationSessionRuntimeSnapshot {
+  projectId: string;
+  taskId: string;
+  taskUuid: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  sessionId?: string | null;
+  sessionStartedAt?: string | null;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+}
+
 export function applyConversationSelectedSessionSnapshot(
   current: ConversationRunVm | null,
-  snapshot: {
-    projectId?: string | null;
-    taskId: string;
-    taskUuid?: string | null;
-    runId: string;
-    roundId: string;
-    nodeId: string;
-    attemptId: string;
-    outerNodeId?: string | null;
-    outerAttemptId?: string | null;
-    session?: AcpSessionVm | null;
-    lifecycle?: ConversationAttemptLifecycleVm | null;
-  },
+  snapshot: ConversationSessionRuntimeSnapshot,
 ): ConversationRunVm | null {
-  if (!current || (!snapshot.session && !snapshot.lifecycle)) return current;
+  if (!current || (!snapshot.sessionId && !snapshot.sessionStartedAt && !snapshot.lifecycle)) return current;
   if (!snapshot.projectId || !sameConversationRunEntity(current, {
     projectId: snapshot.projectId,
     taskId: snapshot.taskId,
@@ -64,20 +66,18 @@ export function applyConversationSelectedSessionSnapshot(
   if (current.sessionTree.selectedSessionKey !== snapshotKey) return current;
   const leaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
   if (!leaf) return current;
-  const nextLeaf = mergeLeafRuntimeSession(leaf, snapshot.session, snapshot.lifecycle);
+  const nextLeaf = mergeLeafRuntimeSummary(leaf, snapshot);
   const nextActiveSessions = updateActiveSessionsForLeaf(current.activeSessions, nextLeaf);
   const nextWorkflowGraph = patchWorkflowGraphLeaf(current.workflowGraph, nextLeaf);
   if (
     nextLeaf === leaf &&
     nextActiveSessions === current.activeSessions &&
-    nextWorkflowGraph === current.workflowGraph &&
-    !snapshot.session
+    nextWorkflowGraph === current.workflowGraph
   ) {
     return current;
   }
   return {
     ...current,
-    selectedSession: snapshot.session ?? current.selectedSession,
     sessionTree: nextLeaf === leaf
       ? current.sessionTree
       : mapConversationTreeLeaf(current.sessionTree, snapshotKey, () => nextLeaf),
@@ -88,21 +88,9 @@ export function applyConversationSelectedSessionSnapshot(
 
 export function applyConversationBackgroundSessionRuntimeSnapshot(
   current: ConversationRunVm | null,
-  snapshot: {
-    projectId?: string | null;
-    taskId: string;
-    taskUuid?: string | null;
-    runId: string;
-    roundId: string;
-    nodeId: string;
-    attemptId: string;
-    outerNodeId?: string | null;
-    outerAttemptId?: string | null;
-    session?: AcpSessionVm | null;
-    lifecycle?: ConversationAttemptLifecycleVm | null;
-  },
+  snapshot: ConversationSessionRuntimeSnapshot,
 ): ConversationRunVm | null {
-  if (!current || (!snapshot.session && !snapshot.lifecycle)) return current;
+  if (!current || (!snapshot.sessionId && !snapshot.sessionStartedAt && !snapshot.lifecycle)) return current;
   if (!snapshot.projectId || !sameConversationRunEntity(current, {
     projectId: snapshot.projectId,
     taskId: snapshot.taskId,
@@ -114,7 +102,7 @@ export function applyConversationBackgroundSessionRuntimeSnapshot(
   const currentLeaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
   if (!currentLeaf) return current;
 
-  const nextLeaf = mergeLeafRuntimeSession(currentLeaf, snapshot.session, snapshot.lifecycle);
+  const nextLeaf = mergeLeafRuntimeSummary(currentLeaf, snapshot);
   const leafChanged = nextLeaf !== currentLeaf;
   const nextActiveSessions = updateActiveSessionsForLeaf(current.activeSessions, nextLeaf);
   const nextWorkflowGraph = patchWorkflowGraphLeaf(current.workflowGraph, nextLeaf);
@@ -171,22 +159,6 @@ export function mergeConversationRunSnapshot(
     },
   };
   const incomingLeaf = findConversationLeafByKey(merged.sessionTree, selectedKey);
-  if (selectedKey !== validIncomingKey) {
-    merged = selectedKey && selectedKey === currentKey && current.selectedSession
-      ? {
-          ...merged,
-          selectedSession: current.selectedSession,
-        }
-      : {
-          ...merged,
-          selectedSession: null,
-        };
-  } else if (!merged.selectedSession && selectedKey && selectedKey === currentKey && current.selectedSession) {
-    merged = {
-      ...merged,
-      selectedSession: current.selectedSession,
-    };
-  }
   if (
     selectedKey &&
     currentLeaf &&
@@ -236,15 +208,6 @@ export function mergeConversationRunSnapshot(
       ...merged,
       activeSessions: [activeSessionFromLeaf(mergedLeaf)],
     };
-  }
-
-  if (
-    current.selectedSession &&
-    merged.selectedSession &&
-    isConversationActiveStatus(current.selectedSession.status) &&
-    isConversationUnknownStatus(merged.selectedSession.status)
-  ) {
-    merged = { ...merged, selectedSession: current.selectedSession };
   }
 
   return merged;
@@ -430,23 +393,17 @@ function patchWorkflowGraphNode(node: GraphNodeVm, leaf: ConversationSessionLeaf
   };
 }
 
-function mergeLeafRuntimeSession(
+function mergeLeafRuntimeSummary(
   leaf: ConversationSessionLeafVm,
-  session?: AcpSessionVm | null,
-  lifecycle?: ConversationAttemptLifecycleVm | null,
+  snapshot: ConversationSessionRuntimeSnapshot,
 ) {
-  const nextLifecycle = lifecycle
-    ? mergeConversationAttemptLifecycle(leaf.lifecycle, lifecycle)
+  const nextLifecycle = snapshot.lifecycle
+    ? mergeConversationAttemptLifecycle(leaf.lifecycle, snapshot.lifecycle)
     : leaf.lifecycle;
-  const nextStatus = nextLifecycle?.displayStatus
-    ?? (session && isConversationActiveStatus(session.status) &&
-      !isConversationActiveStatus(leaf.status) &&
-      !isConversationTerminalLeafStatus(leaf.status)
-      ? session.status
-      : leaf.status);
+  const nextStatus = nextLifecycle?.displayStatus ?? leaf.status;
   const nextRuntimeDisplay = nextLifecycle?.runtimeDisplay ?? leaf.runtimeDisplay;
-  const nextSessionId = session?.sessionId ?? leaf.sessionId ?? null;
-  const nextStartedAt = session?.sessionStartedAt ?? leaf.startedAt ?? null;
+  const nextSessionId = snapshot.sessionId ?? leaf.sessionId ?? null;
+  const nextStartedAt = snapshot.sessionStartedAt ?? leaf.startedAt ?? null;
   if (
     nextStatus === leaf.status &&
     nextSessionId === (leaf.sessionId ?? null) &&
@@ -464,12 +421,6 @@ function mergeLeafRuntimeSession(
     sessionId: nextSessionId,
     startedAt: nextStartedAt,
   };
-}
-
-function isConversationTerminalLeafStatus(status?: string | null) {
-  return ['completed', 'complete', 'success', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(
-    status?.trim().toLowerCase().replace(/_/g, '-') ?? '',
-  );
 }
 
 function updateActiveSessionsForLeaf(

@@ -4,7 +4,7 @@ import { browserPreviewState } from '@/api/browserState';
 import { applyAppearance, applyPersonalization } from '@/theme';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm } from '@/api/client';
 import { createRecordingBuffer, RECORDING_LIMITS } from '../../web/rrweb-demo/recording';
-import { createPreviewRun, PREVIEW_ROUTE, taskTitle } from './fixture';
+import { createPreviewRun, createPreviewSession, PREVIEW_ROUTE, taskTitle } from './fixture';
 import type { Language } from './content';
 
 const options = new URLSearchParams(location.search);
@@ -13,15 +13,30 @@ const scene = options.get('scene') || 'after';
 const preferences = browserPreviewState.getPreferences();
 browserPreviewState.setPreferences({ ...preferences, language: language === 'en' ? 'en' : 'zh-cn', appearance: { ...preferences.appearance, colorScheme: 'dark' } });
 const base = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
+const leaf = base.sessionTree.rounds.flatMap((round) => round.nodes.flatMap((node) => node.attempts))
+  .find((attempt) => `${attempt.roundId}/${attempt.nodeId}/${attempt.attemptId}` === base.sessionTree.selectedSessionKey)!;
+const baseSession = (await browserApi.getAcpSession(base.projectId, base.taskId, base.runId, leaf.roundId, leaf.nodeId, leaf.attemptId))!;
 let run = createPreviewRun(base, language, scene === 'during' ? 1 : 5);
+let session = createPreviewSession(baseSession, language, scene === 'during' ? 1 : 5);
 const sessions = new Set<(event: AcpSessionUpdatedEventVm) => void>();
 const runs = new Set<(event: ConversationRunStateUpdatedEventVm) => void>();
-browserApi.getConversationRun = async () => structuredClone(run);
-browserApi.getAcpSession = async () => structuredClone(run.selectedSession!);
-browserApi.getAcpActivityDetail = async () => ({ items: structuredClone(run.selectedSession!.events.filter(event => event.kind === 'toolCall')), hasMoreEarlier: false, earlierCursor: null });
-browserApi.getAcpToolDetail = async () => ({ event: structuredClone(run.selectedSession!.events.find(event => event.kind === 'toolCall') ?? null) });
+browserApi.getConversationRun = async (projectId, taskId, runId) => {
+  if (projectId !== run.projectId || taskId !== run.taskId || runId !== run.runId) {
+    throw { code: 'demo.resource-not-found', params: { projectId, taskId, runId } };
+  }
+  return structuredClone(run);
+};
+browserApi.getAcpSession = async (projectId, taskId, runId, roundId, nodeId, attemptId) => {
+  if ((projectId ?? run.projectId) !== run.projectId || taskId !== run.taskId || runId !== run.runId
+    || roundId !== leaf.roundId || nodeId !== leaf.nodeId || attemptId !== leaf.attemptId) {
+    throw { code: 'demo.resource-not-found', params: { projectId, taskId, runId, roundId, nodeId, attemptId } };
+  }
+  return structuredClone(session);
+};
+browserApi.getAcpActivityDetail = async (projectId, taskId, runId, roundId, nodeId, attemptId) => ({ items: (await browserApi.getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId))!.events.filter(event => event.kind === 'toolCall'), hasMoreEarlier: false, earlierCursor: null });
+browserApi.getAcpToolDetail = async (projectId, taskId, runId, roundId, nodeId, attemptId) => ({ event: (await browserApi.getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId))!.events.find(event => event.kind === 'toolCall') ?? null });
 browserApi.getConversationSidebarBootstrap = async () => ({ workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Gold Band' }], pinRefs: [], lastActiveWorkspaceId: 'default', preferences: {} });
-browserApi.getConversationTaskPage = async (projectId) => ({ projectId, tasks: [{ projectId, taskId: run.taskId, taskUuid: run.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'direct', lastActivityAt: run.selectedSession!.sessionStartedAt!, runs: [], runHistoryStatus: 'ready', runsNextCursor: null, pinned: false, pinnedOrder: null }], nextCursor: null, errors: [] });
+browserApi.getConversationTaskPage = async (projectId) => ({ projectId, tasks: [{ projectId, taskId: run.taskId, taskUuid: run.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'direct', lastActivityAt: session.sessionStartedAt!, runs: [], runHistoryStatus: 'ready', runsNextCursor: null, pinned: false, pinnedOrder: null }], nextCursor: null, errors: [] });
 browserApi.subscribeAcpSessionUpdates = async (listener) => { sessions.add(listener); return () => { sessions.delete(listener); }; };
 browserApi.subscribeConversationRunStateUpdates = async (listener) => { runs.add(listener); return () => { runs.delete(listener); }; };
 const originalChanges = browserApi.getTurnFileChangeSet.bind(browserApi);
@@ -42,9 +57,11 @@ browserApi.getFileComparison = async (...args) => {
 };
 
 function advance(step: number) {
-  run = createPreviewRun(base, language, Math.max(1, Math.min(5, step)));
-  const locator = { projectId: run.projectId, taskId: run.taskId, taskUuid: run.taskUuid, runId: run.runId, roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-001' };
-  for (const listener of sessions) listener({ ...locator, session: structuredClone(run.selectedSession), lifecycle: run.sessionTree.rounds[0].nodes[0].attempts[0].lifecycle });
+  const boundedStep = Math.max(1, Math.min(5, step));
+  run = createPreviewRun(base, language, boundedStep);
+  session = createPreviewSession(baseSession, language, boundedStep);
+  const locator = { projectId: run.projectId, taskId: run.taskId, taskUuid: run.taskUuid, runId: run.runId, roundId: leaf.roundId, nodeId: leaf.nodeId, attemptId: leaf.attemptId };
+  for (const listener of sessions) listener({ ...locator, session: structuredClone(session), lifecycle: run.sessionTree.rounds[0].nodes[0].attempts[0].lifecycle });
   for (const listener of runs) listener({ ...locator, eventKind: step >= 5 ? 'run-completed' : 'node-started', status: run.runStatus, outcome: run.runOutcome });
 }
 function appearance(scheme: 'dark' | 'light', font: 'default' | 'mono') {

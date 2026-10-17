@@ -155,13 +155,11 @@ function DemoConversation({ taskId, runId, roundId, nodeId, bootstrap, language 
     let active = true;
     setRun(null);
     setFailed(false);
-    browserApi.getConversationRun(DEMO_PROJECT_ID, taskId, runId).then(async (next) => {
+    browserApi.getConversationRun(DEMO_PROJECT_ID, taskId, runId).then((next) => {
       const selectedRound = next.sessionTree.rounds.find((round) => round.roundId === roundId) ?? next.sessionTree.rounds.at(-1)!;
-      const leaf = selectedRound.nodes.flatMap((node) => node.attempts).find((leaf) => leaf.nodeId === (nodeId ?? next.selectedSession?.nodeId));
-      if (leaf) {
-        next.selectedSession = await browserApi.getAcpSession(DEMO_PROJECT_ID, taskId, runId, leaf.roundId, leaf.nodeId, leaf.attemptId);
-        next.sessionTree.selectedSessionKey = `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
-      }
+      const defaultNodeId = next.sessionTree.selectedSessionKey?.split('/')[1];
+      const leaf = selectedRound.nodes.flatMap((node) => node.attempts).find((leaf) => leaf.nodeId === (nodeId ?? defaultNodeId));
+      if (leaf) next.sessionTree.selectedSessionKey = `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
       if (active) setRun(next);
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };

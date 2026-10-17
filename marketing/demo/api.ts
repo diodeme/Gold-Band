@@ -120,9 +120,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
     },
     async getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId) {
       const run = await overrides.getConversationRun!(projectId ?? 'default', taskId, runId);
-      const leaf = run.sessionTree.rounds.find((round) => round.roundId === roundId)?.nodes.find((node) => node.nodeId === nodeId)?.attempts.find((attempt) => attempt.attemptId === attemptId);
-      if (!leaf) throw { code: 'demo.resource-not-found', params: { roundId, nodeId, attemptId } };
-      return demoSessionForNode(run, roundId, nodeId, state.getPreferences().language);
+      return demoSessionForNode(run, roundId, nodeId, attemptId, state.getPreferences().language);
     },
     async getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId) {
       const session = await overrides.getAcpSession!(projectId, taskId, runId, roundId, nodeId, attemptId);

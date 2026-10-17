@@ -17,6 +17,7 @@ export interface ConversationRunViewState {
 }
 
 export interface ConversationRunCacheEntry {
+  /** Navigation and lifecycle projection only; ACP content belongs to its resource store. */
   run: ConversationRunVm;
   viewState: ConversationRunViewState;
 }

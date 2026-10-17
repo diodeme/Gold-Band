@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CHAPTER_IDS, copy, pageHref, parseRoute } from '../../marketing/site/content';
-import { createPreviewRun } from '../../marketing/site/fixture';
-import { mockErrorBlockedConversationRun } from '../src/mockData';
+import { createPreviewRun, createPreviewSession } from '../../marketing/site/fixture';
+import { mockErrorBlockedConversationRun, mockErrorBlockedConversationSession } from '../src/mockData';
 
 describe('website motion', () => {
   it('keeps chapter playback and page motion when the system reduces motion', () => {
@@ -33,8 +33,10 @@ describe('website routing and bilingual content', () => {
 describe('curated product preview projections', () => {
   it('derives every lifecycle projection from the scenario and keeps the source intact', () => {
     const original = structuredClone(mockErrorBlockedConversationRun);
+    const originalSession = structuredClone(mockErrorBlockedConversationSession);
     for (const step of [1, 2, 3, 4, 5]) {
       const run = createPreviewRun(original, 'zh', step);
+      const session = createPreviewSession(originalSession, 'zh', step);
       const leaf = run.sessionTree.rounds[0].nodes[0].attempts[0];
       const done = step === 5;
       expect(run.runStatus).toBe(done ? 'completed' : 'running');
@@ -45,12 +47,24 @@ describe('curated product preview projections', () => {
       expect(leaf.runtimeDisplay.blockingError).toBe(false);
       expect(run.sessionTree.rounds[0].runtimeDisplay).toEqual(leaf.runtimeDisplay);
       expect(run.sessionTree.rounds[0].nodes[0].runtimeDisplay).toEqual(leaf.runtimeDisplay);
-      expect(run.selectedSession?.events).toHaveLength(step);
-      expect(run.selectedSession?.eventPage.total).toBe(step);
-      expect(run.selectedSession?.systemPromptAppend).toBeNull();
+      expect(run).not.toHaveProperty('selectedSession');
+      expect(session.status).toBe(run.runStatus);
+      expect(session.events).toHaveLength(step);
+      expect(session.eventPage.total).toBe(step);
+      expect(session.systemPromptAppend).toBeNull();
       expect(run.runtimeErrorMessage).toBeNull();
     }
     expect(original).toEqual(mockErrorBlockedConversationRun);
+    expect(originalSession).toEqual(mockErrorBlockedConversationSession);
+  });
+  it('keeps preview session bodies independent from run summaries and other reads', () => {
+    const run = createPreviewRun(mockErrorBlockedConversationRun, 'en');
+    const session = createPreviewSession(mockErrorBlockedConversationSession, 'en');
+    const originalContent = session.events[0].content;
+    session.events[0].content = 'visitor change';
+    expect(createPreviewSession(mockErrorBlockedConversationSession, 'en').events[0].content).toBe(originalContent);
+    expect(run).not.toHaveProperty('selectedSession');
+    expect(createPreviewRun(mockErrorBlockedConversationRun, 'en')).toEqual(run);
   });
   it('ships portable, bounded bilingual recordings with actual changes', () => {
     for (const language of ['zh', 'en']) for (const chapter of CHAPTER_IDS) {

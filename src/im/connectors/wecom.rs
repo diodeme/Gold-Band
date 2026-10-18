@@ -2932,7 +2932,7 @@ mod tests {
             else {
                 unreachable!()
             };
-            resolution.outcome = crate::im::ImResolutionOutcome::ElicitationCancelled;
+            resolution.outcome = crate::im::ImResolutionOutcome::Cancelled;
             let request = send_request("req-1", &delivery, &codec, locale).unwrap();
             assert_eq!(request["body"]["markdown"]["content"], expected);
         }

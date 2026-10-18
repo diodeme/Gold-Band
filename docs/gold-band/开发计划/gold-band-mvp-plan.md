@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-18 IM 远程干预迁移后续修复
+
+- 取消路径终态：根因是 Run 停止 teardown、ACP 会话关闭、Direct 后台停止与遗留请求只结算 ACP 信号文件与 timeline，不经过三个桌面命令，IM 卡片停留到过期，点击还被领域误报 `INTERVENTION_REQUEST_NOT_FOUND`（显示“回答无效”）。修复为统一 canonical settlement：ACP 层 `permission_request_settlement` / `elicitation_request_settlement` 按响应文件 → 待处理文件 → timeline 已结算项判定，领域 `InterventionCommandService::settlement` 补人工检查；已结算请求的 inspect 返回 `INTERVENTION_ALREADY_HANDLED`。IM settlement reconciler 由生命周期边界（去抖 1 秒）与 30 秒间隔触发，只为 `Cancelled` 投影 `resolved_by=Runtime` 的取消终态，Answered 仍由 Accepted 一端写入。`ElicitationCancelled` 更名为通用 `Cancelled`（wire `cancelled`）。点击已结算卡片：取消当场投影，答案在途回“已处理”并禁用原卡，快照过期按“操作已过期”。CallbackOnly 渠道被点击的源卡改写 TombstoneOnly 保存赢家并关闭源卡，避免后续扫描另发第二条。
+- 重发保护：源消息失败重试与租约回收在终态已存在时直接过期，worker 用例改为终态另发、原卡不再重发。
+- 删除 `scripts/diagnostics/feishu-im-poc/`，需要时从 Git 历史 b2b1099e 取回。
+- 验收：`a_permission_the_runtime_cancelled_is_handled_not_missing` 与 `a_cancelled_or_abandoned_elicitation_settles_as_cancelled` 修复前 inspect 返回 `InterventionRequestNotFound`，修复后为 `InterventionAlreadyHandled`；飞书 `late_click_on_a_settled_request_without_its_result_disables_the_card` 修复前回包无卡片，修复后禁用原卡；golden 仅 `*/unavailable` 两例按此变更。`runtime_cancellation_*` 覆盖只投影取消、幂等重放与 CallbackOnly 不另发。
+
 ## 2026-10-18 PR #144 飞书 IM 能力迁移到 main
 
 - 范围：只迁移 b2b1099e、981ffb25、aefc7e8e、6abc5721 四个提交；不迁移 multica/remote、资源目录刷新与全仓 rustfmt 提交。`resources/` 与 multica 文件保持 main 原样，`Cargo.lock` 以 main 为基础由 cargo 补入 prost 依赖。

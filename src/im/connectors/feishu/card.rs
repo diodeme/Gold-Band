@@ -706,9 +706,9 @@ pub(crate) fn action_reply(
 ) -> Value {
     let content = message_state_label(locale, response.state.message_state());
     match response.state {
-        ImActionResponseState::AlreadyHandled if response.outcome.is_none() => {
-            Reply::new(ToastType::Info, content, None)
-        }
+        // `AlreadyHandled` is only reported for a settled request, so the card
+        // is disabled even when the winning result is not known yet; a later
+        // resolution PATCH fills it in.
         ImActionResponseState::Handled | ImActionResponseState::AlreadyHandled => {
             let toast_type = if response.state == ImActionResponseState::Handled {
                 ToastType::Success
@@ -1016,9 +1016,7 @@ fn outcome_copy(
         ImResolutionOutcome::ElicitationDeclined => {
             localized(locale, "im.action.decline").to_owned()
         }
-        ImResolutionOutcome::ElicitationCancelled => {
-            localized(locale, "im.intervention.cancelled").to_owned()
-        }
+        ImResolutionOutcome::Cancelled => localized(locale, "im.intervention.cancelled").to_owned(),
         ImResolutionOutcome::ManualCheck {
             outcome: NodeOutcome::Success,
         } => localized(locale, "im.action.success").to_owned(),
@@ -1872,14 +1870,26 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn late_click_without_a_settled_result_does_not_erase_the_card() {
+    fn late_click_on_a_settled_request_without_its_result_disables_the_card() {
         let mut response = submitted_single_select_response();
         response.state = ImActionResponseState::AlreadyHandled;
         response.outcome = None;
         response.resolved_by = None;
         let reply = action_reply(&response, ImLocale::ZhCn, &codec());
-        assert!(reply.get("toast").is_some());
-        assert!(reply.get("card").is_none());
+        assert_eq!(reply["toast"]["content"], "已处理");
+        let card = &reply["card"]["data"];
+        assert_eq!(card["header"]["title"]["content"], "已处理");
+        let controls = card["body"]["elements"][1]["elements"]
+            .as_array()
+            .expect("the original controls stay visible");
+        assert!(!controls.is_empty());
+        assert!(
+            controls
+                .iter()
+                .filter(|control| control.get("disabled").is_some())
+                .all(|control| control["disabled"] == true),
+            "a settled request can no longer be answered from this card"
+        );
     }
 
     #[test]
@@ -2054,7 +2064,7 @@ pub(super) mod tests {
         ] {
             for source in [Some(&source), None] {
                 let content = resolution_payload_card_content(
-                    &resolution(ImResolutionOutcome::ElicitationCancelled),
+                    &resolution(ImResolutionOutcome::Cancelled),
                     locale,
                     source,
                     &codec(),

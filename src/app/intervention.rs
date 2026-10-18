@@ -11,14 +11,15 @@ use crate::{
     acp::{
         elicitation::{
             ElicitationAction, ElicitationResponseState, PendingElicitationState,
-            elicitation_response_file, pending_elicitation_file,
+            elicitation_request_settlement, elicitation_response_file, pending_elicitation_file,
             write_elicitation_response_if_pending,
         },
         events::current_timestamp,
-        interaction::AcpPromptInteractionKind,
+        interaction::{AcpInteractionSettlement, AcpPromptInteractionKind},
         permission::{
             PendingPermissionState, PermissionResponseState, pending_permission_file,
-            permission_response_file, write_permission_response_if_pending,
+            permission_request_settlement, permission_response_file,
+            write_permission_response_if_pending,
         },
     },
     app::{App, ManualCheckSubmissionLease},
@@ -318,6 +319,27 @@ pub struct InterventionCommandResult {
     pub canonical_state: String,
 }
 
+/// Canonical lifecycle of one intervention request, independent of which
+/// surface (desktop, IM, runtime stop) ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterventionSettlement {
+    Pending,
+    /// Answered by a person or an auto-accept policy.
+    Answered,
+    /// Ended without an answer (stop, timeout, abandoned run).
+    Cancelled,
+}
+
+impl From<AcpInteractionSettlement> for InterventionSettlement {
+    fn from(settlement: AcpInteractionSettlement) -> Self {
+        match settlement {
+            AcpInteractionSettlement::Pending => Self::Pending,
+            AcpInteractionSettlement::Answered => Self::Answered,
+            AcpInteractionSettlement::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InterventionErrorCode {
@@ -441,6 +463,87 @@ impl<'a> InterventionCommandService<'a> {
         Ok(snapshot)
     }
 
+    /// Where the request is in its lifecycle. Unlike [`Self::inspect`] it does
+    /// not require the run to still be positioned on the request's attempt, so
+    /// it also answers for requests a stopped or retried run left behind.
+    pub fn settlement(
+        &self,
+        locator: &InterventionLocator,
+        request: &InterventionRequestIdentity,
+    ) -> Result<InterventionSettlement, InterventionError> {
+        self.validate_locator(locator)?;
+        let attempt_dir = self.attempt_dir(locator);
+        let storage_unavailable =
+            |_| InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable);
+        let settlement = match request {
+            InterventionRequestIdentity::Permission { request_id } => {
+                permission_request_settlement(&attempt_dir, request_id)
+                    .map_err(storage_unavailable)?
+                    .map(Into::into)
+            }
+            InterventionRequestIdentity::Elicitation { elicitation_id } => {
+                elicitation_request_settlement(&attempt_dir, elicitation_id)
+                    .map_err(storage_unavailable)?
+                    .map(Into::into)
+            }
+            InterventionRequestIdentity::ManualCheck => Some(self.manual_settlement(locator)?),
+        };
+        settlement.ok_or_else(|| {
+            InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
+        })
+    }
+
+    fn manual_settlement(
+        &self,
+        locator: &InterventionLocator,
+    ) -> Result<InterventionSettlement, InterventionError> {
+        if self
+            .app
+            .validate_manual_check_submission(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            )
+            .is_ok()
+        {
+            return Ok(InterventionSettlement::Pending);
+        }
+        let node: NodeState = read_json(&self.app.paths.node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ))
+        .map_err(|_| {
+            InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
+        })?;
+        Ok(if !node.manual_check_pending && node.outcome.is_some() {
+            InterventionSettlement::Answered
+        } else {
+            InterventionSettlement::Cancelled
+        })
+    }
+
+    /// A request without its pending file is either settled (reported as
+    /// handled) or was never published here.
+    fn missing_request_error(
+        &self,
+        locator: &InterventionLocator,
+        request: &InterventionRequestIdentity,
+        request_kind: &str,
+    ) -> InterventionError {
+        match self.settlement(locator, request) {
+            Ok(InterventionSettlement::Answered | InterventionSettlement::Cancelled) => {
+                InterventionError::new(InterventionErrorCode::InterventionAlreadyHandled)
+            }
+            _ => InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
+                .with_detail("requestKind", request_kind),
+        }
+    }
+
     pub fn execute(
         &self,
         command: InterventionCommand,
@@ -538,10 +641,8 @@ impl<'a> InterventionCommandService<'a> {
     ) -> Result<InterventionSnapshot, InterventionError> {
         let attempt_dir = self.attempt_dir(&locator);
         let pending: PendingPermissionState =
-            read_json(&pending_permission_file(&attempt_dir, request_id)).map_err(|_| {
-                InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
-                    .with_detail("requestKind", "permission")
-            })?;
+            read_json(&pending_permission_file(&attempt_dir, request_id))
+                .map_err(|_| self.missing_request_error(&locator, &request, "permission"))?;
         if pending.identity.interaction_id != request_id
             || pending.identity.kind != AcpPromptInteractionKind::Permission
             || permission_response_file(&attempt_dir, request_id).exists()
@@ -571,10 +672,8 @@ impl<'a> InterventionCommandService<'a> {
     ) -> Result<InterventionSnapshot, InterventionError> {
         let attempt_dir = self.attempt_dir(&locator);
         let pending: PendingElicitationState =
-            read_json(&pending_elicitation_file(&attempt_dir, elicitation_id)).map_err(|_| {
-                InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
-                    .with_detail("requestKind", "elicitation")
-            })?;
+            read_json(&pending_elicitation_file(&attempt_dir, elicitation_id))
+                .map_err(|_| self.missing_request_error(&locator, &request, "elicitation"))?;
         if pending.identity.interaction_id != elicitation_id
             || pending.identity.kind != AcpPromptInteractionKind::Elicitation
             || elicitation_response_file(&attempt_dir, elicitation_id).exists()
@@ -2607,6 +2706,25 @@ mod tests {
         )
         .unwrap();
         let service = InterventionCommandService::new(&app);
+        let manual = InterventionRequestIdentity::ManualCheck;
+        assert_eq!(
+            service.settlement(&locator, &manual),
+            Ok(InterventionSettlement::Pending)
+        );
+        let mut stopped = run.clone();
+        stopped.status = RunStatus::Completed;
+        stopped.outcome = Some(crate::domain::RunOutcome::Killed);
+        write_json(
+            &app.paths.run_file(&locator.task_id, &locator.run_id),
+            &stopped,
+        )
+        .unwrap();
+        assert_eq!(
+            service.settlement(&locator, &manual),
+            Ok(InterventionSettlement::Cancelled),
+            "a stopped run ends the unanswered manual check"
+        );
+        write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
         let snapshot = service
             .inspect(locator.clone(), InterventionRequestIdentity::ManualCheck)
             .unwrap();
@@ -2614,6 +2732,7 @@ mod tests {
             snapshot.prompt.is_none(),
             "Timeline output is optional presentation data"
         );
+        let answered_locator = locator.clone();
         let result = service
             .execute(InterventionCommand {
                 locator,
@@ -2644,6 +2763,10 @@ mod tests {
         assert_eq!(completed_node.status, RunStatus::Completed);
         assert_eq!(completed_node.outcome, Some(NodeOutcome::Success));
         assert!(!completed_node.manual_check_pending);
+        assert_eq!(
+            service.settlement(&answered_locator, &manual),
+            Ok(InterventionSettlement::Answered)
+        );
     }
 
     #[test]
@@ -3547,6 +3670,165 @@ mod tests {
         assert_eq!(
             remote_elicitation_form_allows_content(&form, &json!({"features": ["audit"]})),
             Err(RemoteFormViolation::AnswerMissing)
+        );
+    }
+
+    fn write_pending_permission_item(attempt_dir: &camino::Utf8Path) {
+        let mut pending = crate::acp::events::permission_request_event(
+            7,
+            "permission-001".into(),
+            json!({ "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }] }),
+        );
+        pending.id = "permission-permission-001".into();
+        pending.started_seq = Some(7);
+        pending.ended_seq = Some(7);
+        crate::acp::events::write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[pending],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_permission_the_runtime_cancelled_is_handled_not_missing() {
+        let fixture = permission_fixture(false);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        write_pending_permission_item(&attempt_dir);
+        let request = permission_request();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Pending)
+        );
+
+        crate::acp::permission::cancel_pending_permission_requests(&attempt_dir, "2Z".into())
+            .unwrap();
+
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled)
+        );
+        assert_eq!(
+            service
+                .inspect(fixture.locator.clone(), request.clone())
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionAlreadyHandled,
+            "a stopped request is handled, not an unknown one"
+        );
+        crate::acp::permission::remove_permission_signal_files(&attempt_dir, "permission-001")
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled),
+            "the settled timeline item outlives the signal files"
+        );
+    }
+
+    #[test]
+    fn an_answered_permission_settles_as_answered_after_runtime_cleanup() {
+        let fixture = permission_fixture(false);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        write_pending_permission_item(&attempt_dir);
+        let snapshot = service
+            .inspect(fixture.locator.clone(), permission_request())
+            .unwrap();
+        service
+            .execute(permission_command(&snapshot, "allow"))
+            .unwrap();
+        crate::acp::permission::remove_permission_signal_files(&attempt_dir, "permission-001")
+            .unwrap();
+
+        assert_eq!(
+            service.settlement(&fixture.locator, &permission_request()),
+            Ok(InterventionSettlement::Answered)
+        );
+        let abandoned = InterventionRequestIdentity::Permission {
+            request_id: "never-published".into(),
+        };
+        assert_eq!(
+            service
+                .settlement(&fixture.locator, &abandoned)
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionRequestNotFound
+        );
+    }
+
+    #[test]
+    fn a_cancelled_or_abandoned_elicitation_settles_as_cancelled() {
+        let fixture = permission_fixture(false);
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        let request = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-001".into(),
+        };
+        let pending: PendingElicitationState =
+            read_json(&pending_elicitation_file(&attempt_dir, "elicit-001")).unwrap();
+        let mut item = crate::acp::events::elicitation_request_event(
+            8,
+            "elicit-001".into(),
+            &pending.payload.request,
+        );
+        item.started_seq = Some(8);
+        item.ended_seq = Some(8);
+        crate::acp::events::write_timeline_items(&attempt_dir.join("acp.timeline.jsonl"), &[item])
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Pending)
+        );
+
+        // A runtime that disappears leaves the request item without an answer.
+        crate::acp::elicitation::remove_elicitation_signal_files(&attempt_dir, "elicit-001")
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled)
+        );
+
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        crate::acp::elicitation::cancel_pending_elicitation_requests(&attempt_dir, "2Z".into())
+            .unwrap();
+        crate::acp::elicitation::remove_elicitation_signal_files(&attempt_dir, "elicit-001")
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled),
+            "the timeline cancel response is the settled fact"
+        );
+        assert_eq!(
+            service
+                .inspect(fixture.locator.clone(), request)
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionAlreadyHandled
+        );
+    }
+
+    #[test]
+    fn an_answered_elicitation_settles_as_answered() {
+        let fixture = permission_fixture(false);
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        let request = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-001".into(),
+        };
+        crate::acp::elicitation::write_elicitation_response_if_pending(
+            &attempt_dir,
+            "elicit-001",
+            ElicitationAction::Decline,
+            None,
+            "2Z".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Answered),
+            "a decline is an answer, not a cancellation"
         );
     }
 

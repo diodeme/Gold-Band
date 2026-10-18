@@ -310,6 +310,52 @@ impl ImRepository {
         })
     }
 
+    /// Intervention sources that are still actionable on their channel: not
+    /// expired, not dead-lettered and without a per-target resolution. Bounded
+    /// by the active outbox limit, so a settlement pass stays small.
+    pub fn open_intervention_sources(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<ImDelivery>, ImRepositoryError> {
+        let resolved = source_is_resolved_sql();
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT rowid, delivery_id, channel_kind, destination_json,
+                        notification_kind, canonical_event_id, payload_json,
+                        expires_at_ms, attempt_count
+                 FROM im_outbox
+                 WHERE state IN ('pending', 'sending', 'sent')
+                   AND payload_kind = 'intervention'
+                   AND expires_at_ms > ?1
+                   AND NOT {resolved}
+                 ORDER BY canonical_event_id, channel_kind, destination_id
+                 LIMIT ?2"
+            ))?;
+            let rows = statement.query_map(params![now_ms, self.active_limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(2)?,
+                    StoredDeliveryRow {
+                        row_id: row.get(0)?,
+                        delivery_id: row.get(1)?,
+                        destination_json: row.get(3)?,
+                        notification_kind: row.get(4)?,
+                        canonical_event_id: row.get(5)?,
+                        payload_json: row.get(6)?,
+                        expires_at_ms: row.get(7)?,
+                        attempt_count: row.get(8)?,
+                    },
+                ))
+            })?;
+            rows.map(|row| {
+                let (channel, row) = row?;
+                let channel =
+                    ImChannelKind::parse(&channel).ok_or(ImRepositoryError::InvalidStoredData)?;
+                row.into_delivery(channel)
+            })
+            .collect()
+        })
+    }
+
     pub fn enqueue_resolution_and_expire_pending_source(
         &self,
         source_event_id: &str,

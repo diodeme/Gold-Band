@@ -15,7 +15,7 @@
 ### 1.1 P2 修正历史（2026-10-15）
 
 - 企微 `multiple_interaction.select_list` 官方最多 3 项；真实四题请求返回 42047。能力声明、投影和 browser mock 统一改为 3，四题及以上在出站前整单跳过。仅修正此前错误的四/五题能力边界测试，企微 wire 黄金断言不变。
-- `ImResolutionOutcome::ElicitationSubmitted { content }` 承载 Accepted 的 schema-shaped 答案，删除单独瞬态 submission；runtime 的即时回包与 durable resolution 共用结果。`AlreadyApplied` 读取已存赢家结果，无结果时飞书仅回 toast，禁止后到答案覆盖。
+- `ImResolutionOutcome::ElicitationSubmitted { content }` 承载 Accepted 的 schema-shaped 答案，删除单独瞬态 submission；runtime 的即时回包与 durable resolution 共用结果。`AlreadyApplied` 读取已存赢家结果；无结果时按 canonical settlement 决定：取消当场投影取消终态，答案在途回“已处理”并禁用原卡，请求仍待处理按“操作已过期”禁用原卡；禁止后到答案覆盖。
 - 飞书终态使用官方 Card JSON 2.0 的 `initial_index`（单选，1-based）、`selected_values`（多选）、`default_value`（输入框）与 `disabled`；回调、PATCH 和降级另发复用源 delivery 与同一渲染函数。`ImConnector::send` 同 `update_message` 接收可选源 delivery，上层仍按能力处理。
 - payload v3 / schema v5 在一个 IMMEDIATE 事务内转换旧 JSON、写版本号。旧已提交但无答案的结果转为 `ResultUnavailable`；源 delivery、绑定、display_ref、tombstone 和入站幂等审计保留。迁移失败回滚，新代码不保留旧格式读取分支。
 - 回归覆盖 3/4 题投影边界、四类答案禁用回显、序列化后回调/PATCH 一致、降级另发保留源上下文、迁移保留 tombstone/绑定及回滚、赢家结果不被后到提交覆盖。该轮 P2 修正已由用户验收；未测极限和 P1 历史项仍见飞书技术方案 §3.6、§17。

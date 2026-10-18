@@ -21,18 +21,18 @@ use self::api::{
     FeishuBrand, FeishuClientConfig, FeishuHostTable, FeishuOpenApi, feishu_http_client,
 };
 use self::card::{
-    action_reply, decode_card_action, decode_error_reply, delivery_card_content, processing_reply,
-    resolution_payload_card_content,
+    action_reply, decode_card_action, decode_error_reply, delivery_card_content,
+    late_rejection_card_content, processing_reply, resolution_payload_card_content,
 };
 use self::ws::{
     Connection, EventReply, FeishuAckResult, InboundEvent, PendingActionResponses,
     reconnect_allowed, reconnect_delay,
 };
 use crate::im::{
-    ImActionResponse, ImActionResponseContext, ImActionTokenCodec, ImChannelCapabilities,
-    ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent, ImCustomAnswerSupport,
-    ImDelivery, ImDeliveryBinding, ImDeliveryPayload, ImDeliveryReceipt, ImErrorCode,
-    ImFreeTextCapability, ImIntegrationError, ImInteractionCapabilities, ImLocale,
+    ImActionResponse, ImActionResponseContext, ImActionResponseState, ImActionTokenCodec,
+    ImChannelCapabilities, ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent,
+    ImCustomAnswerSupport, ImDelivery, ImDeliveryBinding, ImDeliveryPayload, ImDeliveryReceipt,
+    ImErrorCode, ImFreeTextCapability, ImIntegrationError, ImInteractionCapabilities, ImLocale,
     ImMessageUpdateMode, ImMultiChoiceCapability, ImObservedBinding, ImOptionLimit,
     ResolvedImChannelConfig,
 };
@@ -673,10 +673,30 @@ impl ImConnector for FeishuConnector {
             return Err(ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid));
         };
         let response = action_reply(&action_response, handle.locale, &self.token_codec);
-        // A missing slot means the platform deadline or connection generation
-        // expired first. The persisted domain result remains authoritative.
-        let _ = self.send_action_response(handle.generation, &handle.request_id, response);
-        Ok(())
+        if self.send_action_response(handle.generation, &handle.request_id, response) {
+            return Ok(());
+        }
+        // The platform deadline or connection generation expired first and the
+        // user saw "Processing". An accepted or settled result reaches the card
+        // through the outbox resolution PATCH; a rejection has no durable
+        // record, so its reason is sent to the chat instead.
+        let (ImActionResponseState::Rejected(code), Some(delivery)) =
+            (action_response.state, &action_response.delivery)
+        else {
+            return Ok(());
+        };
+        let active = self.active_api()?;
+        let content = late_rejection_card_content(delivery, code, handle.locale);
+        active
+            .request(active.api.create_message(
+                &delivery.destination.destination_id,
+                MSG_TYPE_INTERACTIVE,
+                &content,
+                // One message per rejected click, deduplicated across retries.
+                &format!("{}:rejected:{}", delivery.delivery_id, handle.request_id),
+            ))
+            .await
+            .map(|_| ())
     }
 
     async fn update_message(

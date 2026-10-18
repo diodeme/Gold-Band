@@ -69,6 +69,7 @@
   "im.feishu.textTooLong": "A resposta excede o limite de tamanho",
   "im.feishu.invalidAnswer": "Resposta inválida. Corrija e tente novamente",
   "im.feishu.notActionable": "Esta mensagem não pode ser tratada no Feishu",
+  "im.feishu.lateRejection": "**id={ref} não enviado**\n\n{reason}",
   "im.feishu.result.submitted": "Formulário enviado",
   "im.feishu.result.outcome": "Resultado",
   "im.feishu.result.unavailable": "Tratado; detalhes do resultado indisponíveis",

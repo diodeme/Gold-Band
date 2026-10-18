@@ -220,7 +220,9 @@ IM 数据库不得保存 `approved/failed/completed` 作为工作流事实。它
 - `ImSubmittedAction` 为 PublishedAction、PermissionOption、ManualCheck、ElicitationForm、ElicitationDecline；平台类型不越过 connector。
 - `ImDeliveryPayload` 为带 version 的 Intervention、Information、InterventionResolution。只有 Intervention 可产生可执行入站；终态仅用于投递，不可再次提交。
 - `InterventionResolutionNotification` 保存 source_event_id、canonical_event_id、notification_kind、locator、display_ref、resolved_by、outcome。
-- `ImResolvedBy { Desktop, Channel(ImChannelKind) }`；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答、人工检查结果或显式 ResultUnavailable。
+- `ImResolvedBy { Desktop, Channel(ImChannelKind) }`；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答（ElicitationDeclined）、执行停止或过期导致的取消（ElicitationCancelled）、人工检查结果或显式 ResultUnavailable。
+- 只有用户真实拒绝才是 Declined；领域 `ElicitationAction::Cancel` 映射为 Cancelled，只能由桌面/Runtime 的停止、超时与孤儿清理路径产生。`ImSubmittedAction` 没有取消变体，已发布的 allowed actions 也不包含取消，远程入站无法提交 Cancel。取消终态不归属任何处理端：飞书卡片标题和结果均显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”，不得显示为“拒绝”或“已在某端处理”。
+- ElicitationCancelled 是 payload v3 内的追加 serde 变体，不升级 payload/schema 版本：旧数据不可能包含它，已有变体的编码不变，无需迁移；按开发阶段策略不支持新库回退旧客户端。
 - `ImResolutionDispatch { Send, TombstoneOnly }` 分离持久化事实与发送副作用。终态事件 identity 为 `<source_event_id>:resolved`，delivery identity 为 channel + destination + notification_kind + canonical_event_id 的稳定哈希。
 - `ImConnectionState` 为 Disabled、Connecting、Reconnecting、Connected、AuthenticationRequired、Error；快照携带 generation、capabilities、identity、binding、last_error_code。
 

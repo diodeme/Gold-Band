@@ -1089,6 +1089,64 @@ mod tests {
     }
 
     #[test]
+    fn remote_submissions_can_never_resolve_an_elicitation_as_cancelled() {
+        // `Cancel` is reserved for desktop/runtime stop and expiry paths.
+        for kind in ["elicitationCancel", "elicitationCancelled", "cancel"] {
+            assert!(
+                serde_json::from_value::<ImSubmittedAction>(serde_json::json!({ "kind": kind }))
+                    .is_err(),
+                "{kind} must not be a remote submission"
+            );
+        }
+        let cancel = InterventionAction::Elicitation {
+            action: ElicitationAction::Cancel,
+            content: None,
+        };
+        let allowed_actions = vec![
+            InterventionAllowedAction::ElicitationFixedForm {
+                form: RemoteElicitationForm {
+                    questions: vec![],
+                    decline_allowed: true,
+                },
+            },
+            InterventionAllowedAction::ElicitationAccept,
+            InterventionAllowedAction::ElicitationDecline,
+            InterventionAllowedAction::ManualSuccess,
+            InterventionAllowedAction::ManualFailure,
+        ];
+        assert!(!intervention_action_is_allowed(&allowed_actions, &cancel));
+        for allowed in &allowed_actions {
+            assert_ne!(intervention_action_for_allowed(allowed), cancel);
+        }
+
+        let fixture = fixture();
+        let mut delivery = fixture.delivery.clone();
+        delivery.notification_kind = ImNotificationKind::Elicitation;
+        let ImDeliveryPayload::Intervention { reference, .. } = &mut delivery.payload else {
+            unreachable!()
+        };
+        reference.request = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-1".into(),
+        };
+        reference.allowed_actions = vec![
+            InterventionAllowedAction::ElicitationAccept,
+            InterventionAllowedAction::ElicitationDecline,
+        ];
+        let reference = reference.clone();
+        let mut envelope = fixture.envelope.clone();
+        for action in [
+            ImSubmittedAction::PublishedAction { index: 0 },
+            ImSubmittedAction::PublishedAction { index: 1 },
+            ImSubmittedAction::ElicitationDecline,
+        ] {
+            envelope.action = action;
+            let submitted = submitted_intervention_action(&envelope, &reference).unwrap();
+            assert_ne!(submitted, cancel);
+            assert!(!ImResolutionOutcome::from(&submitted).is_cancelled());
+        }
+    }
+
+    #[test]
     fn form_violations_map_to_structured_form_error_codes() {
         let fixture = fixture();
         let mut delivery = fixture.delivery.clone();

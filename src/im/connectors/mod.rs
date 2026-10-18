@@ -127,6 +127,10 @@ fn notification_markdown_impl(
                 .or(delivery.display_ref)
                 .map(|value| format!("{value:04}"))
                 .unwrap_or_else(|| "----".to_string());
+            if resolution.outcome.is_cancelled() {
+                return localized(locale, "im.intervention.cancelledRef")
+                    .replace("{ref}", &display_ref);
+            }
             localized(locale, "im.intervention.handledOn")
                 .replace("{ref}", &display_ref)
                 .replace("{source}", resolved_by_copy(resolution.resolved_by, locale))
@@ -418,6 +422,7 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
         (ImLocale::ZhCn, "im.elicitation.detail.context") => "前序模型输出",
         (ImLocale::ZhCn, "im.intervention.handledOn") => "**id={ref} 已在{source}处理**",
         (ImLocale::ZhCn, "im.intervention.cancelled") => "已取消",
+        (ImLocale::ZhCn, "im.intervention.cancelledRef") => "**id={ref} 已取消**",
         (ImLocale::En, "im.notification.permission.title") => "Permission request",
         (ImLocale::En, "im.notification.permission.summary") => {
             "A task is waiting for your permission decision."
@@ -492,6 +497,7 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
         (ImLocale::En, "im.elicitation.detail.context") => "Previous model output",
         (ImLocale::En, "im.intervention.handledOn") => "**id={ref} Handled on {source}**",
         (ImLocale::En, "im.intervention.cancelled") => "Cancelled",
+        (ImLocale::En, "im.intervention.cancelledRef") => "**id={ref} Cancelled**",
         (ImLocale::En, "im.feishu.processing") => "Processing",
         (ImLocale::En, "im.feishu.customAnswerMissing") => "Enter the custom answer",
         (ImLocale::En, "im.feishu.textTooLong") => "The answer exceeds the length limit",

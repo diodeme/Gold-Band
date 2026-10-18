@@ -1,5 +1,14 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-18 PR #144 飞书 IM 能力迁移到 main
+
+- 范围：只迁移 b2b1099e、981ffb25、aefc7e8e、6abc5721 四个提交；不迁移 multica/remote、资源目录刷新与全仓 rustfmt 提交。`resources/` 与 multica 文件保持 main 原样，`Cargo.lock` 以 main 为基础由 cargo 补入 prost 依赖。
+- 同功能冲突以 main 为准：`src/acp/client.rs`、`client_direct.rs` 保留 e56d8641 的停止边界结算与 bb3f0759 的原生 subagent 跟踪，981ffb25 只取 Direct 后台 Stop 身份断言（按 session + generation 判等，墙钟投影按采样区间验收）；browser preview 保留 c2bf0b12 的会话内容拆分，把无 DOM 保护扩展到 main 新增的 `attachmentIdentity` 查询读取；纯格式化差异全部丢弃。
+- 业务冲突：main 新增 `ElicitationAction::Cancel`（停止、超时、孤儿清理），PR 的 IM 终态只有 Declined。新增 `ImResolutionOutcome::ElicitationCancelled`，飞书卡片标题与结果显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”。远程入站没有取消变体，已发布 allowed actions 不含取消，无法提交 Cancel。该变体为 payload v3 内的追加编码，旧数据不可能包含，不升级 payload/schema 版本。
+- 已知未覆盖：e56d8641 的停止结算直接写入取消结果，不经过 IM 终态投影；对应 IM 卡片保持到过期，之后点击按“已处理”收敛。取消路径的 IM 投影在后续修复中处理。
+- 验收：Cancel 渲染用例在去掉取消判定时稳定失败（卡片仍显示“已处理/桌面端”），恢复后通过；browser 无 DOM 用例在 main 实现上因 `window` 为 undefined 失败，修复后通过。核心 lib 1806 项通过（`doctor_initialize_and_cleanup_share_the_deadline` 仅在全量并行负载下超时，单独运行通过，未改动 doctor 代码），桌面端 880 项、CI Clippy 门禁、TypeScript 检查、相关前端 383 项与发布脚本 6 项通过。全量前端中 `acp-composer-render-isolation` 6 项在 main 原代码上同样失败，marketing/demo 用例因本机依赖缺 `@noble/hashes` 无法加载，均与本次迁移无关。
+- 过度设计与性能评审：只增加一个结果枚举变体和常数级渲染分支，不新增状态、持久字段、依赖或 I/O；暂停时间复用已提交的 `Run.updated_at`。
+
 ## 2026-10-16 续接会话的模型与权限以会话快照为准
 
 - 根因：09-24 让 `session/new` 把不支持的模型、权限回滚为不指定，但同一会话再次构建调用（AI-DYNAMIC proposal repair、提交提醒、workflow continue）时，模型和权限仍从冻结的节点配置取值，只有 `config_options` 以 snapshot 为准。task-334 的 bootstrap 用 `deepseek-flash` 新建 Codex 会话并已回滚，proposal 因 `dynamic.fanout.workspace-dirty` 进入 repair 后又以 `continue` 发出 `deepseek-flash`，在已建立会话分支得到 `acp.session-config-value-unavailable`。属于「复用会话以 snapshot 为权威」契约只覆盖了配置项的设计缺口。

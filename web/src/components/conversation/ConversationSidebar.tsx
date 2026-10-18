@@ -925,7 +925,7 @@ const TaskRow = memo(function TaskRow({
             </TooltipContent>
           </Tooltip>
         ) : (
-          <span className={cn('size-1.5 rounded-full', latestColor)} />
+          <span data-task-status-project={task.projectId} className={cn('size-1.5 rounded-full', latestColor)} />
         )}
       </span>
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">

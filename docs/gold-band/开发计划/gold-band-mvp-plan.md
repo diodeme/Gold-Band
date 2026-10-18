@@ -945,6 +945,12 @@
 - 阴影强度补充证据与验收：最新新旧版本对比截图证明 joined surface 的阴影所有权和连接几何已经正确，但 Gold Band 亮色的 `--gb-elevation-overlay` 为 `0 4px 16px / 6%`，扩散过大且近似不可见，未达到旧版 `0 1px 2px / 12%` 的紧实层次；因此撤回此前对亮色 overlay 观感的验收结论。最小契约改为固定亮色 material、暗色 overlay 和 rail 唯一一次 filter；实现修改前 11 项中仅这两项失败，准确命中直接使用 overlay 的旧实现，修改后 11/11 转绿，扩大到 7 个 composer 相关测试文件 47/47 通过。按用户本轮明确要求不再重复执行生产构建或全量测试，沿用前序 connector 验收记录但不把它冒充为本次阴影 token 调整后的新增结果。
 - 依赖、性能与过度设计评审：复用现有 joined surface、Tailwind、主题 radius/card/border 与 composer 边框变量，不新增依赖、React 状态、观察器、测量、mask、缓存、队列或业务抽象。删除 SVG 节点、path 栅格化、旧的双层 filter 与错误的 spread shadow；connector 只保留一个静态 span、一次 underpaint 和一个 CSS pseudo border，整组 elevation 只增加一个静态主题 filter；最终修正由一个静态 CSS 定位公式、一个 rail 局部 CSS 变量与一次父级合成投影构成，请求、订阅、历史加载和 React 渲染范围不变，常数级绘制无需专项 benchmark。没有为短角标、完整信息、主题或 DPR 增加 DOM、状态或业务补丁分支，复杂度与单一凹角问题匹配。
 
+## 2026-09-22：只读 Demo 输入框与信息 tab 左上连接
+
+- 根因：joined surface 的设计是对的。信息 tab 是否渲染，和主 surface 是否取消左上圆角，必须走同一个可见性判断。官网 Demo 把整棵会话树标成只读，并仍挂载禁用输入框；信息 tab 继续因会话累计、上下文或工作树显示，但连接口判断把 `readOnly` 直接当成“没有 composer”，左上圆角因此留下。桌面应用不是只读，所以同一条左缘是连续的。这是正确设计的实现遗漏，不是 Demo 主题或圆角 token 的问题。
+- 实现：只读且禁用输入框仍是最上层 surface 时，连接口目标回到 composer，输入框取消左上圆角。只读继续不挂载人工判断和待发送队列。
+- 验收：最小 DOM 测试在修复前失败于 `rounded-tl-none` 缺失，信息 tab 与 connector 已经存在；修复后同一测试转绿。
+
 ## 2026-08-30：Task 活动时间轻量投影与终态幂等
 
 - 根因与形成路径：Task 最近活动采用 `conversation.json.lastActivityAt` 作为 canonical、SQLite `tasks.updated_at` 作为可重建排序投影的设计正确，但 activity 更新错误复用了完整 Task 搜索索引入口，每次 Turn 边界都会读取 `task.json`、`conversation.json` 和整份 `requirement.md` 后执行全字段 UPSERT；`tasks_au` 又监听任意 UPDATE，使单列时间变化也重新分词搜索正文。停止控制器与迟到 Finished 还分别以各自 `Utc::now()` 推进同一 terminal，造成一次停止可能产生第二次活动写入。问题属于正确设计下接口职责、canonical 事件时间和 FTS 触发范围实现不完整。

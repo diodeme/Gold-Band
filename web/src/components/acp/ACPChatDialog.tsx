@@ -3010,7 +3010,7 @@ export function ACPChatDialog(
         ? "todo"
         : !readOnly && promptQueueVisible && promptQueue
           ? "queue"
-          : !readOnly
+          : !readOnly || showDisabledComposer
             ? "composer"
             : null;
   const canStopSession = composerState.canStop || backgroundActive;

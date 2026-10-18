@@ -1,3 +1,10 @@
+# Recording hashes cover exact bytes, including JSON and SVG line endings.
+marketing/site/media/workflow/** -text
+marketing/site/media/before/** -text
+marketing/site/media/after/** -text
+marketing/site/media/personalize/** -text
+# Demo dataset hashes cover exact bytes; EOL conversion would fail integrity checks.
+marketing/demo/data/** -text
 # Keep generated text assets stable on Windows machines with core.autocrlf=true.
 resources/themes/*.json text eol=lf
 theme-sdk/schema/*.json text eol=lf

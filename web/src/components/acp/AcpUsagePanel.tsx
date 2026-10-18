@@ -4,7 +4,7 @@ import type { AcpUsageVm } from '@/types';
 import { cn } from '@/lib/utils';
 import { formatTokenCount } from '@/lib/format-token';
 import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
-import { Ellipsis, GitFork } from 'lucide-react';
+import { CircleAlert, Ellipsis, GitFork } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -184,8 +184,9 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
               </dl>
             ) : null}
             {tokenRows.length > 0 && usage?.tokenTotalsExcludeBackground ? (
-              <p className="max-w-56 text-muted-foreground" data-acp-usage-excludes-background="true">
-                {t('acp.usagePanel.excludesBackground')}
+              <p className="flex max-w-56 items-start gap-1.5 text-muted-foreground" data-acp-usage-excludes-background="true">
+                <CircleAlert aria-hidden="true" className="mt-px size-3.5 shrink-0 text-gold-warning" />
+                <span>{t('acp.usagePanel.excludesBackground')}</span>
               </p>
             ) : null}
           </div>

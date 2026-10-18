@@ -635,7 +635,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolution_waits_for_inflight_source_and_its_retry_before_updating() {
+    async fn resolution_of_a_failed_inflight_source_is_sent_on_its_own_without_resending_the_card()
+    {
         let temp = tempfile::tempdir().unwrap();
         let repository = Arc::new(ImRepository::new(
             Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
@@ -680,50 +681,28 @@ mod tests {
                 103,
             )
             .unwrap();
+        // The failed source is already resolved, so it expires instead of
+        // retrying, and the resolution no longer has a card to update.
         assert_eq!(worker.dispatch_once(5_102).await.unwrap(), 1);
-        assert_eq!(
-            connector.sends.load(Ordering::SeqCst),
-            0,
-            "a source waiting to retry is not a permanently missing message"
-        );
-
-        let retry = repository
-            .claim_due(
-                source.channel,
-                20_000,
-                Duration::from_secs(60),
-                MAX_IM_DUE_BATCH,
-            )
-            .unwrap()
-            .into_iter()
-            .find(|c| c.delivery.delivery_id == source.delivery_id)
-            .unwrap();
-        let receipt = connector.send(retry.delivery, None).await.unwrap();
-        let binding = receipt.into_binding(source.channel, source.delivery_id.clone());
-        repository
-            .mark_sent(
-                &source.delivery_id,
-                source.channel,
-                retry.attempt_count,
-                binding.as_ref(),
-                20_001,
-            )
-            .unwrap();
-        // The resolution claimed alongside the source is recovered after a restart.
-        repository
-            .recover_expired_leases(80_000, MAX_IM_DUE_BATCH)
-            .unwrap();
-        assert_eq!(worker.dispatch_once(80_000).await.unwrap(), 1);
         assert_eq!(connector.sends.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *connector.updated_message_ids.lock().unwrap(),
-            vec![format!("message-{}", source.delivery_id)]
+        assert!(connector.updated_message_ids.lock().unwrap().is_empty());
+        assert!(
+            repository
+                .claim_due(
+                    source.channel,
+                    20_000,
+                    Duration::from_secs(60),
+                    MAX_IM_DUE_BATCH,
+                )
+                .unwrap()
+                .is_empty(),
+            "an actionable card is never resent for a resolved request"
         );
         assert_eq!(worker.dispatch_once(90_000).await.unwrap(), 0);
     }
 
     #[tokio::test]
-    async fn resolution_waits_for_source_lease_recovery() {
+    async fn resolution_of_a_source_with_a_lost_lease_is_sent_on_its_own() {
         let temp = tempfile::tempdir().unwrap();
         let repository = Arc::new(ImRepository::new(
             Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
@@ -753,11 +732,12 @@ mod tests {
         );
         worker.dispatch_once(5_102).await.unwrap();
         worker.dispatch_once(10_102).await.unwrap();
-        assert_eq!(connector.sends.load(Ordering::SeqCst), 1);
         assert_eq!(
-            *connector.updated_message_ids.lock().unwrap(),
-            vec![format!("message-{}", source.delivery_id)]
+            connector.sends.load(Ordering::SeqCst),
+            1,
+            "only the resolution is sent; the resolved source expired"
         );
+        assert!(connector.updated_message_ids.lock().unwrap().is_empty());
         assert_eq!(worker.dispatch_once(20_000).await.unwrap(), 0);
     }
 

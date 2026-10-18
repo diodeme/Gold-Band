@@ -4064,3 +4064,101 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
             .contains("# 需求\nExercise AI-DYNAMIC")
     );
 }
+
+/// Fails the first dynamic invocation with a named, auto-recoverable startup
+/// failure and delegates every later call to the fan-out repair scenario.
+#[derive(Clone)]
+struct StartupFailureThenDynamic {
+    inner: DynamicProvider,
+    retry_intents: Arc<Mutex<Vec<Option<gold_band::acp::events::AcpFailedPromptAttempt>>>>,
+}
+
+fn dynamic_startup_failed_attempt() -> gold_band::acp::events::AcpFailedPromptAttempt {
+    gold_band::acp::events::AcpFailedPromptAttempt {
+        turn_id: "turn-dynamic-startup".to_string(),
+        operation_id: "prompt:dynamic-first-attempt".to_string(),
+    }
+}
+
+impl ProviderAdapter for StartupFailureThenDynamic {
+    fn describe_provider(&self) -> ProviderInfo {
+        self.inner.describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        self.inner.doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        self.run_worker_with_callbacks(req, None, None, None)
+    }
+
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        let first = {
+            let mut intents = self.retry_intents.lock().unwrap();
+            intents.push(req.automatic_retry_of.clone());
+            intents.len() == 1
+        };
+        if first {
+            let mut info = gold_band::runtime_error::auto_runtime_error_info(
+                gold_band::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+                "runtime.transport-interrupted",
+                "ACP `initialize` timed out after 60 seconds",
+                json!({}),
+            );
+            info.retry_policy = Some(gold_band::runtime_error::RetryPolicy {
+                max_attempts: 3,
+                backoff_ms: vec![1],
+                jitter: false,
+            });
+            return Err(gold_band::runtime_error::runtime_error(info)
+                .context(dynamic_startup_failed_attempt()));
+        }
+        self.inner
+            .run_worker_with_callbacks(req, live_update, session_update, prompt_accepted)
+    }
+
+    fn open_session(&self, worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
+        self.inner.open_session(worker_ref)
+    }
+
+    fn build_continue_command(
+        &self,
+        worker_ref: &gold_band::domain::SessionRef,
+    ) -> anyhow::Result<Option<String>> {
+        self.inner.build_continue_command(worker_ref)
+    }
+}
+
+#[test]
+fn ai_dynamic_repair_turn_does_not_inherit_the_startup_retry_intent() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-retry-intent";
+    let provider = StartupFailureThenDynamic {
+        inner: DynamicProvider::fanout_repair(),
+        retry_intents: Arc::new(Mutex::new(Vec::new())),
+    };
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+
+    let intents = provider.retry_intents.lock().unwrap();
+    assert!(intents.len() >= 3, "startup retry and repair must both run");
+    assert_eq!(intents[0], None);
+    assert_eq!(intents[1], Some(dynamic_startup_failed_attempt()));
+    assert!(
+        intents[2..].iter().all(Option::is_none),
+        "later repair or child turns must not inherit the retry intent: {intents:?}"
+    );
+}

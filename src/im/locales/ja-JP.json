@@ -69,6 +69,7 @@
   "im.feishu.textTooLong": "入力が文字数の上限を超えています",
   "im.feishu.invalidAnswer": "回答が無効です。修正してもう一度お試しください",
   "im.feishu.notActionable": "このメッセージは Feishu では処理できません",
+  "im.feishu.lateRejection": "**id={ref} は送信できませんでした**\n\n{reason}",
   "im.feishu.result.submitted": "フォームを送信しました",
   "im.feishu.result.outcome": "結果",
   "im.feishu.result.unavailable": "処理済み。結果の詳細は利用できません",

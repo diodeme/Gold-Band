@@ -69,6 +69,7 @@
   "im.feishu.textTooLong": "The answer exceeds the length limit",
   "im.feishu.invalidAnswer": "Invalid answer. Correct it and try again",
   "im.feishu.notActionable": "This message cannot be handled in Feishu",
+  "im.feishu.lateRejection": "**id={ref} Not submitted**\n\n{reason}",
   "im.feishu.result.submitted": "Form submitted",
   "im.feishu.result.outcome": "Result",
   "im.feishu.result.unavailable": "Handled; result details unavailable",

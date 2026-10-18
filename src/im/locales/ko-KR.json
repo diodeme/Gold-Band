@@ -69,6 +69,7 @@
   "im.feishu.textTooLong": "입력이 길이 제한을 초과했습니다",
   "im.feishu.invalidAnswer": "답변이 올바르지 않습니다. 수정한 뒤 다시 시도하세요",
   "im.feishu.notActionable": "이 메시지는 Feishu에서 처리할 수 없습니다",
+  "im.feishu.lateRejection": "**id={ref} 제출되지 않음**\n\n{reason}",
   "im.feishu.result.submitted": "양식이 제출됨",
   "im.feishu.result.outcome": "결과",
   "im.feishu.result.unavailable": "처리됨. 결과 세부 정보를 확인할 수 없습니다",

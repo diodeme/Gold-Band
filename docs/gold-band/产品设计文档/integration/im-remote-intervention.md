@@ -189,7 +189,7 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 - 企微是来源时仅回调更新，不重复广播到自身：被点击的企微目标写 TombstoneOnly/expired 保存赢家结果并关闭源卡，不另发第二条；飞书来源仍写终态，确保超时和 generation 切换后可由 worker 补齐。
 - Runtime 停止路径（Run 停止/节点 teardown、ACP 会话关闭、Direct 后台停止、Runtime 已消失的遗留请求）不经过桌面命令，统一由 canonical settlement 收敛：领域 `InterventionCommandService::settlement` 依据响应文件 → 待处理文件 → timeline 已结算项判定 `Pending | Answered | Cancelled`（无信号文件但 timeline 仍待处理视为被遗弃的取消）。IM 侧 settlement reconciler 在 RunCompleted / NodeCompleted / AcpTurnFinished / DirectTurnLifecycle 后（1 秒去抖）及每 30 秒扫描未结算的开放源卡（pending/sending/sent、未过期、无 `:resolved`），只为 `Cancelled` 写 `resolved_by=Runtime` 的取消终态；`Answered` 留给 Accepted 的一端写入，保持单赢家规则，重复扫描靠终态唯一键幂等。
 - 点击已结算请求的卡片时：已有终态直接回填；canonical 为取消则当场投影取消终态并回填；答案仍在写入途中则回“已处理”并禁用原卡，等待后续 PATCH 补齐结果；请求仍待处理（卡片快照过期，永远无法成功）则按“操作已过期”禁用原卡。领域对已结算请求返回 `INTERVENTION_ALREADY_HANDLED`，不再误报 `INTERVENTION_REQUEST_NOT_FOUND`。
-- 回调最多等待 2.5 秒，超时只返回“处理中”toast，原输入不被清除。Accepted 后的持久终态继续 PATCH；校验失败保持可编辑。
+- 回调最多等待 2.5 秒，超时只返回“处理中”toast，原输入不被清除。Accepted 后的持久终态继续 PATCH；被拒绝时卡片保持可编辑，原因另发一条只读消息“id=xxxx 提交未成功”到同一私聊（拒绝没有持久终态，不进 outbox，也不改卡片，避免迟到的可编辑卡覆盖已结算终态）。
 - 只有消息撤回、删除或超过更新期限的 `MessageUpdateUnavailable` 才另发源上下文完整的只读终态卡；限流/网络错误退避重试，鉴权/缺权限/卡片协议失败不另发掩盖错误。
 - 两端竞争只允许一个 Accepted。迟到提交从已有终态读取赢家答案；没有可读取的赢家结果时回“已处理”并禁用原卡，不使用后到答案填卡。领域 Accepted 与 IM 写入间崩溃的恢复限制保留，不新增跨库事务。
 

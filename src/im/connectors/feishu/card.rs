@@ -726,6 +726,30 @@ pub(crate) fn action_reply(
     .into_value()
 }
 
+/// Chat message for a rejection whose callback window already closed: the
+/// user only saw "Processing", and a rejection has no durable resolution.
+pub(crate) fn late_rejection_card_content(
+    delivery: &ImDelivery,
+    code: ImErrorCode,
+    locale: ImLocale,
+) -> String {
+    let reason = match code {
+        ImErrorCode::ActionExpired => {
+            message_state_label(locale, crate::im::ImMessageState::Expired)
+        }
+        code => error_copy(code, locale),
+    };
+    let display_ref = delivery
+        .display_ref
+        .map(|value| format!("{value:04}"))
+        .unwrap_or_else(|| "----".to_owned());
+    read_only_card_content(
+        &localized(locale, "im.feishu.lateRejection")
+            .replace("{ref}", &display_ref)
+            .replace("{reason}", reason),
+    )
+}
+
 pub(crate) fn processing_reply(locale: ImLocale) -> Value {
     Reply::new(
         ToastType::Info,

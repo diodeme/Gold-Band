@@ -69,6 +69,7 @@
   "im.feishu.textTooLong": "内容超出长度限制",
   "im.feishu.invalidAnswer": "回答无效，请修正后重试",
   "im.feishu.notActionable": "这条消息不能在飞书处理",
+  "im.feishu.lateRejection": "**id={ref} 提交未成功**\n\n{reason}",
   "im.feishu.result.submitted": "表单已提交",
   "im.feishu.result.outcome": "结果",
   "im.feishu.result.unavailable": "已处理，结果详情不可用",

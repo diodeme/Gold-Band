@@ -4,7 +4,7 @@ The website, recording source and read-only Demo are separate Vite entries. This
 
 ## Build And Develop
 
-The root .env.local can set DEMO_DATASET_PATH to the existing exported dataset. Both Demo development and production builds read this setting. Development serves files on demand at /data/ji-history/; production copies the verified publication inventory, including task.json and workflow snapshots, into the bundled Demo directory. Raw task directories must first pass through the existing export pipeline. The local dataset currently has 1610 missing source references, so complete production validation still fails until those sources are supplied.
+Demo development and production builds read the trimmed dataset in `marketing/demo/data/ji-history` by default; `DEMO_DATASET_PATH` overrides it. Development serves files on demand at /data/ji-history/; production copies the verified publication inventory into the bundled Demo directory. Regenerate the in-repo dataset with `scripts/slim-demo-dataset.mjs` after re-exporting raw task directories through the existing export pipeline.
 
 Use the repository lockfile (`npm ci`) and Node 22.18+ (recording scripts import TypeScript). Run commands from the repository root. The website is `marketing/site`, recording source is `marketing/recording`, and Demo is `marketing/demo`. Copy and API boundaries remain in the existing source files:
 
@@ -35,15 +35,15 @@ Remove-Item Env:DEMO_ALLOW_INCOMPLETE_DATASET -ErrorAction SilentlyContinue
 npm run demo:build
 ```
 
-单目录交付使用 npm run website:build。默认输出到 release/website，将官网放在根目录、Demo 放在 demo/ 子目录；设置 WEBSITE_DIST 可指定目标目录。Demo 完整数据门禁仍然生效。
+单目录交付使用 npm run website:build（Cloudflare Worker 部署读取该目录，见 `wrangler.jsonc`）。默认输出到 release/website，将官网放在根目录、Demo 放在 demo/ 子目录；设置 WEBSITE_DIST 可指定目标目录。Demo 完整数据门禁仍然生效。
 
 ### 子路径部署与 HTTP
 
 挂在非根路径时必须在构建期设置 base，不能靠服务器改路径：`VITE_SITE_BASE='/product/'` 会让 `website:build` 自动把 Demo 推导为 `/product/demo/`。产物内的资源引用是绝对路径。用 `root` 托管时目录名要与 URL 前缀一致，否则改用 `alias`（注意 location 与 alias 的尾部斜杠必须一致）。
 
-录制回放和 Demo 数据都带 SHA-256 字节校验。`crypto.subtle` 只在安全上下文（HTTPS 或 localhost）存在，所以纯 HTTP 部署曾让回放退化成“演示暂时无法加载”；现在 `web/src/lib/sha256.ts` 会在缺少 `crypto.subtle` 时回退到导出脚本同款的 `@noble/hashes` 实现，校验在任何来源都保持生效。仍建议生产启用 HTTPS，回放和 Demo 之外的其他浏览器能力也依赖安全上下文。
+录制回放和 Demo 数据都带 SHA-256 字节校验。`crypto.subtle` 只在安全上下文（HTTPS 或 localhost）存在，所以纯 HTTP 部署曾让回放退化成“演示暂时无法加载”；现在 `marketing/shared/sha256.ts` 会在缺少 `crypto.subtle` 时回退到导出脚本同款的 `@noble/hashes` 实现，校验在任何来源都保持生效。仍建议生产启用 HTTPS，回放和 Demo 之外的其他浏览器能力也依赖安全上下文。
 
-Those `C:/delivery` paths are examples to replace, not existing deliverables. Demo builds enforce missing-source and hash gates. The current 1610 missing references prevent a complete release. `DEMO_ALLOW_INCOMPLETE_DATASET` is exclusively a local diagnostic exception, never a production setting. Do not repeatedly copy the current 240990-file dataset merely to preview it.
+Those `C:/delivery` paths are examples to replace, not existing deliverables. Demo builds enforce missing-source and hash gates. `DEMO_ALLOW_INCOMPLETE_DATASET` is exclusively a local diagnostic exception, never a production setting.
 
 ## Recording And Verification
 

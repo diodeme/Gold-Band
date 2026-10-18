@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runtime = vi.hoisted(() => ({
+  tauri: true,
   listener: null as ((event: unknown) => void) | null,
 }));
 
@@ -42,7 +43,6 @@ vi.mock('@/api/client', async () => {
         runtime.listener = listener;
         return () => undefined;
       },
-      getSupportedAttachmentExtensions: async () => [],
     }),
   };
 });
@@ -53,7 +53,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('@/api/shared', async () => {
   const actual = await vi.importActual<typeof import('@/api/shared')>('@/api/shared');
-  return { ...actual, isTauriRuntime: () => true };
+  return { ...actual, isTauriRuntime: () => runtime.tauri };
 });
 
 vi.mock('@/api', async () => {
@@ -86,9 +86,14 @@ import {
   createAcpEventWindowCacheKey,
   createAcpSessionCacheKey,
   loadedEventBufferLimit,
+  markAcpSessionContentHydrated,
   optimisticUserEvent,
   resetAcpResourceCache,
   restoreAcpSession,
+  restoreAcpLoadedEventWindow,
+  storeAcpLoadedEventWindow,
+  storeAcpBranchViewState,
+  storeAcpSession,
   updateAcpOptimisticEvents,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -106,6 +111,14 @@ import type {
 } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
 
 const locator = {
   projectId: 'project-watermark',
@@ -189,7 +202,7 @@ function update(eventUpdate: AcpUiEventVm): AcpSessionUpdatedEventVm {
 }
 
 async function renderDialog(
-  acpSession: AcpSessionVm,
+  acpSession: AcpSessionVm | null,
   branchId = 'root',
   onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
   optimisticEvents?: AcpUiEventVm[],
@@ -198,6 +211,7 @@ async function renderDialog(
   lifecycle?: ConversationAttemptLifecycleVm,
   allowEventOnlySessionShell = true,
   onAtBottomChange?: (atBottom: boolean) => void,
+  onLifecycleSnapshot?: React.ComponentProps<typeof ACPChatDialog>['onLifecycleSnapshot'],
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -219,26 +233,27 @@ async function renderDialog(
   }
   await act(async () => {
     root.render(
-      <TooltipProvider>
-        <ACPChatDialog
-          session={acpSession}
-          {...dialogLocator}
-          branchId={branchId}
-          eventPageSize={eventPageSize}
-          runtimeComposerContext={lifecycle ? {
-            isOrchestrated: true,
-            runtimeStatus: lifecycle.runtime.status,
-            workflowValid: true,
-            lifecycle,
-          } : undefined}
-          allowEventOnlySessionShell={allowEventOnlySessionShell}
-          onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
-          onAtBottomChange={onAtBottomChange}
-          showSystemPromptAction={false}
-          showRawFramesAction={false}
-          usageCompact
-        />
-      </TooltipProvider>,
+      <TestProviders>
+          <ACPChatDialog
+            session={acpSession}
+            {...dialogLocator}
+            branchId={branchId}
+            eventPageSize={eventPageSize}
+            runtimeComposerContext={lifecycle ? {
+              isOrchestrated: true,
+              runtimeStatus: lifecycle.runtime.status,
+              workflowValid: true,
+              lifecycle,
+            } : undefined}
+            allowEventOnlySessionShell={allowEventOnlySessionShell}
+            onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
+            onAtBottomChange={onAtBottomChange}
+            onLifecycleSnapshot={onLifecycleSnapshot}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>,
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
@@ -268,17 +283,17 @@ async function renderStoredOptimisticDialog(
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
-        <ACPChatDialog
-          session={acpSession}
-          {...locator}
-          branchId="root"
-          eventPageSize={eventPageSize}
-          showSystemPromptAction={false}
-          showRawFramesAction={false}
-          usageCompact
-        />
-      </TooltipProvider>,
+      <TestProviders>
+          <ACPChatDialog
+            session={acpSession}
+            {...locator}
+            branchId="root"
+            eventPageSize={eventPageSize}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+      </TestProviders>,
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
@@ -401,6 +416,7 @@ async function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
 }
 
 beforeEach(() => {
+  runtime.tauri = true;
   streamingDiagnostics.enabled = false;
   streamingDiagnostics.records = [];
   resetAcpResourceCache();
@@ -429,6 +445,341 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it('isolates pending questions and late canonical responses across project identity switches', async () => {
+    const first = session([event('project-a-history', 10, 'textDelta', 'Project A history')]);
+    first.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'project-a-question', sessionId: first.sessionId,
+      message: 'Project A question', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    let resolveFirst!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockReturnValueOnce(new Promise(resolve => { resolveFirst = resolve; }))
+      .mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(first);
+    try {
+      expect(container.textContent).toContain('Project A question');
+      await act(async () => root.render(<TestProviders><ACPChatDialog
+        {...locator} projectId="project-other" taskUuid="task-other" session={null} branchId="root"
+        showSystemPromptAction={false} showRawFramesAction={false} usageCompact
+      /></TestProviders>));
+      expect(container.textContent).not.toContain('Project A question');
+      await act(async () => resolveFirst(first));
+      expect(container.textContent).not.toContain('Project A question');
+      expect(container.textContent).not.toContain('Project A history');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('rejects a seed from a different dynamic outer attempt', async () => {
+    const target = { ...locator, outerNodeId: 'dynamic', outerAttemptId: 'outer-current' };
+    const foreign = { ...session([event('foreign-outer', 10, 'textDelta', 'Foreign outer history')]),
+      outerNodeId: target.outerNodeId, outerAttemptId: 'outer-obsolete' };
+    foreign.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'outer-question', sessionId: foreign.sessionId,
+      message: 'Foreign outer question', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(foreign, 'root', undefined, undefined, target);
+    try {
+      expect(container.textContent).not.toContain('Foreign outer history');
+      expect(container.textContent).not.toContain('Foreign outer question');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('loads canonical content in browser runtime without a parent session body', async () => {
+    runtime.tauri = false;
+    vi.mocked(getAcpSession).mockResolvedValue(session([event('browser-answer', 10, 'textDelta', 'Browser canonical answer')]));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain('Browser canonical answer');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('emits lifecycle navigation summaries with the complete locator and without session content', async () => {
+    const current = session([event('summary-answer', 10, 'textDelta', 'Previous answer')], 'completed');
+    current.sessionStartedAt = '2026-10-14T07:43:40Z';
+    const lifecycle = terminalLifecycle('summary-turn');
+    vi.mocked(getAcpSession).mockResolvedValue(current);
+    vi.mocked(submitConversationPrompt).mockResolvedValue({ kind: 'acp-session', session: current, run: null, lifecycle });
+    const snapshots = vi.fn();
+    const { container, root } = await renderDialog(
+      current, 'root', undefined, undefined, locator, undefined, lifecycle, true, undefined, snapshots,
+    );
+    try {
+      await setTextareaValue(container.querySelector('textarea')!, 'Follow up');
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click());
+      expect(snapshots).toHaveBeenCalled();
+      expect(snapshots.mock.calls.at(-1)?.[0]).toMatchObject({
+        ...locator, sessionId: current.sessionId, sessionStartedAt: current.sessionStartedAt, lifecycle,
+      });
+      expect(snapshots.mock.calls.at(-1)?.[0]).not.toHaveProperty('session');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not resurrect a cancelled question from an old prop on two consecutive remounts', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('question-history', 10, 'textDelta', 'Preserved history')]);
+    stale.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'question-cancelled', sessionId: stale.sessionId,
+      message: 'Cancelled Docker permission question', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    // The response is deliberately outside the current page; the canonical revision is authoritative.
+    const settled = { ...stale, pendingInteractions: [], eventPage: { ...stale.eventPage, coveredRevision: 11, newestRevision: 11 } };
+    storeAcpSession(cacheKey, settled);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: settled.sessionId!, timelineGeneration: 1, coveredRevision: 11, events: settled.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    for (let entry = 0; entry < 2; entry += 1) {
+      let resolveCanonical!: (value: AcpSessionVm) => void;
+      vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { resolveCanonical = resolve; }));
+      const { container, root } = await renderDialog(stale);
+      try {
+        expect(container.textContent).not.toContain('Cancelled Docker permission question');
+        expect(restoreAcpSession(cacheKey)?.eventPage.coveredRevision).toBe(11);
+        await act(async () => resolveCanonical(settled));
+        expect(container.textContent).not.toContain('Cancelled Docker permission question');
+      } finally {
+        await unmount(root);
+      }
+    }
+  });
+
+  it('shows a genuinely new live question immediately without unlocking unverified cached questions', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('live-question-history', 10, 'textDelta', 'Retained history')]);
+    stale.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'question-old', sessionId: stale.sessionId,
+      message: 'Unverified old question', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).not.toContain('Unverified old question');
+      await act(async () => runtime.listener?.(update(event('question-new', 12, 'elicitationRequest', 'New live question', {
+        status: 'pending', raw: { message: 'New live question', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } } },
+      }))));
+      expect(container.textContent).toContain('New live question');
+      expect(container.textContent).not.toContain('Unverified old question');
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not unlock cached pending when the canonical response has an older revision', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('older-read-history', 10, 'textDelta', 'Retained query history')]);
+    stale.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'question-query', sessionId: stale.sessionId,
+      message: 'Unverified query question', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    vi.mocked(getAcpSession).mockResolvedValueOnce({
+      ...stale, pendingInteractions: [], eventPage: { ...stale.eventPage, coveredRevision: 9, newestRevision: 9 },
+    }).mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).not.toContain('Unverified query question');
+      expect(restoreAcpSession(cacheKey)?.eventPage.coveredRevision).toBe(10);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps cached history and offers a local retry after pending verification fails', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('retry-question-history', 10, 'textDelta', 'History survives verification failure')]);
+    stale.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'question-retry', sessionId: stale.sessionId,
+      message: 'Still genuinely pending after retry', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    let rejectCanonical!: (reason: Error) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise((_, reject) => { rejectCanonical = reject; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      vi.useFakeTimers();
+      vi.mocked(getAcpSession).mockRejectedValue(new Error('Interaction verification unavailable'));
+      await act(async () => {
+        rejectCanonical(new Error('Interaction verification unavailable'));
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+      expect(container.textContent).toContain('History survives verification failure');
+      expect(container.textContent).toContain('Interaction verification unavailable');
+      expect(container.textContent).not.toContain('Still genuinely pending after retry');
+      const retry = container.querySelector<HTMLButtonElement>('[data-acp-session-query-retry]');
+      expect(retry).not.toBeNull();
+      vi.mocked(getAcpSession).mockResolvedValue(stale);
+      await act(async () => { retry!.click(); await vi.advanceTimersByTimeAsync(0); });
+      expect(container.textContent).toContain('Still genuinely pending after retry');
+      expect(container.textContent).not.toContain('Interaction verification unavailable');
+    } finally {
+      vi.useRealTimers();
+      await unmount(root);
+    }
+  });
+
+  it('keeps detached cached questions unavailable until the canonical reentry read completes', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('detached-question-history', 10, 'textDelta', 'Detached history remains visible')]);
+    stale.pendingInteractions = [{
+      kind: 'elicitation', interactionId: 'question-detached', sessionId: stale.sessionId,
+      message: 'Question cancelled while away', requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } }, raw: {},
+    }];
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    storeAcpBranchViewState(cacheKey, {
+      anchorKey: null, anchorOffset: 0, scrollTop: 0, atBottom: false, hasOlder: true, hasNewer: true,
+    });
+    markAcpSessionContentHydrated(cacheKey);
+    // No retained replay session identity can certify these pending interactions.
+    let resolveCanonical!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { resolveCanonical = resolve; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).toContain('Detached history remains visible');
+      expect(container.textContent).not.toContain('Question cancelled while away');
+      await act(async () => resolveCanonical({
+        ...stale, pendingInteractions: [], eventPage: { ...stale.eventPage, coveredRevision: 11, newestRevision: 11 },
+      }));
+      expect(container.textContent).not.toContain('Question cancelled while away');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([false, true])('does not paint an obsolete cached head while reentry is awaiting canonical content (replay loss: %s)', async (loseReplay) => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('old-head', 10, 'textDelta', '12:58 cached answer')]);
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    const count = loseReplay ? CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + 1 : 1;
+    for (let index = 0; index < count; index += 1) {
+      applyConversationEventToBranchSnapshots(update(event(
+        `background-${index}`, 20 + index, 'textDelta', `background answer ${index}`,
+      )));
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(loseReplay);
+    let resolveHead!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { resolveHead = resolve; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).not.toContain('12:58 cached answer');
+      expect(container.querySelector('[data-testid="markdown"]')).toBeNull();
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+      await act(async () => resolveHead(session([event('current-head', 100, 'textDelta', '15:46 current answer')])));
+      expect(container.textContent).toContain('15:46 current answer');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([
+    { tail: 'visible content', hidden: [] },
+    { tail: 'chat-hidden metadata', hidden: [
+      event('usage', 12, 'usageUpdate'),
+      event('info', 13, 'sessionInfo', null, { title: 'Renamed' }),
+    ] },
+  ])('reenters a followed session from cache when the live head ends with $tail', async ({ hidden }) => {
+    vi.mocked(getAcpSession).mockResolvedValue(session([event('first', 10, 'textDelta', 'First answer')]));
+    const view = await renderDialog(null);
+    try {
+      await act(async () => {
+        runtime.listener?.(update(event('second', 11, 'textDelta', 'Second answer')));
+        hidden.forEach((item) => runtime.listener?.(update(item)));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+      expect(view.container.textContent).toContain('Second answer');
+    } finally {
+      await unmount(view.root);
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root').headRevision).toBe(11 + hidden.length);
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const states: string[] = [];
+    const reentry = await renderDialog(null, 'root', (state) => states.push(state));
+    try {
+      expect(states).not.toContain('loading');
+      expect(reentry.container.textContent).toContain('Second answer');
+    } finally {
+      await unmount(reentry.root);
+    }
+  });
+
+  it('preserves an explicitly detached cached history while the background head advances', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const history = session([event('history-anchor', 10, 'textDelta', 'Reading this history')]);
+    storeAcpSession(cacheKey, history);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: history.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: history.events,
+    }, 1_000);
+    storeAcpBranchViewState(cacheKey, {
+      anchorKey: null, anchorOffset: 0, scrollTop: 0, atBottom: false, hasOlder: true, hasNewer: true,
+    });
+    markAcpSessionContentHydrated(cacheKey);
+    applyConversationEventToBranchSnapshots(update(event('background-head', 20, 'textDelta', 'New background head')));
+    vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+    const { container, root } = await renderDialog(null);
+    try {
+      expect(container.textContent).toContain('Reading this history');
+      expect(container.textContent).not.toContain('New background head');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('reports a failed reentry read instead of unlocking obsolete hydrated content', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const stale = session([event('old-head', 10, 'textDelta', 'Obsolete cached answer')]);
+    storeAcpSession(cacheKey, stale);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: stale.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: stale.events,
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    applyConversationEventToBranchSnapshots(update(event('new-head', 20, 'textDelta', 'Background answer')));
+    let rejectHead!: (reason: Error) => void;
+    vi.mocked(getAcpSession).mockReturnValue(new Promise((_, reject) => { rejectHead = reject; }));
+    const { container, root } = await renderDialog(null);
+    try {
+      vi.useFakeTimers();
+      vi.mocked(getAcpSession).mockRejectedValue(new Error('Reentry read unavailable'));
+      await act(async () => {
+        rejectHead(new Error('Reentry read unavailable'));
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+      expect(container.textContent).not.toContain('Obsolete cached answer');
+      expect(container.textContent).toContain('Reentry read unavailable');
+    } finally {
+      vi.useRealTimers();
+      await unmount(root);
+    }
+  });
+
   it.each([
     { outcome: 'success', arrival: 'body' },
     { outcome: 'failure', arrival: 'body' },
@@ -462,7 +813,7 @@ describe('ACP session re-entry reconciliation', () => {
       runtimeDisplay: nextLifecycle.runtimeDisplay };
     const initial = {
       ...locator, runMode: 'workflow', runStatus: 'paused', activeSessions: [], inputAttachments: [],
-      selectedSession: previous, workflowValid: true, workflowStatus: 'valid',
+      workflowValid: true, workflowStatus: 'valid',
       workflowGraph: { nodes: [], edges: [] },
       sessionTree: {
         selectedSessionKey: `${locator.roundId}/${locator.nodeId}/${locator.attemptId}`,
@@ -479,22 +830,22 @@ describe('ACP session re-entry reconciliation', () => {
       const [run, setRun] = React.useState(initial);
       const [mode, setMode] = React.useState<'auto' | 'manual'>('auto');
       publishNextSummary = () => setRun({
-        ...initial, runStatus: 'running', selectedSession: null,
+        ...initial, runStatus: 'running',
         sessionTree: { selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}`, rounds: [{
           ...initial.sessionTree.rounds[0], nodes: [{ nodeId: 'successor', label: 'Successor', nodeType: 'worker',
             status: 'running', attempts: [nextLeaf] }],
         }] },
       });
-      return <RightWorkspaceProvider><GitBranchPickerSnapshotProvider><TooltipProvider>
+      return <GitBranchPickerSnapshotProvider><TestProviders>
         <ConversationRunPage run={run} taskTitle="Manual check" appConfig={mockBootstrap.appConfig}
           agentRegistry={null} followMode={mode} onAutoFollowChange={(follow) => setMode(follow ? 'auto' : 'manual')}
           onRerun={() => {}} onEditWorkflow={() => {}} initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={() => {}}
           onSelectSession={() => {
             setMode('auto');
-            setRun({ ...initial, selectedSession: null,
+            setRun({ ...initial,
               sessionTree: { ...initial.sessionTree, selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}` } });
           }} />
-      </TooltipProvider></GitBranchPickerSnapshotProvider></RightWorkspaceProvider>;
+      </TestProviders></GitBranchPickerSnapshotProvider>;
     }
     await act(async () => root.render(<RunHarness />));
     try {
@@ -573,6 +924,95 @@ describe('ACP session re-entry reconciliation', () => {
       await unmount(root);
     }
   });
+
+  it.each(['following', 'history-anchor', 'history-offset'] as const)(
+    'restores %s reentry after footer measurement before animation frames', async (mode) => {
+      const message = event('reentry-layout', 10, 'textDelta', 'Unchanged latest message');
+      const initial = session([message]);
+      const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+      storeAcpSession(cacheKey, initial);
+      storeAcpLoadedEventWindow(cacheKey, {
+        sessionId: initial.sessionId!, timelineGeneration: 1, coveredRevision: 10, events: initial.events,
+      }, 1_000);
+      storeAcpBranchViewState(cacheKey, {
+        atBottom: mode === 'following',
+        anchorKey: mode === 'history-offset' ? 'missing-anchor' : 'textDelta-reentry-layout',
+        anchorOffset: 40, scrollTop: 137, hasOlder: false, hasNewer: false,
+      });
+      markAcpSessionContentHydrated(cacheKey);
+      applyConversationEventToBranchSnapshots(update(message));
+      vi.mocked(getAcpSession).mockReturnValue(new Promise(() => undefined));
+
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return 100_000 + frames.length;
+      });
+      vi.stubGlobal('cancelAnimationFrame', () => undefined);
+      const positions = new WeakMap<Element, number>();
+      const isViewport = (element: Element) => element.matches('[data-conversation-viewport] .overflow-y-auto');
+      const footerPadding = (element: Element) => Number.parseFloat(
+        element.closest<HTMLElement>('[data-conversation-viewport-frame]')?.style
+          .getPropertyValue('--conversation-viewport-footer-height') || '0',
+      );
+      const scrollHeight = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function () {
+        return isViewport(this) ? 1_000 + footerPadding(this) : 0;
+      });
+      const clientHeight = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function () {
+        return isViewport(this) ? 400 : 0;
+      });
+      const scrollTopGet = vi.spyOn(Element.prototype, 'scrollTop', 'get').mockImplementation(function () {
+        return positions.get(this) ?? 0;
+      });
+      const scrollTopSet = vi.spyOn(Element.prototype, 'scrollTop', 'set').mockImplementation(function (value) {
+        positions.set(this, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)));
+      });
+      const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+        if (this.matches('[data-conversation-viewport-footer]')) return new DOMRect(0, 304, 600, 96);
+        if (isViewport(this)) return new DOMRect(0, 0, 600, 400);
+        if (this.dataset.acpItemKey === 'textDelta-reentry-layout') {
+          const viewport = this.closest<HTMLElement>('.overflow-y-auto')!;
+          return new DOMRect(0, 500 - viewport.scrollTop, 600, 40);
+        }
+        return new DOMRect();
+      });
+      let view: Awaited<ReturnType<typeof renderDialog>> | undefined;
+      try {
+        view = await renderDialog(null);
+        const viewport = view.container.querySelector<HTMLElement>('[data-conversation-viewport] .overflow-y-auto')!;
+        const frame = view.container.querySelector<HTMLElement>('[data-conversation-viewport-frame]')!;
+        expect(view.container.textContent).toContain('Unchanged latest message');
+        expect(frame.style.getPropertyValue('--conversation-viewport-footer-height')).toBe('96px');
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+        if (mode === 'following') {
+          // The same cached body must already be at the measured bottom; neither
+          // a canonical response nor the library's queued instant scroll may fix it later.
+          expect(viewport.scrollTop).toBe(696);
+        } else if (mode === 'history-anchor') {
+          expect(viewport.scrollTop).toBe(460);
+          expect(view.container.querySelector<HTMLElement>('[data-acp-item-key]')!.getBoundingClientRect().top).toBe(40);
+        } else {
+          expect(viewport.scrollTop).toBe(137);
+        }
+        await act(async () => {
+          frames.splice(0).forEach((callback) => callback(performance.now()));
+          await Promise.resolve();
+        });
+        if (mode === 'following') {
+          expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThanOrEqual(2);
+        } else {
+          expect(viewport.scrollTop).toBe(mode === 'history-anchor' ? 460 : 137);
+        }
+      } finally {
+        if (view) await unmount(view.root);
+        rect.mockRestore();
+        scrollTopSet.mockRestore();
+        scrollTopGet.mockRestore();
+        clientHeight.mockRestore();
+        scrollHeight.mockRestore();
+      }
+    },
+  );
 
   it.each([false, true])('aligns a single-page send before animation frames (reading history: %s)', async (readingHistory) => {
     const initial = session([event('single-layout', 1, 'textDelta', 'Single page layout reply')], 'completed');
@@ -847,6 +1287,9 @@ describe('ACP session re-entry reconciliation', () => {
         },
       }),
     ], 'completed');
+    for (const snapshot of [stale, annotated]) Object.assign(snapshot, {
+      outerNodeId: dynamicLocator.outerNodeId, outerAttemptId: dynamicLocator.outerAttemptId,
+    });
     vi.mocked(getAcpSession)
       .mockResolvedValueOnce(stale)
       .mockResolvedValueOnce(annotated);
@@ -893,6 +1336,9 @@ describe('ACP session re-entry reconciliation', () => {
       prompt,
       event('answer-mounted', 2, 'textDelta', 'Agent 已经完成自动任务'),
     ], 'completed');
+    for (const snapshot of [stale, completed]) Object.assign(snapshot, {
+      outerNodeId: dynamicLocator.outerNodeId, outerAttemptId: dynamicLocator.outerAttemptId,
+    });
     vi.mocked(getAcpSession)
       .mockResolvedValueOnce(stale)
       .mockResolvedValueOnce(completed);
@@ -978,6 +1424,9 @@ describe('ACP session re-entry reconciliation', () => {
       ...session([event('new-result', 2, 'textDelta', 'hello worker selected')]),
       nodeId: secondLocator.nodeId,
     };
+    for (const snapshot of [stale, annotated, next]) Object.assign(snapshot, {
+      outerNodeId: firstLocator.outerNodeId, outerAttemptId: firstLocator.outerAttemptId,
+    });
     let resolveOldRefresh: ((value: AcpSessionVm) => void) | null = null;
     vi.mocked(getAcpSession)
       .mockResolvedValueOnce(stale)
@@ -1005,7 +1454,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={next}
               {...secondLocator}
@@ -1014,7 +1463,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -2427,7 +2876,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={second}
               {...secondLocator}
@@ -2436,7 +2885,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -2554,6 +3003,528 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('settles a background wake reply into a quotable message when background activity ends', async () => {
+    const prompt = event('prompt-done', 1, 'userTextDelta', '设个定时任务', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-done' },
+    });
+    const answer = event('answer-done', 2, 'textDelta', '已设置');
+    const current = session([prompt, answer], 'completed');
+    vi.mocked(getAcpSession).mockResolvedValue(current);
+    const lifecycle = terminalLifecycle('turn-done');
+    lifecycle.composer = {
+      ...lifecycle.composer,
+      backgroundControl: {
+        sessionId: 'session-watermark',
+        connectionGeneration: 1,
+        activeTools: 0,
+        expiresAtMs: Date.now() + 400,
+      },
+    };
+    let resolveHandshake: (() => void) | null = null;
+    const handshake = new Promise<void>((resolve) => {
+      resolveHandshake = resolve;
+    });
+
+    const { container, root } = await renderDialog(
+      current,
+      'root',
+      (state) => {
+        if (state === 'success') resolveHandshake?.();
+      },
+      undefined,
+      locator,
+      undefined,
+      lifecycle,
+    );
+    try {
+      await act(async () => handshake);
+      await act(async () => {
+        runtime.listener?.(update(event('answer-wake', 3, 'textDelta', '定时任务已触发', {
+          raw: { sessionUpdate: 'agent_message_chunk', _meta: { goldBandBackground: true } },
+        })));
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+      });
+      const wake = () => [...container.querySelectorAll('[data-testid="markdown"]')]
+        .find((node) => node.textContent === '定时任务已触发');
+      expect(wake()?.getAttribute('data-streaming')).toBe('true');
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+      });
+      expect(wake()?.getAttribute('data-streaming')).toBe('false');
+      expect(wake()?.closest('[data-agent-quotable-text="true"]')).not.toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps live DOM following when a layout scroll is inside the older threshold', async () => {
+    const initial = session([event('layout-live', 10, 'textDelta', 'Live before layout')]);
+    Object.assign(initial.eventPage, { hasOlder: true, total: 10 });
+    const olderRequests: unknown[] = [];
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (typeof args[6]?.beforeSeq === 'number') {
+        olderRequests.push(args[6]);
+        return new Promise<AcpSessionVm>(() => undefined);
+      }
+      return initial;
+    });
+    streamingDiagnostics.enabled = true;
+    const { container, root } = await renderDialog(initial);
+    try {
+      expect(container.textContent).toContain('Live before layout');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+      expect(scroller).not.toBeNull();
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 700 },
+        scrollTop: { configurable: true, value: 100, writable: true },
+      });
+      const frames = new Map<number, FrameRequestCallback>();
+      let nextFrame = 0;
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      });
+      vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+      await act(async () => {
+        // At the live bottom, but within the older threshold: no wheel/key/pointer intent.
+        scroller.dispatchEvent(new Event('scroll'));
+        const pending = [...frames.values()];
+        frames.clear();
+        pending.forEach((callback) => callback(performance.now()));
+      });
+      await act(async () => {
+        runtime.listener?.(update(event('layout-live-new', 11, 'textDelta', 'Live after layout')));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      await act(async () => {
+        const pending = [...frames.values()];
+        frames.clear();
+        pending.forEach((callback) => callback(performance.now()));
+      });
+      expect.soft(olderRequests).toHaveLength(0);
+      expect.soft(container.textContent).toContain('Live after layout');
+      expect.soft(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect.soft(streamingDiagnostics.records.filter(({ stage, details }) => (
+        stage === 'chat-scroll-trace' && details.event === 'follow-write' && details.next === false
+      ))).toHaveLength(0);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([
+    ['wheel', false], ['key', false], ['wheel', true], ['key', true],
+  ] as const)(
+    'loads short-window history on explicit upward %s without a scroll event, single-flight and anchored (older page hasNewer=%s)',
+    async (input, olderPageHasNewer) => {
+      const initial = session([event('short-head', 10, 'textDelta', 'Short current message')]);
+      Object.assign(initial.eventPage, { hasOlder: true, total: 10 });
+      const older = session([event('short-older', 1, 'textDelta', 'Older visible message')]);
+      Object.assign(older.eventPage, {
+        coveredRevision: 10, newestRevision: 10, total: 10, hasNewer: olderPageHasNewer,
+      });
+      let resolveOlder!: (value: AcpSessionVm) => void;
+      const pendingOlder = new Promise<AcpSessionVm>((resolve) => { resolveOlder = resolve; });
+      vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+        typeof args[6]?.beforeSeq === 'number' ? pendingOlder : initial
+      ));
+      const olderCalls = () => vi.mocked(getAcpSession).mock.calls.filter(
+        (call) => typeof call[6]?.beforeSeq === 'number',
+      );
+      const { container, root } = await renderDialog(initial);
+      try {
+        const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+        const hasPrepended = () => container.textContent!.includes('Older visible message');
+        Object.defineProperties(scroller, {
+          clientHeight: { configurable: true, value: 600 },
+          scrollHeight: { configurable: true, get: () => hasPrepended() ? 900 : 600 },
+          scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        const anchor = [...scroller.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+          .find((element) => element.textContent?.includes('Short current message'))!;
+        expect(anchor).toBeDefined();
+        const anchorRect = () => ({
+          top: 40 + (hasPrepended() ? 120 : 0) - scroller.scrollTop,
+          bottom: 100 + (hasPrepended() ? 120 : 0) - scroller.scrollTop,
+        } as DOMRect);
+        vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(anchorRect);
+        const sendUp = () => scroller.dispatchEvent(input === 'wheel'
+          ? new WheelEvent('wheel', { deltaY: -30, bubbles: true })
+          : new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }));
+        await act(async () => {
+          sendUp(); sendUp(); sendUp();
+          await new Promise((resolve) => window.setTimeout(resolve, 20));
+        });
+        expect(olderCalls()).toHaveLength(1);
+        expect(olderCalls()[0]![6]?.beforeSeq).toBe(10);
+        expect(container.textContent).toContain('Short current message');
+        await act(async () => {
+          sendUp(); sendUp();
+          await new Promise((resolve) => window.setTimeout(resolve, 20));
+        });
+        expect(olderCalls()).toHaveLength(1);
+        await act(async () => { resolveOlder(older); });
+        expect(container.textContent).toContain('Older visible message');
+        expect(scroller.contains(anchor)).toBe(true);
+        expect(anchor.getBoundingClientRect().top).toBe(40);
+        expect(scroller.scrollTop).toBe(120);
+        await act(async () => {
+          scroller.dispatchEvent(new Event('scroll'));
+          await new Promise((resolve) => window.setTimeout(resolve, 20));
+        });
+        expect(olderCalls()).toHaveLength(1);
+        expect.soft(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        expect.soft(container.textContent).toContain('Older visible message');
+        // History intent still protects the visible body from new live content.
+        await act(async () => {
+          runtime.listener?.(update(event('short-live', 11, 'textDelta', 'Deferred live tail')));
+          await new Promise((resolve) => window.setTimeout(resolve, 180));
+        });
+        expect(container.textContent).not.toContain('Deferred live tail');
+        expect(anchor.getBoundingClientRect().top).toBe(40);
+        expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      } finally {
+        resolveOlder(older);
+        await unmount(root);
+      }
+    },
+  );
+
+  it.each(['wheel', 'key'] as const)(
+    'remembers short-window %s history intent across remount while still at geometric bottom', async (input) => {
+      const initial = session([event('remember-short-head', 10, 'textDelta', 'Remembered current body')]);
+      Object.assign(initial.eventPage, { hasOlder: true, total: 10 });
+      const older = session([event('remember-short-older', 1, 'textDelta', 'Remembered older body')]);
+      Object.assign(older.eventPage, { coveredRevision: 10, total: 10, hasNewer: true });
+      vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+        typeof args[6]?.beforeSeq === 'number' ? older : initial
+      ));
+      const atBottomChanges = vi.fn();
+      const first = await renderDialog(initial, 'root', undefined, undefined, locator, undefined, undefined, true, atBottomChanges);
+      let activeRoot: Root | null = first.root;
+      try {
+        const scroller = first.container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+        Object.defineProperties(scroller, {
+          clientHeight: { configurable: true, value: 600 },
+          scrollHeight: { configurable: true, value: 600 },
+          scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        await act(async () => {
+          scroller.dispatchEvent(input === 'wheel'
+            ? new WheelEvent('wheel', { deltaY: -30, bubbles: true })
+            : new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }));
+          await new Promise((resolve) => window.setTimeout(resolve, 30));
+        });
+        expect(first.container.textContent).toContain('Remembered older body');
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        expect.soft(atBottomChanges.mock.calls.at(-1)?.[0]).toBe(false);
+        await unmount(first.root);
+        activeRoot = null;
+        const second = await renderDialog(initial, 'root', undefined, undefined, locator, undefined, undefined, true, atBottomChanges);
+        activeRoot = second.root;
+        expect.soft(atBottomChanges.mock.calls.at(-1)?.[0]).toBe(false);
+        expect.soft(second.container.textContent).toContain('Remembered older body');
+        await act(async () => {
+          runtime.listener?.(update(event('remember-short-live', 11, 'textDelta', 'Live body must stay deferred')));
+          await new Promise((resolve) => window.setTimeout(resolve, 180));
+        });
+        expect.soft(second.container.textContent).toContain('Remembered older body');
+        expect.soft(second.container.textContent).not.toContain('Live body must stay deferred');
+        expect.soft(second.container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      } finally { if (activeRoot) await unmount(activeRoot); }
+    },
+  );
+
+  it.each(['wheel', 'key'] as const)(
+    'resumes a short history window on explicit downward %s without native scrollend', async (input) => {
+      const initial = session([event('short-resume-head', 10, 'textDelta', 'Short resume head')]);
+      Object.assign(initial.eventPage, { hasOlder: true, total: 10 });
+      const older = session([event('short-resume-older', 1, 'textDelta', 'Short resume history')]);
+      Object.assign(older.eventPage, { coveredRevision: 10, total: 10, hasNewer: true });
+      vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+        typeof args[6]?.beforeSeq === 'number' ? older : initial
+      ));
+      const { container, root } = await renderDialog(initial);
+      try {
+        const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+        Object.defineProperties(scroller, {
+          clientHeight: { configurable: true, value: 600 },
+          scrollHeight: { configurable: true, value: 600 },
+          scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        const sendDirection = (up: boolean) => scroller.dispatchEvent(input === 'wheel'
+          ? new WheelEvent('wheel', { deltaY: up ? -30 : 30, bubbles: true })
+          : new KeyboardEvent('keydown', { key: up ? 'PageUp' : 'PageDown', bubbles: true }));
+        await act(async () => {
+          sendDirection(true);
+          await new Promise((resolve) => window.setTimeout(resolve, 30));
+        });
+        expect(container.textContent).toContain('Short resume history');
+        await act(async () => {
+          sendDirection(false);
+          runtime.listener?.(update(event('short-resume-live', 11, 'textDelta', 'Resumed short live body')));
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+        });
+        expect.soft(container.textContent).toContain('Resumed short live body');
+        expect.soft(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      } finally { await unmount(root); }
+    },
+  );
+
+  it.each([
+    ['down', false], ['return', false], ['down', true], ['return', true],
+  ] as const)('keeps short-window %s rejoin when an older request resolves after the input (up again=%s)', async (command, upAgain) => {
+    const initial = session([event('pending-down-head', 10, 'textDelta', 'Pending down head')]);
+    Object.assign(initial.eventPage, { hasOlder: true, total: 10 });
+    const older = session([event('pending-down-older', 1, 'textDelta', 'Pending down older')]);
+    Object.assign(older.eventPage, { coveredRevision: 10, total: 10, hasNewer: true });
+    let resolveOlder!: (value: AcpSessionVm) => void;
+    const pendingOlder = new Promise<AcpSessionVm>((resolve) => { resolveOlder = resolve; });
+    let canonicalHead = initial;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+      typeof args[6]?.beforeSeq === 'number' ? pendingOlder : canonicalHead
+    ));
+    const { container, root } = await renderDialog(initial);
+    try {
+      const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+      let contentHeight = 600;
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+      await act(async () => {
+        scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -30, bubbles: true }));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      if (command === 'return') {
+        // Make the existing return control visible while the older read is pending.
+        await act(async () => {
+          contentHeight = 1_200;
+          scroller.dispatchEvent(new Event('scroll'));
+          await new Promise((resolve) => window.setTimeout(resolve, 30));
+        });
+      }
+      await act(async () => {
+        if (command === 'down') {
+          scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 30, bubbles: true }));
+        } else {
+          const button = container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]');
+          expect(button).not.toBeNull();
+          button!.click();
+        }
+        if (upAgain) {
+          scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -30, bubbles: true }));
+          scroller.scrollTop = 0;
+          scroller.dispatchEvent(new Event('scroll'));
+        }
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        resolveOlder(older);
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      await act(async () => {
+        const live = event('pending-down-live', 11, 'textDelta', 'Live after pending downward rejoin');
+        canonicalHead = session([...initial.events, live]);
+        runtime.listener?.(update(live));
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+      await act(async () => {
+        contentHeight += 300;
+        scroller.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      if (upAgain) {
+        expect(container.textContent).not.toContain('Live after pending downward rejoin');
+        expect(container.textContent).toContain('Pending down older');
+        expect(scroller.scrollTop).toBe(0);
+        const retryButton = container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]');
+        expect(retryButton).not.toBeNull();
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        expect(retryButton!.disabled).toBe(false);
+        await act(async () => {
+          retryButton!.click();
+          await new Promise((resolve) => window.setTimeout(resolve, 180));
+        });
+        expect(container.textContent).toContain('Live after pending downward rejoin');
+        expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      } else {
+        expect(container.textContent).toContain('Live after pending downward rejoin');
+        expect(scroller.scrollTop).toBeGreaterThanOrEqual(contentHeight - 601);
+        expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      }
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(getAcpSession).mock.calls.filter((call) => typeof call[6]?.beforeSeq === 'number')).toHaveLength(1);
+    } finally { resolveOlder(older); await unmount(root); }
+  });
+
+  it.each([
+    [2_400, false], [600, false], [2_400, true], [600, true],
+  ] as const)('rejoins an unseen canonical head exposed by an older-page watermark without claiming head coverage (height=%s, metadataOnly=%s)', async (scrollHeight, metadataOnly) => {
+    const initial = session([event('watermark-head', 10, 'textDelta', 'Known head at revision ten')]);
+    Object.assign(initial.eventPage, { hasOlder: true, total: 10 });
+    const older = session([event('watermark-older', 1, 'textDelta', 'Older watermark body')]);
+    Object.assign(older.eventPage, { coveredRevision: 11, newestRevision: 1, hasNewer: true, total: 11 });
+    const canonical = session(metadataOnly ? initial.events : [
+      ...initial.events,
+      event('watermark-unseen', 11, 'textDelta', 'Previously unseen canonical eleven'),
+    ]);
+    Object.assign(canonical.eventPage, { coveredRevision: 11, hasOlder: true, total: 11 });
+    let headReads = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (typeof args[6]?.beforeSeq === 'number') return older;
+      headReads += 1;
+      return headReads === 1 ? initial : canonical;
+    });
+    const { container, root } = await renderDialog(initial);
+    try {
+      const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: scrollHeight },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+      await act(async () => {
+        scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -30, bubbles: true }));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(container.textContent).toContain('Older watermark body');
+      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: scrollHeight });
+      await act(async () => {
+        scroller.dispatchEvent(new Event('scroll'));
+        scroller.dispatchEvent(new Event('scrollend'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Older watermark body');
+      expect(container.textContent).not.toContain('Previously unseen canonical eleven');
+      expect(restoreAcpLoadedEventWindow(
+        createAcpEventWindowCacheKey({ ...locator, branchId: 'root' }), null, 96,
+      ).coveredRevision).toBe(10);
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      const returnButton = container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]');
+      expect(returnButton).not.toBeNull();
+      await act(async () => {
+        returnButton!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      expect.soft(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      expect.soft(headReads).toBe(2);
+      expect.soft(container.textContent).toContain(metadataOnly ? 'Known head at revision ten' : 'Previously unseen canonical eleven');
+      expect(restoreAcpLoadedEventWindow(
+        createAcpEventWindowCacheKey({ ...locator, branchId: 'root' }), null, 96,
+      ).coveredRevision).toBe(11);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      await act(async () => {
+        scroller.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+    } finally { await unmount(root); }
+  });
+
+  it.each(['existing-gap', 'tail-trim', 'replay-gap'] as const)(
+    'preserves real newer pagination after older prepend for %s', async (scenario) => {
+      const pageSize = 30;
+      const currentEvents = Array.from({ length: scenario === 'tail-trim' ? loadedEventBufferLimit(pageSize) : 1 }, (_, index) => (
+        event(`gap-current-${101 + index}`, 101 + index, 'textDelta', `Current gap message ${101 + index}`)
+      ));
+      const initial = session(currentEvents);
+      Object.assign(initial.eventPage, { hasOlder: true, hasNewer: scenario === 'existing-gap' });
+      const older = session([event('gap-older', 100, 'textDelta', 'Older gap message')]);
+      Object.assign(older.eventPage, {
+        coveredRevision: initial.eventPage.coveredRevision,
+        newestRevision: initial.eventPage.newestRevision,
+        hasNewer: true,
+      });
+      vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+        if (typeof args[6]?.beforeSeq === 'number') return older;
+        if (typeof args[6]?.afterSeq === 'number') return new Promise<AcpSessionVm>(() => undefined);
+        return initial;
+      });
+      const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, pageSize);
+      try {
+        if (scenario === 'replay-gap') {
+          applyConversationEventToBranchSnapshots(update(event('gap-uncovered', 102, 'textDelta', 'Uncovered replay tail')));
+        }
+        const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+        Object.defineProperties(scroller, {
+          clientHeight: { configurable: true, value: 600 },
+          scrollHeight: { configurable: true, value: 2_400 },
+          scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        await act(async () => {
+          scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -30, bubbles: true }));
+          await new Promise((resolve) => window.setTimeout(resolve, 30));
+        });
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        expect(container.textContent).toContain('Older gap message');
+        expect(container.textContent).toContain('Current gap message 101');
+        if (scenario === 'tail-trim') {
+          expect(container.textContent).not.toContain('Current gap message 190');
+        }
+        await act(async () => {
+          scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 30, bubbles: true }));
+          scroller.scrollTop = 1_800;
+          scroller.dispatchEvent(new Event('scroll'));
+          await new Promise((resolve) => window.setTimeout(resolve, 30));
+        });
+        const newerCalls = vi.mocked(getAcpSession).mock.calls.filter((call) => typeof call[6]?.afterSeq === 'number');
+        expect(newerCalls).toHaveLength(1);
+        expect(newerCalls[0]![6]?.afterSeq).toBe(scenario === 'tail-trim' ? 189 : 101);
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+        expect(container.textContent).toContain('Older gap message');
+      } finally { await unmount(root); }
+    },
+  );
+
+  it.each(['wheel-no-history', 'key-no-history', 'down-with-history', 'scrollbar-press'] as const)(
+    'keeps live DOM following without older requests for %s', async (input) => {
+      const initial = session([event('no-up-head', 10, 'textDelta', 'Current live message')]);
+      Object.assign(initial.eventPage, { hasOlder: input === 'down-with-history' || input === 'scrollbar-press', total: 10 });
+      vi.mocked(getAcpSession).mockResolvedValue(initial);
+      const { container, root } = await renderDialog(initial);
+      try {
+        const scroller = container.querySelector<HTMLDivElement>('.h-full.overflow-y-auto')!;
+        Object.defineProperties(scroller, {
+          clientHeight: { configurable: true, value: 600 },
+          scrollHeight: { configurable: true, value: input === 'scrollbar-press' ? 700 : 600 },
+          scrollTop: { configurable: true, value: input === 'scrollbar-press' ? 100 : 0, writable: true },
+          clientWidth: { configurable: true, value: 284 },
+          offsetWidth: { configurable: true, value: 300 },
+        });
+        vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue({
+          top: 0, left: 0, right: 300, bottom: 600, width: 300, height: 600,
+        } as DOMRect);
+        await act(async () => {
+          if (input === 'scrollbar-press') {
+            const press = new MouseEvent('pointerdown', { button: 0, clientX: 295, clientY: 60, bubbles: true });
+            Object.defineProperties(press, { pointerId: { value: 1 }, pointerType: { value: 'mouse' } });
+            scroller.dispatchEvent(press);
+          } else if (input === 'key-no-history') {
+            scroller.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }));
+          } else {
+            scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: input === 'down-with-history' ? 30 : -30, bubbles: true }));
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 20));
+        });
+        await act(async () => {
+          runtime.listener?.(update(event('no-up-live', 11, 'textDelta', 'Continuing visible live tail')));
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+        });
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+        expect(container.textContent).toContain('Continuing visible live tail');
+        expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      } finally { await unmount(root); }
+    },
+  );
+
   it('keeps older pagination reachable after live updates trim a full event window', async () => {
     const pageSize = 30;
     const loadedWindowSize = loadedEventBufferLimit(pageSize);
@@ -2598,6 +3569,7 @@ describe('ACP session re-entry reconciliation', () => {
       });
 
       await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 20));
       });
@@ -2908,6 +3880,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       scroller!.scrollTop = scroller!.scrollHeight - scroller!.clientHeight;
       await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 30));
       });
@@ -3025,7 +3998,7 @@ describe('ACP session re-entry reconciliation', () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={canonicalHead}
             {...locator}
@@ -3035,7 +4008,7 @@ describe('ACP session re-entry reconciliation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       );
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -3249,7 +4222,7 @@ describe('ACP session re-entry reconciliation', () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <TooltipProvider>
+        <TestProviders>
           <ACPChatDialog
             session={historicalWindow}
             {...locator}
@@ -3259,7 +4232,7 @@ describe('ACP session re-entry reconciliation', () => {
             showRawFramesAction={false}
             usageCompact
           />
-        </TooltipProvider>,
+        </TestProviders>,
       );
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -3363,6 +4336,7 @@ describe('ACP session re-entry reconciliation', () => {
           bubbles: true,
           deltaY: -1,
         }));
+        scroller!.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
         scroller!.dispatchEvent(new Event('scroll'));
         await vi.waitFor(() => {
           expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
@@ -3756,7 +4730,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={head}
               {...locator}
@@ -3766,7 +4740,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3800,7 +4774,7 @@ describe('ACP session re-entry reconciliation', () => {
       expect(container.textContent).toContain('prop 一代旧内容');
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={current}
               {...locator}
@@ -3809,7 +4783,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -3933,7 +4907,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={nextSession}
               {...nextLocator}
@@ -3943,7 +4917,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -4516,6 +5490,46 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('restores the live-updated event window instead of an older cached session snapshot on remount', async () => {
+    const cacheKey = createAcpEventWindowCacheKey({ ...locator, branchId: 'root' });
+    const staleSnapshot = session([
+      event('stale-snapshot-head', 10, 'textDelta', '旧快照末尾内容'),
+    ]);
+    storeAcpSession(cacheKey, staleSnapshot);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: 'session-watermark',
+      timelineGeneration: 2, coveredRevision: 30,
+      events: [event('live-window-head', 30, 'textDelta', '实时窗口最新内容')],
+    }, 1_000);
+    markAcpSessionContentHydrated(cacheKey);
+    vi.mocked(getAcpSession).mockImplementation(() => new Promise(() => undefined));
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TestProviders>
+            <ACPChatDialog
+              session={null}
+              {...locator}
+              branchId="root"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('实时窗口最新内容');
+      expect(container.textContent).not.toContain('旧快照末尾内容');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps the historical window isolated when older pagination crosses compaction', async () => {
     const previous = session([
       event('older-generation-anchor', 20, 'textDelta', '一代历史阅读锚点'),
@@ -4556,10 +5570,14 @@ describe('ACP session re-entry reconciliation', () => {
       });
 
       await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       });
 
+      expect(vi.mocked(getAcpSession).mock.calls.filter(
+        (call) => typeof call[6]?.beforeSeq === 'number',
+      )).toHaveLength(1);
       expect(container.textContent).toContain('一代历史阅读锚点');
       expect(container.textContent).not.toContain('不应混入的二代 older 页');
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
@@ -5106,7 +6124,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5117,7 +6135,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5200,7 +6218,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5210,7 +6228,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5363,7 +6381,7 @@ describe('ACP session re-entry reconciliation', () => {
     const renderPausedState = async (paused: boolean) => {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={initial}
               {...locator}
@@ -5379,7 +6397,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
@@ -5496,6 +6514,7 @@ describe('ACP session re-entry reconciliation', () => {
       });
 
       await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 30));
         scroller!.dispatchEvent(new Event('scroll'));
@@ -5850,7 +6869,7 @@ describe('ACP session re-entry reconciliation', () => {
 
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={canonicalHead}
               {...locator}
@@ -5859,7 +6878,7 @@ describe('ACP session re-entry reconciliation', () => {
               showRawFramesAction={false}
               usageCompact
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 
@@ -6214,4 +7233,29 @@ describe('ACP session re-entry reconciliation', () => {
       await unmount(root);
     }
   });
+});
+
+
+it('shows a memory-only execution error before persistence and after reentry', async () => {
+  const body = session([event('reply', 2, 'textDelta', 'Preserved reply'),
+    event('unfinished-tool', 3, 'toolCall', null, { title: 'Bash', toolCallId: 'unfinished-tool', status: 'running' })]);
+  const current = terminalLifecycle('disk-turn');
+  current.acp = { ...current.acp, revision: 12, operationId: 'disk-op', latestTurnStatus: 'none', liveTurnActivity: 'running' };
+  current.composer = { ...current.composer, mode: 'runtime-active', submitTarget: 'none', canStop: true, lockInput: true };
+  vi.mocked(getAcpSession).mockResolvedValue(body);
+  const failure = { owner: { turnId: 'disk-turn', operationId: 'disk-op', revision: 12 }, error: { code: { domain: 'runtime-io', code: 'runtime.io.storage-full' }, domain: 'runtime-io', recovery: 'manual', params: {}, diagnostic: 'TEST_DISK_FULL', raw: null } } as const;
+  const first = await renderDialog(body, 'root', undefined, undefined, locator, undefined, current);
+  await act(async () => { runtime.listener?.({ ...locator, executionError: failure, event: null, session: null }); });
+  expect(first.container.textContent).toContain('TEST_DISK_FULL');
+  expect(first.container.textContent).toContain('Preserved reply');
+  await act(async () => first.container.querySelector<HTMLButtonElement>('[data-theme-role="activity"] > button')!.click());
+  expect(first.container.textContent).toContain('结果未确认');
+  expect(first.container.querySelector('[data-prompt-kit-tool]')?.textContent).not.toContain('运行中');
+  expect(body.events.at(-1)?.status).toBe('running');
+  expect(first.container.querySelector('textarea')?.disabled).toBe(false);
+  await unmount(first.root);
+  const second = await renderDialog(body, 'root', undefined, undefined, locator, undefined, { ...current, executionError: failure });
+  expect(second.container.textContent).toContain('TEST_DISK_FULL');
+  expect(second.container.textContent).toContain('Preserved reply');
+  await unmount(second.root);
 });

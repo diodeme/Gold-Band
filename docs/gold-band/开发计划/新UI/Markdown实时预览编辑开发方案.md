@@ -26,7 +26,7 @@
 - 将 Markdown 转换为 HTML、富文本或 AST 后再反向序列化保存。
 - 多人协作编辑、评论、修订模式。
 - Mermaid、数学公式和任意 HTML 的完整执行环境。
-- 网络图片的无提示自动加载。
+- 未受信任域名的网络图片无提示自动加载（受信任域名见 settings.md §14）。
 - Markdown 图片上传、裁剪和资源重命名。
 - 为标题标记设计特例，例如强制“标题文字删空后必须立即显示 `##`”。标记显隐采用 Atomic Editor 的成熟规则，验收关注语义可编辑性、源码一致性和撤销连续性。
 
@@ -69,7 +69,7 @@ type MarkdownEditorMode = 'live-preview' | 'source'
 ```
 
 - `.md`、`.markdown` 默认 `live-preview`。
-- `live-preview`：隐藏行号和折叠 gutter，使用文档阅读宽度；光标进入结构时显露编辑所需标记。
+- `live-preview`：隐藏行号和折叠 gutter，正文随面板可用宽度伸缩；光标进入结构时显露编辑所需标记。
 - `source`：沿用当前 CodeMirror 源码编辑体验、行号、语法高亮和查找。
 - 模式按打开文件的 resource key 保存在 `FileContentStore` 运行期状态，不写入 Tab，不持久化到磁盘。
 - 超过实时预览字符阈值时强制源码模式，并展示可理解的降级提示。
@@ -130,10 +130,18 @@ interface MarkdownRuntimeState {
 ```rust
 pub struct ResolveMarkdownImageInput {
     pub project_id: String,
-    pub markdown_canonical_path: String,
-    pub markdown_external_access_token: Option<String>,
+    pub workspace_path: Option<String>,
+    pub source: MarkdownImageSource,
     pub raw_src: String,
-    pub approved_external_targets: Vec<String>,
+}
+
+pub enum MarkdownImageSource {
+    Workspace,
+    Document {
+        canonical_path: String,
+        external_access_token: Option<String>,
+        approved_external_targets: Vec<String>,
+    },
 }
 
 pub struct WorkspaceFilePreviewGrantVm {
@@ -160,7 +168,7 @@ pub enum MarkdownImagePreviewVm {
 }
 ```
 
-前端只能提交 `projectId + markdownCanonicalPath + rawSrc + 当前文档授权集合`。最终路径解析、canonicalize、symlink 边界、格式识别和授权判断全部由 Rust 权威执行。
+前端提交 `projectId + workspacePath + source + rawSrc`，`source` 使用 camelCase 判别联合：文档为 `{ kind: 'document', canonicalPath, externalAccessToken, approvedExternalTargets }`，ACP 会话为 `{ kind: 'workspace' }`。文档来源仍必须验证真实 Markdown 文件及其授权，workspace 来源不能伪造 Markdown 文件，且只自动读取 canonical workspace/worktree root 内图片。rawSrc 按 Markdown URL 语义先分离 query/fragment、再解码一次（`file:` 使用 URL 库转换），编码后的 UNC/危险协议在文件 I/O 前再次拒绝。最终路径解析、canonicalize、symlink 边界、格式识别和授权判断全部由 Rust 权威执行。
 
 ## 8. Atomic Editor 接入
 
@@ -191,11 +199,11 @@ CodeMirror markdown language（GFM）
 ### 8.2 样式适配
 
 - 内容颜色、muted、border、primary、code background 全部映射 Gold Band CSS variables。
-- 实时预览正文使用 UI 字体和约 `65–75ch` 阅读宽度；代码块和行内代码使用 mono 字体。
+- 实时预览正文与代码继承编辑器字体和字号偏好；内置主题明暗方案的默认编辑器字号统一为 `13px`，不覆盖用户自定义字号。
 - Markdown 标题接近正文，通过字重、轻量间距和细分隔表达层级，不使用文档页大标题样式。
 - 深色主题避免多层黑色卡片和强边框。
 - CodeMirror 虚拟滚动要求通过 line padding 表达垂直节奏，不对 `.cm-line` 使用会破坏高度测量的 margin。
-- 正文固定使用稳定的 Gold Band 阅读字体栈、14px 基准字号和约 78ch 阅读宽度；标题、表格和内容 padding 使用紧凑相对层级，不继承可能用于代码的展示型自定义字体。
+- 共享样式将 `--atomic-editor-measure` 设为 `100%`，正文保留左右各 `1rem` 留白，不保留固定字符行宽、逐入口宽度参数或尺寸监听状态；面板收窄及重新拉宽时由 CSS 自动重排。标题、表格和内容 padding 使用紧凑相对层级。回归覆盖默认全宽 DOM/CSS 契约、两套内置主题明暗方案默认 `13px`、自定义字号不变，并在浏览器验证正常、窄和重新拉宽的正文及长文本表格。
 
 ### 8.3 README 安全 HTML 子集
 
@@ -215,7 +223,7 @@ CodeMirror markdown language（GFM）
 | 工作区外 Markdown 同目录及子目录的相对图片 | 自动解析并安全展示 |
 | 外部 Markdown 的 `../`、其他盘符或目录外绝对图片 | 当前文档统一确认一次，只授权实际引用的精确文件 |
 | UNC/网络共享路径 | 默认阻止自动加载 |
-| `http://`、`https://` 网络图片 | 不渲染、不下载，保留为普通超链接 |
+| `http://`、`https://` 网络图片 | 域名未受信任时不渲染、不下载，保留为普通超链接，顶部提示条一键信任文档内全部图片域名；已受信任域名直接以 `<img referrerpolicy="no-referrer">` 渲染，点击打开图片地址。不经过本地解析接口 |
 | `data:`、`javascript:`、任意 HTML 注入 | 拒绝 |
 
 “文档统一确认”不是开放目录：前端先解析当前文档内待确认引用，用户确认一次后，只把该批 canonical path 放入当前 Markdown runtime 的授权集合。新增的目录外引用需要再次确认。
@@ -228,7 +236,7 @@ Markdown Image src
   -> Rust 解析并 canonicalize
   -> 校验工作区/文档目录/精确授权
   -> 文件签名、字节数、像素数校验
-  -> SVG 由 Rust 栅格化，禁用外部资源
+  -> SVG 原文以 image/svg+xml 返回，只由 <img> 加载，CSP sandbox 禁止脚本
   -> 签发绑定 path + revision 且携带 expiresAtMs 的短期 preview grant
   -> <img src="gold-band-preview://token">
 ```
@@ -317,7 +325,8 @@ markdownEmbeddedImageMaxConcurrent = 4
 - 图片引用删除、变更、reload、LRU 和 Tab 关闭均释放 token。
 - 过期图片解析响应不能覆盖新引用状态。
 - preview grant 在到期前轮换；续签失败保留旧状态并退避重试，图片加载错误只对仍为当前 token 的 widget 触发补发。
-- 网络图片和 badge 不进入本地解析接口，只生成目标正确的普通超链接。
+- 网络图片和 badge 不进入本地解析接口；未受信任域名只生成目标正确的普通超链接，受信任域名渲染图片且不出现空白（图片 widget 以 `Prec.high` 声明对 Image 节点的渲染所有权，压过 Atomic 的空替换）。
+- 五种 GFM 提示框（NOTE/TIP/IMPORTANT/WARNING/CAUTION）首行渲染为本地化标题；`[!attention]`、`[1]` 等未定义引用按 CommonMark 显示为普通文本而不是链接。
 - badge 外层为 `LICENSE`、`../LICENSE` 等本地目标时，点击由工作区 handler 接管，WebView 不得解析成应用的 localhost 页面。
 
 ### 13.2 Rust 接口测试
@@ -329,7 +338,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - Markdown external grant 缺少、过期或绑定其他文件时拒绝解析。
 - UNC、网络 URL、`data:`、`javascript:` 按策略阻止。
 - 伪造图片扩展名、损坏图片、超大字节、超大像素安全降级。
-- SVG 返回栅格化 preview，绝不返回 SVG 源码 DOM。
+- SVG preview 只由 `<img>` 加载（图片模式无脚本、无外部资源），绝不挂载 SVG 源码 DOM。
 
 ### 13.3 组件验收
 
@@ -380,7 +389,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - [x] 标题、列表、强调、链接、代码块、任务项和合法 GFM 表格可直接编辑。
 - [x] Markdown 本地图片只通过安全 preview grant 展示，并在到期前轮换。
 - [x] 工作区外 Markdown 同目录图片自动展示，目录外引用按文档统一确认且只授权精确引用。
-- [x] SVG 安全栅格化；网络图片只保留超链接，UNC 和危险 scheme 不会静默加载。
+- [x] SVG 以图片模式安全预览；未受信任域名的网络图片只保留超链接并可一键信任，UNC 和危险 scheme 不会静默加载。
 - [x] 大文档、多图片、过期异步响应和 grant 生命周期符合性能与安全约束。
 - [x] 前端、Rust 接口和组件测试覆盖关键验收。
 - [ ] 真实 UI 的深浅主题、宽窄布局和编辑流程由需求方验证。

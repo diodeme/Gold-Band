@@ -3,10 +3,11 @@ import {
   beginConversationSessionSelection,
   canonicalizeConversationPageIdentity,
   conversationPageForSession,
+  conversationPageForRun,
   conversationPageForIntervention,
   conversationPageMatchesRun,
   conversationPageTargetsTask,
-  conversationSourceControlWorkspacePath,
+  conversationWorkLocation,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
@@ -237,25 +238,22 @@ describe('conversation navigation presentation transaction', () => {
     )).toBe('project-last-session');
   });
 
-  it('commits a selected session locator immediately and clears stale session content', () => {
-    const selectedSession = { sessionId: 'old-session' } as ConversationRunVm['selectedSession'];
+  it('commits only the selected session locator immediately without adding content state', () => {
     const run = {
       ...oldRun,
-      selectedSession,
       sessionTree: { rounds: [], selectedSessionKey: 'round-1/node-1/attempt-1' },
     } as ConversationRunVm;
 
     const next = beginConversationSessionSelection(run, 'round-2/node-2/attempt-2');
 
     expect(next.sessionTree.selectedSessionKey).toBe('round-2/node-2/attempt-2');
-    expect(next.selectedSession).toBeNull();
-    expect(run.selectedSession).toBe(selectedSession);
+    expect(next).not.toHaveProperty('selectedSession');
+    expect(run.sessionTree.selectedSessionKey).toBe('round-1/node-1/attempt-1');
   });
 
-  it('keeps loaded content when the selected session locator does not change', () => {
+  it('keeps the run projection when the selected session locator does not change', () => {
     const run = {
       ...oldRun,
-      selectedSession: { sessionId: 'current-session' },
       sessionTree: { rounds: [], selectedSessionKey: 'round-1/node-1/attempt-1' },
     } as ConversationRunVm;
 
@@ -330,13 +328,28 @@ describe('conversation navigation presentation transaction', () => {
     expect(findConversationLeafForPage(tree, page)).toBe(dynamicLeaf);
   });
 
-  it('binds source control to the selected dynamic worktree instead of its source branch workspace', () => {
+  it('uses only the run worktree summary when no navigation leaf is available', () => {
+    const run = {
+      ...oldRun,
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      worktree: { path: 'D:/repo/worktrees/run', branch: 'run-branch', forkCommit: 'head' },
+    } as ConversationRunVm;
+    const page = conversationPageForRun(run);
+
+    expect(conversationWorkLocation(page, run)).toEqual({
+      kind: 'worktree', path: run.worktree!.path, branch: 'run-branch',
+    });
+    expect(conversationWorkLocation(page, { ...run, worktree: null })).toEqual({ kind: 'main' });
+  });
+
+  it('projects the selected session work location instead of its source branch workspace', () => {
+    const worker = { kind: 'worktree', path: 'D:/repo/.gold-band/worktrees/worker', branch: 'gb-worker' } as const;
     const mainLeaf = {
       roundId: 'round-001',
       nodeId: 'ai-dynamic',
       attemptId: 'attempt-001',
       pathLabel: 'ai-dynamic/attempt-001',
-      worktreePath: null,
+      workLocation: { kind: 'main' },
     };
     const dynamicLeaf = {
       roundId: 'round-001',
@@ -345,7 +358,7 @@ describe('conversation navigation presentation transaction', () => {
       outerNodeId: 'ai-dynamic',
       outerAttemptId: 'attempt-001',
       pathLabel: 'worker/attempt-001',
-      worktreePath: 'D:/repo/.gold-band/worktrees/worker',
+      workLocation: worker,
     };
     const run = {
       ...oldRun,
@@ -356,24 +369,21 @@ describe('conversation navigation presentation transaction', () => {
           nodes: [{ attempts: [mainLeaf], outerNodes: [{ attempts: [dynamicLeaf] }] }],
         }],
       },
-      selectedSession: null,
       worktree: null,
     } as ConversationRunVm;
     const dynamicPage = conversationPageForSession(run, dynamicLeaf);
 
-    expect(conversationSourceControlWorkspacePath(dynamicPage, run))
-      .toBe('D:/repo/.gold-band/worktrees/worker');
-    expect(conversationSourceControlWorkspacePath({
+    expect(conversationWorkLocation(dynamicPage, run)).toEqual(worker);
+    expect(conversationWorkLocation({
       kind: 'conversation-run',
       projectId: run.projectId,
       taskId: run.taskId,
       taskUuid: run.taskUuid,
       runId: run.runId,
-    }, run)).toBe('D:/repo/.gold-band/worktrees/worker');
+    }, run)).toEqual(worker);
 
     const staleMainPage = conversationPageForSession(run, mainLeaf);
-    expect(conversationSourceControlWorkspacePath(staleMainPage, run))
-      .toBe('D:/repo/.gold-band/worktrees/worker');
+    expect(conversationWorkLocation(staleMainPage, run)).toEqual(worker);
 
     const mainSelectedRun = {
       ...run,
@@ -382,7 +392,7 @@ describe('conversation navigation presentation transaction', () => {
         selectedSessionKey: 'round-001/ai-dynamic/attempt-001',
       },
     } as ConversationRunVm;
-    expect(conversationSourceControlWorkspacePath(staleMainPage, mainSelectedRun)).toBeNull();
+    expect(conversationWorkLocation(staleMainPage, mainSelectedRun)).toEqual({ kind: 'main' });
 
     const selectionMissingRun = {
       ...run,
@@ -391,16 +401,29 @@ describe('conversation navigation presentation transaction', () => {
         selectedSessionKey: 'round-001/missing/attempt-001',
       },
     } as ConversationRunVm;
-    expect(conversationSourceControlWorkspacePath(dynamicPage, selectionMissingRun))
-      .toBe('D:/repo/.gold-band/worktrees/worker');
-    expect(conversationSourceControlWorkspacePath({ kind: 'conversation-home' }, run)).toBeNull();
+    expect(conversationWorkLocation(dynamicPage, selectionMissingRun)).toEqual(worker);
+
+    // A reclaimed worktree stays unavailable instead of collapsing to the project root.
+    const released = { kind: 'unavailable', reason: 'released', path: worker.path } as const;
+    const releasedRun = {
+      ...run,
+      sessionTree: {
+        ...run.sessionTree,
+        rounds: [{
+          roundId: 'round-001',
+          nodes: [{ attempts: [mainLeaf], outerNodes: [{ attempts: [{ ...dynamicLeaf, workLocation: released }] }] }],
+        }],
+      },
+    } as ConversationRunVm;
+    expect(conversationWorkLocation(dynamicPage, releasedRun)).toEqual(released);
+    expect(conversationWorkLocation({ kind: 'conversation-home' }, run)).toBeNull();
   });
 });
 
 describe('conversation sidebar navigation wiring', () => {
   it('invalidates the active run request before deleting its task from disk', () => {
     const source = readAppSource();
-    const deletion = source.match(/onConversationDeleteTask=\{[\s\S]*?onConversationPinTask=/)?.[0] ?? '';
+    const deletion = source.match(/onConversationDeleteTask: [\s\S]*?onConversationPinTask: /)?.[0] ?? '';
     const deleteRequest = deletion.indexOf('deleteConversationTask(projectId, taskId)');
     const requestInvalidation = deletion.indexOf('conversationNavigationRequestRef.current += 1;');
 
@@ -412,8 +435,8 @@ describe('conversation sidebar navigation wiring', () => {
   it('routes run exits plus sidebar task and run selections through the cache-aware conversation navigation entry', () => {
     const source = readAppSource();
     const sidebarSource = readAppSource('web/src/components/conversation/ConversationSidebar.tsx');
-    const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
-    const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace=\{[\s\S]*?onConversationAddWorkspace=/)?.[0] ?? '';
+    const quickChatSelection = source.match(/onConversationNew: [\s\S]*?onConversationSearch: /)?.[0] ?? '';
+    const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace: [\s\S]*?onConversationAddWorkspace: /)?.[0] ?? '';
     const sidebarRunSelection = sidebarSource.match(/const selectTaskRun[\s\S]*?const selectTask =/)?.[0] ?? '';
     const searchSelection = source.match(/<ConversationSearchDialog[\s\S]*?\/>/)?.[0] ?? '';
     const interventionNavigation = source.match(/const handleInterventionNavigate[\s\S]*?useInterventionNotifications/)?.[0] ?? '';

@@ -1,6 +1,6 @@
 [package]
 name = "gold-band"
-version = "0.17.0"
+version = "0.19.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -50,7 +50,8 @@ minijinja = "2"
 parking_lot = "0.12"
 pulldown-cmark = "0.13"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util", "signal"] }
 tokio-util = { version = "0.7", features = ["time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4", "v5"] }
@@ -59,9 +60,6 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 walkdir = "2"
 file-rotate = "0.8"
-ratatui = "0.29"
-crossterm = "0.28"
-figlet-rs = "1.0.0"
 rusqlite = { version = "0.34", features = ["bundled", "hooks"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 url = "2"
@@ -80,11 +78,7 @@ sys-locale = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-tempfile = "3"
 uzers = { version = "0.12", default-features = false }
-
-[dev-dependencies]
-tempfile = "3"
 
 [target.'cfg(windows)'.dev-dependencies]
 # The regression harness drives tao's real Win32 message callback. Keep the

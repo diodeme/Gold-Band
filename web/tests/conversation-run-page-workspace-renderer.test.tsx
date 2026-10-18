@@ -49,7 +49,9 @@ vi.mock('@/components/conversation/ConversationSessionSwitcher', () => ({
 }));
 
 vi.mock('@/components/acp/ACPChatDialog', () => ({
-  ACPChatDialog: () => <div data-testid="acp-chat" />,
+  ACPChatDialog: ({ runtimeComposerContext }: { runtimeComposerContext?: { runtimeError?: string | null; runtimeErrorFallback?: string | null } }) => (
+    <div data-testid="acp-chat" data-runtime-error={runtimeComposerContext?.runtimeError ?? ''} data-runtime-fallback={runtimeComposerContext?.runtimeErrorFallback ?? ''} />
+  ),
   createAcpEventWindowCacheKey: () => 'window',
   hasHydratedAcpSessionContent: () => true,
   shouldShowConversationContentLoadingState: () => false,
@@ -92,10 +94,6 @@ vi.mock('@/lib/acp-runtime-error', () => ({
   acpRuntimeErrorBannerCopy: () => null,
 }));
 
-vi.mock('@/lib/acp-runtime-composer-state', () => ({
-  shouldTreatAcpRuntimeErrorAsFallback: () => false,
-}));
-
 vi.mock('@/lib/conversation-run-cache', () => ({
   conversationRunCacheKey: () => 'run-key',
 }));
@@ -112,6 +110,7 @@ vi.mock('@/routes', () => ({
 }));
 
 import { ConversationRunPage } from '@/pages/ConversationRunPage';
+import type { ConversationRunVm, ConversationSessionLeafVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -127,7 +126,6 @@ function runSnapshot(sequence: number) {
     workflowGraph: { nodes: [], edges: [] },
     activeSessions: [],
     sessionTree: { rounds: [], selectedSessionKey: null },
-    selectedSession: null,
     runtimeError: null,
     runtimeErrorMessage: null,
     pauseReason: null,
@@ -151,6 +149,47 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
     container.remove();
   });
 
+  it.each(['runtime-controlled', 'non-runtime-controlled'] as const)(
+    'projects a Workflow pause error by current control ownership: %s',
+    async (mode) => {
+      const display = { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, blockingError: false };
+      const leaf: ConversationSessionLeafVm = {
+        roundId: 'round-1', nodeId: 'dev', attemptId: 'attempt-1', pathLabel: 'round-1/dev/attempt-1',
+        status: 'running', current: true, manualCheckPending: false, sessionId: 'session-1', sessionEstablished: true,
+        workLocation: { kind: 'main' }, artifactCount: 0, attachmentCount: 0, runtimeDisplay: display,
+        lifecycle: {
+          runtime: { status: 'paused', pauseReason: 'runtime-abnormal', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
+          control: { mode },
+          acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
+          displayStatus: 'running', runtimeDisplay: display,
+          composer: { mode: 'normal', submitTarget: 'acp-prompt', canStop: true, lockInput: false },
+        },
+      };
+      const run: ConversationRunVm = {
+        ...(runSnapshot(1) as unknown as ConversationRunVm),
+        runMode: 'workflow', runStatus: 'paused', pauseReason: 'runtime-abnormal', runtimeErrorMessage: 'Old run failure',
+        sessionTree: {
+          selectedSessionKey: leaf.pathLabel,
+          rounds: [{ roundId: 'round-1', index: 1, label: 'Round', status: 'paused', runtimeDisplay: display, nodes: [{
+            nodeId: 'dev', label: 'Dev', nodeType: 'ai', status: 'paused', runtimeDisplay: display, attempts: [leaf],
+          }] }],
+        },
+      };
+      await act(async () => root.render(<ConversationRunPage
+        run={run} taskTitle="Task" appConfig={{
+          acpChatEventPageSize: 20, acpChatEventWindowPageCount: 3, conversationInlineContentMaxBytes: 1000,
+          turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 3 },
+        } as never} agentRegistry={null}
+        onRerun={vi.fn()} onEditWorkflow={vi.fn()} onSelectSession={vi.fn()} followMode="manual"
+        initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={vi.fn()}
+      />));
+      const chat = container.querySelector('[data-testid="acp-chat"]');
+      expect(chat).not.toBeNull();
+      expect(chat?.getAttribute('data-runtime-error')).toBe(mode === 'runtime-controlled' ? 'Old run failure' : '');
+      expect(chat?.getAttribute('data-runtime-fallback')).toBe(mode === 'non-runtime-controlled' ? 'Old run failure' : '');
+    },
+  );
+
   it('keeps the registered workflow renderer identity across live run updates', async () => {
     const props = {
       taskTitle: 'Task',
@@ -172,11 +211,15 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
     await act(async () => {
       root.render(<ConversationRunPage {...props} run={runSnapshot(1)} />);
     });
+    const initialRegistrations = [...workspace.registerResourceRenderer.mock.calls];
+    expect(initialRegistrations.length).toBeGreaterThan(0);
+    const initialDisposers = workspace.registerResourceRenderer.mock.results.map((result) => result.value);
     await act(async () => {
       root.render(<ConversationRunPage {...props} run={runSnapshot(2)} />);
     });
 
-    expect(workspace.registerResourceRenderer).toHaveBeenCalledTimes(6);
+    expect(workspace.registerResourceRenderer.mock.calls).toEqual(initialRegistrations);
+    initialDisposers.forEach((dispose) => expect(dispose).not.toHaveBeenCalled());
   });
 
   it('opens AUTO configuration as a right-workspace tab on the current run', async () => {

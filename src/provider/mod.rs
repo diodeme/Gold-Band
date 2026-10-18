@@ -1,4 +1,5 @@
 pub(crate) mod cicd;
+pub mod quotes;
 pub mod workspace_files;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
@@ -14,16 +15,16 @@ use crate::domain::{
 use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE, RUNTIME_HIDDEN_CONTEXT,
-    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_ROLE_MESSAGE,
-    RUNTIME_WORKFLOW_RESUME, profile_template_context, prompt_by_language,
-    render as render_template,
+    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_FILES,
+    RUNTIME_USER_ROLE_MESSAGE, RUNTIME_WORKFLOW_RESUME, profile_template_context,
+    prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
-    normalize_provider_runtime_failure, runtime_error,
+    manual_runtime_error_info, normalize_provider_runtime_failure, runtime_error,
 };
-use crate::storage::{active_storage_path_config, atomic_write_file, read_json, write_json};
+use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use image::codecs::jpeg::JpegEncoder;
@@ -33,7 +34,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek, Write};
 use std::str::FromStr;
 use tracing::debug;
 pub use workspace_files::{
@@ -44,13 +45,11 @@ pub use workspace_files::{
 
 use crate::acp::events::AttachmentMeta;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserPromptQuote {
-    pub id: String,
-    pub source_message_key: String,
-    pub text: String,
-}
+pub use quotes::{
+    DiffQuoteOrigin, DiffQuoteScope, MAX_USER_PROMPT_DIFF_QUOTE_BYTES, MAX_USER_PROMPT_QUOTE_CHARS,
+    MAX_USER_PROMPT_QUOTES, UserPromptQuote, UserPromptQuoteError, UserPromptQuoteSource,
+    conversation_prompt_text, validate_user_prompt_quotes,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,40 +102,51 @@ impl From<String> for ConversationPromptInput {
     }
 }
 
-pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
-pub const MAX_USER_PROMPT_QUOTES: usize = 64;
-pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
-pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+/// Structured input that belongs to the task alongside its requirement and
+/// `authoring/inputs`. Like those, it reaches every new session that renders
+/// the requirement, not just the first visible turn. The role exists only for
+/// Direct tasks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPromptInput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
+}
+
+impl TaskPromptInput {
+    pub fn is_empty(&self) -> bool {
+        self.quotes.is_empty() && self.role.is_none() && self.workspace_files.is_empty()
+    }
+}
+
 pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
-
-pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
-    let display_text = display_text.trim();
-    if quotes.is_empty() {
-        return display_text.to_string();
-    }
-    let quote_blocks = quotes
-        .iter()
-        .map(|quote| {
-            quote
-                .text
-                .lines()
-                .map(|line| format!("> {line}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!("{quote_blocks}\n\n{display_text}")
-}
 
 pub fn conversation_agent_prompt_text(
     input: &ConversationPromptInput,
     language: DesktopLanguage,
 ) -> String {
-    let user_input = conversation_prompt_text(&input.display_text, &input.quotes);
-    let Some(role) = input.role.as_ref() else {
+    agent_prompt_text(
+        &input.display_text,
+        &input.quotes,
+        input.role.as_ref(),
+        language,
+    )
+}
+
+fn agent_prompt_text(
+    display_text: &str,
+    quotes: &[UserPromptQuote],
+    role: Option<&UserPromptRole>,
+    language: DesktopLanguage,
+) -> String {
+    let user_input = conversation_prompt_text(display_text, quotes, language);
+    let Some(role) = role else {
         return user_input;
     };
     if role.content.trim().is_empty() {
@@ -154,41 +164,80 @@ pub fn conversation_agent_prompt_text(
     .to_string()
 }
 
-/// Attachment content awaiting projection into an ACP session/prompt content block.
+/// A file the user gave this turn, awaiting projection at the outbound ACP request boundary.
 ///
-/// The live ACP connection capabilities decide whether this becomes visual/embedded
-/// content or the protocol-baseline resource link at the outbound request boundary.
+/// Inline content becomes an ACP `image` / `resource` block when the live connection declares
+/// that capability; every other file reaches the Agent as a host path listed in the prompt text.
 #[derive(Debug, Clone)]
 pub enum AcpContentBlock {
     Image(AcpImageBlock),
     Resource(AcpResourceBlock),
-    ResourceLink(AcpResourceLinkBlock),
+    File(AcpFileRef),
+}
+
+impl AcpContentBlock {
+    pub fn file(&self) -> &AcpFileRef {
+        match self {
+            Self::Image(image) => &image.file,
+            Self::Resource(resource) => &resource.file,
+            Self::File(file) => file,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpImageBlock {
     pub data: String,
     pub mime_type: String,
-    pub link: AcpResourceLinkBlock,
+    pub file: AcpFileRef,
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpResourceBlock {
-    pub resource: AcpTextResourceContents,
-    pub link: AcpResourceLinkBlock,
-}
-
-#[derive(Debug, Clone)]
-pub struct AcpTextResourceContents {
     pub text: String,
+    pub mime_type: String,
+    pub file: AcpFileRef,
 }
 
-#[derive(Debug, Clone)]
-pub struct AcpResourceLinkBlock {
-    pub name: String,
-    pub uri: String,
-    pub mime_type: String,
+/// A file on the host running the Agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpFileRef {
+    /// Absolute host path.
+    pub path: String,
     pub size: u64,
+}
+
+impl AcpFileRef {
+    pub fn uri(&self) -> String {
+        url::Url::from_file_path(&self.path)
+            .map(|url| url.to_string())
+            .unwrap_or_else(|_| format!("file://{}", self.path))
+    }
+}
+
+/// The user turn with the files the Agent must read by path listed before it.
+pub fn prompt_text_with_files(
+    user_prompt: &str,
+    files: &[&AcpFileRef],
+    language: DesktopLanguage,
+) -> String {
+    if files.is_empty() {
+        return user_prompt.to_string();
+    }
+    let files = files
+        .iter()
+        .map(|file| json!({ "path": file.path, "size": file.size }))
+        .collect::<Vec<_>>();
+    let listing = render_template(
+        prompt_by_language(language, RUNTIME_USER_FILES),
+        json!({ "files": files }),
+    )
+    .expect("bundled user files prompt renders");
+    let listing = listing.trim();
+    if user_prompt.trim().is_empty() {
+        return listing.to_string();
+    }
+    format!("{listing}\n\n{user_prompt}")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -387,6 +436,10 @@ pub struct WorkerInvocation {
     /// and are referenced from the first user message as task-inputs/*.
     #[serde(default)]
     pub task_input_attachment_paths: Vec<String>,
+    /// Task quotes, role and workspace files, loaded with the task inputs for
+    /// every new session and applied when the requirement is rendered.
+    #[serde(default, skip_serializing_if = "TaskPromptInput::is_empty")]
+    pub task_prompt_input: TaskPromptInput,
     /// Attachments explicitly added by a later user turn belong to this
     /// attempt and are materialized under user-inputs/* before prompting.
     #[serde(default)]
@@ -396,7 +449,7 @@ pub struct WorkerInvocation {
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
-    /// Registered workspace roots used to resolve `prompt_display.workspace_files`.
+    /// Registered workspace roots used to resolve the turn's workspace files.
     /// Empty means the conversation project root in `adapter_workspace_dir`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_file_roots: Vec<PromptWorkspaceRoot>,
@@ -720,183 +773,63 @@ pub struct PromptBundle {
     pub workspace_files: Vec<ResolvedWorkspaceFileRef>,
     pub content_blocks: Vec<AcpContentBlock>,
     pub scheduled_trigger: Option<crate::acp::events::ScheduledTriggerPayload>,
+    /// Language of the runtime-rendered prompt text, including the file list added at the ACP boundary.
+    pub language: DesktopLanguage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttachmentContentKind {
-    Image,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AttachmentFormat {
-    extensions: &'static [&'static str],
-    mime_type: &'static str,
-    content_kind: AttachmentContentKind,
-}
+/// Raster formats the Agent can receive as an inline ACP image.
+const INLINE_IMAGE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+];
+const TEXT_ATTACHMENT_FALLBACK_MIME_TYPE: &str = "text/plain";
 
 const INLINE_IMAGE_DECODE_MAX_DIMENSION: u32 = 8_192;
 const INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 128 * 1024 * 1024;
 const INLINE_IMAGE_JPEG_QUALITY: u8 = 92;
 const INLINE_IMAGE_RESIZE_ATTEMPTS: usize = 10;
 
-const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
-    AttachmentFormat {
-        extensions: &["png"],
-        mime_type: "image/png",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["jpg", "jpeg"],
-        mime_type: "image/jpeg",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["webp"],
-        mime_type: "image/webp",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["gif"],
-        mime_type: "image/gif",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["bmp"],
-        mime_type: "image/bmp",
-        content_kind: AttachmentContentKind::Image,
-    },
-    AttachmentFormat {
-        extensions: &["txt"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["md", "markdown"],
-        mime_type: "text/markdown",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["json", "jsonl"],
-        mime_type: "application/json",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["csv"],
-        mime_type: "text/csv",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["html", "htm"],
-        mime_type: "text/html",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["css"],
-        mime_type: "text/css",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["js", "jsx"],
-        mime_type: "text/javascript",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["ts", "tsx"],
-        mime_type: "text/typescript",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["rs"],
-        mime_type: "text/rust",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["py"],
-        mime_type: "text/python",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["go"],
-        mime_type: "text/go",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["java"],
-        mime_type: "text/java",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["c", "h"],
-        mime_type: "text/c",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["cpp", "hpp"],
-        mime_type: "text/cpp",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["yaml", "yml"],
-        mime_type: "text/yaml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["xml"],
-        mime_type: "text/xml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["toml"],
-        mime_type: "text/toml",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["log"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["sql"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-    AttachmentFormat {
-        extensions: &["sh", "bash", "zsh"],
-        mime_type: "text/plain",
-        content_kind: AttachmentContentKind::Text,
-    },
-];
+/// MIME type by file name; the content itself decides how an attachment reaches the Agent.
+pub fn file_mime_type(path: &std::path::Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // mime_guess maps these to video/mp2t, application/javascript and similar.
+    match extension.as_str() {
+        "ts" | "tsx" => "text/typescript".to_string(),
+        "js" | "jsx" => "text/javascript".to_string(),
+        "md" | "markdown" => "text/markdown".to_string(),
+        "json" | "jsonl" => "application/json".to_string(),
+        _ => mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string(),
+    }
+}
 
-fn attachment_format(extension: &str) -> Option<&'static AttachmentFormat> {
-    ATTACHMENT_FORMATS
-        .iter()
-        .find(|format| format.extensions.contains(&extension))
+pub fn is_inline_image_mime_type(mime_type: &str) -> bool {
+    INLINE_IMAGE_MIME_TYPES.contains(&mime_type)
 }
 
 pub fn attachment_meta_for_path(
     path: &std::path::Path,
     storage_prefix: &str,
-) -> Result<Option<AttachmentMeta>> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let Some(format) = attachment_format(&extension) else {
-        return Ok(None);
-    };
+) -> Result<AttachmentMeta> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("unknown")
         .to_string();
-    Ok(Some(AttachmentMeta {
+    Ok(AttachmentMeta {
         path: format!("{storage_prefix}/{name}"),
-        mime_type: format.mime_type.to_string(),
+        mime_type: file_mime_type(path),
         size: path.metadata()?.len(),
         name,
-    }))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -907,96 +840,85 @@ pub enum PromptVisibility {
 }
 
 /// Resolve file paths into attachment intents without exceeding the configured inline budgets.
-/// Text over the content budget is projected metadata-first as a resource link and is never read.
-/// Images are inspected metadata/header-first. Those outside the byte or dimension budget are
-/// streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
-/// path remains canonical and is used whenever the live Agent only supports links.
+/// Any file type is accepted. Content over its inline budget is referenced by path and never read
+/// in full. Images are inspected metadata/header-first. Those outside the byte or dimension budget
+/// are streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
+/// path remains canonical and is what the Agent receives when it cannot take the image inline.
 pub fn resolve_attachments(
     paths: &[String],
     storage_prefix: &str,
     policy: AttachmentProjectionPolicy,
 ) -> Result<Vec<ResolvedAttachment>> {
-    let mut resolved = Vec::new();
-    for path_str in paths {
-        let std_path = std::path::Path::new(path_str);
-        let extension = std_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if attachment_format(&extension).is_none() {
-            continue;
-        }
-        if let Some(attachment) = resolved_attachment(std_path, storage_prefix, policy)? {
-            resolved.push(attachment);
-        }
-    }
-    Ok(resolved)
+    paths
+        .iter()
+        .map(|path| resolved_attachment(std::path::Path::new(path), storage_prefix, policy))
+        .collect()
 }
 
 fn resolved_attachment(
     path: &std::path::Path,
     storage_prefix: &str,
     policy: AttachmentProjectionPolicy,
-) -> Result<Option<ResolvedAttachment>> {
-    let Some(meta) = attachment_meta_for_path(path, storage_prefix)? else {
-        return Ok(None);
-    };
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let format = attachment_format(&extension)
-        .expect("attachment metadata is only created for a supported format");
-    let uri = format!("file://{}", path.to_string_lossy().replace('\\', "/"));
-    let link = AcpResourceLinkBlock {
-        name: meta.name.clone(),
-        uri,
-        mime_type: meta.mime_type.clone(),
+) -> Result<ResolvedAttachment> {
+    let meta = attachment_meta_for_path(path, storage_prefix)?;
+    let file = AcpFileRef {
+        path: path.to_string_lossy().into_owned(),
         size: meta.size,
     };
-    let block = match format.content_kind {
-        AttachmentContentKind::Image => {
-            project_image_attachment(path, format.mime_type, &link, policy)
-        }
-        AttachmentContentKind::Text if meta.size > policy.inline_content_max_bytes => {
-            AcpContentBlock::ResourceLink(link)
-        }
-        AttachmentContentKind::Text => {
-            let data = std::fs::read(path)?;
-            if data.len() as u64 > policy.inline_content_max_bytes {
-                AcpContentBlock::ResourceLink(link)
-            } else {
-                AcpContentBlock::Resource(AcpResourceBlock {
-                    resource: AcpTextResourceContents {
-                        text: String::from_utf8(data)
-                            .unwrap_or_else(|_| "[binary file]".to_string()),
-                    },
-                    link,
-                })
-            }
-        }
+    let block = if is_inline_image_mime_type(&meta.mime_type) {
+        project_image_attachment(path, &meta.mime_type, file, policy)
+    } else {
+        project_text_attachment(path, &meta.mime_type, file, policy)
     };
-    Ok(Some(ResolvedAttachment { meta, block }))
+    Ok(ResolvedAttachment { meta, block })
 }
 
 fn project_image_attachment(
     path: &std::path::Path,
     original_mime_type: &str,
-    link: &AcpResourceLinkBlock,
+    file: AcpFileRef,
     policy: AttachmentProjectionPolicy,
 ) -> AcpContentBlock {
-    let Some((bytes, mime_type)) =
-        inline_image_derivative(path, original_mime_type, link.size, policy)
+    match inline_image_derivative(path, original_mime_type, file.size, policy) {
+        Some((bytes, mime_type)) => AcpContentBlock::Image(AcpImageBlock {
+            data: base64_encode(&bytes),
+            mime_type,
+            file,
+        }),
+        None => AcpContentBlock::File(file),
+    }
+}
+
+/// UTF-8 text within the content budget becomes embedded text; anything else stays a path.
+fn project_text_attachment(
+    path: &std::path::Path,
+    mime_type: &str,
+    file: AcpFileRef,
+    policy: AttachmentProjectionPolicy,
+) -> AcpContentBlock {
+    if file.size > policy.inline_content_max_bytes {
+        return AcpContentBlock::File(file);
+    }
+    let Some(text) = read_file_with_limit(path, policy.inline_content_max_bytes)
+        .and_then(|data| String::from_utf8(data).ok())
+        .filter(|text| !text.contains('\0'))
     else {
-        return AcpContentBlock::ResourceLink(link.clone());
+        return AcpContentBlock::File(file);
     };
-    AcpContentBlock::Image(AcpImageBlock {
-        data: base64_encode(&bytes),
-        mime_type,
-        link: link.clone(),
+    let mime_type = if is_text_mime_type(mime_type) {
+        mime_type
+    } else {
+        TEXT_ATTACHMENT_FALLBACK_MIME_TYPE
+    };
+    AcpContentBlock::Resource(AcpResourceBlock {
+        text,
+        mime_type: mime_type.to_string(),
+        file,
     })
+}
+
+pub fn is_text_mime_type(mime_type: &str) -> bool {
+    mime_type.starts_with("text/") || matches!(mime_type, "application/json" | "application/xml")
 }
 
 fn inline_image_derivative(
@@ -1102,54 +1024,195 @@ pub fn resolve_user_input_attachments(
         return Ok(Vec::new());
     }
 
-    let user_inputs_dir = attempt_dir.join(USER_INPUT_ATTACHMENT_PREFIX);
-    std::fs::create_dir_all(user_inputs_dir.as_std_path())?;
+    std::fs::create_dir_all(attempt_dir)?;
+    let attempt_root = dunce::canonicalize(attempt_dir)?;
+    let user_inputs_dir = user_input_attachment_directory(
+        &attempt_root.join(USER_INPUT_ATTACHMENT_PREFIX),
+        &attempt_root,
+    )?;
+    // `<user-inputs>/<digest>/<name>`: the digest directory has a fixed width, so the remaining
+    // budget for the stored name is known before any bytes are copied.
+    let name_budget = USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
+        .saturating_sub(path_utf16_units(&user_inputs_dir) + USER_INPUT_ATTACHMENT_DIGEST_LEN + 2);
     let mut resolved = Vec::with_capacity(paths.len());
     for path in paths {
         let source = std::path::Path::new(path);
-        let extension = source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if attachment_format(&extension).is_none() {
-            continue;
-        }
         let name = source
             .file_name()
             .and_then(|name| name.to_str())
             .context("user input attachment requires a UTF-8 file name")?;
-        let destination = user_inputs_dir.join(name);
-        let same_file = destination.exists()
-            && std::fs::canonicalize(source)
-                .ok()
-                .zip(std::fs::canonicalize(destination.as_std_path()).ok())
-                .is_some_and(|(source, destination)| source == destination);
-        if !same_file {
-            let mut source_file = std::fs::File::open(source)?;
-            atomic_write_file(destination.as_std_path(), |file| -> Result<()> {
-                std::io::copy(&mut source_file, file)?;
-                Ok(())
-            })?;
+        validate_user_input_attachment_name(name)?;
+        let stored_name = fit_user_input_attachment_name(name, name_budget).ok_or_else(|| {
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::RuntimeIo,
+                USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE,
+                format!(
+                    "attachment `{name}` cannot be stored within {USER_INPUT_ATTACHMENT_PATH_MAX_UNITS} path units under {}",
+                    user_inputs_dir.display()
+                ),
+                json!({ "name": name, "maxPathLength": USER_INPUT_ATTACHMENT_PATH_MAX_UNITS }),
+            ))
+        })?;
+        let mut source_file = std::fs::File::open(source)?;
+        ensure!(
+            source_file.metadata()?.is_file(),
+            "attachment source is not a regular file"
+        );
+
+        // Hash exactly the original bytes being copied, not the source on a second read or
+        // the bounded image derivative. Staging on the same filesystem permits atomic publish.
+        let mut staged = tempfile::NamedTempFile::new_in(&user_inputs_dir)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES];
+        loop {
+            let count = source_file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            staged.write_all(&buffer[..count])?;
+            hasher.update(&buffer[..count]);
         }
-        if let Some(attachment) = resolved_attachment(
-            destination.as_std_path(),
-            USER_INPUT_ATTACHMENT_PREFIX,
+        staged.flush()?;
+        staged.as_file().sync_all()?;
+        let digest = hasher.finalize().to_hex()[..USER_INPUT_ATTACHMENT_DIGEST_LEN].to_string();
+        let content_dir =
+            user_input_attachment_directory(&user_inputs_dir.join(&digest), &user_inputs_dir)?;
+        let destination = content_dir.join(&stored_name);
+        match staged.persist_noclobber(&destination) {
+            Ok(_) => {}
+            Err(mut error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // A retry or concurrent publisher may have won. Reuse only a regular in-root
+                // file whose bytes match; even a corrupt digest destination is never replaced.
+                let metadata = std::fs::symlink_metadata(&destination)?;
+                ensure!(
+                    metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && dunce::canonicalize(&destination)?.starts_with(&user_inputs_dir),
+                    "attachment destination is not a regular in-root file"
+                );
+                ensure!(
+                    user_input_attachment_matches(error.file.as_file_mut(), &destination)?,
+                    "attachment content-addressed destination conflicts with copied bytes"
+                );
+            }
+            Err(error) => return Err(error.error.into()),
+        }
+        let mut attachment = resolved_attachment(
+            &destination,
+            &format!("{USER_INPUT_ATTACHMENT_PREFIX}/{digest}"),
             policy,
-        )? {
-            resolved.push(attachment);
-        }
+        )?;
+        attachment.meta.name = name.to_string();
+        resolved.push(attachment);
     }
     Ok(resolved)
 }
 
-/// Returns the set of file extensions supported as attachments.
-/// This is the single source of truth — the frontend queries it via Tauri command.
-pub fn supported_attachment_extensions() -> Vec<&'static str> {
-    ATTACHMENT_FORMATS
-        .iter()
-        .flat_map(|format| format.extensions.iter().copied())
-        .collect()
+/// Fits a validated name into `max_units` and the file-name component limit by shortening its
+/// stem. The digest directory already identifies the bytes, so a shortened name cannot alias
+/// different content; `AttachmentMeta::name` keeps the original name for display.
+fn fit_user_input_attachment_name(name: &str, max_units: usize) -> Option<String> {
+    let max_units = max_units.min(USER_INPUT_ATTACHMENT_NAME_MAX_UNITS);
+    let fits = |units: usize, bytes: usize| {
+        units <= max_units && bytes <= USER_INPUT_ATTACHMENT_NAME_MAX_UNITS
+    };
+    if fits(name.encode_utf16().count(), name.len()) {
+        return Some(name.to_string());
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(index) if index > 0 => name.split_at(index),
+        _ => (name, ""),
+    };
+    let mut units = extension.encode_utf16().count();
+    let mut bytes = extension.len();
+    let mut fitted = String::new();
+    for character in stem.chars() {
+        if !fits(units + character.len_utf16(), bytes + character.len_utf8()) {
+            break;
+        }
+        units += character.len_utf16();
+        bytes += character.len_utf8();
+        fitted.push(character);
+    }
+    // Windows strips trailing dots and spaces, which would break the locator round-trip.
+    fitted.truncate(fitted.trim_end_matches([' ', '.']).len());
+    if fitted.is_empty() {
+        return None;
+    }
+    fitted.push_str(extension);
+    Some(fitted)
+}
+
+fn path_utf16_units(path: &std::path::Path) -> usize {
+    path.to_string_lossy().encode_utf16().count()
+}
+
+const USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES: usize = 64 * 1024;
+/// Windows MAX_PATH (260) minus the terminating NUL. Persisted attachment paths are handed to
+/// agents, shells and Win32 APIs (including tempfile's MoveFileExW) that do not opt into long paths.
+pub const USER_INPUT_ATTACHMENT_PATH_MAX_UNITS: usize = 259;
+pub const USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE: &str = "runtime.io.attachment-path-too-long";
+/// NTFS caps a component at 255 UTF-16 units and ext4/APFS at 255 bytes; both are enforced.
+const USER_INPUT_ATTACHMENT_NAME_MAX_UNITS: usize = 255;
+/// 128-bit BLAKE3 prefix in hex. Scope is one attempt, and reuse of an existing destination is
+/// byte-verified, so a prefix collision fails loudly instead of aliasing different content.
+const USER_INPUT_ATTACHMENT_DIGEST_LEN: usize = 32;
+
+fn validate_user_input_attachment_name(name: &str) -> Result<()> {
+    // Attachment locators use portable slash-separated components. The preview interface
+    // normalizes backslashes and trims the locator; reject names it cannot read back exactly.
+    ensure!(
+        !name.is_empty()
+            && !matches!(name, "." | "..")
+            && name.trim_end() == name
+            && !name.chars().any(|character| {
+                matches!(character, '/' | '\\' | ':') || character.is_control()
+            }),
+        "user input attachment requires a safe file name"
+    );
+    Ok(())
+}
+
+/// Storage components are owned directories, never symlink aliases into another location.
+fn user_input_attachment_directory(
+    path: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    let canonical = dunce::canonicalize(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink() && canonical.starts_with(root),
+        "attachment directory is not an in-root directory"
+    );
+    Ok(canonical)
+}
+
+fn user_input_attachment_matches(
+    staged: &mut std::fs::File,
+    destination: &std::path::Path,
+) -> Result<bool> {
+    let mut existing = std::fs::File::open(destination)?;
+    if staged.metadata()?.len() != existing.metadata()?.len() {
+        return Ok(false);
+    }
+    staged.rewind()?;
+    let mut staged_buffer = [0_u8; USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES];
+    let mut existing_buffer = [0_u8; USER_INPUT_ATTACHMENT_COPY_BUFFER_BYTES];
+    loop {
+        let count = staged.read(&mut staged_buffer)?;
+        if count == 0 {
+            return Ok(existing.read(&mut existing_buffer[..1])? == 0);
+        }
+        existing.read_exact(&mut existing_buffer[..count])?;
+        if staged_buffer[..count] != existing_buffer[..count] {
+            return Ok(false);
+        }
+    }
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -1880,6 +1943,7 @@ impl AcpProvider {
             finalize_req.continue_ref = Some(continue_ref);
             finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
             finalize_req.task_input_attachment_paths.clear();
+            finalize_req.task_prompt_input = TaskPromptInput::default();
             finalize_req.user_input_attachment_paths.clear();
             let control_turn_kind = if preserve_control_prompt
                 && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
@@ -2332,7 +2396,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
-    let requirement_for_agent = requirement_text_for_agent(req, &requirement_text);
+    let turn_context = turn_prompt_context(req, &requirement_text);
+    let requirement_for_agent = requirement_text_for_agent(req, &turn_context, &requirement_text);
 
     let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
@@ -2372,11 +2437,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         attachment_metas.push(resolved.meta);
         content_blocks.push(resolved.block);
     }
-    let prompt_workspace_files = req
-        .prompt_display
-        .as_ref()
-        .map(|input| input.workspace_files.clone())
-        .unwrap_or_default();
+    let prompt_workspace_files = turn_context.workspace_files;
     let resolved_workspace_files = if prompt_workspace_files.is_empty() {
         Vec::new()
     } else {
@@ -2390,7 +2451,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         };
         resolve_prompt_workspace_files(
             &roots,
-            &prompt_workspace_files,
+            prompt_workspace_files,
             req.task_input_attachment_paths.len() + req.user_input_attachment_paths.len(),
         )
         .map_err(|error| {
@@ -2423,15 +2484,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         system_prompt,
         user_prompt,
         display_text,
-        quotes: req
-            .prompt_display
-            .as_ref()
-            .map(|input| input.quotes.clone())
-            .unwrap_or_default(),
-        role: req
-            .prompt_display
-            .as_ref()
-            .and_then(|input| input.role.clone()),
+        quotes: turn_context.quotes.to_vec(),
+        role: turn_context.role.cloned(),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
@@ -2447,17 +2501,63 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         workspace_files: resolved_workspace_files,
         content_blocks,
         scheduled_trigger: scheduled_trigger_payload(req)?,
+        language: req.runtime_context.language,
     })
 }
 
-fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) -> String {
-    let Some(display) = req.prompt_display.as_ref() else {
-        return requirement_text.to_string();
-    };
-    if display.role.is_none() {
+/// Quotes, role and workspace files the agent receives with this turn: the
+/// task's own input when the requirement is rendered, otherwise those of the
+/// user message being sent.
+struct TurnPromptContext<'a> {
+    text: &'a str,
+    quotes: &'a [UserPromptQuote],
+    role: Option<&'a UserPromptRole>,
+    workspace_files: &'a [PromptWorkspaceFileRef],
+}
+
+fn turn_prompt_context<'a>(
+    req: &'a WorkerInvocation,
+    requirement_text: &'a str,
+) -> TurnPromptContext<'a> {
+    if req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask {
+        let input = &req.task_prompt_input;
+        return TurnPromptContext {
+            text: requirement_text,
+            quotes: &input.quotes,
+            role: input.role.as_ref(),
+            workspace_files: &input.workspace_files,
+        };
+    }
+    match req.prompt_display.as_ref() {
+        Some(input) => TurnPromptContext {
+            text: &input.display_text,
+            quotes: &input.quotes,
+            role: input.role.as_ref(),
+            workspace_files: &input.workspace_files,
+        },
+        None => TurnPromptContext {
+            text: requirement_text,
+            quotes: &[],
+            role: None,
+            workspace_files: &[],
+        },
+    }
+}
+
+fn requirement_text_for_agent(
+    req: &WorkerInvocation,
+    context: &TurnPromptContext<'_>,
+    requirement_text: &str,
+) -> String {
+    if context.role.is_none() && context.quotes.is_empty() {
         return requirement_text.to_string();
     }
-    conversation_agent_prompt_text(display, req.runtime_context.language)
+    agent_prompt_text(
+        context.text,
+        context.quotes,
+        context.role,
+        req.runtime_context.language,
+    )
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
@@ -3408,6 +3508,7 @@ mod tests {
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
+            task_prompt_input: TaskPromptInput::default(),
             user_input_attachment_paths: Vec::new(),
             attachment_projection_policy: AttachmentProjectionPolicy::from(
                 &crate::config::RuntimeConfig::default(),
@@ -3462,32 +3563,24 @@ mod tests {
         let mut req = test_worker_invocation(attempt_dir);
         req.adapter_workspace_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         req.workspace_dir = req.adapter_workspace_dir.clone();
-        req.prompt_display = Some(ConversationPromptInput {
-            display_text: String::new(),
-            quotes: Vec::new(),
-            role: None,
-            workspace_files: vec![PromptWorkspaceFileRef {
-                project_id: "project-001".to_string(),
-                relative_path: "WorkspaceFileTree.tsx".to_string(),
-            }],
-        });
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "project-001".to_string(),
+            relative_path: "WorkspaceFileTree.tsx".to_string(),
+        }];
 
         let prompt = render_prompt_bundle(&req).unwrap();
 
         assert_eq!(prompt.workspace_files.len(), 1);
-        assert_eq!(prompt.display_text.as_deref(), Some(""));
         assert!(matches!(
             prompt.content_blocks.last(),
-            Some(AcpContentBlock::ResourceLink(link))
-                if link.name == "WorkspaceFileTree.tsx"
-                    && link.mime_type == "text/typescript"
-                    && link.size == 1
+            Some(AcpContentBlock::File(file))
+                if file.path == prompt.workspace_files[0].canonical_path && file.size == 1
         ));
         assert!(!prompt.user_prompt.contains("WorkspaceFileTree.tsx"));
     }
 
     #[test]
-    fn prompt_bundle_projects_another_workspace_as_an_absolute_resource_link() {
+    fn prompt_bundle_projects_another_workspace_as_an_absolute_path() {
         let other = tempfile::tempdir().unwrap();
         std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(other.path().join("attempt")).unwrap();
@@ -3497,15 +3590,10 @@ mod tests {
             project_id: "other-project".to_string(),
             root: other.path().to_path_buf(),
         }];
-        req.prompt_display = Some(ConversationPromptInput {
-            display_text: String::new(),
-            quotes: Vec::new(),
-            role: None,
-            workspace_files: vec![PromptWorkspaceFileRef {
-                project_id: "other-project".to_string(),
-                relative_path: "foreign.ts".to_string(),
-            }],
-        });
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "other-project".to_string(),
+            relative_path: "foreign.ts".to_string(),
+        }];
 
         let prompt = render_prompt_bundle(&req).unwrap();
 
@@ -3517,8 +3605,8 @@ mod tests {
         );
         assert!(matches!(
             prompt.content_blocks.last(),
-            Some(AcpContentBlock::ResourceLink(link))
-                if link.uri.starts_with("file:") && link.uri.contains("foreign.ts")
+            Some(AcpContentBlock::File(file))
+                if std::path::Path::new(&file.path).is_absolute() && file.path.ends_with("foreign.ts")
         ));
         assert!(!prompt.user_prompt.contains("foreign.ts"));
     }
@@ -3802,26 +3890,74 @@ mod tests {
     }
 
     #[test]
-    fn every_advertised_attachment_extension_is_resolvable() {
+    fn any_file_type_is_resolved_by_content() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = supported_attachment_extensions()
-            .into_iter()
-            .map(|extension| {
-                let path = dir.path().join(format!("sample.{extension}"));
-                std::fs::write(&path, b"{}\n").unwrap();
-                path.to_string_lossy().to_string()
-            })
-            .collect::<Vec<_>>();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let paths = vec![
+            write("App.vue", b"<template />\n"),
+            write("Dockerfile", b"FROM rust\n"),
+            write("tool.exe", b"MZ\x90\x00\x03\x00"),
+            write("latin1.txt", b"caf\xe9"),
+        ];
 
         let resolved =
             resolve_attachments(&paths, "task-inputs", test_attachment_projection_policy())
                 .unwrap();
 
         assert_eq!(resolved.len(), paths.len());
-        assert!(resolved.iter().all(|attachment| {
-            attachment.meta.path.starts_with("task-inputs/")
-                && attachment.meta.mime_type != "application/octet-stream"
-        }));
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource)
+                if resource.text == "<template />\n" && resource.mime_type == "text/plain"
+        ));
+        assert!(matches!(
+            &resolved[1].block,
+            AcpContentBlock::Resource(resource) if resource.text == "FROM rust\n"
+        ));
+        for (attachment, path) in resolved[2..].iter().zip(&paths[2..]) {
+            assert!(matches!(
+                &attachment.block,
+                AcpContentBlock::File(file)
+                    if file.path == *path && file.size == std::fs::metadata(path).unwrap().len()
+            ));
+        }
+        assert_eq!(resolved[2].meta.path, "task-inputs/tool.exe");
+    }
+
+    #[test]
+    fn listed_files_render_in_every_language_before_the_user_prompt() {
+        let first = AcpFileRef {
+            path: "/host/a.exe".to_string(),
+            size: 7,
+        };
+        let second = AcpFileRef {
+            path: "/host/b.md".to_string(),
+            size: 64_001,
+        };
+        for language in [
+            DesktopLanguage::ZhCn,
+            DesktopLanguage::ZhTw,
+            DesktopLanguage::En,
+            DesktopLanguage::JaJp,
+            DesktopLanguage::KoKr,
+            DesktopLanguage::PtBr,
+            DesktopLanguage::Es,
+        ] {
+            let text = prompt_text_with_files("do it", &[&first, &second], language);
+            let lines = text.lines().collect::<Vec<_>>();
+            assert!(lines[1].starts_with("- `/host/a.exe`") && lines[1].contains('7'));
+            assert!(lines[2].starts_with("- `/host/b.md`") && lines[2].contains("64001"));
+            assert!(text.ends_with("\n\ndo it"), "{language:?}: {text}");
+        }
+        assert_eq!(
+            prompt_text_with_files("do it", &[], DesktopLanguage::En),
+            "do it"
+        );
+        assert!(!prompt_text_with_files("", &[&first], DesktopLanguage::En).ends_with('\n'));
     }
 
     #[test]
@@ -3844,7 +3980,7 @@ mod tests {
         assert!(matches!(
             &resolved[0].block,
             AcpContentBlock::Resource(resource)
-                if resource.resource.text.contains("{\"event\":2}")
+                if resource.text.contains("{\"event\":2}")
         ));
     }
 
@@ -3873,11 +4009,11 @@ mod tests {
 
         assert!(matches!(
             &resolved[0].block,
-            AcpContentBlock::Resource(resource) if resource.resource.text.len() == 64_000
+            AcpContentBlock::Resource(resource) if resource.text.len() == 64_000
         ));
         assert!(matches!(
             &resolved[1].block,
-            AcpContentBlock::ResourceLink(link) if link.size == 64_001
+            AcpContentBlock::File(file) if file.size == 64_001
         ));
     }
 
@@ -3904,12 +4040,12 @@ mod tests {
                 if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
                     && image.data.len()
                         <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
-                    && image.link.mime_type == "image/png"
+                    && image.file.path.ends_with("large.png")
         ));
     }
 
     #[test]
-    fn undecodable_oversized_image_falls_back_to_original_resource_link() {
+    fn undecodable_oversized_image_falls_back_to_the_original_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.png");
         std::fs::write(&path, vec![0_u8; 8 * 1024]).unwrap();
@@ -3925,9 +4061,552 @@ mod tests {
 
         assert!(matches!(
             &resolved[0].block,
-            AcpContentBlock::ResourceLink(link)
-                if link.uri.ends_with("/broken.png") && link.size == 8 * 1024
+            AcpContentBlock::File(file)
+                if file.path.ends_with("broken.png") && file.size == 8 * 1024
         ));
+    }
+
+    #[test]
+    fn user_input_attachments_preserve_same_named_images_across_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let first_source = root.join("first/image.png");
+        let second_source = root.join("second/image.png");
+        let first_bytes = test_png(2, 2);
+        let second_bytes = test_png(3, 2);
+        std::fs::create_dir_all(first_source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second_source.parent().unwrap()).unwrap();
+        std::fs::write(&first_source, &first_bytes).unwrap();
+        std::fs::write(&second_source, &second_bytes).unwrap();
+
+        let first = resolve_user_input_attachments(
+            &[first_source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
+        let second = resolve_user_input_attachments(
+            &[second_source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
+
+        assert_ne!(first[0].meta.path, second[0].meta.path);
+        assert_eq!(
+            std::fs::read(attempt_dir.join(&first[0].meta.path)).unwrap(),
+            first_bytes
+        );
+        assert_eq!(
+            std::fs::read(attempt_dir.join(&second[0].meta.path)).unwrap(),
+            second_bytes
+        );
+    }
+
+    fn user_input_digest(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex()[..USER_INPUT_ATTACHMENT_DIGEST_LEN].to_string()
+    }
+
+    fn assert_persisted_user_input(
+        attempt_dir: &Utf8Path,
+        attachment: &ResolvedAttachment,
+        name: &str,
+        bytes: &[u8],
+    ) {
+        assert_eq!(attachment.meta.name, name);
+        assert_eq!(attachment.meta.size, bytes.len() as u64);
+        assert_eq!(
+            attachment.meta.path,
+            format!("user-inputs/{}/{name}", user_input_digest(bytes))
+        );
+        let destination = attempt_dir.join(&attachment.meta.path);
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        assert_eq!(
+            attachment.block.file().uri(),
+            url::Url::from_file_path(&destination).unwrap().as_str()
+        );
+        assert_eq!(attachment.block.file().size, bytes.len() as u64);
+    }
+
+    #[test]
+    fn user_input_attachments_same_call_isolates_names_and_reuses_identical_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let bytes = [test_png(2, 2), test_png(3, 2), test_png(2, 2)];
+        let paths = bytes
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                let source = root.join(index.to_string()).join("image.png");
+                std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+                std::fs::write(&source, bytes).unwrap();
+                source.to_string()
+            })
+            .collect::<Vec<_>>();
+        let resolved = resolve_user_input_attachments(
+            &paths,
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
+        for (attachment, bytes) in resolved.iter().zip(&bytes) {
+            assert_persisted_user_input(&attempt_dir, attachment, "image.png", bytes);
+            assert!(matches!(&attachment.block, AcpContentBlock::Image(image)
+                if image.data == base64_encode(bytes)));
+        }
+        assert_ne!(resolved[0].meta.path, resolved[1].meta.path);
+        assert_eq!(resolved[0].meta.path, resolved[2].meta.path);
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn user_input_attachments_retry_and_changed_source_preserve_originals() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("notes.txt");
+        let attempt_dir = root.join("attempt-001");
+        std::fs::write(&source, b"first notes").unwrap();
+        let resolve = |path: String| {
+            resolve_user_input_attachments(
+                &[path],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let first = resolve(source.to_string());
+        let saved = attempt_dir.join(&first.meta.path);
+        let modified = saved.metadata().unwrap().modified().unwrap();
+        let retry = resolve(source.to_string());
+        let already_persisted = resolve(saved.to_string());
+        assert_eq!(first.meta.path, retry.meta.path);
+        assert_eq!(first.meta.path, already_persisted.meta.path);
+        assert_eq!(saved.metadata().unwrap().modified().unwrap(), modified);
+        std::fs::write(&source, b"later notes").unwrap();
+        let changed = resolve(source.to_string());
+        assert_ne!(first.meta.path, changed.meta.path);
+        assert_persisted_user_input(&attempt_dir, &first, "notes.txt", b"first notes");
+        assert_persisted_user_input(&attempt_dir, &changed, "notes.txt", b"later notes");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn user_input_attachments_hash_originals_before_bounded_image_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("image.png");
+        let attempt_dir = root.join("attempt-001");
+        let bytes = test_png(256, 256);
+        std::fs::write(&source, &bytes).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 8 * 1024,
+            inline_image_max_dimension: 64,
+        };
+        let resolved =
+            resolve_user_input_attachments(&[source.to_string()], &attempt_dir, policy).unwrap();
+        assert_persisted_user_input(&attempt_dir, &resolved[0], "image.png", &bytes);
+        assert!(matches!(&resolved[0].block, AcpContentBlock::Image(image)
+            if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
+                && image.data.len() <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
+                && image.data != base64_encode(&bytes)));
+    }
+
+    #[test]
+    fn user_input_attachments_concurrent_publication_is_no_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let bytes = [vec![b'a'; 150_000], vec![b'b'; 150_000]];
+        let paths = bytes
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                let source = root.join(index.to_string()).join("notes.txt");
+                std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+                std::fs::write(&source, bytes).unwrap();
+                source.to_string()
+            })
+            .collect::<Vec<_>>();
+        let barrier = std::sync::Barrier::new(8);
+        let resolved = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|index| {
+                    let barrier = &barrier;
+                    let paths = &paths;
+                    let attempt_dir = &attempt_dir;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        resolve_user_input_attachments(
+                            &[paths[index % 2].clone()],
+                            attempt_dir,
+                            test_attachment_projection_policy(),
+                        )
+                        .unwrap()
+                        .remove(0)
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for (index, attachment) in resolved.iter().enumerate() {
+            assert_persisted_user_input(&attempt_dir, attachment, "notes.txt", &bytes[index % 2]);
+        }
+        let content_dirs = std::fs::read_dir(attempt_dir.join("user-inputs"))
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(content_dirs.len(), 2, "staging files must be removed");
+        for entry in content_dirs {
+            assert_eq!(std::fs::read_dir(entry.unwrap().path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn user_input_attachments_conflicts_and_publish_failures_clean_up_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("notes.txt");
+        let attempt_dir = root.join("attempt-001");
+        let bytes = vec![b'a'; 150_000];
+        std::fs::write(&source, &bytes).unwrap();
+        let content_dir = attempt_dir
+            .join("user-inputs")
+            .join(user_input_digest(&bytes));
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let destination = content_dir.join("notes.txt");
+        // Same size, with the mismatch beyond the first streaming buffer.
+        let mut conflicting_bytes = bytes.clone();
+        *conflicting_bytes.last_mut().unwrap() = b'b';
+        std::fs::write(&destination, &conflicting_bytes).unwrap();
+        let resolve = || {
+            resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+        };
+        let error = resolve().unwrap_err();
+        assert!(error.to_string().contains("conflicts with copied bytes"));
+        assert_eq!(std::fs::read(&destination).unwrap(), conflicting_bytes);
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(
+            resolve().is_err(),
+            "a directory must never be replaced by a file"
+        );
+        assert!(destination.is_dir());
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(std::fs::read_dir(&content_dir).unwrap().count(), 1);
+        std::fs::remove_dir(&destination).unwrap();
+        let recovered = resolve().unwrap();
+        assert_persisted_user_input(&attempt_dir, &recovered[0], "notes.txt", &bytes);
+    }
+
+    #[test]
+    fn user_input_attachments_source_failures_do_not_publish_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        for source in [root.join("missing.txt"), root.clone()] {
+            assert!(
+                resolve_user_input_attachments(
+                    &[source.to_string()],
+                    &attempt_dir,
+                    test_attachment_projection_policy(),
+                )
+                .is_err()
+            );
+            assert_eq!(
+                std::fs::read_dir(attempt_dir.join("user-inputs"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    /// Creates an attempt directory whose canonical path has exactly `units` UTF-16 units.
+    fn attachment_test_attempt_dir_with_length(root: &Utf8Path, units: usize) -> Utf8PathBuf {
+        let mut path = Utf8PathBuf::from_path_buf(dunce::canonicalize(root.as_std_path()).unwrap())
+            .unwrap()
+            .join("attempt");
+        while path.as_str().encode_utf16().count() < units {
+            let remaining = units - path.as_str().encode_utf16().count() - 1;
+            path.push("a".repeat(remaining.clamp(1, 64)));
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn user_input_attachments_fit_windows_path_budget_in_deep_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        // Matches a real direct-agent attempt under the default data directory.
+        let attempt_dir = attachment_test_attempt_dir_with_length(&root, 160);
+        let long_name = format!("{}.png", "需求截圖".repeat(30));
+        for (index, name) in [
+            "24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg",
+            long_name.as_str(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = root.join(index.to_string()).join(name);
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            let bytes = test_png(2 + index as u32, 2);
+            std::fs::write(&source, &bytes).unwrap();
+            let resolved = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap()
+            .remove(0);
+            let destination = attempt_dir.join(&resolved.meta.path);
+            assert!(
+                destination.as_str().encode_utf16().count() <= USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
+            );
+            assert_eq!(resolved.meta.name, name);
+            assert_eq!(
+                destination.extension(),
+                std::path::Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+            );
+            assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn user_input_attachment_names_shorten_stem_and_keep_extension() {
+        assert_eq!(
+            fit_user_input_attachment_name("notes.txt", 64).as_deref(),
+            Some("notes.txt")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("abcdef.png", 7).as_deref(),
+            Some("abc.png")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("截圖截圖.png", 6).as_deref(),
+            Some("截圖.png")
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("ab .cd.png", 8).as_deref(),
+            Some("ab.png"),
+            "trailing dots and spaces are dropped from the shortened stem"
+        );
+        assert_eq!(
+            fit_user_input_attachment_name("README", 3).as_deref(),
+            Some("REA")
+        );
+        assert_eq!(fit_user_input_attachment_name("a.png", 4), None);
+        let long = format!("{}.png", "長".repeat(300));
+        let fitted = fit_user_input_attachment_name(&long, usize::MAX).unwrap();
+        assert!(fitted.len() <= 255 && fitted.ends_with(".png"));
+    }
+
+    #[test]
+    fn user_input_attachments_reject_attempts_too_deep_for_path_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("image.png");
+        std::fs::write(&source, test_png(2, 2)).unwrap();
+        let attempt_dir = attachment_test_attempt_dir_with_length(&root, 240);
+        let error = resolve_user_input_attachments(
+            &[source.to_string()],
+            &attempt_dir,
+            test_attachment_projection_policy(),
+        )
+        .unwrap_err();
+        let info = &error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("structured runtime error")
+            .info;
+        assert_eq!(info.code_str(), USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE);
+        assert_eq!(info.params["name"], "image.png");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            0,
+            "no content directory or staging file may be left behind"
+        );
+    }
+
+    #[test]
+    fn user_input_attachment_names_round_trip_as_portable_locator_components() {
+        for name in [
+            "image.png",
+            "截圖.png",
+            "my image.png",
+            " leading.png",
+            "~image.png",
+        ] {
+            validate_user_input_attachment_name(name).unwrap();
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b.png",
+            "a\\b.png",
+            "a:b.png",
+            "image.png ",
+            "image.png\t",
+            "a\nb.png",
+            "a\u{7f}b.png",
+        ] {
+            let error = validate_user_input_attachment_name(name).unwrap_err();
+            assert!(error.to_string().contains("safe file name"), "{name:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn user_input_attachments_reject_unreadable_unix_names_before_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        for name in ["a\\b.png", "a:b.png", "image.png ", "a\nb.png"] {
+            let source = root.join(name);
+            std::fs::write(&source, test_png(2, 2)).unwrap();
+            let error = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("safe file name"));
+            assert_eq!(
+                std::fs::read_dir(attempt_dir.join("user-inputs"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn attachment_test_directory_link(target: &Utf8Path, link: &Utf8Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            // Junctions exercise reparse-point escape rejection without symlink privileges.
+            let result = crate::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link.as_str().replace('/', "\\"))
+                .arg(target.as_str().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn user_input_attachments_reject_directory_link_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let external = root.join("external");
+        std::fs::create_dir(&external).unwrap();
+        let source = root.join("notes.txt");
+        std::fs::write(&source, b"notes").unwrap();
+        for (index, relative) in [
+            "user-inputs".to_string(),
+            format!("user-inputs/{}", user_input_digest(b"notes")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let attempt_dir = root.join(format!("attempt-{index}"));
+            let link = attempt_dir.join(relative);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            attachment_test_directory_link(&external, &link);
+            let result = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            );
+            assert!(result.is_err(), "must reject directory escape: {link}");
+            assert_eq!(std::fs::read_dir(&external).unwrap().count(), 0);
+            #[cfg(windows)]
+            std::fs::remove_dir(&link).unwrap();
+            #[cfg(unix)]
+            std::fs::remove_file(&link).unwrap();
+            if index == 1 {
+                assert_eq!(
+                    std::fs::read_dir(attempt_dir.join("user-inputs"))
+                        .unwrap()
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn user_input_attachments_reject_existing_file_symlink_even_when_bytes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let source = root.join("notes.txt");
+        let attempt_dir = root.join("attempt-001");
+        std::fs::write(&source, b"notes").unwrap();
+        let content_dir = attempt_dir
+            .join("user-inputs")
+            .join(user_input_digest(b"notes"));
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let destination = content_dir.join("notes.txt");
+        std::os::unix::fs::symlink(&source, &destination).unwrap();
+        assert!(
+            resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                test_attachment_projection_policy(),
+            )
+            .is_err()
+        );
+        assert!(
+            std::fs::symlink_metadata(&destination)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"notes");
+        assert_eq!(
+            std::fs::read_dir(attempt_dir.join("user-inputs"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -3958,31 +4637,37 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "task-inputs/task-image.png",
-                "user-inputs/follow-up.png",
-                "user-inputs/notes.txt",
+                "task-inputs/task-image.png".to_string(),
+                format!(
+                    "user-inputs/{}/follow-up.png",
+                    user_input_digest(&follow_up_image_bytes)
+                ),
+                format!(
+                    "user-inputs/{}/notes.txt",
+                    user_input_digest(b"runtime notes")
+                ),
             ]
         );
         assert!(!attempt_dir.join("user-inputs/task-image.png").exists());
         assert_eq!(
-            std::fs::read(attempt_dir.join("user-inputs/follow-up.png").as_std_path()).unwrap(),
+            std::fs::read(attempt_dir.join(paths[1])).unwrap(),
             follow_up_image_bytes
         );
         assert_eq!(
-            std::fs::read_to_string(attempt_dir.join("user-inputs/notes.txt").as_std_path())
-                .unwrap(),
+            std::fs::read_to_string(attempt_dir.join(paths[2])).unwrap(),
             "runtime notes"
         );
         assert!(matches!(
             &prompt.content_blocks[1],
             AcpContentBlock::Image(image)
-                if image.link.uri.contains("/attempt-001/user-inputs/follow-up.png")
+                if image.data == base64_encode(&follow_up_image_bytes)
+                    && image.file.uri() == url::Url::from_file_path(attempt_dir.join(paths[1])).unwrap().as_str()
         ));
         assert!(matches!(
             &prompt.content_blocks[2],
             AcpContentBlock::Resource(resource)
-                if resource.resource.text == "runtime notes"
-                    && resource.link.uri.contains("/attempt-001/user-inputs/notes.txt")
+                if resource.text == "runtime notes"
+                    && resource.file.uri() == url::Url::from_file_path(attempt_dir.join(paths[2])).unwrap().as_str()
         ));
     }
 
@@ -4937,6 +5622,7 @@ mod tests {
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
+            task_prompt_input: TaskPromptInput::default(),
             user_input_attachment_paths: Vec::new(),
             attachment_projection_policy: AttachmentProjectionPolicy::from(
                 &crate::config::RuntimeConfig::default(),

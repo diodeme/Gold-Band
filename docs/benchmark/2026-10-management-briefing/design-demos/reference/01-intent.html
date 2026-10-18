@@ -1,0 +1,98 @@
+<!--
+ASSUMPTIONS
+- This is one of three independent two-slide directions, not an approved full deck.
+- The only content inputs are design-spec.md and brand-spec.md. Shared fonts and
+  original local logos are supplied by the coordinator. No content is invented.
+- Fixed 1920 x 1080 presentation canvas; scaling/navigation belongs to the host.
+- This static draft intentionally has no runtime dependency, navigation or motion.
+REFERENCE / VERIFICATION
+- Stripe's 2024 annual letter: https://stripe.com/annual-updates/2024
+- Official announcement: https://stripe.com/newsroom/news/stripe-2024-update
+- Official publication linked by that page:
+  https://assets.stripeassets.com/fzn2n1nzq965/2pt3yIHthraqR1KwXgr98U/b6301040587a62d5b6ef7b76c904032d/Stripe-annual-letter-2024.pdf
+- WebSearch was attempted twice but returned HTTP 429. Direct retrieval of the
+  official annual-letter page and newsroom page returned HTTP 200; their titles,
+  introductory copy and publication link were checked. No design award is claimed.
+REASONING / FORM FROM CONTENT
+- Transfer the annual letter's thesis-first editorial approach and distinction
+  between the main argument and supporting evidence, not Stripe's identity or site.
+- The content is an open management question with three criteria, not a process.
+  Therefore the question occupies a broad lead column, while the criteria become
+  a narrow marginal register. A shared baseline holds the two execution identities.
+- The restrained paper/ink palette, strong typesetting and ruled criteria are this
+  direction's design interpretation, not a claim of pixel-copying the reference.
+- A 5–10m viewing distance requires a 108px question and 30–34px supporting copy.
+- No charts, fabricated measures, stock pictures, placeholders or product mockups.
+- Overdesign/performance review: native static HTML/CSS plus shared local assets;
+  no new state, scripts, requests, cache or dependencies. Browser review is delegated
+  to the coordinator as requested; layout and content remain independently editable.
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>测试意图 · Gold Band</title>
+  <link rel="stylesheet" href="../assets/fonts.css">
+  <style>
+    :root{--paper:#F0F1EE;--ink:#101112;--muted:#525954;--rule:#CCD0C9;--blue:#244892}
+    *{box-sizing:border-box}
+    html{margin:0;width:1920px;height:1080px;background:var(--paper)}
+    body{margin:0;width:1920px;height:1080px;padding:64px 96px 54px;background:var(--paper);color:var(--ink);font-family:var(--font-brand);font-weight:400;overflow:hidden;-webkit-font-smoothing:antialiased}
+    p,h1,h2,dl,dt,dd{margin:0}
+    .masthead{height:64px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid var(--ink)}
+    .publication{display:flex;align-items:center;gap:16px;font-size:24px;font-weight:520;letter-spacing:.01em}
+    .publication img{width:32px;height:32px;object-fit:contain}
+    .stage{padding-top:2px;font-size:22px;color:var(--muted)}
+    main{display:grid;grid-template-columns:1100px 1fr;column-gap:74px;padding-top:58px}
+    .lead{min-width:0}
+    h1{font-size:108px;font-weight:520;letter-spacing:-.035em;line-height:1.2;text-wrap:balance}
+    h1 span{display:block}
+    h1 .question{color:var(--blue)}
+    .intro{margin-top:38px;font-size:34px;line-height:1.65;letter-spacing:-.02em;max-width:1080px;text-wrap:pretty}
+    .criteria{padding-left:44px;border-left:1px solid var(--rule);padding-top:9px;min-width:0}
+    .criteria h2{font-size:22px;font-weight:500;letter-spacing:.05em;color:var(--muted);margin-bottom:29px}
+    .criterion{padding:24px 0 30px;border-top:1px solid var(--rule)}
+    .criterion:first-of-type{border-top:2px solid var(--blue)}
+    .criterion dt{font-size:38px;line-height:1.35;font-weight:520;letter-spacing:-.02em;margin-bottom:14px}
+    .criterion dd{font-size:30px;line-height:1.65;letter-spacing:-.02em;text-wrap:pretty}
+    .comparison{margin-top:53px;display:grid;grid-template-columns:1fr 1fr;column-gap:48px;border-top:1px solid var(--rule);padding-top:25px}
+    .identity{display:flex;gap:23px;align-items:center;min-width:0}
+    .identity img{width:65px;height:65px;object-fit:contain;flex:none}
+    .identity-name{font-size:35px;line-height:1.3;letter-spacing:-.02em;font-weight:520;white-space:nowrap}
+    .identity-mode{font-size:25px;line-height:1.4;margin-top:7px;color:var(--muted)}
+    footer{position:absolute;left:96px;right:96px;bottom:51px;padding-top:22px;border-top:1px solid var(--rule);font-size:22px;line-height:1.5;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band <span aria-hidden="true">/</span> Benchmark</p>
+    <p class="stage">阶段性结果 · 2026.10.13</p>
+  </header>
+  <main>
+    <section class="lead" aria-labelledby="intent-title">
+      <h1 id="intent-title"><span>什么时候值得</span><span>让多个 Agent</span><span class="question">协作？</span></h1>
+      <p class="intro">从单体执行到工作流与 AUTO，<br>我们测的是：质量收益能否覆盖<br>额外的 token 和时间。</p>
+      <div class="comparison" aria-label="执行框架对照">
+        <div class="identity">
+          <img src="../assets/claude-code.svg" alt="Claude Code 标志">
+          <div><p class="identity-name">Claude Code</p><p class="identity-mode">单体执行</p></div>
+        </div>
+        <div class="identity">
+          <img src="../assets/gold-band.svg" alt="Gold Band 标志">
+          <div><p class="identity-name">Gold Band</p><p class="identity-mode">工作流 / AUTO</p></div>
+        </div>
+      </div>
+    </section>
+    <aside class="criteria" aria-labelledby="criteria-title">
+      <h2 id="criteria-title">判断依据</h2>
+      <dl>
+        <div class="criterion"><dt>质量</dt><dd>是否通过独立测试<br>与整体验收。</dd></div>
+        <div class="criterion"><dt>成本</dt><dd>token 与<br>端到端耗时。</dd></div>
+        <div class="criterion"><dt>适用边界</dt><dd>从局部问题<br>到长程工程。</dd></div>
+      </dl>
+    </aside>
+  </main>
+  <footer>执行框架对照，不是模型能力排名。</footer>
+</body>
+</html>

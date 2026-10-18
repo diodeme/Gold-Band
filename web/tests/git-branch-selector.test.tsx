@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GitBranchPickerSnapshotVm } from '@/types';
+import { hoverTooltip } from './helpers/tooltip';
 
 const getSnapshot = vi.fn<() => Promise<GitBranchPickerSnapshotVm>>();
 const changeBranch = vi.fn();
@@ -292,13 +293,56 @@ describe('GitBranchSelector', () => {
       Object.defineProperty(value, 'scrollWidth', { configurable: true, value: 240 });
       const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
 
-      await act(async () => {
-        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
-      });
+      await hoverTooltip(trigger);
 
       expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe(branch);
     } finally {
       await act(async () => root.unmount());
+    }
+  });
+
+  it.each([false, true])('keeps the tooltip open after the complete mouse entry sequence (responsive=%s)', async (responsiveContext) => {
+    vi.useFakeTimers();
+    const branch = 'feature/a-very-long-editable-branch-name';
+    getSnapshot.mockResolvedValueOnce(snapshot({ currentBranch: branch }));
+    const { container, root, store } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext={responsiveContext} />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      const value = container.querySelector<HTMLElement>('[data-git-branch-value="true"]')!;
+      Object.defineProperties(value, {
+        clientWidth: { configurable: true, value: 80 },
+        scrollWidth: { configurable: true, value: 240 },
+      });
+
+      // A real mouse enters and moves in the same native event sequence. Flush the
+      // React commit before Radix's opening timer to reproduce the self-dismissal.
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+        trigger.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+
+      const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
+      expect(tooltip?.textContent).toBe(branch);
+      expect(tooltip?.getAttribute('data-state')).toBe('delayed-open');
+
+      await act(async () => root.render(
+        <TooltipProvider>
+          <GitBranchPickerSnapshotProvider store={store}>
+            <GitBranchSelector projectId="project-a" responsiveContext={responsiveContext} />
+          </GitBranchPickerSnapshotProvider>
+        </TooltipProvider>,
+      ));
+      expect(container.querySelector('[data-git-branch-selector="editable"]')).toBe(trigger);
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBe(tooltip);
+
+      await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
     }
   });
 
@@ -319,9 +363,7 @@ describe('GitBranchSelector', () => {
         clientWidth: { configurable: true, value: 80 },
         scrollWidth: { configurable: true, value: 80 },
       });
-      await act(async () => {
-        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
-      });
+      await hoverTooltip(trigger);
       expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('main');
 
       await act(async () => {
@@ -345,8 +387,8 @@ describe('GitBranchSelector', () => {
     );
     try {
       const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      await hoverTooltip(trigger);
       await act(async () => {
-        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
         trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
         trigger.click();
       });

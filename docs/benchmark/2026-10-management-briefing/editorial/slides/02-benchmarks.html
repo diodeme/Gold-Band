@@ -1,0 +1,111 @@
+<!doctype html>
+<!--
+Approved direction B; source: ../../README.md and ../../index.html#benchmarks.
+Form: an editorial task register grows from local repairs to whole-system delivery.
+The five-task scale is qualitative, not a shared difficulty score. Native same-name
+ details own selection; absolute right-column details never change the list height.
+Print deliberately retains the closed overview. No additional state or dependencies.
+Fixed 1920×1080 canvas; the parent deck owns scaling, navigation and page numbering.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>任务全景 · Gold Band Benchmark</title>
+  <link rel="stylesheet" href="../assets/editorial.css">
+  <style>
+    body{overflow:visible}
+    .headline{white-space:nowrap}
+    .explorer{position:relative;margin-top:22px;height:528px}
+    .task-list{width:1030px;height:100%;display:grid;grid-auto-rows:minmax(0,1fr);border-top:2px solid var(--blue)}
+    .benchmark{min-height:0;border-bottom:1px solid var(--rule)}
+    .benchmark summary{height:100%;display:grid;grid-template-columns:140px 240px 1fr 150px 24px;align-items:center;gap:14px;list-style:none;cursor:pointer;padding:0 10px 0 0}
+    .benchmark summary::-webkit-details-marker{display:none}
+    .tier{font-size:22px;color:var(--muted);line-height:1.4}
+    .task-name{font-size:30px;font-weight:520;letter-spacing:-.025em;white-space:nowrap}
+    .task-description{font-size:28px;line-height:1.35;letter-spacing:-.025em}
+    .task-size{font-size:22px;line-height:1.4;color:var(--muted);white-space:nowrap}
+    .task-size strong{color:var(--ink);font-weight:520;font-variant-numeric:tabular-nums}
+    .disclosure{font-size:31px;font-weight:400;line-height:1;color:var(--blue);text-align:right}
+    .benchmark summary:hover .task-name,.benchmark[open] .task-name{color:var(--blue)}
+    .benchmark[open] .disclosure{transform:rotate(45deg)}
+    .detail,.overview{position:absolute;left:1090px;right:0;top:0;height:528px;border-top:2px solid var(--blue);padding:22px 0 0 35px;border-left:1px solid var(--rule)}
+    .detail{background:var(--paper)}
+    .detail-kicker{font-size:22px;line-height:1.4;color:var(--muted);letter-spacing:.02em}
+    .detail h2{font-size:42px;line-height:1.25;letter-spacing:-.025em;font-weight:520;margin-top:12px;margin-bottom:22px}
+    .detail dl{display:grid;gap:19px}
+    .detail dt{font-size:22px;line-height:1.35;color:var(--muted);margin-bottom:5px}
+    .detail dd{font-size:28px;line-height:1.48;letter-spacing:-.025em;text-wrap:pretty}
+    .detail strong{font-weight:550}
+    .overview h2{margin-top:24px;font-size:52px;font-weight:520;line-height:1.35;letter-spacing:-.025em}
+    .overview .explanation{font-size:30px;line-height:1.65;margin-top:28px;max-width:570px}
+    .overview .hint{font-size:25px;line-height:1.5;color:var(--muted);margin-top:36px;padding-top:22px;border-top:1px solid var(--rule)}
+    .explorer:has(.benchmark[open]) .overview{display:none}
+    .conclusion{font-size:34px}
+    @media print{
+      .benchmark .detail{display:none!important}
+      .explorer .overview{display:block!important}
+      .benchmark[open] .task-name{color:var(--ink)}
+      .benchmark[open] .disclosure{transform:none}
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band <span aria-hidden="true">/</span> Benchmark</p>
+    <p class="stage">任务全景 · 由轻到重</p>
+  </header>
+  <main>
+    <h1 class="headline">结论：中短任务用 Direct，长任务用编排</h1>
+    <p class="lede">中短题：编排质量略好或持平，但 token 与耗时更高；长题更能体现分工与整体验收的价值。</p>
+    <section class="explorer" aria-label="五种 benchmark 的任务与验收内容">
+      <aside class="overview" aria-label="任务全景说明">
+        <p class="detail-kicker">长任务的收益</p>
+        <h2>质量更好，<br>token 差距可反转。</h2>
+        <p class="explanation">AUTO 在 Kubernetes 完整通过验收，<br>token 约少 47%，但仍更慢。</p>
+        <p class="hint">点击左侧任务，查看具体题面与验收内容。</p>
+      </aside>
+      <div class="task-list">
+        <details class="benchmark" name="benchmark-overview">
+          <summary><span class="tier">轻量<br>局部修复</span><span class="task-name">DeepSWE</span><span class="task-description">修复真实仓库中的独立问题</span><span class="task-size">参考补丁<br><strong>443–1,031</strong> 行</span><span class="disclosure" aria-hidden="true">+</span></summary>
+          <article class="detail">
+            <p class="detail-kicker">DeepSWE v1.1 hard</p><h2>29 道同题修复</h2>
+            <dl><div><dt>具体任务</dt><dd>流式 JSON、队列死信、编辑器工具栏焦点、分页与 SQL 格式化。</dd></div><div><dt>交付内容</dt><dd>理解问题、定位代码并提交修复；每题目标相对集中。</dd></div><div><dt>验收方式</dt><dd>逐题测试；比较通过题数、输出 token 和平均耗时。</dd></div></dl>
+          </article>
+        </details>
+        <details class="benchmark" name="benchmark-overview">
+          <summary><span class="tier">轻量<br>独立功能</span><span class="task-name">zstd-decoder</span><span class="task-description">实现一个完整的解码器</span><span class="task-size">参考实现<br><strong>2,373</strong> 行</span><span class="disclosure" aria-hidden="true">+</span></summary>
+          <article class="detail">
+            <p class="detail-kicker">SWE-Marathon · 轻量工作流</p><h2>43 项功能与交付检查</h2>
+            <dl><div><dt>具体任务</dt><dd>实现 zstd 解码行为，以独立功能为交付单位。</dd></div><div><dt>验收结果</dt><dd>轻量工作流与 Claude Code 均通过 <strong>43/43</strong>。</dd></div><div><dt>执行开销</dt><dd>工作流约 126M token、63 分钟；Claude Code 约 64M、37 分钟。</dd></div></dl>
+          </article>
+        </details>
+        <details class="benchmark" name="benchmark-overview">
+          <summary><span class="tier">中量<br>模块重建</span><span class="task-name">mailauth</span><span class="task-description">组合实现多种邮件认证能力</span><span class="task-size">参考实现<br><strong>18,881</strong> 行</span><span class="disclosure" aria-hidden="true">+</span></summary>
+          <article class="detail">
+            <p class="detail-kicker">MirrorCode · 两轮对照</p><h2>702 项隐藏测试</h2>
+            <dl><div><dt>具体任务</dt><dd>用 Python 重写邮件认证能力，覆盖 SPF、DKIM、DMARC、ARC。</dd></div><div><dt>交付内容</dt><dd>协议与命令行行为共同交付，检查边界与兼容性。</dd></div><div><dt>验收方式</dt><dd>702 项隐藏测试；两轮分别比较质量、总 token 与 Eval 耗时。</dd></div></dl>
+          </article>
+        </details>
+        <details class="benchmark" name="benchmark-overview">
+          <summary><span class="tier">重量<br>跨模块工程</span><span class="task-name">Kubernetes</span><span class="task-description">用 Rust 重写并完成整体验收</span><span class="task-size">参考实现<br><strong>133,220</strong> 行</span><span class="disclosure" aria-hidden="true">+</span></summary>
+          <article class="detail">
+            <p class="detail-kicker">SWE-Marathon · Rust 重写</p><h2>1,407 项整体验收</h2>
+            <dl><div><dt>具体任务</dt><dd>重写 api-server、controller-manager、kubelet、kubectl 与整合入口。</dd></div><div><dt>交付内容</dt><dd>跨组件行为必须一致；局部正确，还需要整体集成与收尾。</dd></div><div><dt>验收方式</dt><dd>1,390 项可见、17 项隐藏测试；比较最终产物、token 与 Agent 耗时。</dd></div></dl>
+          </article>
+        </details>
+        <details class="benchmark" name="benchmark-overview">
+          <summary><span class="tier">超长<br>系统级重建</span><span class="task-name">Ruff</span><span class="task-description">重建代码检查器，持续长程执行</span><span class="task-size">参考实现<br>约 <strong>25 万</strong> 行</span><span class="disclosure" aria-hidden="true">+</span></summary>
+          <article class="detail">
+            <p class="detail-kicker">MirrorCode · 阶段观察</p><h2>424 条规则的系统重建</h2>
+            <dl><div><dt>具体任务</dt><dd>用 Go 重建 Ruff；参考实现约 25 万行 Rust，覆盖 424 条规则。</dd></div><div><dt>验收方式</dt><dd>761 项可见测试推进实现；61 项隐藏测试评估最终结果。</dd></div><div><dt>当前边界</dt><dd>截止 2026.10.13，后续对照仍在运行；不把过程分数当作最终成绩。</dd></div></dl>
+          </article>
+        </details>
+      </div>
+    </section>
+    <p class="conclusion"><span>题目越长、越需要分工和整体验收，工作流与 AUTO 的价值越明显。</span></p>
+  </main>
+  <footer>参考建议：预计新增/修改超过 5 万行、或上下文压缩 3 次及以上的任务，优先工作流 / AUTO。</footer>
+  <script src="../assets/slide.js"></script>
+</body>
+</html>

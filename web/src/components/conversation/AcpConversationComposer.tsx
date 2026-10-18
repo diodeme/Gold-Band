@@ -81,6 +81,7 @@ export interface AcpConversationComposerProps {
   onPickFiles: () => void | Promise<void>;
   canStop: boolean;
   stopInProgress: boolean;
+  stopCommandInFlight: boolean;
   onStop: () => void | Promise<void>;
   canSubmit: boolean;
   canSubmitHistory: boolean;
@@ -106,6 +107,8 @@ export interface AcpConversationComposerProps {
  * Agent branches never mount this component. Keeping the whole prompt-kit
  * subtree behind one component boundary makes that read-only contract visible
  * in the DOM and prevents Agent Tabs from paying for input-only rendering.
+ * Typing and sending stay disabled, but workspace file references the user
+ * adds still render in the composer.
  */
 export function AcpConversationComposer(props: AcpConversationComposerProps) {
   const readOnly = useReadOnlyExperience();
@@ -116,7 +119,9 @@ export function AcpConversationComposer(props: AcpConversationComposerProps) {
     prompt="" onPromptChange={noop} onSubmit={noop} sending={false}
     onHistoryTextCommit={noop}
     attachments={[]} quotes={[]} contextError={null} fileError={null}
-    workspaceFiles={[]} onRemoveWorkspaceFile={noop} onOpenWorkspaceFile={noop}
+    workspaceFiles={props.workspaceFiles}
+    onRemoveWorkspaceFile={props.onRemoveWorkspaceFile}
+    onOpenWorkspaceFile={props.onOpenWorkspaceFile}
     slashGroups={[]} slashMenuOpen={false} committedSlashCommand={null}
     placeholder={t('demo.inputDisabled')} inputDisabled={true}
     onTextareaKeyDown={noop} onDragEnter={(event) => event.preventDefault()}
@@ -166,6 +171,7 @@ function AcpConversationComposerContent({
   onPickFiles,
   canStop,
   stopInProgress,
+  stopCommandInFlight,
   onStop,
   canSubmit,
   canSubmitHistory,
@@ -350,7 +356,7 @@ function AcpConversationComposerContent({
                     className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
-                    disabled={stopInProgress}
+                    disabled={stopCommandInFlight}
                     onClick={() => { void onStop(); }}
                   >
                     {stopInProgress ? (

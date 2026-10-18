@@ -141,6 +141,125 @@ function agent(agentExecutionId: string, executionStatus: string): AcpAgentExecu
   };
 }
 
+function nativeState(branchId: string, status: string, seq: number) {
+  return live(branchId, {
+    ...uiEvent('agentState', status),
+    id: `native-state-${branchId}-${seq}`,
+    seq,
+    endedSeq: seq,
+    raw: { source: 'nativeSubagentState', _meta: { goldBandConversation: { branchId } } },
+  });
+}
+
+function nativeAgent(branchId: string, status: string, providerStateSeq: number): AcpAgentExecutionVm {
+  return { ...agent(branchId, status), providerStateSeq };
+}
+
+describe('native subagent state projection', () => {
+  beforeEach(resetConversationEventRouterSnapshots);
+
+  it.each(['running', 'waiting_permission', 'unknown'])('preserves native %s through root end_turn and snapshots', (status) => {
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', status, 10));
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('completed'));
+    applyConversationEventToBranchSnapshots(sessionUpdate('completed', []));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status, providerStateSeq: 10, contentRevision: 0,
+    });
+  });
+
+  it('allows only newer explicit native running to resume the same completed child', () => {
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'completed', 10));
+    applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('textDelta'), seq: 11 }));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a').status).toBe('completed');
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'running', 12));
+    const resumed = readConversationBranchLiveSnapshot(locator, 'agent-a');
+    expect(resumed).toMatchObject({ status: 'running', providerStateSeq: 12 });
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'completed', 10));
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'running', 12));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toBe(resumed);
+    expect(readConversationBranchReplaySnapshot(locator, 'agent-a').headSeq).toBe(12);
+  });
+
+  it('does not infer native lifecycle from text, permission decisions or synthetic results', () => {
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'unknown', 10));
+    applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('textDelta'), seq: 11 }));
+    applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('permissionRequest', 'pending'), seq: 12 }));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'unknown', attention: true });
+    applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('permissionRequest', 'selected'), seq: 13 }));
+    applyConversationEventToBranchSnapshots(live('agent-a', {
+      ...uiEvent('textDelta', 'completed'), seq: 14, raw: { source: 'agentBranchResult' },
+    }));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'unknown', attention: false, providerStateSeq: 10 });
+  });
+
+  it('orders live and persisted native states by state sequence, not last text or terminal precedence', () => {
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'completed', 10));
+    applyConversationEventToBranchSnapshots(sessionUpdate('completed', [nativeAgent('agent-a', 'running', 12)]));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'running', providerStateSeq: 12 });
+    applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('textDelta'), seq: 20 }));
+    applyConversationEventToBranchSnapshots(sessionUpdate('completed', [nativeAgent('agent-a', 'completed', 10)]));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'running', providerStateSeq: 12 });
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'waiting_permission', 18));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'waiting_permission', providerStateSeq: 18 });
+    expect(resolveConversationBranchDisplayStatus('completed', 'running', 10, 12)).toBe('running');
+    expect(resolveConversationBranchDisplayStatus('running', 'completed', 12, 10)).toBe('running');
+    expect(resolveConversationBranchDisplayStatus('unknown', 'completed', 12, null)).toBe('unknown');
+  });
+
+  it.each(['root', 'agent-a'])('recognizes native cold %s snapshots independently of the root status', (branchId) => {
+    const execution = nativeAgent('agent-a', 'running', 10);
+    const snapshot = sessionUpdate('completed', branchId === 'root' ? [execution] : []).session!;
+    reconcileConversationBranchSession(locator, {
+      ...snapshot, branchId, branchExecution: branchId === 'root' ? null : execution,
+    });
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('completed'));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'running', providerStateSeq: 10 });
+  });
+
+  it('accepts an explicit close snapshot at the same native state sequence without permitting stale revival', () => {
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'running', 10));
+    applyConversationEventToBranchSnapshots(sessionUpdate('completed', [nativeAgent('agent-a', 'interrupted', 10)]));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'interrupted', providerStateSeq: 10 });
+    applyConversationEventToBranchSnapshots(sessionUpdate('completed', [{
+      ...nativeAgent('agent-a', 'running', 10), hasAttention: true,
+    }]));
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'running', 10));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'interrupted', attention: false });
+    expect(resolveConversationBranchDisplayStatus('interrupted', 'running', 10, 10)).toBe('interrupted');
+    expect(resolveConversationBranchDisplayStatus('running', 'interrupted', 10, 10)).toBe('interrupted');
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'running', 12));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a').status).toBe('running');
+  });
+
+  it.each([false, true])('merges ancestor attention changes without a new native state sequence (initial=%s)', (initialAttention) => {
+    const snapshot = (hasAttention: boolean) => sessionUpdate('running', [{
+      ...nativeAgent('agent-parent', 'running', 10), hasAttention,
+    }]);
+    applyConversationEventToBranchSnapshots(snapshot(initialAttention));
+    applyConversationEventToBranchSnapshots(snapshot(!initialAttention));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-parent')).toMatchObject({
+      status: 'running', providerStateSeq: 10, attention: !initialAttention,
+    });
+    applyConversationEventToBranchSnapshots(sessionUpdate('running', [{
+      ...nativeAgent('agent-parent', 'running', 9), hasAttention: initialAttention,
+    }]));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-parent')).toMatchObject({
+      status: 'running', providerStateSeq: 10, attention: !initialAttention,
+    });
+  });
+
+  it('isolates native child states and preserves legacy provider interruption', () => {
+    applyConversationEventToBranchSnapshots(nativeState('agent-a', 'completed', 10));
+    applyConversationEventToBranchSnapshots(nativeState('agent-b', 'running', 11));
+    applyConversationEventToBranchSnapshots(live('legacy', uiEvent('textDelta')));
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('completed'));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a').status).toBe('completed');
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-b').status).toBe('running');
+    expect(readConversationBranchLiveSnapshot(locator, 'legacy').status).toBe('interrupted');
+    expect(readConversationBranchLiveSnapshot({ ...locator, projectId: 'other' }, 'agent-b').status).toBeNull();
+  });
+});
+
 describe('conversation event router', () => {
   beforeEach(resetConversationEventRouterSnapshots);
 

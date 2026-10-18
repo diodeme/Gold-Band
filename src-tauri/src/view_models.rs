@@ -10,9 +10,9 @@ use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    AppearancePreference, BrowserPreferences, DesktopAvailableUpdate, DesktopLanguage,
-    DesktopUpdateBadgeState, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
-    McpServerDiagnosticState, PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
+    AppearancePreference, BrowserPreferences, DesktopLanguage, DesktopUpdateBadgeState,
+    DiagnosticError, ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState,
+    PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -32,7 +32,7 @@ use crate::channel::current_channel_config;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
-use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
+use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, persisted_update_info, updater_settings};
 use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
 use gold_band::storage::read_json;
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,6 @@ pub struct LocalClaudeStatusVm {
 pub struct UpdateBadgeStateVm {
     pub settings_entry_seen_version: Option<String>,
     pub settings_advanced_seen_version: Option<String>,
-    pub announcement_closed_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,12 +78,12 @@ pub struct AppBootstrapVm {
     pub metrics_settings: MetricsSettingsVm,
     pub update_status: UpdateStatusVm,
     pub update_badges: UpdateBadgeStateVm,
-    pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
     pub platform: String,
     pub window_chrome: DesktopWindowChromeVm,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
+    pub remote_image_trust: gold_band::remote_image_trust::RemoteImageTrust,
     pub needs_workspace: bool,
 }
 
@@ -95,6 +94,7 @@ pub struct AppConfigVm {
     pub acp_chat_event_page_size: usize,
     pub acp_chat_event_window_page_count: usize,
     pub acp_chat_resource_cache_session_count: usize,
+    pub browser_hidden_release_secs: u64,
     pub conversation_inline_content_max_bytes: u64,
     pub conversation_inline_image_max_bytes: u64,
     pub conversation_inline_image_max_dimension: u32,
@@ -173,6 +173,7 @@ pub struct WorkspaceLayoutProfileVm {
 pub struct AppInfoVm {
     pub channel: String,
     pub feedback_enabled: bool,
+    pub release_notes_url: String,
     pub app_name: String,
     pub app_key: String,
     pub config_dir_name: String,
@@ -188,6 +189,7 @@ pub struct AgentRegistryVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentVm {
+    pub cache_repair_available: bool,
     pub agent_type: String,
     pub display_name: String,
     pub command: String,
@@ -471,11 +473,20 @@ pub struct RoundSummaryVm {
     pub attachment_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphVm {
     pub nodes: Vec<GraphNodeVm>,
     pub edges: Vec<GraphEdgeVm>,
+    /// Structural containers that enclose `GraphNodeVm.dynamic_group_id` members.
+    pub groups: Vec<GraphGroupVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphGroupVm {
+    pub id: String,
+    pub parent_group_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -741,6 +752,10 @@ pub struct AcpUsageVm {
     pub cached_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    /// Token totals come from prompt responses only; background Agent work
+    /// happened in this session and is not included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub token_totals_exclude_background: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -765,10 +780,7 @@ pub struct AcpSessionVm {
     pub adapter_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter_icon_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_branch: Option<String>,
+    pub work_location: SessionWorkLocationVm,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -806,6 +818,7 @@ pub struct AcpAgentExecutionVm {
     pub agent_execution_id: String,
     pub parent_agent_execution_id: Option<String>,
     pub execution_status: String,
+    pub provider_state_seq: Option<u64>,
     pub event_count: usize,
     pub tool_call_count: usize,
     pub read_file_count: usize,
@@ -984,6 +997,7 @@ pub struct AcpSessionTimingVm {
 pub enum AcpPromptInteractionVm {
     Permission {
         interaction_id: String,
+        session_id: Option<String>,
         turn_id: Option<String>,
         prompt_event_id: Option<String>,
         title: String,
@@ -993,6 +1007,7 @@ pub enum AcpPromptInteractionVm {
     },
     Elicitation {
         interaction_id: String,
+        session_id: Option<String>,
         turn_id: Option<String>,
         prompt_event_id: Option<String>,
         message: String,
@@ -1236,25 +1251,7 @@ fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm 
     UpdateBadgeStateVm {
         settings_entry_seen_version: state.settings_entry_seen_version.clone(),
         settings_advanced_seen_version: state.settings_advanced_seen_version.clone(),
-        announcement_closed_version: state.announcement_closed_version.clone(),
     }
-}
-
-fn persisted_available_update_vm(
-    update: Option<&DesktopAvailableUpdate>,
-    current_version: &str,
-) -> Option<UpdateInfoVm> {
-    let update = update?;
-    // 退出安装后 current_version 会变为新版本号，此时应清除旧的 available 记录
-    if update.current_version != current_version {
-        return None;
-    }
-    Some(UpdateInfoVm {
-        version: update.version.clone(),
-        current_version: update.current_version.clone(),
-        notes: update.notes.clone(),
-        pub_date: update.pub_date.clone(),
-    })
 }
 
 fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
@@ -1270,6 +1267,7 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
         acp_chat_event_page_size: config.acp_chat_event_page_size,
         acp_chat_event_window_page_count: config.acp_chat_event_window_page_count,
         acp_chat_resource_cache_session_count: config.acp_chat_resource_cache_session_count,
+        browser_hidden_release_secs: config.browser_hidden_release_secs,
         conversation_inline_content_max_bytes: config.conversation_inline_content_max_bytes,
         conversation_inline_image_max_bytes: config.conversation_inline_image_max_bytes,
         conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
@@ -1362,23 +1360,29 @@ pub fn bootstrap_vm(
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
-        update_status,
+        update_status: UpdateStatusVm {
+            update: update_status.update.clone().or_else(|| {
+                persisted_update_info(
+                    app.config.desktop_available_update.as_ref(),
+                    &client_version_string,
+                )
+            }),
+            ..update_status
+        },
         update_badges: update_badge_state_vm(&app.config.desktop_update_badges),
-        persisted_available_update: persisted_available_update_vm(
-            app.config.desktop_available_update.as_ref(),
-            &client_version_string,
-        ),
         client_version: client_version_string,
         platform: DESKTOP_PLATFORM.to_string(),
         window_chrome: desktop_window_chrome_vm(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             feedback_enabled: channel_config.feedback_enabled,
+            release_notes_url: channel_config.release_notes_url.to_string(),
             app_name: channel_config.app_name.to_string(),
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
         },
         app_config: app_config_vm(&app.config),
+        remote_image_trust: crate::remote_image_trust::load_remote_image_trust(app),
         needs_workspace,
     }
 }
@@ -1464,6 +1468,15 @@ pub(crate) fn managed_agent_vm(
     diagnostic: Option<&AgentDiagnosticState>,
 ) -> ManagedAgentVm {
     ManagedAgentVm {
+        cache_repair_available: gold_band::npx_cache::is_npx(&config.adapter)
+            && diagnostic.is_some_and(|d| {
+                !d.available
+                    && d.error
+                        .as_ref()
+                        .and_then(|e| e.params.get("reason"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|r| !gold_band::npx_cache::missing_manifests(r).is_empty())
+            }),
         agent_type: agent_id.as_str().to_string(),
         display_name: config.adapter.display_name.clone(),
         command: config.adapter.command.clone(),
@@ -2122,6 +2135,7 @@ pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
                 blocked_reason: None,
             })
             .collect(),
+        groups: Vec::new(),
     }
 }
 
@@ -2182,6 +2196,7 @@ fn round_graph_vm(
     Ok(GraphVm {
         nodes: graph_nodes,
         edges,
+        groups: Vec::new(),
     })
 }
 
@@ -2465,6 +2480,7 @@ fn round_trace_graph_vm(
     Ok(GraphVm {
         nodes: graph_nodes,
         edges: graph_edges,
+        groups: Vec::new(),
     })
 }
 
@@ -2777,7 +2793,20 @@ fn dynamic_internal_graph_vm(
         })
         .collect();
 
-    GraphVm { nodes, edges }
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| GraphGroupVm {
+            id: group.id.clone(),
+            parent_group_id: group.parent_group_id.clone(),
+        })
+        .collect();
+
+    GraphVm {
+        nodes,
+        edges,
+        groups,
+    }
 }
 
 fn dynamic_graph_relations(graph: &DynamicGraphState) -> Vec<GraphEdgeVm> {
@@ -3782,8 +3811,8 @@ pub fn dynamic_acp_session_vm(
         outer_node_id,
         outer_attempt_id,
     );
-    let session_worktree =
-        session_worktree_projection(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
+    let work_location =
+        session_work_location(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
@@ -3816,10 +3845,7 @@ pub fn dynamic_acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path: session_worktree
-            .as_ref()
-            .map(|workspace| workspace.path.clone()),
-        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
+        work_location,
         cwd,
         provider_cwd,
         status,
@@ -4193,7 +4219,7 @@ pub fn acp_session_vm(
         .map(str::to_string)
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
     let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
-    let session_worktree = session_worktree_projection(run_worktree.as_ref(), None, None);
+    let work_location = session_work_location(run_worktree.as_ref(), None, None);
 
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
@@ -4218,10 +4244,7 @@ pub fn acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path: session_worktree
-            .as_ref()
-            .map(|workspace| workspace.path.clone()),
-        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
+        work_location,
         cwd,
         provider_cwd,
         status,
@@ -4410,7 +4433,7 @@ fn restore_initial_task_attachments(
     input_paths.sort();
     let attachment_values = input_paths
         .iter()
-        .filter_map(|path| attachment_meta_for_path(path, "task-inputs").ok().flatten())
+        .filter_map(|path| attachment_meta_for_path(path, "task-inputs").ok())
         .filter_map(|attachment| serde_json::to_value(attachment).ok())
         .collect::<Vec<_>>();
     if attachment_values.is_empty() {
@@ -4620,6 +4643,7 @@ fn indexed_timeline_page_to_scan(
         used: usage.used,
         size: usage.size,
         cost_amount_usd: usage.cost_amount_usd,
+        token_totals_exclude_background: usage.token_totals_exclude_background,
         ..AcpUsageVm::default()
     });
     Ok(AcpEventScan {
@@ -5702,6 +5726,48 @@ fn load_selected_activity_detail_events(
     Ok(events)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpCompactionSummaryQueryInput {
+    pub branch_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpCompactionSummaryVm {
+    pub markdown: Option<String>,
+}
+
+pub fn acp_compaction_summary_vm_for_attempt(
+    attempt_dir: &camino::Utf8Path,
+    query: AcpCompactionSummaryQueryInput,
+) -> Result<AcpCompactionSummaryVm> {
+    gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
+    let path = gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
+    if path.exists() && !fs::canonicalize(&path)?.starts_with(fs::canonicalize(attempt_dir)?) {
+        anyhow::bail!("acp.compaction-summary-query-failed");
+    }
+    let item = gold_band::acp::timeline::read_indexed_timeline_item(&path, &query.event_id)?;
+    let mut summary = item
+        .filter(|item| item.event.kind == "contextCompaction")
+        .and_then(|item| item.event.raw)
+        .and_then(|mut raw| raw.get_mut("summary").map(serde_json::Value::take))
+        .unwrap_or(serde_json::Value::Null);
+    gold_band::acp::timeline::hydrate_timeline_value(&path, &mut summary)?;
+    let markdown = summary
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect::<String>()
+        })
+        .filter(|text| !text.trim().is_empty());
+    Ok(AcpCompactionSummaryVm { markdown })
+}
+
 pub fn acp_tool_detail_vm_for_attempt(
     attempt_dir: &camino::Utf8Path,
     query: AcpToolDetailQueryInput,
@@ -5947,6 +6013,7 @@ fn agent_execution_vm(
         agent_execution_id: record.agent_execution_id.clone(),
         parent_agent_execution_id: record.parent_agent_execution_id.clone(),
         execution_status: record.status.clone(),
+        provider_state_seq: record.provider_state_seq,
         event_count: record.event_count,
         tool_call_count: record.tool_call_count,
         read_file_count: record.read_file_count,
@@ -6592,6 +6659,31 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
+    if event.kind == "contextCompaction" {
+        if let Some(raw) = event
+            .raw
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            let available = raw
+                .get("summary")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block["type"] == "text"
+                            && (block["text"]
+                                .as_str()
+                                .is_some_and(|text| !text.trim().is_empty())
+                                || block["text"].get("$goldBandBlob").is_some())
+                    })
+                });
+            raw.remove("summary");
+            raw.insert(
+                "compactionSummaryAvailable".into(),
+                serde_json::Value::Bool(available),
+            );
+        }
+    }
     let images = event
         .raw
         .as_ref()
@@ -6721,6 +6813,7 @@ fn compact_raw_value(value: serde_json::Value) -> serde_json::Value {
     let mut fallback = serde_json::Map::new();
     for key in [
         "sessionUpdate",
+        "compactionSummaryAvailable",
         "title",
         "status",
         "requestId",
@@ -6901,65 +6994,109 @@ fn run_worktree_state_optional(
     Ok(read_json::<RunState>(&path)?.worktree)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionWorktreeProjection {
-    pub path: String,
-    pub branch: Option<String>,
+/// Where a session works. `Main` and an unavailable worktree are distinct
+/// facts: consumers must never fall back to the project root when the
+/// session's worktree was released or cannot be resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SessionWorkLocationVm {
+    Main,
+    #[serde(rename_all = "camelCase")]
+    Worktree {
+        path: String,
+        branch: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Unavailable {
+        reason: SessionWorkLocationUnavailableReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
 }
 
-pub(crate) fn session_worktree_projection(
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionWorkLocationUnavailableReason {
+    Released,
+    Unresolved,
+}
+
+impl SessionWorkLocationVm {
+    fn unresolved() -> Self {
+        Self::Unavailable {
+            reason: SessionWorkLocationUnavailableReason::Unresolved,
+            path: None,
+        }
+    }
+
+    fn run_worktree(worktree: &gold_band::runtime::RunWorktreeState) -> Self {
+        Self::Worktree {
+            path: worktree.path.to_string(),
+            branch: Some(worktree.branch.clone()),
+        }
+    }
+}
+
+pub(crate) fn session_work_location(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     dynamic_graph: Option<&DynamicGraphState>,
     dynamic_node_id: Option<&str>,
-) -> Option<SessionWorktreeProjection> {
+) -> SessionWorkLocationVm {
     let (graph, dynamic_node_id) = match (dynamic_graph, dynamic_node_id) {
         (None, None) => {
-            return run_worktree.map(|worktree| SessionWorktreeProjection {
-                path: worktree.path.to_string(),
-                branch: Some(worktree.branch.clone()),
-            });
+            return run_worktree.map_or(
+                SessionWorkLocationVm::Main,
+                SessionWorkLocationVm::run_worktree,
+            );
         }
         (Some(graph), Some(dynamic_node_id)) => (graph, dynamic_node_id),
-        _ => return None,
+        _ => return SessionWorkLocationVm::unresolved(),
     };
-    let node = graph.nodes.iter().find(|node| node.id == dynamic_node_id)?;
-    workspace_worktree_projection_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
+    let Some(node) = graph.nodes.iter().find(|node| node.id == dynamic_node_id) else {
+        return SessionWorkLocationVm::unresolved();
+    };
+    workspace_work_location_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
 }
 
-fn workspace_worktree_projection_by_id(
+fn workspace_work_location_by_id(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspaces: &[gold_band::dynamic::WorkspaceState],
     workspace_id: &str,
-) -> Option<SessionWorktreeProjection> {
-    let workspace = workspaces
+) -> SessionWorkLocationVm {
+    workspaces
         .iter()
-        .find(|workspace| workspace.id == workspace_id)?;
-    workspace_worktree_projection(run_worktree, workspace)
+        .find(|workspace| workspace.id == workspace_id)
+        .map_or_else(SessionWorkLocationVm::unresolved, |workspace| {
+            workspace_work_location(run_worktree, workspace)
+        })
 }
 
-fn workspace_worktree_projection(
+fn workspace_work_location(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspace: &gold_band::dynamic::WorkspaceState,
-) -> Option<SessionWorktreeProjection> {
+) -> SessionWorkLocationVm {
     match workspace.kind {
         WorkspaceKind::Worktree
-            if workspace.status != gold_band::dynamic::WorkspaceStatus::Released =>
+            if workspace.status == gold_band::dynamic::WorkspaceStatus::Released =>
         {
-            Some(SessionWorktreeProjection {
-                path: workspace.path.to_string(),
-                branch: workspace.branch.clone(),
-            })
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Released,
+                path: Some(workspace.path.to_string()),
+            }
         }
-        WorkspaceKind::Worktree => None,
+        WorkspaceKind::Worktree => SessionWorkLocationVm::Worktree {
+            path: workspace.path.to_string(),
+            branch: workspace.branch.clone(),
+        },
         WorkspaceKind::Main => run_worktree
             .filter(|worktree| {
                 gold_band::storage::normalize_workspace_path(&worktree.path)
                     == gold_band::storage::normalize_workspace_path(&workspace.path)
             })
-            .map(|worktree| SessionWorktreeProjection {
-                path: worktree.path.to_string(),
-                branch: Some(worktree.branch.clone()),
-            }),
+            .map_or(
+                SessionWorkLocationVm::Main,
+                SessionWorkLocationVm::run_worktree,
+            ),
     }
 }
 
@@ -7230,6 +7367,10 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
         .collect::<Vec<_>>();
     AcpPromptInteractionVm::Permission {
         interaction_id: request_id,
+        session_id: raw
+            .pointer("/_meta/goldBandConversation/sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         turn_id: raw
             .pointer("/_meta/goldBandConversation/turnId")
             .or_else(|| raw.get("turnId"))
@@ -7289,6 +7430,10 @@ fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
     AcpPromptInteractionVm::Elicitation {
         interaction_id: event.id.clone(),
+        session_id: raw
+            .pointer("/_meta/goldBandConversation/sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         turn_id: raw
             .pointer("/_meta/goldBandConversation/turnId")
             .or_else(|| raw.get("turnId"))
@@ -7812,10 +7957,7 @@ fn enum_label<T: Serialize>(value: &T) -> String {
 }
 
 fn empty_graph() -> GraphVm {
-    GraphVm {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-    }
+    GraphVm::default()
 }
 
 fn read_optional_text(path: &camino::Utf8Path) -> Result<Option<String>> {
@@ -8003,6 +8145,7 @@ mod tests {
         assert_eq!(value["acpChatEventPageSize"], 96);
         assert_eq!(value["acpChatEventWindowPageCount"], 3);
         assert_eq!(value["acpChatResourceCacheSessionCount"], 8);
+        assert_eq!(value["browserHiddenReleaseSecs"], 3600);
         assert_eq!(value["conversationInlineContentMaxBytes"], 20_000);
         assert_eq!(value["conversationInlineImageMaxBytes"], 4 * 1024 * 1024);
         assert_eq!(value["conversationInlineImageMaxDimension"], 2_560);
@@ -8263,6 +8406,7 @@ mod tests {
             launch_tool_call_id: format!("launch-{agent_execution_id}"),
             session_id: "session-123".to_string(),
             status: status.to_string(),
+            provider_state_seq: None,
             title: Some(agent_execution_id.to_string()),
             description: None,
             started_at: "100Z".to_string(),
@@ -8356,6 +8500,27 @@ mod tests {
         let usage = usage.unwrap();
         assert_eq!(usage.used, Some(38_223));
         assert_eq!(usage.cost_amount_usd, Some(0.315532));
+    }
+
+    #[test]
+    fn usage_vm_serializes_the_background_token_totals_gap_only_when_present() {
+        let complete = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            ..Default::default()
+        })
+        .unwrap();
+        let partial = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            token_totals_exclude_background: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(complete.get("tokenTotalsExcludeBackground").is_none());
+        assert_eq!(
+            partial["tokenTotalsExcludeBackground"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -9000,6 +9165,58 @@ mod tests {
                     .any(|edge| edge.from == "bootstrap" && edge.to == to && edge.label == label)
             );
         }
+    }
+
+    #[test]
+    fn dynamic_graph_exposes_group_containment_for_layout() {
+        let directory = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap());
+        seed_dynamic_round_graph_fixture(&app);
+        let mut graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+        ))
+        .unwrap();
+        let group = |id: &str, parent: Option<&str>| {
+            serde_json::from_value::<gold_band::dynamic::DynamicGroupState>(json!({
+                "version": "0.1", "id": id, "dynamicRunId": "dynamic-run-001",
+                "status": "closed", "depth": if parent.is_some() { 2 } else { 1 },
+                "parentGroupId": parent, "rootNodeIds": [], "terminalNodeIds": [],
+                "targetWorkspaceId": "workspace-main", "childWorkspaceIds": [],
+                "mergeNodeId": null, "acceptanceNodeId": null, "createdByNodeId": "bootstrap",
+                "merge": {"title": "Merge", "task": "Merge"},
+                "acceptance": {"title": "Accept", "task": "Accept"},
+                "createdAt": "2026-06-17T10:00:00Z", "updatedAt": "2026-06-17T10:00:00Z"
+            }))
+            .unwrap()
+        };
+        graph.groups = vec![group("wave-1", None), group("wave-1-fix", Some("wave-1"))];
+        graph.nodes[1].group_id = Some("wave-1-fix".to_string());
+
+        let vm = dynamic_internal_graph_vm(
+            &app,
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+            &graph,
+        );
+
+        let groups = vm
+            .groups
+            .iter()
+            .map(|group| (group.id.as_str(), group.parent_group_id.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            groups,
+            vec![("wave-1", None), ("wave-1-fix", Some("wave-1"))]
+        );
+        assert_eq!(vm.nodes[1].dynamic_group_id.as_deref(), Some("wave-1-fix"));
+        assert!(vm.groups.len() == 2 && empty_graph().groups.is_empty());
     }
 
     #[test]
@@ -10124,6 +10341,122 @@ mod tests {
     }
 
     #[test]
+    fn compaction_summary_loads_full_blob_backed_markdown_by_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let markdown = format!("# Summary\n\n{}\nEND", "retained context\n".repeat(5_000));
+        let event = acp_event_at(
+            "compaction-1",
+            "contextCompaction",
+            Some("completed"),
+            1,
+            Some(
+                json!({"summary":[{"type":"text","text":markdown},{"type":"text","text":"\nlast chunk"}]}),
+            ),
+        );
+        let core_event = serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+        gold_band::acp::events::write_timeline_items(
+            &attempt.join("acp.timeline.jsonl"),
+            &[core_event],
+        )
+        .unwrap();
+        let detail = acp_compaction_summary_vm_for_attempt(
+            &attempt,
+            AcpCompactionSummaryQueryInput {
+                branch_id: "root".into(),
+                event_id: "compaction-1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            detail.markdown.as_deref(),
+            Some(format!("{markdown}\nlast chunk").as_str())
+        );
+        let list = compact_event_for_session(event);
+        assert_eq!(
+            list.raw.as_ref().unwrap()["compactionSummaryAvailable"],
+            true
+        );
+        assert!(list.raw.as_ref().unwrap().get("summary").is_none());
+        assert!(serde_json::to_string(&list).unwrap().len() < 2_000);
+        let missing = acp_compaction_summary_vm_for_attempt(
+            &attempt,
+            AcpCompactionSummaryQueryInput {
+                branch_id: "root".into(),
+                event_id: "other-compaction".into(),
+            },
+        )
+        .unwrap();
+        assert!(missing.markdown.is_none());
+        assert!(
+            acp_compaction_summary_vm_for_attempt(
+                &attempt,
+                AcpCompactionSummaryQueryInput {
+                    branch_id: "../other".into(),
+                    event_id: "compaction-1".into(),
+                }
+            )
+            .is_err()
+        );
+        let other_dir = tempfile::tempdir().unwrap();
+        let other_attempt = Utf8PathBuf::from_path_buf(other_dir.path().to_path_buf()).unwrap();
+        let other = acp_event_at(
+            "compaction-1",
+            "contextCompaction",
+            Some("completed"),
+            1,
+            Some(json!({"summary":[{"type":"text","text":"other session"}]})),
+        );
+        write_timeline_file(&other_attempt, "acp.timeline.jsonl", &[other]);
+        assert_eq!(
+            acp_compaction_summary_vm_for_attempt(
+                &other_attempt,
+                AcpCompactionSummaryQueryInput {
+                    branch_id: "root".into(),
+                    event_id: "compaction-1".into(),
+                }
+            )
+            .unwrap()
+            .markdown
+            .as_deref(),
+            Some("other session")
+        );
+    }
+
+    #[test]
+    fn compaction_summary_projection_handles_absent_empty_and_blob_content() {
+        for summary in [
+            serde_json::Value::Null,
+            json!([]),
+            json!([{"type":"text","text":"  "}]),
+            json!([{"type":"image","data":"image"}]),
+        ] {
+            let event = acp_event_at(
+                "cmp",
+                "contextCompaction",
+                Some("completed"),
+                1,
+                Some(json!({"summary":summary})),
+            );
+            assert_eq!(
+                compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"],
+                false
+            );
+        }
+        let event = acp_event_at(
+            "cmp",
+            "contextCompaction",
+            Some("completed"),
+            1,
+            Some(json!({"summary":[{"type":"text","text":{"$goldBandBlob":{"id":"blob"}}}]})),
+        );
+        assert_eq!(
+            compact_event_for_session(event).raw.unwrap()["compactionSummaryAvailable"],
+            true
+        );
+    }
+
+    #[test]
     fn tool_detail_keeps_intermediate_diff_when_terminal_revision_has_only_status() {
         let dir = std::env::temp_dir().join(format!(
             "gb-tool-detail-diff-revision-{}",
@@ -10592,7 +10925,7 @@ mod tests {
     }
 
     #[test]
-    fn session_worktree_projection_uses_the_current_physical_workspace() {
+    fn session_work_location_distinguishes_main_worktree_and_unavailable() {
         let outer_path = Utf8PathBuf::from("C:/GoldBand/worktrees/outer");
         let child_path = Utf8PathBuf::from("D:/repo/.gold-band/worktrees/child");
         let run_worktree = gold_band::runtime::RunWorktreeState {
@@ -10623,7 +10956,7 @@ mod tests {
         };
 
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-child",
@@ -10631,23 +10964,23 @@ mod tests {
                     child_path.clone()
                 ),
             ),
-            Some(SessionWorktreeProjection {
+            SessionWorkLocationVm::Worktree {
                 path: child_path.to_string(),
                 branch: Some("gb-dynamic-child".to_string()),
-            }),
+            },
         );
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 Some(&run_worktree),
                 &workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
             ),
-            Some(SessionWorktreeProjection {
+            SessionWorkLocationVm::Worktree {
                 path: outer_path.to_string(),
                 branch: Some("gb-conversation-outer".to_string()),
-            }),
+            },
         );
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-main",
@@ -10655,10 +10988,10 @@ mod tests {
                     Utf8PathBuf::from("D:/repo")
                 ),
             ),
-            None,
+            SessionWorkLocationVm::Main,
         );
         assert_eq!(
-            workspace_worktree_projection(
+            workspace_work_location(
                 None,
                 &workspace(
                     "workspace-main",
@@ -10666,10 +10999,10 @@ mod tests {
                     Utf8PathBuf::from("D:/repo")
                 ),
             ),
-            None,
+            SessionWorkLocationVm::Main,
         );
         assert_eq!(
-            workspace_worktree_projection_by_id(
+            workspace_work_location_by_id(
                 Some(&run_worktree),
                 &[
                     workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
@@ -10681,10 +11014,10 @@ mod tests {
                 ],
                 "workspace-child",
             ),
-            Some(SessionWorktreeProjection {
+            SessionWorkLocationVm::Worktree {
                 path: child_path.to_string(),
                 branch: Some("gb-dynamic-child".to_string()),
-            }),
+            },
         );
         let mut released_child = workspace(
             "workspace-child",
@@ -10693,12 +11026,44 @@ mod tests {
         );
         released_child.status = gold_band::dynamic::WorkspaceStatus::Released;
         assert_eq!(
-            workspace_worktree_projection(Some(&run_worktree), &released_child),
-            None,
+            workspace_work_location(Some(&run_worktree), &released_child),
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Released,
+                path: Some(child_path.to_string()),
+            },
         );
         assert_eq!(
-            session_worktree_projection(Some(&run_worktree), None, Some("missing-dynamic-node")),
-            None,
+            session_work_location(Some(&run_worktree), None, Some("missing-dynamic-node")),
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Unresolved,
+                path: None,
+            },
+        );
+        assert_eq!(
+            workspace_work_location_by_id(Some(&run_worktree), &[], "missing-workspace"),
+            SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Unresolved,
+                path: None,
+            },
+        );
+        assert_eq!(
+            session_work_location(None, None, None),
+            SessionWorkLocationVm::Main
+        );
+        assert_eq!(
+            session_work_location(Some(&run_worktree), None, None),
+            SessionWorkLocationVm::Worktree {
+                path: outer_path.to_string(),
+                branch: Some("gb-conversation-outer".to_string()),
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(SessionWorkLocationVm::Unavailable {
+                reason: SessionWorkLocationUnavailableReason::Released,
+                path: Some("D:/wt".to_string()),
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "unavailable", "reason": "released", "path": "D:/wt" }),
         );
     }
 
@@ -11821,6 +12186,7 @@ mod tests {
             agent_execution_id: "agent-internal".to_string(),
             parent_agent_execution_id: Some("agent-parent".to_string()),
             execution_status: "running".to_string(),
+            provider_state_seq: Some(12),
             event_count: 1,
             tool_call_count: 1,
             read_file_count: 0,
@@ -11832,6 +12198,7 @@ mod tests {
         };
         let value = serde_json::to_value(vm).unwrap();
         assert_eq!(value["agentExecutionId"], "agent-internal");
+        assert_eq!(value["providerStateSeq"], 12);
         assert!(value.get("toolCallId").is_none());
         assert!(value.get("parentToolCallId").is_none());
         assert!(value.get("launchStatus").is_none());

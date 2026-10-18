@@ -14,9 +14,14 @@ use crate::process::{
 };
 
 const REQUIRE_LOCAL_CLAUDE_ENV: &str = "GOLD_BAND_REQUIRE_LOCAL_CLAUDE";
-const CLAUDE_ACP_PROVIDER: &str = "claude-acp";
+const CLAUDE_CODE_META_KEY: &str = "claudeCode";
 const DISABLE_BACKGROUND_TASKS_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const MONITOR_TOOL: &str = "Monitor";
+const THINKING_OPTION: &str = "thinking";
+const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
+// Recent Claude models default thinking display to "omitted", which streams
+// signature-only blocks and leaves the timeline silent while the model thinks.
+const THINKING_DISPLAY_SUMMARIZED: &str = "summarized";
 
 #[derive(Debug, thiserror::Error)]
 #[error("{code}: {msg}")]
@@ -34,21 +39,43 @@ impl InvalidSessionOptions {
     }
 }
 
+pub(crate) fn is_session_options_method(method: &str) -> bool {
+    matches!(
+        method,
+        "session/new" | "session/load" | "session/resume" | "session/fork"
+    )
+}
+
+/// Claude Code session options travel in `_meta.claudeCode.options`; only
+/// adapters that negotiated the `claudeCode` extension at initialize accept
+/// them, whatever provider id or launch command the user configured.
+pub(crate) fn supports_claude_code_session_options(agent_capabilities: &Value) -> bool {
+    agent_capabilities
+        .pointer(&format!("/_meta/{CLAUDE_CODE_META_KEY}"))
+        .is_some_and(Value::is_object)
+}
+
 pub(crate) fn apply_session_execution_policy(
-    provider_id: &str,
+    agent_capabilities: Option<&Value>,
     method: &str,
     params: &mut Value,
 ) -> Result<()> {
-    if provider_id != CLAUDE_ACP_PROVIDER
-        || !matches!(
-            method,
-            "session/new" | "session/load" | "session/resume" | "session/fork"
-        )
+    apply_session_execution_policy_for_surface(agent_capabilities, method, params, false)
+}
+
+pub(crate) fn apply_session_execution_policy_for_surface(
+    agent_capabilities: Option<&Value>,
+    method: &str,
+    params: &mut Value,
+    allow_background: bool,
+) -> Result<()> {
+    if !is_session_options_method(method)
+        || !agent_capabilities.is_some_and(supports_claude_code_session_options)
     {
         return Ok(());
     }
     let mut options = params;
-    for key in ["_meta", "claudeCode", "options"] {
+    for key in ["_meta", CLAUDE_CODE_META_KEY, "options"] {
         let object = options
             .as_object_mut()
             .ok_or_else(|| InvalidSessionOptions::expected(key, "object"))?;
@@ -57,6 +84,14 @@ pub(crate) fn apply_session_execution_policy(
     let options = options
         .as_object_mut()
         .ok_or_else(|| InvalidSessionOptions::expected("options", "object"))?;
+    if allow_background {
+        options.entry(THINKING_OPTION).or_insert_with(|| {
+            json!({
+                "type": THINKING_TYPE_ADAPTIVE, "display": THINKING_DISPLAY_SUMMARIZED,
+            })
+        });
+        return Ok(());
+    }
     let tools = options
         .entry("disallowedTools")
         .or_insert_with(|| json!([]));
@@ -69,6 +104,12 @@ pub(crate) fn apply_session_execution_policy(
     if !tools.iter().any(|tool| tool == MONITOR_TOOL) {
         tools.push(json!(MONITOR_TOOL));
     }
+    options.entry(THINKING_OPTION).or_insert_with(|| {
+        json!({
+            "type": THINKING_TYPE_ADAPTIVE,
+            "display": THINKING_DISPLAY_SUMMARIZED,
+        })
+    });
     // Claude settings are applied after the child environment. Enforce the same
     // policy at both tiers so project settings cannot re-enable background work.
     let env = options.entry("env").or_insert_with(|| json!({}));
@@ -110,7 +151,6 @@ pub fn resolve_adapter(config: &AcpAdapterConfig) -> Result<ResolvedAcpAdapter> 
 }
 
 pub fn spawn_adapter(
-    provider_id: &str,
     config: &AcpAdapterConfig,
     cwd: &std::path::Path,
     use_local_claude: bool,
@@ -119,20 +159,34 @@ pub fn spawn_adapter(
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
     let resolved_env = resolved_adapter_env(&config.env);
-    let resolved_command =
-        resolve_command_with_path(&executable, resolved_env.get("PATH").map(String::as_str));
-    let mut command = background_command(&resolved_command);
+    let mut command = match crate::npx_cache::cached_launch(
+        config,
+        &adapter.args,
+        cwd,
+        &resolved_env,
+    ) {
+        Some(launch) => {
+            tracing::debug!(script = %launch.script.display(), "launching cached npx adapter directly");
+            let mut command = background_command(&launch.node);
+            command.arg(&launch.script).args(&launch.args);
+            command
+        }
+        None => {
+            let mut command = background_command(resolve_command_with_path(
+                &executable,
+                resolved_env.get("PATH").map(String::as_str),
+            ));
+            command.args(&adapter.args);
+            command
+        }
+    };
     command
-        .args(&adapter.args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in &resolved_env {
         command.env(key, value);
-    }
-    if provider_id == CLAUDE_ACP_PROVIDER {
-        command.env(DISABLE_BACKGROUND_TASKS_ENV, "1");
     }
     match local_claude_executable_for_env(use_local_claude, &resolved_env) {
         Some(claude_path) => {
@@ -188,7 +242,7 @@ fn normalize_args(args: &[String]) -> Vec<String> {
 }
 
 #[cfg(windows)]
-fn platform_adapter_command(command: &str) -> String {
+pub(crate) fn platform_adapter_command(command: &str) -> String {
     if command.eq_ignore_ascii_case("npx") {
         "npx.cmd".to_string()
     } else {
@@ -197,11 +251,13 @@ fn platform_adapter_command(command: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn platform_adapter_command(command: &str) -> String {
+pub(crate) fn platform_adapter_command(command: &str) -> String {
     command.to_string()
 }
 
-fn resolved_adapter_env(config_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(crate) fn resolved_adapter_env(
+    config_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     let mut env = config_env.clone();
     let configured_path = configured_path(&env);
     if let Some(path) = resolved_child_path(configured_path.map(OsStr::new)) {
@@ -232,7 +288,7 @@ fn remove_configured_path_keys(env: &mut BTreeMap<String, String>) {
     }
 }
 
-fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
+pub(crate) fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
     if !command_requires_path_lookup(command) {
         return command.to_string();
     }
@@ -367,13 +423,116 @@ fn command_requires_path_lookup(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        local_claude_executable_for_env, resolve_command_with_path,
+        apply_session_execution_policy, local_claude_executable_for_env, resolve_command_with_path,
         resolve_local_claude_executable, should_require_local_claude_resolution, spawn_adapter,
     };
     use crate::config::AcpAdapterConfig;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
+
+    fn claude_code_capabilities() -> Value {
+        json!({ "_meta": { "claudeCode": { "promptQueueing": true } } })
+    }
+
+    #[test]
+    fn direct_session_policy_allows_background_without_changing_workflow_defaults() {
+        for method in [
+            "session/new",
+            "session/load",
+            "session/resume",
+            "session/fork",
+        ] {
+            let mut params = json!({"cwd":"D:/work"});
+            super::apply_session_execution_policy_for_surface(
+                Some(&claude_code_capabilities()),
+                method,
+                &mut params,
+                true,
+            )
+            .unwrap();
+            let options = params.pointer("/_meta/claudeCode/options").unwrap();
+            assert!(options.get("disallowedTools").is_none());
+            assert!(options.get("env").is_none());
+            assert_eq!(options["thinking"]["type"], "adaptive");
+            apply_session_execution_policy(Some(&claude_code_capabilities()), method, &mut params)
+                .unwrap();
+            assert_eq!(
+                params.pointer("/_meta/claudeCode/options/disallowedTools"),
+                Some(&json!(["Monitor"]))
+            );
+        }
+    }
+
+    #[test]
+    fn session_policy_follows_negotiated_claude_code_capability() {
+        let mut params = json!({ "cwd": "D:/work" });
+        apply_session_execution_policy(
+            Some(&claude_code_capabilities()),
+            "session/new",
+            &mut params,
+        )
+        .unwrap();
+
+        let options = params.pointer("/_meta/claudeCode/options").unwrap();
+        assert_eq!(options["disallowedTools"], json!(["Monitor"]));
+        assert_eq!(options["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"], "1");
+        assert_eq!(
+            options["settings"]["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"],
+            "1"
+        );
+        assert_eq!(
+            options["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
+    }
+
+    #[test]
+    fn session_policy_skips_adapters_without_claude_code_capability() {
+        for capabilities in [
+            None,
+            Some(json!({})),
+            Some(json!({ "_meta": { "claudeCode": true } })),
+        ] {
+            let mut params = json!({ "cwd": "D:/work" });
+            apply_session_execution_policy(capabilities.as_ref(), "session/new", &mut params)
+                .unwrap();
+            assert_eq!(params, json!({ "cwd": "D:/work" }));
+        }
+    }
+
+    #[test]
+    fn session_policy_only_touches_session_options_methods() {
+        let mut params = json!({ "sessionId": "s1", "prompt": [] });
+        apply_session_execution_policy(
+            Some(&claude_code_capabilities()),
+            "session/prompt",
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(params, json!({ "sessionId": "s1", "prompt": [] }));
+    }
+
+    #[test]
+    fn session_policy_keeps_caller_thinking_and_merges_disallowed_tools() {
+        let mut params = json!({
+            "_meta": { "claudeCode": { "options": {
+                "thinking": { "type": "disabled" },
+                "disallowedTools": ["WebFetch", "Monitor"],
+            } } }
+        });
+        apply_session_execution_policy(
+            Some(&claude_code_capabilities()),
+            "session/resume",
+            &mut params,
+        )
+        .unwrap();
+
+        let options = params.pointer("/_meta/claudeCode/options").unwrap();
+        assert_eq!(options["thinking"], json!({ "type": "disabled" }));
+        assert_eq!(options["disallowedTools"], json!(["WebFetch", "Monitor"]));
+    }
 
     #[test]
     fn resolve_command_uses_resolved_path() {
@@ -381,7 +540,7 @@ mod tests {
         let adapter_bin = temp.path().join("adapter-bin");
         fs::create_dir_all(&adapter_bin).unwrap();
         let executable_name = if cfg!(windows) { "npx.exe" } else { "npx" };
-        fs::write(adapter_bin.join(executable_name), "").unwrap();
+        fs::write(adapter_bin.join(executable_name), "native-binary").unwrap();
 
         let path = std::env::join_paths([adapter_bin.clone()]).unwrap();
         let resolved = resolve_command_with_path("npx", Some(path.to_str().unwrap()));
@@ -560,7 +719,7 @@ CALL :find_dp0
             env: Default::default(),
         };
 
-        let error = spawn_adapter("fixture", &config, temp.path(), false, false).unwrap_err();
+        let error = spawn_adapter(&config, temp.path(), false, false).unwrap_err();
         let message = error.to_string();
 
         assert!(message.contains("missing-acp-command-for-test"));

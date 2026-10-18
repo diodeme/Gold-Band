@@ -1,4 +1,4 @@
-import { isExternalUrlHref, isHttpUrlHref, isLocalFileHref, isSystemHandlerHref, parseLocalFileLinkTarget } from '@/lib/file-link';
+import { isExternalUrlHref, isHttpUrlHref, isLocalFileHref, isSystemHandlerHref } from '@/lib/file-link';
 import type { BrowserSearchEngine } from '@/types';
 
 export type { BrowserSearchEngine } from '@/types';
@@ -11,23 +11,25 @@ const SEARCH_URLS: Record<BrowserSearchEngine, string> = {
 
 export { isHttpUrlHref, isSystemHandlerHref };
 
+function documentPathOf(path: string) {
+  return path.trim().replaceAll('\\', '/').replace(/:\d+(?::\d+)?$/u, '');
+}
+
+/** Local links to these documents open in the built-in browser by default. */
 export function isHtmlDocumentPath(path: string) {
-  const value = path.trim().replaceAll('\\', '/');
-  const withoutHash = value.split('#')[0] ?? value;
-  const withoutQuery = withoutHash.split('?')[0] ?? withoutHash;
-  const withoutLine = withoutQuery.replace(/:\d+(?::\d+)?$/u, '');
-  return /\.(?:html|htm)$/iu.test(withoutLine);
+  return /\.(?:html|htm)$/iu.test(documentPathOf(path));
+}
+
+/** Local files the built-in browser can load when the user explicitly asks for it. */
+export function isBrowserDocumentPath(path: string) {
+  return /\.(?:html|htm|svg)$/iu.test(documentPathOf(path));
 }
 
 export function localHtmlHrefFrom(href: string) {
   const trimmed = href.trim();
-  if (!trimmed) return null;
-  if (isHtmlDocumentPath(trimmed)) {
-    const target = parseLocalFileLinkTarget(trimmed);
-    return target ? trimmed.slice(0, -target.sourceSuffix.length) : trimmed;
-  }
-  if (/^file:\/\//iu.test(trimmed) && isHtmlDocumentPath(trimmed)) return trimmed;
-  return null;
+  let pathname = trimmed.split(/[?#]/u, 1)[0];
+  try { pathname = decodeURIComponent(pathname); } catch { /* The resolver reports invalid encodings. */ }
+  return isLocalFileHref(trimmed) && isHtmlDocumentPath(pathname) ? trimmed : null;
 }
 
 export function classifyWebTarget(href: string): 'http' | 'local-html' | 'local-file' | 'system' | 'invalid' {

@@ -3,7 +3,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { getOverlayPortalHost, PortalContainerContext } from "@/lib/portal-container"
+import { getOverlayPortalHost, overlayPortalHostId, PortalContainerContext } from "@/lib/portal-container"
 
 const sheetResizeStoragePrefix = "gold-band:sheet-size:"
 const defaultSheetMinSize = 360
@@ -69,9 +69,37 @@ function clampSheetSize(value: number, minSize: number, maxSize: number) {
   return Math.min(Math.max(value, effectiveMinSize), maxSize)
 }
 
+export type SheetBox = { left: number; right: number; width: number }
+
+export function sheetContainingBox(host: HTMLElement | null | undefined, fallback: SheetBox): SheetBox {
+  const boundary = host?.parentElement ?? null
+  const ownerDocument = host?.ownerDocument
+  if (!boundary || !ownerDocument || boundary === ownerDocument.body || boundary === ownerDocument.documentElement) {
+    return fallback
+  }
+  const rect = boundary.getBoundingClientRect()
+  if (rect.width <= 0) return fallback
+  return { left: rect.left, right: rect.right, width: rect.width }
+}
+
+export function sheetSizeLimit(boxWidth: number, maxSize: number, viewportMargin: number) {
+  return Math.min(maxSize, Math.max(240, boxWidth - viewportMargin))
+}
+
+export function sheetResizeWidth(side: "left" | "right", clientX: number, box: SheetBox) {
+  return side === "right" ? box.right - clientX : clientX - box.left
+}
+
+function currentSheetBox(): SheetBox {
+  const width = typeof window === "undefined" ? 0 : window.innerWidth
+  const fallback = { left: 0, right: width, width }
+  if (typeof document === "undefined") return fallback
+  return sheetContainingBox(document.getElementById(overlayPortalHostId), fallback)
+}
+
 function resolveSheetViewportMaxSize(_minSize: number, maxSize: number, viewportMargin: number) {
   if (typeof window === "undefined") return maxSize
-  return Math.min(maxSize, Math.max(240, window.innerWidth - viewportMargin))
+  return sheetSizeLimit(currentSheetBox().width, maxSize, viewportMargin)
 }
 
 function readStoredSheetSize(key: string) {
@@ -197,7 +225,15 @@ function SheetContent({
       setSize((current) => (current === null ? current : clampSize(current)))
     }
     window.addEventListener("resize", handleResize)
-    return () => window.removeEventListener("resize", handleResize)
+    const boundary = document.getElementById(overlayPortalHostId)?.parentElement ?? null
+    const observer = boundary && boundary !== document.body && boundary !== document.documentElement
+      ? new ResizeObserver(handleResize)
+      : null
+    if (observer && boundary) observer.observe(boundary)
+    return () => {
+      window.removeEventListener("resize", handleResize)
+      observer?.disconnect()
+    }
   }, [clampSize, resizeEnabled])
 
   React.useEffect(() => {
@@ -226,8 +262,8 @@ function SheetContent({
 
   const resizeFromClientX = React.useCallback(
     (clientX: number) => {
-      if (typeof window === "undefined") return
-      setClampedSize(side === "right" ? window.innerWidth - clientX : clientX)
+      if (typeof window === "undefined" || (side !== "right" && side !== "left")) return
+      setClampedSize(sheetResizeWidth(side, clientX, currentSheetBox()))
     },
     [setClampedSize, side]
   )

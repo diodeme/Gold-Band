@@ -7,6 +7,7 @@ import type {
   ConversationSessionTargetVm,
   ConversationSessionTreeVm,
   InterventionNavigateEventVm,
+  SessionWorkLocationVm,
 } from '@/types';
 import { findConversationTask } from '@/lib/conversation-task-state';
 import {
@@ -72,16 +73,20 @@ export function conversationPageTargetsTask(
     || sameConversationTaskEntity(page, task);
 }
 
-export function conversationSourceControlWorkspacePath(
+/**
+ * Work location of the session the page presents. It is the single source for
+ * every workspace tab root (files, source control, links, mentions); `null`
+ * means no conversation is presented and tabs use the project root.
+ */
+export function conversationWorkLocation(
   page: ConversationPage,
   run: ConversationRunVm | null | undefined,
-): string | null {
+): SessionWorkLocationVm | null {
   if (!run || !conversationPageMatchesRun(page, run)) return null;
   const selectedLeaf = findConversationLeafByKey(run.sessionTree, run.sessionTree.selectedSessionKey)
     ?? findConversationLeafForPage(run.sessionTree, page);
-  if (selectedLeaf) return selectedLeaf.worktreePath ?? null;
-  if (run.selectedSession) return run.selectedSession.worktreePath ?? null;
-  return run.worktree?.path ?? null;
+  if (selectedLeaf) return selectedLeaf.workLocation;
+  return run.worktree ? { kind: 'worktree', path: run.worktree.path, branch: run.worktree.branch } : { kind: 'main' };
 }
 
 export function conversationPageForRun(run: ConversationRunVm): Extract<ConversationPage, { kind: 'conversation-run' }> {
@@ -119,7 +124,6 @@ export function beginConversationSessionSelection(
   if (run.sessionTree.selectedSessionKey === selectedSessionKey) return run;
   return {
     ...run,
-    selectedSession: null,
     sessionTree: {
       ...run.sessionTree,
       selectedSessionKey,
@@ -200,6 +204,7 @@ export function conversationTerminalResultAcknowledgementTarget(
   sidebar: ConversationSidebarVm,
   page: ConversationPage,
   loadedRun: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid' | 'runId'> | null | undefined,
+  visibility: { foreground: boolean; atBottom: boolean } = { foreground: true, atBottom: true },
 ) {
   if (page.kind !== 'conversation-run'
     || !loadedRun
@@ -208,6 +213,7 @@ export function conversationTerminalResultAcknowledgementTarget(
   }
   const unread = findConversationTask(sidebar, page.projectId, page.taskId)?.unreadTerminalResult;
   if (!unread || unread.runId !== page.runId) return null;
+  if (!visibility.foreground || (unread.eventId.startsWith('background:') && !visibility.atBottom)) return null;
   return {
     projectId: page.projectId,
     taskId: page.taskId,

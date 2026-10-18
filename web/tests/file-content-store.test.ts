@@ -25,12 +25,16 @@ const resource: FileWorkspaceResource = {
   key: 'file:project-1:D:/repo/file.txt',
   scopeKey: 'draft:project-1',
   projectId: 'project-1',
+  workspacePath: null,
   title: 'file.txt',
   attention: false,
   locator: { projectId: 'project-1', canonicalPath: 'D:/repo/file.txt', relativePath: 'file.txt', scope: 'workspace' },
   target: null,
   targetRevision: 0,
 };
+
+const MAIN_ROOT = { projectId: 'project-1', workspacePath: null };
+const WORKTREE_ROOT = { projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' };
 
 function snapshot(content = 'start', disk = revision('disk-1')): TextFileSnapshotVm {
   return {
@@ -109,6 +113,22 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('FileContentStore autosave contract', () => {
+  it('keeps image transforms per file without publishing content updates and releases them on close', async () => {
+    const store = createStore();
+    const other = { ...resource, key: 'file:project-1:D:/repo/other.txt', locator: { ...resource.locator, canonicalPath: 'D:/repo/other.txt' } };
+    await store.load(resource);
+    await store.load(other);
+    const entry = store.snapshot(resource.key);
+    const view = { scale: 1.35, positionX: -30, positionY: -20 };
+    store.persistImageViewState(resource.key, view);
+    expect(store.imageViewState(resource.key)).toEqual(view);
+    expect(store.imageViewState(other.key)).toBeNull();
+    expect(store.snapshot(resource.key)).toBe(entry);
+    await store.release(resource.key);
+    expect(store.imageViewState(resource.key)).toBeNull();
+    await store.release(other.key);
+  });
+
   it('coalesces rapid edits for 300ms and writes only the latest content', async () => {
     const store = createStore();
     await store.load(resource);
@@ -122,6 +142,23 @@ describe('FileContentStore autosave contract', () => {
     expect(api.writeFileResource).toHaveBeenCalledTimes(1);
     expect(api.writeFileResource.mock.calls[0]?.[0].content).toBe('latest');
     expect(store.snapshot(resource.key).saveState.kind).toBe('clean');
+  });
+
+  it('flushes and then releases open files below a renamed or deleted folder', async () => {
+    const store = createStore();
+    await store.load(resource);
+    store.updateText(resource.key, 'pending edit');
+
+    expect(store.hasUnsavedWithin('project-1', 'D:/repo')).toBe(true);
+    expect(store.hasUnsavedWithin('project-1', 'D:/rep')).toBe(false);
+    expect(store.hasUnsavedWithin('project-2', 'D:/repo')).toBe(false);
+
+    await expect(store.flushWithin('project-1', 'D:\\repo')).resolves.toBe(true);
+    expect(api.writeFileResource.mock.calls[0]?.[0].content).toBe('pending edit');
+    expect(store.hasUnsavedWithin('project-1', 'D:/repo')).toBe(false);
+
+    await store.releaseWithin('project-1', 'd:/REPO');
+    expect(store.snapshot(resource.key).status).toBe('idle');
   });
 
   it('serializes a newer edit behind an in-flight write without losing it', async () => {
@@ -239,11 +276,11 @@ describe('FileContentStore autosave contract', () => {
 
   it('does not flash loading or drop the scroll offset when a watched file is opened again', async () => {
     const store = createStore();
-    await store.startProjectWatch(resource.projectId);
+    await store.startRootWatch(MAIN_ROOT);
     await store.load(resource);
     const contentRevision = store.snapshot(resource.key).contentRevision;
     store.persistEditorState(resource.key, { history: ['kept'] }, contentRevision, null, 480);
-    await store.stopProjectWatch(resource.projectId);
+    await store.stopRootWatch(MAIN_ROOT);
 
     const statuses: string[] = [];
     store.subscribe(() => statuses.push(store.snapshot(resource.key).status));
@@ -330,10 +367,11 @@ describe('FileContentStore autosave contract', () => {
       return () => {};
     });
     await store.load(resource);
-    await store.startProjectWatch(resource.projectId);
+    await store.startRootWatch(MAIN_ROOT);
     api.readFileResource.mockResolvedValueOnce(snapshot('external clean', revision('disk-2')));
     onChange?.({
       projectId: resource.projectId,
+      workspacePath: null,
       canonicalPath: resource.locator.canonicalPath,
       kind: 'modified',
       revision: revision('disk-2'),
@@ -345,6 +383,7 @@ describe('FileContentStore autosave contract', () => {
     store.updateText(resource.key, 'pending local');
     onChange?.({
       projectId: resource.projectId,
+      workspacePath: null,
       canonicalPath: resource.locator.canonicalPath,
       kind: 'modified',
       revision: revision('disk-3'),
@@ -354,6 +393,7 @@ describe('FileContentStore autosave contract', () => {
 
     onChange?.({
       projectId: resource.projectId,
+      workspacePath: null,
       canonicalPath: resource.locator.canonicalPath,
       kind: 'removed',
       revision: null,
@@ -378,11 +418,11 @@ describe('FileContentStore autosave contract', () => {
     };
     await store.load(resource);
     await store.load(other);
-    await store.startProjectWatch(resource.projectId);
+    await store.startRootWatch(MAIN_ROOT);
     await store.load(resource);
     expect(api.readFileResource).toHaveBeenCalledTimes(2);
 
-    await store.stopProjectWatch(resource.projectId);
+    await store.stopRootWatch(MAIN_ROOT);
     api.readFileResource.mockResolvedValueOnce(snapshot('after gap', revision('disk-2')));
     await store.load(resource);
 
@@ -411,11 +451,11 @@ describe('FileContentStore autosave contract', () => {
       .mockRejectedValueOnce({ code: 'workspace-file.watch-failed' })
       .mockResolvedValueOnce(undefined);
 
-    await expect(store.startProjectWatch(resource.projectId)).rejects.toMatchObject({
+    await expect(store.startRootWatch(MAIN_ROOT)).rejects.toMatchObject({
       code: 'workspace-file.watch-failed',
     });
-    await store.startProjectWatch(resource.projectId);
-    await store.stopProjectWatch(resource.projectId);
+    await store.startRootWatch(MAIN_ROOT);
+    await store.stopRootWatch(MAIN_ROOT);
 
     expect(api.startWorkspaceFileWatch).toHaveBeenCalledTimes(2);
     expect(api.stopWorkspaceFileWatch).toHaveBeenCalledTimes(1);
@@ -429,11 +469,12 @@ describe('FileContentStore autosave contract', () => {
       return () => {};
     });
     await store.load(resource);
-    await store.startProjectWatch(resource.projectId);
+    await store.startRootWatch(MAIN_ROOT);
     api.readFileResource.mockResolvedValueOnce(snapshot('recovered after overflow', revision('disk-2')));
 
     onChange?.({
       projectId: resource.projectId,
+      workspacePath: null,
       canonicalPath: 'D:/repo',
       kind: 'invalidated',
       revision: null,
@@ -442,6 +483,47 @@ describe('FileContentStore autosave contract', () => {
 
     await vi.waitFor(() => expect(store.snapshot(resource.key).snapshot?.kind === 'text'
       && store.snapshot(resource.key).snapshot.content).toBe('recovered after overflow'));
+  });
+});
+
+describe('FileContentStore file roots', () => {
+  it('keeps one backend watch per root and reads a file in its own root', async () => {
+    const store = createStore();
+    await store.startRootWatch(MAIN_ROOT);
+    await store.startRootWatch(WORKTREE_ROOT);
+    await store.startRootWatch(WORKTREE_ROOT);
+    expect(api.startWorkspaceFileWatch).toHaveBeenCalledTimes(2);
+    expect(api.startWorkspaceFileWatch).toHaveBeenCalledWith(WORKTREE_ROOT);
+
+    await store.stopRootWatch(WORKTREE_ROOT);
+    expect(api.stopWorkspaceFileWatch).not.toHaveBeenCalled();
+    await store.stopRootWatch(WORKTREE_ROOT);
+    expect(api.stopWorkspaceFileWatch).toHaveBeenCalledWith(WORKTREE_ROOT);
+    await store.stopRootWatch(MAIN_ROOT);
+
+    await store.load({ ...resource, workspacePath: WORKTREE_ROOT.workspacePath });
+    expect(api.readFileResource).toHaveBeenLastCalledWith(WORKTREE_ROOT, resource.locator.canonicalPath, undefined, false);
+  });
+
+  it('reconciles only files of the root whose watch was invalidated', async () => {
+    const store = createStore();
+    let onChange: ((event: WorkspaceFileChangedEventVm) => void) | null = null;
+    api.subscribeWorkspaceFileChanges.mockImplementationOnce(async (listener) => {
+      onChange = listener;
+      return () => {};
+    });
+    await store.load(resource);
+    await store.startRootWatch(MAIN_ROOT);
+    expect(api.readFileResource).toHaveBeenCalledTimes(1);
+
+    onChange?.({ ...WORKTREE_ROOT, canonicalPath: 'D:/repo/.wt/a', kind: 'invalidated', revision: null, operationId: null });
+    await Promise.resolve();
+    expect(api.readFileResource).toHaveBeenCalledTimes(1);
+
+    api.readFileResource.mockResolvedValueOnce(snapshot('main invalidated', revision('disk-2')));
+    onChange?.({ ...MAIN_ROOT, canonicalPath: 'D:/repo', kind: 'invalidated', revision: null, operationId: null });
+    await vi.waitFor(() => expect(store.snapshot(resource.key).snapshot?.kind === 'text'
+      && store.snapshot(resource.key).snapshot.content).toBe('main invalidated'));
   });
 });
 
@@ -474,7 +556,12 @@ describe('FileContentStore Markdown runtime contract', () => {
     await store.syncMarkdownImages(markdownResource.key, ['image.png']);
 
     expect(api.resolveMarkdownImage).toHaveBeenCalledWith(expect.objectContaining({
-      markdownCanonicalPath: 'D:/repo/readme.md',
+      source: {
+        kind: 'document',
+        canonicalPath: 'D:/repo/readme.md',
+        externalAccessToken: null,
+        approvedExternalTargets: [],
+      },
       rawSrc: 'image.png',
     }));
     expect(store.markdownImages(markdownResource.key).get('image.png')?.kind).toBe('ready');
@@ -498,7 +585,7 @@ describe('FileContentStore Markdown runtime contract', () => {
     expect(store.markdownImages(markdownResource.key).get('../outside.png')?.kind).toBe('approvalRequired');
 
     await store.approveMarkdownImages(markdownResource.key);
-    expect(api.resolveMarkdownImage.mock.calls[1]?.[0].approvedExternalTargets).toEqual(['D:/outside.png']);
+    expect(api.resolveMarkdownImage.mock.calls[1]?.[0].source.approvedExternalTargets).toEqual(['D:/outside.png']);
     expect(store.markdownImages(markdownResource.key).get('../outside.png')?.kind).toBe('ready');
   });
 

@@ -6,6 +6,7 @@ import {
   applyAcpScrollAnchorCompensation,
   captureAcpBranchScrollState,
   captureAcpBranchViewState,
+  canRestoreAcpSessionContent,
   configureAcpResourceCacheSessionCount,
   hasHydratedAcpSessionContent,
   markAcpSessionContentHydrated,
@@ -19,6 +20,7 @@ import {
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
 import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from '@/lib/acp-chat-resource-cache';
+import { readConversationBranchReplaySnapshot } from '@/lib/conversation-event-router';
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
 
 const state = (scrollTop: number) => ({
@@ -81,6 +83,66 @@ beforeEach(() => {
 });
 
 describe('ACP branch view state cache', () => {
+  it.each([
+    { name: 'unchanged head', generation: 2, head: 10, expected: true },
+    { name: 'new background head', generation: 2, head: 20, expected: false },
+    { name: 'new generation with reset sequence', generation: 3, head: 1, expected: false },
+    { name: 'obsolete Router generation', generation: 1, head: 20, expected: true },
+    { name: 'unknown Router generation', generation: 0, head: 20, expected: false },
+  ])('checks cached timeline freshness before restoring $name', ({ generation, head, expected }) => {
+    const key = 'freshness-window';
+    storeAcpSession(key, session('root'));
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1', timelineGeneration: 2, coveredRevision: 10, events: [{ ...event('head'), seq: 10 }],
+    }, 100);
+    const replay = {
+      ...readConversationBranchReplaySnapshot({ projectId: 'p', taskId: 't', runId: 'r', roundId: 'r', nodeId: 'n', attemptId: 'a' }, 'root'),
+      sessionId: 'session-1', timelineGeneration: generation, headSeq: head,
+    };
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(false);
+    markAcpSessionContentHydrated(key);
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(expected);
+    expect(canRestoreAcpSessionContent(key, { ...replay, sessionId: 'different-session' })).toBe(false);
+  });
+
+  it.each([
+    { name: 'covers a chat-hidden head', headRevision: 13, expected: true },
+    { name: 'misses a newer canonical revision', headRevision: 14, expected: false },
+  ])('measures Router head freshness by covered revision: $name', ({ headRevision, expected }) => {
+    const key = 'freshness-revision';
+    storeAcpSession(key, session('root'));
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1', timelineGeneration: 1, coveredRevision: 13, events: [{ ...event('visible-head'), seq: 11 }],
+    }, 100);
+    markAcpSessionContentHydrated(key);
+    const replay = {
+      ...readConversationBranchReplaySnapshot({ projectId: 'p', taskId: 't', runId: 'r', roundId: 'r', nodeId: 'n', attemptId: 'a' }, 'root'),
+      sessionId: 'session-1', timelineGeneration: 1, headSeq: headRevision, headRevision,
+    };
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(expected);
+  });
+
+  it('does not mistake the newest retained event for coverage of a missing revision', () => {
+    const key = 'freshness-loss';
+    const cached = session('root');
+    cached.eventPage.coveredRevision = 10;
+    cached.eventPage.newestSeq = 10;
+    storeAcpSession(key, cached);
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1', timelineGeneration: 1, coveredRevision: 30, events: [{ ...event('tail'), seq: 30 }],
+    }, 100);
+    markAcpSessionContentHydrated(key);
+    const replay = {
+      ...readConversationBranchReplaySnapshot({ projectId: 'p', taskId: 't', runId: 'r', roundId: 'r', nodeId: 'n', attemptId: 'a' }, 'root'),
+      sessionId: 'session-1', timelineGeneration: 1, headSeq: 30,
+      requiresCatchUp: true, lossWatermarkGeneration: 1, lossWatermarkRevision: 20,
+    };
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(false);
+    storeAcpSession(key, { ...cached, eventPage: { ...cached.eventPage, coveredRevision: 30, newestSeq: 30 } });
+    expect(canRestoreAcpSessionContent(key, replay)).toBe(false);
+    expect(canRestoreAcpSessionContent(key, { ...replay, requiresCatchUp: false })).toBe(true);
+  });
+
   it('starts a remounted viewport from the cached follow intent', () => {
     expect(shouldInitiallyFollowAcpBranch(state(100))).toBe(false);
     expect(shouldInitiallyFollowAcpBranch({ ...state(100), atBottom: true })).toBe(true);
@@ -139,7 +201,7 @@ describe('ACP branch view state cache', () => {
     storeAcpSession('combined-oldest', session('agent-oldest'));
     storeAcpLoadedEventWindow('combined-oldest', {
       sessionId: 'session-1',
-      timelineGeneration: 1,
+      timelineGeneration: 1, coveredRevision: 1,
       events: [event('event-oldest')],
     }, 100);
     storeAcpBranchViewState('combined-oldest', state(100));
@@ -158,7 +220,7 @@ describe('ACP branch view state cache', () => {
     const liveHeadEvent = { ...event('live-head-event'), seq: 20 };
     storeAcpLoadedEventWindow(key, {
       sessionId: 'session-1',
-      timelineGeneration: 1,
+      timelineGeneration: 1, coveredRevision: 1,
       events: [historicalEvent],
     }, 100);
     const liveHeadSession = {
@@ -180,7 +242,7 @@ describe('ACP branch view state cache', () => {
 
     expect(restoreAcpLoadedEventWindow(key, liveHeadSession, 100, true)).toEqual({
       sessionId: 'session-1',
-      timelineGeneration: 1,
+      timelineGeneration: 1, coveredRevision: 1,
       events: [historicalEvent],
     });
     expect(restoreAcpBranchViewState(key)?.hasNewer).toBe(true);
@@ -192,6 +254,7 @@ describe('ACP branch view state cache', () => {
     storeAcpLoadedEventWindow(key, {
       sessionId: 'session-1',
       timelineGeneration: 1,
+      coveredRevision: 40,
       events: [historicalEvent],
     }, 100);
     const replacementEvent = {
@@ -203,10 +266,12 @@ describe('ACP branch view state cache', () => {
       sessionId: 'session-2',
       events: [replacementEvent],
     };
+    replacementSession.eventPage = { ...replacementSession.eventPage, coveredRevision: 7 };
 
     expect(restoreAcpLoadedEventWindow(key, replacementSession, 100, true)).toEqual({
       sessionId: 'session-2',
       timelineGeneration: 1,
+      coveredRevision: 7,
       events: [replacementEvent],
     });
   });

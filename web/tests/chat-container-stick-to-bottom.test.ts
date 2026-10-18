@@ -8,6 +8,7 @@ import {
   ChatContainerContent,
   ChatContainerRoot,
   type ChatContainerContext,
+  type ChatContainerUserScrollDirection,
 } from '@/components/prompt-kit/chat-container';
 import {
   ConversationViewport,
@@ -216,7 +217,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
   it('reports wheel and keyboard input but not an unqualified pointer press as user scrolling', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     const contextRef = React.createRef<ChatContainerContext>();
-    const userScrolls: number[] = [];
+    const userScrolls: ChatContainerUserScrollDirection[] = [];
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -226,7 +227,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         root.render(
           React.createElement(
             ChatContainerRoot,
-            { contextRef, onViewportUserScroll: () => userScrolls.push(1) },
+            { contextRef, onViewportUserScroll: (_viewport, direction) => { userScrolls.push(direction); } },
             React.createElement(ChatContainerContent, null, 'streaming content'),
           ),
         );
@@ -243,7 +244,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp' }));
         viewport.dispatchEvent(new Event('pointerdown', { bubbles: true }));
       });
-      expect(userScrolls).toHaveLength(2);
+      expect(userScrolls).toEqual(['up', 'up']);
     } finally {
       await act(async () => root.unmount());
     }

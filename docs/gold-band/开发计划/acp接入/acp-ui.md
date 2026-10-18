@@ -2,6 +2,10 @@
 
 ## 0. 当前实现状态
 
+- 2026-10-14 会话重进旧提问修复：现有 summary-first 设计仍残留 run.selectedSession，非空旧 prop 会在重挂载时遮住较新 ACP 缓存，甚至回写更低 revision；历史窗口可恢复也不能证明离页缓存提问仍有效。先以延迟 canonical Promise 的 DOM 测试复现两条路径，再删除 run 正文契约及缓存/merge/页面消费，复用 ACP resource 的单调接纳与局部就绪状态。生命周期回传收紧为完整 locator、session identity 与 lifecycle 摘要，不再回传正文；浏览器 fixture 的 run/session 查询分离。验收必须覆盖连续两次重进首帧、可疑缓存待确认、可信 live 新问题、迟到旧快照和跨身份隔离，并验证 Direct/Workflow/右侧 Agent、历史阅读位置和文件变化按需加载；不能只检查查询后的最终状态。
+- 本次验收：新增 9 项 DOM、3 项接口测试由红转绿；受影响 14 个前端测试文件共 349 项，348 项通过，1 项既有 `atomically rejoins the live head with replay received during the latest-page request` 仍因缺少 `Editing · files` 文案失败，内存加载 HEAD 原 ACP 实现可复现相同失败，未扩围处理。Rust `conversation_run_` 17 项通过，产品 TypeScript 与生产构建通过。真实浏览器连续两次离开/重进，在 canonical 查询挂起时旧问题闪现次数为 0、历史消息可见、每次 1 个查询；新 revision 11 拒绝旧 revision 10 回写，真正新问题正常显示，640px/1440px 无横向溢出。未验证已安装 EXE。Demo/Site 的接口测试通过；Demo 类型检查及独立营销预览仍有既有接口/Vite 配置问题，不计为本次通过项。
+
+- 2026-10-13 复合模型菜单的二级菜单按实际空间选择载体：打开时以主菜单位置和会话栏碰撞边界判断左右两侧能否容纳 22rem 侧向菜单，能放下则保持悬停侧弹；都放不下时悬停不弹出，点击或 Enter / Space / → 在主菜单内原地展开同一组单选项，← 收起，一次只展开一个分区。根因是窄会话栏下侧向菜单两侧都放不下，Radix 翻到左侧后按剩余宽度压缩，菜单被挤到窗口最左边。
 - 2026-09-23 新会话冷启动短暂出现 ACP 错误横幅，切走再回来后恢复。根因是初始会话重试耗尽时无条件进入 `error`，把 provider 元数据已落盘但 timeline 正文尚未就绪的正常启动空窗误判为失败；这是正确状态分层下的收敛实现不完整。修复新增 `shouldKeepAcpInitialSessionLoadingAfterRetryExhausted` 判定：runtime 仍 active 且没有实际 `lastLoadError` 时保持 `loading/initializing`，由既有 live subscription 或后续刷新收敛为 available；实际命令错误或非运行态空会话仍正常报错。最小失败测试先固定误报，再用 5 个 ACP 相关文件 170 项回归转绿；TypeScript 产品构建检查通过。不新增状态机、请求、缓存或兼容旁路。
 - 2026-09-23 P2 修正：上述重试耗尽判定原先读取长异步 effect 启动时捕获的 `runtimeActiveFromContext`，active 在 30 秒重试窗口内变化但未同时改变 failed/interrupted 时可能使用旧值。修复新增 `runtimeActiveFromContextRef` 并在收尾判定读取 ref 当前值，不把 runtime active 加入 effect 依赖，避免 active 每次变化重启会话订阅。组件级 fake-timer 回归先固定 active 由真变假后仍错误停留在“加载中…”，修复后正确进入 ACP 失败态；TypeScript 产品构建检查通过。
 - 2026-09-20 AUTO / AI-DYNAMIC runtime continue 只传 snapshot `configOptionOverrides`，不得把冻结作者态 `config_options` 再 merge 回来；否则 Gemini 省略表后第一次回滚的 reasoning 会在每次追问再刷分割线。Direct 运行中追问走 prompt queue，本来就不会再 apply。新节点 `session/new` 按所选模型已观测的 `modelBoundCatalogs[modelId]` 静默 retain。
@@ -41,7 +45,7 @@
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
 - ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，Auto Accept 只继承 session `autoAccept`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。Auto Accept 不通过 mode API 下发。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖；AUTO / 工作流 continue 不得把冻结作者态 `config_options` 再 merge 进已清洗的 snapshot。新节点 `session/new` 按所选模型已观测的 `modelBoundCatalogs[modelId]` 静默 retain，未观测才带作者态进活目录并通知一次。
-- 发起会话前与已建立会话后的模型配置按 Agent 能力选择载体：存在模型且同时存在 `thought_level` 或 `model_config` 时使用复合二级菜单，选择任一子项后保留菜单以便继续配置，点击外部才关闭；只有模型时使用普通单项菜单，权限始终使用单项菜单，两者选择后立即关闭。追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器以及 `menuitem`、`menuitemcheckbox`、`menuitemradio` 等菜单项，配置选择只生效而不主动聚焦文本框。
+- 发起会话前与已建立会话后的模型配置按 Agent 能力选择载体：存在模型且同时存在 `thought_level` 或 `model_config` 时使用复合二级菜单（会话栏两侧放得下时侧向弹出，放不下时在主菜单内原地展开），选择任一子项后保留菜单以便继续配置，点击外部才关闭；只有模型时使用普通单项菜单，权限始终使用单项菜单，两者选择后立即关闭。追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器以及 `menuitem`、`menuitemcheckbox`、`menuitemradio` 等菜单项，配置选择只生效而不主动聚焦文本框。
 - ACP session 配置归一化统一采用 `configOptions` 优先、旧 `models` / `modes` 回退：目录、当前值和显示名必须使用同一优先级，避免 Codex 等 adapter 同时返回纯模型 config option 与“模型 × 思考强度”旧目录时展示展开组合。缺少模型绑定的 `thought_level` / `model_config` 时继续退化为模型单下拉，不从模型 ID 或名称反向猜测思考强度或 Fast；回归测试覆盖新旧字段冲突和 legacy-only adapter。
 - Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。单项菜单沿用 Radix 的选择即关闭语义，只有复合菜单拦截子项默认关闭事件。
 - 待发送队列与追问 composer 已收口为同一个底部输入 surface：队列存在时 composer 使用无上圆角贴合形态；无附件时不渲染附件 chips 空容器，避免空 `margin-bottom` 把队列和输入框分开。队列进一步对齐任务列表的紧凑 `Collapsible` 标题、箭头、边线、内容行和 `card` 背景，不再让相邻面板分别使用实色与半透明 surface；但保持队列默认展开。标题行负责整体收起/展开，展开后默认展示 FIFO 前 3 条，列表底部独立提供“查看更多 / 仅显示前 3 条”，且整体收起后保留当前展示范围。前端回归测试固定覆盖该布局、颜色与交互契约。
@@ -166,6 +170,7 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 基础 AI chat 交互优先使用 prompt-kit 生成到项目内的源码组件，避免自研消息容器、输入框和工具调用基础控件：
 
 - 普通 `overflow-y-auto` message list：承载 ACP 历史浏览和双向 cursor 分页；prepend/append 前捕获当前可见语义项的稳定 DOM key 与 top，合并和反向裁剪后按同一项的新旧 top 差值补偿 `scrollTop`。继续使用原生滚动，不引入动态高度虚拟列表；流式消息、图片和折叠块的内容增高由共享内容尺寸监听维持底部贴合，不能只在事件数量变化时滚动。
+- 2026-10-14～15 历史分页修复：普通 scroll 不得自行创造历史意图；短窗口上翻进入共享 follow 生命周期，切出重进继续保护阅读位置。older 的 `hasNewer` 按合并窗口判断，旧页暴露的新 canonical 水位通过既有 recovery 校准，不冒充正文已覆盖。保留锚点、有界窗口和真实缺口追平。引入链路、独立红绿证据、既有测试失败及生产浏览器验收见 [会话历史分页意图与水位修复](../新UI/会话历史分页意图与水位修复.md)。
 - `ChatContainerRoot / ChatContainerContent / ChatContainerScrollAnchor`：仅用于不需要历史分页的普通聊天容器场景。
 - `Message / MessageContent`：承载用户与 agent 气泡。
 - `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。受控输入的 autosize ref 必须稳定，每次 value 更新只在 layout effect 中测量一次，不能在 `onChange`、ref 重挂载和 layout effect 三条路径重复读写高度。
@@ -369,6 +374,16 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 ```
 
 ## 9. 一句话总结
+
+### 2026-10-14 Workflow 手动续聊后的旧错误横幅
+
+- 根因：旧 run 错误降为 fallback 的规则限定 Direct，遗漏 Workflow 节点内已经转为 `non-runtime-controlled / manual-follow-up` 的会话。顶部状态已投影当前 ACP 活动，横幅却优先显示外层旧暂停错误，属于正确生命周期设计下的消费端实现不完整。
+- 实现：父页面与本地 ACP lifecycle 共用按控制权判断的 fallback 规则，保留 blocking error、Runtime 控制中的错误和当前 turn/execution error。外层 Workflow 仍暂停时不改写 run 状态；手动续聊开始、完成或取消后清除旧错误展示。
+- 横幅支持仅本次提示关闭，复用 Button / Tooltip / `common.close`。关闭状态局限于当前横幅视图，按完整会话 scope、session 与错误来源的既有 owner / revision / 时间戳区分；不按文案或通用 ACP revision 去重，不删除后台事实，不屏蔽下一轮同文案错误。
+- 最小失败证据：真实聊天组件的 Workflow starting/running/completed 三个用例均因旧运行错误仍可见而失败；关闭交互用例因缺少关闭按钮失败。fixture 使用首屏真实历史响应，不以加载态或环境问题作为 Bug 证据。
+- 验收范围：恢复与新失败归属、父页面投影、Direct 回归、关闭不触发后台命令、无关刷新不重现、同文案新 turn/operation/session/scope 重现；本地浏览器 `run-054` 脱敏场景验证真实页面的关闭与手动续聊，不调用真实 provider。
+- 范围与性能：仅修正现有控制权投影并增加有界局部展示状态，无新增依赖、持久字段、状态机、IPC、轮询或日志扫描。浏览器 mock 的状态推进仅限该验证场景，不改变桌面接口。
+- 验收：9 组相关测试共 252 项通过，前端类型检查与 `npm run web:build` 通过（仍有 npm 配置、混合导入与大 chunk 提示）。真实浏览器验证蓝点运行时旧横幅已消失、完成后仍不重现，接口同时保留 `runStatus=paused` 与旧 run 错误；× 支持键盘关闭且继续入口保留。390px 深色长文本、1280px 浅色及重新拉宽无横向溢出，页面无未处理异常。
 
 ### 2026-09-17 重启后 ACP 会话失败原因丢失
 

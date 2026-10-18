@@ -38,6 +38,27 @@ export function resolveOverlayCollisionBoundary(
   return explicit ?? undefined;
 }
 
+type HorizontalRect = Pick<DOMRect, 'left' | 'right'>;
+
+export function overlayCollisionRect(boundary: HTMLElement | null | undefined): HorizontalRect {
+  return boundary?.getBoundingClientRect() ?? { left: 0, right: window.innerWidth };
+}
+
+/** Whether a side-placed overlay of `width` fits left or right of `anchor` inside `boundary`. */
+export function overlayFitsBeside(
+  anchor: HorizontalRect,
+  boundary: HorizontalRect,
+  width: number,
+  sideOffset: number,
+  padding: OverlayCollisionPadding = 0,
+): boolean {
+  const paddingLeft = typeof padding === 'number' ? padding : padding.left ?? 0;
+  const paddingRight = typeof padding === 'number' ? padding : padding.right ?? 0;
+  const needed = width + sideOffset;
+  return boundary.right - paddingRight - anchor.right >= needed
+    || anchor.left - boundary.left - paddingLeft >= needed;
+}
+
 const EMPTY_COLLISION_PROPS: Record<string, never> = {};
 
 export function useOverlayPositioning(

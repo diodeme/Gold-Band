@@ -1,0 +1,104 @@
+{
+  "pageCount": 9,
+  "checks": [
+    {
+      "file": "01-intent.html",
+      "title": "测试意图 · Gold Band",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "02-benchmarks.html",
+      "title": "任务全景 · Gold Band Benchmark",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "03-deepswe.html",
+      "title": "短任务的收益与开销 · Gold Band Benchmark",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "04-mailauth.html",
+      "title": "mailauth 两轮对照 · Gold Band Benchmark",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "05-marathon.html",
+      "title": "重量级已完成案例 · Gold Band",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "06-ruff.html",
+      "title": "Ruff：提前退出与持续编排 · Gold Band",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "07-context.html",
+      "title": "上下文与漂移 · 架构判断",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "08-auto.html",
+      "title": "AUTO 的编排边界 · Gold Band",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    },
+    {
+      "file": "09-recommendations.html",
+      "title": "使用建议 · Gold Band",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "outside": [],
+      "smallText": [],
+      "errors": []
+    }
+  ]
+}

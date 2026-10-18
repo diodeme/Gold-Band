@@ -70,13 +70,13 @@ describe('ACP composite model selector', () => {
 
   it('keeps only one nested selector open and ignores stale close events', () => {
     let openSection = nextAcpCompositeSection(null, 'model', true);
-    expect(openSection).toBe('model');
+    expect(openSection).toEqual({ id: 'model', presentation: 'flyout' });
 
-    openSection = nextAcpCompositeSection(openSection, 'reasoning_effort', true);
-    expect(openSection).toBe('reasoning_effort');
+    openSection = nextAcpCompositeSection(openSection, 'reasoning_effort', true, 'inline');
+    expect(openSection).toEqual({ id: 'reasoning_effort', presentation: 'inline' });
 
     openSection = nextAcpCompositeSection(openSection, 'model', false);
-    expect(openSection).toBe('reasoning_effort');
+    expect(openSection).toEqual({ id: 'reasoning_effort', presentation: 'inline' });
 
     openSection = nextAcpCompositeSection(openSection, 'reasoning_effort', false);
     expect(openSection).toBeNull();
@@ -947,7 +947,7 @@ describe('ACP composite model selector', () => {
       i18n.t('acp.thoughtLevel', { lng: 'en' }),
       1,
       (key, options) => i18n.t(key, { ...options, lng: 'en' }),
-    )).toBe('Reasoning (effort)');
+    )).toBe('Thinking effort (effort)');
   });
 
   it('forwards disabled state to model-only and composite triggers', () => {

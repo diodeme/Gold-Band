@@ -59,6 +59,7 @@ pub enum InterventionType {
     RunCompleted,
     /// Agent 单轮回复结束（成功或失败）→ 查看对应会话。
     AgentTurnFinished,
+    AgentMessageAvailable,
 }
 
 /// 一次干预提醒的核心数据契约。

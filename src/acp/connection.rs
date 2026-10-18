@@ -33,6 +33,7 @@ const UNROUTED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 const EARLY_SESSION_FRAME_TTL: Duration = Duration::from_secs(5);
 const EARLY_SESSION_FRAME_MAX_BYTES: usize = 1024 * 1024;
 const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
+const SUBAGENT_ROUTE_MAX_CHILDREN: usize = 1_024;
 const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
@@ -1188,7 +1189,6 @@ impl AdapterConnection {
         require_local_claude_executable: bool,
     ) -> Result<Arc<Self>> {
         let (adapter, mut child) = spawn_adapter(
-            provider_id,
             config,
             cwd.as_std_path(),
             use_local_claude,
@@ -1391,11 +1391,19 @@ impl AdapterConnection {
     }
 
     pub fn begin_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
-        self.begin_request_with_policy(method, params, false)
+        self.begin_request_with_policy(method, params, false, false)
+    }
+
+    pub(crate) fn begin_direct_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<PendingRequest> {
+        self.begin_request_with_policy(method, params, false, true)
     }
 
     fn begin_shutdown_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
-        self.begin_request_with_policy(method, params, true)
+        self.begin_request_with_policy(method, params, true, false)
     }
 
     fn begin_request_with_policy(
@@ -1403,6 +1411,7 @@ impl AdapterConnection {
         method: &str,
         mut params: Value,
         allow_draining: bool,
+        allow_background: bool,
     ) -> Result<PendingRequest> {
         self.touch();
         if let Err(error) = self.ensure_request_allowed(allow_draining) {
@@ -1417,7 +1426,22 @@ impl AdapterConnection {
             );
             return Err(error);
         }
-        super::adapter::apply_session_execution_policy(&self.provider_id, method, &mut params)?;
+        if super::adapter::is_session_options_method(method) {
+            if allow_background {
+                super::adapter::apply_session_execution_policy_for_surface(
+                    self.initialized_capabilities().as_ref(),
+                    method,
+                    &mut params,
+                    true,
+                )?;
+            } else {
+                super::adapter::apply_session_execution_policy(
+                    self.initialized_capabilities().as_ref(),
+                    method,
+                    &mut params,
+                )?;
+            }
+        }
         let id = {
             let mut next_id = self
                 .next_id
@@ -1433,9 +1457,9 @@ impl AdapterConnection {
             "method": method,
             "params": params,
         });
-        let route_session_id = (method == "session/prompt")
-            .then(|| frame.pointer("/params/sessionId").and_then(Value::as_str))
-            .flatten()
+        let route_session_id = frame
+            .pointer("/params/sessionId")
+            .and_then(Value::as_str)
             .map(str::to_string);
         let (tx, rx) = mpsc::channel();
         self.pending
@@ -2144,14 +2168,22 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
-    let already_logged = connection.exit_status_logged.swap(true, Ordering::AcqRel);
-    if !should_emit_adapter_exit_status(already_logged) {
-        return;
-    }
     let result = connection.try_wait();
+    let event = if result.as_ref().is_ok_and(Option::is_none) {
+        if connection.exit_status_logged.load(Ordering::Acquire) {
+            return;
+        }
+        "acp_adapter_exit_status_pending"
+    } else {
+        let already_logged = connection.exit_status_logged.swap(true, Ordering::AcqRel);
+        if !should_emit_adapter_exit_status(already_logged) {
+            return;
+        }
+        "acp_adapter_exit_status"
+    };
     if connection.logs_lifecycle_at_info() {
         info!(
-            event = "acp_adapter_exit_status",
+            event,
             provider = %connection.provider_id,
             adapter = %connection.adapter.adapter_id,
             command = %connection.adapter.command,
@@ -2164,7 +2196,7 @@ fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed
         );
     } else {
         debug!(
-            event = "acp_adapter_exit_status",
+            event,
             provider = %connection.provider_id,
             adapter = %connection.adapter.adapter_id,
             command = %connection.adapter.command,
@@ -2263,7 +2295,10 @@ fn route_inbound_frame(
 }
 
 impl AdapterConnection {
-    fn session_route_watermark(&self, session_id: &str) -> Option<SessionRouteWatermark> {
+    pub(crate) fn session_route_watermark(
+        &self,
+        session_id: &str,
+    ) -> Option<SessionRouteWatermark> {
         self.session_routes
             .lock()
             .ok()
@@ -2281,11 +2316,23 @@ fn register_session_route_state(
     let (tx, rx) = session_route_pair(adapter_id.to_string(), session_id.to_string());
     let (previous, buffered) = match session_routes.lock() {
         Ok(mut routes) => {
+            // Native children share their owner's pump, never a second consumer.
+            if routes
+                .get(session_id)
+                .is_some_and(|route| route.session_id != session_id)
+            {
+                tx.close();
+                return rx;
+            }
+            let previous = routes.insert(session_id.to_string(), tx.clone());
+            if let Some(previous) = &previous {
+                routes.retain(|_, route| route.inner.generation != previous.inner.generation);
+            }
             let buffered = early_session_frames
                 .lock()
                 .map(|mut frames| frames.take(session_id, Instant::now()))
                 .unwrap_or_default();
-            (routes.insert(session_id.to_string(), tx.clone()), buffered)
+            (previous, buffered)
         }
         Err(_) => {
             tx.close();
@@ -2296,7 +2343,14 @@ fn register_session_route_state(
         previous.close();
     }
     for frame in buffered {
-        if !tx.send_at(frame.value, frame.bytes, frame.received_at) {
+        if !route_or_buffer_session_frame(
+            session_routes,
+            early_session_frames,
+            session_id,
+            frame.value,
+            frame.bytes,
+            frame.received_at,
+        ) {
             break;
         }
     }
@@ -2317,6 +2371,15 @@ fn unregister_session_route_state(
             return false;
         }
         let route = routes.remove(session_id);
+        if let Some(owner) = &route {
+            if owner.session_id != session_id {
+                if let Ok(mut early_frames) = early_session_frames.lock() {
+                    early_frames.remove(session_id);
+                }
+                return true;
+            }
+            routes.retain(|_, child| child.inner.generation != owner.inner.generation);
+        }
         if let Ok(mut early_frames) = early_session_frames.lock() {
             early_frames.remove(session_id);
         }
@@ -2340,12 +2403,65 @@ fn route_or_buffer_session_frame(
     frame_bytes: usize,
     now: Instant,
 ) -> bool {
-    let Ok(routes) = session_routes.lock() else {
+    let Ok(mut routes) = session_routes.lock() else {
         return false;
     };
     if let Some(route) = routes.get(session_id).cloned() {
+        let mut early_child = None;
+        if value.get("method").and_then(Value::as_str) == Some("session/update")
+            && value
+                .pointer("/params/update/sessionUpdate")
+                .and_then(Value::as_str)
+                == Some("subagent_update")
+        {
+            if let Some(child_id) = value
+                .pointer("/params/update/sessionId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && *id != session_id)
+            {
+                if let Some(existing) = routes.get(child_id) {
+                    if existing.inner.generation != route.inner.generation {
+                        warn!(
+                            session_id,
+                            child_id, "ACP subagent announcement conflicts with an existing route"
+                        );
+                    }
+                } else if routes
+                    .values()
+                    .filter(|entry| entry.inner.generation == route.inner.generation)
+                    .count()
+                    > SUBAGENT_ROUTE_MAX_CHILDREN
+                {
+                    warn!(session_id, child_id, "ACP subagent route limit exceeded");
+                } else {
+                    routes.insert(child_id.to_string(), route.clone());
+                    let frames = early_session_frames
+                        .lock()
+                        .map(|mut frames| frames.take(child_id, now))
+                        .unwrap_or_default();
+                    early_child = Some((child_id.to_string(), frames));
+                }
+            }
+        }
         drop(routes);
-        return route.send_at(value, frame_bytes, now);
+        if !route.send_at(value, frame_bytes, now) {
+            return false;
+        }
+        if let Some((child_id, frames)) = early_child {
+            for frame in frames {
+                if !route_or_buffer_session_frame(
+                    session_routes,
+                    early_session_frames,
+                    &child_id,
+                    frame.value,
+                    frame.bytes,
+                    frame.received_at,
+                ) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
     let buffered = early_session_frames
         .lock()
@@ -2451,6 +2567,46 @@ pub struct AdapterConnectionManager {
 }
 
 impl AdapterConnectionManager {
+    /// A retained Direct reader is the sole scoped user. Recheck under the
+    /// acquisition lock so a concurrent session/new cannot lose its process.
+    pub(crate) fn release_unshared_retained_connection(
+        &self,
+        binding: &LiveAcpSession,
+        retained_readers: usize,
+    ) -> Result<bool> {
+        let mut connections = self
+            .connections
+            .lock()
+            .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?;
+        let Some(connection) = connections.get(&binding.key).cloned() else {
+            return Ok(false);
+        };
+        if connection.generation() != binding.connection_generation
+            || connection.active_users.load(Ordering::Acquire) != retained_readers
+        {
+            return Ok(false);
+        }
+        let attempts = self
+            .attempt_sessions
+            .lock()
+            .map_err(|_| anyhow!("ACP attempt session lock poisoned"))?;
+        let references: Vec<_> = attempts
+            .values()
+            .filter(|s| {
+                s.key == binding.key && s.connection_generation == binding.connection_generation
+            })
+            .collect();
+        if references.len() != 1 || references[0].session_id != binding.session_id {
+            return Ok(false);
+        }
+        connection.begin_draining()?;
+        connections.remove(&binding.key);
+        drop(attempts);
+        drop(connections);
+        connection.shutdown(AdapterShutdownReason::IdleCapacity);
+        Ok(true)
+    }
+
     pub fn shared() -> &'static Self {
         &ADAPTER_CONNECTION_MANAGER
     }
@@ -3638,7 +3794,7 @@ mod tests {
                 .unwrap()
         );
         let response = worker.join().unwrap();
-        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert!(matches!(response.action, ElicitationAction::Cancel));
         assert_eq!(prompts.count(), 0);
     }
 
@@ -3785,6 +3941,143 @@ mod tests {
 
         assert_eq!(receiver.try_recv().unwrap(), frame);
         assert_eq!(receiver.try_recv(), Err(SessionRouteTryRecvError::Empty));
+    }
+
+    #[test]
+    fn subagent_announcement_routes_child_frames_through_the_parent_queue() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let receiver =
+            register_session_route_state("test-adapter", "parent", &routes, &early_frames);
+        let now = std::time::Instant::now();
+        let announcement = json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "sessionId": "parent", "update": {
+                "sessionUpdate": "subagent_update", "sessionId": "child",
+                "state": { "state": "running" }
+            }}
+        });
+        let prompt = json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "sessionId": "child", "update": {
+                "sessionUpdate": "session_message", "messageId": "launch-1",
+                "senderSessionId": "parent", "recipientSessionId": "child",
+                "content": [{ "type": "text", "text": "Inspect the files" }]
+            }}
+        });
+        let permission = json!({
+            "jsonrpc": "2.0", "id": "permission-1", "method": "session/request_permission",
+            "params": { "sessionId": "child", "toolCall": { "toolCallId": "read-1" } }
+        });
+        for (session, frame) in [
+            ("parent", &announcement),
+            ("child", &prompt),
+            ("child", &permission),
+        ] {
+            assert!(route_or_buffer_session_frame(
+                &routes,
+                &early_frames,
+                session,
+                frame.clone(),
+                256,
+                now,
+            ));
+        }
+
+        assert_eq!(receiver.try_recv().unwrap(), announcement);
+        assert_eq!(receiver.try_recv(), Ok(prompt));
+        assert_eq!(receiver.try_recv(), Ok(permission));
+        assert_eq!(receiver.try_recv(), Err(SessionRouteTryRecvError::Empty));
+        assert_eq!(
+            routes.lock().unwrap()["parent"]
+                .watermark()
+                .unwrap()
+                .sequence(),
+            3
+        );
+    }
+
+    #[test]
+    fn nested_subagent_routes_close_with_their_owner_without_closing_other_sessions() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let receiver =
+            register_session_route_state("test-adapter", "parent", &routes, &early_frames);
+        let other = register_session_route_state("test-adapter", "other", &routes, &early_frames);
+        let now = std::time::Instant::now();
+        for (parent, child) in [("parent", "child"), ("child", "grandchild")] {
+            let frame = json!({
+                "method": "session/update", "params": { "sessionId": parent, "update": {
+                    "sessionUpdate": "subagent_update", "sessionId": child,
+                    "state": { "state": "running" }
+                }}
+            });
+            assert!(route_or_buffer_session_frame(
+                &routes,
+                &early_frames,
+                parent,
+                frame.clone(),
+                128,
+                now,
+            ));
+            assert_eq!(receiver.try_recv(), Ok(frame));
+        }
+        let generation = routes.lock().unwrap()["parent"]
+            .watermark()
+            .unwrap()
+            .route_generation();
+        assert!(unregister_session_route_state(
+            "parent",
+            Some(generation),
+            &routes,
+            &early_frames,
+        ));
+        assert_eq!(routes.lock().unwrap().len(), 1);
+        let frame = json!({ "method": "session/update", "params": { "sessionId": "other" } });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "other",
+            frame.clone(),
+            64,
+            now,
+        ));
+        assert_eq!(other.try_recv(), Ok(frame));
+    }
+
+    #[test]
+    fn subagent_announcement_cannot_take_over_another_root_route() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let parent = register_session_route_state("test-adapter", "parent", &routes, &early_frames);
+        let other = register_session_route_state("test-adapter", "other", &routes, &early_frames);
+        let now = std::time::Instant::now();
+        let announcement = json!({
+            "method": "session/update", "params": { "sessionId": "parent", "update": {
+                "sessionUpdate": "subagent_update", "sessionId": "other",
+                "state": { "state": "running" }
+            }}
+        });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "parent",
+            announcement.clone(),
+            128,
+            now,
+        ));
+        assert_eq!(parent.try_recv(), Ok(announcement));
+        let frame = json!({ "method": "session/update", "params": { "sessionId": "other" } });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "other",
+            frame.clone(),
+            64,
+            now,
+        ));
+        assert_eq!(other.try_recv(), Ok(frame));
+        assert_eq!(parent.try_recv(), Err(SessionRouteTryRecvError::Empty));
     }
 
     #[test]

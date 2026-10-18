@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   WorkspaceFileReferenceBridgeProvider,
   useWorkspaceFileReferenceBridgeState,
+  type AddWorkspaceFileRefCommand,
   type AddWorkspaceFileRefResult,
 } from '@/components/workspace/workspace-file-reference-bridge';
 import type { ComposerWorkspaceFileRef } from '@/lib/composer-context';
@@ -17,7 +18,7 @@ function Harness({
   command,
   onResult,
 }: {
-  command: Parameters<ReturnType<typeof useWorkspaceFileReferenceBridgeState>['bridge']['register']>[0];
+  command: AddWorkspaceFileRefCommand | null;
   onResult: (result: AddWorkspaceFileRefResult) => void;
 }) {
   const bridgeState = useWorkspaceFileReferenceBridgeState();
@@ -34,7 +35,10 @@ function Harness({
   useEffect(
     () => bridgeState.bridge.register(
       command
-        ? (reference, options) => commandRef.current(reference, options)
+        ? {
+          addWorkspaceFileRef: (reference, options) => commandRef.current!(reference, options),
+          addQuote: () => ({ kind: 'added' }),
+        }
         : null,
     ),
     [bridgeState.bridge],
@@ -54,10 +58,22 @@ function Harness({
   );
 }
 
-describe('workspace file reference bridge', () => {
-  let root: Root | null = null;
-  let container: HTMLElement | null = null;
+function renderBridge() {
+  const result = { current: null as unknown as ReturnType<typeof useWorkspaceFileReferenceBridgeState> };
+  function Probe() {
+    result.current = useWorkspaceFileReferenceBridgeState();
+    return null;
+  }
+  container = document.body.appendChild(document.createElement('div'));
+  root = createRoot(container);
+  act(() => root?.render(<Probe />));
+  return { result };
+}
 
+let root: Root | null = null;
+let container: HTMLElement | null = null;
+
+describe('workspace file reference bridge', () => {
   afterEach(() => {
     act(() => root?.unmount());
     container?.remove();
@@ -78,6 +94,20 @@ describe('workspace file reference bridge', () => {
     });
 
     expect(result).toHaveBeenCalledWith({ kind: 'unavailable' });
+  });
+
+  it('routes quotes to the registered composer and reports unavailable without one', () => {
+    const { result } = renderBridge();
+    const quote = { text: 'fn a() {}', source: { kind: 'file', label: 'src/a.rs', startLine: 1, endLine: 1 } } as const;
+    expect(result.current.commands.addQuote(quote, { isDocked: false })).toEqual({ kind: 'unavailable' });
+
+    const addQuote = vi.fn(() => ({ kind: 'rejected' as const }));
+    act(() => {
+      result.current.bridge.register({ addWorkspaceFileRef: () => ({ kind: 'added' }), addQuote });
+    });
+    expect(result.current.commands.available).toBe(true);
+    expect(result.current.commands.addQuote(quote, { isDocked: true })).toEqual({ kind: 'rejected' });
+    expect(addQuote).toHaveBeenCalledWith(quote, { isDocked: true });
   });
 
   it('passes the dock presentation through to the registered composer command', async () => {

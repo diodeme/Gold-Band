@@ -1,4 +1,4 @@
-import type { AcpCommandItemVm } from '@/types';
+import type { AcpCommandItemVm, WorkspaceDirectoryEntryVm } from '@/types';
 
 const SLASH_QUERY_RE = /^\/([\p{L}\p{N}._:-]*)$/u;
 const MENTION_QUERY_RE = /^@([\p{L}\p{N}._:-]*)$/u;
@@ -7,26 +7,18 @@ const SLASH_COMMAND_SEPARATOR_RE = /^[\s\p{P}]/u;
 const MAX_VISIBLE_SLASH_COMMANDS = 512;
 const dismissedSlashQueries = new Map<string, string>();
 
-export interface SlashCommandFocusTarget {
-  disabled?: boolean;
-  value?: string;
-  focus: () => void;
-  setSelectionRange?: (start: number, end: number) => void;
-}
-
-export interface SlashCommandFocusRef {
-  readonly current: SlashCommandFocusTarget | null;
-}
-
-export type SlashCommandFocusScheduler = (callback: () => void) => unknown;
-
 export interface CommittedSlashCommand {
   command: AcpCommandItemVm;
   prefix: string;
   suffix: string;
 }
 
-export type SlashCatalogItemKind = 'role' | 'command';
+export type SlashCatalogItemKind =
+  | 'role'
+  | 'command'
+  | 'mention-category'
+  | 'workspace-directory'
+  | 'workspace-file';
 
 export interface SlashCatalogItem {
   kind: SlashCatalogItemKind;
@@ -36,12 +28,129 @@ export interface SlashCatalogItem {
   inputHint?: string;
   content?: string;
   profileName?: string;
+  /** Workspace entry behind a `workspace-directory` / `workspace-file` item. */
+  workspaceEntry?: WorkspaceDirectoryEntryVm;
 }
 
+export type SlashCatalogGroupStatus = 'loading' | 'empty' | 'error';
+
 export interface SlashCatalogGroup {
-  id: 'roles' | 'agent';
+  id: 'roles' | 'agent' | 'mention-categories' | 'workspace-files';
   heading: string;
   items: SlashCatalogItem[];
+  /** Shown in place of items while a group's entries are loading, empty or failed. */
+  status?: SlashCatalogGroupStatus;
+}
+
+export type MentionCategory = 'files' | 'roles';
+
+/** Where the `@` menu is: the category list, the role list, or a workspace directory. */
+export type MentionView =
+  | { kind: 'root' }
+  | { kind: 'roles' }
+  | { kind: 'files'; path: string };
+
+export const MENTION_ROOT_VIEW: MentionView = { kind: 'root' };
+
+/** Workspace entries the `@` menu needs for its current view. */
+export type MentionFilesRequest =
+  | { kind: 'directory'; path: string }
+  | { kind: 'search'; query: string };
+
+export interface MentionFilesState {
+  status: 'loading' | 'ready' | 'error';
+  entries: readonly WorkspaceDirectoryEntryVm[];
+}
+
+export interface MentionMenuLabels {
+  files: string;
+  roles: string;
+  workspaceRoot: string;
+}
+
+export function mentionFilesRequest(view: MentionView, query: string): MentionFilesRequest | null {
+  const keyword = query.trim();
+  if (view.kind === 'roles') return null;
+  if (keyword) return { kind: 'search', query: keyword };
+  return view.kind === 'files' ? { kind: 'directory', path: view.path } : null;
+}
+
+export function parentMentionView(view: MentionView): MentionView {
+  if (view.kind !== 'files' || !view.path) return MENTION_ROOT_VIEW;
+  const separator = view.path.lastIndexOf('/');
+  return { kind: 'files', path: separator < 0 ? '' : view.path.slice(0, separator) };
+}
+
+function workspaceEntryItem(entry: WorkspaceDirectoryEntryVm): SlashCatalogItem | null {
+  const path = entry.relativePath.replaceAll('\\', '/');
+  if (entry.kind === 'directory') {
+    return { kind: 'workspace-directory', id: path, name: entry.name, description: '', workspaceEntry: entry };
+  }
+  if (entry.kind !== 'file') return null;
+  const separator = path.lastIndexOf('/');
+  return {
+    kind: 'workspace-file',
+    id: path,
+    name: entry.name,
+    description: separator < 0 ? '' : path.slice(0, separator),
+    workspaceEntry: entry,
+  };
+}
+
+function workspaceFilesGroup(heading: string, files: MentionFilesState): SlashCatalogGroup {
+  const items = files.entries.flatMap((entry) => workspaceEntryItem(entry) ?? []);
+  // A refining search keeps showing the previous results until the new ones arrive.
+  const status = files.status === 'error'
+    ? 'error'
+    : items.length > 0 ? undefined : files.status === 'loading' ? 'loading' : 'empty';
+  return { id: 'workspace-files', heading, items, ...(status ? { status } : {}) };
+}
+
+/**
+ * Groups of the `@` menu. With no query it navigates: categories, then roles or
+ * workspace directories. A query searches every available category at once.
+ */
+export function buildMentionGroups({
+  view,
+  query,
+  roleItems,
+  filesAvailable,
+  files,
+  labels,
+}: {
+  view: MentionView;
+  query: string;
+  roleItems: readonly SlashCatalogItem[];
+  filesAvailable: boolean;
+  files: MentionFilesState;
+  labels: MentionMenuLabels;
+}): SlashCatalogGroup[] {
+  const keyword = query.trim();
+  const roles = (items: readonly SlashCatalogItem[], heading: string): SlashCatalogGroup[] => (
+    items.length > 0 ? [{ id: 'roles', heading, items: [...items] }] : []
+  );
+  if (view.kind === 'roles') {
+    return filterSlashCatalog(roles(roleItems, ''), keyword);
+  }
+  if (view.kind === 'files') {
+    if (!filesAvailable) return [];
+    return [workspaceFilesGroup(keyword ? labels.files : view.path || labels.workspaceRoot, files)];
+  }
+  if (keyword) {
+    return [
+      ...filterSlashCatalog(roles(roleItems, labels.roles), keyword),
+      ...(filesAvailable ? [workspaceFilesGroup(labels.files, files)] : []),
+    ];
+  }
+  const categories: SlashCatalogItem[] = [
+    ...(filesAvailable ? [{ kind: 'mention-category' as const, id: 'files', name: labels.files, description: '' }] : []),
+    ...(roleItems.length > 0 ? [{ kind: 'mention-category' as const, id: 'roles', name: labels.roles, description: '' }] : []),
+  ];
+  return categories.length > 0 ? [{ id: 'mention-categories', heading: '', items: categories }] : [];
+}
+
+export function slashCatalogGroupsHaveContent(groups: readonly SlashCatalogGroup[]): boolean {
+  return groups.some((group) => group.items.length > 0 || group.status !== undefined);
 }
 
 export interface SlashItemIdentity {
@@ -210,11 +319,37 @@ export function composerTextFromPromptRole(
 export type ComposerMenuTrigger = '/' | '@';
 
 export function matchComposerMenuQuery(input: string): { trigger: ComposerMenuTrigger; query: string } | null {
-  const mention = input.match(MENTION_QUERY_RE);
+  return matchComposerMenuQueryAt(input, input.length);
+}
+
+/**
+ * The menu query is the `/` or `@` token typed at the start of the input, up to
+ * the caret. Text after the caret is existing content that the chosen item is
+ * inserted in front of.
+ */
+export function matchComposerMenuQueryAt(
+  input: string,
+  caret: number | null,
+): { trigger: ComposerMenuTrigger; query: string } | null {
+  if (caret === null) return null;
+  const head = input.slice(0, caret);
+  const mention = head.match(MENTION_QUERY_RE);
   if (mention) return { trigger: '@', query: mention[1] };
-  const slash = input.match(SLASH_QUERY_RE);
+  const slash = head.match(SLASH_QUERY_RE);
   if (slash) return { trigger: '/', query: slash[1] };
   return null;
+}
+
+/** Replaces the menu query before `caret` and returns the new input with its caret. */
+export function replaceComposerMenuQuery(
+  input: string,
+  caret: number,
+  replacement: string,
+): { input: string; caret: number } {
+  const rest = input.slice(caret);
+  // A completed token needs one separator before the text that follows it.
+  const text = replacement.endsWith(' ') && /^\s/u.test(rest) ? replacement.trimEnd() : replacement;
+  return { input: `${text}${rest}`, caret: text.length };
 }
 
 export function matchSlashCommandQuery(input: string): string | null {
@@ -272,21 +407,6 @@ function normalizeSlashCommand(candidate: unknown): AcpCommandItemVm | null {
 
 export function slashCommandText(commandName: string): string {
   return `/${commandName.trim().replace(/^[@/]+/, '')} `;
-}
-
-export function restoreSlashCommandInputFocus(
-  inputRef: SlashCommandFocusRef,
-  schedule: SlashCommandFocusScheduler = requestAnimationFrame,
-): void {
-  schedule(() => {
-    const input = inputRef.current;
-    if (!input || input.disabled) return;
-    input.focus();
-    if (typeof input.value === 'string' && input.setSelectionRange) {
-      const caret = input.value.length;
-      input.setSelectionRange(caret, caret);
-    }
-  });
 }
 
 export function unwrapSelectedSlashCommand(

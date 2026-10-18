@@ -9,6 +9,7 @@ import {
   workspaceEditorTheme,
   workspaceSyntaxHighlighting,
 } from './editor-extensions';
+import { EditorSelectionQuote } from './EditorSelectionQuote';
 import { isMarkdownDocumentPath } from './markdown-document';
 import { ReadonlyMarkdownWorkspaceViewer } from './ReadonlyMarkdownWorkspaceViewer';
 
@@ -16,14 +17,18 @@ interface ReadonlyTextWorkspaceViewerProps {
   documentKey: string;
   name: string;
   value: string;
+  /** Names the file in quotes taken from a selection; without it the viewer offers no quoting. */
+  quoteLabel?: string | null;
 }
 
 export function ReadonlyTextWorkspaceViewer({
   documentKey,
   name,
   value,
+  quoteLabel = null,
 }: ReadonlyTextWorkspaceViewerProps) {
   const { t } = useTranslation();
+  const [view, setView] = useState<EditorView | null>(null);
   const markdown = isMarkdownDocumentPath(name);
   const [language, setLanguage] = useState<Extension | null>(null);
 
@@ -51,19 +56,23 @@ export function ReadonlyTextWorkspaceViewer({
   ], [language]);
 
   if (markdown) {
-    return <ReadonlyMarkdownWorkspaceViewer documentKey={documentKey} value={value} />;
+    return <ReadonlyMarkdownWorkspaceViewer documentKey={documentKey} value={value} quoteLabel={quoteLabel} />;
   }
 
   return (
-    <CodeMirror
-      value={value}
-      height="100%"
-      theme="none"
-      basicSetup={false}
-      editable={false}
-      extensions={extensions}
-      className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-content]:min-w-0 [&_.cm-editor]:h-full [&_.cm-editor]:min-w-0 [&_.cm-line]:break-words [&_.cm-scroller]:min-w-0 [&_.cm-scroller]:overflow-auto"
-      aria-label={t('turnFiles.assetViewer')}
-    />
+    <>
+      <CodeMirror
+        value={value}
+        height="100%"
+        theme="none"
+        basicSetup={false}
+        editable={false}
+        extensions={extensions}
+        className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-content]:min-w-0 [&_.cm-editor]:h-full [&_.cm-editor]:min-w-0 [&_.cm-line]:break-words [&_.cm-scroller]:min-w-0 [&_.cm-scroller]:overflow-auto"
+        onCreateEditor={setView}
+        aria-label={t('turnFiles.assetViewer')}
+      />
+      <EditorSelectionQuote view={view} label={quoteLabel} />
+    </>
   );
 }

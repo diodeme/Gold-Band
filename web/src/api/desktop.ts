@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, RemoteImageTrustVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
@@ -45,16 +45,30 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  reportSourceControlLoad: (report) => invokeCommand("record_source_control_load", { report }),
+  reportSourceControlWatch: (report) => invokeCommand("record_source_control_watch", { report }),
   readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
   writeProjectMemory: (projectId, command) => invokeCommand('write_project_memory', { projectId, command }),
-  getGitCapability(projectId) {
-    return invokeCommand('get_git_capability', { projectId });
+  getGitCapability(projectId, loadId) {
+    return invokeCommand('get_git_capability', { projectId, loadId });
   },
   initializeGitRepository(projectId) {
     return invokeCommand('initialize_git_repository', { projectId });
   },
-  getSourceControlSnapshot(projectId, workspacePath) {
-    return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
+  getSourceControlBootstrap(projectId, workspacePath, loadId) {
+    return invokeCommand('bootstrap_source_control', { projectId, workspacePath, loadId });
+  },
+  getSourceControlOverview(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_overview', { projectId, workspacePath, loadId });
+  },
+  getSourceControlStatistics(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_statistics', { projectId, workspacePath, loadId });
+  },
+  getSourceControlRemotes(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_remotes', { projectId, workspacePath, loadId });
+  },
+  getSourceControlSnapshot(projectId, workspacePath, loadId) {
+    return invokeCommand('get_source_control_snapshot', { projectId, workspacePath, loadId });
   },
   getGitBranchPickerSnapshot(projectId, workspacePath) {
     return invokeCommand('get_git_branch_picker_snapshot', { projectId, workspacePath });
@@ -71,6 +85,9 @@ export const desktopApi: RuntimeApi = {
   getGitCommitReview(projectId, workspacePath, query) {
     return invokeCommand('get_git_commit_review', { projectId, workspacePath, query });
   },
+  getGitCommitReviewStatistics(projectId, workspacePath, review) {
+    return invokeCommand('get_git_commit_review_statistics', { projectId, workspacePath, review });
+  },
   getGitCommitReachability(projectId, workspacePath, query) {
     return invokeCommand('get_git_commit_reachability', { projectId, workspacePath, query });
   },
@@ -79,6 +96,9 @@ export const desktopApi: RuntimeApi = {
   },
   getGitComparison(projectId, source) {
     return invokeCommand('get_git_comparison', { projectId, source });
+  },
+  prepareGitPush(projectId, workspacePath, input) {
+    return invokeCommand('prepare_git_push', { projectId, workspacePath, input });
   },
   startGitOperation(projectId, workspacePath, input) {
     return invokeCommand('start_git_operation', { projectId, workspacePath, input });
@@ -89,8 +109,8 @@ export const desktopApi: RuntimeApi = {
   cancelGitOperation(operationId) {
     return invokeCommand('cancel_git_operation', { operationId });
   },
-  startGitStateMonitor(projectId, workspacePath) {
-    return invokeCommand('start_git_state_monitor', { projectId, workspacePath });
+  startGitStateMonitor(projectId, workspacePath, loadId) {
+    return invokeCommand('start_git_state_monitor', { projectId, workspacePath, loadId });
   },
   stopGitStateMonitor(projectId, workspacePath) {
     return invokeCommand('stop_git_state_monitor', { projectId, workspacePath });
@@ -269,8 +289,13 @@ export const desktopApi: RuntimeApi = {
   getAgentBindingUsage(agentType: string) {
     return invokeCommand('get_agent_binding_usage', { agentType });
   },
+  previewAgentCacheRepair(agentType: string) { return invokeCommand('preview_agent_cache_repair', { agentType }); },
+  repairAgentCache(agentType: string, token: string) { return invokeCommand('repair_agent_cache', { agentType, token }); },
   doctorAgent(agentType: string) {
     return invokeCommand('doctor_agent', { agentType });
+  },
+  fetchAgentModelConfig(agentType: string, modelId: string) {
+    return invokeCommand('fetch_agent_model_config', { agentType, modelId });
   },
   getTaskList() {
     return invokeCommand('get_task_list');
@@ -377,8 +402,8 @@ export const desktopApi: RuntimeApi = {
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });
   },
-  stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
-    return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId, backgroundControl, expectedTurnId) {
+    return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, backgroundControl, expectedTurnId });
   },
   submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome) {
     return invokeCommand('submit_manual_check', { projectId, taskId, runId, roundId, nodeId, attemptId, outcome });
@@ -400,6 +425,9 @@ export const desktopApi: RuntimeApi = {
   },
   getAcpImage(locator, image, thumbnail) {
     return invokeCommand<import('../types').AcpImageContentVm>('get_acp_image', { ...locator, image, thumbnail });
+  },
+  getAcpCompactionSummary(locator, query) {
+    return invokeCommand<import('../types').AcpCompactionSummaryVm>('get_acp_compaction_summary', { ...locator, query });
   },
   getAcpActivityImages(input) {
     return invokeCommand<import('../types').AcpActivityImagesPage>('get_acp_activity_images', { input });
@@ -581,18 +609,21 @@ export const desktopApi: RuntimeApi = {
   markSettingsAdvancedUpdateSeen(version: string) {
     return invokeCommand('mark_settings_advanced_update_seen', { version });
   },
-  dismissUpdateAnnouncement(version: string) {
-    return invokeCommand('dismiss_update_announcement', { version });
-  },
   checkUpdateManual() {
     return invokeCommand('check_update_manual');
   },
-  downloadAndInstallUpdate() {
-    return invokeCommand('download_and_install_update');
+  startUpdateInstall() {
+    return invokeCommand('start_update_install');
   },
   // ── Conversation UI ──
   saveDesktopUiMode(mode) {
     return invokeCommand('save_desktop_ui_mode', { mode });
+  },
+  trustRemoteImageHosts(hosts) {
+    return invokeCommand<RemoteImageTrustVm>('trust_remote_image_hosts', { hosts });
+  },
+  revokeRemoteImageHost(host) {
+    return invokeCommand<RemoteImageTrustVm>('revoke_remote_image_host', { host });
   },
   getConversationSidebarBootstrap() {
     return invokeCommand<ConversationSidebarBootstrapVm>('get_conversation_sidebar_bootstrap');
@@ -729,6 +760,9 @@ export const desktopApi: RuntimeApi = {
   deleteConversationTask(projectId, taskId) {
     return invokeCommand<ConversationSidebarBootstrapVm>('delete_conversation_task', { projectId, taskId });
   },
+  setConversationResident(projectId, taskId, resident) {
+    return invokeCommand<ConversationTaskRowVm>("set_conversation_resident", { projectId, taskId, resident });
+  },
   pinConversation(projectId, taskId) {
     return invokeCommand<ConversationSidebarBootstrapVm>('pin_conversation', { projectId, taskId });
   },
@@ -770,11 +804,23 @@ export const desktopApi: RuntimeApi = {
   saveLastConversationWorkspace(projectId) {
     return invokeCommand('save_last_conversation_workspace', { projectId });
   },
-  listWorkspaceDirectory(projectId, relativePath) {
-    return invokeCommand('list_workspace_directory', { input: { projectId, relativePath } });
+  listWorkspaceDirectory(root, relativePath) {
+    return invokeCommand('list_workspace_directory', { input: { ...root, relativePath } });
   },
-  openWorkspacePathInFileManager(projectId, relativePath = '') {
-    return invokeCommand('open_workspace_path_in_file_manager', { input: { projectId, relativePath } });
+  openWorkspacePathInFileManager(root, relativePath = '') {
+    return invokeCommand('open_workspace_path_in_file_manager', { input: { ...root, relativePath } });
+  },
+  createWorkspaceEntry(input) {
+    return invokeCommand('create_workspace_entry', { input });
+  },
+  renameWorkspaceEntry(root, relativePath, newName) {
+    return invokeCommand('rename_workspace_entry', { input: { ...root, relativePath, newName } });
+  },
+  deleteWorkspaceEntry(root, relativePath) {
+    return invokeCommand('delete_workspace_entry', { input: { ...root, relativePath } });
+  },
+  restoreWorkspaceEntry(root, receiptId) {
+    return invokeCommand('restore_workspace_entry', { input: { ...root, receiptId } });
   },
   listConversationDirectory(input) {
     return invokeCommand('list_conversation_directory', { input });
@@ -783,14 +829,14 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('open_conversation_directory_path_in_file_manager', { input });
   },
   readConversationDirectoryFile(input) { return invokeCommand('read_conversation_directory_file', { input }); },
-  searchWorkspaceFiles(projectId, query, requestId, limit) {
-    return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
+  searchWorkspaceFiles(root, query, requestId, limit) {
+    return invokeCommand('search_workspace_files', { input: { ...root, query, requestId, limit } });
   },
-  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
-    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref, baseCanonicalPath } });
+  resolveWorkspaceFileLink(root, rawHref, baseCanonicalPath = null) {
+    return invokeCommand('resolve_workspace_file_link', { input: { ...root, rawHref, baseCanonicalPath } });
   },
-  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
-    return invokeCommand('read_file_resource', { input: { projectId, canonicalPath, externalAccessToken, preferSource } });
+  readFileResource(root, canonicalPath, externalAccessToken = null, preferSource = false) {
+    return invokeCommand('read_file_resource', { input: { ...root, canonicalPath, externalAccessToken, preferSource } });
   },
   resolveMarkdownImage(input) {
     return invokeCommand('resolve_markdown_image', { input });
@@ -807,11 +853,11 @@ export const desktopApi: RuntimeApi = {
   releaseExternalFileAccess(token) {
     return invokeCommand('release_external_file_access', { input: { token } });
   },
-  startWorkspaceFileWatch(projectId) {
-    return invokeCommand('start_workspace_file_watch', { input: { projectId } });
+  startWorkspaceFileWatch(root) {
+    return invokeCommand('start_workspace_file_watch', { input: root });
   },
-  stopWorkspaceFileWatch(projectId) {
-    return invokeCommand('stop_workspace_file_watch', { input: { projectId } });
+  stopWorkspaceFileWatch(root) {
+    return invokeCommand('stop_workspace_file_watch', { input: root });
   },
   workspaceFilePreviewUrl(token, staticFrame = false) {
     return convertFileSrc(staticFrame ? `${token}/static` : token, 'gold-band-preview');
@@ -825,6 +871,9 @@ export const desktopApi: RuntimeApi = {
   },
   browserResolveLocalHtml(input) {
     return invokeCommand('browser_resolve_local_html', { input });
+  },
+  browserOpenInSystemBrowser(url) {
+    return invokeCommand('browser_open_in_system_browser', { input: { url } });
   },
   browserSetBounds(input) {
     return invokeCommand('browser_set_bounds', { input });
@@ -846,6 +895,9 @@ export const desktopApi: RuntimeApi = {
   },
   browserNavigate(input) {
     return invokeCommand('browser_navigate', { input });
+  },
+  browserAllowLocalAccess(input) {
+    return invokeCommand('browser_allow_local_access', { input });
   },
   browserGoBack(input) {
     return invokeCommand('browser_go_back', { input });
@@ -907,9 +959,8 @@ export const desktopApi: RuntimeApi = {
     });
     return () => unlisten();
   },
-  async openFileWithSystemApp(path) {
-    const { openPath } = await import('@tauri-apps/plugin-opener');
-    await openPath(path);
+  openFileWithSystemApp(input) {
+    return invokeCommand('open_file_with_system_app', { input });
   },
   copyImageToClipboard(input) {
     return invokeCommand('copy_image_to_clipboard', { source: input.source });
@@ -951,9 +1002,6 @@ export const desktopApi: RuntimeApi = {
   },
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });
-  },
-  getSupportedAttachmentExtensions() {
-    return invokeCommand<string[]>('get_supported_attachment_extensions');
   },
   openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('open_in_file_manager', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });

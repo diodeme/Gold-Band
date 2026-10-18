@@ -1,5 +1,5 @@
 use super::ScheduledMode;
-use crate::provider::{PromptWorkspaceFileRef, workspace_file_authoring_identity};
+use crate::provider::{PromptWorkspaceFileRef, UserPromptQuote, workspace_file_authoring_identity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,9 @@ pub struct ScheduledTaskContentInput {
     pub attachment_hashes: Vec<String>,
     #[serde(default)]
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
+    /// Frozen quotes sent with every occurrence, in the order the user added them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<UserPromptQuote>,
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_authoring: Option<Value>,
@@ -39,6 +42,7 @@ impl Default for ScheduledTaskContentInput {
             instruction: String::new(),
             attachment_hashes: Vec::new(),
             workspace_files: Vec::new(),
+            quotes: Vec::new(),
             workspace_id: String::new(),
             workflow_authoring: None,
             auto_authoring: None,
@@ -176,6 +180,15 @@ pub fn canonical_content_json(input: &ScheduledTaskContentInput) -> Value {
         })
         .collect::<Vec<_>>();
     root.insert("workspaceFiles".to_string(), Value::Array(workspace_files));
+    if !input.quotes.is_empty() {
+        // Quote ids are per-draft handles; only the quoted text and its source identify content.
+        let quotes = input
+            .quotes
+            .iter()
+            .map(|quote| serde_json::json!({ "text": quote.text, "source": quote.source }))
+            .collect();
+        root.insert("quotes".to_string(), Value::Array(quotes));
+    }
     root.insert(
         "instruction".to_string(),
         Value::String(input.instruction.clone()),
@@ -441,6 +454,37 @@ mod tests {
             "workspace-a",
             agent_identity,
         )
+    }
+
+    #[test]
+    fn quotes_change_fingerprint_by_content_not_by_draft_id() {
+        let quote = |id: &str, text: &str| UserPromptQuote {
+            id: id.to_string(),
+            text: text.to_string(),
+            source: crate::provider::UserPromptQuoteSource::File {
+                label: "src/lib.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+            },
+        };
+        let plain = direct_input("claude-acp");
+        let mut quoted = plain.clone();
+        quoted.quotes = vec![quote("draft-a", "fn a() {}")];
+        let mut same_text_new_id = plain.clone();
+        same_text_new_id.quotes = vec![quote("draft-b", "fn a() {}")];
+        let mut other_text = plain.clone();
+        other_text.quotes = vec![quote("draft-a", "fn b() {}")];
+
+        let fingerprint = |input: &ScheduledTaskContentInput| content_fingerprint(input).unwrap();
+        assert_ne!(fingerprint(&plain), fingerprint(&quoted));
+        assert_eq!(fingerprint(&quoted), fingerprint(&same_text_new_id));
+        assert_ne!(fingerprint(&quoted), fingerprint(&other_text));
+        assert!(
+            !canonical_content_json(&plain)
+                .as_object()
+                .unwrap()
+                .contains_key("quotes")
+        );
     }
 
     #[test]

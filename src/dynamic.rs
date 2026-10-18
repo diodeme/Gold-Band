@@ -708,6 +708,185 @@ impl Default for SessionMode {
     }
 }
 
+/// Long completion text is submitted as a file in the node's attempt
+/// attachments directory: the wire JSON carries `<field>Path`, and the runtime
+/// freezes the file content into the canonical `<field>` before acceptance.
+pub const DYNAMIC_HANDOFF_SUMMARY_FIELD: &str = "summary";
+pub const DYNAMIC_HANDOFF_TASK_FIELD: &str = "task";
+pub const DYNAMIC_HANDOFF_SUMMARY_PATH_FIELD: &str = "summaryPath";
+pub const DYNAMIC_HANDOFF_TASK_PATH_FIELD: &str = "taskPath";
+pub const DYNAMIC_HANDOFF_FILE_MAX_BYTES: u64 = 256 * 1024;
+pub const DYNAMIC_HANDOFF_INVALID_PATH: &str = "dynamic.handoff-file.invalid-path";
+pub const DYNAMIC_HANDOFF_OUTSIDE_ATTACHMENTS: &str = "dynamic.handoff-file.outside-attachments";
+pub const DYNAMIC_HANDOFF_NOT_FOUND: &str = "dynamic.handoff-file.not-found";
+pub const DYNAMIC_HANDOFF_EMPTY: &str = "dynamic.handoff-file.empty";
+pub const DYNAMIC_HANDOFF_NOT_UTF8: &str = "dynamic.handoff-file.not-utf8";
+pub const DYNAMIC_HANDOFF_TOO_LARGE: &str = "dynamic.handoff-file.too-large";
+
+/// Replaces every `summaryPath` / `taskPath` in a schema-valid completion
+/// submission with the referenced file content. Paths are relative to the
+/// submitting attempt's attachments directory and may not leave it.
+pub fn resolve_dynamic_completion_handoff_files(
+    submission: &serde_json::Value,
+    attachments_dir: &camino::Utf8Path,
+) -> std::result::Result<serde_json::Value, Vec<DynamicProposalValidationError>> {
+    let mut resolved = submission.clone();
+    let mut errors = Vec::new();
+    let mut slots = vec![(
+        String::new(),
+        DYNAMIC_HANDOFF_SUMMARY_PATH_FIELD,
+        DYNAMIC_HANDOFF_SUMMARY_FIELD,
+    )];
+    let next = submission.get("next");
+    for stage in ["node", "merge", "acceptance"] {
+        if next.and_then(|next| next.get(stage)).is_some() {
+            slots.push((
+                format!("/next/{stage}"),
+                DYNAMIC_HANDOFF_TASK_PATH_FIELD,
+                DYNAMIC_HANDOFF_TASK_FIELD,
+            ));
+        }
+    }
+    let branch_count = next
+        .and_then(|next| next.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    for index in 0..branch_count {
+        slots.push((
+            format!("/next/nodes/{index}"),
+            DYNAMIC_HANDOFF_TASK_PATH_FIELD,
+            DYNAMIC_HANDOFF_TASK_FIELD,
+        ));
+    }
+    for (pointer, path_field, text_field) in slots {
+        let Some(owner) = resolved
+            .pointer_mut(&pointer)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let Some(relative) = owner
+            .get(path_field)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let json_path = dynamic_handoff_json_path(&pointer, path_field);
+        match read_dynamic_handoff_file(attachments_dir, &relative) {
+            Ok(text) => {
+                owner.remove(path_field);
+                owner.insert(text_field.to_string(), serde_json::Value::String(text));
+            }
+            Err((code, message)) => {
+                let mut error = DynamicProposalValidationError::new(
+                    code,
+                    message,
+                    serde_json::json!({
+                        "field": path_field,
+                        "file": relative,
+                        "attachmentsDir": attachments_dir,
+                        "maxBytes": DYNAMIC_HANDOFF_FILE_MAX_BYTES,
+                    }),
+                );
+                error.path = Some(json_path);
+                error.actual = Some(relative);
+                error.expected = Some(
+                    "relative path of a non-empty UTF-8 file written inside the attachments directory"
+                        .to_string(),
+                );
+                error.suggestion = Some(format!(
+                    "write the text to a file inside {attachments_dir} and set `{path_field}` to its path relative to that directory; keep the other fields unchanged"
+                ));
+                errors.push(error);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(resolved)
+    } else {
+        Err(errors)
+    }
+}
+
+fn dynamic_handoff_json_path(pointer: &str, field: &str) -> String {
+    let mut path = String::new();
+    for segment in pointer.split('/').filter(|segment| !segment.is_empty()) {
+        if segment.chars().all(|ch| ch.is_ascii_digit()) {
+            path.push_str(&format!("[{segment}]"));
+        } else {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(segment);
+        }
+    }
+    if path.is_empty() {
+        field.to_string()
+    } else {
+        format!("{path}.{field}")
+    }
+}
+
+fn read_dynamic_handoff_file(
+    attachments_dir: &camino::Utf8Path,
+    relative: &str,
+) -> std::result::Result<String, (&'static str, String)> {
+    let candidate = camino::Utf8Path::new(relative);
+    let lexically_contained = !relative.trim().is_empty()
+        && candidate.components().all(|component| {
+            matches!(
+                component,
+                camino::Utf8Component::Normal(_) | camino::Utf8Component::CurDir
+            )
+        });
+    if !lexically_contained {
+        return Err((
+            DYNAMIC_HANDOFF_INVALID_PATH,
+            format!("`{relative}` must be a relative path without `..`"),
+        ));
+    }
+    let full = attachments_dir.join(candidate);
+    let not_found = || {
+        (
+            DYNAMIC_HANDOFF_NOT_FOUND,
+            format!("no file exists at `{relative}` in the attachments directory"),
+        )
+    };
+    let real = std::fs::canonicalize(full.as_std_path()).map_err(|_| not_found())?;
+    let root = std::fs::canonicalize(attachments_dir.as_std_path()).map_err(|_| not_found())?;
+    if !real.starts_with(&root) {
+        return Err((
+            DYNAMIC_HANDOFF_OUTSIDE_ATTACHMENTS,
+            format!("`{relative}` resolves outside the attachments directory"),
+        ));
+    }
+    let metadata = std::fs::metadata(&real).map_err(|_| not_found())?;
+    if !metadata.is_file() {
+        return Err(not_found());
+    }
+    if metadata.len() > DYNAMIC_HANDOFF_FILE_MAX_BYTES {
+        return Err((
+            DYNAMIC_HANDOFF_TOO_LARGE,
+            format!(
+                "`{relative}` has {} bytes; the limit is {DYNAMIC_HANDOFF_FILE_MAX_BYTES}",
+                metadata.len()
+            ),
+        ));
+    }
+    let bytes = std::fs::read(&real).map_err(|_| not_found())?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        (
+            DYNAMIC_HANDOFF_NOT_UTF8,
+            format!("`{relative}` is not valid UTF-8 text"),
+        )
+    })?;
+    if text.trim().is_empty() {
+        return Err((DYNAMIC_HANDOFF_EMPTY, format!("`{relative}` is empty")));
+    }
+    Ok(text)
+}
+
 pub fn dynamic_completion_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(DynamicNodeCompletion))
         .expect("dynamic completion JSON schema serializes")
@@ -757,7 +936,13 @@ fn patch_dynamic_completion_root_schema(schema: &mut serde_json::Value) {
     };
     object.insert(
         "required".to_string(),
-        serde_json::json!(["version", "kind", "status", "summary", "next"]),
+        serde_json::json!([
+            "version",
+            "kind",
+            "status",
+            DYNAMIC_HANDOFF_SUMMARY_PATH_FIELD,
+            "next"
+        ]),
     );
     object.insert("additionalProperties".to_string(), serde_json::json!(false));
     let Some(properties) = object
@@ -767,6 +952,11 @@ fn patch_dynamic_completion_root_schema(schema: &mut serde_json::Value) {
         return;
     };
     properties.remove("source");
+    properties.remove(DYNAMIC_HANDOFF_SUMMARY_FIELD);
+    properties.insert(
+        DYNAMIC_HANDOFF_SUMMARY_PATH_FIELD.to_string(),
+        string_schema(),
+    );
     properties.insert(
         "version".to_string(),
         enum_string_schema([VERSION.to_string()]),
@@ -876,7 +1066,7 @@ fn conditional_schema(
 }
 
 fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Value {
-    let mut worker_required = vec!["id", "kind", "title", "task"];
+    let mut worker_required = vec!["id", "kind", "title", DYNAMIC_HANDOFF_TASK_PATH_FIELD];
     if policy.provider_required {
         worker_required.push("provider");
     }
@@ -892,13 +1082,13 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
     }
     serde_json::json!({
         "type": "object",
-        "required": ["id", "kind", "title", "task"],
+        "required": ["id", "kind", "title", DYNAMIC_HANDOFF_TASK_PATH_FIELD],
         "additionalProperties": false,
         "properties": {
             "id": string_schema(),
             "kind": enum_string_schema(["worker", "workflow-invocation"]),
             "title": string_schema(),
-            "task": string_schema(),
+            DYNAMIC_HANDOFF_TASK_PATH_FIELD: string_schema(),
             "provider": optional_enum_or_string_schema(&policy.provider_ids),
             "profile": optional_enum_or_string_schema(&policy.profile_ids),
             "model": optional_enum_or_string_schema(&policy.model_names),
@@ -920,7 +1110,7 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
             conditional_schema(
                 "kind",
                 "workflow-invocation",
-                &["id", "kind", "title", "task", "workflowId"],
+                &["id", "kind", "title", DYNAMIC_HANDOFF_TASK_PATH_FIELD, "workflowId"],
                 &["provider", "profile", "model", "permissionMode"],
             )
         ]
@@ -928,7 +1118,7 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
 }
 
 fn dynamic_agent_task_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Value {
-    let mut required = vec!["title", "task"];
+    let mut required = vec!["title", DYNAMIC_HANDOFF_TASK_PATH_FIELD];
     if policy.agent_task_model_required {
         required.push("model");
     }
@@ -942,7 +1132,7 @@ fn dynamic_agent_task_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> ser
             "provider".to_string(),
             optional_enum_or_string_schema(&policy.provider_ids),
         ),
-        ("task".to_string(), string_schema()),
+        (DYNAMIC_HANDOFF_TASK_PATH_FIELD.to_string(), string_schema()),
     ]);
     if policy.agent_task_model_visible {
         properties.insert(
@@ -1390,14 +1580,14 @@ mod tests {
             "version": VERSION,
             "kind": DYNAMIC_COMPLETION_ARTIFACT,
             "status": "success",
-            "summary": "route",
+            "summaryPath": "handoff/summary.md",
             "next": {
                 "type": "single",
                 "node": {
                     "id": "worker-1",
                     "kind": "worker",
                     "title": "Worker",
-                    "task": "Implement",
+                    "taskPath": "handoff/worker-1.md",
                     "provider": "codex-acp"
                 }
             }
@@ -1416,20 +1606,168 @@ mod tests {
             "version": VERSION,
             "kind": DYNAMIC_COMPLETION_ARTIFACT,
             "status": "success",
-            "summary": "route",
+            "summaryPath": "handoff/summary.md",
             "next": {
                 "type": "single",
                 "node": {
                     "id": "worker-1",
                     "kind": "worker",
                     "title": "Worker",
-                    "task": "Implement",
+                    "taskPath": "handoff/worker-1.md",
                     "provider": "codex-acp"
                 }
             }
         });
         with_workspace["next"]["node"]["workspace"] = serde_json::json!({ "mode": "worktree" });
         assert!(!compiled.is_valid(&with_workspace));
+    }
+
+    fn handoff_attachments_dir() -> (tempfile::TempDir, Utf8PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Utf8PathBuf::from_path_buf(temp.path().join("attachments")).unwrap();
+        std::fs::create_dir_all(dir.join("handoff")).unwrap();
+        (temp, dir)
+    }
+
+    fn fanout_submission() -> serde_json::Value {
+        serde_json::json!({
+            "version": VERSION,
+            "kind": DYNAMIC_COMPLETION_ARTIFACT,
+            "status": "success",
+            "summaryPath": "handoff/summary.md",
+            "next": {
+                "type": "fanout",
+                "groupId": "g",
+                "nodes": [
+                    { "id": "a", "kind": "worker", "title": "A", "taskPath": "handoff/a.md" },
+                    { "id": "b", "kind": "worker", "title": "B", "taskPath": "./handoff/b.md" }
+                ],
+                "merge": { "title": "Merge", "taskPath": "handoff/merge.md" },
+                "acceptance": { "title": "Accept", "taskPath": "handoff/accept.md" }
+            }
+        })
+    }
+
+    #[test]
+    fn handoff_files_resolve_into_canonical_completion_text() {
+        let (_temp, dir) = handoff_attachments_dir();
+        for (name, text) in [
+            ("summary", "split work"),
+            ("a", "task A"),
+            ("b", "task B"),
+            ("merge", "merge both"),
+            ("accept", "accept merged"),
+        ] {
+            std::fs::write(dir.join(format!("handoff/{name}.md")), text).unwrap();
+        }
+
+        let resolved =
+            resolve_dynamic_completion_handoff_files(&fanout_submission(), &dir).unwrap();
+        // The resolved value is frozen: later file edits cannot reach it.
+        std::fs::write(dir.join("handoff/a.md"), "edited later").unwrap();
+        let completion: DynamicNodeCompletion = serde_json::from_value(resolved.clone()).unwrap();
+
+        assert_eq!(completion.summary, "split work");
+        let DynamicNext::Fanout {
+            nodes,
+            merge,
+            acceptance,
+            ..
+        } = completion.next
+        else {
+            panic!("fanout expected");
+        };
+        assert_eq!(nodes[0].task, "task A");
+        assert_eq!(nodes[1].task, "task B");
+        assert_eq!(merge.task, "merge both");
+        assert_eq!(acceptance.task, "accept merged");
+        assert!(resolved.get("summaryPath").is_none());
+        assert!(resolved["next"]["nodes"][0].get("taskPath").is_none());
+    }
+
+    #[test]
+    fn handoff_file_errors_are_structured_per_field() {
+        let (_temp, dir) = handoff_attachments_dir();
+        std::fs::write(dir.join("handoff/summary.md"), " \n").unwrap();
+        std::fs::write(dir.join("handoff/a.md"), [0xff, 0xfe]).unwrap();
+        std::fs::write(
+            dir.join("handoff/merge.md"),
+            vec![b'x'; DYNAMIC_HANDOFF_FILE_MAX_BYTES as usize + 1],
+        )
+        .unwrap();
+        std::fs::write(dir.parent().unwrap().join("outside.md"), "outside").unwrap();
+        let mut submission = fanout_submission();
+        submission["next"]["nodes"][1]["taskPath"] = serde_json::json!("handoff/missing.md");
+        submission["next"]["acceptance"]["taskPath"] = serde_json::json!("../outside.md");
+
+        let errors = resolve_dynamic_completion_handoff_files(&submission, &dir).unwrap_err();
+        let codes = errors
+            .iter()
+            .map(|error| (error.path.as_deref().unwrap(), error.code.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            codes,
+            vec![
+                ("summaryPath", DYNAMIC_HANDOFF_EMPTY),
+                ("next.merge.taskPath", DYNAMIC_HANDOFF_TOO_LARGE),
+                ("next.acceptance.taskPath", DYNAMIC_HANDOFF_INVALID_PATH),
+                ("next.nodes[0].taskPath", DYNAMIC_HANDOFF_NOT_UTF8),
+                ("next.nodes[1].taskPath", DYNAMIC_HANDOFF_NOT_FOUND),
+            ]
+        );
+        assert_eq!(errors[0].params["file"], "handoff/summary.md");
+    }
+
+    #[test]
+    fn handoff_file_paths_cannot_be_absolute() {
+        let (_temp, dir) = handoff_attachments_dir();
+        let mut submission = fanout_submission();
+        submission["summaryPath"] = serde_json::json!(dir.join("handoff/summary.md").as_str());
+
+        let errors = resolve_dynamic_completion_handoff_files(&submission, &dir).unwrap_err();
+
+        assert_eq!(errors[0].code, DYNAMIC_HANDOFF_INVALID_PATH);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_file_symlinks_cannot_escape_attachments() {
+        let (_temp, dir) = handoff_attachments_dir();
+        let outside = dir.parent().unwrap().join("outside.md");
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("handoff/summary.md")).unwrap();
+        let mut submission = fanout_submission();
+        submission["next"] = serde_json::json!({ "type": "end" });
+
+        let errors = resolve_dynamic_completion_handoff_files(&submission, &dir).unwrap_err();
+
+        assert_eq!(errors[0].code, DYNAMIC_HANDOFF_OUTSIDE_ATTACHMENTS);
+    }
+
+    #[test]
+    fn effective_schema_accepts_handoff_paths_and_rejects_inline_text() {
+        let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
+            max_fanout: 5,
+            ..Default::default()
+        });
+        let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
+        assert!(compiled.is_valid(&fanout_submission()));
+
+        let mut inline_summary = fanout_submission();
+        inline_summary["summary"] = serde_json::json!("inline");
+        assert!(!compiled.is_valid(&inline_summary));
+
+        let mut inline_task = fanout_submission();
+        inline_task["next"]["merge"]["task"] = serde_json::json!("inline");
+        assert!(!compiled.is_valid(&inline_task));
+
+        let mut missing_path = fanout_submission();
+        missing_path["next"]["nodes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("taskPath");
+        assert!(!compiled.is_valid(&missing_path));
     }
 
     #[test]
@@ -1443,7 +1781,7 @@ mod tests {
         let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
         let task = serde_json::json!({
             "title": "Merge",
-            "task": "Merge branch results"
+            "taskPath": "handoff/merge.md"
         });
         assert!(compiled.is_valid(&task));
 

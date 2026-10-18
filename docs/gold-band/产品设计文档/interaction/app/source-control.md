@@ -6,24 +6,61 @@
 
 ## 2. 工作区绑定
 
-- 右侧会话树只展示一个项目级“源码管理”Tab；Tab 的展示身份按当前会话 Run 保持稳定，不为 main 和各 linked worktree 创建多个同名 Tab。源码管理数据会话身份由 `projectId + normalized workspacePath` 组成。
+- 右侧会话树只展示一个项目级“源码管理”Tab；Tab 的展示身份按当前会话 Run 保持稳定，不为 main 和各 linked worktree 创建多个同名 Tab。源码管理数据会话身份由 `projectId + canonical workspace scope` 组成；主工作区 scope 唯一为 `null`，linked worktree scope 为规范化路径。显式路径是否等于项目根必须使用跨平台文件系统 identity 判断，统一 Windows 分隔符、大小写与长路径前缀并解析符号链接；不得用原始路径字符串比较后把同一主工作区误判为 linked worktree。
 - 未指定 `workspacePath` 时绑定项目主工作区。
 - dynamic child workspace 必须绑定自身 worktree；后端校验其 Git common directory 与项目一致，禁止通过路径参数访问其他仓库。
 - 用户切换源码管理资源时，状态、历史、diff 和写操作必须始终使用同一 workspace 身份。
-- 会话页右侧通用“源码管理”入口必须从 Run 已提交的 `sessionTree.selectedSessionKey` 对应 `ConversationSessionLeafVm.worktreePath` 投影工作位置；页面完整 session locator 只用于 deep-link 尚未收敛到 Run 选择时的回退。顶层主工作区为 `null`，Run worktree 和 dynamic child 使用各自 canonical path。入口不得从分支显示名反查路径，也不得把创建 worktree 时的源分支当作操作作用域。用户选择 session 时，React 页面状态、最新页面引用、URL locator 和 Run selected session 必须在同一事件事务内更新，不能只写 history 后依赖 effect 补同步。
+- 会话页右侧通用“源码管理”入口必须从 Run 已提交的 `sessionTree.selectedSessionKey` 对应 `ConversationSessionLeafVm.workLocation` 投影工作位置；页面完整 session locator 只用于 deep-link 尚未收敛到 Run 选择时的回退。`main` 的 `workspacePath` 为 `null`，Run worktree 和 dynamic child 使用各自 canonical path。`unavailable`（worktree 已收回或无法解析）不得回落主工作区：源码管理 Tab 展示“会话工作树已收回 / 不可用”、原路径和“浏览主工作区”，用户点击后才在该 Tab 内切到主工作区；会话重新可用后该选择失效。入口不得从分支显示名反查路径，也不得把创建 worktree 时的源分支当作操作作用域。用户选择 session 时，React 页面状态、最新页面引用、URL locator 和 Run selected session 必须在同一事件事务内更新，不能只写 history 后依赖 effect 补同步。
 - 切换 session 时按工作位置 identity 投影源码管理：两个节点都属于 main，或属于同一个 linked worktree 时 identity 不变，已经打开的源码管理组件、滚动位置和数据订阅保持不动，不重新读取 Git；只有 main 与 worktree、或两个不同 worktree 之间切换时，单一源码管理 Tab 才切换到对应的 repository/workspace 会话。源分支如需展示只能作为只读来源信息，不能替代当前 worktree 的 HEAD、index 和 working directory。
 
-源码管理会话状态独立于右侧面板组件生命周期，按 `projectId + canonical workspacePath` 进入最多 24 项的运行期 LRU。切换工作位置后再返回时恢复该位置原有的当前分区、repository 子页、历史分页、提交多选、历史滚动位置、详情和 commit 草稿；普通 Tab 切换、打开 Diff 或暂时收起右栏不会重新加载。Git 写操作成功和 Git watcher 事件才使对应会话重新读取。Stage/Unstage 只回写最新 workspace status 与 repository revision，不读取未受影响的 refs、worktree、stash、remote 或 history；Commit、分支、标签和 worktree等改变 repository 结构的 mutation 才并行刷新 snapshot/history。旧的异步请求不得覆盖较新的刷新或操作结果，不同 linked worktree 的缓存必须隔离。
+源码管理会话状态独立于右侧面板组件生命周期，按 `projectId + canonical workspace scope` 进入最多 24 项的运行期 LRU；显式传入项目根也必须归一化到主工作区的 `null` scope。切换工作位置后再返回时恢复该位置原有的当前分区、repository 子页、历史分页、提交多选、历史滚动位置、详情和 commit 草稿；普通 Tab 切换、打开 Diff 或暂时收起右栏不会重新加载。Git 写操作成功和 Git watcher 事件才使对应会话重新读取。Stage/Unstage 只回写最新 workspace status 与 repository revision，不读取未受影响的 refs、worktree、stash、remote 或 history；Commit、分支、标签和 worktree等改变 repository 结构的 mutation 才并行刷新 snapshot/history。旧的异步请求不得覆盖较新的刷新或操作结果，不同 linked worktree 的缓存必须隔离。
 
 GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命周期，按 `projectId + Git common directory + canonical workspacePath` 进入最多 24 个 repository/workspace 会话的运行期有界 LRU；同一 query 或详情的并发请求必须合并。该会话同时持有轻量导航 locator：PR/Issue 分区、已提交的筛选/搜索条件、选中实体的 kind/number 与详情“概览/文件”子页，不能把完整详情或正文复制进导航状态。普通源码管理 Tab 切换、打开 PR Diff 和返回只读缓存并恢复原详情位置，不重新执行 `gh`；用户显式刷新、登录成功或查询条件改变时才按最小领域重新验证。PR 文件 comparison 以 `host + repository + PR number + base OID + head OID + path` 作为不可变 identity，最多缓存 96 项，PR revision 改变后自然生成新资源，不允许旧 Diff 覆盖新 revision。
 
-用户在 Fetch、Push 或 Push Tag 对话框中主动选择的 remote 是仓库级持久偏好，以规范化 Git common directory 为身份保存，因此同仓库的 linked worktree 共享选择。重新打开对话框时按“仍然有效的用户偏好 → 当前 upstream remote → remote 列表第一项”解析默认值；已删除的 remote 不得继续成为可提交值。偏好使用集中、带版本号且有 64 个仓库上限的 schema，不把 localStorage key 散落在组件中。
+用户在 Fetch、首次发布或 Push Tag 对话框中主动选择的 remote 是仓库级持久偏好，以规范化 Git common directory 为身份保存，因此同仓库的 linked worktree 共享选择。这些可选 remote 的入口按“仍然有效的用户偏好 → 当前 upstream remote → remote 列表第一项”解析默认值；已删除的 remote 不得继续成为可提交值。已有 upstream 的普通 Push 固定同步到该 upstream 的真实 remote/branch，不被此偏好覆盖。偏好使用集中、带版本号且有 64 个仓库上限的 schema，不把 localStorage key 散落在组件中。
 
-每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。首次加载必须先完成事件订阅并启动 monitor，再读取权威 snapshot/history，消除“快照完成但监听尚未建立”的丢事件窗口；`workspacePath = null` 是主工作区的合法作用域，必须原样交给后端解析，不能被当作路径缺失而跳过 monitor。加载或 Git 写操作期间到达的失效保留为一个 dirty follow-up，不能因当前状态不是 ready/pending 而丢弃。两类事件经过去抖后只刷新匹配会话，quiet window 同时受 1 秒最大延迟约束；普通 workspace 事件只刷新 worktree/status snapshot，不读取 history，Git metadata/ref 事件才刷新 repository snapshot/history。monitor 身份包含 `projectId + common directory + workspace path`，LRU 淘汰会对称释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。notify 错误或有界事件通道溢出必须升级为一次 repository scope 失效并记录诊断，不能静默忽略。
+每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。首次加载使用单一 monitored bootstrap：先订阅事件，一次探测 Git 版本与仓库 identity，一次批量定位监听和操作标记路径，完成 workspace/metadata watcher 注册后才读取 status 并发布首屏。监听已覆盖读取窗口，因此不得再安排整份 overview 交接补读；注册或 status 失败时对称回滚本次 watcher。bootstrap 必须同时返回 canonical `workspaceScopePath`：未传路径和显式项目根都返回 `null`，只有 linked worktree 返回规范化路径；repository snapshot 中的物理 `workspacePath` 只用于定位，不能成为主工作区的第二个会话身份。前端为原始请求路径、canonical scope 和物理仓库路径注册同一会话别名，后续刷新与写操作统一发送 canonical scope。加载或 Git 写操作期间到达的失效保留为一个 dirty follow-up，不能因当前状态不是 ready/pending 而丢弃。两类事件经过去抖后只刷新匹配会话，quiet window 同时受 1 秒最大延迟约束；普通 workspace 事件只刷新 worktree/status snapshot，不读取 history，Git metadata/ref 事件才刷新 repository snapshot/history。monitor 身份为 `projectId + 规范化 workspace path`（去除 Windows `\\?\` 前缀、统一分隔符与大小写），停止监听不再执行 Git 解析，worktree 被收回后仍能释放 watcher；LRU 淘汰会对称释放 watcher。同一物理 root 的 watcher 仅在 canonical scope 相同时复用；scope 冲突必须记录 DEBUG 诊断并返回结构化 watch failure，不能让先启动的文件面板或源码管理决定后续事件身份。workspace 文件事件携带工作位置身份（linked worktree 路径，主工作区为 `null`），源码管理只把事件路由给同一工作位置的会话，嵌套在项目目录内的 worktree 不会被主工作区 watcher 重复刷新。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。notify 错误或有界事件通道溢出必须升级为一次 repository scope 失效并记录诊断，不能静默忽略。
 
 同一 workspace 任意时刻只允许一个 Git 写操作。pending action 由源码管理会话统一保存为结构化 `kind + path`，不得由各按钮维护旁路 loading：单文件 Stage/Unstage 时被点击行的操作按钮持续显示旋转状态，其他文件行的按钮不渲染，Commit 和其他仓库写操作保持禁用；后台只读刷新使用独立 `refreshing` 状态，不禁用 commit 草稿或文件操作。Commit、Fetch、Pull、Push 在各自主操作按钮显示旋转状态，直至权威结果收敛或结构化失败返回。
 
 会话 composer 的分支入口复用同一 Git runner、repository/workspace 协调锁与结构化错误，但使用独立轻量 `GitBranchPickerSnapshot { workspacePath, currentBranch, headOid, revision, dirtyFileCount, operationInProgress, lock, branches }`，不得为了显示选择器读取完整源码管理 snapshot、numstat、history 或 diff。分支列表只查询 `refs/heads`。脏文件计数使用 `git status --untracked-files=normal`，未跟踪目录按目录计一次，不展开其中每个文件。轻量 snapshot 按 `projectId + workspacePath` 进入 App 会话期最多 24 项的有界 LRU；重新挂载先同步恢复旧 snapshot，再在后台校准，因此普通导航不闪回 loading。该 Store 不持久化，也不作为 Git 事实源。`switch` 与 `create-and-switch` 都是 typed Git mutation；后端必须在同一把 Git 写锁内完成 expected revision 校验、checkout 和最终 `HEAD` 读取，并返回新的 snapshot。Merge/Rebase 进行中、runtime 锁占用、目标分支被其他 worktree 检出或 revision 过期均返回稳定错误码。连续快速切换由该锁串行化，后一个请求必须基于前一个请求返回的新 revision；前端 mutation pending 时禁用重复选择与会话提交，失败后重读轻量 snapshot 收敛，不保留乐观分支事实。
+
+## 渐进加载（2026-09-24）
+
+### 后台重验证与诊断（2026-09-25）
+
+监听循环定向诊断补充：`metadata_monitor_start` 生成仅用于日志关联的随机 `monitor_id`；`metadata_batch` 增加同实例递增的 `batch_number` 和 `overflowed`。DEBUG 下每批按 notify EventKind 与固定元数据类别聚合为 `metadata_event_group`，记录 `path_occurrences`、批次内首次/末次接收偏移 `first_ms/last_ms`；重命名双路径分别计入所属类别，因此路径出现次数不等于事件数。`metadata_batch_details` 记录 rescan/error 数与因分组上限省略的路径次数。每批最多 64 个分组、下一批立即释放；INFO 不执行分类或构造分组。类别通过已注册 watch root 做纯词法归属，支持 linked worktree 和 refs 递归监听，不新增文件系统查询；只输出 index/index.lock、HEAD、refs、操作标记等白名单类别，未知文件统一 other，不输出完整路径、分支名称或错误正文。本次仅增强证据，不更改失效决定、事件过滤、去抖或审阅查询。
+
+- catalog 首次读取与后台重验证使用不同的展示语义：已有目录数据时保留仓库/GitHub 组件、选择、搜索草稿与滚动位置；请求失败只显示局部错误和重试入口。目录重验证、失败或 overview 刷新期间禁用依赖目录 revision 的仓库写入口，后端 expected revision 校验仍是最终保障。
+- catalog 使用独立的请求代次与已发布代次，仅管理异步投影新鲜度，不新增 canonical repository identity。metadata、显式刷新、写操作或实际 workspace revision 变化使其失效；Git 状态未变的普通文件事件不得失效目录或饿死正在读取的目录请求。仍为每会话至多一个 in-flight，迟到结果丢弃后至多补读一次，非当前领域保持按需加载。
+- 同一工作区普通文件刷新不重复读取 remote；行数统计只合并 status，不能把请求开始时捕获的旧 repository 覆盖到新 remote 投影上。
+- 两类 notify watcher 忽略读取/打开等纯访问事件；写关闭、创建、修改、重命名、删除继续失效。rescan、错误与通道溢出保持保守补读。metadata watcher 每批 DEBUG 记录事件数、是否失效与批次耗时，不记录路径；不能仅凭过滤访问事件就断言某台 Windows 机器上的循环事件来源。
+- 历史每页前端 300 条、服务端最多 1000 条；聚合审阅最多 32 个提交。新增 DEBUG 请求 `history`、`commit-detail`、`commit-review`、`commit-reachability`、`comparison`，以 UUID `load_id` 关联请求总时长、resolve-app、resolve-workspace、blocking-work 和 Git 调用。history 分 revision/log/parse，review 分 revision/resolve-selection/metadata/changes/aggregate/statistics，comparison 分 read-versions/build；现有工作线程与 stdin 命令也计入同一请求。日志不包含 OID、文件路径、正文或命令参数。
+- 本轮不改变历史、聚合或 Diff 算法，也不增加并发、依赖或缓存层。验收以重复事件请求数、DOM identity 和迟到响应规则为准；实际慢阶段与弱机器秒数由新 DEBUG runtime.log 判断。
+
+更改首屏由 monitored bootstrap 返回 capability、仓库身份、分支/同步信息和文件状态；不读取 remote、refs、Worktree、Stash 或 numstat。remote 在首屏发布后独立加载，加载期间同步入口显示进度并禁用，失败只影响同步入口且可重试，不清空文件状态。remote 跟随共享仓库 config 的 `remotesRevision`：工作区、index、HEAD 或 refs 变化不重读 remote；config 变化时后台重读，期间保留已有 remote 和可用的同步入口；失败不随无关刷新自动重试。目录数据在进入仓库或 GitHub 页签后调用 snapshot，使用独立的 catalog/loading/error 状态；未加载不能显示为空目录。catalog 返回的 remote 可直接补齐同一会话。GitHub 能力只由 GitHub 页签触发。文件增删统计在 overview 发布后通过 statistics 补齐，按会话请求 revision 和状态 revision 校验后合并，同时更新 Diff 审阅 summary；统计失败不清空已显示的文件。
+
+工作区 revision 由分支和文件状态派生，供 index、commit、stash/merge/rebase 使用；catalogRevision 额外包含 refs，供分支、标签和 Worktree 写操作校验。同步操作继续使用 syncRevision。目录、remote、统计请求各自 single-flight，仍受已有 24 个会话容量约束；刷新、写入和淘汰后拒绝迟到结果。无需持久缓存或新依赖。
+
+Git 原生 rev-parse 一次返回 repository identity，并把 8 个监听路径和 5 个操作标记路径合并为另一次批量查询；保持 linked worktree common-dir 校验与原有后台隐藏窗口 helper。linked worktree 需要一次额外 identity 查询来验证作用域。路径输出数量不符时拒绝解析，不能用错位路径继续读取。
+
+单 remote、已有 HEAD、主工作区基线：用户 runtime(1).log 首次加载 47.0258 秒/34 次 Git；第一轮优化后的 runtime(2).log 首次发布 17.0842 秒，其中 capability 5.949 秒/4 次 Git、monitor 4.546 秒/3 次 Git、overview 11.106 秒/7 次 Git，仍有重复版本/identity、首屏 remote 和监听交接补读。当前 monitored bootstrap 的主工作区首屏预算固定为 4 次 Git：版本、identity、批量 marker、status；linked worktree 为 5 次。remote、statistics 和按需 catalog 均在发布后执行，不再做监听交接 overview 补读。目标为弱机器首次 6～8 秒、理想 5～6 秒、同应用会话再次打开 3～5 秒；这些是验收目标，实际秒数仍须在原机器通过新日志确认。remote 继续使用 Git get-url 保留 URL rewrite 语义。
+
+性能与过度设计评审：文件状态仍为 O(变更/未跟踪文件)，目录为 O(refs + worktrees + stashes)，目录只按需加载；保留完整未跟踪文件以保证列表正确性。remote 只增加一个有界 single-flight，不能阻塞首屏；不复制 repository canonical state。没有新增第三方库、持久缓存、队列或无界并发；复用现有 CLI、Store、request revision、watcher 和 UI 组件。
+
+## 加载诊断（2026-09-24）
+
+源码管理加载诊断统一使用 `DEBUG`，复用设置中的“记录详细日志”和现有异步轮转 `runtime.log`，日志 target 为 `gold_band::git::load`。默认 Info 不输出这些记录。前端为一次实际加载生成临时 UUID `load_id`，贯穿 bootstrap 及随后 remote、statistics IPC；旧兼容路径仍记录 capability、monitor 和 overview。它只关联诊断，不作为 workspace、repository 或业务 revision。日志不记录路径、remote URL、文件内容、stdout/stderr 或任意命令参数。
+
+- `frontend_load_end`：从 Store 开始加载到数据发布的 `elapsed_ms`，以及 capability、订阅、monitor、snapshot 阶段耗时；不代表浏览器 paint。包含 `initial` 和 `Ready/Unavailable/Error/Superseded` 结果。会话缓存直接命中不产生一次新加载记录。
+- `request_start/request_end`：单个 IPC 的总耗时、结果和 `git_commands` 调用尝试次数（包含准备失败，不能当作成功创建的进程数）。请求取消或异常展开以 `aborted` 收尾。
+- `stage_start/stage_end`：应用作用域解析、blocking worker、状态与统计、refs、worktrees、stashes、remotes、workspace watch 和 Git metadata watch 的时间边界；嵌套阶段不可重复相加。
+- `command_start/command_end`：白名单命令类别、请求内序号、`prepare_ms`、`execution_ms`、总耗时、是否取得输出和退出码。准备包括 Git 定位、PATH 处理和参数设置；execution 包括 OS 创建进程、执行、收集输出和退出等待，不等同于 Git 算法 CPU 时间。并行 numstat 的耗时不能直接相加当作墙钟耗时。
+- workspace watcher 使用 `workspace_watch_start/reuse/stop` 记录监听实例、引用计数和匿名作用域 hash；同一物理 root 出现不同 canonical scope 时记录 `workspace_watch_scope_conflict`。`workspace_batch` 每个原生事件批次只记录事件数、溢出/失效标记、发出路径数和耗时。前端通过 typed IPC 上报 `frontend_watch_subscriptions`、`frontend_workspace_events`、`frontend_worktree_refresh_start/end`，分别定位订阅、Tauri 事件路由、作用域/元数据过滤和 worktree status 刷新。所有事件只记录固定计数、结果、项目 ID 与临时关联 ID，不记录文件路径或内容。
+
+前端只上报一次固定字段的摘要，不等待写入，不因上报失败修改加载结果。后端诊断上下文只在同步作用域安装，并显式传入 blocking worker 和并行 numstat 线程；作用域退出或 panic 自动恢复，禁止全局 current-request 造成跨请求串号。日志仍受已有 1024 行异步缓冲、单文件 8 MiB 与 4 个轮转文件限制。
+
+本次仅增加测量，不改变既有加载顺序、Git 参数或缓存边界，保留优化前基线。用户机器实测版本查询约 1 秒、8 次元数据查询约 8 秒，不能替代真实 EXE 的阶段测量。复测时先开启详细日志、退出并重新启动客户端，再首次打开源码管理；从 `<用户配置根>/logs/runtime.log` 提取 `gold_band::git::load`。默认发行版配置根为 `%USERPROFILE%/.gold-band`，品牌渠道或自定义 HOME 使用其配置根。
 
 ## 3. 信息架构
 
@@ -37,7 +74,11 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 2. 历史：当前工作树 HEAD 可达的完整提交列表、标准桌面多选、按文件聚合的最终 Diff 审阅、提交归属和分页；其他分支只有用户显式选择对应 ref 时才进入历史范围，默认不得用 `--all` 混入旁支提交。
 3. 仓库：分支、tag、worktree 与已有 stash 的查看/应用，不承载日常同步入口。
 
-仓库标题右侧使用一个动态同步按钮和一个独立 Fetch 按钮。`behind > 0` 时同步按钮同时显示 `↓behind ↑ahead`，主动作固定为 Pull；`behind = 0` 时只显示 `↑ahead`，主动作是 Push，`ahead = 0` 时禁用；未设置 upstream 的当前分支显示上箭头并允许首次 Push。Push 遇到 non-fast-forward 只返回结构化错误，不自动 Pull，用户需自行 Fetch、Pull 后再 Push。点击可用入口后进入对应确认/配置对话框，执行中在原入口显示旋转状态，结束后在仓库标题下保留成功、失败、冲突或取消结果，直到用户关闭或开始下一次操作。更改区不重复显示 Fetch/Pull/Push，只在 `…` 菜单提供全部暂存、全部取消暂存和保存为 stash。Git watcher 自动收敛本地工作区和 Git metadata 状态，因此已加载页面不提供普通“重新读取本地状态”按钮；Fetch 不能删除，因为 watcher 不感知远端服务器的新提交，必须由用户显式联网更新 remote refs。Fetch、Pull、Push 和 Push Tag 的预期修订只覆盖当前分支、HEAD、upstream 以及 ahead/behind，不包含未暂存或未跟踪文件。暂存、提交和 Stash 继续使用包含文件列表的 workspace revision。修订不匹配时重新读取 snapshot，保留该错误直到用户再次操作：同步操作提示分支已变化，文件操作提示更改列表已更新，都不再要求用户手动刷新，也不自动重试这次写操作。
+仓库标题右侧使用一个动态同步按钮和一个独立 Fetch 按钮。`behind > 0` 时同步按钮同时显示 `↓behind ↑ahead`，主动作固定为 Pull；`behind = 0` 时只显示 `↑ahead`，主动作是 Push，`ahead = 0` 时禁用；未设置 upstream 的当前分支显示 `↑new`（各语言均保留 `new`），并按原有可用条件允许首次 Push；已设置 upstream 的数字显示与行为不变。Push 遇到 non-fast-forward 只返回结构化错误，不自动 Pull，用户需自行 Fetch、Pull 后再 Push。点击可用入口后进入对应确认/配置对话框，执行中在原入口显示旋转状态，结束后在仓库标题下保留成功、失败、冲突或取消结果，直到用户关闭或开始下一次操作。更改区不重复显示 Fetch/Pull/Push，只在 `…` 菜单提供全部暂存、全部取消暂存和保存为 stash。Git watcher 自动收敛本地工作区和 Git metadata 状态，因此已加载页面不提供普通“重新读取本地状态”按钮；Fetch 不能删除，因为 watcher 不感知远端服务器的新提交，必须由用户显式联网更新 remote refs。Fetch、Pull、Push 和 Push Tag 的预期修订只覆盖当前分支、HEAD、upstream 以及 ahead/behind，不包含未暂存或未跟踪文件。暂存、提交和 Stash 继续使用包含文件列表的 workspace revision。修订不匹配时重新读取 snapshot，保留该错误直到用户再次操作：同步操作提示分支已变化，文件操作提示更改列表已更新，都不再要求用户手动刷新，也不自动重试这次写操作。
+
+Push 的计数与默认同步目标必须一致：已有 upstream 时推到它真实对应的 remote/branch，即使远端分支与本地不同名；未配置 upstream 时首次发布到用户选择的 remote 的同名分支，并在成功后设置 upstream。确认框用紧凑的一行 `本地分支 → remote/目标分支` 展示方向（例如 `release/financeagent → origin/main`），不重复三组字段标签或通用推送说明；长分支名安全换行。已有 upstream 的目标只读，首次发布才显示 remote 选择和设置上游的必要提示。目标只在打开确认框时按需解析，准备中显示局部 loading 并禁用确认，失败可重试；关闭、改选或切换工作区后旧响应不得覆盖新确认。后端使用 Git 原生 upstream 元数据，不拆分 `origin/main` 之类的显示名称；已配置但无法解析的 upstream、不可用 remote 或不支持的本地 upstream 必须报错，不得退回同名发布。
+
+确认结果携带现有 syncRevision、源 OID 与明确目标；Store 不得用较新的 snapshot 修订替换用户确认的修订。执行前在已有 repository 写锁内重读并核对源、目标与是否设置 upstream，变化后要求重新确认，禁止静默改目标。GitHub PR 流程中的“先发布 head 分支”属于显式发布：只推送预检选定的 remote/head，不改推所选分支的 upstream；在原 PR 流程内展示真实目标并确认，不叠加模态框。是否设置 upstream 依据所选源分支，而不是当前 checkout 分支；已有 tracking 保持不变，创建 PR 前仍重跑 head 发布状态预检。
 
 Fetch 的可选 prune 行为对客描述为“移除远端已删除的分支记录”，并明确提示不会删除本地分支或工作区文件；默认关闭，只有用户显式开启才向 operation 传递 `prune=true`。
 
@@ -68,6 +109,14 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 工作区没有冲突、已暂存、未暂存或未跟踪文件时，“工作区没有变更”占满更改工具栏与 Commit composer 之间的剩余内容区并水平、垂直居中，使用弱化前景色表达非阻塞空状态；不得复用带主标题强调的错误/能力提示样式，也不得仅在滚动内容顶部居中。
 
+### 单文件放弃更改
+
+更改 Tab 的已暂存、未暂存和未跟踪文件支持右键菜单“放弃更改”（Discard Change，七种语言）。菜单复用 shadcn ContextMenu；执行前通过 AlertDialog 展示完整文件路径与不可撤销提示，默认聚焦取消。确认后将选中文件的 index 和 worktree 还原至 HEAD；新增文件删除，重命名同时还原原路径。子模块和进行中的冲突流程不开放此操作，不递归删除目录。
+
+单文件还原沿用 workspace 写锁、expectedRevision 校验和最新 status 回写，只刷新对应工作区，不读取 history/catalog。执行中显示目标文件 spinner，并禁用冲突写入口；取消确认不调用写接口。切换 workspace 后不得继续使用旧文件确认状态。
+
+Git 错误保留到用户启动下一次操作、主动刷新或关闭结果。后台仓库/文件刷新只更新当前数据，不清空现有操作错误，也不缓存并回填旧错误；新操作清除旧结果后，迟到刷新不得恢复旧原因。最新操作失败时显示本次结构化原因。
+
 ## 4. Git 操作约束
 
 - 系统 Git CLI 是唯一读写后端；可执行文件通过桌面 PATH 适配层解析，与 ACP/`gh` 共用查找规则。
@@ -92,7 +141,7 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 未安装时禁用 GitHub 操作并提供 GitHub CLI 官方安装入口，本地 Git 不受影响。未登录时由用户按钮启动 `gh auth login --web --clipboard`；后台进程隐藏窗口，浏览器完成授权，UI 提供取消与重新检测。应用不读取、保存或输出 GitHub token。
 
-PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。普通文档继续使用适合阅读的正文行宽，PR/Issue 详情作为右侧工作区审阅面必须显式使用全部可用宽度，不能继承 Atomic 默认的 `78ch` 阅读栏而在宽窗口留下空白。详情子页 TabsContent 必须是 column flex，让正文编辑器沿交叉轴撑满面板；禁止默认 row flex 把阅读栏固有宽度收缩成半栏。line Tabs 的 `w-full` 只负责画满宽底边，Trigger 跟随标签内容宽度，不得 `flex-1` 把「概览 / 文件」均分成左右两半。Markdown 浮层的源码/预览切换只在父级拥有 `markdownMode` 时出现；PR/Issue 详情是只读审阅面，固定实时预览，浮层只保留复制源码。创建 PR 的可编辑正文由对话框持有模式状态，切换必须生效。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
+PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。普通文档与 PR/Issue 详情统一随所在面板的可用宽度伸缩，保留正文左右留白，不使用固定字符行宽的居中窄栏。详情子页 TabsContent 必须是 column flex，让正文编辑器沿交叉轴撑满面板；禁止默认 row flex 把阅读栏固有宽度收缩成半栏。line Tabs 的 `w-full` 只负责画满宽底边，Trigger 跟随标签内容宽度，不得 `flex-1` 把「概览 / 文件」均分成左右两半。Markdown 浮层的源码/预览切换只在父级拥有 `markdownMode` 时出现；PR/Issue 详情是只读审阅面，固定实时预览，浮层只保留复制源码。创建 PR 的可编辑正文由对话框持有模式状态，切换必须生效。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
 
 PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态，再异步读取 PR 详情；不得让列表在请求期间保持无反馈，也不得通过延迟切页掩盖请求耗时。PR 详情提供“概览/文件”分区，并随详情返回 base/head OID。文件列表只承担 PR 变更导航，点击文件后打开现有右侧 `file-diff` resource，并由新 Tab 自己展示 comparison loading；typed `github-pr` comparison source 携带后端已经解析的不可变 base/head OID，后端校验 host、repository、OID 和路径后，并行按两个 OID 读取文件内容，不再为每个文件重复执行整 PR 的 `gh pr diff --name-only` 与 `gh pr view --json files`。前端不能传递任意 `gh` 参数。新增、删除、二进制、非 UTF-8 和超限文件继续使用统一 `GitFileComparison` 与 limitation code；加载期间 viewer 显示 spinner。
 
@@ -114,10 +163,38 @@ PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态�
 
 `workspacePath` 已贯穿 snapshot/history/mutation/comparison/长操作 IPC，并由后端校验 linked worktree 归属。stash create/apply、fetch/pull/push/push-tag 已接入可取消后台进程组、共享锁和结构化状态；分支、tag、worktree、stash 与远端操作已提供 shadcn 对话框/菜单入口。
 
-Git 失败链路已完整保留 `code + params.reason`：常见的身份验证、权限、仓库不存在、主机解析、网络不可达、远端拒绝和 non-fast-forward 使用稳定错误码，未细分失败仍展示脱敏后的 Git 原始原因。Fetch/Push/Push Tag 的 remote 选择已按 repository common-dir 持久记忆，重新打开对话框和重新挂载源码管理资源后继续使用上次有效选择。
+Git 失败链路已完整保留 `code + params.reason`：常见的身份验证、权限、仓库不存在、主机解析、网络不可达、远端拒绝和 non-fast-forward 使用稳定错误码，未细分失败仍展示脱敏后的 Git 原始原因。Fetch/首次发布/Push Tag 的 remote 选择已按 repository common-dir 持久记忆，重新打开对话框和重新挂载源码管理资源后继续使用上次有效选择；已有 upstream 的普通 Push 始终以 upstream 的实际 remote/branch 为目标。
 
 GitHub 已完成 CLI capability、网页登录、repository/default branch/remote mapping、PR/Issue 列表与详情、带 typed preflight 的可取消 PR 创建，以及 PR 文件 Diff。仓库探测使用 GitHub CLI 支持的 positional repository 参数，并以命令参数契约测试防止回退到无效 `--repo` flag；capability、列表、详情和 immutable-revision comparison 已进入有界缓存并合并 in-flight 请求。预检覆盖 head/base、ahead、发布状态和已有 open PR；未发布分支必须由用户显式 push。PR body 使用可编辑 `WorkspaceFileEditor`，只经 stdin 传给 `gh`。PR 文件列表进入与更改/历史相同的连续 CodeMirror 审阅会话，base/head 内容并行读取；权威文件状态映射和输出截断已有接口测试。
 
 GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。填充剩余高度的 TabsContent 使用 column flex，使正文编辑器与列表沿交叉轴撑满，不得保留默认 row flex。line Tabs 标签跟随内容宽度。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。PR/Issue 详情标题栏的远端跳转按钮固定通过统一 `openWebTarget` 进入应用内置浏览器，并显示“在内置浏览器中打开”Tooltip；不得直接调用系统浏览器 opener。
 
 旧 Git Graph、Checkbox 多选和两两关系分析已完整删除，包括第三方依赖、前后端模型、命令与测试；不再把不可恢复的“历史分支来源”包装成分析结果。新的 `GitCommitReview` 与 `GitCommitReachability` typed service 分离管理聚合文件终态和当前归属。源码管理 snapshot/history、内部 Tab、分页、选择、审阅和 commit 草稿位于 repository/workspace-scoped 有界会话 Store，Review 结果和 Diff 审阅序列使用独立有界缓存，源码管理会话清理或 LRU 淘汰时同步清理所属 Review 缓存；Stage/Unstage 使用 status-scoped mutation result 局部收敛，refs 变更 mutation 并行刷新 snapshot/history，并通过各领域独立 request revision 阻止 stale response。
+
+
+## 2026-09-27 元数据事务过滤与提交审阅渐进读取
+
+- 根因：元数据监听把临时锁文件的创建/删除当成已发布变更，普通工作区监听又能绕过元数据过滤；审阅接口把选中提交解析、文件列表和行数统计绑定，进程启动成本随选择数增长。前者是失效边界实现错误，后者是接口加载边界设计缺陷。
+- 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
+- commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
+- commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
+- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
+- 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
+
+- 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
+- 浏览器使用受控 browserApi fixture 验证：统计未返回时文件可点击；补齐 +77/-11 后编辑器 DOM 不变、正文查询仍为 1 次；统计失败后文件保留且局部重试可用。此验证不替代弱机器 EXE 性能验收，也尚未证明现场静置 30 秒无循环；现场请观察 metadata_batch.invalidated 与 commit-review / commit-review-statistics 的独立 DEBUG 计数和耗时。
+- 本轮复用现有 Git CLI/notify/Store/有界缓存，未新增依赖或并发池。通用约束已由 data-loading、frontend-performance、state-lifecycle 和 bug-fix-verification 规则覆盖，不新增规则。本轮未提交 Git。
+
+## 2026-09-29 Windows watcher 路径身份收敛
+
+- 源码管理会话与 workspace watcher 的路径归属判断必须复用共享的 filesystem path identity。Windows drive、verbatim drive、UNC 与 verbatim UNC 在比较前统一分隔符、长路径前缀与大小写；Unix 路径保持大小写语义。主工作区仍以 `workspacePath = null` 路由，linked worktree 仍按 canonical scope 精确隔离。
+- Git repository DTO 可以携带 `std::fs::canonicalize` 产生的 Windows verbatim 路径，workspace watcher 对客事件使用去除 verbatim 前缀的普通路径；两者表示同一文件时必须触发同一源码管理会话的去抖刷新，不能落入越界过滤。
+- DEBUG 路由摘要将越界会话拆为 scope 不一致、嵌套 worktree 过滤和文件路径不在工作区三类计数；watcher start/reuse 同时记录匿名 `scope_kind`。诊断不记录路径、文件名或内容，也不参与刷新控制流。
+
+### 更改列表统计的后台刷新（2026-09-30）
+
+单文件放弃更改、Stage/Unstage 完成后，后续 watcher 校验不得将已有增删行数清空再补回。轻量 overview 与 numstat 渐进合并：同一 repository/workspace、同一 HEAD、同一分组内路径及变更语义不变的行，在统计重算期间保留上次可见值；新统计返回后完整替换，包括零值、二进制及无统计结果。换工作区、HEAD、路径、旧路径、变更类型或分组时不继承。保留值仅为刷新期间的显示投影，不能用于判断内容未变或跳过统计请求；porcelain revision 不包含文件内容摘要。
+
+### 文件行操作状态布局
+
+Discard 执行中的 spinner 必须使用更改行 trailing 操作区域参与 flex 布局，与增删统计分别占位；菜单仅负责触发、确认和忙碌语义，不通过绝对定位叠加加载图标。长路径截断不能挤压统计或操作区域。Windows 上文件被其他程序以禁止删除共享的方式打开时，Git 可能无法替换文件并返回 unable to unlink old；界面保留实际错误原因，用户释放文件占用后可重试。

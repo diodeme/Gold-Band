@@ -30,15 +30,49 @@ describe('workspace file reference opening', () => {
       projectId: 'project-1',
       relativePath: 'src/a.ts',
       name: 'a.ts',
-    }, 'scope-1', openResource);
+    }, 'scope-1', openResource, { projectId: 'project-1', workspacePath: 'D:/workspace/.wt/a' });
 
-    expect(resolveWorkspaceFileLink).toHaveBeenCalledWith('project-1', 'src/a.ts');
+    expect(resolveWorkspaceFileLink).toHaveBeenCalledWith(
+      { projectId: 'project-1', workspacePath: 'D:/workspace/.wt/a' },
+      'src/a.ts',
+    );
     expect(openResource).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'file-browser',
       key: 'file-browser:project-1',
       selectedFile: expect.objectContaining({
         key: fileWorkspaceResourceKey('project-1', 'D:/workspace/src/a.ts'),
+        workspacePath: 'D:/workspace/.wt/a',
       }),
+    }));
+  });
+
+  it('resolves a reference of another project against that project root', async () => {
+    vi.mocked(resolveWorkspaceFileLink).mockResolvedValue({
+      locator: { projectId: 'project-2', canonicalPath: 'D:/other/a.ts', relativePath: 'a.ts', scope: 'workspace' },
+      target: null,
+      externalAccessGrant: null,
+    });
+
+    await openWorkspaceFileReference(
+      { projectId: 'project-2', relativePath: 'a.ts' },
+      'scope-1',
+      vi.fn().mockResolvedValue(undefined),
+      { projectId: 'project-1', workspacePath: 'D:/workspace/.wt/a' },
+    );
+
+    expect(resolveWorkspaceFileLink).toHaveBeenCalledWith({ projectId: 'project-2', workspacePath: null }, 'a.ts');
+  });
+
+  it('opens the files tab without reading the project root while the worktree is unavailable', async () => {
+    const openResource = vi.fn().mockResolvedValue(undefined);
+
+    await openWorkspaceFileReference({ projectId: 'project-1', relativePath: 'src/a.ts' }, 'scope-1', openResource, null);
+
+    expect(resolveWorkspaceFileLink).not.toHaveBeenCalled();
+    expect(openResource).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'file-browser',
+      key: 'file-browser:project-1',
+      selectedFile: null,
     }));
   });
 
@@ -52,7 +86,7 @@ describe('workspace file reference opening', () => {
     await expect(openWorkspaceFileReference({
       projectId: 'project-1',
       relativePath: 'src/a.ts',
-    }, 'scope-1', openResource)).rejects.toMatchObject({
+    }, 'scope-1', openResource, { projectId: 'project-1', workspacePath: null })).rejects.toMatchObject({
       code: 'workspace-file.not-found',
     });
 

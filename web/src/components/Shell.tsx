@@ -1,6 +1,6 @@
 import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppConfigVm, BrowserPreferences, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
+import type { AppConfigVm, BrowserPreferences, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule, SessionWorkLocationVm } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -8,14 +8,16 @@ import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import type { ConversationSidebarWorkspaceRevealRequest } from '@/components/conversation/ConversationSidebar';
 import type { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
 import { AppTitleBar } from './AppTitleBar';
+import { DesktopWindowFrame } from './DesktopWindowFrame';
 import { cn } from '@/lib/utils';
 import { ThemeIcon, useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 
-interface ShellProps {
+export interface ShellProps {
   uiMode: DesktopUiMode;
   active: PrimaryModule;
   conversationPage: ConversationPage;
   conversationSidebar: ConversationSidebarVm;
+  showMulticaTaskManagement: boolean;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -30,12 +32,15 @@ interface ShellProps {
   onSelectConversation: (page: ConversationPage) => void;
   onToggleSidebar: () => void;
   onOpenPersonalAnalytics: () => void;
+  onOpenReleaseNotes?: () => void;
+  titleBarUpdateAction?: React.ReactNode;
   onChooseWorkspace: () => void;
   onConversationNew: () => void;
   onConversationSearch: () => void;
   onConversationPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
   onConversationDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onConversationSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onConversationPinTask: (projectId: string, taskId: string) => void;
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
   onConversationNewInWorkspace: (projectId: string) => void;
@@ -49,12 +54,12 @@ interface ShellProps {
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
-  sourceControlWorkspacePath?: string | null;
+  workLocation?: SessionWorkLocationVm | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, sourceControlWorkspacePath, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, showMulticaTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationSetResident, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -67,13 +72,17 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         browserPreferences={browserPreferences}
         vm={conversationSidebar}
         active={conversationPage}
+        showMulticaTaskManagement={showMulticaTaskManagement}
         sidebarCollapsed={sidebarCollapsed}
         onSelect={onSelectConversation}
         onToggleSidebar={onToggleSidebar}
         onOpenPersonalAnalytics={onOpenPersonalAnalytics}
+        onOpenReleaseNotes={onOpenReleaseNotes}
+        titleBarUpdateAction={titleBarUpdateAction}
         onNewConversation={onConversationNew}
         onSearch={onConversationSearch}
         onPauseRun={onConversationPauseRun}
+        onSetResident={onConversationSetResident}
         onPinTask={onConversationPinTask}
         onUnpinTask={onConversationUnpinTask}
         onRenameTask={onConversationRenameTask}
@@ -89,7 +98,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
         workspaceRevealRequest={workspaceRevealRequest}
         conversationTaskUuid={conversationTaskUuid}
-        sourceControlWorkspacePath={sourceControlWorkspacePath}
+        workLocation={workLocation}
         conversationWorkspaceStore={conversationWorkspaceStore}
       >
         {children}
@@ -110,6 +119,8 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
       onSelect={onSelect}
       onToggleSidebar={onToggleSidebar}
       onOpenPersonalAnalytics={onOpenPersonalAnalytics}
+      onOpenReleaseNotes={onOpenReleaseNotes}
+      titleBarUpdateAction={titleBarUpdateAction}
       onChooseWorkspace={onChooseWorkspace}
     >
       {children}
@@ -132,19 +143,21 @@ interface WorkbenchShellProps {
   onSelect: (module: PrimaryModule) => void;
   onToggleSidebar: () => void;
   onOpenPersonalAnalytics: () => void;
+  onOpenReleaseNotes?: () => void;
+  titleBarUpdateAction?: React.ReactNode;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar, onOpenPersonalAnalytics }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
+      <DesktopWindowFrame frameStyle={windowFrameStyle}>
       <div
-        className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+        className="app-window-shell flex min-h-0 min-w-0 flex-1 flex-col bg-gold-workspace text-foreground"
         data-theme-role="shell"
         data-theme-wallpaper-slot="app"
-        data-window-frame-style={windowFrameStyle}
         onContextMenu={(event) => event.preventDefault()}
       >
         <AppTitleBar
@@ -154,6 +167,8 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
           onOpenPersonalAnalytics={onOpenPersonalAnalytics}
+          onOpenReleaseNotes={onOpenReleaseNotes}
+          updateAction={titleBarUpdateAction}
         />
         <div className="flex min-h-0 flex-1 bg-sidebar">
           <div
@@ -196,6 +211,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
           <main className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-2xl border-l border-t border-workspace-divider bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]">{children}</main>
         </div>
       </div>
+      </DesktopWindowFrame>
     </TooltipProvider>
   );
 }

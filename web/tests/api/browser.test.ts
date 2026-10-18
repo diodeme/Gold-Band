@@ -1,7 +1,121 @@
-import { describe, expect, it } from 'vitest';
+/** @vitest-environment jsdom */
+
+import { describe, expect, it, vi } from 'vitest';
+import type { AcpSessionUpdatedEventVm } from '../../src/api/client';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('keeps paused Workflow errors independent from manual ACP follow-up lifecycle', async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const api = await import('../../src/api');
+    const { subscribeConversationAttemptEvents, readConversationBranchLiveSnapshot } = await import('../../src/lib/conversation-event-router');
+    const { applyConversationSelectedSessionSnapshot } = await import('../../src/lib/conversation-run-snapshot');
+    const locator = ['default', 'mock-task', 'run-054', 'round-001', 'dev', 'attempt-001'] as const;
+    const initial = await api.getConversationRun('default', 'mock-task', 'run-054');
+    const eventLocator = {
+      projectId: initial.projectId, taskId: initial.taskId, taskUuid: initial.taskUuid,
+      runId: initial.runId, roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-001',
+    };
+    const updates: AcpSessionUpdatedEventVm[] = [];
+    const unsubscribe = subscribeConversationAttemptEvents(eventLocator, (event) => updates.push(event));
+    try {
+      expect(initial).toMatchObject({ runMode: 'workflow', runStatus: 'paused', pauseReason: 'runtime-abnormal' });
+      expect(initial.runtimeError?.diagnostic).toBeTruthy();
+      const initialLifecycle = initial.sessionTree.rounds[0].nodes[0].attempts[0].lifecycle!;
+      expect(initialLifecycle).toMatchObject({
+        runtime: { status: 'paused', active: false, revision: 1 },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { latestTurnStatus: 'failed', liveTurnActivity: 'idle' },
+        composer: { submitTarget: 'acp-prompt', lockInput: false },
+      });
+      const session = await api.getAcpSession(...locator);
+      expect(session?.events.length).toBeGreaterThan(0);
+      expect(session?.turnError).toEqual(initialLifecycle.acp.turnError);
+      expect(session?.status).toBe('failed');
+      await expect(api.getAcpSession('other-project', 'mock-task', 'run-054', 'round-001', 'dev', 'attempt-001')).resolves.toBeNull();
+      await expect(api.getAcpSession(...locator, { branchId: 'other-branch' })).resolves.toBeNull();
+      await api.submitConversationPrompt('other-project', 'mock-task', 'run-054', 'round-001', 'dev', 'attempt-001', { displayText: 'Other project', quotes: [] });
+      expect(updates).toHaveLength(0);
+
+      const admitted = await api.submitConversationPrompt(...locator, { displayText: '继续分析这个问题', quotes: [] }, 'follow-up-1', session);
+      expect(admitted).toMatchObject({ kind: 'acp-session-started', lifecycle: {
+        runtime: initialLifecycle.runtime,
+        acp: { liveTurnActivity: 'accepted', latestTurnStatus: 'none', turnError: null, promptEventId: 'follow-up-1' },
+      } });
+      expect.soft(admitted.session?.events.find((event) => event.id === 'follow-up-1')).toMatchObject({
+        kind: 'userTextDelta', raw: { source: 'goldBandPrompt', promptId: 'follow-up-1' },
+      });
+      expect(admitted.turnId).not.toBe(initialLifecycle.acp.turnId);
+      expect(admitted.operationId).not.toBe(initialLifecycle.acp.operationId);
+      expect(admitted.revision).toBeGreaterThan(initialLifecycle.acp.revision!);
+      await expect(api.submitConversationPrompt(...locator, { displayText: 'Concurrent submission', quotes: [] }, 'concurrent-prompt'))
+        .resolves.toMatchObject({ kind: 'rejected' });
+      await vi.advanceTimersToNextTimerAsync();
+      expect(updates.at(-1)).toMatchObject({
+        projectId: 'default', taskId: 'mock-task', runId: 'run-054',
+        roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-001',
+        session: { status: 'running', turnError: null },
+        lifecycle: { runtime: initialLifecycle.runtime, acp: { liveTurnActivity: 'running', turnId: admitted.turnId } },
+      });
+      expect.soft(updates.at(-1)?.lifecycle).toMatchObject({
+        displayStatus: 'running', runtimeDisplay: { code: 'running', tone: 'running', blockingError: false },
+      });
+      const projected = applyConversationSelectedSessionSnapshot(initial, {
+        ...eventLocator, taskUuid: initial.taskUuid!, lifecycle: updates.at(-1)!.lifecycle,
+      });
+      expect.soft(projected?.sessionTree.rounds[0].nodes[0].attempts[0].runtimeDisplay.tone).toBe('running');
+      const runningRun = await api.getConversationRun('default', 'mock-task', 'run-054');
+      expect.soft(runningRun.activeSessions).toHaveLength(1);
+      expect.soft(runningRun.sessionTree.rounds[0].nodes[0].attempts[0].runtimeDisplay.tone).toBe('running');
+      expect(readConversationBranchLiveSnapshot(eventLocator, 'root')).toMatchObject({
+        status: 'running', acp: { liveTurnActivity: 'running', turnError: null, turnId: admitted.turnId },
+      });
+      await vi.runAllTimersAsync();
+      expect(updates.map((event) => event.lifecycle?.acp.liveTurnActivity)).toEqual(['accepted', 'running', 'idle']);
+      expect(updates.at(-1)).toMatchObject({
+        session: { status: 'completed', turnError: null },
+        lifecycle: { runtime: initialLifecycle.runtime, acp: { latestTurnStatus: 'completed', turnError: null } },
+      });
+      const completed = await api.getAcpSession(...locator);
+      expect(completed?.events.some((event) => event.content === '继续分析这个问题')).toBe(true);
+      const run = await api.getConversationRun('default', 'mock-task', 'run-054');
+      expect(run).toMatchObject({ runStatus: 'paused', pauseReason: 'runtime-abnormal', runtimeError: initial.runtimeError, activeSessions: [] });
+      expect(run.sessionTree.rounds[0].nodes[0].attempts[0].lifecycle?.acp.latestTurnStatus).toBe('completed');
+      const second = await api.submitConversationPrompt(...locator, { displayText: '补充说明', quotes: [] }, 'follow-up-2', completed);
+      expect(second.turnId).not.toBe(admitted.turnId);
+      expect(second.operationId).not.toBe(admitted.operationId);
+      expect(second.revision).toBeGreaterThan(updates.at(-2)!.lifecycle!.acp.revision!);
+      await vi.runAllTimersAsync();
+      expect((await api.getConversationRun('default', 'mock-task', 'run-051')).pauseReason).toBe('error-blocked');
+      expect((await api.getAcpSession('default', 'mock-task', 'run-052', 'round-001', 'dev', 'attempt-001'))?.sessionId).toBe('browser-session-052');
+      const count = updates.length;
+      unsubscribe();
+      await api.submitConversationPrompt(...locator, { displayText: '确认', quotes: [] }, 'follow-up-3');
+      await vi.runAllTimersAsync();
+      expect(updates).toHaveLength(count);
+    } finally {
+      unsubscribe();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['run-051', 'run-052', 'run-053', 'run-054'])('keeps %s session content out of run summaries', async (runId) => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', runId);
+    expect(run).not.toHaveProperty('selectedSession');
+
+    const session = await browserApi.getAcpSession(
+      'default', 'mock-task', runId, 'round-001', 'dev', 'attempt-001',
+    );
+    expect(session).not.toBeNull();
+    expect(session).toHaveProperty('pendingInteractions');
+    if (runId !== 'run-051') {
+      expect(session?.events.length).toBeGreaterThan(0);
+      expect(session?.sessionId).toBe(`browser-session-${runId.slice(-3)}`);
+    }
+  });
+
   it('keeps queued authoring payload out of lifecycle summaries and restores one item on demand', async () => {
     const run = await browserApi.getConversationRun('default', 'mock-task', 'run-053');
     const item = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle?.promptQueue?.items[0];

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -55,6 +56,9 @@ type Props = {
   autoAcceptLabel?: string;
   autoAcceptGroupLabel?: string;
   appName?: string;
+  footer?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 export function resolveAcpSingleConfigMenuValue(value: string) {
@@ -79,6 +83,9 @@ export function AcpSingleConfigMenu({
   autoAcceptLabel,
   autoAcceptGroupLabel,
   appName,
+  footer,
+  open,
+  onOpenChange,
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = formatAcpCompositeSelection(
@@ -89,23 +96,22 @@ export function AcpSingleConfigMenu({
   const {
     valueRef,
     tooltipOpen,
-    showTooltipIfOverflowing,
+    handleTooltipFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useAcpComposerConfigOverflowTooltip();
 
   return (
-    <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
+    <DropdownMenu open={open} onOpenChange={onOpenChange} modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger
             disabled={disabled}
             className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
             data-acp-auto-accept-overlay={onAutoAcceptChange ? 'true' : undefined}
-            onPointerEnter={showTooltipIfOverflowing}
             onPointerLeave={hideTooltip}
             onPointerDown={hideTooltip}
-            onFocus={showTooltipIfOverflowing}
+            onFocus={handleTooltipFocus}
             onBlur={hideTooltip}
           >
             <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
@@ -175,6 +181,7 @@ export function AcpSingleConfigMenu({
             </DropdownMenuCheckboxItem>
           </>
         ) : null}
+        {footer}
       </DropdownMenuContent>
     </DropdownMenu>
   );

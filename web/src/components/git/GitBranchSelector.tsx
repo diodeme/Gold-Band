@@ -91,7 +91,7 @@ export function GitBranchSelector({
   const {
     valueRef: branchValueRef,
     tooltipOpen: branchTooltipOpen,
-    showTooltipIfOverflowing: showBranchTooltipIfOverflowing,
+    handleTooltipFocus: handleBranchTooltipFocus,
     hideTooltip: hideBranchTooltip,
     handleTooltipOpenChange: handleBranchTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>({ always: responsiveContext });
@@ -245,7 +245,6 @@ export function GitBranchSelector({
                 data-git-branch-selector="editable"
                 data-git-branch-workspace-name={workspaceDisplayName || undefined}
                 data-git-branch-popover-open={open ? 'true' : 'false'}
-                onPointerEnter={showBranchTooltipIfOverflowing}
                 onPointerLeave={() => {
                   compactPointerClickPendingRef.current = false;
                   hideBranchTooltip();
@@ -265,7 +264,7 @@ export function GitBranchSelector({
                 onClickCapture={() => {
                   compactPointerClickPendingRef.current = false;
                 }}
-                onFocus={showBranchTooltipIfOverflowing}
+                onFocus={handleBranchTooltipFocus}
                 onBlur={() => {
                   compactPointerClickPendingRef.current = false;
                   hideBranchTooltip();

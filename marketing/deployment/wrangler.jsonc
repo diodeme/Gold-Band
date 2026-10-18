@@ -1,0 +1,14 @@
+{
+  "name": "gold-band",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-23",
+  "workers_dev": true,
+  "assets": {
+    "directory": "../../release/website",
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS"
+  },
+  "routes": [
+    { "pattern": "gold-band.dion.blue", "custom_domain": true }
+  ]
+}

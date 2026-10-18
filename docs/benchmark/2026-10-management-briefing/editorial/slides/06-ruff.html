@@ -1,0 +1,79 @@
+<!doctype html>
+<!--
+Approved B editorial extension. Source: ../../README.md, MirrorCode / Ruff.
+Snapshot cutoff: 2026-10-13, Asia/Taipei. No live benchmark data is read.
+Form: Claude Code's voluntary early exit versus AUTO's program-driven continuation.
+No extra submission gate does not mean no infrastructure recovery or final success.
+The native details panel overlays the evidence column without changing slide height.
+Shared local CSS/assets and the host's slide bridge only; no new runtime/dependency.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>Ruff：提前退出与持续编排 · Gold Band</title>
+  <link rel="stylesheet" href="../assets/editorial.css">
+  <style>
+    body{overflow:visible}
+    .evidence{display:grid;grid-template-columns:680px 1fr;gap:80px;margin-top:40px}
+    .sealed{border-top:2px solid var(--blue);padding-top:24px}
+    .sealed-label{font-size:28px;line-height:1.4}
+    .hero-value{font-size:110px;line-height:1.3;letter-spacing:-.035em;font-weight:520;margin-top:22px;margin-bottom:18px}
+    .hero-caption{font-size:30px;line-height:1.5;margin-top:2px}
+    .cost{display:flex;gap:40px;margin-top:20px;padding-top:14px;border-top:1px solid var(--rule);font-size:30px;line-height:1.55;font-variant-numeric:tabular-nums}
+    .cost span{font-size:22px;color:var(--muted);margin-left:10px}
+    .continuation{padding-top:18px}
+    .running{font-size:28px;line-height:1.4;color:var(--blue);font-weight:500}
+    .continuation h2{font-size:44px;font-weight:520;line-height:1.4;letter-spacing:-.02em;margin-top:21px}
+    .continuation .explanation{font-size:32px;line-height:1.65;margin-top:22px}
+    .fault-details{position:absolute;left:856px;right:96px;top:811px;z-index:2}
+    .fault-details summary{font-size:28px;line-height:1.5;cursor:pointer;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:8px;width:max-content;max-width:100%}
+    .fault-panel{position:absolute;bottom:66px;left:0;right:0;background:var(--paper);border:1px solid var(--rule);border-top:3px solid var(--blue);padding:28px 32px 30px;box-shadow:0 12px 30px #10111214}
+    .fault-panel h3{font-size:32px;line-height:1.4;font-weight:520;margin-bottom:15px}
+    .fault-panel p{font-size:28px;line-height:1.55;margin-top:14px}
+    .fault-panel .note{font-size:22px;line-height:1.5}
+    .cause-note{position:absolute;left:96px;top:862px;max-width:1620px}
+    @media print{.fault-panel{display:none!important}}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <p class="publication"><img src="../assets/gold-band.svg" alt="Gold Band">Gold Band / Benchmark</p>
+    <p class="stage">Ruff · 阶段观察 · 2026.10.13</p>
+  </header>
+  <main>
+    <h1 class="headline">Claude Code 未完成就主动退出；<br>AUTO 无需额外闸门，持续推进</h1>
+    <section class="evidence" aria-label="Claude Code 提前退出与 AUTO 持续编排对照">
+      <figure class="sealed">
+        <p class="sealed-label identity"><img src="../assets/claude-code.svg" alt="">Claude Code · 无闸门首段</p>
+        <p class="hero-value">主动退出</p>
+        <figcaption class="hero-caption">hidden 通过率仅 8.2%（5 / 61）<br>仍能继续提升，却结束了任务。</figcaption>
+        <div class="cost">
+          <p>约 309M<span>总 token</span></p>
+          <p>8h 02m<span>Eval 耗时</span></p>
+        </div>
+      </figure>
+      <section class="continuation" aria-labelledby="continuation-title">
+        <p class="running identity"><img src="../assets/gold-band.svg" alt="Gold Band">AUTO · 编排持续运行</p>
+        <h2 id="continuation-title">无需额外添加<br>防止提前退出的提交闸门。</h2>
+        <p class="explanation">程序接续任务、分工与验收，<br>不依赖主会话持续自我催促。</p>
+      </section>
+    </section>
+    <details class="fault-details">
+      <summary>查看首段记录与测试口径</summary>
+      <section class="fault-panel" aria-label="首段异常与续跑依据">
+        <h3>未加提交闸门，不等于从未发生中断</h3>
+        <p>约 920K 上下文时，声明窗口与上游实际窗口不一致，加上错误转译，导致暂停；规则族 fanout 尚未执行。</p>
+        <p>hidden：1 / 61（1.64%）<br>约 637.6M 总 token · 13h 56m Eval 耗时</p>
+        <p class="note">可见测试 123 / 761。AUTO 首段异常暂停后修复并续跑；基础节点交付后，Runtime 已接续后继节点与 fanout。最终验收尚未完成。</p>
+        <p class="note">CC 提前退出时约 507K / 1M 上下文、0 次压缩，并未触顶。后续 CC 增加了提交闸门与官方评测工具，AUTO 没有相同设置。</p>
+        <p class="note">运行中还有恢复、配置调整与分段迁移；两臂不是严格单变量对照，不据首段判断最终质量与成本。</p>
+      </section>
+    </details>
+    <p class="note cause-note">AUTO 经故障恢复后持续推进；这里比较执行方式，最终验收尚未完成。</p>
+    <p class="conclusion"><span>长程执行由编排持续接力，不靠额外闸门阻止提前退出。</span></p>
+  </main>
+  <footer>来源：汇报 README · Ruff；首段已封存，后续 running 为 2026.10.13 快照，非实时结果。</footer>
+  <script src="../assets/slide.js"></script>
+</body>
+</html>

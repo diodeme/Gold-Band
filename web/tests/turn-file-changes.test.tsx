@@ -185,6 +185,98 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('keeps the recorded-change explanation in a focusable header tooltip', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-slot="card-title"] button[data-slot="tooltip-trigger"]');
+      expect(trigger).not.toBeNull();
+      const explanation = trigger!.getAttribute('aria-label');
+      expect(explanation).toBeTruthy();
+      expect(container.textContent).not.toContain(explanation);
+      expect(trigger!.hasAttribute('title')).toBe(false);
+      await act(async () => trigger!.focus());
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(explanation);
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+      await act(async () => trigger!.blur());
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('groups disconnected edits by file with recorded totals and loads only the selected edit', async () => {
+    const set = changeSet();
+    set.summary = { ...set.summary, fileCount: 2, addedLines: 7, deletedLines: 2 };
+    set.changes = [set.changes[0]!, set.changes[1]!, { ...set.changes[1]!, id: 'modified-2' }];
+    getTurnFileChangeSetMock.mockResolvedValue(set);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const rows = [...container.querySelectorAll<HTMLElement>('[role="listitem"]')];
+      expect(rows).toHaveLength(2);
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+      const group = container.querySelector<HTMLButtonElement>('[data-recorded-file-group]');
+      expect(group).not.toBeNull();
+      expect(group!.textContent).toContain('+4');
+      expect(group!.textContent).toContain('-2');
+      expect(group!.textContent).toContain('×2');
+      // One row shape: single and grouped files share height and stat slots.
+      expect(group).toBe(rows[1]);
+      expect(group!.className).toBe(rows[0]!.className);
+      // Stats stay the last column on every row, aligned with the header total;
+      // the edit count is not reserved on rows that do not have one.
+      for (const row of rows) expect(row.lastElementChild?.hasAttribute('data-file-stats')).toBe(true);
+      expect(rows[0]!.querySelector('[data-file-edit-count]')).toBeNull();
+      expect(group!.querySelector('[data-file-edit-count]')?.textContent).toBe('×2');
+      expect(container.querySelector('[data-slot="card-header"]')?.textContent).toContain('+7');
+      await act(async () => group!.click());
+      expect(container.querySelectorAll('[data-recorded-edit]')).toHaveLength(2);
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('shows workspace files relative to the recorded root and keeps outside paths absolute', async () => {
+    const set = changeSet();
+    set.workspaceRoot = 'E:/Repo';
+    set.summary.fileCount = 2;
+    set.changes = [
+      { ...set.changes[0]!, logicalPath: 'e:/repo/src/deep/new.ts' },
+      { ...set.changes[1]!, logicalPath: 'C:/Temp/outside.rs' },
+    ];
+    getTurnFileChangeSetMock.mockResolvedValue(set);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const rows = [...container.querySelectorAll<HTMLElement>('[role="listitem"]')];
+      expect(rows[0]!.querySelector('[data-file-name]')?.textContent).toBe('new.ts');
+      expect(rows[0]!.querySelector('[data-file-directory]')?.textContent).toBe('src/deep');
+      expect(rows[1]!.querySelector('[data-file-name]')?.textContent).toBe('outside.rs');
+      expect(rows[1]!.querySelector('[data-file-directory]')?.textContent).toBe('C:/Temp');
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('does not present incomplete net statistics as a complete total', async () => {
+    const partial = changeSet();
+    partial.status = 'partial';
+    partial.limitationCodes = ['turn-files.capture-limit-exceeded'];
+    partial.changes[1]!.addedLines = null;
+    partial.changes[1]!.deletedLines = null;
+    partial.changes[1]!.limitationCode = 'turn-files.capture-limit-exceeded';
+    getTurnFileChangeSetMock.mockResolvedValue(partial);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const header = container.querySelector('[data-slot="card-header"]');
+      expect(header?.textContent).not.toContain('+5');
+      expect(header?.textContent).not.toContain('-2');
+      expect(container.querySelectorAll('[role="listitem"]')[1]?.textContent).not.toContain('+0');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not render a nested-agent change set on the parent conversation', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -315,6 +407,27 @@ describe('turn file changes card', () => {
     }
   });
 
+  it('keeps future ACP compaction statuses opaque instead of showing success', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <TooltipProvider><ACPMessageList timeline={[{
+          id: 'context-compaction-id-future', seq: 1, kind: 'contextCompaction',
+          timestamp: '2026-10-08T00:00:00Z', status: '_provider_waiting',
+        }]} sessionStatus="running" sending={false} /></TooltipProvider>,
+      ));
+      const row = container.querySelector('[role="status"]');
+      expect(row?.textContent).not.toContain('✓');
+      expect(row?.textContent).not.toContain('上下文压缩完成');
+      expect(row?.querySelector('.animate-spin')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
   it('uses the shared assistant content rail for compaction and file-change timeline items', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -371,7 +484,7 @@ describe('turn file changes card', () => {
       expect(container.textContent).not.toContain('正在加载文件变化');
       expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
       expect(container.querySelectorAll('[data-slot="hover-card-trigger"]')).toHaveLength(3);
-      expect(container.querySelector('[data-slot="tooltip-trigger"]')).toBeNull();
+      expect(container.querySelector('[role="list"] [data-slot="tooltip-trigger"]')).toBeNull();
       expect(container.querySelector('[title]')).toBeNull();
       expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
     } finally {
@@ -383,7 +496,7 @@ describe('turn file changes card', () => {
     const container = document.createElement('div');
     document.body.append(container);
     const limitedChangeSet = changeSet();
-    limitedChangeSet.changes[1]!.limitationCode = 'turn-files.non-linear-mutation';
+    limitedChangeSet.changes[1]!.limitationCode = 'turn-files.capture-limit-exceeded';
     getTurnFileChangeSetMock.mockResolvedValue(limitedChangeSet);
     const root = await renderCard(container);
     try {

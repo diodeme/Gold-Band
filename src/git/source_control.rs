@@ -19,6 +19,8 @@ use super::{git_background_command, git_filesystem_path_identity};
 const HISTORY_PAGE_DEFAULT: usize = 300;
 const HISTORY_PAGE_MAX: usize = 1_000;
 const COMMIT_REVIEW_SELECTION_MAX: usize = 32;
+const COMMIT_REVIEW_FILES_MAX: usize = 10_000;
+const COMMIT_REVIEW_PATH_BYTES_MAX: usize = 1024 * 1024;
 const MACHINE_COMMAND_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
 const OPERATION_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const OPERATION_POLL_INTERVAL: Duration = Duration::from_millis(40);
@@ -415,17 +417,19 @@ struct GitMachineRunner;
 
 impl GitMachineRunner {
     fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<MachineCommandOutput> {
-        let mut command = git_background_command()
-            .ok_or_else(|| GitServiceError::new("git.not-installed", serde_json::json!({})))?;
-        command
-            .arg("-C")
-            .arg(cwd.as_str())
-            .args(args)
-            .env("LC_ALL", "C")
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .output()
-            .map(MachineCommandOutput::from)
-            .with_context(|| format!("failed to execute Git in `{cwd}`"))
+        super::diagnostics::command_output(args, || {
+            let mut command = git_background_command()
+                .ok_or_else(|| GitServiceError::new("git.not-installed", serde_json::json!({})))?;
+            command
+                .arg("-C")
+                .arg(cwd.as_str())
+                .args(args)
+                .env("LC_ALL", "C")
+                .env("GIT_OPTIONAL_LOCKS", "0");
+            Ok(command)
+        })
+        .map(MachineCommandOutput::from)
+        .with_context(|| format!("failed to execute Git in `{cwd}`"))
     }
 
     fn require(
@@ -448,44 +452,53 @@ impl GitMachineRunner {
         args: &[&str],
         input: &[u8],
     ) -> Result<MachineCommandOutput> {
-        let mut command = git_background_command()
-            .ok_or_else(|| GitServiceError::new("git.not-installed", serde_json::json!({})))?;
-        command
-            .arg("-C")
-            .arg(cwd.as_str())
-            .args(args)
-            .env("LC_ALL", "C")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut process = ManagedProcessGroup::spawn(&mut command)
-            .with_context(|| format!("failed to execute Git in `{cwd}`"))?;
-        let mut stdin = process
-            .take_stdin()
-            .ok_or_else(|| GitServiceError::new("git.stdin-unavailable", serde_json::json!({})))?;
-        stdin.write_all(input)?;
-        drop(stdin);
-        let stdout = process
-            .take_stdout()
-            .ok_or_else(|| GitServiceError::new("git.stdout-unavailable", serde_json::json!({})))?;
-        let stderr = process
-            .take_stderr()
-            .ok_or_else(|| GitServiceError::new("git.stderr-unavailable", serde_json::json!({})))?;
-        let stdout_reader = std::thread::spawn(move || read_command_stream(stdout));
-        let stderr_reader = std::thread::spawn(move || read_command_stream(stderr));
-        let status = process.wait()?;
-        let stdout = stdout_reader.join().map_err(|_| {
-            GitServiceError::new("git.output-reader-failed", serde_json::json!({}))
-        })??;
-        let stderr = stderr_reader.join().map_err(|_| {
-            GitServiceError::new("git.output-reader-failed", serde_json::json!({}))
-        })??;
-        Ok(MachineCommandOutput {
-            success: status.success(),
-            exit_code: status.code(),
-            stdout,
-            stderr,
-        })
+        super::diagnostics::command_output_with(
+            args,
+            || {
+                let mut command = git_background_command().ok_or_else(|| {
+                    GitServiceError::new("git.not-installed", serde_json::json!({}))
+                })?;
+                command
+                    .arg("-C")
+                    .arg(cwd.as_str())
+                    .args(args)
+                    .env("LC_ALL", "C")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                Ok(command)
+            },
+            |mut command| {
+                let mut process = ManagedProcessGroup::spawn(&mut command)
+                    .with_context(|| format!("failed to execute Git in `{cwd}`"))?;
+                let mut stdin = process.take_stdin().ok_or_else(|| {
+                    GitServiceError::new("git.stdin-unavailable", serde_json::json!({}))
+                })?;
+                stdin.write_all(input)?;
+                drop(stdin);
+                let stdout = process.take_stdout().ok_or_else(|| {
+                    GitServiceError::new("git.stdout-unavailable", serde_json::json!({}))
+                })?;
+                let stderr = process.take_stderr().ok_or_else(|| {
+                    GitServiceError::new("git.stderr-unavailable", serde_json::json!({}))
+                })?;
+                let stdout_reader = std::thread::spawn(move || read_command_stream(stdout));
+                let stderr_reader = std::thread::spawn(move || read_command_stream(stderr));
+                let status = process.wait()?;
+                let stdout = stdout_reader.join().map_err(|_| {
+                    GitServiceError::new("git.output-reader-failed", serde_json::json!({}))
+                })??;
+                let stderr = stderr_reader.join().map_err(|_| {
+                    GitServiceError::new("git.output-reader-failed", serde_json::json!({}))
+                })??;
+                Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                })
+            },
+        )
+        .map(MachineCommandOutput::from)
     }
 
     fn require_with_input(
@@ -593,6 +606,9 @@ pub struct GitRepositorySnapshot {
     pub unborn: bool,
     pub upstream: Option<GitUpstream>,
     pub remotes: Vec<GitRemote>,
+    /// Content identity of the repository config that defines `remotes`.
+    /// Remotes are read separately; readers refetch only when this changes.
+    pub remotes_revision: String,
     pub lock: GitLockSnapshot,
     pub revision: String,
     /// Branch, HEAD, upstream, and ahead/behind. Sync operations compare this
@@ -815,7 +831,7 @@ pub struct GitCommitReviewFile {
     pub path: String,
     pub old_path: Option<String>,
     pub kind: GitFileChangeKind,
-    pub binary: bool,
+    pub binary: Option<bool>,
     pub before_oid: Option<String>,
     pub before_path: Option<String>,
     pub after_oid: String,
@@ -869,7 +885,39 @@ pub struct GitCommitReachability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitSourceControlOverview {
+    pub repository: GitRepositorySnapshot,
+    pub status: GitWorkspaceStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSourceControlBootstrap {
+    pub capability: super::GitCapability,
+    pub overview: Option<GitSourceControlOverview>,
+    pub workspace_scope_path: Option<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GitSourceControlBootstrapPreparation {
+    pub capability: super::GitCapability,
+    pub identity: Option<GitRepositoryIdentity>,
+    pub workspace_scope_path: Option<Utf8PathBuf>,
+    pub watch_targets: Vec<GitMetadataWatchTarget>,
+    operation_paths: Vec<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitScopedWorkspaceIdentity {
+    pub repository: GitRepositoryIdentity,
+    /// `None` is the registered project root; only linked worktrees carry a path.
+    pub scope_path: Option<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitSourceControlSnapshot {
+    pub catalog_revision: String,
     pub repository: GitRepositorySnapshot,
     pub status: GitWorkspaceStatus,
     pub refs: Vec<GitRef>,
@@ -938,6 +986,9 @@ pub enum GitTagStyle {
     rename_all_fields = "camelCase"
 )]
 pub enum GitMutation {
+    DiscardPath {
+        path: String,
+    },
     StagePaths {
         paths: Vec<String>,
     },
@@ -1033,6 +1084,41 @@ pub enum GitOperationKind {
     rename_all = "kebab-case",
     rename_all_fields = "camelCase"
 )]
+pub enum GitPushIntent {
+    UpstreamSync {
+        branch: String,
+        remote: Option<String>,
+    },
+    PublishHead {
+        branch: String,
+        remote: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushTarget {
+    pub branch: String,
+    pub source_oid: String,
+    pub remote: String,
+    pub remote_branch: String,
+    pub set_upstream: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPreparedPush {
+    pub intent: GitPushIntent,
+    pub target: GitPushTarget,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum GitOperationInput {
     Fetch {
         remote: Option<String>,
@@ -1044,9 +1130,8 @@ pub enum GitOperationInput {
         strategy: GitPullStrategy,
     },
     Push {
-        remote: String,
-        branch: String,
-        set_upstream: bool,
+        intent: GitPushIntent,
+        target: GitPushTarget,
     },
     PushTag {
         remote: String,
@@ -1220,20 +1305,199 @@ pub struct GitSourceControlService {
     runner: GitMachineRunner,
 }
 
+const METADATA_WATCH_MARKERS: [(&str, bool); 8] = [
+    ("HEAD", false),
+    ("index", false),
+    ("packed-refs", false),
+    ("refs", true),
+    ("MERGE_HEAD", false),
+    ("REBASE_HEAD", false),
+    ("rebase-merge", true),
+    ("rebase-apply", true),
+];
+const OPERATION_MARKERS: [&str; 5] = [
+    "MERGE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+];
+
 impl GitSourceControlService {
+    pub fn prepare_bootstrap(
+        &self,
+        project_root: &Utf8Path,
+        requested_workspace: Option<&Utf8Path>,
+    ) -> Result<GitSourceControlBootstrapPreparation> {
+        let version = match super::supported_git_version() {
+            Ok(version) => version,
+            Err(capability) => {
+                return Ok(GitSourceControlBootstrapPreparation {
+                    capability,
+                    identity: None,
+                    workspace_scope_path: None,
+                    watch_targets: Vec::new(),
+                    operation_paths: Vec::new(),
+                });
+            }
+        };
+        let installed_version = Some(version.display);
+        let Some(project) = self.probe_repository_identity(project_root)? else {
+            return Ok(GitSourceControlBootstrapPreparation {
+                capability: super::GitCapability::new(
+                    super::GitCapabilityStatus::RepositoryRequired,
+                    installed_version,
+                ),
+                identity: None,
+                workspace_scope_path: None,
+                watch_targets: Vec::new(),
+                operation_paths: Vec::new(),
+            });
+        };
+        let requested = requested_workspace.unwrap_or(project_root);
+        let (identity, workspace_scope_path) = if same_workspace_argument(requested, project_root)?
+            || same_workspace_argument(requested, &project.repo_root)?
+            || same_workspace_argument(requested, &project.workspace_path)?
+        {
+            (project, None)
+        } else {
+            let workspace = self.probe_repository_identity(requested)?.ok_or_else(|| {
+                GitServiceError::new(
+                    "git.workspace-outside-project",
+                    serde_json::json!({ "workspacePath": requested }),
+                )
+            })?;
+            if normalized_lock_path(&canonical_utf8_path(&project.common_dir)?)?
+                != normalized_lock_path(&canonical_utf8_path(&workspace.common_dir)?)?
+            {
+                return Err(GitServiceError::new(
+                    "git.workspace-outside-project",
+                    serde_json::json!({ "workspacePath": workspace.workspace_path }),
+                )
+                .into());
+            }
+            let scope_path = workspace.workspace_path.clone();
+            (workspace, Some(scope_path))
+        };
+        let marker_names = METADATA_WATCH_MARKERS
+            .iter()
+            .map(|(name, _)| *name)
+            .chain(OPERATION_MARKERS)
+            .collect::<Vec<_>>();
+        let mut marker_paths = self
+            .metadata_paths(&identity.workspace_path, &marker_names)?
+            .into_iter()
+            .map(Utf8PathBuf::from);
+        let watch_paths = marker_paths
+            .by_ref()
+            .take(METADATA_WATCH_MARKERS.len())
+            .collect::<Vec<_>>();
+        let operation_paths = marker_paths.collect::<Vec<_>>();
+        let watch_targets =
+            self.metadata_watch_targets_from_paths(&identity.workspace_path, watch_paths)?;
+        let mut capability =
+            super::GitCapability::new(super::GitCapabilityStatus::Ready, installed_version);
+        capability.repo_root = Some(identity.repo_root.clone());
+        capability.common_dir = Some(identity.common_dir.clone());
+        Ok(GitSourceControlBootstrapPreparation {
+            capability,
+            identity: Some(identity),
+            workspace_scope_path,
+            watch_targets,
+            operation_paths,
+        })
+    }
+
+    pub fn complete_bootstrap(
+        &self,
+        project_id: &str,
+        mut preparation: GitSourceControlBootstrapPreparation,
+    ) -> Result<GitSourceControlBootstrap> {
+        let Some(identity) = preparation.identity.take() else {
+            return Ok(GitSourceControlBootstrap {
+                capability: preparation.capability,
+                overview: None,
+                workspace_scope_path: preparation.workspace_scope_path,
+            });
+        };
+        let status = self.status_without_stats_with_operation_paths(
+            &identity.workspace_path,
+            &preparation.operation_paths,
+        )?;
+        let overview = self.overview_from_status(project_id, &identity, status, Vec::new());
+        preparation.capability.head = overview.repository.head_oid.clone();
+        if overview.repository.unborn {
+            preparation.capability.status = super::GitCapabilityStatus::HeadRequired;
+        }
+        Ok(GitSourceControlBootstrap {
+            capability: preparation.capability,
+            overview: Some(overview),
+            workspace_scope_path: preparation.workspace_scope_path,
+        })
+    }
+
+    fn probe_repository_identity(&self, cwd: &Utf8Path) -> Result<Option<GitRepositoryIdentity>> {
+        let output = self.runner.run(
+            cwd,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--is-inside-work-tree",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+        )?;
+        if !output.success {
+            return Ok(None);
+        }
+        let text = String::from_utf8(output.stdout)?;
+        let paths = text.lines().collect::<Vec<_>>();
+        if paths.first() != Some(&"true") {
+            return Ok(None);
+        }
+        if paths.len() != 3
+            || !Utf8Path::new(paths[1]).is_absolute()
+            || !Utf8Path::new(paths[2]).is_absolute()
+        {
+            return Err(
+                GitServiceError::new("git.repository-not-found", serde_json::json!({})).into(),
+            );
+        }
+        let repo_root = canonical_utf8_path(Utf8Path::new(paths[1]))?;
+        let common_dir = canonical_utf8_path(Utf8Path::new(paths[2]))?;
+        Ok(Some(GitRepositoryIdentity {
+            workspace_path: repo_root.clone(),
+            repo_root,
+            common_dir,
+        }))
+    }
+
     pub fn resolve_scoped_workspace(
         &self,
         project_root: &Utf8Path,
         requested_workspace: Option<&Utf8Path>,
     ) -> Result<GitRepositoryIdentity> {
+        Ok(self
+            .resolve_scoped_workspace_identity(project_root, requested_workspace)?
+            .repository)
+    }
+
+    pub fn resolve_scoped_workspace_identity(
+        &self,
+        project_root: &Utf8Path,
+        requested_workspace: Option<&Utf8Path>,
+    ) -> Result<GitScopedWorkspaceIdentity> {
         super::require_supported_git_version_for_service()?;
         let project = self.repository_identity(project_root)?;
         let requested = requested_workspace.unwrap_or(project_root);
-        if same_workspace_argument(requested, project_root)
-            || same_workspace_argument(requested, &project.repo_root)
-            || same_workspace_argument(requested, &project.workspace_path)
+        if same_workspace_argument(requested, project_root)?
+            || same_workspace_argument(requested, &project.repo_root)?
+            || same_workspace_argument(requested, &project.workspace_path)?
         {
-            return Ok(project);
+            return Ok(GitScopedWorkspaceIdentity {
+                repository: project,
+                scope_path: None,
+            });
         }
         let workspace = self.repository_identity(requested)?;
         let project_common_dir = canonical_utf8_path(&project.common_dir)?;
@@ -1247,26 +1511,17 @@ impl GitSourceControlService {
             )
             .into());
         }
-        Ok(workspace)
+        let scope_path = workspace.workspace_path.clone();
+        Ok(GitScopedWorkspaceIdentity {
+            repository: workspace,
+            scope_path: Some(scope_path),
+        })
     }
 
     pub fn repository_identity(&self, cwd: &Utf8Path) -> Result<GitRepositoryIdentity> {
-        let repo_root = self
-            .runner
-            .require(
-                cwd,
-                &["rev-parse", "--show-toplevel"],
-                "git.repository-not-found",
-            )?
-            .stdout_text();
-        let common_dir = self
-            .runner
-            .require(
-                cwd,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-                "git.repository-not-found",
-            )?
-            .stdout_text();
+        let paths = self.resolve_paths(cwd, &["--show-toplevel", "--git-common-dir"], 2)?;
+        let repo_root = &paths[0];
+        let common_dir = &paths[1];
         let repo_root = canonical_utf8_path(Utf8Path::new(&repo_root))?;
         let common_dir = canonical_utf8_path(Utf8Path::new(&common_dir))?;
         let workspace_path = repo_root.clone();
@@ -1277,24 +1532,51 @@ impl GitSourceControlService {
         })
     }
 
+    // rev-parse accepts multiple path queries. Keep ordering and fail closed if
+    // an ambiguous newline-containing path cannot be represented by its output.
+    fn resolve_paths(&self, cwd: &Utf8Path, queries: &[&str], count: usize) -> Result<Vec<String>> {
+        let mut args = vec!["rev-parse", "--path-format=absolute"];
+        args.extend_from_slice(queries);
+        let output = self
+            .runner
+            .require(cwd, &args, "git.repository-not-found")?;
+        let text = String::from_utf8(output.stdout)?;
+        let paths: Vec<String> = text.lines().map(str::to_owned).collect();
+        if paths.len() != count || paths.iter().any(|path| !Utf8Path::new(path).is_absolute()) {
+            return Err(
+                GitServiceError::new("git.repository-not-found", serde_json::json!({})).into(),
+            );
+        }
+        Ok(paths)
+    }
+
+    fn metadata_paths(&self, cwd: &Utf8Path, markers: &[&str]) -> Result<Vec<String>> {
+        let queries: Vec<&str> = markers
+            .iter()
+            .flat_map(|marker| ["--git-path", *marker])
+            .collect();
+        self.resolve_paths(cwd, &queries, markers.len())
+    }
+
     pub fn metadata_watch_targets(&self, cwd: &Utf8Path) -> Result<Vec<GitMetadataWatchTarget>> {
+        let names: Vec<&str> = METADATA_WATCH_MARKERS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        let paths = self.metadata_paths(cwd, &names)?;
+        self.metadata_watch_targets_from_paths(
+            cwd,
+            paths.into_iter().map(Utf8PathBuf::from).collect(),
+        )
+    }
+
+    fn metadata_watch_targets_from_paths(
+        &self,
+        cwd: &Utf8Path,
+        paths: Vec<Utf8PathBuf>,
+    ) -> Result<Vec<GitMetadataWatchTarget>> {
         let mut targets = BTreeMap::<String, GitMetadataWatchTarget>::new();
-        for (marker, wants_recursive) in [
-            ("HEAD", false),
-            ("index", false),
-            ("packed-refs", false),
-            ("refs", true),
-            ("MERGE_HEAD", false),
-            ("REBASE_HEAD", false),
-            ("rebase-merge", true),
-            ("rebase-apply", true),
-        ] {
-            let output = self.runner.require(
-                cwd,
-                &["rev-parse", "--path-format=absolute", "--git-path", marker],
-                "git.repository-not-found",
-            )?;
-            let marker_path = Utf8PathBuf::from(output.stdout_text());
+        for ((_, wants_recursive), marker_path) in METADATA_WATCH_MARKERS.into_iter().zip(paths) {
             let recursive = wants_recursive && marker_path.is_dir();
             let watch_path = if recursive {
                 marker_path
@@ -1324,13 +1606,57 @@ impl GitSourceControlService {
         project_id: &str,
         identity: &GitRepositoryIdentity,
     ) -> Result<GitSourceControlSnapshot> {
+        let mut overview = self.overview_with_identity(project_id, identity)?;
         let cwd = &identity.workspace_path;
-        let mut status = self.status(cwd)?;
-        let refs = self.refs(cwd)?;
-        let worktrees = self.worktrees(cwd)?;
-        let stashes = self.stashes(cwd)?;
-        let remotes = self.remotes(cwd)?;
-        let revision = workspace_snapshot_revision(&status, &refs);
+        overview.repository.remotes = super::diagnostics::stage("remotes", || self.remotes(cwd))?;
+        let refs = super::diagnostics::stage("refs", || self.refs(cwd))?;
+        let worktrees = super::diagnostics::stage("worktrees", || self.worktrees(cwd))?;
+        let stashes = super::diagnostics::stage("stashes", || self.stashes(cwd))?;
+        let catalog_revision = workspace_snapshot_revision(&overview.status, &refs);
+        let GitSourceControlOverview { repository, status } = overview;
+        let mut refs = refs;
+        let worktree_paths = worktrees
+            .iter()
+            .filter_map(|worktree| {
+                worktree
+                    .branch
+                    .as_ref()
+                    .map(|branch| (branch, &worktree.path))
+            })
+            .collect::<HashMap<_, _>>();
+        for git_ref in &mut refs {
+            if let Some(path) = worktree_paths.get(&git_ref.full_name) {
+                git_ref.checked_out_worktree_paths.push((*path).clone());
+            }
+        }
+        Ok(GitSourceControlSnapshot {
+            catalog_revision,
+            repository,
+            status,
+            refs,
+            worktrees,
+            stashes,
+        })
+    }
+
+    pub fn overview_with_identity(
+        &self,
+        project_id: &str,
+        identity: &GitRepositoryIdentity,
+    ) -> Result<GitSourceControlOverview> {
+        let cwd = &identity.workspace_path;
+        let status = super::diagnostics::stage("status", || self.status_without_stats(cwd))?;
+        Ok(self.overview_from_status(project_id, identity, status, Vec::new()))
+    }
+
+    fn overview_from_status(
+        &self,
+        project_id: &str,
+        identity: &GitRepositoryIdentity,
+        mut status: GitWorkspaceStatus,
+        remotes: Vec<GitRemote>,
+    ) -> GitSourceControlOverview {
+        let revision = workspace_snapshot_revision(&status, &[]);
         let sync_revision = history_revision(&status.branch);
         status.snapshot_revision.clone_from(&revision);
         let current_branch = status
@@ -1355,32 +1681,18 @@ impl GitSourceControlService {
                 behind: status.branch.behind,
             }),
             remotes,
+            remotes_revision: remotes_revision(&identity.common_dir),
             lock,
             revision,
             sync_revision,
         };
-        let mut refs = refs;
-        let worktree_paths = worktrees
-            .iter()
-            .filter_map(|worktree| {
-                worktree
-                    .branch
-                    .as_ref()
-                    .map(|branch| (branch, &worktree.path))
-            })
-            .collect::<HashMap<_, _>>();
-        for git_ref in &mut refs {
-            if let Some(path) = worktree_paths.get(&git_ref.full_name) {
-                git_ref.checked_out_worktree_paths.push((*path).clone());
-            }
-        }
-        Ok(GitSourceControlSnapshot {
-            repository,
-            status,
-            refs,
-            worktrees,
-            stashes,
-        })
+        GitSourceControlOverview { repository, status }
+    }
+
+    pub fn statistics(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
+        let mut status = self.status(cwd)?;
+        status.snapshot_revision = workspace_snapshot_revision(&status, &[]);
+        Ok(status)
     }
 
     pub fn branch_picker_snapshot(&self, cwd: &Utf8Path) -> Result<GitBranchPickerSnapshot> {
@@ -1535,8 +1847,16 @@ impl GitSourceControlService {
     pub fn status(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
         let mut status = self.status_without_stats(cwd)?;
         let (staged_stats, unstaged_stats) = std::thread::scope(|scope| {
-            let staged = scope.spawn(|| self.workspace_numstat(cwd, true));
-            let unstaged = scope.spawn(|| self.workspace_numstat(cwd, false));
+            let staged_trace = super::diagnostics::GitReadTrace::current();
+            let unstaged_trace = staged_trace.clone();
+            let staged = scope.spawn(move || match staged_trace {
+                Some(trace) => trace.scope(|| self.workspace_numstat(cwd, true)),
+                None => self.workspace_numstat(cwd, true),
+            });
+            let unstaged = scope.spawn(move || match unstaged_trace {
+                Some(trace) => trace.scope(|| self.workspace_numstat(cwd, false)),
+                None => self.workspace_numstat(cwd, false),
+            });
             let staged = staged.join().map_err(|_| {
                 GitServiceError::new("git.status-diff-query-failed", serde_json::json!({}))
             })??;
@@ -1554,6 +1874,28 @@ impl GitSourceControlService {
 
     fn status_without_stats(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
         self.status_with_untracked(cwd, "all")
+    }
+
+    fn status_without_stats_with_operation_paths(
+        &self,
+        cwd: &Utf8Path,
+        operation_paths: &[Utf8PathBuf],
+    ) -> Result<GitWorkspaceStatus> {
+        let output = self.runner.require(
+            cwd,
+            &[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--branch",
+                "--untracked-files=all",
+            ],
+            "git.status-failed",
+        )?;
+        let mut status = parse_porcelain_v2(&output.stdout)?;
+        status.operation_in_progress =
+            self.in_progress_operation_from_paths(cwd, operation_paths)?;
+        Ok(status)
     }
 
     fn status_with_untracked(&self, cwd: &Utf8Path, untracked: &str) -> Result<GitWorkspaceStatus> {
@@ -1655,7 +1997,7 @@ impl GitSourceControlService {
     }
 
     pub fn history(&self, cwd: &Utf8Path, query: &GitHistoryQuery) -> Result<GitHistoryPage> {
-        let branch = self.branch_header(cwd)?;
+        let branch = super::diagnostics::stage("history-revision", || self.branch_header(cwd))?;
         let revision = history_revision(&branch);
         if let Some(expected) = query.revision.as_deref()
             && expected != revision
@@ -1705,10 +2047,11 @@ impl GitSourceControlService {
             owned_args.push("HEAD".to_string());
         }
         let args = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
-        let output = self
-            .runner
-            .require(cwd, &args, "git.history-query-failed")?;
-        let mut commits = parse_history_summary(&output.stdout)?;
+        let output = super::diagnostics::stage("history-log", || {
+            self.runner.require(cwd, &args, "git.history-query-failed")
+        })?;
+        let mut commits =
+            super::diagnostics::stage("history-parse", || parse_history_summary(&output.stdout))?;
         let has_more = commits.len() > limit;
         commits.truncate(limit);
         Ok(GitHistoryPage {
@@ -1800,7 +2143,7 @@ impl GitSourceControlService {
             .into());
         }
 
-        let branch = self.branch_header(cwd)?;
+        let branch = super::diagnostics::stage("review-revision", || self.branch_header(cwd))?;
         let revision = history_revision(&branch);
         if let Some(expected) = query.revision.as_deref()
             && expected != revision
@@ -1811,58 +2154,16 @@ impl GitSourceControlService {
             )
             .into());
         }
-        let mut selected_oids = Vec::with_capacity(query.selected_oids.len());
-        for revision in &query.selected_oids {
-            let oid = self.resolve_commit_oid(cwd, revision)?;
-            if !selected_oids.contains(&oid) {
-                selected_oids.push(oid);
-            }
-        }
-        let labels = HashMap::<String, Vec<GitRefLabel>>::new();
-        let metadata = self.commit_metadata_batch(cwd, &selected_oids, &labels)?;
-        let worker_count = metadata.len().min(4);
-        let chunk_size = metadata.len().div_ceil(worker_count);
-        let indexed = metadata.into_iter().enumerate().collect::<Vec<_>>();
-        let mut commits = std::thread::scope(|scope| {
-            let handles = indexed
-                .chunks(chunk_size)
-                .map(|chunk| {
-                    let service = self.clone();
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|(index, commit)| {
-                                let before_oid = commit.parent_oids.first().cloned();
-                                let files = service.commit_name_status(
-                                    cwd,
-                                    before_oid.as_deref(),
-                                    &commit.oid,
-                                )?;
-                                Ok((
-                                    *index,
-                                    CommitReviewPatch {
-                                        after_oid: commit.oid.clone(),
-                                        before_oid,
-                                        files,
-                                    },
-                                ))
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    })
-                })
-                .collect::<Vec<_>>();
-            let mut entries = Vec::with_capacity(indexed.len());
-            for handle in handles {
-                entries.extend(handle.join().map_err(|_| {
-                    GitServiceError::new("git.commit-review-worker-failed", serde_json::json!({}))
-                })??);
-            }
-            Ok::<_, anyhow::Error>(entries)
+        let commits = super::diagnostics::stage("review-batch", || {
+            self.commit_review_patches(cwd, &query.selected_oids)
         })?;
-        commits.sort_by_key(|(index, _)| *index);
-        let mut files =
-            self.aggregate_commit_review_files(cwd, commits.into_iter().map(|(_, entry)| entry))?;
-        self.populate_commit_review_stats(cwd, &mut files)?;
+        let selected_oids = commits
+            .iter()
+            .map(|commit| commit.after_oid.clone())
+            .collect::<Vec<_>>();
+        let files = super::diagnostics::stage("review-aggregate", || {
+            self.aggregate_commit_review_files(cwd, commits)
+        })?;
         let totals = GitCommitReviewTotals {
             commit_count: selected_oids.len(),
             file_count: files.len(),
@@ -1874,6 +2175,129 @@ impl GitSourceControlService {
             files,
             totals,
         })
+    }
+
+    fn commit_review_patches(
+        &self,
+        cwd: &Utf8Path,
+        selection: &[String],
+    ) -> Result<Vec<CommitReviewPatch>> {
+        let invalid =
+            || GitServiceError::new("git.commit-review-query-failed", serde_json::json!({}));
+        let mut selected = Vec::new();
+        for oid in selection {
+            if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(invalid().into());
+            }
+            let oid = oid.to_ascii_lowercase();
+            if !selected.contains(&oid) {
+                selected.push(oid);
+            }
+        }
+        let input = format!("{}\n", selected.join("\n"));
+        let metadata = self.runner.require_with_input(
+            cwd,
+            &[
+                "log",
+                "--no-walk=unsorted",
+                "--format=%H%x00%P",
+                "-z",
+                "--stdin",
+            ],
+            input.as_bytes(),
+            "git.commit-review-query-failed",
+        )?;
+        if metadata.stdout.len() >= MACHINE_COMMAND_CAPTURE_LIMIT {
+            return Err(invalid().into());
+        }
+        let mut fields = metadata.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.last() == Some(&b"".as_slice()) {
+            fields.pop();
+        }
+        if fields.len() != selected.len() * 2 {
+            return Err(invalid().into());
+        }
+        let mut commits = Vec::new();
+        let mut diff_input = String::new();
+        for (index, oid) in selected.iter().enumerate() {
+            if text(fields[index * 2]) != *oid {
+                return Err(invalid().into());
+            }
+            let before_oid = text(fields[index * 2 + 1])
+                .split_whitespace()
+                .next()
+                .map(str::to_string);
+            diff_input.push_str(oid);
+            if let Some(parent) = &before_oid {
+                diff_input.push(' ');
+                diff_input.push_str(parent);
+            }
+            diff_input.push('\n');
+            commits.push(CommitReviewPatch {
+                after_oid: oid.clone(),
+                before_oid,
+                files: Vec::new(),
+            });
+        }
+        let output = self.runner.require_with_input(
+            cwd,
+            &[
+                "diff-tree",
+                "--stdin",
+                "--root",
+                "--always",
+                "-r",
+                "-M",
+                "-C",
+                "--name-status",
+                "-z",
+                "--format=%H",
+            ],
+            diff_input.as_bytes(),
+            "git.commit-diff-query-failed",
+        )?;
+        if output.stdout.len() >= MACHINE_COMMAND_CAPTURE_LIMIT {
+            return Err(invalid().into());
+        }
+        let mut fields = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.last() == Some(&b"".as_slice()) {
+            fields.pop();
+        }
+        let mut cursor = 0;
+        for commit in &mut commits {
+            if fields.get(cursor).map(|field| text(field)) != Some(commit.after_oid.clone()) {
+                return Err(invalid().into());
+            }
+            cursor += 1;
+            let mut records = Vec::new();
+            while cursor < fields.len() {
+                let status = fields[cursor].strip_prefix(b"\n").unwrap_or(fields[cursor]);
+                if status.len() >= 40 {
+                    break;
+                }
+                let paths = if matches!(status.first(), Some(b'R' | b'C')) {
+                    2
+                } else {
+                    1
+                };
+                if cursor + paths >= fields.len() {
+                    return Err(invalid().into());
+                }
+                records.extend_from_slice(status);
+                records.push(0);
+                for path in &fields[cursor + 1..=cursor + paths] {
+                    records.extend_from_slice(path);
+                    records.push(0);
+                }
+                cursor += paths + 1;
+            }
+            commit.files =
+                merge_commit_file_changes(parse_commit_name_status(&records)?, HashMap::new())?;
+        }
+        if cursor != fields.len() {
+            return Err(invalid().into());
+        }
+        Ok(commits)
     }
 
     pub fn commit_reachability(
@@ -2134,6 +2558,56 @@ impl GitSourceControlService {
         Ok(files)
     }
 
+    pub fn commit_review_statistics(
+        &self,
+        cwd: &Utf8Path,
+        mut review: GitCommitReview,
+    ) -> Result<GitCommitReview> {
+        let valid_oid = |oid: &str| {
+            matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        };
+        let valid_path = |path: &str| validate_repo_relative_path(path).is_ok();
+        if review.selected_oids.is_empty()
+            || review.selected_oids.len() > COMMIT_REVIEW_SELECTION_MAX
+            || review.files.len() > COMMIT_REVIEW_FILES_MAX
+            || review
+                .files
+                .iter()
+                .map(|file| file.path.len() + file.before_path.as_ref().map_or(0, String::len))
+                .sum::<usize>()
+                > COMMIT_REVIEW_PATH_BYTES_MAX
+            || !review.selected_oids.iter().all(|oid| valid_oid(oid))
+            || review.files.iter().any(|file| {
+                !valid_oid(&file.after_oid)
+                    || file
+                        .before_oid
+                        .as_deref()
+                        .is_some_and(|oid| !valid_oid(oid))
+                    || !review.selected_oids.contains(&file.after_oid)
+                    || !valid_path(&file.path)
+                    || file
+                        .before_path
+                        .as_deref()
+                        .is_some_and(|path| !valid_path(path))
+            })
+        {
+            return Err(GitServiceError::new(
+                "git.commit-review-query-failed",
+                serde_json::json!({}),
+            )
+            .into());
+        }
+        for file in &mut review.files {
+            file.binary = None;
+            file.added_lines = None;
+            file.deleted_lines = None;
+        }
+        super::diagnostics::stage("review-statistics", || {
+            self.populate_commit_review_stats(cwd, &mut review.files)
+        })?;
+        Ok(review)
+    }
+
     fn populate_commit_review_stats(
         &self,
         cwd: &Utf8Path,
@@ -2149,6 +2623,20 @@ impl GitSourceControlService {
                 .or_default()
                 .push(index);
         }
+        let empty_tree = if endpoint_groups.keys().any(|(before, _)| before.is_none()) {
+            Some(
+                self.runner
+                    .require_with_input(
+                        cwd,
+                        &["hash-object", "-t", "tree", "--stdin"],
+                        &[],
+                        "git.commit-diff-query-failed",
+                    )?
+                    .stdout_text(),
+            )
+        } else {
+            None
+        };
         for ((before_oid, after_oid), indexes) in endpoint_groups {
             let mut paths = Vec::new();
             for index in &indexes {
@@ -2162,13 +2650,18 @@ impl GitSourceControlService {
                     paths.push(file.path.clone());
                 }
             }
-            let stats = self.commit_numstat(cwd, before_oid.as_deref(), &after_oid, &paths)?;
+            let stats = self.commit_numstat(
+                cwd,
+                before_oid.as_deref().or(empty_tree.as_deref()),
+                &after_oid,
+                &paths,
+            )?;
             for index in indexes {
                 let file = &mut files[index];
                 let Some(file_stats) = stats.get(&file.path) else {
                     continue;
                 };
-                file.binary = file_stats.binary;
+                file.binary = Some(file_stats.binary);
                 file.added_lines = file_stats.added_lines;
                 file.deleted_lines = file_stats.deleted_lines;
             }
@@ -2199,6 +2692,7 @@ impl GitSourceControlService {
             empty_tree_oid.as_str()
         };
         let mut args = vec![
+            "--literal-pathspecs".to_string(),
             "diff".to_string(),
             "--numstat".to_string(),
             "-z".to_string(),
@@ -2380,6 +2874,7 @@ impl GitSourceControlService {
         if matches!(
             &request.mutation,
             GitMutation::StagePaths { .. }
+                | GitMutation::DiscardPath { .. }
                 | GitMutation::StageAll
                 | GitMutation::UnstagePaths { .. }
                 | GitMutation::UnstageAll
@@ -2389,9 +2884,8 @@ impl GitSourceControlService {
                 "update-index",
                 || {
                     let current_status = self.status_without_stats(cwd)?;
-                    let refs = self.refs(cwd)?;
                     if let Some(expected_revision) = request.expected_revision.as_deref() {
-                        let actual_revision = workspace_snapshot_revision(&current_status, &refs);
+                        let actual_revision = workspace_snapshot_revision(&current_status, &[]);
                         if expected_revision != actual_revision {
                             return Err(GitServiceError::new(
                                 "git.ref-changed",
@@ -2404,6 +2898,9 @@ impl GitSourceControlService {
                         }
                     }
                     match &request.mutation {
+                        GitMutation::DiscardPath { path } => {
+                            self.discard_path(cwd, path, &current_status)?;
+                        }
                         GitMutation::StagePaths { paths } => self.stage_paths(cwd, paths)?,
                         GitMutation::StageAll => {
                             self.runner
@@ -2414,7 +2911,7 @@ impl GitSourceControlService {
                         _ => unreachable!("workspace mutation kind was checked above"),
                     }
                     let mut status = self.status(cwd)?;
-                    let repository_revision = workspace_snapshot_revision(&status, &refs);
+                    let repository_revision = workspace_snapshot_revision(&status, &[]);
                     status.snapshot_revision.clone_from(&repository_revision);
                     Ok(GitMutationResult::Workspace {
                         status,
@@ -2431,7 +2928,16 @@ impl GitSourceControlService {
                 || {
                     let current = self.branch_picker_snapshot_for_identity(cwd, &identity)?;
                     if let Some(expected_revision) = request.expected_revision.as_deref() {
-                        ensure_expected_branch_revision(expected_revision, &current)?;
+                        let status = self.status_without_stats(cwd)?;
+                        let refs = self.refs(cwd)?;
+                        let actual_revision = workspace_snapshot_revision(&status, &refs);
+                        if expected_revision != actual_revision {
+                            return Err(GitServiceError::new(
+                                "git.ref-changed",
+                                serde_json::json!({}),
+                            )
+                            .into());
+                        }
                     }
                     ensure_branch_change_allowed(&current)?;
                     self.branch_switch(cwd, name)?;
@@ -2441,7 +2947,11 @@ impl GitSourceControlService {
         }
         if let Some(expected_revision) = request.expected_revision.as_deref() {
             let status = self.status_without_stats(cwd)?;
-            let refs = self.refs(cwd)?;
+            let refs = if matches!(request.mutation, GitMutation::Commit { .. }) {
+                Vec::new()
+            } else {
+                self.refs(cwd)?
+            };
             let actual_revision = workspace_snapshot_revision(&status, &refs);
             if expected_revision != actual_revision {
                 return Err(GitServiceError::new(
@@ -2456,6 +2966,7 @@ impl GitSourceControlService {
         }
         match &request.mutation {
             GitMutation::StagePaths { .. }
+            | GitMutation::DiscardPath { .. }
             | GitMutation::StageAll
             | GitMutation::UnstagePaths { .. }
             | GitMutation::UnstageAll => {
@@ -2521,6 +3032,170 @@ impl GitSourceControlService {
         Ok(GitMutationResult::Repository)
     }
 
+    /// Resolve only the selected source ref; never infer a remote from a display name.
+    pub fn prepare_push(&self, cwd: &Utf8Path, intent: &GitPushIntent) -> Result<GitPreparedPush> {
+        let branch = match intent {
+            GitPushIntent::UpstreamSync { branch, .. }
+            | GitPushIntent::PublishHead { branch, .. } => branch,
+        };
+        self.validate_branch_name(cwd, branch)?;
+        let full_name = format!("refs/heads/{branch}");
+        if is_runtime_branch(&full_name) {
+            return Err(GitServiceError::new(
+                "git.runtime-branch-push-forbidden",
+                serde_json::json!({ "branch": branch }),
+            )
+            .into());
+        }
+        let header = self.branch_header(cwd)?;
+        if matches!(intent, GitPushIntent::UpstreamSync { .. })
+            && header.head.as_deref() != Some(branch.as_str())
+        {
+            return Err(GitServiceError::new(
+                "git.push-branch-not-current",
+                serde_json::json!({ "branch": branch }),
+            )
+            .into());
+        }
+        let output = self.runner.require(cwd, &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)%00",
+            "--count=1",
+            full_name.as_str(),
+        ], "git.refs-query-failed")?;
+        // for-each-ref scopes also match descendants: only the exact ref is a source.
+        let record = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .find(|record| record.split(|byte| *byte == 0).next() == Some(full_name.as_bytes()))
+            .ok_or_else(|| {
+                GitServiceError::new(
+                    "git.branch-not-found",
+                    serde_json::json!({ "branch": branch }),
+                )
+            })?;
+        let fields = record.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() != 5 || fields[1].is_empty() {
+            return Err(
+                GitServiceError::new("git.refs-query-failed", serde_json::json!({})).into(),
+            );
+        }
+        let source_oid = text(fields[1]);
+        let native_remote = text(fields[2]);
+        let native_remote_ref = text(fields[3]);
+        let invalid_upstream = || {
+            GitServiceError::new(
+                "git.push-upstream-invalid",
+                serde_json::json!({ "branch": branch }),
+            )
+        };
+        // Empty native upstream fields can mean missing *or broken* configuration.
+        // Query literal keys (not a branch-derived regex), retaining empty/multiple values.
+        let config_values = |suffix: &str| -> Result<Vec<String>> {
+            let key = format!("branch.{branch}.{suffix}");
+            let output = self
+                .runner
+                .run(cwd, &["config", "--null", "--get-all", &key])?;
+            if output.success {
+                Ok(text(&output.stdout)
+                    .split_terminator('\0')
+                    .map(str::to_string)
+                    .collect())
+            } else if output.exit_code == Some(1) {
+                Ok(Vec::new())
+            } else {
+                Err(invalid_upstream().into())
+            }
+        };
+        let configured_remotes = config_values("remote")?;
+        let configured_merges = config_values("merge")?;
+        let upstream = match (configured_remotes.as_slice(), configured_merges.as_slice()) {
+            ([], []) if native_remote.is_empty() && native_remote_ref.is_empty() => None,
+            ([remote], _) if remote == "." => {
+                return Err(GitServiceError::new(
+                    "git.push-upstream-unsupported",
+                    serde_json::json!({ "branch": branch, "remote": remote }),
+                )
+                .into());
+            }
+            ([remote], [merge])
+                if !remote.is_empty()
+                    && *remote == native_remote
+                    && *merge == native_remote_ref
+                    && native_remote_ref.starts_with("refs/heads/") =>
+            {
+                Some((
+                    native_remote,
+                    native_remote_ref["refs/heads/".len()..].to_string(),
+                ))
+            }
+            _ => return Err(invalid_upstream().into()),
+        };
+        let (remote, remote_branch, set_upstream) = match intent {
+            GitPushIntent::UpstreamSync { remote, .. } => match upstream {
+                Some((remote, remote_branch)) => (remote, remote_branch, false),
+                None => (
+                    remote.clone().ok_or_else(|| {
+                        GitServiceError::new(
+                            "git.push-remote-required",
+                            serde_json::json!({ "branch": branch }),
+                        )
+                    })?,
+                    branch.clone(),
+                    true,
+                ),
+            },
+            GitPushIntent::PublishHead { remote, .. } => {
+                (remote.clone(), branch.clone(), upstream.is_none())
+            }
+        };
+        self.validate_remote(cwd, &remote)?;
+        self.validate_branch_name(cwd, &remote_branch)?;
+        if is_runtime_branch(&format!("refs/heads/{remote_branch}")) {
+            return Err(GitServiceError::new(
+                "git.runtime-branch-push-forbidden",
+                serde_json::json!({ "branch": remote_branch }),
+            )
+            .into());
+        }
+        Ok(GitPreparedPush {
+            intent: intent.clone(),
+            target: GitPushTarget {
+                branch: branch.clone(),
+                source_oid,
+                remote,
+                remote_branch,
+                set_upstream,
+            },
+            expected_revision: history_revision(&header),
+        })
+    }
+
+    fn validate_push_confirmation(
+        &self,
+        cwd: &Utf8Path,
+        request: &GitOperationRequest,
+    ) -> Result<()> {
+        let GitOperationInput::Push { intent, target } = &request.operation else {
+            return Ok(());
+        };
+        let expected_revision = request.expected_revision.as_deref().ok_or_else(|| {
+            GitServiceError::new("git.push-confirmation-required", serde_json::json!({}))
+        })?;
+        let current = self.prepare_push(cwd, intent)?;
+        if expected_revision != current.expected_revision {
+            return Err(GitServiceError::new("git.sync-ref-changed", serde_json::json!({
+                "expectedRevision": expected_revision, "actualRevision": current.expected_revision,
+            })).into());
+        }
+        if *target != current.target {
+            return Err(
+                GitServiceError::new("git.push-target-changed", serde_json::json!({})).into(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn start_operation(
         &self,
         cwd: &Utf8Path,
@@ -2536,18 +3211,16 @@ impl GitSourceControlService {
         update_sink: Option<GitOperationUpdateSink>,
     ) -> Result<GitOperation> {
         let identity = self.repository_identity(cwd)?;
-        if let Some(expected_revision) = request.expected_revision.as_deref() {
+        if matches!(request.operation, GitOperationInput::Push { .. }) {
+            self.validate_push_confirmation(cwd, request)?;
+        } else if let Some(expected_revision) = request.expected_revision.as_deref() {
             let (code, actual_revision) = if operation_uses_sync_revision(request.operation.kind())
             {
                 let branch = self.branch_header(cwd)?;
                 ("git.sync-ref-changed", history_revision(&branch))
             } else {
                 let status = self.status_without_stats(cwd)?;
-                let refs = self.refs(cwd)?;
-                (
-                    "git.ref-changed",
-                    workspace_snapshot_revision(&status, &refs),
-                )
+                ("git.ref-changed", workspace_snapshot_revision(&status, &[]))
             };
             if expected_revision != actual_revision {
                 return Err(GitServiceError::new(
@@ -2588,8 +3261,8 @@ impl GitSourceControlService {
                 GitServiceError::new("git.operation-registry-poisoned", serde_json::json!({}))
             })?
             .insert(operation.operation_id.clone(), cell.clone());
-        let input = request.operation.clone();
-        thread::spawn(move || run_git_operation(identity, input, cell));
+        let request = request.clone();
+        thread::spawn(move || run_git_operation(identity, request, cell));
         Ok(operation)
     }
 
@@ -2653,27 +3326,8 @@ impl GitSourceControlService {
                     validate_revision(branch)?;
                 }
             }
-            GitOperationInput::Push { remote, branch, .. } => {
-                self.validate_remote(cwd, remote)?;
-                self.validate_branch_name(cwd, branch)?;
-                let full_name = format!("refs/heads/{branch}");
-                if is_runtime_branch(&full_name) {
-                    return Err(GitServiceError::new(
-                        "git.runtime-branch-push-forbidden",
-                        serde_json::json!({ "branch": branch }),
-                    )
-                    .into());
-                }
-                if !self.refs(cwd)?.iter().any(|git_ref| {
-                    git_ref.kind == GitRefKind::LocalBranch && git_ref.short_name == *branch
-                }) {
-                    return Err(GitServiceError::new(
-                        "git.branch-not-found",
-                        serde_json::json!({ "branch": branch }),
-                    )
-                    .into());
-                }
-            }
+            // Push validates its complete prepared contract in admission and under the write lock.
+            GitOperationInput::Push { .. } => {}
             GitOperationInput::PushTag { remote, tag } => {
                 self.validate_remote(cwd, remote)?;
                 self.validate_tag_name(cwd, tag)?;
@@ -2760,7 +3414,12 @@ impl GitSourceControlService {
             )
             .into());
         }
-        if self.remotes(cwd)?.iter().any(|item| item.name == remote) {
+        // get-url requires a configured named remote; do not enumerate every remote's URLs.
+        if self
+            .runner
+            .run(cwd, &["remote", "get-url", remote])?
+            .success
+        {
             Ok(())
         } else {
             Err(GitServiceError::new(
@@ -2776,61 +3435,155 @@ impl GitSourceControlService {
         cwd: &Utf8Path,
         source: &GitComparisonSource,
     ) -> Result<GitFileComparison> {
-        let (path, before, after) = match source {
-            GitComparisonSource::Workspace { path, area, .. } => {
-                validate_repo_relative_path(path)?;
-                match area {
-                    GitWorkspaceDiffArea::Staged => {
-                        let before = if self.has_head(cwd)? {
-                            self.read_git_text(cwd, &format!("HEAD:{path}"))?
-                        } else {
-                            None
-                        };
-                        let after = self.read_git_text(cwd, &format!(":{path}"))?;
-                        (path.clone(), before, after)
+        let (path, before, after) = super::diagnostics::stage("comparison-read-versions", || {
+            Ok::<_, anyhow::Error>(match source {
+                GitComparisonSource::Workspace { path, area, .. } => {
+                    validate_repo_relative_path(path)?;
+                    match area {
+                        GitWorkspaceDiffArea::Staged => {
+                            let before = if self.has_head(cwd)? {
+                                self.read_git_text(cwd, &format!("HEAD:{path}"))?
+                            } else {
+                                None
+                            };
+                            let after = self.read_git_text(cwd, &format!(":{path}"))?;
+                            (path.clone(), before, after)
+                        }
+                        GitWorkspaceDiffArea::Unstaged => {
+                            let before = self.read_git_text(cwd, &format!(":{path}"))?;
+                            let after = read_worktree_text(cwd, path)?;
+                            (path.clone(), before, after)
+                        }
                     }
-                    GitWorkspaceDiffArea::Unstaged => {
-                        let before = self.read_git_text(cwd, &format!(":{path}"))?;
-                        let after = read_worktree_text(cwd, path)?;
-                        (path.clone(), before, after)
+                }
+                GitComparisonSource::Commit {
+                    path,
+                    before_oid,
+                    before_path,
+                    after_oid,
+                    ..
+                } => {
+                    validate_repo_relative_path(path)?;
+                    if let Some(before_path) = before_path {
+                        validate_repo_relative_path(before_path)?;
                     }
+                    validate_revision(after_oid)?;
+                    if let Some(before_oid) = before_oid {
+                        validate_revision(before_oid)?;
+                    }
+                    let before = before_oid
+                        .as_ref()
+                        .map(|oid| {
+                            let path = before_path.as_deref().unwrap_or(path);
+                            self.read_git_text(cwd, &format!("{oid}:{path}"))
+                        })
+                        .transpose()?
+                        .flatten();
+                    let after = self.read_git_text(cwd, &format!("{after_oid}:{path}"))?;
+                    (path.clone(), before, after)
                 }
+                GitComparisonSource::GitHubPr { .. } => {
+                    return Err(GitServiceError::new(
+                        "git.comparison-source-unsupported",
+                        serde_json::json!({ "kind": "github-pr" }),
+                    )
+                    .into());
+                }
+            })
+        })?;
+        super::diagnostics::stage("comparison-build", || {
+            comparison_from_versions(path, before, after)
+        })
+    }
+
+    fn discard_path(&self, cwd: &Utf8Path, path: &str, status: &GitWorkspaceStatus) -> Result<()> {
+        validate_repo_relative_path(path)?;
+        ensure!(
+            status.conflicts.is_empty() && status.operation_in_progress.is_none(),
+            GitServiceError::new("git.operation-in-progress", serde_json::json!({}))
+        );
+        let change = status
+            .staged
+            .iter()
+            .chain(&status.unstaged)
+            .chain(&status.untracked)
+            .find(|change| change.path == path)
+            .ok_or_else(|| {
+                GitServiceError::new("git.invalid-pathspec", serde_json::json!({ "path": path }))
+            })?;
+        ensure!(
+            !change.submodule,
+            GitServiceError::new("git.file-not-regular", serde_json::json!({ "path": path }))
+        );
+        let mut paths = vec![path.to_owned()];
+        if change.kind == GitFileChangeKind::Renamed
+            && let Some(old_path) = &change.old_path
+        {
+            paths.push(old_path.clone());
+        }
+        // Only exact status entries may be discarded. Never recurse into directories
+        // (including submodules), or follow a parent symlink out of the worktree.
+        let root = std::fs::canonicalize(cwd)?;
+        for relative in &paths {
+            validate_repo_relative_path(relative)?;
+            let target = cwd.join(relative);
+            let mut parent = target.parent().unwrap();
+            while !parent.exists() {
+                parent = parent.parent().ok_or_else(|| {
+                    GitServiceError::new(
+                        "git.invalid-pathspec",
+                        serde_json::json!({ "path": relative }),
+                    )
+                })?;
             }
-            GitComparisonSource::Commit {
-                path,
-                before_oid,
-                before_path,
-                after_oid,
-                ..
-            } => {
-                validate_repo_relative_path(path)?;
-                if let Some(before_path) = before_path {
-                    validate_repo_relative_path(before_path)?;
-                }
-                validate_revision(after_oid)?;
-                if let Some(before_oid) = before_oid {
-                    validate_revision(before_oid)?;
-                }
-                let before = before_oid
-                    .as_ref()
-                    .map(|oid| {
-                        let path = before_path.as_deref().unwrap_or(path);
-                        self.read_git_text(cwd, &format!("{oid}:{path}"))
-                    })
-                    .transpose()?
-                    .flatten();
-                let after = self.read_git_text(cwd, &format!("{after_oid}:{path}"))?;
-                (path.clone(), before, after)
-            }
-            GitComparisonSource::GitHubPr { .. } => {
-                return Err(GitServiceError::new(
-                    "git.comparison-source-unsupported",
-                    serde_json::json!({ "kind": "github-pr" }),
+            ensure!(
+                std::fs::canonicalize(parent)?.starts_with(&root),
+                GitServiceError::new(
+                    "git.invalid-pathspec",
+                    serde_json::json!({ "path": relative })
                 )
-                .into());
+            );
+            match std::fs::symlink_metadata(&target) {
+                Ok(metadata) => ensure!(
+                    !metadata.is_dir(),
+                    GitServiceError::new(
+                        "git.file-not-regular",
+                        serde_json::json!({ "path": relative })
+                    )
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
-        };
-        comparison_from_versions(path, before, after)
+        }
+        if change.kind == GitFileChangeKind::Untracked {
+            self.runner.require(
+                cwd,
+                &["--literal-pathspecs", "clean", "-f", "--", path],
+                "git.discard-failed",
+            )?;
+        } else if self.has_head(cwd)? {
+            self.runner.require_with_input(
+                cwd,
+                &[
+                    "--literal-pathspecs",
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ],
+                &pathspec_input(&paths)?,
+                "git.discard-failed",
+            )?;
+        } else {
+            self.runner.require(
+                cwd,
+                &["--literal-pathspecs", "rm", "-f", "--", path],
+                "git.discard-failed",
+            )?;
+        }
+        Ok(())
     }
 
     fn stage_paths(&self, cwd: &Utf8Path, paths: &[String]) -> Result<()> {
@@ -3140,7 +3893,7 @@ impl GitSourceControlService {
         Ok(Some(output.stdout))
     }
 
-    pub(crate) fn remotes(&self, cwd: &Utf8Path) -> Result<Vec<GitRemote>> {
+    pub fn remotes(&self, cwd: &Utf8Path) -> Result<Vec<GitRemote>> {
         let names = self
             .runner
             .require(cwd, &["remote"], "git.remote-query-failed")?
@@ -3180,18 +3933,33 @@ impl GitSourceControlService {
     }
 
     fn in_progress_operation(&self, cwd: &Utf8Path) -> Result<Option<GitInProgressOperation>> {
-        for (marker, kind) in [
-            ("MERGE_HEAD", GitInProgressOperationKind::Merge),
-            ("rebase-merge", GitInProgressOperationKind::Rebase),
-            ("rebase-apply", GitInProgressOperationKind::Rebase),
-            ("CHERRY_PICK_HEAD", GitInProgressOperationKind::CherryPick),
-            ("REVERT_HEAD", GitInProgressOperationKind::Revert),
-        ] {
-            let output = self.runner.run(
-                cwd,
-                &["rev-parse", "--path-format=absolute", "--git-path", marker],
-            )?;
-            if output.success && Utf8Path::new(&output.stdout_text()).exists() {
+        let paths = self
+            .metadata_paths(cwd, &OPERATION_MARKERS)?
+            .into_iter()
+            .map(Utf8PathBuf::from)
+            .collect::<Vec<_>>();
+        self.in_progress_operation_from_paths(cwd, &paths)
+    }
+
+    fn in_progress_operation_from_paths(
+        &self,
+        cwd: &Utf8Path,
+        paths: &[Utf8PathBuf],
+    ) -> Result<Option<GitInProgressOperation>> {
+        let kinds = [
+            GitInProgressOperationKind::Merge,
+            GitInProgressOperationKind::Rebase,
+            GitInProgressOperationKind::Rebase,
+            GitInProgressOperationKind::CherryPick,
+            GitInProgressOperationKind::Revert,
+        ];
+        if paths.len() != kinds.len() {
+            return Err(
+                GitServiceError::new("git.repository-not-found", serde_json::json!({})).into(),
+            );
+        }
+        for (kind, path) in kinds.into_iter().zip(paths) {
+            if path.exists() {
                 let current_oid = (kind == GitInProgressOperationKind::Rebase)
                     .then(|| self.runner.run(cwd, &["rev-parse", "REBASE_HEAD"]))
                     .transpose()?
@@ -3256,7 +4024,7 @@ fn operation_timestamp() -> String {
 
 fn run_git_operation(
     identity: GitRepositoryIdentity,
-    input: GitOperationInput,
+    request: GitOperationRequest,
     cell: Arc<GitOperationCell>,
 ) {
     if cell.cancel_requested.load(Ordering::SeqCst) {
@@ -3273,8 +4041,15 @@ fn run_git_operation(
     if let Some(operation) = running {
         emit_operation_update(&cell, operation);
     }
+    let input = &request.operation;
     let kind = input.kind();
-    let action = || execute_managed_git_operation(&identity.workspace_path, &input, &cell);
+    let action = || {
+        // Admission precedes the worker: confirmed refs/config must still match while locked,
+        // before any managed push process is created. Never replace the confirmed revision.
+        GitSourceControlService::default()
+            .validate_push_confirmation(&identity.workspace_path, &request)?;
+        execute_managed_git_operation(&identity.workspace_path, input, &cell)
+    };
     let result = match kind {
         GitOperationKind::Fetch | GitOperationKind::Push | GitOperationKind::PushTag => {
             GitCoordinationService.try_with_user_repository_write(
@@ -3504,19 +4279,18 @@ fn operation_args(input: &GitOperationInput) -> Vec<String> {
             }
             args
         }
-        GitOperationInput::Push {
-            remote,
-            branch,
-            set_upstream,
-        } => {
+        GitOperationInput::Push { target, .. } => {
             let mut args = vec!["push".to_string(), "--porcelain".to_string()];
-            if *set_upstream {
+            if target.set_upstream {
                 args.push("--set-upstream".to_string());
             }
             args.extend([
                 "--".to_string(),
-                remote.clone(),
-                format!("refs/heads/{branch}:refs/heads/{branch}"),
+                target.remote.clone(),
+                format!(
+                    "refs/heads/{}:refs/heads/{}",
+                    target.branch, target.remote_branch
+                ),
             ]);
             args
         }
@@ -4306,7 +5080,7 @@ fn aggregate_commit_review_files(
                 old_path,
                 path: file.path,
                 kind,
-                binary: file.binary,
+                binary: None,
                 before_oid: file.before_oid,
                 before_path: file.before_path,
                 after_oid: file.after_oid,
@@ -4318,7 +5092,7 @@ fn aggregate_commit_review_files(
 }
 
 fn parse_commit_name_status(bytes: &[u8]) -> Result<Vec<CommitFileStatusRecord>> {
-    let fields = nul_fields(bytes);
+    let fields = exact_nul_fields(bytes);
     let mut index = 0;
     let mut changes = Vec::new();
     while index < fields.len() {
@@ -4382,7 +5156,7 @@ fn parse_numstat(
     bytes: &[u8],
     error_code: &'static str,
 ) -> Result<HashMap<String, CommitFileStats>> {
-    let fields = nul_fields(bytes);
+    let fields = exact_nul_fields(bytes);
     let mut index = 0;
     let mut stats = HashMap::new();
     while index < fields.len() {
@@ -4506,6 +5280,22 @@ fn operation_uses_sync_revision(kind: GitOperationKind) -> bool {
     )
 }
 
+/// Remotes live in the shared repository config, which the metadata monitor
+/// already observes. Hashing its few-KB content is cheaper than one `git` call.
+fn remotes_revision(common_dir: &Utf8Path) -> String {
+    let mut hasher = blake3::Hasher::new();
+    match std::fs::read(common_dir.join("config")) {
+        Ok(content) => {
+            hasher.update(b"config");
+            hasher.update(&content);
+        }
+        Err(_) => {
+            hasher.update(b"unreadable");
+        }
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 fn history_revision(branch: &GitBranchStatus) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(branch.oid.as_deref().unwrap_or_default().as_bytes());
@@ -4516,8 +5306,11 @@ fn history_revision(branch: &GitBranchStatus) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn same_workspace_argument(requested: &Utf8Path, known: &Utf8Path) -> bool {
-    requested.as_str().eq_ignore_ascii_case(known.as_str())
+fn same_workspace_argument(requested: &Utf8Path, known: &Utf8Path) -> Result<bool> {
+    if requested.as_str() == known.as_str() {
+        return Ok(true);
+    }
+    Ok(git_filesystem_path_identity(requested)? == git_filesystem_path_identity(known)?)
 }
 
 fn parse_history(bytes: &[u8], refs: &HashMap<String, Vec<GitRefLabel>>) -> Result<Vec<GitCommit>> {
@@ -4686,6 +5479,18 @@ fn non_empty_text(bytes: &[u8]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+// Machine paths may begin with a newline; only the protocol terminator is removed.
+fn exact_nul_fields(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut fields = bytes
+        .split(|byte| *byte == 0)
+        .map(<[u8]>::to_vec)
+        .collect::<Vec<_>>();
+    if fields.last().is_some_and(Vec::is_empty) {
+        fields.pop();
+    }
+    fields
+}
+
 fn nul_fields(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut fields = bytes
         .split(|byte| *byte == 0)
@@ -4701,6 +5506,17 @@ fn nul_fields(bytes: &[u8]) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::git::GitCommandRunner;
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_argument_identity_accepts_equivalent_windows_path_forms() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical =
+            Utf8PathBuf::from_path_buf(std::fs::canonicalize(directory.path()).unwrap()).unwrap();
+        let alternate_separators = Utf8PathBuf::from(canonical.as_str().replace('\\', "/"));
+
+        assert!(same_workspace_argument(&canonical, &alternate_separators).unwrap());
+    }
 
     fn initialized_repository() -> (tempfile::TempDir, Utf8PathBuf) {
         let temp = tempfile::tempdir().unwrap();
@@ -4976,6 +5792,309 @@ mod tests {
         assert!(!targets.is_empty());
         assert!(targets.iter().all(|target| target.path.is_dir()));
         assert!(targets.iter().any(|target| target.recursive));
+    }
+
+    #[test]
+    fn metadata_reads_use_one_process_per_query() {
+        let (_temp, root) = initialized_repository();
+        let service = GitSourceControlService::default();
+        let request = super::super::diagnostics::GitReadRequest::new(None, "test");
+        let trace = request.trace();
+        trace
+            .scope(|| service.metadata_watch_targets(&root))
+            .unwrap();
+        assert_eq!(trace.command_count(), 1, "watch paths must be batched");
+        trace
+            .scope(|| service.in_progress_operation(&root))
+            .unwrap();
+        assert_eq!(
+            trace.command_count(),
+            2,
+            "operation markers must be batched"
+        );
+        trace.scope(|| service.repository_identity(&root)).unwrap();
+        assert_eq!(trace.command_count(), 3, "identity must be batched");
+    }
+
+    #[test]
+    fn overview_defers_catalog_and_stats_and_preserves_revision_scopes() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "base");
+        let runner = GitCommandRunner;
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &["remote", "add", "origin", "https://example.com/repo.git"]
+                )
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+        let service = GitSourceControlService::default();
+        let identity = service.repository_identity(&root).unwrap();
+        let request = super::super::diagnostics::GitReadRequest::new(None, "test");
+        let trace = request.trace();
+        let overview = trace
+            .scope(|| service.overview_with_identity("test", &identity))
+            .unwrap();
+        assert_eq!(
+            trace.command_count(),
+            2,
+            "overview reads status and operation markers only"
+        );
+        assert!(overview.repository.remotes.is_empty());
+        assert_eq!(overview.status.unstaged.len(), 1);
+        assert_eq!(overview.status.unstaged[0].added_lines, None);
+        let stats = service.statistics(&root).unwrap();
+        assert_eq!(stats.snapshot_revision, overview.repository.revision);
+        assert_eq!(stats.unstaged[0].added_lines, Some(1));
+        let catalog = service.snapshot("test", &root).unwrap();
+        assert_eq!(catalog.repository.remotes[0].name, "origin");
+        assert!(
+            runner
+                .run(&root, &["branch", "new-branch"])
+                .unwrap()
+                .success
+        );
+        let updated = service.overview_with_identity("test", &identity).unwrap();
+        assert_eq!(updated.repository.revision, overview.repository.revision);
+        let error = service
+            .execute_mutation(
+                &root,
+                &GitMutationRequest {
+                    expected_revision: Some(catalog.catalog_revision),
+                    mutation: GitMutation::TagDeleteLocal {
+                        name: "unused".into(),
+                    },
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<GitServiceError>().unwrap().code,
+            "git.ref-changed"
+        );
+        service
+            .execute_mutation(
+                &root,
+                &GitMutationRequest {
+                    expected_revision: Some(overview.repository.revision),
+                    mutation: GitMutation::StageAll,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn remotes_revision_tracks_remote_config_but_not_worktree_or_refs() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "base");
+        let runner = GitCommandRunner;
+        let service = GitSourceControlService::default();
+        let identity = service.repository_identity(&root).unwrap();
+        let initial = service.overview_with_identity("test", &identity).unwrap();
+
+        std::fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+        assert!(runner.run(&root, &["add", "tracked.txt"]).unwrap().success);
+        assert!(runner.run(&root, &["branch", "side"]).unwrap().success);
+        let unrelated = service.overview_with_identity("test", &identity).unwrap();
+        assert_ne!(unrelated.repository.revision, initial.repository.revision);
+        assert_eq!(
+            unrelated.repository.remotes_revision,
+            initial.repository.remotes_revision
+        );
+
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &["remote", "add", "origin", "https://example.com/repo.git"]
+                )
+                .unwrap()
+                .success
+        );
+        let added = service.overview_with_identity("test", &identity).unwrap();
+        assert_ne!(
+            added.repository.remotes_revision,
+            initial.repository.remotes_revision
+        );
+        let catalog = service.snapshot("test", &root).unwrap();
+        assert_eq!(
+            catalog.repository.remotes_revision,
+            added.repository.remotes_revision
+        );
+        assert_eq!(catalog.repository.remotes[0].name, "origin");
+
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &["remote", "set-url", "origin", "https://example.com/moved.git"]
+                )
+                .unwrap()
+                .success
+        );
+        let moved = service.overview_with_identity("test", &identity).unwrap();
+        assert_ne!(
+            moved.repository.remotes_revision,
+            added.repository.remotes_revision
+        );
+    }
+
+    #[test]
+    fn capability_batches_repository_identity_queries() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "base");
+        let request = super::super::diagnostics::GitReadRequest::new(None, "test");
+        let trace = request.trace();
+        let capability = trace.scope(|| super::super::GitRepositoryService::default().probe(&root));
+        assert_eq!(capability.status, super::super::GitCapabilityStatus::Ready);
+        assert_eq!(trace.command_count(), 4);
+    }
+
+    #[test]
+    fn bootstrap_registers_watch_inputs_and_publishes_overview_in_four_processes() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "base");
+        assert!(
+            GitCommandRunner
+                .run(
+                    &root,
+                    &["remote", "add", "origin", "https://example.com/repo.git"]
+                )
+                .unwrap()
+                .success
+        );
+        let service = GitSourceControlService::default();
+        let request = super::super::diagnostics::GitReadRequest::new(None, "test");
+        let trace = request.trace();
+        #[cfg(windows)]
+        let requested_root = Utf8PathBuf::from(root.as_str().replace('\\', "/"));
+        #[cfg(not(windows))]
+        let requested_root = root.clone();
+        let preparation = trace
+            .scope(|| service.prepare_bootstrap(&root, Some(&requested_root)))
+            .unwrap();
+        assert_eq!(
+            trace.command_count(),
+            3,
+            "version, identity and marker paths"
+        );
+        assert!(preparation.identity.is_some());
+        assert_eq!(preparation.workspace_scope_path, None);
+        assert!(!preparation.watch_targets.is_empty());
+        let bootstrap = trace
+            .scope(|| service.complete_bootstrap("project-test", preparation))
+            .unwrap();
+        assert_eq!(
+            trace.command_count(),
+            4,
+            "status is the only publication read"
+        );
+        assert_eq!(
+            bootstrap.capability.status,
+            super::super::GitCapabilityStatus::Ready
+        );
+        assert_eq!(bootstrap.workspace_scope_path, None);
+        assert_eq!(
+            service
+                .resolve_scoped_workspace_identity(&root, Some(&requested_root))
+                .unwrap()
+                .scope_path,
+            None,
+            "the standalone monitor resolver must use the same main-workspace identity"
+        );
+        let overview = bootstrap.overview.unwrap();
+        assert!(
+            overview.repository.remotes.is_empty(),
+            "remotes are post-publication data"
+        );
+    }
+
+    #[test]
+    fn bootstrap_returns_capability_without_an_overview_outside_a_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let service = GitSourceControlService::default();
+        let preparation = service.prepare_bootstrap(&root, None).unwrap();
+        let bootstrap = service
+            .complete_bootstrap("project-test", preparation)
+            .unwrap();
+
+        assert_eq!(
+            bootstrap.capability.status,
+            super::super::GitCapabilityStatus::RepositoryRequired
+        );
+        assert!(bootstrap.overview.is_none());
+    }
+
+    #[test]
+    fn bootstrap_publishes_an_unborn_repository_as_head_required() {
+        let (_temp, root) = initialized_repository();
+        let service = GitSourceControlService::default();
+        let preparation = service.prepare_bootstrap(&root, None).unwrap();
+        let bootstrap = service
+            .complete_bootstrap("project-test", preparation)
+            .unwrap();
+
+        assert_eq!(
+            bootstrap.capability.status,
+            super::super::GitCapabilityStatus::HeadRequired
+        );
+        assert!(bootstrap.overview.unwrap().repository.unborn);
+    }
+
+    #[test]
+    fn linked_worktree_bootstrap_keeps_scope_and_uses_five_processes() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "base.txt", "base\n", "base");
+        let worktree_parent = tempfile::tempdir().unwrap();
+        let worktree = Utf8PathBuf::from_path_buf(worktree_parent.path().join("child")).unwrap();
+        assert!(
+            GitCommandRunner
+                .run(
+                    &root,
+                    &[
+                        "worktree",
+                        "add",
+                        "-b",
+                        "scoped/bootstrap",
+                        worktree.as_str(),
+                        "HEAD"
+                    ]
+                )
+                .unwrap()
+                .success
+        );
+        let service = GitSourceControlService::default();
+        let request = super::super::diagnostics::GitReadRequest::new(None, "test");
+        let trace = request.trace();
+        let preparation = trace
+            .scope(|| service.prepare_bootstrap(&root, Some(&worktree)))
+            .unwrap();
+        assert_eq!(
+            trace.command_count(),
+            4,
+            "linked scope adds one identity query"
+        );
+        let bootstrap = trace
+            .scope(|| service.complete_bootstrap("project-test", preparation))
+            .unwrap();
+
+        assert_eq!(trace.command_count(), 5);
+        assert_eq!(
+            bootstrap.workspace_scope_path,
+            Some(canonical_utf8_path(&worktree).unwrap())
+        );
+        let repository = bootstrap.overview.unwrap().repository;
+        assert_eq!(
+            repository.workspace_path,
+            canonical_utf8_path(&worktree).unwrap()
+        );
+        assert_eq!(
+            repository.current_branch.as_deref(),
+            Some("scoped/bootstrap")
+        );
     }
 
     #[test]
@@ -5360,6 +6479,7 @@ mod tests {
             )
             .unwrap();
 
+        let review = service.commit_review_statistics(&root, review).unwrap();
         assert_eq!(review.selected_oids, vec![second.clone(), first]);
         assert_eq!(review.files.len(), 1);
         assert_eq!(review.files[0].before_oid, None);
@@ -5370,6 +6490,140 @@ mod tests {
         assert_eq!(review.files[0].deleted_lines, Some(0));
         assert_eq!(review.totals.commit_count, 2);
         assert_eq!(review.totals.file_count, 1);
+    }
+
+    #[test]
+    fn batch_review_matches_first_parent_changes_including_empty_commits() {
+        let (_temp, root) = initialized_repository();
+        let service = GitSourceControlService::default();
+        let base = commit_file(&root, "base.txt", "base\n", "base");
+        let runner = GitCommandRunner;
+        assert!(
+            runner
+                .run(&root, &["checkout", "-b", "side"])
+                .unwrap()
+                .success
+        );
+        let side = commit_file(&root, "side.txt", "side\n", "side");
+        assert!(
+            runner
+                .run(&root, &["checkout", "-b", "main-test", &base])
+                .unwrap()
+                .success
+        );
+        commit_file(&root, "main.txt", "main\n", "main");
+        assert!(
+            runner
+                .run(&root, &["merge", "--no-ff", "side", "-m", "merge"])
+                .unwrap()
+                .success
+        );
+        let merge = runner.run(&root, &["rev-parse", "HEAD"]).unwrap().stdout;
+        assert!(
+            runner
+                .run(&root, &["commit", "--allow-empty", "-m", "empty"])
+                .unwrap()
+                .success
+        );
+        let empty = runner.run(&root, &["rev-parse", "HEAD"]).unwrap().stdout;
+        let patches = service
+            .commit_review_patches(&root, &[empty, merge, side, base])
+            .unwrap();
+        assert!(patches[0].files.is_empty());
+        assert_eq!(patches[1].files.len(), 1);
+        assert_eq!(patches[1].files[0].path, "side.txt");
+        for patch in patches {
+            assert_eq!(
+                patch.files,
+                service
+                    .commit_name_status(&root, patch.before_oid.as_deref(), &patch.after_oid)
+                    .unwrap()
+            );
+        }
+        let parsed = parse_commit_name_status(b"A\0\nleading.txt\0R100\0old\0\nnew\0").unwrap();
+        assert_eq!(parsed[0].path, "\nleading.txt");
+        assert_eq!(parsed[1].path, "\nnew");
+    }
+
+    #[test]
+    fn commit_review_batches_six_commits_in_four_commands() {
+        let (_temp, root) = initialized_repository();
+        let mut selection = Vec::new();
+        for index in 0..6 {
+            selection.push(commit_file(
+                &root,
+                &format!("file-{index}.txt"),
+                "one\n",
+                "change",
+            ));
+        }
+        selection.reverse();
+        let request = super::super::diagnostics::GitReadRequest::new(None, "commit-review");
+        let review = request
+            .trace()
+            .scope(|| {
+                GitSourceControlService::default().commit_review(
+                    &root,
+                    &GitCommitReviewQuery {
+                        selected_oids: selection,
+                        revision: None,
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(review.files.len(), 6);
+        assert!(request.trace().command_count() <= 4);
+        assert!(
+            review
+                .files
+                .iter()
+                .all(|file| file.binary.is_none() && file.added_lines.is_none())
+        );
+    }
+
+    #[test]
+    fn commit_review_statistics_rejects_unbounded_or_revision_expression_input() {
+        let (_temp, root) = initialized_repository();
+        let service = GitSourceControlService::default();
+        let oid = commit_file(&root, "file.txt", "one\n", "first");
+        let review = service
+            .commit_review(
+                &root,
+                &GitCommitReviewQuery {
+                    selected_oids: vec![oid],
+                    revision: None,
+                },
+            )
+            .unwrap();
+        let mut invalid = review.clone();
+        invalid.files[0].after_oid = "HEAD".into();
+        assert!(service.commit_review_statistics(&root, invalid).is_err());
+        let mut invalid = review;
+        invalid.files[0].path = "../outside".into();
+        assert!(service.commit_review_statistics(&root, invalid).is_err());
+    }
+
+    #[test]
+    fn commit_review_trace_counts_worker_and_stdin_commands() {
+        let (_temp, root) = initialized_repository();
+        let oid = commit_file(&root, "file.txt", "one\n", "first");
+        let request = super::super::diagnostics::GitReadRequest::new(None, "commit-review");
+        let review = request
+            .trace()
+            .scope(|| {
+                GitSourceControlService::default().commit_review(
+                    &root,
+                    &GitCommitReviewQuery {
+                        selected_oids: vec![oid],
+                        revision: None,
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(review.files.len(), 1);
+        // One revision read, one metadata batch, one file-change batch.
+        assert_eq!(request.trace().command_count(), 3);
+        assert!(review.files.iter().all(|file| file.added_lines.is_none()));
     }
 
     #[test]
@@ -5461,6 +6715,7 @@ mod tests {
             .unwrap();
         assert_eq!(comparison.stats.added_lines, 3);
         assert_eq!(comparison.stats.deleted_lines, 1);
+        let review = service.commit_review_statistics(&root, review).unwrap();
         assert_eq!(review.files[0].added_lines, Some(3));
         assert_eq!(review.files[0].deleted_lines, Some(1));
     }
@@ -5891,6 +7146,126 @@ mod tests {
                 .workspace_lock(&identity.workspace_path)
                 .locked
         );
+    }
+
+    #[test]
+    fn typed_discard_restores_only_selected_file_including_index_and_rename() {
+        let (_temp, root) = initialized_repository();
+        GitSourceControlService::default()
+            .runner
+            .require(
+                &root,
+                &["config", "core.autocrlf", "false"],
+                "git.operation-failed",
+            )
+            .unwrap();
+        commit_file(&root, "tracked.txt", "base\n", "base");
+        let service = GitSourceControlService::default();
+        std::fs::write(root.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+        service.stage_paths(&root, &["tracked.txt".into()]).unwrap();
+        std::fs::write(root.join("tracked.txt"), "working\n").unwrap();
+        let discard = |path: &str| {
+            service
+                .execute_mutation(
+                    &root,
+                    &GitMutationRequest {
+                        expected_revision: None,
+                        mutation: GitMutation::DiscardPath { path: path.into() },
+                    },
+                )
+                .unwrap()
+        };
+        assert!(matches!(
+            discard("tracked.txt"),
+            GitMutationResult::Workspace { .. }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        service
+            .runner
+            .require(
+                &root,
+                &["mv", "tracked.txt", "renamed.txt"],
+                "git.operation-failed",
+            )
+            .unwrap();
+        discard("renamed.txt");
+        assert!(!root.join("renamed.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        std::fs::remove_file(root.join("tracked.txt")).unwrap();
+        discard("tracked.txt");
+        assert!(root.join("tracked.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("keep.txt")).unwrap(),
+            "keep\n"
+        );
+        assert!(service.status(&root).unwrap().staged.is_empty());
+    }
+
+    #[test]
+    fn typed_discard_new_files_and_unborn_index_are_exact_and_revision_guarded() {
+        for head in [false, true] {
+            for staged in [false, true] {
+                let (_temp, root) = initialized_repository();
+                if head {
+                    commit_file(&root, "base.txt", "base\n", "base");
+                }
+                let service = GitSourceControlService::default();
+                let path = "[file] 中文.txt";
+                std::fs::write(root.join(path), "new\n").unwrap();
+                std::fs::write(root.join("f 中文.txt"), "keep\n").unwrap();
+                if staged {
+                    service.stage_paths(&root, &[path.into()]).unwrap();
+                }
+                let mutation = GitMutation::DiscardPath { path: path.into() };
+                assert!(
+                    service
+                        .execute_mutation(
+                            &root,
+                            &GitMutationRequest {
+                                expected_revision: Some("stale".into()),
+                                mutation: mutation.clone(),
+                            }
+                        )
+                        .is_err()
+                );
+                assert!(root.join(path).exists());
+                service
+                    .execute_mutation(
+                        &root,
+                        &GitMutationRequest {
+                            expected_revision: None,
+                            mutation,
+                        },
+                    )
+                    .unwrap();
+                assert!(!root.join(path).exists());
+                assert!(root.join("f 中文.txt").exists());
+                assert!(service.status(&root).unwrap().staged.is_empty());
+                for invalid in [".", "../outside", ":(glob)*", "f*"] {
+                    assert!(
+                        service
+                            .execute_mutation(
+                                &root,
+                                &GitMutationRequest {
+                                    expected_revision: None,
+                                    mutation: GitMutation::DiscardPath {
+                                        path: invalid.into()
+                                    },
+                                }
+                            )
+                            .is_err()
+                    );
+                }
+                assert!(root.join("f 中文.txt").exists());
+            }
+        }
     }
 
     #[test]
@@ -6471,12 +7846,34 @@ mod tests {
                 .success
         );
         let service = GitSourceControlService::default();
+        let main = service
+            .resolve_scoped_workspace_identity(&root, Some(&root))
+            .unwrap();
+        assert_eq!(main.scope_path, None);
         let resolved = service
-            .resolve_scoped_workspace(&root, Some(&worktree))
+            .resolve_scoped_workspace_identity(&root, Some(&worktree))
             .unwrap();
         assert_eq!(
-            resolved.workspace_path,
+            resolved.scope_path,
+            Some(canonical_utf8_path(&worktree).unwrap())
+        );
+        assert_eq!(
+            resolved.repository.workspace_path,
             canonical_utf8_path(&worktree).unwrap()
+        );
+        let targets = service.metadata_watch_targets(&worktree).unwrap();
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.path == resolved.repository.common_dir
+                    || target.path == resolved.repository.common_dir.join("refs"))
+        );
+        let overview = service
+            .overview_with_identity("test", &resolved.repository)
+            .unwrap();
+        assert_eq!(
+            overview.repository.current_branch.as_deref(),
+            Some("scoped/test")
         );
 
         let (_other_temp, other_root) = initialized_repository();
@@ -6586,6 +7983,689 @@ mod tests {
         assert_eq!(restored.status.untracked[0].path, "untracked.txt");
     }
 
+    fn push_test_git(root: &Utf8Path, args: &[&str]) -> String {
+        let output = GitCommandRunner.run(root, args).unwrap();
+        assert!(output.success, "git {args:?}: {output:?}");
+        output.stdout
+    }
+
+    fn push_repository() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Utf8PathBuf,
+        Utf8PathBuf,
+    ) {
+        let (temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "base\n", "base");
+        push_test_git(&root, &["branch", "-M", "main"]);
+        let bare_temp = tempfile::tempdir().unwrap();
+        let bare = Utf8PathBuf::from_path_buf(bare_temp.path().join("remote.git")).unwrap();
+        push_test_git(&root, &["init", "--bare", bare.as_str()]);
+        push_test_git(&root, &["remote", "add", "origin", bare.as_str()]);
+        push_test_git(&root, &["push", "--set-upstream", "origin", "main"]);
+        (temp, bare_temp, root, bare)
+    }
+
+    fn prepared_push_request(prepared: GitPreparedPush) -> GitOperationRequest {
+        GitOperationRequest {
+            expected_revision: Some(prepared.expected_revision),
+            operation: GitOperationInput::Push {
+                intent: prepared.intent,
+                target: prepared.target,
+            },
+        }
+    }
+
+    #[test]
+    fn prepare_push_resolves_native_slash_names_and_custom_fetch_mapping() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+        push_test_git(&root, &["remote", "rename", "origin", "team/origin"]);
+        push_test_git(
+            &root,
+            &[
+                "config",
+                "remote.team/origin.fetch",
+                "+refs/heads/*:refs/remotes/custom/*",
+            ],
+        );
+        push_test_git(
+            &root,
+            &[
+                "push",
+                "team/origin",
+                "refs/heads/main:refs/heads/integration/main",
+            ],
+        );
+        push_test_git(
+            &root,
+            &["config", "branch.main.merge", "refs/heads/integration/main"],
+        );
+        push_test_git(&root, &["fetch", "team/origin"]);
+        let head = commit_file(&root, "tracked.txt", "next\n", "next");
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: Some("stale-remembered-remote".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            prepared.target,
+            GitPushTarget {
+                branch: "main".into(),
+                source_oid: head.clone(),
+                remote: "team/origin".into(),
+                remote_branch: "integration/main".into(),
+                set_upstream: false,
+            }
+        );
+        let request = prepared_push_request(prepared);
+        assert_eq!(
+            operation_args(&request.operation),
+            [
+                "push",
+                "--porcelain",
+                "--",
+                "team/origin",
+                "refs/heads/main:refs/heads/integration/main"
+            ]
+        );
+        let operation = service.start_operation(&root, &request).unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(
+            finished.status,
+            GitOperationStatus::Succeeded,
+            "{finished:?}"
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/integration/main"]),
+            head
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            base
+        );
+        assert_eq!(service.branch_header(&root).unwrap().ahead, 0);
+    }
+
+    #[test]
+    fn prepare_push_absent_upstream_requires_a_named_remote() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        push_test_git(&root, &["branch", "--unset-upstream"]);
+        let service = GitSourceControlService::default();
+        for (remote, code) in [
+            (None, "git.push-remote-required"),
+            (Some("missing".into()), "git.remote-not-found"),
+            (Some(bare.to_string()), "git.remote-not-found"),
+            (Some("-bad".into()), "git.invalid-remote"),
+        ] {
+            let error = service
+                .prepare_push(
+                    &root,
+                    &GitPushIntent::UpstreamSync {
+                        branch: "main".into(),
+                        remote,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.downcast_ref::<GitServiceError>().unwrap().code, code);
+        }
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: Some("origin".into()),
+                },
+            )
+            .unwrap();
+        assert!(prepared.target.set_upstream);
+        assert_eq!(prepared.target.remote_branch, "main");
+        let operation = service
+            .start_operation(&root, &prepared_push_request(prepared))
+            .unwrap();
+        assert_eq!(
+            wait_operation(&service, &operation.operation_id).status,
+            GitOperationStatus::Succeeded
+        );
+        assert_eq!(
+            push_test_git(&root, &["config", "branch.main.merge"]),
+            "refs/heads/main"
+        );
+    }
+
+    #[test]
+    fn prepare_push_rejects_broken_and_local_upstream_without_fallback() {
+        for (args, expected) in [
+            (
+                vec!["config", "--unset-all", "branch.main.merge"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "--unset-all", "branch.main.remote"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "branch.main.remote", "missing"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "branch.main.remote", "."],
+                "git.push-upstream-unsupported",
+            ),
+            (
+                vec!["config", "branch.main.merge", ""],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "--unset-all", "remote.origin.fetch"],
+                "git.push-upstream-invalid",
+            ),
+            (
+                vec!["config", "--add", "branch.main.merge", "refs/heads/other"],
+                "git.push-upstream-invalid",
+            ),
+        ] {
+            let (_temp, _bare_temp, root, _bare) = push_repository();
+            push_test_git(&root, &args);
+            for intent in [
+                GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: Some("origin".into()),
+                },
+                GitPushIntent::PublishHead {
+                    branch: "main".into(),
+                    remote: "origin".into(),
+                },
+            ] {
+                let error = GitSourceControlService::default()
+                    .prepare_push(&root, &intent)
+                    .unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<GitServiceError>().unwrap().code,
+                    expected,
+                    "config {args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepare_push_requires_exact_source_current_sync_and_nonruntime_refs() {
+        let (_temp, _bare_temp, root, _bare) = push_repository();
+        push_test_git(&root, &["branch", "--no-track", "feature/parent/child"]);
+        push_test_git(&root, &["branch", "--no-track", "codex/runtime"]);
+        let service = GitSourceControlService::default();
+        for (intent, expected) in [
+            (
+                GitPushIntent::PublishHead {
+                    branch: "feature/parent".into(),
+                    remote: "origin".into(),
+                },
+                "git.branch-not-found",
+            ),
+            (
+                GitPushIntent::UpstreamSync {
+                    branch: "feature/parent/child".into(),
+                    remote: Some("origin".into()),
+                },
+                "git.push-branch-not-current",
+            ),
+            (
+                GitPushIntent::PublishHead {
+                    branch: "codex/runtime".into(),
+                    remote: "origin".into(),
+                },
+                "git.runtime-branch-push-forbidden",
+            ),
+        ] {
+            let error = service.prepare_push(&root, &intent).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<GitServiceError>().unwrap().code,
+                expected
+            );
+        }
+        push_test_git(
+            &root,
+            &["config", "branch.main.merge", "refs/heads/codex/runtime"],
+        );
+        let error = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<GitServiceError>().unwrap().code,
+            "git.runtime-branch-push-forbidden"
+        );
+    }
+
+    #[test]
+    fn managed_push_publish_noncurrent_head_preserves_existing_tracking() {
+        for existing_tracking in [false, true] {
+            let (_temp, _bare_temp, root, bare) = push_repository();
+            let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+            push_test_git(&root, &["checkout", "--no-track", "-b", "feature/head"]);
+            let head = commit_file(&root, "tracked.txt", "feature\n", "feature");
+            if existing_tracking {
+                push_test_git(&root, &["branch", "--set-upstream-to", "origin/main"]);
+            }
+            push_test_git(&root, &["checkout", "main"]);
+            let service = GitSourceControlService::default();
+            let prepared = service
+                .prepare_push(
+                    &root,
+                    &GitPushIntent::PublishHead {
+                        branch: "feature/head".into(),
+                        remote: "origin".into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(prepared.target.source_oid, head);
+            assert_eq!(prepared.target.remote_branch, "feature/head");
+            assert_eq!(prepared.target.set_upstream, !existing_tracking);
+            let operation = service
+                .start_operation(&root, &prepared_push_request(prepared))
+                .unwrap();
+            let finished = wait_operation(&service, &operation.operation_id);
+            assert_eq!(
+                finished.status,
+                GitOperationStatus::Succeeded,
+                "{finished:?}"
+            );
+            assert_eq!(
+                push_test_git(&bare, &["rev-parse", "refs/heads/feature/head"]),
+                head
+            );
+            assert_eq!(
+                push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+                base
+            );
+            assert_eq!(push_test_git(&root, &["branch", "--show-current"]), "main");
+            assert_eq!(
+                push_test_git(&root, &["config", "branch.feature/head.merge"]),
+                if existing_tracking {
+                    "refs/heads/main"
+                } else {
+                    "refs/heads/feature/head"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn managed_push_revalidates_noncurrent_source_and_tracking_after_admission() {
+        for change_source in [true, false] {
+            let (_temp, _bare_temp, root, bare) = push_repository();
+            push_test_git(&root, &["branch", "--no-track", "feature/head"]);
+            let new_oid = push_test_git(
+                &root,
+                &[
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-p",
+                    "HEAD",
+                    "-m",
+                    "alternate",
+                ],
+            );
+            let service = GitSourceControlService::default();
+            let prepared = service
+                .prepare_push(
+                    &root,
+                    &GitPushIntent::PublishHead {
+                        branch: "feature/head".into(),
+                        remote: "origin".into(),
+                    },
+                )
+                .unwrap();
+            let before_revision = prepared.expected_revision.clone();
+            let callback_root = root.clone();
+            let sink: GitOperationUpdateSink = Arc::new(move |operation| {
+                // Running is published after admission and before entering the write action.
+                if operation.status == GitOperationStatus::Running {
+                    if change_source {
+                        push_test_git(
+                            &callback_root,
+                            &["update-ref", "refs/heads/feature/head", &new_oid],
+                        );
+                    } else {
+                        push_test_git(
+                            &callback_root,
+                            &["config", "branch.feature/head.remote", "origin"],
+                        );
+                        push_test_git(
+                            &callback_root,
+                            &["config", "branch.feature/head.merge", "refs/heads/main"],
+                        );
+                    }
+                }
+            });
+            let operation = service
+                .start_operation_with_update_sink(
+                    &root,
+                    &prepared_push_request(prepared),
+                    Some(sink),
+                )
+                .unwrap();
+            let finished = wait_operation(&service, &operation.operation_id);
+            assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+            assert_eq!(finished.error.unwrap().code, "git.push-target-changed");
+            assert_eq!(
+                history_revision(&service.branch_header(&root).unwrap()),
+                before_revision,
+                "current HEAD revision cannot detect noncurrent source changes"
+            );
+            assert!(
+                !GitCommandRunner
+                    .run(&bare, &["show-ref", "--verify", "refs/heads/feature/head"])
+                    .unwrap()
+                    .success
+            );
+        }
+    }
+
+    #[test]
+    fn managed_push_revalidates_destination_even_when_sync_revision_is_unchanged() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+        push_test_git(&bare, &["update-ref", "refs/heads/other", &base]);
+        commit_file(&root, "tracked.txt", "next\n", "next");
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let before_revision = prepared.expected_revision.clone();
+        let callback_root = root.clone();
+        let sink: GitOperationUpdateSink = Arc::new(move |operation| {
+            if operation.status == GitOperationStatus::Running {
+                // Keep the same upstream display ref/OID, but change its native remote destination.
+                push_test_git(
+                    &callback_root,
+                    &[
+                        "config",
+                        "remote.origin.fetch",
+                        "+refs/heads/other:refs/remotes/origin/main",
+                    ],
+                );
+                push_test_git(
+                    &callback_root,
+                    &["config", "branch.main.merge", "refs/heads/other"],
+                );
+            }
+        });
+        let operation = service
+            .start_operation_with_update_sink(&root, &prepared_push_request(prepared), Some(sink))
+            .unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+        assert_eq!(finished.error.unwrap().code, "git.push-target-changed");
+        assert_eq!(
+            history_revision(&service.branch_header(&root).unwrap()),
+            before_revision
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            base
+        );
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/other"]),
+            base
+        );
+    }
+
+    #[test]
+    fn managed_push_revalidates_sync_revision_after_admission() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        let base = push_test_git(&root, &["rev-parse", "HEAD"]);
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let callback_root = root.clone();
+        let sink: GitOperationUpdateSink = Arc::new(move |operation| {
+            if operation.status == GitOperationStatus::Running {
+                commit_file(&callback_root, "tracked.txt", "late\n", "late");
+            }
+        });
+        let operation = service
+            .start_operation_with_update_sink(&root, &prepared_push_request(prepared), Some(sink))
+            .unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+        assert_eq!(finished.error.unwrap().code, "git.sync-ref-changed");
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            base
+        );
+    }
+
+    #[test]
+    fn prepared_push_rejects_missing_revision_and_modified_confirmation() {
+        let (_temp, _bare_temp, root, _bare) = push_repository();
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        for (field, expected) in [
+            ("revision", "git.push-confirmation-required"),
+            ("stale", "git.sync-ref-changed"),
+            ("target", "git.push-target-changed"),
+            ("source", "git.push-target-changed"),
+        ] {
+            let mut request = prepared_push_request(prepared.clone());
+            match field {
+                "revision" => request.expected_revision = None,
+                "stale" => request.expected_revision = Some("stale".into()),
+                _ => {
+                    if let GitOperationInput::Push { target, .. } = &mut request.operation {
+                        if field == "target" {
+                            target.remote_branch = "other".into();
+                        } else {
+                            target.source_oid = "unconfirmed".into();
+                        }
+                    }
+                }
+            }
+            let error = service.start_operation(&root, &request).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<GitServiceError>().unwrap().code,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn managed_push_non_fast_forward_is_not_forced() {
+        let (_temp, _bare_temp, root, bare) = push_repository();
+        push_test_git(&root, &["checkout", "--no-track", "-b", "other"]);
+        let remote_head = commit_file(&root, "tracked.txt", "remote\n", "remote");
+        push_test_git(
+            &root,
+            &["push", "origin", "refs/heads/other:refs/heads/main"],
+        );
+        push_test_git(&root, &["checkout", "main"]);
+        commit_file(&root, "tracked.txt", "local\n", "local");
+        let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "main".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let request = prepared_push_request(prepared);
+        assert_eq!(
+            operation_args(&request.operation),
+            [
+                "push",
+                "--porcelain",
+                "--",
+                "origin",
+                "refs/heads/main:refs/heads/main"
+            ]
+        );
+        let operation = service.start_operation(&root, &request).unwrap();
+        let finished = wait_operation(&service, &operation.operation_id);
+        assert_eq!(finished.status, GitOperationStatus::Failed, "{finished:?}");
+        assert_eq!(finished.error.unwrap().code, "git.non-fast-forward");
+        assert_eq!(
+            push_test_git(&bare, &["rev-parse", "refs/heads/main"]),
+            remote_head
+        );
+    }
+
+    #[test]
+    fn prepared_push_wire_contract_has_no_legacy_fallback() {
+        let prepared: GitPreparedPush = serde_json::from_value(serde_json::json!({
+            "intent": { "kind": "upstream-sync", "branch": "release/test", "remote": null },
+            "target": { "branch": "release/test", "sourceOid": "abc", "remote": "origin", "remoteBranch": "main", "setUpstream": false },
+            "expectedRevision": "confirmed",
+        })).unwrap();
+        let request = prepared_push_request(prepared);
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["kind"], "push");
+        assert_eq!(json["expectedRevision"], "confirmed");
+        assert_eq!(json["target"]["remoteBranch"], "main");
+        assert_eq!(
+            serde_json::from_value::<GitOperationRequest>(json).unwrap(),
+            request
+        );
+        assert!(
+            serde_json::from_value::<GitOperationRequest>(serde_json::json!({
+                "kind": "push", "remote": "origin", "branch": "main", "setUpstream": true,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_push_syncs_different_name_upstream() {
+        let (_temp, root) = initialized_repository();
+        let runner = GitCommandRunner;
+        let base = commit_file(&root, "tracked.txt", "base\n", "base");
+        assert!(
+            runner
+                .run(&root, &["branch", "-M", "main"])
+                .unwrap()
+                .success
+        );
+        let bare_temp = tempfile::tempdir().unwrap();
+        let bare = Utf8PathBuf::from_path_buf(bare_temp.path().join("remote.git")).unwrap();
+        assert!(
+            runner
+                .run(&root, &["init", "--bare", bare.as_str()])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&root, &["remote", "add", "origin", bare.as_str()])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&root, &["push", "origin", "main"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &[
+                        "checkout",
+                        "-b",
+                        "release/financeagent",
+                        "--track",
+                        "origin/main"
+                    ]
+                )
+                .unwrap()
+                .success
+        );
+        commit_file(&root, "tracked.txt", "one\n", "one");
+        let head = commit_file(&root, "tracked.txt", "two\n", "two");
+        let service = GitSourceControlService::default();
+        assert_eq!(service.branch_header(&root).unwrap().ahead, 2);
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: "release/financeagent".into(),
+                    remote: None,
+                },
+            )
+            .unwrap();
+        let push = service
+            .start_operation(
+                &root,
+                &GitOperationRequest {
+                    expected_revision: Some(prepared.expected_revision),
+                    operation: GitOperationInput::Push {
+                        intent: prepared.intent,
+                        target: prepared.target,
+                    },
+                },
+            )
+            .unwrap();
+        let operation = wait_operation(&service, &push.operation_id);
+        assert_eq!(
+            operation.status,
+            GitOperationStatus::Succeeded,
+            "{operation:?}"
+        );
+        let remote_main = runner
+            .run(&bare, &["rev-parse", "refs/heads/main"])
+            .unwrap()
+            .stdout;
+        let status = service.branch_header(&root).unwrap();
+        assert_eq!(
+            remote_main, head,
+            "Push succeeded but upstream main did not advance: base={base}, ahead={}, behind={}",
+            status.ahead, status.behind
+        );
+        assert_eq!((status.ahead, status.behind), (0, 0));
+        assert!(
+            !runner
+                .run(
+                    &bare,
+                    &["show-ref", "--verify", "refs/heads/release/financeagent"]
+                )
+                .unwrap()
+                .success
+        );
+    }
+
     #[test]
     fn managed_push_fetch_and_ff_only_pull_use_typed_arguments() {
         let (_temp, root) = initialized_repository();
@@ -6610,15 +8690,24 @@ mod tests {
             .unwrap()
             .stdout;
         let service = GitSourceControlService::default();
+        let prepared = service
+            .prepare_push(
+                &root,
+                &GitPushIntent::UpstreamSync {
+                    branch: branch.clone(),
+                    remote: Some("origin".into()),
+                },
+            )
+            .unwrap();
+        assert!(prepared.target.set_upstream);
         let push = service
             .start_operation(
                 &root,
                 &GitOperationRequest {
-                    expected_revision: None,
+                    expected_revision: Some(prepared.expected_revision),
                     operation: GitOperationInput::Push {
-                        remote: "origin".to_string(),
-                        branch: branch.clone(),
-                        set_upstream: true,
+                        intent: prepared.intent,
+                        target: prepared.target,
                     },
                 },
             )

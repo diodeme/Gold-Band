@@ -1,25 +1,32 @@
 import i18n, { type TFunction } from "i18next";
 import { initReactI18next } from "react-i18next";
-import type { AppErrorVm, WorkflowErrorVm } from "./types";
-import en from "./locales/en.json";
-import es from "./locales/es.json";
-import jaJP from "./locales/ja-JP.json";
-import koKR from "./locales/ko-KR.json";
-import ptBR from "./locales/pt-BR.json";
-import zhCN from "./locales/zh-CN.json";
-import zhTW from "./locales/zh-TW.json";
+import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
+import {
+  DESKTOP_LANGUAGE_OPTIONS,
+  i18nLanguage,
+  type SupportedLocaleTag,
+} from "./languages";
 
 export { i18nLanguage } from "./languages";
 
-const resources = {
-  "zh-CN": { translation: zhCN },
-  "zh-TW": { translation: zhTW },
-  en: { translation: en },
-  "ja-JP": { translation: jaJP },
-  "ko-KR": { translation: koKR },
-  "pt-BR": { translation: ptBR },
-  es: { translation: es },
+type LocaleModule = { default: Record<string, unknown> };
+
+const supportedLocaleTags = DESKTOP_LANGUAGE_OPTIONS.map(({ tag }) => tag);
+const localeLoaders: Record<SupportedLocaleTag, () => Promise<LocaleModule>> = {
+  "zh-CN": () => import("./locales/zh-CN.json"),
+  "zh-TW": () => import("./locales/zh-TW.json"),
+  en: () => import("./locales/en.json"),
+  "ja-JP": () => import("./locales/ja-JP.json"),
+  "ko-KR": () => import("./locales/ko-KR.json"),
+  "pt-BR": () => import("./locales/pt-BR.json"),
+  es: () => import("./locales/es.json"),
 };
+
+function localeTag(language: DesktopLanguage | SupportedLocaleTag): SupportedLocaleTag {
+  return supportedLocaleTags.includes(language as SupportedLocaleTag)
+    ? language as SupportedLocaleTag
+    : i18nLanguage(language as DesktopLanguage);
+}
 
 export function displayStatus(t: TFunction, value?: string | null) {
   if (!value) return "";
@@ -73,13 +80,38 @@ function isAppError(value: unknown): value is AppErrorVm {
   );
 }
 
-if (!i18n.isInitialized) {
-  void i18n.use(initReactI18next).init({
-    resources,
+if (i18n.isInitialized && typeof initReactI18next?.init === "function") {
+  initReactI18next.init(i18n);
+}
+
+export const i18nInitialized: Promise<void> = i18n.isInitialized
+  ? Promise.resolve()
+  : i18n.use(initReactI18next).init({
     lng: "zh-CN",
-    fallbackLng: "en",
+    fallbackLng: false,
+    supportedLngs: supportedLocaleTags,
+    load: "currentOnly",
     interpolation: { escapeValue: false },
-  });
+  }).then(() => undefined);
+
+export async function ensureI18nLanguage(
+  language: DesktopLanguage | SupportedLocaleTag,
+): Promise<SupportedLocaleTag> {
+  const tag = localeTag(language);
+  await i18nInitialized;
+  if (!i18n.hasResourceBundle(tag, "translation")) {
+    const catalog = await localeLoaders[tag]();
+    i18n.addResourceBundle(tag, "translation", catalog.default, true, true);
+  }
+  return tag;
+}
+
+export async function loadI18nLanguage(
+  language: DesktopLanguage | SupportedLocaleTag,
+): Promise<SupportedLocaleTag> {
+  const tag = await ensureI18nLanguage(language);
+  await i18n.changeLanguage(tag);
+  return tag;
 }
 
 export default i18n;

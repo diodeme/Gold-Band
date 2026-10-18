@@ -12,7 +12,7 @@ const conversationAssetPanelSource = readFileSync(
 );
 
 describe('WorkspaceImageCanvas interaction contract', () => {
-  it('zooms only for Ctrl-wheel/native pinch while retaining touch pinch and mouse drag', () => {
+  it('zooms for wheel/native pinch while retaining touch pinch and mouse drag', () => {
     expect(source).toContain('minScale={MIN_IMAGE_SCALE}');
     expect(source).toContain('maxScale={MAX_IMAGE_SCALE}');
     expect(source).toContain('wheel={{ disabled: true }}');
@@ -20,8 +20,8 @@ describe('WorkspaceImageCanvas interaction contract', () => {
     expect(source).toContain('allowLeftClickPan: true');
     expect(source).toContain('allowRightClickPan: false');
     expect(source).toContain('pinch={{ disabled: false }}');
-    expect(source).toContain("addEventListener('wheel', handleCtrlWheelZoom, { passive: false })");
-    expect(source).toContain("removeEventListener('wheel', handleCtrlWheelZoom)");
+    expect(source).toContain("addEventListener('wheel', handleWheelZoom, { passive: false })");
+    expect(source).toContain("removeEventListener('wheel', handleWheelZoom)");
     expect(source).toContain('ref={viewportRef}');
     expect(source).toContain('data-workspace-image-viewport="true"');
     expect(source).not.toContain('wrapperProps={{');
@@ -29,7 +29,7 @@ describe('WorkspaceImageCanvas interaction contract', () => {
 
   it('uses a semantic plain background and centers the image in both axes', () => {
     expect(source).toContain('bg-background active:cursor-grabbing');
-    expect(source).toContain('items-center justify-center p-5');
+    expect(source).toContain('items-center justify-center');
     expect(source).not.toContain('linear-gradient');
   });
 
@@ -52,8 +52,9 @@ describe('WorkspaceImageCanvas interaction contract', () => {
     expect(libraryCommit).toBeGreaterThan(authoritativeCommit);
   });
 
-  it('fits back to the CSS-constrained viewport size instead of the minimum zoom', () => {
-    expect(source).toContain("centerView(1, 180, 'easeOut')");
+  it('fits intrinsic dimensions from metadata or the loaded attachment', () => {
+    expect(source).toContain('fitImageScale({ width, height }, { width: viewport.clientWidth, height: viewport.clientHeight })');
+    expect(source).toContain("centerView(scale, duration, 'easeOut')");
     expect(source).not.toContain("centerView(MIN_IMAGE_SCALE, 180, 'easeOut')");
   });
 });

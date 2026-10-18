@@ -1,0 +1,31 @@
+# DeepSWE v1.1 hard subset: published per-task pass rate <= 30%
+# Source: https://deepswe.datacurve.ai/blog/deepswe-v1-1 (per-task v1.1 column)
+bandit-structured-nosec-directives 0
+clack-async-autocomplete-options 22
+effect-sse-httpapi-streaming 25
+eicrud-keyset-pagination-cursor 22
+expr-try-catch-errors 19
+gql-incremental-graphql-delivery 3
+happy-dom-deterministic-intersectionobserver 11
+httpx-streaming-json-iteration 28
+ink-grid-box-layout 17
+katex-multicolumn-array-spans 19
+kombu-virtual-queue-dead-lettering 22
+koota-deferred-mutation-buffer 22
+koota-pair-relation-tracking 17
+koota-query-predicates 22
+langchain-request-coalescing 25
+mashumaro-flattened-dataclass-fields 25
+obsidian-linter-auto-table-of-contents 0
+obsidian-linter-link-format-conversion 28
+oxvg-structural-selector-preservation 11
+participle-grammar-conflict-analysis 29
+pest-character-class-coalescing 14
+prometheus-transactional-reload-status 11
+python-statemachine-state-data-scoping 25
+quill-shared-toolbar-focus 19
+sqlfmt-create-table-ddl-formatting 25
+termenv-preserve-ansi-resets 9
+testem-bail-on-test-failure 14
+updo-policy-alerting 9
+vulture-persistent-analysis-cache 17

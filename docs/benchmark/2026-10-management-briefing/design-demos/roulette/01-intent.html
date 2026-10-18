@@ -1,0 +1,78 @@
+<!--
+assumptions: 三方向探索中的轮盘方向；已真实取秒 31，31 % 20 + 1 = 12。
+风格：PPT「图谱箭头企业版 / Diagram-Driven Isotype」。仅使用共同 design-spec 与 brand-spec 的事实和本地真实资产。
+reasoning: form 来自「单体执行与工作流 / AUTO 的分岔，最终必须汇合到独立测试与整体验收」。路径是执行框架的概念对照，不表示真实拓扑、Agent 数量、时间或性能比例。
+五问：意图页提出选择问题；会议投屏；可信而冷静；一个主问题、两种身份、三项判断；分岔与汇合是内容本身的母题。
+边界：1920×1080 固定画布，无页码、导航、动态数据、外部依赖或占位资产。浏览器验证由主 agent 统一执行。
+过度设计与性能：原生 HTML/CSS 与一张语义连接线 SVG；本地共享字体，无请求、缓存、状态或持续动画。
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, initial-scale=1">
+<title>什么时候值得让多个 Agent 协作？</title>
+<link rel="stylesheet" href="../assets/fonts.css">
+<style>
+:root{--paper:#F0F1EE;--ink:#101112;--blue:#244892;--muted:#525954;--rule:#CCD0C9}
+*{box-sizing:border-box}
+html{margin:0;background:var(--paper)}
+body{position:relative;width:1920px;height:1080px;margin:0;overflow:hidden;background:var(--paper);color:var(--ink);font-family:var(--font-brand);font-size:30px;font-weight:400;-webkit-font-smoothing:antialiased}
+h1,h2,p,figure{margin:0}h1,h2{font-weight:520}img{display:block;object-fit:contain}svg{overflow:visible}
+.top{position:absolute;left:88px;right:88px;top:56px;display:flex;justify-content:space-between;align-items:center;font-size:22px;letter-spacing:.025em}
+.brand{display:flex;align-items:center;gap:15px;font-weight:600;letter-spacing:-.025em}.brand img{width:48px;height:48px}
+.stage{color:var(--muted)}
+h1{position:absolute;left:88px;top:149px;font-size:104px;line-height:1.17;letter-spacing:-.025em;text-wrap:balance}
+h1 span{display:block}
+.subtitle{position:absolute;left:94px;top:423px;font-size:31px;line-height:1.6;letter-spacing:-.02em}
+.diagram{position:absolute;left:88px;top:531px;width:1744px;height:305px}
+.connections{position:absolute;inset:0;width:1744px;height:305px;color:var(--blue)}
+.identity{position:absolute;left:0;display:flex;align-items:center;gap:23px;height:76px;background:var(--paper);padding-right:24px}
+.identity img{width:66px;height:66px}.identity strong{font-size:37px;font-weight:520;letter-spacing:-.025em}.identity.claude{top:1px}.identity.gold{top:189px}
+.route-label{position:absolute;left:532px;min-width:180px;padding:9px 22px;text-align:center;background:var(--paper);font-size:29px;line-height:1.4;color:var(--ink)}
+.single{top:10px}.workflow{top:123px;border:2px solid var(--blue)}.auto{top:236px;border:2px solid var(--blue)}
+.gate{position:absolute;left:1342px;top:0;width:402px;height:305px;padding:34px 38px;border:3px solid var(--blue);border-top-width:10px;background:var(--paper)}
+.gate h2{font-size:39px;line-height:1.25;margin-bottom:31px;color:var(--blue)}
+.acceptance{font-size:34px;line-height:1.45;letter-spacing:-.025em}.acceptance span{display:block}.acceptance span+span{margin-top:20px;padding-top:19px;border-top:1px solid var(--rule)}
+.criteria{position:absolute;left:88px;right:88px;top:887px;border-top:2px solid var(--blue);padding-top:27px;display:grid;grid-template-columns:1fr 1fr;gap:75px}
+.criterion{display:flex;align-items:baseline;gap:35px}.criterion h2{font-size:30px;color:var(--blue);white-space:nowrap}.criterion p{font-size:30px;line-height:1.5}
+.note{position:absolute;left:88px;bottom:40px;font-size:21px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<header class="top">
+<p class="stage">阶段性结果 · 2026.10.13</p>
+<div class="brand"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><span>Gold Band</span></div>
+</header>
+<main>
+<h1><span>什么时候值得</span><span>让多个 Agent 协作？</span></h1>
+<p class="subtitle">从单体执行到工作流与 AUTO，质量收益能否覆盖额外的 token 和时间。</p>
+<figure class="diagram" aria-label="Claude Code 单体执行与 Gold Band 工作流、AUTO 两类路径，汇合到独立测试与整体验收；路径不表示时长或 Agent 数量。">
+<svg class="connections" viewBox="0 0 1744 305" aria-hidden="true">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 8 5 L 1 9" fill="none" stroke="currentColor" stroke-width="1.7"/></marker></defs>
+<g fill="none" stroke="currentColor" stroke-width="3">
+<path d="M 348 40 H 1180 Q 1220 40 1220 80 V 122 Q 1220 152 1250 152 H 1330" marker-end="url(#arrow)"/>
+<path d="M 314 228 H 426"/>
+<path d="M 426 228 V 174 Q 426 154 446 154 H 532"/>
+<path d="M 426 228 V 247 Q 426 267 446 267 H 532"/>
+<path d="M 712 154 H 1012 Q 1042 154 1042 184 V 210"/>
+<path d="M 712 267 H 1012 Q 1042 267 1042 237 V 210"/>
+<path d="M 1042 210 H 1178 Q 1220 210 1220 170 V 152"/>
+</g>
+<g fill="currentColor"><circle cx="426" cy="228" r="7"/><circle cx="1042" cy="210" r="7"/><circle cx="1220" cy="152" r="7"/></g>
+</svg>
+<div class="identity claude"><img src="../assets/claude-code.svg" alt="Claude Code 标志"><strong>Claude Code</strong></div>
+<div class="identity gold"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><strong>Gold Band</strong></div>
+<p class="route-label single">单体执行</p>
+<p class="route-label workflow">工作流</p>
+<p class="route-label auto">AUTO</p>
+<div class="gate"><h2>质量</h2><p class="acceptance"><span>独立测试</span><span>整体验收</span></p></div>
+</figure>
+<div class="criteria">
+<section class="criterion"><h2>成本</h2><p>token 与端到端耗时</p></section>
+<section class="criterion"><h2>适用边界</h2><p>从局部问题到长程工程</p></section>
+</div>
+</main>
+<footer class="note">执行框架对照，不是模型能力排名。</footer>
+</body>
+</html>

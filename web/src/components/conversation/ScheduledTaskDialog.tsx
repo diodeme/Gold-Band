@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { TimezoneCombobox } from '@/components/scheduled-tasks/TimezoneCombobox';
 import { ScheduledTimePicker } from '@/components/scheduled-tasks/ScheduledTimePicker';
+import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import {
   analyzeScheduledLocalTime,
   buildScheduledScheduleInput,
@@ -29,9 +30,12 @@ import type {
   ScheduledScheduleSpec,
   ScheduledSessionPolicy,
   ScheduledTaskConfig,
+  UserPromptQuote,
 } from '@/types';
 
 export type { ScheduledTaskConfig } from '@/types';
+
+const EMPTY_QUOTES: readonly UserPromptQuote[] = [];
 
 export type ScheduledTaskInitialConfig = {
   schedule: ScheduledScheduleSpec;
@@ -42,11 +46,14 @@ export type ScheduledTaskInitialConfig = {
 type ScheduledTaskDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (config: ScheduledTaskConfig, content?: string) => Promise<void>;
+  /** `content` and the kept `quotes` are passed only when the dialog shows the content. */
+  onSave: (config: ScheduledTaskConfig, content?: string, quotes?: UserPromptQuote[]) => Promise<void>;
   allowContinuous: boolean;
   initialConfig?: ScheduledTaskInitialConfig | null;
   draftConfig?: ScheduledTaskConfig | null;
   initialContent?: string;
+  /** Quotes frozen with the task; editing can only remove them. */
+  initialQuotes?: readonly UserPromptQuote[];
   showContent?: boolean;
   saveDisabled?: boolean;
   presentation?: 'dialog' | 'workspace';
@@ -100,6 +107,7 @@ export function ScheduledTaskDialog({
   initialConfig,
   draftConfig,
   initialContent,
+  initialQuotes = EMPTY_QUOTES,
   showContent = false,
   saveDisabled = false,
   presentation = 'dialog',
@@ -120,6 +128,7 @@ export function ScheduledTaskDialog({
   const [sessionPolicy, setSessionPolicy] = useState<ScheduledSessionPolicy>('new');
   const [saving, setSaving] = useState(false);
   const [content, setContent] = useState('');
+  const [quotes, setQuotes] = useState<readonly UserPromptQuote[]>(EMPTY_QUOTES);
 
   const applyAuthoringSchedule = (schedule: ScheduledScheduleInput) => {
     setTimezone(schedule.timezone);
@@ -202,6 +211,7 @@ export function ScheduledTaskDialog({
   useEffect(() => {
     if (!open) return;
     setContent(initialContent ?? '');
+    setQuotes(initialQuotes);
     const config = initialConfig ?? draftConfig;
     if (!config) {
       resetNewTask();
@@ -211,7 +221,7 @@ export function ScheduledTaskDialog({
     setSessionPolicy(config.sessionPolicy);
     if (initialConfig) applyPersistedSchedule(initialConfig.schedule);
     else if (draftConfig) applyAuthoringSchedule(draftConfig.schedule);
-  }, [draftConfig, initialConfig, initialContent, open]);
+  }, [draftConfig, initialConfig, initialContent, initialQuotes, open]);
 
   const timezoneValid = useMemo(() => getScheduledTimezones().includes(timezone), [timezone]);
   const atDateValid = useMemo(
@@ -310,7 +320,7 @@ export function ScheduledTaskDialog({
         schedule,
         overlapPolicy: queueProtection ? 'skip_when_running' : 'retry_when_busy',
         sessionPolicy: allowContinuous ? sessionPolicy : 'new',
-      }, showContent ? content : undefined);
+      }, showContent ? content : undefined, showContent ? [...quotes] : undefined);
       onOpenChange(false);
     } finally {
       setSaving(false);
@@ -340,6 +350,15 @@ export function ScheduledTaskDialog({
               {t('scheduled.dialog.content')}
               <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-28 resize-y text-sm" />
             </label>
+          ) : null}
+          {showContent && quotes.length > 0 ? (
+            <ComposerContextArea
+              quotes={quotes}
+              attachments={[]}
+              onRemoveQuote={(id) => setQuotes((current) => current.filter((quote) => quote.id !== id))}
+              onRemoveAttachment={() => undefined}
+              onPreviewAttachment={() => undefined}
+            />
           ) : null}
           <Tabs value={tab} onValueChange={(value) => setTab(value as ScheduledAuthoringTab)}>
             <TabsList className="grid w-full grid-cols-3">

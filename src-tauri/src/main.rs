@@ -5,6 +5,7 @@ mod avatar;
 mod browser;
 mod browser_bookmarks;
 mod browser_history;
+mod browser_local_files;
 mod browser_location;
 mod browser_ua;
 mod builtin_mcp;
@@ -23,7 +24,9 @@ mod memory;
 mod metrics;
 mod multica;
 mod notifications;
+mod npx_cache;
 mod personal_analytics;
+mod remote_image_trust;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -43,12 +46,12 @@ use commands::{
     check_update_manual, choose_workspace, clear_desktop_avatar, connect_multica,
     continue_conversation_runtime, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
-    dismiss_update_announcement, doctor_agent, download_and_install_update, execute_git_mutation,
-    get_acp_activity_detail, get_acp_image, get_acp_raw_frames, get_acp_session,
-    get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
-    get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot,
-    get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
+    delete_profile, delete_skill, delete_workflow_template, disconnect_multica, doctor_agent,
+    execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail, get_acp_image,
+    get_acp_raw_frames, get_acp_session, get_acp_tool_detail, get_agent_binding_usage,
+    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
+    get_file_comparison, get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
+    get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,
     get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
     get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
@@ -72,11 +75,11 @@ use commands::{
     set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
     start_git_operation, start_git_state_monitor, start_github_login,
-    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
-    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
-    update_auto_template, update_mcp_server, update_notification_attention, update_profile,
-    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
-    write_skill,
+    start_github_pull_request_create, start_run, start_update_install, stop_active_session,
+    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_skill_sync_targets, update_workflow_template,
+    use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
@@ -86,13 +89,13 @@ use commands_conversation::{
     get_conversation_run_mode, get_conversation_run_summary_page,
     get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
-    get_supported_attachment_extensions, list_scheduled_execution_history, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation,
-    preflight_conversation_execution_plan_save, recover_conversation_execution_plan_operation,
-    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
-    run_scheduled_task_now, save_conversation_execution_plan, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    save_scheduled_runtime_settings, search_conversation_tasks, set_scheduled_task_enabled,
+    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, preflight_conversation_execution_plan_save,
+    recover_conversation_execution_plan_operation, remove_conversation_workspace,
+    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
+    save_conversation_execution_plan, save_conversation_preference, save_conversation_run_mode,
+    save_desktop_ui_mode, save_last_conversation_workspace, save_scheduled_runtime_settings,
+    search_conversation_tasks, set_conversation_resident, set_scheduled_task_enabled,
     show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
     sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
     validate_conversation_create,
@@ -215,10 +218,10 @@ fn run() -> anyhow::Result<()> {
             },
         )
         // Browser local HTML is served through the same bounded custom-protocol
-        // mechanism so the child WebView keeps a single authorized directory
-        // instead of relying on file:// (unsupported on WebView2 navigation).
+        // mechanism instead of file:// (unsupported on WebView2 navigation); each
+        // page reads only the directories its grant covers.
         .register_asynchronous_uri_scheme_protocol(
-            browser::BROWSER_LOCAL_FILE_PROTOCOL,
+            browser_local_files::BROWSER_LOCAL_FILE_PROTOCOL,
             |protocol_context, request, responder| {
                 let app = protocol_context.app_handle().clone();
                 let label = protocol_context.webview_label().to_string();
@@ -450,6 +453,11 @@ fn run() -> anyhow::Result<()> {
             update_agent,
             delete_agent,
             doctor_agent,
+            fetch_agent_model_config,
+            npx_cache::preview_agent_cache_repair,
+            npx_cache::repair_agent_cache,
+            remote_image_trust::trust_remote_image_hosts,
+            remote_image_trust::revoke_remote_image_host,
             get_task_list,
             get_profiles,
             get_profile,
@@ -482,6 +490,7 @@ fn run() -> anyhow::Result<()> {
             resolve_turn_attachment_file,
             get_acp_activity_detail,
             get_acp_tool_detail,
+            commands::get_acp_compaction_summary,
             get_acp_image,
             commands::get_acp_activity_images,
             renew_acp_session_lease,
@@ -501,16 +510,24 @@ fn run() -> anyhow::Result<()> {
             commands::get_composer_history_text,
             start_run,
             get_git_capability,
+            commands::record_source_control_load,
+            commands::record_source_control_watch,
+            commands::bootstrap_source_control,
             initialize_git_repository,
             get_source_control_snapshot,
+            commands::get_source_control_overview,
+            commands::get_source_control_statistics,
+            commands::get_source_control_remotes,
             get_git_branch_picker_snapshot,
             change_git_branch,
             get_git_history,
             get_git_commit_detail,
             get_git_commit_review,
+            get_git_commit_review_statistics,
             get_git_commit_reachability,
             execute_git_mutation,
             get_git_comparison,
+            commands::prepare_git_push,
             start_git_operation,
             start_git_state_monitor,
             stop_git_state_monitor,
@@ -569,9 +586,8 @@ fn run() -> anyhow::Result<()> {
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,
-            dismiss_update_announcement,
             check_update_manual,
-            download_and_install_update,
+            start_update_install,
             search_acp_prompts,
             search_acp_sessions,
             search_tasks,
@@ -605,6 +621,7 @@ fn run() -> anyhow::Result<()> {
             update_task_metadata,
             delete_conversation_task,
             pin_conversation,
+            set_conversation_resident,
             unpin_conversation,
             reorder_pinned_conversations,
             search_conversation_tasks,
@@ -620,18 +637,22 @@ fn run() -> anyhow::Result<()> {
             sync_conversation_workspace,
             save_conversation_preference,
             save_last_conversation_workspace,
-            get_supported_attachment_extensions,
             open_in_file_manager,
             list_conversation_directory,
             open_conversation_directory_path_in_file_manager,
             read_conversation_directory_file,
             workspace_files::list_workspace_directory,
             workspace_files::open_workspace_path_in_file_manager,
+            workspace_files::open_file_with_system_app,
             workspace_files::search_workspace_files,
             workspace_files::resolve_workspace_file_link,
             workspace_files::read_file_resource,
             workspace_files::resolve_markdown_image,
             workspace_files::write_file_resource,
+            workspace_files::create_workspace_entry,
+            workspace_files::rename_workspace_entry,
+            workspace_files::delete_workspace_entry,
+            workspace_files::restore_workspace_entry,
             workspace_files::release_workspace_file_preview,
             workspace_files::renew_external_file_access,
             workspace_files::release_external_file_access,
@@ -639,6 +660,7 @@ fn run() -> anyhow::Result<()> {
             workspace_files::stop_workspace_file_watch,
             browser::browser_create_page,
             browser::browser_resolve_local_html,
+            browser::browser_open_in_system_browser,
             browser::browser_set_bounds,
             browser::browser_show_page,
             browser::browser_hide_page,
@@ -648,6 +670,7 @@ fn run() -> anyhow::Result<()> {
             browser::browser_address_suggestion_action,
             browser::browser_address_suggestions_ready,
             browser::browser_navigate,
+            browser::browser_allow_local_access,
             browser::browser_go_back,
             browser::browser_go_forward,
             browser::browser_reload,

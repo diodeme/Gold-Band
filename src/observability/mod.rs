@@ -20,7 +20,6 @@ use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 use crate::config::{RuntimeConfig, RuntimeLogLevel};
 use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
-use crate::inspect::render_run_status;
 use crate::runtime::RunState;
 use crate::storage::{GoldBandPaths, append_jsonl, ensure_parent_dir, write_json};
 
@@ -360,7 +359,7 @@ pub fn runtime_log_filter(metadata: &tracing::Metadata<'_>) -> bool {
 }
 
 pub fn progress(run_summary: &str) {
-    tracing::info!(target: PROGRESS_TARGET, "{}", render_run_status(run_summary));
+    tracing::info!(target: PROGRESS_TARGET, "{run_summary}");
 }
 
 pub fn write_run_progress_best_effort(
@@ -570,6 +569,34 @@ mod tests {
         }
     }
 
+    struct DropAcknowledgedWriter<W> {
+        inner: Option<W>,
+        dropped: mpsc::Sender<()>,
+    }
+
+    impl<W: Write> Write for DropAcknowledgedWriter<W> {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.inner
+                .as_mut()
+                .expect("writer remains available until drop")
+                .write(buffer)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner
+                .as_mut()
+                .expect("writer remains available until drop")
+                .flush()
+        }
+    }
+
+    impl<W> Drop for DropAcknowledgedWriter<W> {
+        fn drop(&mut self) {
+            drop(self.inner.take());
+            let _ = self.dropped.send(());
+        }
+    }
+
     #[test]
     fn runtime_log_queue_drops_at_capacity_without_backpressure() {
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -603,13 +630,21 @@ mod tests {
     fn async_runtime_log_flushes_and_keeps_configured_rotated_backups() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let log_path = temp.path().join("runtime.log");
-        let (mut writer, guard) = runtime_log_channel(runtime_log_writer(&log_path, 8, 4), 16);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let rotating_writer = DropAcknowledgedWriter {
+            inner: Some(runtime_log_writer(&log_path, 8, 4)),
+            dropped: dropped_tx,
+        };
+        let (mut writer, guard) = runtime_log_channel(rotating_writer, 16);
 
         writer
             .write_all(b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH")
             .expect("enqueue log data");
         drop(writer);
         drop(guard);
+        dropped_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("logging worker closes the rotating writer");
 
         assert!(log_path.exists());
         assert!(std::fs::metadata(&log_path).unwrap().len() <= 8);

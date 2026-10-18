@@ -112,16 +112,31 @@ pub fn write_pending_permission(
     params: Value,
     created_at: String,
 ) -> Result<()> {
+    write_pending_permission_with_identity(
+        attempt_dir,
+        AcpPromptInteractionIdentity::new(
+            request_id,
+            AcpPromptInteractionKind::Permission,
+            turn_id,
+            prompt_event_id,
+        ),
+        params,
+        created_at,
+    )
+}
+
+pub fn write_pending_permission_with_identity(
+    attempt_dir: &Utf8Path,
+    identity: AcpPromptInteractionIdentity,
+    params: Value,
+    created_at: String,
+) -> Result<()> {
+    let request_id = &identity.interaction_id;
     let path = pending_permission_file(attempt_dir, request_id);
     write_pending_prompt_interaction(
         &path,
         &PendingAcpPromptInteractionState {
-            identity: AcpPromptInteractionIdentity::new(
-                request_id,
-                AcpPromptInteractionKind::Permission,
-                turn_id,
-                prompt_event_id,
-            ),
+            identity,
             payload: params,
             created_at,
             timeline_identity: None,
@@ -510,8 +525,11 @@ mod tests {
             read_json(&pending_permission_file(&attempt_dir, "request-1")).unwrap();
         assert_eq!(pending.identity.interaction_id, "request-1");
         assert_eq!(pending.identity.kind, AcpPromptInteractionKind::Permission);
-        assert_eq!(pending.identity.turn_id, "turn-2");
-        assert_eq!(pending.identity.prompt_event_id, "prompt-event-2");
+        assert_eq!(pending.identity.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(
+            pending.identity.prompt_event_id.as_deref(),
+            Some("prompt-event-2")
+        );
     }
 
     #[test]

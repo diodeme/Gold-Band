@@ -14,6 +14,7 @@ import {
 } from '@/components/workspace/right-workspace-context';
 import { WorkspaceFileLinkProvider } from '@/components/workspace/files/WorkspaceFileLinkProvider';
 import { fileContentStore } from '@/components/workspace/files/file-content-store';
+import type { SessionWorkLocationVm } from '@/types';
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
@@ -36,7 +37,7 @@ function FileLinkHarness() {
   return (
     <>
       <button type="button" onClick={() => handler?.openLocalFile('docs/README.md#L47')}>open line</button>
-      <output data-line={file?.target?.line ?? ''} data-target-revision={file?.targetRevision ?? 0} />
+      <output data-line={file?.target?.line ?? ''} data-target-revision={file?.targetRevision ?? 0} data-workspace-path={file?.workspacePath ?? ''} />
     </>
   );
 }
@@ -108,13 +109,55 @@ describe('workspace file link target lifecycle', () => {
       await act(async () => container.querySelector<HTMLAnchorElement>('a')?.click());
 
       expect(resolveWorkspaceFileLink).toHaveBeenCalledWith(
-        'project-1',
+        { projectId: 'project-1', workspacePath: null },
         '/D:/repo/roadmap.md:12',
         undefined,
       );
       expect(container.querySelector('output')?.dataset.tabCount).toBe('0');
       expect(container.querySelector('[role="alert"]')?.getAttribute('data-workspace-file-link-error'))
         .toBe('workspace-file.path-invalid');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('resolves links in the session worktree and never falls back to the project root', async () => {
+    vi.mocked(resolveWorkspaceFileLink).mockResolvedValue({
+      locator: {
+        projectId: 'project-1',
+        canonicalPath: 'D:/repo/.wt/a/docs/README.md',
+        relativePath: 'docs/README.md',
+        scope: 'workspace',
+      },
+      target: null,
+      externalAccessGrant: null,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const scope = createDraftConversationWorkspaceScope('project-1');
+    const store = new ConversationWorkspaceStore();
+    const render = (workLocation: SessionWorkLocationVm) => root.render(
+      <RightWorkspaceProvider scope={scope} store={store} workLocation={workLocation}>
+        <WorkspaceFileLinkProvider>
+          <FileLinkHarness />
+        </WorkspaceFileLinkProvider>
+      </RightWorkspaceProvider>,
+    );
+    try {
+      await act(async () => render({ kind: 'worktree', path: 'D:/repo/.wt/a', branch: 'gb-a' }));
+      await act(async () => container.querySelector('button')!.click());
+      expect(resolveWorkspaceFileLink).toHaveBeenCalledWith(
+        { projectId: 'project-1', workspacePath: 'D:/repo/.wt/a' },
+        'docs/README.md#L47',
+        undefined,
+      );
+      expect(container.querySelector('output')?.dataset.workspacePath).toBe('D:/repo/.wt/a');
+
+      vi.mocked(resolveWorkspaceFileLink).mockClear();
+      await act(async () => render({ kind: 'unavailable', reason: 'released', path: 'D:/repo/.wt/a' }));
+      await act(async () => container.querySelector('button')!.click());
+      expect(resolveWorkspaceFileLink).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
     }

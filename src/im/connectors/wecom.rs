@@ -1704,10 +1704,7 @@ fn terminal_title_with_leading_ref(
 ) -> String {
     let Some(display_ref) = display_ref else {
         return if state == ImMessageState::Handled && !summary.is_empty() {
-            let prefix = match locale {
-                ImLocale::ZhCn => "已处理：",
-                ImLocale::En => "Handled: ",
-            };
+            let prefix = super::localized(locale, "im.state.handledPrefix");
             format!("{prefix}{}", truncate_chars(summary, 22))
         } else {
             message_state_label(locale, state).to_owned()
@@ -1717,10 +1714,7 @@ fn terminal_title_with_leading_ref(
     if state != ImMessageState::Handled || summary.is_empty() {
         return format!("{id_prefix}{}", message_state_label(locale, state));
     }
-    let state_prefix = match locale {
-        ImLocale::ZhCn => "已处理：",
-        ImLocale::En => "Handled: ",
-    };
+    let state_prefix = super::localized(locale, "im.state.handledPrefix");
     let max_summary_chars = 26usize
         .saturating_sub(id_prefix.chars().count())
         .saturating_sub(state_prefix.chars().count());

@@ -678,7 +678,7 @@
             },
             {
               "tag": "markdown",
-              "content": "**Submission**\n\n- 部署环境: 生产\n- 部署环境: 同名选项、同名选项\n- 部署环境: 第一行\n第二行\n- 部署环境: 自定义单选\n- 部署环境: 自定义多选\n\n- Result: Form submitted\n\n- Handled on: Feishu"
+              "content": "**Submission**\n\n- 部署环境: 生产\n- 部署环境: 同名选项, 同名选项\n- 部署环境: 第一行\n第二行\n- 部署环境: 自定义单选\n- 部署环境: 自定义多选\n\n- Result: Form submitted\n\n- Handled on: Feishu"
             }
           ]
         }
@@ -1579,7 +1579,7 @@
             },
             {
               "tag": "markdown",
-              "content": "**Submission**\n\n- 部署环境: 生产\n- 部署环境: 同名选项、同名选项\n- 部署环境: 第一行\n第二行\n- 部署环境: 自定义单选\n- 部署环境: 自定义多选\n\n- Result: Form submitted\n\n- Handled on: Feishu"
+              "content": "**Submission**\n\n- 部署环境: 生产\n- 部署环境: 同名选项, 同名选项\n- 部署环境: 第一行\n第二行\n- 部署环境: 自定义单选\n- 部署环境: 自定义多选\n\n- Result: Form submitted\n\n- Handled on: Feishu"
             }
           ]
         }

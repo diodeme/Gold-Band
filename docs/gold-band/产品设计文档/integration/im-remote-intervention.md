@@ -332,7 +332,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - 投递：IM_PROTOCOL_INVALID、IM_STORAGE_UNAVAILABLE、IM_QUEUE_CAPACITY_EXCEEDED、IM_MESSAGE_UPDATE_UNAVAILABLE。
 - 扫码：IM_SCAN_CANCELLED、IM_SCAN_EXPIRED、IM_SCAN_DENIED、IM_SCAN_NETWORK_UNAVAILABLE、IM_SCAN_SESSION_INVALID 等；完整值以 ImErrorCode 与扫码错误类型为准。
 
-设置页七语言 catalog 映射用户文案；平台出站 renderer 使用现有 ZhCn/En 消息资源。缺权限/凭据失效引导重新授权，网络故障引导重连；更新不可用是原消息生命周期问题，不与鉴权或协议错误混为一类。
+设置页七语言 catalog 映射用户文案。平台出站 renderer 与回调回包的卡片文案来自 `src/im/locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json` 七语言 keyed 资源表，编译期嵌入；`ImLocale` 就是桌面语言 `DesktopLanguage`，未设置时与桌面启动一致取系统语言，飞书回调回包使用接收点击的会话语言，不再各自兜底为中文或英文。列表分隔符、“已处理”前缀、未知权限选项的“桌面处理”等也属于资源表；zh-CN 是语义来源，单测校验七语言 key、`{ref}`/`{source}` 占位符和 Agent、ACP、Run 等保留词一致。缺权限/凭据失效引导重新授权，网络故障引导重连；更新不可用是原消息生命周期问题，不与鉴权或协议错误混为一类。
 
 ## 12. 验收标准
 

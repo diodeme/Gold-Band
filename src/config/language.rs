@@ -1,6 +1,16 @@
 use super::DesktopLanguage;
 
 impl DesktopLanguage {
+    pub const ALL: [Self; 7] = [
+        Self::ZhCn,
+        Self::ZhTw,
+        Self::En,
+        Self::JaJp,
+        Self::KoKr,
+        Self::PtBr,
+        Self::Es,
+    ];
+
     /// Map a BCP 47 tag onto the supported catalog. Unmatched tags become English.
     /// Bare `zh` and `zh-Hans` are Simplified Chinese. Traditional script and
     /// Taiwan, Hong Kong, and Macau tags are Traditional Chinese. Portuguese

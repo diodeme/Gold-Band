@@ -49,6 +49,15 @@
 - 已知验证边界：扩展前端重入测试有既有失败 `atomically rejoins the live head with replay received during the latest-page request`（期待 Editing · files）；隔离加载 HEAD 原源码也失败，非本次引入。未运行付费线上模型、真实 provider 嵌套子会话、父 idle 后后台子任务取消、跨进程重启子会话或修复 task-314 旧数据；官方重载后继续子会话的能力仍受上游实现限制。
 - 过度设计与性能复核：没有新依赖、任务数据库、独立执行器、状态机、历史扫描器或后台调度器。复用原消息队列、分支身份、timeline 和索引；每个状态增量只更新所属分支。子路由/绑定上限 1024、待关联公告 64 条且单条最多 16 KiB；已绑定正文按 ID 直接路由，新增别名容量核查和 owner 清理才扫描当前连接路由，未在逐 chunk 热路径增加历史 I/O、N+1 查询或无界缓存。必要映射是有界协议投影，不是平行 canonical state；未发现需新增专项 benchmark 的性能风险。
 
+## 2026-10-18：Token 累计重复计数（身份空间不一致）
+
+- 现场：task-342 四轮 prompt 均无重试，tooltip 总计 3.2M，逐轮相加为 2,288,305；前两轮在 journal 中各有一条 `recovered_from_raw` 别名完成记录。
+- 根因（设计缺陷）：f7b4ea44 起 journal 以每次 RPC 的 transaction id 记账，而 `repair_attempt_usage` 仍把 timeline 按逻辑 `promptId` 读出的开始记录与 journal 按字符串合并，两套身份永不相等，每轮 prompt 都多出一个“未完成”别名。只要新一轮 prompt 在新建 runtime 上开始（Direct 空闲超过回收时间后继续对话即会发生），raw 恢复就把上一轮的同一 RPC 再记到别名上。
+- 修复：`read_indexed_prompt_starts` 返回 prompt 事件 id 与逻辑 id；journal 已有以该事件 id 为前缀的 transaction 时不再补 timeline 开始记录，逻辑 id 仅为 journal 缺失开始记录的兜底命名。transaction id 格式移到 `usage::prompt_usage_transaction_id` 统一定义。完成记录、补记守卫与 metrics 分段按 `turn_seq`（一次 RPC 的 operation seq）去重，非补记记录优先，已写坏的旧 journal 读取时自动纠正，无需迁移。原计划按 request id 去重被否定：task-342 第二、三轮的 request id 都是 7（每次新连接从头编号）。
+- RED → GREEN：`repair_does_not_recount_a_journaled_transaction_under_its_logical_prompt_id`（recovered_turns 1 → 0）、`journal_completions_of_one_rpc_count_once_even_under_an_alias`（总计 1,600,474 → 800,237）。task-342 数据副本修复后总计 2,288,305、输入 46、输出 23,086，原数据未改动。`cargo test -p gold-band --lib -- acp:: metrics usage` 672 通过，3 项既有失败与基线一致；`cargo check -p gold-band-desktop` 通过。
+- tooltip 的“不含后台唤醒的消耗”前增加 `CircleAlert` 警告图标（`text-gold-warning`），用量面板测试 28 项与类型检查通过。
+- 自评审：未新增状态或持久字段，只对齐身份并在已读出的记录上做 HashMap 去重，规模为该 attempt 的 RPC 数。
+
 ## 2026-10-15：后台唤醒的计时、Token 说明与引用配套
 
 - 现场：task-105 的 prompt 实际 13 秒，约 10 分钟后定时唤醒工作 18 秒；时间线会话累计记为 658 秒（= 最后后台事件 − prompt 开始），`acp.snapshot.json` 仍是 13 秒、累计费用 $0.0761（raw 已到 $0.0945）。后台回复最后一条消息一直处于流式状态，不能引用或复制。

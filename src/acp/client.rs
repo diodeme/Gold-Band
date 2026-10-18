@@ -102,14 +102,6 @@ fn canonical_prompt_event_identity(
         })
 }
 
-fn prompt_usage_transaction_id(
-    prompt_event_id: &str,
-    retry_attempt: u32,
-    operation_seq: u64,
-) -> String {
-    format!("{prompt_event_id}:attempt-{retry_attempt}:{operation_seq}")
-}
-
 fn scheduled_trigger_for_prompt(seq: u64, prompt: &PromptBundle) -> Option<AcpUiEvent> {
     prompt
         .scheduled_trigger
@@ -417,7 +409,7 @@ use crate::acp::timeline::{
 };
 use crate::acp::usage::{
     AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
-    append_prompt_started, repair_attempt_usage,
+    append_prompt_started, prompt_usage_transaction_id, repair_attempt_usage,
 };
 use crate::config::{
     AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,

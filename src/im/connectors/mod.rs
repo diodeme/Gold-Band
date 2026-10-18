@@ -236,96 +236,52 @@ fn normalized_prose(value: &str) -> String {
 }
 
 pub(crate) fn message_state_label(locale: ImLocale, state: super::ImMessageState) -> &'static str {
-    match (locale, state) {
-        (ImLocale::ZhCn, super::ImMessageState::Handled) => "已处理",
-        (ImLocale::ZhCn, super::ImMessageState::Expired) => "操作已过期",
-        (ImLocale::ZhCn, super::ImMessageState::Failed) => "处理失败，请在桌面端查看",
-        (ImLocale::En, super::ImMessageState::Handled) => "Handled",
-        (ImLocale::En, super::ImMessageState::Expired) => "This action has expired",
-        (ImLocale::En, super::ImMessageState::Failed) => "Failed. Open the desktop app for details",
-    }
+    localized(
+        locale,
+        match state {
+            super::ImMessageState::Handled => "im.state.handled",
+            super::ImMessageState::Expired => "im.state.expired",
+            super::ImMessageState::Failed => "im.state.failed",
+        },
+    )
 }
 
 pub(crate) fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String {
-    match action {
+    let key = match action {
         InterventionAllowedAction::PermissionOption {
             option_id,
             permission_kind,
             ..
-        } => {
-            let qualifier = permission_action_qualifier(option_id, action_name(action));
-            match (locale, qualifier) {
-                (_, PermissionActionQualifier::BypassPermissions) => {
-                    localized(locale, "im.permission.action.bypass").into()
-                }
-                (_, PermissionActionQualifier::AutoEdit) => {
-                    localized(locale, "im.permission.action.autoEdit").into()
-                }
-                (_, PermissionActionQualifier::AutoMode) => {
-                    localized(locale, "im.permission.action.autoMode").into()
-                }
-                (_, PermissionActionQualifier::ManualApproval) => {
-                    localized(locale, "im.permission.action.manualApproval").into()
-                }
-                (_, PermissionActionQualifier::KeepPlanning) => {
-                    localized(locale, "im.permission.action.keepPlanning").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowOnce =>
-                {
-                    localized(locale, "im.permission.action.allowOnce").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowAlways =>
-                {
-                    localized(locale, "im.permission.action.allowForSession").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectOnce =>
-                {
-                    localized(locale, "im.permission.action.deny").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectAlways =>
-                {
-                    localized(locale, "im.permission.action.denyAlways").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowOnce =>
-                {
-                    localized(locale, "im.permission.action.allowOnce").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowAlways =>
-                {
-                    localized(locale, "im.permission.action.allowForSession").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectOnce =>
-                {
-                    localized(locale, "im.permission.action.deny").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectAlways =>
-                {
-                    localized(locale, "im.permission.action.denyAlways").into()
-                }
-                (ImLocale::ZhCn, _) => "桌面处理".into(),
-                (ImLocale::En, _) => "Desktop".into(),
+        } => match (
+            permission_action_qualifier(option_id, action_name(action)),
+            permission_kind,
+        ) {
+            (PermissionActionQualifier::BypassPermissions, _) => "im.permission.action.bypass",
+            (PermissionActionQualifier::AutoEdit, _) => "im.permission.action.autoEdit",
+            (PermissionActionQualifier::AutoMode, _) => "im.permission.action.autoMode",
+            (PermissionActionQualifier::ManualApproval, _) => "im.permission.action.manualApproval",
+            (PermissionActionQualifier::KeepPlanning, _) => "im.permission.action.keepPlanning",
+            (PermissionActionQualifier::Standard, PermissionActionKind::AllowOnce) => {
+                "im.permission.action.allowOnce"
             }
-        }
-        InterventionAllowedAction::ElicitationFixedForm { .. } => {
-            localized(locale, "im.elicitation.form.label").into()
-        }
-        InterventionAllowedAction::ElicitationAccept => {
-            localized(locale, "im.action.accept").into()
-        }
-        InterventionAllowedAction::ElicitationDecline => {
-            localized(locale, "im.action.decline").into()
-        }
-        InterventionAllowedAction::ManualSuccess => localized(locale, "im.action.success").into(),
-        InterventionAllowedAction::ManualFailure => localized(locale, "im.action.failure").into(),
-    }
+            (PermissionActionQualifier::Standard, PermissionActionKind::AllowAlways) => {
+                "im.permission.action.allowForSession"
+            }
+            (PermissionActionQualifier::Standard, PermissionActionKind::RejectOnce) => {
+                "im.permission.action.deny"
+            }
+            (PermissionActionQualifier::Standard, PermissionActionKind::RejectAlways) => {
+                "im.permission.action.denyAlways"
+            }
+            _ => "im.permission.action.desktop",
+        },
+        InterventionAllowedAction::ElicitationFixedForm { .. } => "im.elicitation.form.label",
+        InterventionAllowedAction::ElicitationAccept => "im.action.accept",
+        InterventionAllowedAction::ElicitationDecline => "im.action.decline",
+        InterventionAllowedAction::ManualSuccess => "im.action.success",
+        InterventionAllowedAction::ManualFailure => "im.action.failure",
+    };
+    localized(locale, key).to_owned()
 }
 
 pub(crate) fn action_name(action: &InterventionAllowedAction) -> &str {
@@ -335,194 +291,48 @@ pub(crate) fn action_name(action: &InterventionAllowedAction) -> &str {
     }
 }
 
-pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
-    match (locale, key) {
-        (ImLocale::ZhCn, "im.notification.permission.title") => "权限请求",
-        (ImLocale::ZhCn, "im.notification.permission.summary") => "任务正在等待你的权限决定。",
-        (ImLocale::ZhCn, "im.notification.elicitation.title") => "需要补充信息",
-        (ImLocale::ZhCn, "im.notification.elicitation.summary") => "任务正在等待你的回答。",
-        (ImLocale::ZhCn, "im.notification.manualCheck.title") => "需要人工检查",
-        (ImLocale::ZhCn, "im.notification.manualCheck.summary") => "任务正在等待人工检查结果。",
-        (ImLocale::ZhCn, "im.notification.run_success.summary") => "Run 已成功完成",
-        (ImLocale::ZhCn, "im.notification.run_failure.summary") => "Run 执行失败",
-        (ImLocale::ZhCn, "im.notification.acp_turn_finished.summary") => "ACP 回合已结束",
-        (ImLocale::ZhCn, "workspaceLabel") => "工作空间",
-        (ImLocale::ZhCn, "nodeLabel") => "节点",
-        (ImLocale::ZhCn, "taskTitle") => "任务",
-        (ImLocale::ZhCn, "permissionTool") => "工具",
-        (ImLocale::ZhCn, "permissionPath") => "路径",
-        (ImLocale::ZhCn, "permissionParameter") => "参数",
-        (ImLocale::ZhCn, "permissionCommand") => "命令",
-        (ImLocale::ZhCn, "im.action.accept") => "接受",
-        (ImLocale::ZhCn, "im.action.decline") => "拒绝",
-        (ImLocale::ZhCn, "im.action.success") => "成功",
-        (ImLocale::ZhCn, "im.action.failure") => "失败",
-        (ImLocale::ZhCn, "im.question.singleSelect") => "单选",
-        (ImLocale::ZhCn, "im.question.multiSelect") => "多选",
-        (ImLocale::ZhCn, "im.question.freeText") => "文本回答，请在桌面端填写",
-        (ImLocale::ZhCn, "im.question.customAnswer") => "- 其他答案请在桌面端填写",
-        (ImLocale::ZhCn, "im.permission.vote.subtitle") => "请选择授权范围后提交",
-        (ImLocale::ZhCn, "im.permission.vote.linkedSubtitle") => {
-            "请求详情见上一条消息，请选择授权范围后提交"
-        }
-        (ImLocale::ZhCn, "im.permission.card.title") => "权限审批",
-        (ImLocale::ZhCn, "im.permission.card.titleWithRef") => "权限审批（id={ref}）",
-        (ImLocale::ZhCn, "im.permission.card.summary") => "Agent 请求执行命令",
-        (ImLocale::ZhCn, "im.permission.detail.description") => "说明",
-        (ImLocale::ZhCn, "im.permission.detail.link") => {
-            "请求详情见本消息，请在下一条权限审批卡片中选择。"
-        }
-        (ImLocale::ZhCn, "im.manualCheck.card.titleWithRef") => "人工检查（id={ref}）",
-        (ImLocale::ZhCn, "im.feishu.processing") => "处理中",
-        (ImLocale::ZhCn, "im.feishu.customAnswerMissing") => "请填写“其他”的内容",
-        (ImLocale::ZhCn, "im.feishu.textTooLong") => "内容超出长度限制",
-        (ImLocale::ZhCn, "im.feishu.invalidAnswer") => "回答无效，请修正后重试",
-        (ImLocale::ZhCn, "im.feishu.notActionable") => "这条消息不能在飞书处理",
-        (ImLocale::ZhCn, "im.feishu.result.submitted") => "表单已提交",
-        (ImLocale::ZhCn, "im.feishu.result.outcome") => "结果",
-        (ImLocale::ZhCn, "im.feishu.result.unavailable") => "已处理，结果详情不可用",
-        (ImLocale::ZhCn, "im.feishu.result.submission") => "提交内容",
-        (ImLocale::ZhCn, "im.feishu.result.empty") => "（空）",
-        (ImLocale::ZhCn, "im.feishu.result.source") => "处理端",
-        (ImLocale::ZhCn, "im.feishu.form.submit") => "提交",
-        (ImLocale::ZhCn, "im.feishu.form.select") => "请选择",
-        (ImLocale::ZhCn, "im.feishu.form.multiSelect") => "可多选",
-        (ImLocale::ZhCn, "im.feishu.form.input") => "请输入",
-        (ImLocale::ZhCn, "im.feishu.form.optional") => "选填",
-        (ImLocale::ZhCn, "im.feishu.form.other") => "其他（自行填写）",
-        (ImLocale::ZhCn, "im.intervention.resolvedBy.desktop") => "桌面端",
-        (ImLocale::ZhCn, "im.intervention.resolvedBy.wecom") => "企业微信",
-        (ImLocale::ZhCn, "im.intervention.resolvedBy.feishu") => "飞书",
-        (ImLocale::ZhCn, "im.intervention.resolvedBy.runtime") => "运行时",
-        (ImLocale::ZhCn, "im.manualCheck.vote.linkedSubtitle") => {
-            "模型输出见上一条消息，请选择检查结果后提交"
-        }
-        (ImLocale::ZhCn, "im.manualCheck.detail.output") => "最后一轮模型输出",
-        (ImLocale::ZhCn, "im.manualCheck.detail.link") => {
-            "模型输出见本消息，请在下一条人工检查卡片中选择。"
-        }
-        (ImLocale::ZhCn, "im.permission.desktopGuidance") => "请在桌面端处理此权限请求",
-        (ImLocale::ZhCn, "im.permission.submit") => "提交",
-        (ImLocale::ZhCn, "im.permission.submitted") => "已提交",
-        (ImLocale::ZhCn, "im.permission.action.bypass") => "跳过权限",
-        (ImLocale::ZhCn, "im.permission.action.autoEdit") => "自动编辑",
-        (ImLocale::ZhCn, "im.permission.action.autoMode") => "自动模式",
-        (ImLocale::ZhCn, "im.permission.action.manualApproval") => "手动确认",
-        (ImLocale::ZhCn, "im.permission.action.keepPlanning") => "保持计划",
-        (ImLocale::ZhCn, "im.permission.action.allowOnce") => "仅允许一次",
-        (ImLocale::ZhCn, "im.permission.action.allowForSession") => "本次会话允许",
-        (ImLocale::ZhCn, "im.permission.action.deny") => "拒绝",
-        (ImLocale::ZhCn, "im.permission.action.denyAlways") => "始终拒绝",
-        (ImLocale::ZhCn, "im.elicitation.form.label") => "远程表单",
-        (ImLocale::ZhCn, "im.elicitation.card.titleWithRef") => "补充信息（id={ref}）",
-        (ImLocale::ZhCn, "im.elicitation.vote.linkedSubtitle") => {
-            "问题详情见上一条消息，请完成选择后提交"
-        }
-        (ImLocale::ZhCn, "im.elicitation.detail.link") => {
-            "问题详情见本消息，请在下一条补充信息卡片中选择。"
-        }
-        (ImLocale::ZhCn, "im.elicitation.detail.context") => "前序模型输出",
-        (ImLocale::ZhCn, "im.intervention.handledOn") => "**id={ref} 已在{source}处理**",
-        (ImLocale::ZhCn, "im.intervention.cancelled") => "已取消",
-        (ImLocale::ZhCn, "im.intervention.cancelledRef") => "**id={ref} 已取消**",
-        (ImLocale::En, "im.notification.permission.title") => "Permission request",
-        (ImLocale::En, "im.notification.permission.summary") => {
-            "A task is waiting for your permission decision."
-        }
-        (ImLocale::En, "im.notification.elicitation.title") => "More information required",
-        (ImLocale::En, "im.notification.elicitation.summary") => {
-            "A task is waiting for your answer."
-        }
-        (ImLocale::En, "im.notification.manualCheck.title") => "Manual check required",
-        (ImLocale::En, "im.notification.manualCheck.summary") => {
-            "A task is waiting for a manual check result."
-        }
-        (ImLocale::En, "im.notification.run_success.summary") => "Run succeeded",
-        (ImLocale::En, "im.notification.run_failure.summary") => "Run failed",
-        (ImLocale::En, "im.notification.acp_turn_finished.summary") => "ACP turn finished",
-        (ImLocale::En, "workspaceLabel") => "Workspace",
-        (ImLocale::En, "nodeLabel") => "Node",
-        (ImLocale::En, "taskTitle") => "Task",
-        (ImLocale::En, "permissionTool") => "Tool",
-        (ImLocale::En, "permissionPath") => "Path",
-        (ImLocale::En, "permissionParameter") => "Parameter",
-        (ImLocale::En, "permissionCommand") => "Command",
-        (ImLocale::En, "im.action.accept") => "Accept",
-        (ImLocale::En, "im.action.decline") => "Decline",
-        (ImLocale::En, "im.action.success") => "Success",
-        (ImLocale::En, "im.action.failure") => "Failure",
-        (ImLocale::En, "im.question.singleSelect") => "Single choice",
-        (ImLocale::En, "im.question.multiSelect") => "Multiple choice",
-        (ImLocale::En, "im.question.freeText") => "Text answer; enter it in the desktop app",
-        (ImLocale::En, "im.question.customAnswer") => "- Enter another answer in the desktop app",
-        (ImLocale::En, "im.permission.vote.subtitle") => "Choose a scope and submit",
-        (ImLocale::En, "im.permission.vote.linkedSubtitle") => {
-            "See the preceding message for details, then choose a scope and submit"
-        }
-        (ImLocale::En, "im.permission.card.title") => "Permission approval",
-        (ImLocale::En, "im.permission.card.titleWithRef") => "Permission (id={ref})",
-        (ImLocale::En, "im.permission.card.summary") => "Agent requests command execution",
-        (ImLocale::En, "im.permission.detail.description") => "Description",
-        (ImLocale::En, "im.permission.detail.link") => {
-            "This message contains the request details. Use the next permission card to decide."
-        }
-        (ImLocale::En, "im.manualCheck.card.titleWithRef") => "Manual check (id={ref})",
-        (ImLocale::En, "im.manualCheck.vote.linkedSubtitle") => {
-            "See the preceding message for the model output, choose a result, then submit"
-        }
-        (ImLocale::En, "im.manualCheck.detail.output") => "Latest model output",
-        (ImLocale::En, "im.manualCheck.detail.link") => {
-            "This message contains the model output. Use the next manual-check card to decide."
-        }
-        (ImLocale::En, "im.permission.desktopGuidance") => {
-            "Handle this permission request in the desktop app"
-        }
-        (ImLocale::En, "im.permission.submit") => "Submit",
-        (ImLocale::En, "im.permission.submitted") => "Submitted",
-        (ImLocale::En, "im.permission.action.bypass") => "Bypass",
-        (ImLocale::En, "im.permission.action.autoEdit") => "Auto edits",
-        (ImLocale::En, "im.permission.action.autoMode") => "Auto mode",
-        (ImLocale::En, "im.permission.action.manualApproval") => "Manual",
-        (ImLocale::En, "im.permission.action.keepPlanning") => "Keep plan",
-        (ImLocale::En, "im.permission.action.allowOnce") => "Allow once",
-        (ImLocale::En, "im.permission.action.allowForSession") => "Allow for session",
-        (ImLocale::En, "im.permission.action.deny") => "Deny",
-        (ImLocale::En, "im.permission.action.denyAlways") => "Always deny",
-        (ImLocale::En, "im.elicitation.form.label") => "Remote form",
-        (ImLocale::En, "im.elicitation.card.titleWithRef") => "More information (id={ref})",
-        (ImLocale::En, "im.elicitation.vote.linkedSubtitle") => {
-            "See the preceding message for details, choose an answer, then submit"
-        }
-        (ImLocale::En, "im.elicitation.detail.link") => {
-            "This message contains the questions. Use the next information card to answer."
-        }
-        (ImLocale::En, "im.elicitation.detail.context") => "Previous model output",
-        (ImLocale::En, "im.intervention.handledOn") => "**id={ref} Handled on {source}**",
-        (ImLocale::En, "im.intervention.cancelled") => "Cancelled",
-        (ImLocale::En, "im.intervention.cancelledRef") => "**id={ref} Cancelled**",
-        (ImLocale::En, "im.feishu.processing") => "Processing",
-        (ImLocale::En, "im.feishu.customAnswerMissing") => "Enter the custom answer",
-        (ImLocale::En, "im.feishu.textTooLong") => "The answer exceeds the length limit",
-        (ImLocale::En, "im.feishu.invalidAnswer") => "Invalid answer. Correct it and try again",
-        (ImLocale::En, "im.feishu.notActionable") => "This message cannot be handled in Feishu",
-        (ImLocale::En, "im.feishu.result.submitted") => "Form submitted",
-        (ImLocale::En, "im.feishu.result.outcome") => "Result",
-        (ImLocale::En, "im.feishu.result.unavailable") => "Handled; result details unavailable",
-        (ImLocale::En, "im.feishu.result.submission") => "Submission",
-        (ImLocale::En, "im.feishu.result.empty") => "Empty",
-        (ImLocale::En, "im.feishu.result.source") => "Handled on",
-        (ImLocale::En, "im.feishu.form.submit") => "Submit",
-        (ImLocale::En, "im.feishu.form.select") => "Select an option",
-        (ImLocale::En, "im.feishu.form.multiSelect") => "Select options",
-        (ImLocale::En, "im.feishu.form.input") => "Enter text",
-        (ImLocale::En, "im.feishu.form.optional") => "Optional",
-        (ImLocale::En, "im.feishu.form.other") => "Other (enter text)",
-        (ImLocale::En, "im.intervention.resolvedBy.desktop") => "Desktop",
-        (ImLocale::En, "im.intervention.resolvedBy.wecom") => "WeCom",
-        (ImLocale::En, "im.intervention.resolvedBy.feishu") => "Feishu",
-        (ImLocale::En, "im.intervention.resolvedBy.runtime") => "Runtime",
-        _ => key,
+/// Joins answer labels with the locale's list separator.
+pub(crate) fn join_list(locale: ImLocale, items: &[String]) -> String {
+    items.join(localized(locale, "im.list.separator"))
+}
+
+type CopyCatalog = std::collections::HashMap<String, String>;
+
+/// One keyed copy table per desktop language, embedded at compile time.
+fn catalog_source(locale: ImLocale) -> &'static str {
+    match locale {
+        ImLocale::ZhCn => include_str!("../locales/zh-CN.json"),
+        ImLocale::ZhTw => include_str!("../locales/zh-TW.json"),
+        ImLocale::En => include_str!("../locales/en.json"),
+        ImLocale::JaJp => include_str!("../locales/ja-JP.json"),
+        ImLocale::KoKr => include_str!("../locales/ko-KR.json"),
+        ImLocale::PtBr => include_str!("../locales/pt-BR.json"),
+        ImLocale::Es => include_str!("../locales/es.json"),
     }
+}
+
+static COPY_CATALOGS: std::sync::LazyLock<Vec<(ImLocale, CopyCatalog)>> =
+    std::sync::LazyLock::new(|| {
+        ImLocale::ALL
+            .iter()
+            .map(|locale| {
+                let catalog = serde_json::from_str(catalog_source(*locale))
+                    .expect("embedded IM copy catalog is valid JSON");
+                (*locale, catalog)
+            })
+            .collect()
+    });
+
+fn catalog(locale: ImLocale) -> &'static CopyCatalog {
+    COPY_CATALOGS
+        .iter()
+        .find_map(|(candidate, catalog)| (*candidate == locale).then_some(catalog))
+        .expect("every desktop language has an IM copy catalog")
+}
+
+/// Keys without copy (for example raw presentation field names) render as-is.
+pub(crate) fn localized<'a>(locale: ImLocale, key: &'a str) -> &'a str {
+    catalog(locale).get(key).map_or(key, String::as_str)
 }
 
 #[cfg(test)]
@@ -630,5 +440,64 @@ mod tests {
             ),
             "桌面处理"
         );
+        assert_eq!(
+            action_label(
+                ImLocale::JaJp,
+                &action("allow_once", "Allow", PermissionActionKind::AllowOnce)
+            ),
+            "今回のみ許可"
+        );
+        assert_eq!(join_list(ImLocale::ZhTw, &["A".into(), "B".into()]), "A、B");
+        assert_eq!(join_list(ImLocale::Es, &["A".into(), "B".into()]), "A, B");
+    }
+
+    fn placeholders(text: &str) -> std::collections::BTreeSet<&str> {
+        text.match_indices('{')
+            .filter_map(|(start, _)| {
+                let end = text[start..].find('}')?;
+                Some(&text[start..=start + end])
+            })
+            .collect()
+    }
+
+    /// zh-CN is the semantic source: every locale carries the same keys,
+    /// the same placeholders and the English product words zh-CN keeps.
+    #[test]
+    fn every_locale_catalog_matches_the_zh_cn_source() {
+        const RETAINED_WORDS: [&str; 4] = ["Agent", "ACP", "Run", "id="];
+        let source = catalog(ImLocale::ZhCn);
+        assert!(!source.is_empty());
+        for locale in ImLocale::ALL {
+            let catalog = catalog(locale);
+            let mut missing: Vec<_> = source
+                .keys()
+                .filter(|key| !catalog.contains_key(*key))
+                .collect();
+            let mut extra: Vec<_> = catalog
+                .keys()
+                .filter(|key| !source.contains_key(*key))
+                .collect();
+            missing.sort();
+            extra.sort();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "{locale:?}: missing {missing:?}, extra {extra:?}"
+            );
+            for (key, text) in source {
+                let translated = &catalog[key];
+                assert!(!translated.trim().is_empty(), "{locale:?}: {key} is empty");
+                assert_eq!(
+                    placeholders(text),
+                    placeholders(translated),
+                    "{locale:?}: {key} placeholders differ"
+                );
+                for word in RETAINED_WORDS {
+                    assert!(
+                        !text.contains(word) || translated.contains(word),
+                        "{locale:?}: {key} must keep {word}"
+                    );
+                }
+            }
+        }
     }
 }

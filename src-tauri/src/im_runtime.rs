@@ -777,10 +777,10 @@ impl DesktopImRuntime {
             .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
         let target_count = self.configure_projection_targets(&settings.im_integrations)?;
         tracing::info!(target_count, "IM projection targets configured");
-        let locale = match settings.desktop_language {
-            Some(gold_band::config::DesktopLanguage::ZhCn) => ImLocale::ZhCn,
-            _ => ImLocale::En,
-        };
+        // Same resolution as desktop bootstrap for an unset language.
+        let locale: ImLocale = settings
+            .desktop_language
+            .unwrap_or_else(gold_band::config::DesktopLanguage::from_system);
         for channel in ImChannelKind::ALL {
             if let Err(error) = self
                 .reconfigure_channel(app_handle, channel, &settings.im_integrations, locale)

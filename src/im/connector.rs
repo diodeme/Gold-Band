@@ -15,12 +15,8 @@ use super::{
 pub const IM_INBOUND_QUEUE_CAPACITY: usize = 128;
 pub const IM_LIFECYCLE_QUEUE_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ImLocale {
-    #[default]
-    ZhCn,
-    En,
-}
+/// IM copy always follows the desktop language.
+pub type ImLocale = crate::config::DesktopLanguage;
 
 /// `Default` is a channel without any capability (no connector registered).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]

@@ -26,7 +26,7 @@ use crate::im::{
 };
 
 use super::super::{
-    action_label, intervention_actions, localized, message_state_label,
+    action_label, intervention_actions, join_list, localized, message_state_label,
     notification_context_markdown, notification_markdown, notification_markdown_without_context,
     resolved_by_copy,
 };
@@ -946,7 +946,7 @@ fn submitted_answer_lines(
             match question.question.question_kind {
                 ElicitationQuestionKind::FreeText => value.as_str().map(|value| value.to_owned()),
                 ElicitationQuestionKind::SingleSelect | ElicitationQuestionKind::MultiSelect => {
-                    select_value_label(value, &question.question.options)
+                    select_value_label(value, &question.question.options, locale)
                 }
             }
         });
@@ -966,6 +966,7 @@ fn submitted_answer_lines(
 fn select_value_label(
     value: &Value,
     options: &[crate::app::intervention::ElicitationQuestionOption],
+    locale: ImLocale,
 ) -> Option<String> {
     let selected = match value {
         Value::Array(values) => values.to_vec(),
@@ -980,7 +981,7 @@ fn select_value_label(
                 .map(|option| option.label.clone())
         })
         .collect::<Option<Vec<_>>>()?;
-    Some(labels.join("、"))
+    Some(join_list(locale, &labels))
 }
 
 fn outcome_copy(

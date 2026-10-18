@@ -123,6 +123,8 @@ impl ActiveApi {
 struct FeishuResponseHandle {
     generation: u64,
     request_id: String,
+    /// The reply speaks the language of the session that received the click.
+    locale: ImLocale,
 }
 
 /// Immutable per-connection facts shared with event handler tasks.
@@ -380,6 +382,7 @@ async fn dispatch_card_action(
     let response_context = ImActionResponseContext::new(FeishuResponseHandle {
         generation: context.generation,
         request_id: request_id.clone(),
+        locale: context.locale,
     });
     if context
         .events
@@ -669,10 +672,7 @@ impl ImConnector for FeishuConnector {
         let Some(handle) = context.downcast_ref::<FeishuResponseHandle>() else {
             return Err(ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid));
         };
-        let locale = self
-            .active_api()
-            .map_or(ImLocale::ZhCn, |active| active.locale);
-        let response = action_reply(&action_response, locale, &self.token_codec);
+        let response = action_reply(&action_response, handle.locale, &self.token_codec);
         // A missing slot means the platform deadline or connection generation
         // expired first. The persisted domain result remains authoritative.
         let _ = self.send_action_response(handle.generation, &handle.request_id, response);

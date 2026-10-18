@@ -2082,6 +2082,16 @@ async fn ensure_im_runtime(
     Ok(runtime)
 }
 
+/// Runs an IM command's settings, SQLite or keyring work on the blocking pool
+/// so the async runtime never waits on file or database I/O.
+async fn run_blocking_command<T: Send + 'static>(
+    work: impl FnOnce() -> CommandResult<T> + Send + 'static,
+) -> CommandResult<T> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))?
+}
+
 fn im_settings_require_runtime(settings: &ImIntegrationSettings) -> bool {
     settings
         .channels
@@ -2150,23 +2160,28 @@ pub fn cancel_wecom_scan_authorization(
 #[tauri::command]
 pub async fn start_feishu_scan_authorization(
     app_handle: AppHandle,
-    state: tauri::State<'_, DesktopState>,
+    _state: tauri::State<'_, DesktopState>,
     input: FeishuScanStartInput,
 ) -> CommandResult<ImScanAuthorizationVm> {
     let runtime = require_im_runtime(&app_handle).await?;
     let existing_app_id = if input.reauthorize {
-        let settings = state
-            .app()
-            .and_then(|app| app.load_settings())
-            .map_err(im_command_error)?;
-        let app_id = settings
-            .im_integrations
-            .channels
-            .into_iter()
-            .find(|channel| channel.kind == ImChannelKind::Feishu)
-            .map(|channel| channel.public_identity)
-            .filter(|app_id| !app_id.is_empty())
-            .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))?;
+        let handle = app_handle.clone();
+        let app_id = run_blocking_command(move || {
+            let settings = handle
+                .state::<DesktopState>()
+                .app()
+                .and_then(|app| app.load_settings())
+                .map_err(im_command_error)?;
+            settings
+                .im_integrations
+                .channels
+                .into_iter()
+                .find(|channel| channel.kind == ImChannelKind::Feishu)
+                .map(|channel| channel.public_identity)
+                .filter(|app_id| !app_id.is_empty())
+                .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))
+        })
+        .await?;
         Some(app_id)
     } else {
         None
@@ -2218,10 +2233,14 @@ pub async fn set_im_channel_enabled(
     state: tauri::State<'_, DesktopState>,
     input: SetImChannelEnabledInput,
 ) -> CommandResult<ImSettingsVm> {
-    let app = state.app().map_err(im_command_error)?;
+    let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
-    let (settings, changed) = {
-        let _write_guard = runtime
+    let writer = Arc::clone(&runtime);
+    let handle = app_handle.clone();
+    let (settings, changed) = run_blocking_command(move || {
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = writer
             .settings_write_lock
             .lock()
             .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
@@ -2233,8 +2252,9 @@ pub async fn set_im_channel_enabled(
                 .update_settings_config(&settings)
                 .map_err(im_command_error)?;
         }
-        (settings, changed)
-    };
+        Ok((settings, changed))
+    })
+    .await?;
     if changed {
         runtime
             .reconfigure(&app_handle)
@@ -2250,24 +2270,32 @@ pub async fn save_im_notification_preferences(
     state: tauri::State<'_, DesktopState>,
     input: SaveImNotificationPreferencesInput,
 ) -> CommandResult<ImSettingsVm> {
-    let app = state.app().map_err(im_command_error)?;
+    let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
-    let _write_guard = runtime
-        .settings_write_lock
-        .lock()
-        .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
-    let mut settings = app.load_settings().map_err(im_command_error)?;
-    if apply_notification_update(&mut settings.im_integrations, &input)? {
-        app.save_settings(&settings).map_err(im_command_error)?;
-        state
-            .update_settings_config(&settings)
-            .map_err(im_command_error)?;
-        *runtime
-            .targets
-            .write()
-            .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
-            projection_targets(&settings.im_integrations, &runtime.connectors);
-    }
+    let writer = Arc::clone(&runtime);
+    let handle = app_handle.clone();
+    let settings = run_blocking_command(move || {
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = writer
+            .settings_write_lock
+            .lock()
+            .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
+        let mut settings = app.load_settings().map_err(im_command_error)?;
+        if apply_notification_update(&mut settings.im_integrations, &input)? {
+            app.save_settings(&settings).map_err(im_command_error)?;
+            state
+                .update_settings_config(&settings)
+                .map_err(im_command_error)?;
+            *writer
+                .targets
+                .write()
+                .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
+                projection_targets(&settings.im_integrations, &writer.connectors);
+        }
+        Ok(settings)
+    })
+    .await?;
     Ok(settings_vm(&settings.im_integrations, Some(&runtime)))
 }
 
@@ -2277,10 +2305,14 @@ pub async fn reset_im_channel_binding(
     state: tauri::State<'_, DesktopState>,
     input: ImGenerationInput,
 ) -> CommandResult<ImSettingsVm> {
+    let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
-    let app = state.app().map_err(im_command_error)?;
-    let (settings, changed) = {
-        let _write_guard = runtime
+    let writer = Arc::clone(&runtime);
+    let handle = app_handle.clone();
+    let (settings, changed) = run_blocking_command(move || {
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = writer
             .settings_write_lock
             .lock()
             .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
@@ -2294,9 +2326,9 @@ pub async fn reset_im_channel_binding(
             .binding
             .is_some();
         if !has_binding {
-            return Ok(settings_vm(&settings.im_integrations, Some(&runtime)));
+            return Ok((settings, false));
         }
-        let current_generation = runtime
+        let current_generation = writer
             .connection_manager
             .snapshot(input.kind)
             .map(|snapshot| snapshot.generation)
@@ -2310,18 +2342,20 @@ pub async fn reset_im_channel_binding(
         state
             .update_settings_config(&settings)
             .map_err(im_command_error)?;
-        *runtime
+        *writer
             .targets
             .write()
             .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
-            projection_targets(&settings.im_integrations, &runtime.connectors);
-        (settings, true)
-    };
-    debug_assert!(changed);
-    runtime
-        .reconfigure(&app_handle)
-        .await
-        .map_err(im_command_error)?;
+            projection_targets(&settings.im_integrations, &writer.connectors);
+        Ok((settings, true))
+    })
+    .await?;
+    if changed {
+        runtime
+            .reconfigure(&app_handle)
+            .await
+            .map_err(im_command_error)?;
+    }
     Ok(settings_vm(&settings.im_integrations, Some(&runtime)))
 }
 
@@ -2339,17 +2373,27 @@ pub async fn reconnect_im_channel(
     if current.generation != input.expected_generation {
         return Err(im_error("IM_STALE_GENERATION"));
     }
-    let app = state.app().map_err(im_command_error)?;
-    let settings = app.load_settings().map_err(im_command_error)?;
-    let channel = settings
-        .im_integrations
-        .channels
-        .iter()
-        .find(|channel| channel.kind == input.kind)
-        .ok_or_else(|| im_error("IM_CREDENTIAL_REQUIRED"))?;
-    if !channel.enabled || channel.credential_ref.is_none() {
-        return Err(im_error("IM_CREDENTIAL_REQUIRED"));
-    }
+    let _ = state;
+    let handle = app_handle.clone();
+    let kind = input.kind;
+    run_blocking_command(move || {
+        let app = handle
+            .state::<DesktopState>()
+            .app()
+            .map_err(im_command_error)?;
+        let settings = app.load_settings().map_err(im_command_error)?;
+        let channel = settings
+            .im_integrations
+            .channels
+            .iter()
+            .find(|channel| channel.kind == kind)
+            .ok_or_else(|| im_error("IM_CREDENTIAL_REQUIRED"))?;
+        if !channel.enabled || channel.credential_ref.is_none() {
+            return Err(im_error("IM_CREDENTIAL_REQUIRED"));
+        }
+        Ok(())
+    })
+    .await?;
     runtime
         .reconfigure(&app_handle)
         .await

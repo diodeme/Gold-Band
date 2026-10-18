@@ -2303,8 +2303,20 @@ fn intervention_timeline_path(app: &App, locator: &InterventionLocator) -> Utf8P
     }
 }
 
+#[cfg(test)]
 fn desktop_intervention_source_event_id(
     app: &App,
+    command: &InterventionCommand,
+) -> Option<String> {
+    let attempt_dir = intervention_timeline_path(app, &command.locator)
+        .parent()?
+        .to_owned();
+    desktop_intervention_source_event_id_at(&attempt_dir, command)
+}
+
+/// Reads the request's pending file, so it must run off the async runtime.
+fn desktop_intervention_source_event_id_at(
+    attempt_dir: &camino::Utf8Path,
     command: &InterventionCommand,
 ) -> Option<String> {
     let locator = &command.locator;
@@ -2321,26 +2333,18 @@ fn desktop_intervention_source_event_id(
             ));
         }
         InterventionRequestIdentity::Permission { request_id } => {
-            let attempt_dir = intervention_timeline_path(app, locator)
-                .parent()?
-                .to_owned();
             let pending: gold_band::acp::permission::PendingPermissionState = read_json(
-                &gold_band::acp::permission::pending_permission_file(&attempt_dir, request_id),
+                &gold_band::acp::permission::pending_permission_file(attempt_dir, request_id),
             )
             .ok()?;
             let item_id = pending.timeline_identity?.item_id;
             format!("{PERMISSION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
         }
         InterventionRequestIdentity::Elicitation { elicitation_id } => {
-            let attempt_dir = intervention_timeline_path(app, locator)
-                .parent()?
-                .to_owned();
-            let pending: gold_band::acp::elicitation::PendingElicitationState =
-                read_json(&gold_band::acp::elicitation::pending_elicitation_file(
-                    &attempt_dir,
-                    elicitation_id,
-                ))
-                .ok()?;
+            let pending: gold_band::acp::elicitation::PendingElicitationState = read_json(
+                &gold_band::acp::elicitation::pending_elicitation_file(attempt_dir, elicitation_id),
+            )
+            .ok()?;
             let item_id = pending.timeline_identity?.item_id;
             format!("{ELICITATION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
         }
@@ -2370,7 +2374,8 @@ impl DesktopInterventionProjection {
     }
 }
 
-fn project_desktop_intervention_resolution(
+/// Writes the desktop winner to the IM outbox on the blocking pool (SQLite).
+async fn project_desktop_intervention_resolution(
     state: &DesktopState,
     projection: Option<DesktopInterventionProjection>,
 ) {
@@ -2380,15 +2385,28 @@ fn project_desktop_intervention_resolution(
     let Some(runtime) = state.im_runtime() else {
         return;
     };
-    let source_event_id = projection.source_event_id.as_str();
-    match runtime.project_intervention_resolution(&InterventionResolution {
-        source_event_id,
-        notification_kind: projection.notification_kind,
-        locator: &projection.locator,
-        resolved_by: gold_band::im::ImResolvedBy::Desktop,
-        source_delivery_id: None,
-        outcome: projection.outcome,
-    }) {
+    let source_event_id = projection.source_event_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        runtime.project_intervention_resolution(&InterventionResolution {
+            source_event_id: &projection.source_event_id,
+            notification_kind: projection.notification_kind,
+            locator: &projection.locator,
+            resolved_by: gold_band::im::ImResolvedBy::Desktop,
+            source_delivery_id: None,
+            outcome: projection.outcome,
+        })
+    })
+    .await;
+    let Ok(result) = result else {
+        warn!(
+            canonical_event_id = source_event_id,
+            error_code = "IM_RUNTIME_UNAVAILABLE",
+            "desktop intervention resolution projection task failed"
+        );
+        return;
+    };
+    let source_event_id = source_event_id.as_str();
+    match result {
         Ok(result) => info!(
             canonical_event_id = source_event_id,
             inserted = result.inserted,
@@ -2404,8 +2422,29 @@ fn project_desktop_intervention_resolution(
     }
 }
 
-fn desktop_intervention_projection(
+/// Captures the IM source identity before the command consumes the pending
+/// request. Skipped entirely when IM is not running; the pending-file read
+/// runs on the blocking pool.
+async fn desktop_intervention_projection(
+    state: &DesktopState,
     app: &App,
+    command: &InterventionCommand,
+) -> Option<DesktopInterventionProjection> {
+    state.im_runtime()?;
+    let attempt_dir = intervention_timeline_path(app, &command.locator)
+        .parent()?
+        .to_owned();
+    let command = command.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_intervention_projection_at(&attempt_dir, &command)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn desktop_intervention_projection_at(
+    attempt_dir: &camino::Utf8Path,
     command: &InterventionCommand,
 ) -> Option<DesktopInterventionProjection> {
     let notification_kind = match &command.request {
@@ -2418,7 +2457,7 @@ fn desktop_intervention_projection(
         InterventionRequestIdentity::ManualCheck => gold_band::im::ImNotificationKind::ManualCheck,
     };
     Some(DesktopInterventionProjection {
-        source_event_id: desktop_intervention_source_event_id(app, command)?,
+        source_event_id: desktop_intervention_source_event_id_at(attempt_dir, command)?,
         notification_kind,
         locator: command.locator.clone(),
         outcome: gold_band::im::ImResolutionOutcome::from(&command.action),
@@ -5150,12 +5189,13 @@ pub async fn submit_manual_check(
         action: InterventionAction::ManualCheck { outcome },
         expires_at_ms: snapshot.expires_at_ms,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
     let (result, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
     project_desktop_intervention_resolution(
         state.inner(),
         im_projection.and_then(|p| p.for_result(&result)),
-    );
+    )
+    .await;
     Ok(run_summary_vm(run))
 }
 
@@ -8498,14 +8538,15 @@ pub async fn respond_acp_permission(
         action: InterventionAction::PermissionOption { option_id },
         expires_at_ms: snapshot.expires_at_ms,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
     let (result, session) =
         execute_permission_intervention(app_handle, state.inner(), &app, project_id, command)
             .await?;
     project_desktop_intervention_resolution(
         state.inner(),
         im_projection.and_then(|p| p.for_result(&result)),
-    );
+    )
+    .await;
     Ok(session)
 }
 
@@ -11217,7 +11258,7 @@ pub async fn respond_elicitation(
         action: InterventionAction::Elicitation { action, content },
         expires_at_ms: None,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
     let result = execute_elicitation_intervention(
         app_handle.clone(),
         state.inner(),
@@ -11230,7 +11271,8 @@ pub async fn respond_elicitation(
     project_desktop_intervention_resolution(
         state.inner(),
         im_projection.and_then(|p| p.for_result(&result)),
-    );
+    )
+    .await;
 
     Ok(())
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('App window shell style', () => {
-  it('uses a viewport-safe Win10 inset frame without duplicating Win11 native rounding', () => {
+  it('owns the Win10 border outside the wallpaper surface and its pseudo elements', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
     const generatedThemeStyles = readFileSync(
       path.resolve(__dirname, '../src/themes/generated/builtin-themes.css'),
@@ -11,13 +11,15 @@ describe('App window shell style', () => {
     );
 
     expect(styles).toContain('--gold-window-outline');
-    expect(styles).toContain('--gold-window-edge-shadow');
     expect(styles).not.toContain('--gold-window-top-outline');
-    expect(styles).toContain(".app-window-shell[data-window-frame-style='app-outline']");
-    expect(styles).toContain('inset 0 0 0 1px var(--gold-window-outline)');
-    expect(styles).toContain('inset 0 0 8px var(--gold-window-edge-shadow)');
+    expect(styles).toContain(".app-window-frame[data-window-frame-style='app-outline']");
+    expect(styles).toContain('border: var(--gb-border-hairline) solid var(--gold-window-outline)');
+    expect(styles).not.toContain(".app-window-shell[data-window-frame-style='app-outline']");
+    expect(styles).not.toContain('.app-window-frame::after');
+    expect(styles).toMatch(/@layer utilities\s*\{\s*\.app-window-frame\[data-window-frame-style='app-outline'\]\s*\{\s*border:/u);
+    expect(styles).not.toContain('inset 0 0 0 1px var(--gold-window-outline)');
+    expect(styles).toMatch(/:has\(> \.app-window-shell > \[data-window-occludes-desktop='true'\]\)\s*\{\s*border-width:\s*0;/u);
     expect(styles).not.toContain('--gold-window-shadow-gutter');
-    expect(styles).not.toContain('data-window-occludes-desktop');
     expect(styles).not.toContain('outline-offset: -1px');
     expect(styles).not.toMatch(/^\.app-window-shell \{/mu);
     expect(styles).not.toMatch(/^\.app-window-shell::before/mu);
@@ -31,8 +33,10 @@ describe('App window shell style', () => {
     const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
     const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 
-    expect(workbenchShell).toContain('data-window-frame-style={windowFrameStyle}');
-    expect(conversationShell).toContain('data-window-frame-style={windowFrameStyle}');
+    expect(workbenchShell).toContain('<DesktopWindowFrame frameStyle={windowFrameStyle}>');
+    expect(conversationShell).toContain('<DesktopWindowFrame frameStyle={windowFrameStyle}>');
+    expect(workbenchShell).not.toContain('app-window-shell flex h-screen');
+    expect(conversationShell).not.toContain('app-window-shell flex h-screen');
   });
 
   it('lets the WebView follow the real viewport instead of clipping at desktop minimum dimensions', () => {

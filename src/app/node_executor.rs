@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use tracing::{info, warn};
@@ -523,15 +523,6 @@ pub(crate) fn build_worker_invocation(
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
         }
     };
-    let model = model_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or(configured_model);
-    let permission_mode = permission_mode_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or(permission_mode);
-
     let profile_entry = profile
         .as_deref()
         .map(|id| app.profile_show(id))
@@ -550,21 +541,39 @@ pub(crate) fn build_worker_invocation(
         .as_deref()
         .and_then(|provider| diagnostics.get(provider))
         .and_then(|snapshot| snapshot.capabilities.as_ref());
-    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+    let crate::acp::session_config::InvocationSessionConfig {
+        model,
+        permission_mode,
+        config_options,
+    } = crate::acp::session_config::invocation_session_config(
         session_mode == SessionMode::Continue,
-        configured_options,
-        current_acp_config_option_overrides(&runtime_context.attempt_dir),
+        crate::acp::session_config::InvocationSessionConfig {
+            model: configured_model,
+            permission_mode,
+            config_options: configured_options,
+        },
+        crate::acp::events::read_continued_session_config(continue_ref.as_ref()),
+        model_override,
+        permission_mode_override,
         capabilities,
-        model.as_deref(),
     );
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =
         build_new_round_trigger_context(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let (task_input_attachment_paths, user_input_attachment_paths) = match session_mode {
-        SessionMode::New => (super::task_input_attachment_paths(app, task_id), Vec::new()),
-        SessionMode::Continue => (Vec::new(), resume_input_attachment_paths),
-    };
+    let (task_input_attachment_paths, task_prompt_input, user_input_attachment_paths) =
+        match session_mode {
+            SessionMode::New => (
+                super::task_input_attachment_paths(app, task_id),
+                super::task_prompt_input(app, task_id),
+                Vec::new(),
+            ),
+            SessionMode::Continue => (
+                Vec::new(),
+                Default::default(),
+                resume_input_attachment_paths,
+            ),
+        };
 
     let mcp_resolution_started_at = Instant::now();
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
@@ -596,11 +605,12 @@ pub(crate) fn build_worker_invocation(
     );
 
     let workspace_dir = super::orchestrator::run_workspace_dir(app, task_id, run_id)?;
-    let workspace_file_roots = if prompt_display
-        .as_ref()
-        .is_some_and(|input| !input.workspace_files.is_empty())
+    let workspace_file_roots = if !task_prompt_input.workspace_files.is_empty()
+        || prompt_display
+            .as_ref()
+            .is_some_and(|input| !input.workspace_files.is_empty())
     {
-        app.prompt_workspace_roots()
+        app.prompt_workspace_roots(&workspace_dir)
     } else {
         Vec::new()
     };
@@ -653,6 +663,7 @@ pub(crate) fn build_worker_invocation(
         cold_artifacts,
         cold_attachments,
         task_input_attachment_paths,
+        task_prompt_input,
         user_input_attachment_paths,
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &app.config,
@@ -661,22 +672,6 @@ pub(crate) fn build_worker_invocation(
         scheduled_context: app.scheduled_task_context().cloned(),
         workspace_file_roots,
     })
-}
-
-fn current_acp_config_option_overrides(attempt_dir: &camino::Utf8Path) -> BTreeMap<String, String> {
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-    let path = if snapshot_path.exists() {
-        snapshot_path
-    } else if session_path.exists() {
-        session_path
-    } else {
-        return BTreeMap::new();
-    };
-    crate::acp::events::load_session_metadata(&path, None)
-        .ok()
-        .map(|metadata| metadata.config_option_overrides)
-        .unwrap_or_default()
 }
 
 pub(crate) fn execute_ai_node(
@@ -1478,6 +1473,13 @@ mod tests {
     }
 
     fn attachment_test_workflow() -> ValidatedWorkflow {
+        configured_test_workflow(None, None)
+    }
+
+    fn configured_test_workflow(
+        model: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> ValidatedWorkflow {
         crate::dsl::validate_workflow(crate::dsl::WorkflowDsl {
             version: VERSION.to_string(),
             id: "workflow-001".to_string(),
@@ -1487,12 +1489,12 @@ mod tests {
                 id: "dev".to_string(),
                 execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
-                model: None,
+                model: model.map(str::to_string),
                 profile: None,
                 goal: Some("Do the work".to_string()),
                 output: None,
                 success_condition: None,
-                permission_mode: None,
+                permission_mode: permission_mode.map(str::to_string),
                 auto_accept: false,
                 config_options: Default::default(),
                 manual_check: None,
@@ -1617,6 +1619,25 @@ mod tests {
         assert_eq!(locators, vec!["round-002/dev"]);
     }
 
+    fn write_task_prompt_input(app: &App, task_id: &str) -> crate::provider::TaskPromptInput {
+        let input = crate::provider::TaskPromptInput {
+            quotes: vec![crate::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                text: "引用内容".to_string(),
+                source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                    message_key: "answer-1".to_string(),
+                },
+            }],
+            role: None,
+            workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
+                project_id: app.paths.project_id.clone(),
+                relative_path: "src/lib.rs".to_string(),
+            }],
+        };
+        crate::storage::write_json(&app.paths.task_prompt_input_file(task_id), &input).unwrap();
+        input
+    }
+
     #[test]
     fn continue_worker_invocation_uses_only_resume_attachments() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1632,6 +1653,7 @@ mod tests {
         let resume_input = temp.path().join("resume.txt");
         std::fs::write(&resume_input, "resume").unwrap();
         let resume_input = resume_input.to_string_lossy().to_string();
+        write_task_prompt_input(&app, task_id);
 
         let invocation = build_worker_invocation(
             &app,
@@ -1662,6 +1684,73 @@ mod tests {
                 .any(|path| path.ends_with("original.txt"))
         );
         assert!(invocation.task_input_attachment_paths.is_empty());
+        assert!(invocation.task_prompt_input.is_empty());
+        assert!(invocation.workspace_file_roots.is_empty());
+    }
+
+    #[test]
+    fn continue_worker_invocation_takes_session_snapshot_after_new_session_rollback() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root.clone(), crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let snapshot = repo_root.join("source-attempt").join("acp.snapshot.json");
+        crate::storage::write_json(
+            &snapshot,
+            &serde_json::json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": repo_root.as_str(),
+                "sessionId": "session-001",
+                "createdAt": "1792113902Z",
+                "updatedAt": "1792113940Z",
+                "restored": false,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "configOptionOverrides": { "effort": "high" },
+            }),
+        )
+        .unwrap();
+        let workflow = configured_test_workflow(Some("deepseek-flash"), Some("bypassPermissions"));
+        let build = |session_id: &str| {
+            build_worker_invocation(
+                &app,
+                "task-001",
+                "run-001",
+                &attachment_test_round(),
+                "attempt-001",
+                &workflow,
+                "dev",
+                SessionMode::Continue,
+                Some(serde_json::json!({
+                    "acpSessionId": session_id,
+                    "snapshotFile": snapshot.as_str(),
+                })),
+                Some("continue".to_string()),
+                Some("prompt-001".to_string()),
+                None,
+                PromptVisibility::Visible,
+                UserPromptRenderMode::UserMessage,
+                Vec::new(),
+                None,
+                None,
+            )
+            .expect("invocation should build")
+        };
+
+        let resumed = build("session-001");
+        assert_eq!(resumed.model, None);
+        assert_eq!(resumed.permission_mode, None);
+        assert_eq!(
+            resumed.config_options,
+            std::collections::BTreeMap::from([("effort".to_string(), "high".to_string())])
+        );
+
+        // A snapshot that belongs to another session is not this session's fact.
+        let foreign = build("session-other");
+        assert_eq!(foreign.model, None);
+        assert!(foreign.config_options.is_empty());
     }
 
     #[test]
@@ -1676,6 +1765,7 @@ mod tests {
         std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
         let original_input = task_input_dir.join("original.txt");
         std::fs::write(original_input.as_std_path(), "original").unwrap();
+        let task_prompt_input = write_task_prompt_input(&app, task_id);
 
         let invocation = build_worker_invocation(
             &app,
@@ -1703,6 +1793,9 @@ mod tests {
             vec![original_input.to_string()]
         );
         assert!(invocation.user_input_attachment_paths.is_empty());
+        // Quotes and workspace files travel with the task inputs to every new session.
+        assert_eq!(invocation.task_prompt_input, task_prompt_input);
+        assert!(!invocation.workspace_file_roots.is_empty());
         assert_eq!(
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled

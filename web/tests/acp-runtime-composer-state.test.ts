@@ -16,7 +16,14 @@ import {
   type AcpRuntimeComposerStateInput,
 } from '@/lib/acp-runtime-composer-state';
 import type { AcpSessionVm, ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
-import { visibleAcpBannerError } from '@/components/acp/ACPChatDialog';
+import { visibleAcpBannerError, settlePendingAcpInteractionsForLifecycle } from '@/components/acp/ACPChatDialog';
+
+it('preserves session-owned background interactions after the previous prompt ended', () => {
+  const background = { requestId: 'background', sessionId: 'session-a', turnId: null };
+  const session = { pendingInteractions: [background, { requestId: 'old', turnId: 'turn-a' }] } as unknown as AcpSessionVm;
+  const lifecycle = { acp: { latestTurnStatus: 'completed', liveTurnActivity: 'idle', stopping: false, turnId: 'turn-a' } } as ConversationAttemptLifecycleVm;
+  expect(settlePendingAcpInteractionsForLifecycle(session, lifecycle)?.pendingInteractions).toEqual([background]);
+});
 
 const pausedDisplay: RuntimeDisplayVm = {
   code: 'paused',
@@ -131,7 +138,7 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
   return merged;
 }
 
-describe('Direct runtime error ownership', () => {
+describe('ACP runtime error ownership after control is released', () => {
   it('keeps the old run banner hidden from completion through follow-up and stop', () => {
     const oldRunError = 'OLD_RUN_FAILURE';
     const session = { status: 'running', diagnostics: { errorCount: 0 } } as AcpSessionVm;
@@ -145,7 +152,7 @@ describe('Direct runtime error ownership', () => {
         composer: { submitTarget },
         acp: { latestTurnStatus, turnError: null },
       });
-      const fallback = shouldTreatAcpRuntimeErrorAsFallback(true, current);
+      const fallback = shouldTreatAcpRuntimeErrorAsFallback(current);
       expect(visibleAcpBannerError(
         fallback ? null : oldRunError, session, [], fallback ? oldRunError : null,
         current.acp.latestTurnStatus, current.acp.turnError,
@@ -160,18 +167,17 @@ describe('Direct runtime error ownership', () => {
         runtimeDisplay: runtimeAbnormalDisplay,
         composer: { submitTarget },
       });
-      expect(shouldTreatAcpRuntimeErrorAsFallback(true, current)).toBe(true);
-      expect(shouldTreatAcpRuntimeErrorAsFallback(false, current)).toBe(false);
-      expect(shouldTreatAcpRuntimeErrorAsFallback(true, {
+      expect(shouldTreatAcpRuntimeErrorAsFallback(current)).toBe(true);
+      expect(shouldTreatAcpRuntimeErrorAsFallback({
         ...current, runtimeDisplay: { ...runtimeAbnormalDisplay, blockingError: true },
       })).toBe(false);
-      expect(shouldTreatAcpRuntimeErrorAsFallback(true, {
+      expect(shouldTreatAcpRuntimeErrorAsFallback({
         ...current, control: { mode: 'runtime-controlled' },
       })).toBe(false);
     },
   );
   it('does not classify process-interrupted as a runtime abnormal error', () => {
-    expect(shouldTreatAcpRuntimeErrorAsFallback(true, lifecycle({
+    expect(shouldTreatAcpRuntimeErrorAsFallback(lifecycle({
       runtime: { status: 'paused', pauseReason: 'process-interrupted' },
       runtimeDisplay: pausedDisplay,
     }))).toBe(false);
@@ -473,6 +479,23 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.stopInProgress).toBe(true);
     expect(state.inputDisabled).toBe(true);
     expect(state.canSubmit).toBe(false);
+    // Backend-only stopping (for example after a restart) stays retryable.
+    expect(state.canStop).toBe(true);
+    expect(state.stopCommandInFlight).toBe(false);
+  });
+
+  it('blocks a repeated Stop only while the local stop command is in flight', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'cancel-requested', latestTurnStatus: 'none', stopping: true },
+        displayStatus: 'cancelling',
+      }),
+      cancelling: true,
+      stopCommandPending: true,
+    }));
+
+    expect(state.stopInProgress).toBe(true);
+    expect(state.stopCommandInFlight).toBe(true);
   });
 
   it('lets a terminal ACP snapshot override a stale cancelling lifecycle', () => {
@@ -1437,6 +1460,10 @@ describe('isTerminalAcpLifecycle', () => {
 });
 
 describe('shouldHidePendingAcpInteractions', () => {
+  it('keeps a session-owned background question visible after end_turn', () => {
+    const terminal = lifecycle({ acp: { turnId: 'turn-1', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false } });
+    expect(shouldHidePendingAcpInteractions(terminal, null, false, false, null, 'session-1')).toBe(false);
+  });
   it('hides a stale permission projection as soon as stop is accepted', () => {
     const stopping = lifecycle({ acp: { stopping: true, latestTurnStatus: 'none' } });
 
@@ -1779,5 +1806,34 @@ describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
 
     expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, parentActive)).toBe(false);
     expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, parentError)).toBe(false);
+  });
+});
+
+
+describe('uncommitted execution failure', () => {
+  const failure = {
+    owner: { turnId: 'disk-turn', operationId: 'disk-op', revision: 3 },
+    error: { code: { domain: 'runtime-io', code: 'runtime.io.storage-full' }, domain: 'runtime-io', recovery: 'manual', retryPolicy: null, params: {}, diagnostic: 'disk full', raw: null },
+  } as const;
+  it('stops waiting without inventing a committed terminal state', () => {
+    const current = lifecycle({ acp: { turnId: 'disk-turn', operationId: 'disk-op', revision: 3, liveTurnActivity: 'running', latestTurnStatus: 'none' }, executionError: failure });
+    const state = deriveAcpRuntimeComposerState(baseInput({ lifecycle: current, acpStatus: 'running', localTurnId: 'disk-turn', awaitingResponse: true }));
+    expect(state.showStatus).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(shouldSettleAcpComposerTransientState(current, 'running', 'disk-turn')).toBe(true);
+    expect(activityProjectionStatus(current, 'running', false)).toBe('interrupted');
+    expect(current.acp.latestTurnStatus).toBe('none');
+    expect(current.acp.revision).toBe(3);
+  });
+  it('retains the failure across old snapshots and removes it for a newer owner', () => {
+    const current = lifecycle({ acp: { turnId: 'disk-turn', operationId: 'disk-op', revision: 3, liveTurnActivity: 'running', latestTurnStatus: 'none' }, executionError: failure });
+    const stale = { ...current, executionError: null };
+    expect(mergeConversationAttemptLifecycle(current, stale).executionError).toEqual(failure);
+    const newer = lifecycle({ acp: { turnId: 'new-turn', operationId: 'new-op', revision: 5, liveTurnActivity: 'running', latestTurnStatus: 'none' } });
+    expect(mergeConversationAttemptLifecycle(current, newer).executionError ?? null).toBeNull();
+    expect(mergeConversationAttemptLifecycle(newer, current).executionError ?? null).toBeNull();
+    const committed = { ...current, executionError: null, acp: { ...current.acp, revision: 4, latestTurnStatus: 'failed', liveTurnActivity: 'idle' } };
+    expect(mergeConversationAttemptLifecycle(current, committed).executionError ?? null).toBeNull();
+    expect(mergeConversationAttemptLifecycle(committed, current).executionError ?? null).toBeNull();
   });
 });

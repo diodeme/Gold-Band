@@ -36,8 +36,12 @@ impl AcpPromptInteractionKind {
 pub struct AcpPromptInteractionIdentity {
     pub interaction_id: String,
     pub kind: AcpPromptInteractionKind,
-    pub turn_id: String,
-    pub prompt_event_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl AcpPromptInteractionIdentity {
@@ -50,8 +54,42 @@ impl AcpPromptInteractionIdentity {
         Self {
             interaction_id: interaction_id.into(),
             kind,
-            turn_id: turn_id.into(),
-            prompt_event_id: prompt_event_id.into(),
+            turn_id: Some(turn_id.into()),
+            prompt_event_id: Some(prompt_event_id.into()),
+            session_id: None,
+        }
+    }
+
+    pub fn for_session(
+        interaction_id: String,
+        kind: AcpPromptInteractionKind,
+        session_id: String,
+    ) -> Self {
+        Self {
+            interaction_id,
+            kind,
+            turn_id: None,
+            prompt_event_id: None,
+            session_id: Some(session_id),
+        }
+    }
+
+    /// An interaction raised while a prompt turn owns the conversation. In
+    /// Direct mode it additionally carries the session id so retention can
+    /// still route it, but only its own settlement or turn terminal closes it.
+    pub fn for_turn_and_session(
+        interaction_id: String,
+        kind: AcpPromptInteractionKind,
+        turn_id: String,
+        prompt_event_id: String,
+        session_id: Option<String>,
+    ) -> Self {
+        Self {
+            interaction_id,
+            kind,
+            turn_id: Some(turn_id),
+            prompt_event_id: Some(prompt_event_id),
+            session_id,
         }
     }
 }
@@ -108,14 +146,15 @@ pub fn annotate_prompt_interaction_identity(
         "interactionKind".to_string(),
         Value::String(identity.kind.as_str().to_string()),
     );
-    conversation.insert(
-        "turnId".to_string(),
-        Value::String(identity.turn_id.clone()),
-    );
-    conversation.insert(
-        "promptEventId".to_string(),
-        Value::String(identity.prompt_event_id.clone()),
-    );
+    if let Some(id) = &identity.turn_id {
+        conversation.insert("turnId".into(), Value::String(id.clone()));
+    }
+    if let Some(id) = &identity.prompt_event_id {
+        conversation.insert("promptEventId".into(), Value::String(id.clone()));
+    }
+    if let Some(id) = &identity.session_id {
+        conversation.insert("sessionId".into(), Value::String(id.clone()));
+    }
 }
 
 #[cfg(test)]

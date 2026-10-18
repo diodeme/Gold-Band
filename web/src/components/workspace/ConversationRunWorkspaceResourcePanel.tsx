@@ -3,6 +3,8 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getAcpRawFrames, getAcpSession, getAgentRegistry, getConversationExecutionPlan, getWorkflowTemplates, preflightConversationExecutionPlanSave, recoverConversationExecutionPlanOperation, saveConversationExecutionPlan } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
+import { CompactionSummaryWorkspacePanel } from './CompactionSummaryWorkspacePanel';
+import type { CompactionSummaryWorkspaceResource } from './right-workspace-context';
 import { resolveGoldBandHiddenSection } from '@/components/acp/hiddenPromptSections';
 import { GraphView } from '@/components/GraphView';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -67,6 +69,7 @@ type ConversationRunWorkspaceResource =
   | AutoConfigWorkspaceResource
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
+  | CompactionSummaryWorkspaceResource
   | RawFramesWorkspaceResource;
 
 interface ConversationRunWorkspaceResourcePanelProps {
@@ -138,6 +141,9 @@ function ConversationRunWorkspaceResourcePanelComponent({
   }
   if (resource.kind === 'hidden-prompt-section') {
     return <HiddenPromptSectionWorkspacePanel resource={resource} />;
+  }
+  if (resource.kind === 'compaction-summary') {
+    return <CompactionSummaryWorkspacePanel key={resource.key} resource={resource} />;
   }
   return <RawFramesWorkspacePanel resource={resource} />;
 }

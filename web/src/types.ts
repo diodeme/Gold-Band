@@ -42,7 +42,7 @@ export type AvatarKind = 'agent' | 'user';
 export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
-export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
+export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error';
 
 export interface PreferencesVm {
   appearance: AppearancePreference;
@@ -191,7 +191,11 @@ export interface UpdateStatusVm {
 export interface UpdateBadgeStateVm {
   settingsEntrySeenVersion?: string | null;
   settingsAdvancedSeenVersion?: string | null;
-  announcementClosedVersion?: string | null;
+}
+
+export interface UpdateDownloadProgressVm {
+  downloaded: number;
+  total: number | null;
 }
 
 export interface DesktopWindowChromeVm {
@@ -207,13 +211,19 @@ export interface AppBootstrapVm {
   metricsSettings: MetricsSettingsVm;
   updateStatus: UpdateStatusVm;
   updateBadges: UpdateBadgeStateVm;
-  persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   platform: DesktopPlatform;
   windowChrome: DesktopWindowChromeVm;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
+  remoteImageTrust: RemoteImageTrustVm;
   needsWorkspace: boolean;
+}
+
+/** Hosts the user trusts to serve remote Markdown images; normalized like `new URL(src).host`. */
+export interface RemoteImageTrustVm {
+  schemaVersion: 1;
+  trustedHosts: string[];
 }
 
 export interface AppConfigVm {
@@ -221,6 +231,8 @@ export interface AppConfigVm {
   acpChatEventPageSize: number;
   acpChatEventWindowPageCount: number;
   acpChatResourceCacheSessionCount: number;
+  /** Hidden built-in browser pages are released after this long and reloaded on return. */
+  browserHiddenReleaseSecs: number;
   conversationInlineContentMaxBytes: number;
   conversationInlineImageMaxBytes: number;
   conversationInlineImageMaxDimension: number;
@@ -258,6 +270,15 @@ export interface FileRevisionVm {
   contentHash: string;
 }
 
+/**
+ * File root of a work location: the registered project root
+ * (`workspacePath: null`) or a linked Git worktree of that project.
+ */
+export interface WorkspaceRootRef {
+  projectId: string;
+  workspacePath: string | null;
+}
+
 export interface WorkspaceFileLocatorVm {
   projectId: string;
   canonicalPath: string;
@@ -291,6 +312,21 @@ export interface WorkspaceDirectoryEntryVm {
   hasChildren: boolean;
   byteLength: number | null;
   modifiedAtNs: string | null;
+}
+
+export type WorkspaceEntryKind = 'file' | 'directory';
+
+export interface CreateWorkspaceEntryInput {
+  projectId: string;
+  workspacePath: string | null;
+  parentRelativePath: string;
+  name: string;
+  kind: WorkspaceEntryKind;
+}
+
+export interface WorkspaceEntryDeletionVm {
+  receiptId: string;
+  entry: WorkspaceDirectoryEntryVm;
 }
 
 export interface WorkspaceFileSearchVm {
@@ -342,12 +378,21 @@ export type WorkspaceFileSnapshotVm =
   | ImageFileSnapshotVm
   | UnsupportedFileSnapshotVm;
 
+export type MarkdownImageSource =
+  | { kind: 'workspace' }
+  | {
+      kind: 'document';
+      canonicalPath: string;
+      externalAccessToken?: string | null;
+      approvedExternalTargets?: string[];
+    };
+
 export interface ResolveMarkdownImageInput {
   projectId: string;
-  markdownCanonicalPath: string;
-  markdownExternalAccessToken: string | null;
+  workspacePath: string | null;
+  source: MarkdownImageSource;
+  /** Markdown URL syntax: query/fragment are excluded, percent encoding is decoded once. */
   rawSrc: string;
-  approvedExternalTargets: string[];
 }
 
 export type MarkdownImagePreviewVm =
@@ -370,8 +415,16 @@ export type MarkdownImagePreviewVm =
       limitationCode: string;
     };
 
+export interface OpenFileWithSystemAppInput {
+  projectId: string;
+  workspacePath: string | null;
+  canonicalPath: string;
+  externalAccessToken: string | null;
+}
+
 export interface WriteFileResourceInput {
   projectId: string;
+  workspacePath: string | null;
   canonicalPath: string;
   externalAccessToken: string | null;
   content: string;
@@ -384,6 +437,8 @@ export interface WriteFileResourceInput {
 
 export interface WorkspaceFileChangedEventVm {
   projectId: string;
+  /** Watched root; `null` for single-file external watches. */
+  workspacePath: string | null;
   canonicalPath: string;
   kind: 'created' | 'modified' | 'removed' | 'renamed' | 'invalidated';
   revision: FileRevisionVm | null;
@@ -423,6 +478,7 @@ export interface WorkspaceLayoutProfileVm {
 export interface AppInfoVm {
   channel: string;
   feedbackEnabled: boolean;
+  releaseNotesUrl: string;
   appName: string;
   appKey: string;
   configDirName: string;
@@ -443,6 +499,7 @@ export interface AcpActivityImagesPage {
 }
 
 export interface ManagedAgentVm {
+  cacheRepairAvailable?: boolean;
   agentType: string;
   displayName: string;
   command: string;
@@ -512,6 +569,8 @@ export interface AcpUsageVm {
   cachedReadTokens?: number | null;
   cachedWriteTokens?: number | null;
   totalTokens?: number | null;
+  /** Token totals cover prompt responses only; background Agent work ran too. */
+  tokenTotalsExcludeBackground?: boolean;
 }
 
 export interface AgentEnvEntryVm {
@@ -826,6 +885,8 @@ export interface GitRepositorySnapshotVm {
   unborn: boolean;
   upstream?: GitUpstreamVm | null;
   remotes: GitRemoteVm[];
+  /** Repository config identity; remotes are refetched only when it changes. */
+  remotesRevision: string;
   lock: GitLockVm;
   revision: string;
   syncRevision: string;
@@ -971,7 +1032,7 @@ export interface GitCommitReviewFileVm {
   path: string;
   oldPath?: string | null;
   kind: GitFileChangeKindVm;
-  binary: boolean;
+  binary: boolean | null;
   beforeOid?: string | null;
   beforePath?: string | null;
   afterOid: string;
@@ -1004,7 +1065,20 @@ export interface GitCommitReachabilityVm {
   parentOids: string[];
 }
 
+export interface GitSourceControlOverviewVm {
+  repository: GitRepositorySnapshotVm;
+  status: GitWorkspaceStatusVm;
+}
+
+export interface GitSourceControlBootstrapVm {
+  capability: GitCapabilityVm;
+  overview?: GitSourceControlOverviewVm | null;
+  /** `null` identifies the registered project root; paths identify linked worktrees. */
+  workspaceScopePath: string | null;
+}
+
 export interface GitSourceControlSnapshotVm {
+  catalogRevision: string;
   repository: GitRepositorySnapshotVm;
   status: GitWorkspaceStatusVm;
   refs: GitRefVm[];
@@ -1039,6 +1113,7 @@ export type GitBranchChangeRequestVm = (
 ) & { expectedRevision: string };
 
 export type GitMutationVm =
+  | { kind: 'discard-path'; path: string }
   | { kind: 'stage-paths'; paths: string[] }
   | { kind: 'stage-all' }
   | { kind: 'unstage-paths'; paths: string[] }
@@ -1067,10 +1142,28 @@ export type GitMutationResultVm =
 
 export type GitPullStrategyVm = 'fast-forward-only' | 'merge' | 'rebase';
 
+export type GitPushIntentVm =
+  | { kind: 'upstream-sync'; branch: string; remote: string | null }
+  | { kind: 'publish-head'; branch: string; remote: string };
+
+export interface GitPushTargetVm {
+  branch: string;
+  sourceOid: string;
+  remote: string;
+  remoteBranch: string;
+  setUpstream: boolean;
+}
+
+export interface GitPreparedPushVm {
+  intent: GitPushIntentVm;
+  target: GitPushTargetVm;
+  expectedRevision: string;
+}
+
 export type GitOperationInputVm =
   | { kind: 'fetch'; remote?: string | null; prune: boolean }
   | { kind: 'pull'; remote?: string | null; branch?: string | null; strategy: GitPullStrategyVm }
-  | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
+  | { kind: 'push'; intent: GitPushIntentVm; target: GitPushTargetVm }
   | { kind: 'push-tag'; remote: string; tag: string }
   | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
   | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean }
@@ -1113,7 +1206,7 @@ export interface GitStateChangedEventVm {
   projectId: string;
   repositoryCommonDir: string;
   workspacePath: string;
-  reason: 'workspace' | 'metadata' | 'operation';
+  reason: 'metadata';
 }
 
 export type GitHubCapabilityStatusVm = 'not-installed' | 'not-authenticated' | 'repository-unresolved' | 'ready';
@@ -1591,6 +1684,13 @@ export interface RoundSummaryVm {
 export interface GraphVm {
   nodes: GraphNodeVm[];
   edges: GraphEdgeVm[];
+  /** Structural containers enclosing nodes with a matching `dynamicGroupId`. */
+  groups: GraphGroupVm[];
+}
+
+export interface GraphGroupVm {
+  id: string;
+  parentGroupId?: string | null;
 }
 
 export interface RuntimeDisplayVm {
@@ -1760,8 +1860,7 @@ export interface AcpSessionVm {
   adapterId?: string | null;
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
-  worktreePath?: string | null;
-  worktreeBranch?: string | null;
+  workLocation: SessionWorkLocationVm;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -1880,6 +1979,7 @@ export interface AcpSessionTimingVm {
 
 export interface AcpPromptInteractionIdentityVm {
   interactionId: string;
+  sessionId?: string | null;
   turnId?: string | null;
   promptEventId?: string | null;
 }
@@ -1964,6 +2064,8 @@ export interface TurnFileChangeSetVm {
   changes: TurnFileChangeVm[];
   attachments: TurnAttachmentVm[];
   limitationCodes: string[];
+  /** Directory relative tool paths were resolved against; display only. */
+  workspaceRoot?: string | null;
 }
 
 export interface CapturedTextSnapshotVm {
@@ -2153,9 +2255,7 @@ export interface WeComScanAuthorizationVm {
 }
 
 export interface NotificationAttentionInput {
-  windowFocused: boolean;
-  windowMinimized: boolean;
-  windowVisible: boolean;
+  backgroundMessageTitle?: string;
   projectId?: string | null;
   taskId?: string | null;
   runId?: string | null;
@@ -2479,6 +2579,7 @@ export interface ScheduledTaskEditVm {
   projectId: string;
   content: string;
   attachmentNames: string[];
+  quotes: UserPromptQuote[];
   runMode: 'direct' | 'workflow' | 'auto' | string;
   workflowTemplateId?: string | null;
   includeOptionalEntry?: boolean | null;
@@ -2502,6 +2603,8 @@ export interface UpdateScheduledTaskInput {
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
+  /** Omitted keeps the stored quotes; a list keeps only the stored quotes with these ids. */
+  quotes?: UserPromptQuote[];
   schedule: ScheduledScheduleInput;
   overlapPolicy: ScheduledOverlapPolicy;
   sessionPolicy: ScheduledSessionPolicy;
@@ -2513,7 +2616,7 @@ export interface ConversationWorkspaceVm {
   name: string;
 }
 
-export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'ready-empty' | 'error';
+export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'error';
 
 export interface ConversationPageLoadVm {
   status: ConversationLoadStatus;
@@ -2549,6 +2652,7 @@ export interface ConversationTaskRowVm {
   runHistoryStatus: ConversationLoadStatus;
   runsNextCursor?: string | null;
   pinned: boolean;
+  resident?: boolean;
   pinnedOrder?: number | null;
   scheduledTaskId?: string | null;
 }
@@ -2579,6 +2683,15 @@ export interface AcpToolDetailVm {
   event?: AcpUiEventVm | null;
 }
 
+export interface AcpCompactionSummaryQueryInput {
+  branchId: string;
+  eventId: string;
+}
+
+export interface AcpCompactionSummaryVm {
+  markdown: string | null;
+}
+
 export interface AcpTimelineProjectionVm {
   agents: AcpAgentExecutionVm[];
   todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
@@ -2589,6 +2702,8 @@ export interface AcpAgentExecutionVm {
   parentAgentExecutionId?: string | null;
   attemptId?: string | null;
   executionStatus: string;
+  /** Latest canonical native Agent state event sequence, not the last content sequence. */
+  providerStateSeq?: number | null;
   eventCount: number;
   toolCallCount: number;
   readFileCount: number;
@@ -2602,12 +2717,14 @@ export interface AcpAgentExecutionVm {
 export interface ConversationTaskActivityVm {
   phase: string;
   stopping: boolean;
+  /** Present for phase `background`; judged by isDirectBackgroundActive. */
+  backgroundControl?: DirectBackgroundControl | null;
 }
 
 export interface ConversationTerminalResultVm {
   eventId: string;
   runId: string;
-  kind: 'completed' | 'stopped' | 'failed';
+  kind: 'completed' | 'stopped' | 'failed' | 'new-message';
   occurredAt: string;
 }
 
@@ -2696,7 +2813,15 @@ export interface ConversationAcpFacetVm {
   operationId?: string | null;
 }
 
+export interface DirectBackgroundControl {
+  sessionId: string;
+  connectionGeneration: number;
+  activeTools: number;
+  expiresAtMs: number;
+}
+
 export interface ConversationComposerVm {
+  backgroundControl?: DirectBackgroundControl | null;
   mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'interaction-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
@@ -2736,10 +2861,19 @@ export interface ConversationQueuedPromptVm {
   createdAt: string;
 }
 
+export type DiffQuoteOrigin = 'workingTreeStaged' | 'workingTreeUnstaged' | 'commit' | 'pullRequest' | 'agentTurn';
+
+export type UserPromptQuoteSource =
+  | { kind: 'agentMessage'; messageKey: string }
+  /** `label` is a workspace-relative path, run-directory path, or attachment name. */
+  | { kind: 'file'; label: string; startLine: number; endLine: number }
+  | { kind: 'diff'; path: string; origin: DiffQuoteOrigin; revision?: string | null; scope: 'selection' | 'file' };
+
 export interface UserPromptQuote {
   id: string;
-  sourceMessageKey: string;
+  /** Empty in timeline history for whole-file diffs; the Agent received the full text. */
   text: string;
+  source: UserPromptQuoteSource;
 }
 
 export interface UserPromptRole {
@@ -2767,6 +2901,7 @@ export interface ConversationPromptQueueVm {
 }
 
 export interface ConversationAttemptLifecycleVm {
+  executionError?: AcpExecutionErrorVm | null;
   runtime: ConversationRuntimeFacetVm;
   control: ConversationControlFacetVm;
   acp: ConversationAcpFacetVm;
@@ -2775,6 +2910,11 @@ export interface ConversationAttemptLifecycleVm {
   continueKind?: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   composer: ConversationComposerVm;
   promptQueue?: ConversationPromptQueueVm | null;
+}
+
+export interface AcpExecutionErrorVm {
+  owner: { turnId: string; operationId: string; revision: number };
+  error: RuntimeErrorInfoVm;
 }
 
 export interface ConversationSessionLeafVm {
@@ -2794,8 +2934,7 @@ export interface ConversationSessionLeafVm {
   finishedAt?: string | null;
   sessionId?: string | null;
   sessionEstablished?: boolean;
-  worktreePath?: string | null;
-  worktreeBranch?: string | null;
+  workLocation: SessionWorkLocationVm;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -2914,7 +3053,6 @@ export interface ConversationRunVm {
   runStatus: string;
   runOutcome?: string | null;
   sessionTree: ConversationSessionTreeVm;
-  selectedSession?: AcpSessionVm | null;
   activeSessions: ConversationActiveSessionVm[];
   inputAttachments: AssetItemVm[];
   workflowStatus: string;
@@ -3046,9 +3184,19 @@ export interface ConversationCreateInput {
   selectedBranch?: string | null;
   role?: UserPromptRole | null;
   workspaceFiles?: PromptWorkspaceFileRef[];
+  quotes?: UserPromptQuote[];
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';
+
+/**
+ * Where a session works. `unavailable` (released or unresolvable worktree)
+ * is distinct from `main`: consumers must not fall back to the project root.
+ */
+export type SessionWorkLocationVm =
+  | { kind: 'main' }
+  | { kind: 'worktree'; path: string; branch?: string | null }
+  | { kind: 'unavailable'; reason: 'released' | 'unresolved'; path?: string | null };
 
 export interface ConversationValidationResultVm {
   valid: boolean;

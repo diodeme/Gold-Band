@@ -181,6 +181,9 @@ mod windows_runtime {
     }
 
     #[test]
+    // The child re-runs this test binary and must inherit the console so its
+    // `--nocapture` output stays visible; `background_command()` would detach it.
+    #[allow(clippy::disallowed_methods)]
     fn windows_message_reentrancy_regression_is_bounded() {
         let mut child = Command::new(env::current_exe().expect("test executable path"))
             .args([

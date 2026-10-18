@@ -1,0 +1,82 @@
+<!doctype html>
+<!--
+assumptions: Standalone 1920×1080 stage slide. No navigation, page number or scaling;
+the parent showcase supplies those. Facts come only from the shared design-spec.md.
+The coordinating agent performs the browser check. Logos/fonts are local brand assets.
+reasoning: Pentagram-inspired editorial information design, not a commissioned or
+endorsed Pentagram design. The authorial device is an acceptance boundary: 1,407 is
+set at monumental scale; Claude Code's last two not-yet-passed items are an explicit
+small gap, and the gold field closes the composition with the actual trade-off.
+The two outlined squares denote ONLY the two-item shortfall, not a scaled progress
+bar, and no implied ratio, timing trace, trend or invented test identity is drawn.
+Form follows the contrast between nearly complete and fully accepted delivery.
+All six comparison figures remain written in plain text. 47% is token reduction,
+not a quality, speed, price or billing claim. The slower run is visibly disclosed.
+Overdesign/performance: fixed CSS composition, native HTML, shared local assets;
+no JavaScript, charts library, external requests, interaction state or animation.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, initial-scale=1">
+<title>长任务，先看能否完整交付 · Studio</title>
+<link rel="stylesheet" href="../assets/fonts.css">
+<style>
+:root{--charcoal:#101112;--paper:#F0F1EE;--gold:#E4CB79;--muted:#A2A8A6;--rule:#343839}
+*{box-sizing:border-box}html,body{width:1920px;height:1080px;margin:0;overflow:hidden}
+body{position:relative;background:var(--charcoal);color:var(--paper);font-family:var(--font-brand);font-weight:400;-webkit-font-smoothing:antialiased}
+p,h1,h2,dl,dd{margin:0}img{display:block;object-fit:contain}h1,h2{font-weight:520;text-wrap:balance}
+.task{position:absolute;left:86px;top:51px;display:flex;align-items:center;gap:20px}
+.task img{width:58px;height:58px}.task .name{font-size:28px;font-weight:550;letter-spacing:-.025em}.task .desc{font-size:23px;color:var(--muted);margin-top:6px}
+.total{position:absolute;left:67px;top:190px;font-size:280px;font-weight:600;line-height:1;letter-spacing:-.075em;font-variant-numeric:tabular-nums}
+.total-label{position:absolute;left:89px;top:493px;font-size:34px;letter-spacing:-.015em}.total-label strong{font-weight:550;color:var(--gold)}
+.score{position:absolute;left:88px;width:872px}.score.claude{top:609px}.score.auto{top:808px}
+.identity{display:flex;align-items:center;gap:15px;font-size:29px;font-weight:600;line-height:42px}
+.identity img{width:40px;height:40px}
+.pass{position:absolute;right:0;top:0;font-size:37px;font-weight:600;line-height:44px;letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.pass .denominator{font-size:26px;font-weight:400;color:var(--muted);letter-spacing:-.025em}
+.detail{display:flex;align-items:baseline;gap:29px;margin-top:16px;padding-left:55px;font-size:28px;color:var(--muted);white-space:nowrap}
+.detail strong{font-size:32px;color:var(--paper);font-weight:550;letter-spacing:-.02em}
+.shortfall{display:flex;align-items:center;gap:9px;position:absolute;left:55px;top:111px;font-size:23px;color:var(--muted)}
+.shortfall i{display:block;width:18px;height:18px;border:1.5px solid var(--muted)}.shortfall span{margin-left:5px}
+.score.auto{border-top:1px solid var(--rule);padding-top:25px}.score.auto .pass{top:25px}
+.conclusion{position:absolute;left:1044px;top:0;width:876px;height:1080px;background:var(--gold);color:var(--charcoal);padding:124px 80px 70px 88px}
+.conclusion h1{font-size:86px;line-height:1.23;letter-spacing:-.045em}
+.conclusion h1 span{display:block}
+.tradeoff{position:absolute;left:88px;right:78px;top:568px;border-top:2px solid var(--charcoal);padding-top:32px}
+.tradeoff .token{font-size:40px;line-height:1.4;letter-spacing:-.03em}
+.tradeoff .token strong{font-size:72px;font-weight:650;letter-spacing:-.055em;display:inline-block;margin-left:10px}
+.tradeoff .time{font-size:34px;line-height:1.55;margin-top:28px;letter-spacing:-.02em}
+.tradeoff .time strong{font-weight:520;border-bottom:2px solid var(--charcoal);padding-bottom:3px}
+.caveat{position:absolute;left:88px;right:76px;bottom:67px;font-size:22px;line-height:1.65}
+.context{position:absolute;left:89px;bottom:48px;font-size:20px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main aria-label="SWE-Marathon Kubernetes 完整验收结果">
+<div class="task"><img src="../assets/kubernetes.svg" alt="Kubernetes 标志"><div><p class="name">SWE-Marathon / Kubernetes</p><p class="desc">任务：Rust 重写 Kubernetes</p></div></div>
+<div class="total" aria-hidden="true">1,407</div>
+<p class="total-label">项测试，<strong>AUTO 全部通过。</strong></p>
+<section class="score claude" aria-label="Claude Code：通过 1405 项，共 1407 项；约 325.8M token；97 分钟">
+<div class="identity"><img src="../assets/claude-code.svg" alt="Claude Code 标志"><span>Claude Code</span></div>
+<p class="pass">1,405 <span class="denominator">/ 1,407 项</span></p>
+<p class="detail"><span>约 <strong>325.8M</strong> token</span><span><strong>97</strong> 分钟</span></p>
+<p class="shortfall"><i aria-hidden="true"></i><i aria-hidden="true"></i><span>距完整通过，还差 2 项</span></p>
+</section>
+<section class="score auto" aria-label="Gold Band AUTO：通过 1407 项，共 1407 项；约 173M token；165 分钟">
+<div class="identity"><img src="../assets/gold-band.svg" alt="Gold Band 标志"><span>Gold Band AUTO</span></div>
+<p class="pass">1,407 <span class="denominator">/ 1,407 项</span></p>
+<p class="detail"><span>约 <strong>173M</strong> token</span><span><strong>165</strong> 分钟</span></p>
+</section>
+<aside class="conclusion" aria-label="关键判断与代价">
+<h1><span>长任务，</span><span>先看能否</span><span>完整交付。</span></h1>
+<div class="tradeoff">
+<p class="token">记录 token 约少<strong>47%</strong></p>
+<p class="time">完整通过，但<strong>耗时仍更长</strong>。<br>165 分钟，而非 97 分钟。</p>
+</div>
+<p class="caveat">加入整体验收规则后的单次同题复测。<br>token 是记录用量，不是账单金额。</p>
+</aside>
+<p class="context">阶段性结果 · 2026.10.13</p>
+</main>
+</body>
+</html>

@@ -1,17 +1,18 @@
 import { browserResolveLocalHtml, openExternalUrl } from '@/api';
+import type { BrowserResolveLocalHtmlInput } from '@/api/client';
 import type { RightWorkspaceCommands } from '../right-workspace-context';
-import type { BrowserPreferences } from '@/types';
+import type { BrowserPreferences, WorkspaceRootRef } from '@/types';
 import { browserWorkspaceResourceKey } from '../right-workspace-context';
 import { browserSessionStore } from './browser-session-store';
 import {
   classifyWebTarget,
   isLocalhostUrl,
-  localHtmlHrefFrom,
   normalizeBrowserAddress,
 } from './web-target';
 
 export interface OpenWebTargetContext {
-  projectId: string | null;
+  /** File root local documents resolve against; `null` when none is available. */
+  root: WorkspaceRootRef | null;
   scopeKey: string | null;
   openResource: RightWorkspaceCommands['openResource'];
   browserTitle: string;
@@ -51,33 +52,53 @@ export async function openWebTarget(
   if (!context.scopeKey) {
     return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
   }
-  let url = kind === 'http'
-    ? normalizeBrowserAddress(href, context.browserPreferences?.searchEngine)
-    : href;
   if (kind === 'local-html') {
-    const rawPath = localHtmlHrefFrom(href) ?? href;
-    if (!context.projectId) {
-      return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
-    }
-    try {
-      const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
-        projectId: context.projectId,
-        rawHref: rawPath,
-      });
-      url = resolved.canonicalPath;
-    } catch (reason) {
-      const value = reason as { code?: unknown; params?: unknown };
-      return {
-        status: 'error',
-        error: {
-          code: typeof value.code === 'string' ? value.code : 'browser.local_html.grant_failed',
-          params: typeof value.params === 'object' && value.params
-            ? value.params as Record<string, unknown>
-            : {},
-        },
-      };
-    }
+    return openResolvedLocalDocument({ kind: 'href', href }, context);
   }
+  return openBrowserPage(normalizeBrowserAddress(href, context.browserPreferences?.searchEngine), context.scopeKey, context);
+}
+
+/** Opens a literal canonical HTML/SVG path, not a URL or percent-encoded href. */
+export async function openLocalDocumentInBrowser(
+  path: string,
+  context: OpenWebTargetContext,
+): Promise<OpenWebTargetResult> {
+  return openResolvedLocalDocument({ kind: 'path', path }, context);
+}
+
+async function openResolvedLocalDocument(
+  target: BrowserResolveLocalHtmlInput['target'],
+  context: OpenWebTargetContext,
+): Promise<OpenWebTargetResult> {
+  if (!context.scopeKey) {
+    return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
+  }
+  if (!context.root) {
+    return { status: 'error', error: { code: 'workspace-file.workspace-unavailable', params: {} } };
+  }
+  let url: string;
+  try {
+    const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
+      ...context.root,
+      target,
+    });
+    url = resolved.url;
+  } catch (reason) {
+    const value = reason as { code?: unknown; params?: unknown };
+    return {
+      status: 'error',
+      error: {
+        code: typeof value.code === 'string' ? value.code : 'browser.local_html.grant_failed',
+        params: typeof value.params === 'object' && value.params
+          ? value.params as Record<string, unknown>
+          : {},
+      },
+    };
+  }
+  return openBrowserPage(url, context.scopeKey, context);
+}
+
+async function openBrowserPage(url: string, scopeKey: string, context: OpenWebTargetContext): Promise<OpenWebTargetResult> {
   let pageId: string;
   try {
     pageId = browserSessionStore.openUrl(url);
@@ -94,7 +115,7 @@ export async function openWebTarget(
   await context.openResource({
     kind: 'browser',
     key: browserWorkspaceResourceKey(),
-    scopeKey: context.scopeKey,
+    scopeKey,
     title: context.browserTitle,
     description: null,
     attention: false,

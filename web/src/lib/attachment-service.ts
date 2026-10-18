@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from './attachments';
+import { isImageMime, isTextPreviewableMime } from './attachments';
 import { materializeConversationAttachments, pickAttachmentFiles } from '@/api';
 import type { AttachmentFileRef, MaterializeAttachmentFileInput } from '@/api/client';
 import { isTauriRuntime } from '@/api/shared';
@@ -153,6 +153,7 @@ export function createLongPasteAttachmentItem(
 }
 
 export async function readAttachmentText(item: AttachmentItem): Promise<string> {
+  if (!isTextPreviewableMime(item.mime)) throw new Error('attachment.content-unavailable');
   if (item.file) return item.file.text();
   if (!item.contentUrl) throw new Error('attachment.content-unavailable');
   const response = await fetch(item.contentUrl, { cache: 'no-store' });
@@ -187,9 +188,8 @@ export interface UseAttachmentPickerOptions {
   attachments?: AttachmentStateController;
   /**
    * When set, only items whose guessed MIME starts with this prefix are
-   * accepted (e.g. "image/" for screenshot-only pickers). When set this is the
-   * authoritative type filter and the backend extension allowlist is bypassed,
-   * so the picker is not coupled to the conversation attachment set.
+   * accepted (e.g. "image/" for screenshot-only pickers). Without it any file
+   * type is accepted.
    */
   acceptMimePrefix?: string;
   /** Exact MIME allowlist for flows with a narrower backend contract. */
@@ -209,7 +209,6 @@ export function revokeAttachmentPreviewUrls(attachments: AttachmentItem[]): void
 
 export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const { t } = useTranslation();
-  const allowedExts = useAttachmentExtensions();
   const [internalAttachments, setInternalAttachments] = useState<AttachmentItem[]>([]);
   const externalAttachments = options.attachments;
   const attachments = externalAttachments?.[0] ?? internalAttachments;
@@ -247,14 +246,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
           }
           return true;
         }
-        if (acceptMimePrefix) {
-          if (!item.mime.startsWith(acceptMimePrefix)) {
-            rejected.push(item.name);
-            return false;
-          }
-          return true;
-        }
-        if (allowedExts && !isAllowedAttachment(item.name, allowedExts)) {
+        if (acceptMimePrefix && !item.mime.startsWith(acceptMimePrefix)) {
           rejected.push(item.name);
           return false;
         }
@@ -292,7 +284,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       }
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
-    [t, allowedExts, maxCount, maxTotalSize, maxFileSize, acceptMimePrefix, acceptedMimes],
+    [t, maxCount, maxTotalSize, maxFileSize, acceptMimePrefix, acceptedMimes],
   );
 
   // -- Direct add (paste / drop / programmatic) --
@@ -512,7 +504,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const handlePreviewAttachment = useCallback((item: AttachmentItem) => {
     if (isImageMime(item.mime)) {
       setPreviewImage(item);
-    } else if (item.file) {
+    } else if (item.file && isTextPreviewableMime(item.mime)) {
       const reader = new FileReader();
       reader.onload = () => {
         setTextPreview({ name: item.name, content: reader.result as string });

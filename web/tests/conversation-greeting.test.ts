@@ -16,8 +16,8 @@ const homeSource = readFileSync(
   fileURLToPath(new URL('../src/pages/ConversationHomePage.tsx', import.meta.url)),
   'utf8',
 );
-const i18nSource = readFileSync(
-  fileURLToPath(new URL('../src/i18n.ts', import.meta.url)),
+const englishLocaleSource = readFileSync(
+  fileURLToPath(new URL('../src/locales/en.json', import.meta.url)),
   'utf8',
 );
 
@@ -56,11 +56,11 @@ describe('conversation greeting periods in the system local timezone', () => {
 
 describe('conversation greeting rendering contract', () => {
   it('keeps English greetings concise and aligned with natural day-part wording', () => {
-    expect(i18nSource.match(/Good morning\. What shall we work on\?/g)).toHaveLength(2);
-    expect(i18nSource.match(/Good afternoon\. What shall we work on\?/g)).toHaveLength(2);
-    expect(i18nSource).toContain('Good evening. What shall we work on?');
-    expect(i18nSource).toContain("It's late. What shall we work on?");
-    expect(i18nSource).not.toContain('What would you like to work on together today?');
+    expect(englishLocaleSource.match(/Good morning\. What shall we work on\?/g)).toHaveLength(2);
+    expect(englishLocaleSource.match(/Good afternoon\. What shall we work on\?/g)).toHaveLength(2);
+    expect(englishLocaleSource).toContain('Good evening. What shall we work on?');
+    expect(englishLocaleSource).toContain("It's late. What shall we work on?");
+    expect(englishLocaleSource).not.toContain('What would you like to work on together today?');
   });
 
   it('isolates time state from the composer and refreshes only at boundaries or resume events', () => {

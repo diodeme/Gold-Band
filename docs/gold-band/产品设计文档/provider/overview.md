@@ -30,9 +30,21 @@ Gold Band 核心 runtime 不应直接了解：
 
 Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-version>` 启动；Windows 桌面运行时仅在进程启动边界把 bare `npx` 解析为 `npx.cmd`，其他平台不做命令改写。
 
+npx 直启（2026-10-11）：npx 在适配器整个生命周期内保留 `cmd → node(npx) → cmd` 三层包装进程（每个适配器约 55～90 MB）。对形如 `npx [-y|--yes] <包>@<精确 semver> [参数]` 的配置，启动边界先在 npm 实际缓存中定位 npx 已安装的同一规格：按 npx 自身规则（规格的 sha512 前 16 位十六进制）直接定位 `_npx/<hash>`，并校验其 `package.json` 的 `_npx.packages` 恰为该规格、`node_modules/.package-lock.json` 存在（安装已完成）、包版本一致、`bin` 入口位于包内且存在；全部满足时用与 npx 同一安装目录下的 node 直接执行入口。任一条件不满足（首次使用、版本范围/latest、其他 npx 选项、npm exec 形式、缓存被清理或 npm 布局变化）均原样走 npx，后者同时补齐缓存。缓存根目录沿用修复功能的 `npm config get cache` 查询（同一启动环境与工作目录），按 npx 路径、工作目录和环境在进程内记忆，最多 32 项。适配器自身按模块路径定位 `claude.exe`/`codex`，不依赖 npx 注入的环境变量。
+
 ### 构建期 Agent 版本策略
 
-`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前 `claude-acp` 固定为 `0.72.0`，规避其后 SDK `0.3.257` 在 macOS 12 上的启动回归。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.87.0`、`codex-acp` 为 `2.1.1`（2026-10-08 的 npm latest 正式版）。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+
+Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，消费预览版 `compaction_update` / `compaction_summary_chunk`。按 provider 的 `compactionId` 原位更新既有压缩时间线实体，保留首次位置；支持 completed-only 回放、摘要顺序追加及最终替换、缺字段保持和 null 清空。未知状态保留原值并显示通用状态，不推断成功。压缩行展示状态、耗时和已确认的压缩前用量；用量以 `usage_update` 为准。压缩完成且 provider 返回非空文本摘要时显示“查看摘要”，点击在右侧“压缩摘要”Tab 默认渲染 Markdown，支持切换只读源码及复制原文；无摘要时不显示入口。其他 Agent 的既有压缩信号继续映射到同一实体模型，不声明 JetBrains AIR 私有客户端能力。
+
+摘要正文仍以持久化的压缩事件为唯一来源，列表投影只携带 `compactionSummaryAvailable` 标记，避免通用 raw 截断及提前读取 blob。Tab 仅保存完整 attempt/branch locator 和事件 ID，同一压缩重复打开复用 Tab；正文通过 `get_acp_compaction_summary` 在激活时按现有 timeline 索引读取，并仅还原该摘要的文本 blob，保留分段文本拼接顺序。读取在 blocking worker 中执行，校验路径作用域，不扫描全部 raw frames；Tab 展示加载、失败重试和摘要已清除状态，迟到响应不能覆盖其他摘要。当前展示完成后的文本摘要，不新增流式摘要预览或非文本摘要附件 UI。
+
+“查看摘要”作为次要操作放在压缩行第二行、压缩前用量之后；采用普通字重的小号次要文字和右向箭头，悬停加深并显示下划线，无按钮底色。窄宽度允许自然换行；无用量但有摘要时也保留入口，键盘焦点沿用共享 Button。
+
+工具更新按字段是否出现合并，省略的状态、输入、输出与 diff 保留，显式空值清除。Codex `terminal_output_delta` 按工具累计进入已有输出详情，最多保留 256,000 字符并标记截断，原始帧留在 raw 日志；沿用工具详情按需读取与流式发布机制。Claude 无 AIR 的 `question_n_custom` 与其选择题配对，桌面和远程提问保持一致。此升级不扩展 goal、原生子 Agent 或后台任务 UI。
+
+`session/prompt` 返回 ACP `AuthRequired`（`-32000`）时，按协议错误码映射到既有 `provider.auth-required`，保留原始错误与诊断，不依赖错误消息语言。失败按现有生命周期结束当前轮次，释放发送状态；认证问题由用户处理后手动再次发送，不自动重发或新增应用内登录流程。
 
 正式 build 继续在线刷新 Registry，再应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略，基于本地 snapshot 应用相同规则。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。
 
@@ -87,6 +99,7 @@ Settings schema 11 不再持久化内置 Agent 的 `adapter.command` / `adapter.
 - canonical artifact contract 必须保持 provider-agnostic
 - provider-specific 引用只能通过 `worker-ref` 等边界文件暴露
 - ACP session events 是 provider 返回值的统一观测输入，但不作为稳定控制流依据
+- ACP adapter 的 stdout EOF 只表示 transport 已关闭；若进程退出状态尚不可用，记录 pending 观测但不得消耗最终退出状态。进程终态可用后必须只记录一次包含 exit code 的 `acp_adapter_exit_status`，保证诊断能够区分协议断开、正常退出和异常退出。
 - provider raw frame / raw stream 仅用于排障与 raw viewer，不作为 UI 主协议
 - 不再新增 Gold Band 自研 `progress.events.jsonl` 作为 provider 输出统一层
 - workflow / profile 的解析优先级应在 runtime 上层统一完成，而不是由 provider implementation 自行猜测

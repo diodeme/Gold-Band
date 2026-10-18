@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DraftAttachmentWorkspaceResource } from '@/components/workspace/right-workspace-context';
-import '@/i18n';
+import i18n from '@/i18n';
 
 vi.mock('@/components/workspace/files/ReadonlyTextWorkspaceViewer', () => ({
   ReadonlyTextWorkspaceViewer: (props: { documentKey: string; name: string; value: string }) => (
@@ -47,6 +47,34 @@ describe('draft attachment workspace panel', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     document.body.replaceChildren();
+  });
+
+  it('does not read a binary attachment as text', async () => {
+    const file = new File([new Uint8Array([0x4d, 0x5a, 0, 0xff])], 'tool.exe', { type: 'application/x-msdownload' });
+    const readText = vi.fn();
+    Object.defineProperty(file, 'text', { value: readText });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<DraftAttachmentWorkspacePanel resource={resource({
+          id: 'tool',
+          name: 'tool.exe',
+          size: file.size,
+          mime: file.type,
+          file,
+          source: 'browser-file',
+        })} />);
+      });
+
+      expect(readText).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="readonly-text-workspace"]')).toBeNull();
+      expect(container.textContent).toContain(i18n.t('workspace.filesPanel.attachmentPreviewUnavailable'));
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it('loads text lazily from its revision-bound URL and opens Markdown in the shared viewer', async () => {

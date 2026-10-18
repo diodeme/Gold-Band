@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { ImageCanvasViewState } from '@/lib/image-zoom-gesture';
 import {
   readFileResource,
   resolveMarkdownImage,
@@ -18,9 +19,12 @@ import type {
   WorkspaceFileSnapshotVm,
   WorkspaceFilesVm,
   MarkdownImagePreviewVm,
+  WorkspaceRootRef,
 } from '@/types';
 import type { FileWorkspaceResource } from '../right-workspace-context';
 import type { EditorViewportAnchor } from './WorkspaceFileEditor';
+import { workspacePathIsWithin } from './workspace-path';
+import { workspaceRootKey, workspaceRootRef } from '@/lib/workspace-root';
 
 export type FileSaveState =
   | { kind: 'clean' }
@@ -78,19 +82,13 @@ interface SaveRuntime {
   viewportAnchor: EditorViewportAnchor | null;
   viewportScrollTop: number;
   consumedLocationRevision: number;
-  imageViewState: FileImageViewState;
+  imageViewState: ImageCanvasViewState | null;
   markdownMode: MarkdownEditorMode;
   markdownImages: Map<string, MarkdownImageState>;
   markdownImageSources: Set<string>;
   markdownImageRequestRevision: number;
   markdownImageRefreshPromise: Promise<void> | null;
   approvedMarkdownImageTargets: Set<string>;
-}
-
-export interface FileImageViewState {
-  zoom: number;
-  scrollLeft: number;
-  scrollTop: number;
 }
 
 interface PrimedExternalGrant {
@@ -101,6 +99,10 @@ interface PrimedExternalGrant {
 
 const PREVIEW_REFRESH_LEAD_MS = 60_000;
 const PREVIEW_REFRESH_RETRY_MS = 15_000;
+
+function resourceRootKey(resource: FileWorkspaceResource) {
+  return workspaceRootKey(resource.projectId, resource.workspacePath);
+}
 
 function isNetworkImageSource(source: string) {
   return /^(?:https?:)?\/\//iu.test(source.trim());
@@ -131,10 +133,11 @@ export class FileContentStore {
   private readonly primedGrants = new Map<string, PrimedExternalGrant>();
   private readonly listeners = new Set<() => void>();
   private readonly changeListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
-  private readonly projectWatchRefs = new Map<string, number>();
-  private readonly projectWatchOperations = new Map<string, Promise<void>>();
-  private readonly activeProjectWatches = new Set<string>();
-  private readonly projectContentEpoch = new Map<string, number>();
+  /** Watch refs, operations and content epochs are keyed by file root (project + work location). */
+  private readonly rootWatchRefs = new Map<string, number>();
+  private readonly rootWatchOperations = new Map<string, Promise<void>>();
+  private readonly activeRootWatches = new Set<string>();
+  private readonly rootContentEpoch = new Map<string, number>();
   private eventUnsubscribe: (() => void) | null = null;
   private eventSubscriptionPromise: Promise<void> | null = null;
 
@@ -299,6 +302,12 @@ export class FileContentStore {
 
   snapshot = (key: string) => this.entries.get(key) ?? EMPTY_ENTRY;
 
+  externalAccessToken(resourceKey: string) {
+    return (this.entries.get(resourceKey)?.snapshot?.externalAccessGrant
+      ?? this.runtimes.get(resourceKey)?.externalAccessGrant
+      ?? this.primedGrants.get(resourceKey)?.grant)?.token ?? null;
+  }
+
   primeExternalGrant(
     resourceKey: string,
     projectId: string,
@@ -315,7 +324,7 @@ export class FileContentStore {
 
   async load(resource: FileWorkspaceResource, preferSource = false, force = false, preserveReady = false) {
     const existing = this.entries.get(resource.key);
-    const watchEpoch = this.contentEpoch(resource.projectId);
+    const watchEpoch = this.contentEpoch(resourceRootKey(resource));
     if (!force && existing?.status === 'ready' && existing.watchEpoch === watchEpoch) return existing;
     const requestRevision = (existing?.requestRevision ?? 0) + 1;
     // A later watch epoch still re-reads disk, but an open file must stay visible.
@@ -332,7 +341,7 @@ export class FileContentStore {
       ?? null;
     try {
       const snapshot = await readFileResource(
-        resource.projectId,
+        workspaceRootRef(resource.projectId, resource.workspacePath),
         resource.locator.canonicalPath,
         grant?.token,
         preferSource,
@@ -365,7 +374,7 @@ export class FileContentStore {
           snapshot,
           errorCode: null,
           requestRevision,
-          watchEpoch: this.contentEpoch(resource.projectId) === watchEpoch ? watchEpoch : current.watchEpoch,
+          watchEpoch: this.contentEpoch(resourceRootKey(resource)) === watchEpoch ? watchEpoch : current.watchEpoch,
         };
         this.setEntry(resource.key, next);
         this.touch(resource.key);
@@ -392,7 +401,7 @@ export class FileContentStore {
         errorCode: null,
         requestRevision,
         contentRevision: (existing?.contentRevision ?? 0) + 1,
-        watchEpoch: this.contentEpoch(resource.projectId) === watchEpoch ? watchEpoch : existing?.watchEpoch ?? watchEpoch,
+        watchEpoch: this.contentEpoch(resourceRootKey(resource)) === watchEpoch ? watchEpoch : existing?.watchEpoch ?? watchEpoch,
         localRevision: 0,
         savedLocalRevision: 0,
         saveState: { kind: 'clean' },
@@ -500,39 +509,41 @@ export class FileContentStore {
     await this.load(entry.resource, preferSource ?? showSvgSource, true);
   }
 
-  async startProjectWatch(projectId: string) {
-    const refs = this.projectWatchRefs.get(projectId) ?? 0;
-    this.projectWatchRefs.set(projectId, refs + 1);
+  async startRootWatch(root: WorkspaceRootRef) {
+    const key = workspaceRootKey(root.projectId, root.workspacePath);
+    const refs = this.rootWatchRefs.get(key) ?? 0;
+    this.rootWatchRefs.set(key, refs + 1);
     try {
       await this.ensureEventSubscription();
-      await this.queueWatchOperation(projectId, async () => {
-        if (this.activeProjectWatches.has(projectId)) return;
-        await startWorkspaceFileWatch(projectId);
-        this.activeProjectWatches.add(projectId);
+      await this.queueWatchOperation(key, async () => {
+        if (this.activeRootWatches.has(key)) return;
+        await startWorkspaceFileWatch(root);
+        this.activeRootWatches.add(key);
       });
     } catch (reason) {
-      const currentRefs = this.projectWatchRefs.get(projectId) ?? 0;
-      if (currentRefs <= 1) this.projectWatchRefs.delete(projectId);
-      else this.projectWatchRefs.set(projectId, currentRefs - 1);
+      const currentRefs = this.rootWatchRefs.get(key) ?? 0;
+      if (currentRefs <= 1) this.rootWatchRefs.delete(key);
+      else this.rootWatchRefs.set(key, currentRefs - 1);
       this.releaseEventSubscriptionIfIdle();
       throw reason;
     }
   }
 
-  async stopProjectWatch(projectId: string) {
-    const refs = this.projectWatchRefs.get(projectId) ?? 0;
+  async stopRootWatch(root: WorkspaceRootRef) {
+    const key = workspaceRootKey(root.projectId, root.workspacePath);
+    const refs = this.rootWatchRefs.get(key) ?? 0;
     if (refs > 1) {
-      this.projectWatchRefs.set(projectId, refs - 1);
+      this.rootWatchRefs.set(key, refs - 1);
       return;
     }
     if (refs === 1) {
-      this.projectContentEpoch.set(projectId, this.contentEpoch(projectId) + 1);
+      this.rootContentEpoch.set(key, this.contentEpoch(key) + 1);
     }
-    this.projectWatchRefs.delete(projectId);
-    await this.queueWatchOperation(projectId, async () => {
-      if (!this.activeProjectWatches.has(projectId)) return;
-      await stopWorkspaceFileWatch(projectId);
-      this.activeProjectWatches.delete(projectId);
+    this.rootWatchRefs.delete(key);
+    await this.queueWatchOperation(key, async () => {
+      if (!this.activeRootWatches.has(key)) return;
+      await stopWorkspaceFileWatch(root);
+      this.activeRootWatches.delete(key);
     }).finally(() => this.releaseEventSubscriptionIfIdle());
   }
 
@@ -580,6 +591,31 @@ export class FileContentStore {
     return results.every(Boolean);
   }
 
+  private keysWithin(projectId: string, canonicalPath: string) {
+    return [...this.entries.entries()]
+      .filter(([, entry]) => entry.resource.projectId === projectId
+        && workspacePathIsWithin(entry.resource.locator.canonicalPath, canonicalPath))
+      .map(([key]) => key);
+  }
+
+  /** Whether an open file at or below `canonicalPath` has edits not yet written to disk. */
+  hasUnsavedWithin(projectId: string, canonicalPath: string) {
+    return this.keysWithin(projectId, canonicalPath).some((key) => {
+      const entry = this.entries.get(key);
+      return entry !== undefined && entry.localRevision > entry.savedLocalRevision;
+    });
+  }
+
+  async flushWithin(projectId: string, canonicalPath: string) {
+    const results = await Promise.all(this.keysWithin(projectId, canonicalPath).map((key) => this.flush(key)));
+    return results.every(Boolean);
+  }
+
+  /** Drop cached content for paths that no longer exist after a rename or delete. */
+  async releaseWithin(projectId: string, canonicalPath: string) {
+    await Promise.all(this.keysWithin(projectId, canonicalPath).map((key) => this.release(key)));
+  }
+
   async releaseProject(projectId: string) {
     const saved = await this.flushAll(projectId);
     if (!saved) return false;
@@ -595,11 +631,11 @@ export class FileContentStore {
     return true;
   }
 
-  imageViewState(resourceKey: string): FileImageViewState {
-    return this.runtimes.get(resourceKey)?.imageViewState ?? { zoom: 1, scrollLeft: 0, scrollTop: 0 };
+  imageViewState(resourceKey: string): ImageCanvasViewState | null {
+    return this.runtimes.get(resourceKey)?.imageViewState ?? null;
   }
 
-  persistImageViewState(resourceKey: string, state: FileImageViewState) {
+  persistImageViewState(resourceKey: string, state: ImageCanvasViewState) {
     const runtime = this.runtimes.get(resourceKey);
     if (runtime) runtime.imageViewState = state;
   }
@@ -651,6 +687,7 @@ export class FileContentStore {
       try {
         const revision = await writeFileResource({
           projectId: entry.resource.projectId,
+          workspacePath: entry.resource.workspacePath,
           canonicalPath: entry.resource.locator.canonicalPath,
           externalAccessToken: runtime.externalAccessGrant?.token ?? null,
           content: runtime.latestContent,
@@ -706,10 +743,14 @@ export class FileContentStore {
         try {
           const result = await resolveMarkdownImage({
             projectId: entry.resource.projectId,
-            markdownCanonicalPath: entry.resource.locator.canonicalPath,
-            markdownExternalAccessToken: runtime.externalAccessGrant?.token ?? null,
+            workspacePath: entry.resource.workspacePath,
+            source: {
+              kind: 'document',
+              canonicalPath: entry.resource.locator.canonicalPath,
+              externalAccessToken: runtime.externalAccessGrant?.token ?? null,
+              approvedExternalTargets: [...runtime.approvedMarkdownImageTargets],
+            },
             rawSrc,
-            approvedExternalTargets: [...runtime.approvedMarkdownImageTargets],
           });
           next = { ...result, rawSrc };
         } catch (reason) {
@@ -780,7 +821,7 @@ export class FileContentStore {
       viewportAnchor: null,
       viewportScrollTop: 0,
       consumedLocationRevision: 0,
-      imageViewState: existing?.imageViewState ?? { zoom: 1, scrollLeft: 0, scrollTop: 0 },
+      imageViewState: existing?.imageViewState ?? null,
       markdownMode: existing?.markdownMode ?? 'live-preview',
       markdownImages: new Map(),
       markdownImageSources: new Set(),
@@ -858,21 +899,21 @@ export class FileContentStore {
     await this.eventSubscriptionPromise;
   }
 
-  private async queueWatchOperation(projectId: string, operation: () => Promise<void>) {
-    const previous = this.projectWatchOperations.get(projectId) ?? Promise.resolve();
+  private async queueWatchOperation(rootKey: string, operation: () => Promise<void>) {
+    const previous = this.rootWatchOperations.get(rootKey) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(operation);
-    this.projectWatchOperations.set(projectId, next);
+    this.rootWatchOperations.set(rootKey, next);
     try {
       await next;
     } finally {
-      if (this.projectWatchOperations.get(projectId) === next) {
-        this.projectWatchOperations.delete(projectId);
+      if (this.rootWatchOperations.get(rootKey) === next) {
+        this.rootWatchOperations.delete(rootKey);
       }
     }
   }
 
   private releaseEventSubscriptionIfIdle() {
-    if (this.projectWatchRefs.size === 0 && this.eventUnsubscribe) {
+    if (this.rootWatchRefs.size === 0 && this.eventUnsubscribe) {
       this.eventUnsubscribe();
       this.eventUnsubscribe = null;
     }
@@ -881,9 +922,10 @@ export class FileContentStore {
   private async handleFileChange(event: WorkspaceFileChangedEventVm) {
     for (const listener of this.changeListeners) listener(event);
     if (event.kind === 'invalidated') {
+      const rootKey = workspaceRootKey(event.projectId, event.workspacePath);
       await Promise.all(
         [...this.entries.entries()]
-          .filter(([, entry]) => entry.resource.projectId === event.projectId && entry.saveState.kind === 'clean')
+          .filter(([, entry]) => resourceRootKey(entry.resource) === rootKey && entry.saveState.kind === 'clean')
           .map(([key]) => this.reconcile(key)),
       );
       return;
@@ -915,8 +957,8 @@ export class FileContentStore {
     }
   }
 
-  private contentEpoch(projectId: string) {
-    return this.projectContentEpoch.get(projectId) ?? 0;
+  private contentEpoch(rootKey: string) {
+    return this.rootContentEpoch.get(rootKey) ?? 0;
   }
 
   private setEntry(key: string, entry: FileContentEntry) {

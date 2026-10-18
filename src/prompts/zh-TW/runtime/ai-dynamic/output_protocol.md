@@ -1,5 +1,10 @@
 你必須在最後一步只輸出 `dynamic-node-completion` artifact 對應的 JSON 內容，不要輸出解釋、Markdown、程式碼圍欄或額外文字。
 
+長文本透過檔案交接：
+- 本節點總結和每個後繼任務（含 merge / acceptance）的正文不寫進 JSON。先把正文寫入本次 attempt 的 attachments 目錄，再在 JSON 中填寫檔案相對 attachments 目錄的路徑：總結填 `summaryPath`，任務正文填 `taskPath`。
+- 建議命名為 `handoff/summary.md`、`handoff/<後繼節點 id>.md`、`handoff/merge.md`、`handoff/acceptance.md`。路徑必須是相對路徑，不得包含 `..`；檔案必須是非空 UTF-8 文字。
+- Runtime 接受 artifact 時讀取並固化這些檔案的內容；接受後再修改檔案不會改變已提交的總結或任務。
+
 {% if agent_strategy_mode == "fixed" %}
 目前 AI-DYNAMIC 使用固定 agent 策略：除 `workflow-invocation` 外，所有 internal worker、merge、acceptance 節點都會由 runtime 自動使用同一個固定 provider。你不需要為任何節點輸出 provider，輸出中也不要包含 provider 欄位。
 {{ model_policy }}
@@ -20,9 +25,9 @@
 {% else %}- 動態 agent 策略下，worker 必須輸出合法 provider，且必須符合目前 prompt 給出的節點 agent 選擇說明；`merge / acceptance` 不要輸出 provider，runtime 會固定使用初始分發 Agent。
 - `workflow-invocation` 不要輸出 `provider`。
 {% endif %}- {{ model_policy }}
-- `next.type="end"` 時，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
-{% if end_summary_is_outer_handoff %}- 如果本次使用 `next.type="end"`，`summary` 必須是交給 AI-DYNAMIC 外層後繼節點的完整業務交接摘要：說明已完成內容、關鍵結論、重要產物及仍需關注事項；不要只寫路由動作或「驗收通過」。
-{% else %}- 如果本次使用 `next.type="end"`，`summary` 是內部進度/分支報告，準確說明本節點完成內容，供 Runtime 報告清單和上層 group 使用。
+- 整個需求的開發全部完成後，必須交給驗收節點對照需求統一收尾，中間階段完成時不單獨驗收；驗收不通過繼續指派節點修復，修復後再次驗收。只有驗收通過後才使用 `next.type="end"`，此時 `next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
+{% if end_summary_is_outer_handoff %}- 如果本次使用 `next.type="end"`，`summaryPath` 指向的總結必須是交給 AI-DYNAMIC 外層後繼節點的完整業務交接摘要：說明已完成內容、關鍵結論、重要產物及仍需關注事項；不要只寫路由動作或「驗收通過」。
+{% else %}- 如果本次使用 `next.type="end"`，`summaryPath` 指向的總結是內部進度/分支報告，準確說明本節點完成內容，供 Runtime 報告清單和上層 group 使用。
 {% endif %}
 - `next.type="single"` 時，必須提供完整的 `next.node`，不要提供 `groupId / nodes / merge / acceptance`。
 - 不要為任何節點輸出 `workspace`、workspace mode、路徑或分支；runtime 獨占工作空間分配權。

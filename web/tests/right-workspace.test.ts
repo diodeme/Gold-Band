@@ -17,16 +17,19 @@ import {
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
   hiddenPromptSectionWorkspaceResourceKey,
-  projectSourceControlWorkspaceState,
+  projectWorkspaceTabRoots,
+  fileWorkspaceResourceKey,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
   sourceControlWorkspaceResourceKey,
   browserWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
+  type ConversationAssetWorkspaceResource,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
+import { MAIN_WORKSPACE_TAB_ROOT } from '@/lib/workspace-root';
 
 const locator = (branchId: string): AgentTranscriptLocator => ({
   projectId: 'project-1',
@@ -56,23 +59,60 @@ describe('right workspace resource model', () => {
       key: sourceControlWorkspaceResourceKey('project-1'),
       scopeKey: 'conversation:project-1:task-1:run-1',
       projectId: 'project-1',
-      workspacePath: null,
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: false,
       title: 'Source control',
       attention: false,
     };
     const main = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
 
     expect(sourceControlWorkspaceResourceKey('project-1')).toBe('source-control:project-1');
-    expect(projectSourceControlWorkspaceState(main, null)).toBe(main);
+    expect(projectWorkspaceTabRoots(main, MAIN_WORKSPACE_TAB_ROOT)).toBe(main);
 
-    const worktree = projectSourceControlWorkspaceState(main, 'D:/repo/worktrees/worker-a');
+    const worktreeRoot = { kind: 'available', workspacePath: 'D:/repo/worktrees/worker-a' } as const;
+    const worktree = projectWorkspaceTabRoots(main, worktreeRoot);
     expect(worktree.tabs).toHaveLength(1);
     expect(worktree.activeTabKey).toBe(resource.key);
-    expect(worktree.tabs[0]).toMatchObject({
-      key: resource.key,
-      workspacePath: 'D:/repo/worktrees/worker-a',
+    expect(worktree.tabs[0]).toMatchObject({ key: resource.key, root: worktreeRoot });
+    expect(projectWorkspaceTabRoots(worktree, { kind: 'available', workspacePath: 'd:\\REPO\\worktrees\\worker-a\\' })).toBe(worktree);
+  });
+
+  it('never shows project-root files for a reclaimed worktree unless the user chooses to', () => {
+    const worktreePath = 'D:/repo/worktrees/worker-a';
+    const selectedFile = {
+      kind: 'file' as const,
+      key: fileWorkspaceResourceKey('project-1', `${worktreePath}/a.ts`),
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      projectId: 'project-1',
+      workspacePath: worktreePath,
+      title: 'a.ts',
+      attention: false,
+      locator: { projectId: 'project-1', canonicalPath: `${worktreePath}/a.ts`, relativePath: 'a.ts', scope: 'workspace' as const },
+      target: null,
+      targetRevision: 0,
+    };
+    const state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: selectedFile });
+    const worktree = { kind: 'available', workspacePath: worktreePath } as const;
+    const released = { kind: 'unavailable', reason: 'released', workspacePath: worktreePath } as const;
+    expect(state.tabs[0]).toMatchObject({ kind: 'file-browser', root: worktree, browseMain: false });
+
+    // Reclaimed: the tab reports the unavailable root and keeps the file for a return.
+    const unavailable = projectWorkspaceTabRoots(state, released);
+    expect(unavailable.tabs[0]).toMatchObject({ root: released, selectedFile: { key: selectedFile.key } });
+
+    // Browsing main is explicit and drops the worktree file, which does not exist in main.
+    const browsing = rightWorkspaceReducer(state, {
+      type: 'open',
+      resource: { ...(unavailable.tabs[0] as Extract<RightWorkspaceResource, { kind: 'file-browser' }>), browseMain: true },
     });
-    expect(projectSourceControlWorkspaceState(worktree, 'd:\\REPO\\worktrees\\worker-a\\')).toBe(worktree);
+    expect(projectWorkspaceTabRoots(browsing, released).tabs[0]).toMatchObject({
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      browseMain: true,
+      selectedFile: null,
+    });
+
+    // Once the session works in a worktree again, the explicit choice no longer applies.
+    expect(projectWorkspaceTabRoots(browsing, worktree).tabs[0]).toMatchObject({ root: worktree, browseMain: false });
   });
 
   it('uses stable locator-only keys for conversation and ACP resources', () => {
@@ -131,6 +171,31 @@ describe('right workspace resource model', () => {
         partIndex: 2,
       },
     });
+  });
+
+  it('isolates same-name message attachments by canonical path and every locator dimension', () => {
+    const base = { ...locator('root'), outerNodeId: 'outer-node-1', outerAttemptId: 'outer-attempt-1' };
+    const path = `user-inputs/${'a'.repeat(32)}/image.png`;
+    const key = (scope: typeof base, canonicalPath = path) => conversationAssetWorkspaceResourceKey(
+      'message-attachment', scope, 'image.png', canonicalPath,
+    );
+    const scoped = (Object.keys(base) as (keyof typeof base)[])
+      // taskUuid is the canonical task identity; taskId is only its display locator.
+      .filter((field) => field !== 'taskId')
+      .map((field) => ({ ...base, [field]: `${base[field]}-other` }));
+    const resources: ConversationAssetWorkspaceResource[] = [base, ...scoped].map((scope) => ({
+      kind: 'conversation-asset', key: key(scope), scopeKey: 'draft:default', title: 'image.png', attention: false,
+      assetKind: 'message-attachment', locator: scope, name: 'image.png', path,
+    }));
+    const otherPath = `user-inputs/${'b'.repeat(32)}/image.png`;
+    resources.push({ ...resources[0]!, key: key(base, otherPath), path: otherPath });
+    let state = createInitialRightWorkspaceState();
+    for (const resource of resources) state = rightWorkspaceReducer(state, { type: 'open', resource });
+    expect(new Set(resources.map((resource) => resource.key)).size).toBe(resources.length);
+    expect(state.tabs).toHaveLength(resources.length);
+    state = rightWorkspaceReducer(state, { type: 'open', resource: resources[0]! });
+    expect(state.tabs).toHaveLength(resources.length);
+    expect(state.activeTabKey).toBe(resources[0]!.key);
   });
 
   it('keeps one run-directory tab bound to the selected attempt without activating unrelated resources', () => {
@@ -503,11 +568,12 @@ describe('right workspace resource model', () => {
     const reused = store.draftAttachmentForPreviewAlias(conversation.key, aliasKey);
     expect(reused?.attachment).toMatchObject({ id: attachment.id, previewUrl: 'blob:open-preview' });
     expect(reused?.kind).toBe('draft-attachment');
-    expect(store.draftAttachmentForPreviewAlias(conversation.key, sentAttachmentPreviewAliasKey({
-      assetKind: 'message-attachment',
-      locator: { ...attempt, attemptId: 'attempt-2' },
-      name: attachment.name,
-    }))).toBeNull();
+    expect(store.draftAttachmentForPreviewAlias(conversation.key, conversationAssetWorkspaceResourceKey(
+      'message-attachment',
+      { ...attempt, attemptId: 'attempt-2' },
+      attachment.name,
+      `user-inputs/${'a'.repeat(32)}/${attachment.name}`,
+    ))).toBeNull();
     expect(store.restore(conversation).tabs.filter((tab) => tab.kind === 'draft-attachment')).toHaveLength(2);
   });
 

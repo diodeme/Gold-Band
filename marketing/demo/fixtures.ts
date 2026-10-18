@@ -1,18 +1,18 @@
 import type { ConversationRunVm, ConversationSidebarVm, ConversationTaskRowVm, DesktopLanguage, RuntimeDisplayVm } from '@/types';
-import { createPreviewRun } from '../site/fixture';
-import { mockWorkflowTemplates } from '@/mockData';
+import { createPreviewRun, createPreviewSession } from '../shared/fixture';
+import { mockErrorBlockedConversationSession, mockWorkflowTemplates } from '@/mockData';
 import { demoAgentRegistry, demoProfiles } from './catalog';
 import { demoDevelopmentFiles } from './turn-files';
 import { DEMO_RUN_ID, DEMO_WORKFLOW_ROUNDS, demoWorkflowRuns } from './scenarios';
 
-export const DEMO_TASKS = ['mock-task', 'demo-review'] as const;
+export const DEMO_TASKS = ['mock-task', 'demo-diagram', 'demo-review'] as const;
 export { DEMO_RUN_ID } from './scenarios';
 export const DEMO_PROJECT_ID = 'default';
 export const demoRunMode = (taskId: string) => taskId === 'demo-review' ? 'workflow' as const : 'direct' as const;
 export function demoTitle(taskId: string, language: DesktopLanguage) {
-  return taskId === 'demo-review'
-    ? language === 'en' ? 'Review project structure' : '审阅项目结构'
-    : language === 'en' ? 'Workspace configuration and docs' : '完善工作区配置与说明';
+  if (taskId === 'demo-review') return language === 'en' ? 'Review project structure' : '审阅项目结构';
+  if (taskId === 'demo-diagram') return language === 'en' ? 'Diagram the module flow' : '用图说明模块关系';
+  return language === 'en' ? 'Workspace configuration and docs' : '完善工作区配置与说明';
 }
 
 export function demoRun(base: ConversationRunVm, taskId: string, language: DesktopLanguage, runId = DEMO_RUN_ID) {
@@ -23,25 +23,6 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
   run.runId = runId;
   run.runMode = demoRunMode(taskId);
   run.activeSessions = [];
-  const session = run.selectedSession!;
-  session.title = demoTitle(taskId, language);
-  session.events = session.events.filter((event) => event.kind !== 'fileChangeSet');
-  const en = language === 'en';
-  session.events[0].content = en ? 'Inspect the workspace configuration and prepare a project guide.' : '请检查工作区配置，并整理一份项目说明。';
-  session.events[1].content = en ? 'I will check the configuration defaults and summarize the project structure.' : '我会先检查配置默认值，再整理项目结构与审阅清单。';
-  const tool = session.events.find((event) => event.kind === 'toolCall')!;
-  tool.title = en ? 'Read workspace files' : '读取工作区文件';
-  tool.raw = { toolCallId: tool.toolCallId, title: tool.title, status: 'completed' };
-  if (taskId === 'demo-review') {
-    session.events[0].content = en ? 'Review the project structure and summarize the responsibilities of each module.' : '请检查项目结构，整理各模块的职责和后续审阅重点。';
-    session.events[1].content = en ? 'I will read the project notes and inspect the entry points.' : '我会先阅读项目说明，再检查各模块的入口与依赖关系。';
-  }
-  session.events.at(-1)!.content = en
-    ? '## Review result\n\nThe workspace keeps configuration and application logic separate.\n\n- [README.md](/default/README.md): project notes\n- [src/config.json](/default/src/config.json): configuration\n\nThe next review can focus on input validation and regression coverage.'
-    : '## 审阅结果\n\n工作区将配置与应用逻辑分开管理。\n\n- [README.md](/default/README.md)：项目说明\n- [src/config.json](/default/src/config.json)：配置内容\n\n后续可以重点检查输入校验和回归测试覆盖。';
-  session.events.forEach((event, index) => { event.seq = index + 1; });
-  session.eventPage = { loadedCount: session.events.length, total: session.events.length, oldestSeq: 1, newestSeq: session.events.length, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null };
-  session.diagnostics.eventCount = session.events.length;
   if (run.runMode === 'workflow') {
     const template = mockWorkflowTemplates.templates.find((item) => item.id === 'default-lightweight')!;
     const profiles = demoProfiles(language);
@@ -83,22 +64,131 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
         nodeType: node.nodeType, status: 'completed', outcome: 'success', runtimeDisplay: node.runtimeDisplay,
         attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0, current: false })),
       edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
+      groups: [],
     };
-    run.selectedSession = demoSessionForNode(run, round.roundId, 'accept', language);
     run.sessionTree.selectedSessionKey = `${round.roundId}/accept/${round.nodes[0].attempts[0].attemptId}`;
-  } else {
-    run.selectedSession = demoSessionForNode(run, run.sessionTree.rounds[0].roundId, run.sessionTree.rounds[0].nodes[0].nodeId, language);
   }
   return run;
 }
 
-export function demoSessionForNode(run: ConversationRunVm, roundId: string, nodeId: string, language: DesktopLanguage) {
+export function demoSessionForNode(run: ConversationRunVm, roundId: string, nodeId: string, attemptId: string, language: DesktopLanguage) {
   const round = run.sessionTree.rounds.find((round) => round.roundId === roundId);
   const node = round?.nodes.find((node) => node.nodeId === nodeId);
-  if (!node || !round) throw { code: 'demo.resource-not-found', params: { nodeId } };
-  const session = structuredClone(run.selectedSession!);
+  const leaf = node?.attempts.find((attempt) => attempt.attemptId === attemptId);
+  if (!node || !round || !leaf) throw { code: 'demo.resource-not-found', params: { roundId, nodeId, attemptId } };
+  const session = createPreviewSession(mockErrorBlockedConversationSession, language === 'en' ? 'en' : 'zh');
+  session.title = demoTitle(run.taskId, language);
   session.events = session.events.filter((event) => event.kind !== 'fileChangeSet');
-  const leaf = node.attempts[0];
+  const en = language === 'en';
+  session.events[0].content = en ? 'Inspect the workspace configuration and prepare a project guide.' : '请检查工作区配置，并整理一份项目说明。';
+  session.events[1].content = en ? 'I will check the configuration defaults and summarize the project structure.' : '我会先检查配置默认值，再整理项目结构与审阅清单。';
+  const tool = session.events.find((event) => event.kind === 'toolCall')!;
+  tool.title = en ? 'Read workspace files' : '读取工作区文件';
+  tool.raw = { toolCallId: tool.toolCallId, title: tool.title, status: 'completed' };
+  if (run.taskId === 'demo-review') {
+    session.events[0].content = en ? 'Review the project structure and summarize the responsibilities of each module.' : '请检查项目结构，整理各模块的职责和后续审阅重点。';
+    session.events[1].content = en ? 'I will read the project notes and inspect the entry points.' : '我会先阅读项目说明，再检查各模块的入口与依赖关系。';
+  }
+  if (run.taskId === 'demo-diagram') {
+    session.events[0].content = en
+      ? 'Draw how a session, the harness, agents and the workspace fit together.'
+      : '把会话、Harness、Agent 和工作区的关系画出来。';
+    session.events[1].content = en
+      ? 'I will follow a message from the composer into a run mode, then into the agent, its tools and the workspace.'
+      : '我会从输入框跟到运行模式，再接到 Agent、工具和工作区。';
+    const diagram = en
+      ? `flowchart TB
+  subgraph conversation ["Session"]
+    User["User"] --> Composer["Composer"] --> Timeline["Timeline"]
+  end
+  subgraph harness ["Harness"]
+    Mode{"Run mode"}
+    Direct["Direct"]
+    Workflow["Workflow"]
+    Auto["AUTO"]
+    Repair["Repair"]
+  end
+  subgraph agents ["Agent"]
+    Claude["Claude"]
+    Codex["Codex"]
+    Tools["Tool calls"]
+  end
+  subgraph workspace ["Workspace"]
+    Files["Files"]
+    Diff["Diff"]
+    Git["Source control"]
+    Browser["Browser"]
+    Diagram["Mermaid"]
+  end
+  Timeline --> Mode
+  Mode --> Direct
+  Mode --> Workflow
+  Mode --> Auto
+  Auto --> Workflow
+  Workflow --> Repair
+  Repair --> Workflow
+  Direct --> Claude
+  Direct --> Codex
+  Workflow --> Claude
+  Claude --> Tools
+  Codex --> Tools
+  Tools --> Files
+  Tools --> Diff
+  Files --> Git
+  Tools --> Browser
+  Timeline --> Diagram`
+      : `flowchart TB
+  subgraph conversation ["会话"]
+    User["用户"] --> Composer["输入框"] --> Timeline["消息流"]
+  end
+  subgraph harness ["Harness"]
+    Mode{"运行模式"}
+    Direct["Direct"]
+    Workflow["Workflow"]
+    Auto["AUTO"]
+    Repair["修正"]
+  end
+  subgraph agents ["Agent"]
+    Claude["Claude"]
+    Codex["Codex"]
+    Tools["工具调用"]
+  end
+  subgraph workspace ["工作区"]
+    Files["文件"]
+    Diff["Diff"]
+    Git["源码管理"]
+    Browser["浏览器"]
+    Diagram["Mermaid"]
+  end
+  Timeline --> Mode
+  Mode --> Direct
+  Mode --> Workflow
+  Mode --> Auto
+  Auto --> Workflow
+  Workflow --> Repair
+  Repair --> Workflow
+  Direct --> Claude
+  Direct --> Codex
+  Workflow --> Claude
+  Claude --> Tools
+  Codex --> Tools
+  Tools --> Files
+  Tools --> Diff
+  Files --> Git
+  Tools --> Browser
+  Timeline --> Diagram`;
+    session.events.at(-1)!.content = en
+      ? `A message leaves the composer, enters the timeline, and the run mode hands it to Direct, Workflow or AUTO. AUTO can enter Workflow, and a failed check can loop back through repair. Agents change files and diffs through tools, then return to source control.\n\n\`\`\`mermaid\n${diagram}\n\`\`\``
+      : `消息从输入框进入时间线，运行模式再把它交给 Direct、Workflow 或 AUTO。AUTO 可以进入 Workflow，验收失败会走修正再回到流程。Agent 通过工具改文件、看 Diff，然后回到源码管理。\n\n\`\`\`mermaid\n${diagram}\n\`\`\``;
+  }
+  if (run.taskId !== 'demo-diagram') {
+    session.events.at(-1)!.content = en
+      ? '## Review result\n\nThe workspace keeps configuration and application logic separate.\n\n- [README.md](/default/README.md): project notes\n- [src/config.json](/default/src/config.json): configuration\n\nThe next review can focus on input validation and regression coverage.'
+      : '## 审阅结果\n\n工作区将配置与应用逻辑分开管理。\n\n- [README.md](/default/README.md)：项目说明\n- [src/config.json](/default/src/config.json)：配置内容\n\n后续可以重点检查输入校验和回归测试覆盖。';
+  }
+  session.events.forEach((event, index) => { event.seq = index + 1; });
+  session.eventPage = { loadedCount: session.events.length, total: session.events.length, oldestSeq: 1, newestSeq: session.events.length, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null };
+  session.diagnostics.eventCount = session.events.length;
   Object.assign(session, { roundId: round.roundId, nodeId, attemptId: leaf.attemptId, sessionId: leaf.sessionId ?? session.sessionId });
   if (run.runMode === 'workflow') {
     session.sessionStartedAt = leaf.startedAt;
@@ -108,7 +198,7 @@ export function demoSessionForNode(run: ConversationRunVm, roundId: string, node
     session.title = node.label;
     const en = language === 'en';
     const scenario = demoWorkflowRuns.find((scenario) => scenario.runId === run.runId)!;
-    const goal = scenario.goals[language][round.index - 1];
+    const goal = scenario.goals[language === 'en' ? 'en' : 'zh-cn'][round.index - 1];
     session.events[0].content = goal;
     session.events[1].content = en ? `I will work on: ${goal}.` : `本轮将完成：${goal}。`;
     const result: Record<string, string> = en ? {
@@ -148,11 +238,11 @@ export function demoSidebar(language: DesktopLanguage): ConversationSidebarVm {
     })() : null,
     latestRun: taskId === 'demo-review' ? workflowRuns[0] : { runId: DEMO_RUN_ID, status: 'completed', outcome: 'success', resumable: false, startedAt: '2026-09-01T08:00:00Z', updatedAt: '2026-09-01T08:01:00Z' },
     runs: taskId === 'demo-review' ? workflowRuns : [],
-    runHistoryStatus: taskId === 'demo-review' ? 'ready' : 'ready-empty', runsNextCursor: null, pinned: false,
+    runHistoryStatus: 'ready', runsNextCursor: null, pinned: false,
   }));
   return {
     loadStatus: 'ready', workspaces: [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }],
-    pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready-empty' },
+    pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' },
     tasksByWorkspace: { [DEMO_PROJECT_ID]: tasks }, workspaceTaskPages: { [DEMO_PROJECT_ID]: { status: 'ready' } },
     lastActiveWorkspaceId: DEMO_PROJECT_ID, preferences: {},
   };

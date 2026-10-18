@@ -67,13 +67,9 @@ describe('ConversationSidebar run selection identity', () => {
       runMode: 'direct' as const,
       agentIdentity: { agentType: 'codex-acp', displayName: 'Codex', iconKey: 'codex' },
     };
-    expect(shouldShowConversationSidebarActivity({ ...direct, activity: { phase: 'running', stopping: false } })).toBe(true);
-    expect(shouldShowConversationSidebarActivity({ ...direct, activity: null })).toBe(false);
-    expect(shouldShowConversationSidebarActivity({
-      runMode: 'workflow',
-      agentIdentity: null,
-      activity: { phase: 'runtime-active', stopping: false },
-    })).toBe(false);
+    expect(shouldShowConversationSidebarActivity(direct, true)).toBe(true);
+    expect(shouldShowConversationSidebarActivity(direct, false)).toBe(false);
+    expect(shouldShowConversationSidebarActivity({ runMode: 'workflow', agentIdentity: null }, true)).toBe(false);
   });
 
   it('maps canonical lifecycle into both workspace and pinned sidebar copies', () => {

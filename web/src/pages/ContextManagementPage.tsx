@@ -1257,7 +1257,7 @@ function SkillSheet({
                 <div><span className="text-muted-foreground">{t('contextManagement.scope', '范围')}:</span> {form.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</div>
               </div>
               <div className="rounded-lg border bg-card/50 p-4">
-                <Markdown>{form.body || t('contextManagement.emptyContent', '暂无正文内容')}</Markdown>
+                <Markdown flavor="document">{form.body || t('contextManagement.emptyContent', '暂无正文内容')}</Markdown>
               </div>
             </div>
           ) : (
@@ -1565,7 +1565,7 @@ function ProfileSheet({ mode, profile, returnToImportResult, onOpenChange, onSav
                   </Card>
                   <Card className="bg-card/40 py-0">
                     <CardContent className="p-4">
-                      <Markdown>{profile.content || t('contextManagement.emptyContent')}</Markdown>
+                      <Markdown flavor="document">{profile.content || t('contextManagement.emptyContent')}</Markdown>
                     </CardContent>
                   </Card>
                 </div>

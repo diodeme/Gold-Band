@@ -20,6 +20,8 @@ const api = vi.hoisted(() => ({
   browserSetViewMode: vi.fn(async () => undefined),
   browserDiscardAll: vi.fn(async () => undefined),
   browserStop: vi.fn(async () => undefined),
+  browserReload: vi.fn(async () => undefined),
+  browserAllowLocalAccess: vi.fn(async (_input: { pageId: string; directories: string[] }) => undefined),
   subscribeBrowserPageEvents: vi.fn(async () => () => undefined),
 }));
 
@@ -121,6 +123,35 @@ describe('browser webview host lifecycle', () => {
     });
     expect(browserSessionStore.snapshot().pages).toHaveLength(2);
     expect(browserSessionStore.page(browserSessionStore.snapshot().activePageId!)?.url).toBe('https://github.com/');
+  });
+
+  it('allows refused local directories, clears the notice and reloads the page', async () => {
+    const page = liveNativePage('file:///E:/demo/tmp/index.html');
+    browserWebviewHost.handleNativeEvent({
+      kind: 'local-access-denied',
+      pageId: page.pageId,
+      directories: ['E:\\demo\\node_modules\\mermaid'],
+    });
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.access_denied');
+
+    await browserWebviewHost.allowLocalAccess(page.pageId, ['E:\\demo\\node_modules\\mermaid']);
+
+    expect(api.browserAllowLocalAccess).toHaveBeenCalledWith({
+      pageId: page.pageId,
+      directories: ['E:\\demo\\node_modules\\mermaid'],
+    });
+    expect(api.browserReload).toHaveBeenCalledWith({ pageId: page.pageId });
+    expect(browserSessionStore.snapshot().notice).toBeNull();
+  });
+
+  it('keeps the page and reports a stale grant when allowing local access fails', async () => {
+    const page = liveNativePage('file:///E:/demo/tmp/index.html');
+    api.browserAllowLocalAccess.mockRejectedValueOnce({ code: 'browser.local_html.grant_failed', params: {} });
+
+    await browserWebviewHost.allowLocalAccess(page.pageId, ['E:\\elsewhere']);
+
+    expect(api.browserReload).not.toHaveBeenCalled();
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
   });
 
   it('does not treat a closed menu as a blocking overlay', async () => {
@@ -430,7 +461,7 @@ describe('browser webview host lifecycle', () => {
       url: 'https://example.com/',
       loading: false,
     });
-    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
   });
 
   it('suppresses show while hide is in flight so a leftover webview cannot cover the empty workspace', async () => {
@@ -529,7 +560,7 @@ describe('browser webview host lifecycle', () => {
       code: 'browser.local_html.grant_failed',
     });
     expect(api.browserSetBounds).toHaveBeenCalledWith({ pageId: page.pageId, bounds: shifted });
-    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+    expect(browserSessionStore.snapshot().notice?.code).toBe('browser.local_html.grant_failed');
   });
 
   it('clears loading when native create fails so the loader cannot cover the workspace forever', async () => {
@@ -572,5 +603,90 @@ describe('browser webview host lifecycle', () => {
     await browserWebviewHost.discardAll();
     expect(browserSessionStore.page(page.pageId)?.live).toBe(false);
     expect(api.browserDiscardAll).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('browser webview hidden release', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    api.browserCreatePage.mockImplementation(async (input) => ({ pageId: input.pageId, url: input.url, label: `gb-${input.pageId}` }));
+    api.browserDiscardAll.mockResolvedValue(undefined);
+    browserWebviewHost.setHiddenReleaseDelay(3600);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    browserWebviewHost.resetForTests();
+    browserSessionStore.resetForTests();
+    document.body.replaceChildren();
+  });
+
+  it('keeps hidden pages live when the browser returns within the release delay', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(HOUR_MS - 1000);
+    browserWebviewHost.resume();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(api.browserDiscardAll).not.toHaveBeenCalled();
+    expect(browserSessionStore.page(page.pageId)?.live).toBe(true);
+  });
+
+  it('releases native pages after the delay but keeps tabs and urls, then recreates on return', async () => {
+    const page = liveNativePage('https://example.com/docs');
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+    const released = browserSessionStore.page(page.pageId);
+    expect(released?.live).toBe(false);
+    expect(released?.url).toBe('https://example.com/docs');
+
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(released!, bounds, true);
+    expect(api.browserCreatePage).toHaveBeenCalledWith(expect.objectContaining({ pageId: page.pageId, url: 'https://example.com/docs' }));
+  });
+
+  it('uses the configured delay', async () => {
+    liveNativePage();
+    browserWebviewHost.setHiddenReleaseDelay(60);
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(60 * 1000);
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases on return when the timer was delayed past the deadline', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.suppress();
+    // Simulate sleep or background throttling: wall clock advances but the timer has not fired.
+    vi.setSystemTime(Date.now() + HOUR_MS + 1000);
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(browserSessionStore.page(page.pageId)!, bounds, true);
+
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+    expect(api.browserCreatePage).toHaveBeenCalledWith(expect.objectContaining({ pageId: page.pageId }));
+  });
+
+  it('waits for an in-flight release before showing the returning page', async () => {
+    const page = liveNativePage();
+    let finishDiscard!: () => void;
+    api.browserDiscardAll.mockImplementationOnce(() => new Promise<void>((resolve) => { finishDiscard = resolve; }));
+    await browserWebviewHost.suppress();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    browserWebviewHost.resume();
+    const showing = browserWebviewHost.ensurePage(browserSessionStore.page(page.pageId)!, bounds, true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.browserCreatePage).not.toHaveBeenCalled();
+    expect(api.browserShowPage).not.toHaveBeenCalled();
+
+    finishDiscard();
+    await showing;
+    expect(api.browserDiscardAll).toHaveBeenCalledTimes(1);
+    expect(api.browserCreatePage).toHaveBeenCalledTimes(1);
+    expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
   });
 });

@@ -17,9 +17,13 @@ import { getAcpSession, respondAcpPermission } from '@/api';
 import {
   ACPChatDialog,
   createAcpSessionCacheKey,
+  markAcpSessionContentHydrated,
+  resetAcpResourceCache,
+  storeAcpLoadedEventWindow,
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import {
   applyConversationEventToBranchSnapshots,
   resetConversationEventRouterSnapshots,
@@ -29,8 +33,18 @@ import type { AcpSessionVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+function TestProviders({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    RightWorkspaceProvider,
+    null,
+    React.createElement(TooltipProvider, null, children),
+  );
+}
+
 beforeEach(() => {
   resetConversationEventRouterSnapshots();
+  resetAcpResourceCache();
+  vi.mocked(getAcpSession).mockReset().mockResolvedValue(null);
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
@@ -98,7 +112,7 @@ async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <TooltipProvider>
+      <TestProviders>
         <ACPChatDialog
           session={acpSession}
           projectId="project-1"
@@ -113,7 +127,7 @@ async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
           showRawFramesAction={false}
           usageCompact
         />
-      </TooltipProvider>,
+      </TestProviders>,
     );
   });
   return { container, root };
@@ -142,6 +156,64 @@ describe('read-only Agent conversation boundary', () => {
       expect(row).not.toBeNull();
       expect(row?.textContent).toContain('状态未知');
       expect(row?.textContent).not.toContain('等待执行');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps one native Agent card through completion, resume and unknown without exposing state rows', async () => {
+    const rootSession = session('root');
+    rootSession.timelineProjection = {
+      agents: [{ ...session('agent-1').branchExecution!, providerStateSeq: 10 }], todoEntries: [],
+    };
+    rootSession.events = [{
+      id: 'native-launch', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      sessionId: 'session-1', title: 'Native child', toolCallId: 'native-launch', status: 'completed',
+      raw: { _meta: { goldBandConversation: { branchId: 'root', launchedAgentExecutionId: 'agent-1', toolName: 'Agent' } } },
+    }, {
+      id: 'state-fact', seq: 10, timestamp: '10Z', kind: 'agentState',
+      sessionId: 'session-1', content: null, title: 'Hidden native state fact', status: 'completed',
+      raw: { source: 'nativeSubagentState' },
+    }];
+    const { container, root } = await renderDialog(rootSession, true);
+    try {
+      const card = container.querySelector('[data-agent-link-branch-id="agent-1"]');
+      expect(card?.getAttribute('data-agent-link-status')).toBe('completed');
+      expect(container.textContent).not.toContain('Hidden native state fact');
+      for (const [status, seq] of [['running', 12], ['unknown', 13]] as const) {
+        await act(async () => applyConversationEventToBranchSnapshots({
+          projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',
+          nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'agent-1', timelineGeneration: 1, timelineRevision: seq,
+          event: { id: `state-${seq}`, seq, endedSeq: seq, timestamp: `${seq}Z`, kind: 'agentState',
+            sessionId: 'session-1', content: null, status, raw: { source: 'nativeSubagentState' } },
+        }));
+        expect(container.querySelectorAll('[data-agent-link-branch-id="agent-1"]')).toHaveLength(1);
+        expect(container.querySelector('[data-agent-link-branch-id="agent-1"]')).toBe(card);
+        expect(card?.getAttribute('data-agent-link-status')).toBe(status);
+      }
+      expect(card?.textContent).toContain('状态未知');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it.each([
+    ['completed', 10, 'running', 12, 'running'],
+    ['running', 12, 'completed', 10, 'running'],
+    ['interrupted', 10, 'running', 10, 'interrupted'],
+  ] as const)('orders native branch summary %s/%s against live %s/%s', async (persistedStatus, persistedSeq, liveStatus, liveSeq, expected) => {
+    applyConversationEventToBranchSnapshots({
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',
+      nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'agent-1', timelineGeneration: 1, timelineRevision: liveSeq,
+      event: { id: `state-${liveSeq}`, seq: liveSeq, endedSeq: liveSeq, timestamp: `${liveSeq}Z`, kind: 'agentState',
+        sessionId: 'session-1', content: null, status: liveStatus, raw: { source: 'nativeSubagentState' } },
+    });
+    const branch = session('agent-1');
+    branch.branchExecution = { ...branch.branchExecution!, executionStatus: persistedStatus, providerStateSeq: persistedSeq };
+    const { container, root } = await renderDialog(branch, true);
+    try {
+      expect(container.querySelector('[data-agent-branch-summary="true"]')
+        ?.getAttribute('data-agent-branch-status')).toBe(expected);
     } finally {
       await act(async () => root.unmount());
     }
@@ -269,7 +341,9 @@ describe('read-only Agent conversation boundary', () => {
 
   it('keeps a pending Agent permission actionable without mounting the composer', async () => {
     const activeBranch = session('agent-1', true);
-    vi.mocked(getAcpSession).mockResolvedValueOnce(session('agent-1'));
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(activeBranch)
+      .mockResolvedValueOnce(session('agent-1'));
     const { container, root } = await renderDialog(activeBranch, true);
     try {
       const allow = Array.from(container.querySelectorAll('button'))
@@ -311,7 +385,14 @@ describe('read-only Agent conversation boundary', () => {
 
   it('offers an explicit return to the latest when the viewport detaches from a historical window', async () => {
     const historical = session('agent-1');
-    historical.eventPage.hasNewer = true;
+    historical.events = [{
+      id: 'agent-history', seq: 1, timestamp: '1Z', kind: 'textDelta',
+      sessionId: historical.sessionId, content: 'Earlier Agent message', raw: {},
+    }];
+    historical.eventPage = {
+      ...historical.eventPage, loadedCount: 1, total: 2, oldestSeq: 1, newestSeq: 1, hasNewer: true,
+    };
+    vi.mocked(getAcpSession).mockResolvedValueOnce(historical);
     const { container, root } = await renderDialog(historical, true);
     try {
       await detachConversationViewport(container);
@@ -335,14 +416,23 @@ describe('read-only Agent conversation boundary', () => {
       null,
       branchId,
     )}:`;
-    storeAcpSession(cacheKey, session(branchId));
+    const cached = session(branchId);
+    storeAcpSession(cacheKey, cached);
+    storeAcpLoadedEventWindow(cacheKey, {
+      sessionId: cached.sessionId,
+      timelineGeneration: 0,
+      coveredRevision: 0,
+      events: cached.events,
+    }, 100);
+    markAcpSessionContentHydrated(cacheKey);
+    vi.mocked(getAcpSession).mockReturnValueOnce(new Promise(() => {}));
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     try {
       await act(async () => {
         root.render(
-          <TooltipProvider>
+          <TestProviders>
             <ACPChatDialog
               session={null}
               projectId="project-1"
@@ -359,13 +449,13 @@ describe('read-only Agent conversation boundary', () => {
               usageCompact
               cacheNamespace="right-workspace-agent"
             />
-          </TooltipProvider>,
+          </TestProviders>,
         );
       });
 
       expect(container.querySelector('[data-conversation-viewport="true"]')).not.toBeNull();
       expect(container.textContent).not.toContain('加载中');
-      expect(getAcpSession).not.toHaveBeenCalled();
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => root.unmount());
     }

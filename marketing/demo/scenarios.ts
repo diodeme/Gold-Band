@@ -8,5 +8,5 @@ export const demoWorkflowRuns = [
 ];
 
 export function demoRunIds(taskId: string): string[] {
-  return taskId === 'demo-review' ? demoWorkflowRuns.map((run) => run.runId) : taskId === 'mock-task' ? [DEMO_RUN_ID] : [];
+  return taskId === 'demo-review' ? demoWorkflowRuns.map((run) => run.runId) : taskId === 'mock-task' || taskId === 'demo-diagram' ? [DEMO_RUN_ID] : [];
 }

@@ -1,0 +1,26 @@
+@import url('./fonts.css');
+:root{--paper:#F0F1EE;--ink:#101112;--muted:#525954;--rule:#CCD0C9;--blue:#244892;--gold:#E4CB79}
+*{box-sizing:border-box}
+html,body{margin:0;width:1920px;height:1080px;background:var(--paper)}
+body{position:relative;padding:64px 96px 49px;color:var(--ink);font-family:var(--font-brand);font-weight:400;overflow:hidden;-webkit-font-smoothing:antialiased}
+p,h1,h2,h3,h4,figure,dl,dt,dd{margin:0}
+button,summary{font:inherit;color:inherit}
+h1,h2,h3{text-wrap:balance}p{ text-wrap:pretty }
+.masthead{height:64px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid var(--ink);gap:24px}
+.publication{display:flex;align-items:center;gap:16px;font-size:24px;font-weight:520;letter-spacing:.01em}
+.publication img{width:36px;height:36px;object-fit:contain}
+.stage{padding-top:2px;font-size:22px;color:var(--muted)}
+.headline{margin-top:43px;font-size:86px;font-weight:520;letter-spacing:-.02em;line-height:1.23}
+.lede{font-size:30px;line-height:1.65;color:var(--muted);margin-top:22px}
+.blue{color:var(--blue)}
+.note{font-size:22px;line-height:1.55;color:var(--muted)}
+.conclusion{position:absolute;left:96px;right:96px;top:924px;padding-top:22px;border-top:2px solid var(--ink);font-size:36px;line-height:1.4;letter-spacing:-.02em;font-weight:500;display:flex;justify-content:space-between;gap:40px}
+footer{position:absolute;left:96px;right:96px;bottom:35px;font-size:22px;line-height:1.5;color:var(--muted)}
+.identity{display:flex;gap:14px;align-items:center}
+.identity img{width:42px;height:42px;object-fit:contain;flex:none}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;text-align:left}
+th,td{vertical-align:middle;text-align:left}
+button:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--blue);outline-offset:6px}
+::selection{background:var(--gold);color:var(--ink)}
+[hidden]{display:none!important}
+@media print{@page{size:1920px 1080px;margin:0}html,body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}

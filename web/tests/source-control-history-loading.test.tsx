@@ -9,6 +9,12 @@ const sessionRuntime = vi.hoisted(() => ({
   session: null as Record<string, unknown> | null,
 }));
 const githubRuntime = vi.hoisted(() => ({ getCapability: vi.fn() }));
+const pushRuntime = vi.hoisted(() => ({ prepare: vi.fn() }));
+
+vi.mock('@/api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api')>(),
+  prepareGitPush: pushRuntime.prepare,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -76,6 +82,7 @@ vi.mock('@/components/workspace/source-control/source-control-store', async () =
       cancelOperation: vi.fn(),
       dismissOperationResult: vi.fn(),
       initializeRepository: vi.fn(),
+      retryRemotes: vi.fn(),
     },
     useSourceControlSession: () => React.useSyncExternalStore(
       (listener) => {
@@ -92,6 +99,9 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { RightWorkspaceProvider as BaseRightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import { SourceControlWorkspacePanel } from '@/components/workspace/source-control/SourceControlWorkspacePanel';
 import { sourceControlStore } from '@/components/workspace/source-control/source-control-store';
+import { SourceControlSyncActions } from '@/components/workspace/source-control/SourceControlChangesToolbar';
+import { rememberPreferredGitRemote, resolvePreferredGitRemote } from '@/components/workspace/source-control/source-control-preferences';
+import type { GitPreparedPushVm, GitSourceControlOverviewVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -100,9 +110,17 @@ function RightWorkspaceProvider({ children }: { children: ReactNode }) {
 }
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = () => {};
   sessionRuntime.listeners.clear();
+  window.localStorage.clear();
+  pushRuntime.prepare.mockReset();
   sessionRuntime.session = sourceControlSession();
   githubRuntime.getCapability.mockResolvedValue({ status: 'not-installed' });
+  pushRuntime.prepare.mockResolvedValue({
+    intent: { kind: 'upstream-sync', branch: 'release/financeagent', remote: 'origin' },
+    target: { branch: 'release/financeagent', sourceOid: 'head', remote: 'origin', remoteBranch: 'main', setUpstream: false },
+    expectedRevision: 'confirmed-revision',
+  });
 });
 
 afterEach(() => {
@@ -112,13 +130,118 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it('shows a reclaimed session worktree as unavailable without loading the project root', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1',
+        root: { kind: 'unavailable', reason: 'released', workspacePath: 'D:/repo/.wt/a' }, browseMain: false,
+      }} /></RightWorkspaceProvider>));
+      const state = container.querySelector('[data-workspace-root-unavailable="released"]');
+      expect(state?.textContent).toContain('workspace.rootUnavailable.released');
+      expect(state?.textContent).toContain('D:/repo/.wt/a');
+      expect(state?.querySelector('button')?.textContent).toBe('workspace.rootUnavailable.browseMain');
+      expect(sourceControlStore.ensureLoaded).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('requires confirmation before discarding a file and disables it during writes', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
+      }} /></RightWorkspaceProvider>));
+      const openMenu = async () => {
+        await act(async () => container.querySelector('[data-source-control-diff-file-row]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 })));
+      };
+      await openMenu();
+      const item = () => document.querySelector<HTMLElement>('[role="menuitem"]')!;
+      expect(item().textContent).toBe('sourceControl.discardChange');
+      await act(async () => item().click());
+      expect(sourceControlStore.mutate).not.toHaveBeenCalled();
+      expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('src/app.ts');
+      await act(async () => document.querySelector<HTMLElement>('[data-slot="alert-dialog-cancel"]')!.click());
+      expect(sourceControlStore.mutate).not.toHaveBeenCalled();
+      await openMenu();
+      await act(async () => item().click());
+      await act(async () => document.querySelector<HTMLElement>('[data-slot="alert-dialog-action"]')!.click());
+      expect(sourceControlStore.mutate).toHaveBeenCalledExactlyOnceWith('project-1', 'D:/repo', { kind: 'discard-path', path: 'src/app.ts' });
+      await act(async () => {
+        sessionRuntime.session = { ...sessionRuntime.session, pendingAction: { kind: 'discard-path', path: 'src/app.ts' } };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.querySelector('[aria-label="sourceControl.discarding"]')).not.toBeNull();
+      const spinner = container.querySelector('[aria-label="sourceControl.discarding"]')!;
+      const pendingRow = spinner.closest('[data-source-control-diff-file-row]');
+      expect(pendingRow).not.toBeNull();
+      expect(pendingRow?.querySelector('[data-source-control-diff-summary]')?.textContent).toBe('+1-0');
+      expect(spinner.closest('[data-source-control-row-progress]')?.className).toContain('shrink-0');
+      await openMenu();
+      expect(item().getAttribute('aria-disabled')).toBe('true');
+    } finally { await act(async () => root.unmount()); }
+  });
+  it.each(['repository', 'github'])('preserves %s DOM during catalog refresh and failure', async (activeTab) => {
+    sessionRuntime.session = { ...sourceControlSession(), activeTab, catalog: sourceControlSession().snapshot };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
+      }} /></RightWorkspaceProvider>));
+      const content = container.querySelector(`[data-tested-${activeTab}-view]`);
+      expect(content).not.toBeNull();
+      for (const patch of [
+        { catalogLoading: true, catalogError: null },
+        { catalogLoading: false, catalogError: { code: 'git.status-failed', params: {} } },
+      ]) {
+        await act(async () => {
+          sessionRuntime.session = { ...sessionRuntime.session, ...patch };
+          for (const listener of sessionRuntime.listeners) listener();
+        });
+        expect(container.querySelector(`[data-tested-${activeTab}-view]`)).toBe(content);
+      }
+      expect(container.textContent).toContain('sourceControl.checkAgain');
+    } finally { await act(async () => root.unmount()); }
+  });
+  it('shows catalog loading and local failure without pretending the catalog is empty', async () => {
+    sessionRuntime.session = { ...sourceControlSession(), activeTab: 'repository', catalog: null, catalogLoading: true };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
+      }} /></RightWorkspaceProvider>));
+      expect(container.textContent).toContain('sourceControl.loading');
+      expect(container.querySelector('[data-tested-repository-view]')).toBeNull();
+      await act(async () => {
+        sessionRuntime.session = { ...sessionRuntime.session, catalogLoading: false, catalogError: { code: 'git.status-failed', params: {} } };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.textContent).toContain('sourceControl.loadFailed');
+      expect(container.textContent).toContain('sourceControl.checkAgain');
+      await act(async () => {
+        sessionRuntime.session = { ...sessionRuntime.session, catalogError: null, catalog: sourceControlSession().snapshot };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.querySelector('[data-tested-repository-view]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders workspace numstat beside each tracked changed file', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
 
       const rows = container.querySelectorAll('[data-source-control-diff-file-row="true"]');
@@ -154,7 +277,7 @@ describe('source control history cache presentation', () => {
         },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
 
       const emptyState = container.querySelector('[data-source-control-changes-empty="true"]');
@@ -179,7 +302,7 @@ describe('source control history cache presentation', () => {
         capability: { status: 'repository-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       expect(container.textContent).toContain('sourceControl.repositoryRequired');
       const initialize = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'sourceControl.initializeRepository');
@@ -215,7 +338,7 @@ describe('source control history cache presentation', () => {
         },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
 
       expect(container.textContent).toContain('sourceControl.capability.version-unsupported.title');
@@ -235,7 +358,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -250,6 +373,30 @@ describe('source control history cache presentation', () => {
     } finally {
       await act(async () => root.unmount());
     }
+  });
+
+  it('shows the actual upstream destination before confirming a different-name branch push', async () => {
+    const snapshot = sessionRuntime.session!.snapshot as { repository: Record<string, unknown> };
+    sessionRuntime.session = {
+      ...sessionRuntime.session,
+      snapshot: { ...snapshot, repository: { ...snapshot.repository, currentBranch: 'release/financeagent', upstream: { name: 'origin/main', ahead: 2, behind: 0 } } },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
+        title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
+      }} /></RightWorkspaceProvider>));
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.push"]')!.click());
+      const dialog = document.querySelector('[role="dialog"]');
+      expect(dialog?.textContent).toContain('release/financeagent → origin/main');
+      expect(dialog?.textContent).not.toContain('sourceControl.actions.push.description');
+      expect(dialog?.querySelector('dl')).toBeNull();
+      expect(dialog?.querySelector('[role="combobox"]')).toBeNull();
+      expect(sourceControlStore.startOperation).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); }
   });
 
   it('disables a no-op sync action while keeping Fetch available', async () => {
@@ -270,12 +417,61 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.push"]')?.disabled).toBe(true);
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.pull"]')).toBeNull();
       expect(container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.fetch"]')?.disabled).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps changes visible while remotes load and exposes an in-place retry on failure', async () => {
+    sessionRuntime.session = {
+      ...sessionRuntime.session,
+      remotesLoading: true,
+      remotesError: null,
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+          kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
+        }} /></RightWorkspaceProvider>);
+      });
+
+      expect(container.querySelector('[data-source-control-changes-toolbar="true"]')).not.toBeNull();
+      const loading = container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.loading"]');
+      expect(loading?.disabled).toBe(true);
+      expect(loading?.querySelector('.animate-spin')).not.toBeNull();
+
+      await act(async () => {
+        sessionRuntime.session = {
+          ...sessionRuntime.session,
+          remotesLoading: false,
+          remotesError: { code: 'git.status-failed', params: {} },
+        };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      const retry = container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.loadFailed"]');
+      expect(retry?.disabled).toBe(false);
+      await act(async () => retry?.click());
+      expect(sourceControlStore.retryRemotes).toHaveBeenCalledWith('project-1', 'D:/repo');
+
+      await act(async () => {
+        sessionRuntime.session = {
+          ...sessionRuntime.session,
+          remotesLoading: false,
+          remotesError: null,
+        };
+        for (const listener of sessionRuntime.listeners) listener();
+      });
+      expect(container.querySelector('button[aria-label="sourceControl.fetch"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());
     }
@@ -299,7 +495,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
       const sync = container.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.pull"]');
@@ -327,7 +523,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -357,7 +553,7 @@ describe('source control history cache presentation', () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       const complete = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'sourceControl.conflictWorkflow.completeMerge');
       await act(async () => complete?.click());
@@ -370,12 +566,13 @@ describe('source control history cache presentation', () => {
   });
 
   it('keeps the selected repository sub-tab in the source-control session', async () => {
+    sessionRuntime.session = { ...sourceControlSession(), catalog: sourceControlSession().snapshot };
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     try {
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
-        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
       }} /></RightWorkspaceProvider>));
       const repository = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent === 'sourceControl.repository');
       await act(async () => repository?.click());
@@ -402,7 +599,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -431,7 +628,7 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
 
@@ -447,7 +644,7 @@ describe('source control history cache presentation', () => {
     }
   });
 
-  it('prewarms GitHub capability once the source-control repository is ready', async () => {
+  it('does not probe GitHub while viewing changes', async () => {
     githubRuntime.getCapability.mockResolvedValue({ status: 'not-installed' });
     const container = document.createElement('div');
     document.body.append(container);
@@ -456,13 +653,10 @@ describe('source control history cache presentation', () => {
       await act(async () => {
         root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
           kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default',
-          title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+          title: 'Source control', attention: false, projectId: 'project-1', root: { kind: 'available', workspacePath: 'D:/repo' }, browseMain: false,
         }} /></RightWorkspaceProvider>);
       });
-      expect(githubRuntime.getCapability).toHaveBeenCalledTimes(1);
-      expect(githubRuntime.getCapability).toHaveBeenCalledWith(
-        'project-1:D:/repo/.git:D:/repo', 'project-1', 'D:/repo',
-      );
+      expect(githubRuntime.getCapability).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
     }
@@ -483,7 +677,8 @@ describe('source control history cache presentation', () => {
               title: 'Source control',
               attention: false,
               projectId: 'project-1',
-              workspacePath: 'D:/repo',
+              root: { kind: 'available', workspacePath: 'D:/repo' },
+              browseMain: false,
             }} />
           </RightWorkspaceProvider>,
         );
@@ -510,6 +705,161 @@ describe('source control history cache presentation', () => {
     }
   });
 });
+
+describe('push target confirmation', () => {
+  it.each([
+    [false, '↑sourceControl.newBranchIndicator'],
+    [true, '↑2'],
+  ] as const)('shows the correct push indicator with upstream=%s without changing availability', async (upstream, indicator) => {
+    const view = await renderPushActions(upstream);
+    try {
+      const button = document.querySelector<HTMLButtonElement>('button[aria-label="sourceControl.push"]')!;
+      expect(button.textContent).toBe(indicator);
+      expect(button.disabled).toBe(false);
+      expect(pushRuntime.prepare).not.toHaveBeenCalled();
+    } finally { await view.unmount(); }
+  });
+
+  it('prepares only on demand, ignores remembered remote for upstream, and submits the exact confirmation', async () => {
+    const request = deferredPush();
+    pushRuntime.prepare.mockReturnValue(request.promise);
+    rememberPreferredGitRemote('D:/repo/.git', 'fork');
+    const view = await renderPushActions();
+    try {
+      expect(pushRuntime.prepare).not.toHaveBeenCalled();
+      await view.open();
+      expect(document.querySelector('[role="status"]')?.textContent).toBe('sourceControl.pushPreparing');
+      expect(dialogButton('common.confirm').disabled).toBe(true);
+      expect(pushRuntime.prepare).toHaveBeenCalledExactlyOnceWith('project-1', 'D:/repo', { kind: 'upstream-sync', branch: 'release/financeagent', remote: 'fork' });
+      const prepared = preparedPush('origin', false);
+      await act(async () => request.resolve(prepared));
+      expect(document.querySelector('[data-push-source-branch]')?.textContent).toBe('release/financeagent');
+      expect(document.querySelector('[data-push-target-remote]')?.textContent).toBe('origin');
+      expect(document.querySelector('[data-push-target-branch]')?.textContent).toBe('main');
+      expect(document.querySelector('[role="dialog"] [role="combobox"]')).toBeNull();
+      await act(async () => dialogButton('common.confirm').click());
+      expect(view.onOperation).toHaveBeenCalledExactlyOnceWith({ kind: 'push', ...prepared });
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+    } finally { await view.unmount(); }
+  });
+
+  it('shows preparation failure in place and retries without submitting', async () => {
+    const request = deferredPush();
+    pushRuntime.prepare.mockRejectedValueOnce({ code: 'git.push-upstream-invalid', params: {} }).mockReturnValueOnce(request.promise);
+    const view = await renderPushActions();
+    try {
+      await view.open();
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('errors.git.push-upstream-invalid');
+      expect(dialogButton('common.confirm').disabled).toBe(true);
+      await act(async () => dialogButton('sourceControl.checkAgain').click());
+      expect(document.querySelector('[role="status"]')).not.toBeNull();
+      expect(dialogButton('common.confirm').disabled).toBe(true);
+      expect(pushRuntime.prepare).toHaveBeenCalledTimes(2);
+      await act(async () => request.resolve(preparedPush()));
+      expect(dialogButton('common.confirm').disabled).toBe(false);
+      await act(async () => dialogButton('common.cancel').click());
+      expect(view.onOperation).not.toHaveBeenCalled();
+    } finally { await view.unmount(); }
+  });
+
+  it.each(['resolve', 'reject'] as const)('ignores a closed dialog preparation that later %ss after reopening', async (outcome) => {
+    const old = deferredPush();
+    const current = preparedPush('origin', false, 'new-confirmation');
+    pushRuntime.prepare.mockReturnValueOnce(old.promise).mockResolvedValueOnce(current);
+    const view = await renderPushActions();
+    try {
+      await view.open();
+      await act(async () => dialogButton('common.cancel').click());
+      await view.open();
+      await act(async () => {
+        if (outcome === 'resolve') old.resolve(preparedPush('fork', true, 'old-confirmation'));
+        else old.reject({ code: 'git.push-upstream-invalid', params: {} });
+      });
+      expect(document.querySelector('[data-push-target-remote]')?.textContent).toBe('origin');
+      expect(document.querySelector('[role="alert"]')).toBeNull();
+      await act(async () => dialogButton('common.confirm').click());
+      expect(view.onOperation).toHaveBeenCalledExactlyOnceWith({ kind: 'push', ...current });
+    } finally { await view.unmount(); }
+  });
+
+  it('discards old scope preparation when the workspace switches', async () => {
+    const old = deferredPush();
+    pushRuntime.prepare.mockReturnValueOnce(old.promise).mockResolvedValueOnce(preparedPush('origin', false, 'other-scope'));
+    const view = await renderPushActions();
+    try {
+      await view.open();
+      await view.render('project-2', 'D:/other');
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      await view.open();
+      await act(async () => old.resolve(preparedPush('fork', true)));
+      await act(async () => dialogButton('common.confirm').click());
+      expect(pushRuntime.prepare).toHaveBeenLastCalledWith('project-2', 'D:/other', expect.any(Object));
+      expect(view.onOperation).toHaveBeenCalledExactlyOnceWith({ kind: 'push', ...preparedPush('origin', false, 'other-scope') });
+    } finally { await view.unmount(); }
+  });
+
+  it('remembers first-publish remote choices and requires a fresh target before confirming', async () => {
+    const changed = deferredPush();
+    pushRuntime.prepare.mockResolvedValueOnce(preparedPush('origin', true)).mockReturnValueOnce(changed.promise);
+    const view = await renderPushActions(false);
+    try {
+      await view.open();
+      expect(document.querySelector('[data-push-target-branch]')?.textContent).toBe('release/financeagent');
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('sourceControl.pushSetUpstream');
+      const trigger = document.querySelector<HTMLButtonElement>('[role="dialog"] [role="combobox"]')!;
+      await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })));
+      const fork = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent === 'fork')!;
+      await act(async () => fork.click());
+      expect(dialogButton('common.confirm').disabled).toBe(true);
+      expect(pushRuntime.prepare).toHaveBeenLastCalledWith('project-1', 'D:/repo', { kind: 'upstream-sync', branch: 'release/financeagent', remote: 'fork' });
+      expect(resolvePreferredGitRemote('D:/repo/.git', ['origin', 'fork'], null)).toBe('fork');
+      const prepared = preparedPush('fork', true, 'fork-confirmation');
+      await act(async () => changed.resolve(prepared));
+      await act(async () => dialogButton('common.confirm').click());
+      expect(view.onOperation).toHaveBeenCalledExactlyOnceWith({ kind: 'push', ...prepared });
+    } finally { await view.unmount(); }
+  });
+});
+
+function preparedPush(remote = 'origin', setUpstream = false, expectedRevision = 'confirmed-revision'): GitPreparedPushVm {
+  return {
+    intent: { kind: 'upstream-sync', branch: 'release/financeagent', remote },
+    target: { branch: 'release/financeagent', sourceOid: 'confirmed-head', remote, remoteBranch: setUpstream ? 'release/financeagent' : 'main', setUpstream },
+    expectedRevision,
+  };
+}
+
+function deferredPush() {
+  let resolve!: (value: GitPreparedPushVm) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<GitPreparedPushVm>((nextResolve, nextReject) => { resolve = nextResolve; reject = nextReject; });
+  return { promise, resolve, reject };
+}
+
+function dialogButton(label: string) {
+  return [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((button) => button.textContent === label)!;
+}
+
+async function renderPushActions(upstream = true) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const onOperation = vi.fn();
+  const render = async (projectId = 'project-1', workspacePath = 'D:/repo') => {
+    const snapshot = sourceControlSession().snapshot as unknown as GitSourceControlOverviewVm;
+    snapshot.repository.currentBranch = 'release/financeagent';
+    snapshot.repository.upstream = upstream ? { name: 'origin/main', ahead: 2, behind: 0 } : null;
+    snapshot.repository.remotes.push({ name: 'fork', fetchUrls: [], pushUrls: [] });
+    await act(async () => root.render(<TooltipProvider><SourceControlSyncActions key={`${projectId}:${workspacePath}`} projectId={projectId} workspacePath={workspacePath} snapshot={snapshot} busyActionKind={null} locked={false} remotesLoading={false} remotesError={false} onRetryRemotes={() => undefined} onOperation={onOperation} /></TooltipProvider>));
+  };
+  await render();
+  return {
+    render,
+    onOperation,
+    open: () => act(async () => container.querySelector<HTMLButtonElement>('[aria-label="sourceControl.push"]')!.click()),
+    unmount: () => act(async () => root.unmount()),
+  };
+}
 
 function sourceControlSession() {
   const commit = {
@@ -540,6 +890,8 @@ function sourceControlSession() {
     historyPage: 0,
     pendingAction: null,
     refreshing: null,
+    remotesLoading: false,
+    remotesError: null,
     selectedCommitOids: new Set<string>(),
     selectionAnchorOid: null,
     snapshot: {

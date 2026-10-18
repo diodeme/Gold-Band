@@ -46,6 +46,7 @@ import type {
   SkillContentVm,
   SkillListVm,
   PreferencesVm,
+  RemoteImageTrustVm,
   ResolvedColorScheme,
   AvatarKind,
   AvatarShape,
@@ -114,6 +115,8 @@ import type {
   GitMutationRequestVm,
   GitMutationResultVm,
   GitOperationRequestVm,
+  GitPushIntentVm,
+  GitPreparedPushVm,
   GitOperationVm,
   GitStateChangedEventVm,
   GitHubCapabilityVm,
@@ -132,12 +135,16 @@ import type {
   FileRevisionVm,
   ResolvedWorkspaceFileLinkVm,
   WorkspaceDirectoryEntryVm,
+  WorkspaceEntryDeletionVm,
+  CreateWorkspaceEntryInput,
   WorkspaceFileChangedEventVm,
+  WorkspaceRootRef,
   WorkspaceFileSearchVm,
   WorkspaceFileSnapshotVm,
   ResolveMarkdownImageInput,
   MarkdownImagePreviewVm,
   WriteFileResourceInput,
+  OpenFileWithSystemAppInput,
   TurnFileLocatorVm,
   TurnFileChangeSetVm,
   FileComparisonVm,
@@ -147,6 +154,8 @@ import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
 
 interface AcpSessionUpdatedEventBaseVm {
+  backgroundControl?: import("../types").DirectBackgroundControl | null;
+  executionError?: import('../types').AcpExecutionErrorVm | null;
   branchId?: string | null;
   projectId?: string | null;
   taskId: string;
@@ -196,6 +205,8 @@ export interface ConversationTerminalResultUpdatedEventVm {
   projectId: string;
   taskId: string;
   unreadTerminalResult: import('../types').ConversationTerminalResultVm;
+  /** 本次结果同时推进的会话活动时间；仅在后台回复等不经会话状态更新送达时间的路径上提供。 */
+  taskActivityAt?: string | null;
 }
 
 export type ImageActionSourceInput =
@@ -296,13 +307,20 @@ export interface BrowserNavigateInput extends BrowserPageIdInput {
   url: string;
 }
 
+export interface BrowserAllowLocalAccessInput extends BrowserPageIdInput {
+  /** Directories the page was refused, exactly as reported by `local-access-denied`. */
+  directories: string[];
+}
+
 export interface BrowserResolveLocalHtmlInput {
   projectId: string;
-  rawHref: string;
+  workspacePath: string | null;
+  target: { kind: 'href'; href: string } | { kind: 'path'; path: string };
 }
 
 export interface BrowserLocalHtmlTargetVm {
-  canonicalPath: string;
+  /** Canonical file URL, including the navigation query and fragment. */
+  url: string;
 }
 
 export interface BrowserSetViewModeInput extends BrowserPageIdInput {
@@ -320,6 +338,8 @@ export interface BrowserPageNativeEventVm {
   pageId: string;
   url?: string | null;
   title?: string | null;
+  /** `local-access-denied`: every directory the page is still waiting on. */
+  directories?: string[];
 }
 
 export interface BrowserAddressSuggestionOverlayItemVm {
@@ -378,23 +398,31 @@ export interface BrowserBookmarkVm {
 }
 
 export interface RuntimeApi {
+  reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
+  reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
   writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
-  getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
+  getGitCapability(projectId?: string | null, loadId?: string): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
-  getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
+  getSourceControlBootstrap(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitSourceControlBootstrapVm>;
+  getSourceControlOverview(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitSourceControlOverviewVm>;
+  getSourceControlStatistics(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitWorkspaceStatusVm>;
+  getSourceControlRemotes(projectId: string, workspacePath?: string | null, loadId?: string): Promise<import('@/types').GitRemoteVm[]>;
+  getSourceControlSnapshot(projectId: string, workspacePath?: string | null, loadId?: string): Promise<GitSourceControlSnapshotVm>;
   getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null): Promise<GitBranchPickerSnapshotVm>;
   changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: GitBranchChangeRequestVm): Promise<GitBranchPickerSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
   getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
   getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: GitCommitReviewQueryVm): Promise<GitCommitReviewVm>;
+  getGitCommitReviewStatistics(projectId: string, workspacePath: string | null | undefined, review: GitCommitReviewVm): Promise<GitCommitReviewVm>;
   getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: GitCommitReachabilityQueryVm): Promise<GitCommitReachabilityVm>;
   executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
   getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;
+  prepareGitPush(projectId: string, workspacePath: string | null | undefined, input: GitPushIntentVm): Promise<GitPreparedPushVm>;
   startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;
   getGitOperation(operationId: string): Promise<GitOperationVm>;
   cancelGitOperation(operationId: string): Promise<GitOperationVm>;
-  startGitStateMonitor(projectId: string, workspacePath: string | null | undefined): Promise<void>;
+  startGitStateMonitor(projectId: string, workspacePath: string | null | undefined, loadId?: string): Promise<void>;
   stopGitStateMonitor(projectId: string, workspacePath: string | null | undefined): Promise<void>;
   subscribeGitOperationUpdates?(listener: (operation: GitOperationVm) => void): Promise<() => void>;
   subscribeGitStateChanges?(listener: (event: GitStateChangedEventVm) => void): Promise<() => void>;
@@ -427,7 +455,10 @@ export interface RuntimeApi {
   updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   deleteAgent(agentType: string): Promise<AgentRegistryVm>;
   getAgentBindingUsage(agentType: string): Promise<import('../types').AgentBindingUsageVm>;
+  previewAgentCacheRepair(agentType: string): Promise<{ token: string; paths: string[] }>;
+  repairAgentCache(agentType: string, token: string): Promise<{ path: string; errorCode: string | null }[]>;
   doctorAgent(agentType: string): Promise<AgentRegistryVm>;
+  fetchAgentModelConfig(agentType: string, modelId: string): Promise<import('../types').ManagedAgentVm>;
   getTaskList(): Promise<TaskListVm>;
   getProfiles(): Promise<ProfileListVm>;
   getProfile(id: string): Promise<ProfileVm>;
@@ -462,13 +493,14 @@ export interface RuntimeApi {
   continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('../types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number): Promise<ConversationPromptSubmitVm>;
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
-  stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
+  stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("../types").DirectBackgroundControl | null, expectedTurnId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
   getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
+  getAcpCompactionSummary(locator: import('../types').TurnFileLocatorVm, query: import('../types').AcpCompactionSummaryQueryInput): Promise<import('../types').AcpCompactionSummaryVm>;
   getAcpImage(locator: import('../types').TurnFileLocatorVm, image: import('../types').AcpImageRef, thumbnail: boolean): Promise<import('../types').AcpImageContentVm>;
   getAcpActivityImages(input: import('../types').AcpActivityImagesInput): Promise<import('../types').AcpActivityImagesPage>;
   getTurnFileChangeSet(locator: TurnFileLocatorVm, changeSetId: string): Promise<TurnFileChangeSetVm>;
@@ -555,11 +587,12 @@ export interface RuntimeApi {
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
-  dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
   checkUpdateManual(): Promise<UpdateStatusVm>;
-  downloadAndInstallUpdate(): Promise<void>;
+  startUpdateInstall(): Promise<UpdateStatusVm>;
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
+  trustRemoteImageHosts(hosts: string[]): Promise<RemoteImageTrustVm>;
+  revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
@@ -583,6 +616,7 @@ export interface RuntimeApi {
   updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
   deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
   pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
+  setConversationResident(projectId: string, taskId: string, resident: boolean): Promise<ConversationTaskRowVm>;
   unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
   reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarBootstrapVm>;
   searchConversationTasks(query: string, limit?: number): Promise<ConversationSearchResultVm[]>;
@@ -594,21 +628,25 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarBootstrapVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
-  listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
-  openWorkspacePathInFileManager(projectId: string, relativePath?: string): Promise<void>;
+  listWorkspaceDirectory(root: WorkspaceRootRef, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
+  openWorkspacePathInFileManager(root: WorkspaceRootRef, relativePath?: string): Promise<void>;
+  createWorkspaceEntry(input: CreateWorkspaceEntryInput): Promise<WorkspaceDirectoryEntryVm>;
+  renameWorkspaceEntry(root: WorkspaceRootRef, relativePath: string, newName: string): Promise<WorkspaceDirectoryEntryVm>;
+  deleteWorkspaceEntry(root: WorkspaceRootRef, relativePath: string): Promise<WorkspaceEntryDeletionVm>;
+  restoreWorkspaceEntry(root: WorkspaceRootRef, receiptId: string): Promise<WorkspaceDirectoryEntryVm>;
   listConversationDirectory(input: ConversationDirectoryInput): Promise<WorkspaceDirectoryEntryVm[]>;
   openConversationDirectoryPathInFileManager(input: ConversationDirectoryInput): Promise<void>;
   readConversationDirectoryFile(input: ConversationDirectoryInput): Promise<WorkspaceFileSnapshotVm>;
-  searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
-  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
-  readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
+  searchWorkspaceFiles(root: WorkspaceRootRef, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
+  resolveWorkspaceFileLink(root: WorkspaceRootRef, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
+  readFileResource(root: WorkspaceRootRef, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
   resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
   writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;
   releaseWorkspaceFilePreview(token: string): Promise<void>;
   renewExternalFileAccess(token: string): Promise<ExternalFileAccessGrantVm>;
   releaseExternalFileAccess(token: string): Promise<void>;
-  startWorkspaceFileWatch(projectId: string): Promise<void>;
-  stopWorkspaceFileWatch(projectId: string): Promise<void>;
+  startWorkspaceFileWatch(root: WorkspaceRootRef): Promise<void>;
+  stopWorkspaceFileWatch(root: WorkspaceRootRef): Promise<void>;
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
   subscribeMulticaTaskUpdates?(listener: () => void): Promise<() => void>;
   subscribeMulticaSettingsUpdates?(listener: () => void): Promise<() => void>;
@@ -616,6 +654,7 @@ export interface RuntimeApi {
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;
   browserResolveLocalHtml(input: BrowserResolveLocalHtmlInput): Promise<BrowserLocalHtmlTargetVm>;
+  browserOpenInSystemBrowser(url: string): Promise<void>;
   browserSetBounds(input: BrowserBoundsCommandInput): Promise<void>;
   browserShowPage(input: BrowserPageIdInput): Promise<void>;
   browserHidePage(input: BrowserPageIdInput): Promise<void>;
@@ -623,6 +662,7 @@ export interface RuntimeApi {
   browserShowAddressSuggestions(input: BrowserAddressSuggestionOverlayInput): Promise<void>;
   browserHideAddressSuggestions(input: BrowserAddressSuggestionOverlayRevisionInput): Promise<void>;
   browserNavigate(input: BrowserNavigateInput): Promise<BrowserPageNativeVm>;
+  browserAllowLocalAccess(input: BrowserAllowLocalAccessInput): Promise<void>;
   browserGoBack(input: BrowserPageIdInput): Promise<void>;
   browserGoForward(input: BrowserPageIdInput): Promise<void>;
   browserReload(input: BrowserPageIdInput): Promise<void>;
@@ -639,13 +679,12 @@ export interface RuntimeApi {
   subscribeBrowserHistoryEvents?(listener: () => void): Promise<() => void>;
   subscribeBrowserPageEvents?(listener: (event: BrowserPageNativeEventVm) => void): Promise<() => void>;
   subscribeBrowserAddressSuggestionActions?(listener: (event: BrowserAddressSuggestionActionVm) => void): Promise<() => void>;
-  openFileWithSystemApp(path: string): Promise<void>;
+  openFileWithSystemApp(input: OpenFileWithSystemAppInput): Promise<void>;
   copyImageToClipboard(input: ImageActionInput): Promise<void>;
   saveImageAs(input: ImageActionInput): Promise<boolean>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   statAttachmentFiles(paths: string[]): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
-  getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
   // MCP & SKILL management
   listMcpServers(): Promise<McpServerVm[]>;

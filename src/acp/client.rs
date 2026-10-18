@@ -5,14 +5,25 @@ use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::v1::{
     AgentCapabilities, ContentBlock as ProtocolContentBlock, EmbeddedResource,
-    EmbeddedResourceResource, ImageContent, PromptCapabilities, ResourceLink, TextContent,
-    TextResourceContents,
+    EmbeddedResourceResource, ErrorCode as ProtocolErrorCode, ImageContent, PromptCapabilities,
+    TextContent, TextResourceContents,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, info};
+
+#[path = "client_direct.rs"]
+mod direct;
+#[path = "client_subagents.rs"]
+mod subagents;
+pub use direct::{
+    DirectBackgroundControl, cancel_retained_direct_session, close_direct_conversation,
+    direct_background_control, direct_background_control_under, register_direct_session,
+    set_direct_session_resident,
+};
+use subagents::{NativeSubagents, canonical_tool_item_id, native_tool_branch};
 
 fn stderr_tail(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
@@ -184,6 +195,10 @@ struct AcpUsageState {
     latest_prompt: AcpPromptTokenUsage,
     attempt_totals: AcpAttemptTokenTotals,
     compaction: Option<AcpContextCompactionState>,
+    /// Agent work observed outside a user prompt by this runtime. Token totals
+    /// only accumulate prompt responses, so they no longer cover all work.
+    /// Durable stickiness lives in the timeline usage projection.
+    background_work_observed: bool,
 }
 
 impl AcpUsageState {
@@ -212,6 +227,7 @@ impl AcpUsageState {
                 total_tokens: prior.attempt_total_tokens,
             },
             compaction,
+            background_work_observed: false,
         }
     }
 
@@ -352,6 +368,17 @@ impl AcpUsageState {
                 object.remove("size");
             }
         }
+        if self.background_work_observed {
+            let meta = object
+                .entry("_meta")
+                .or_insert_with(|| Value::Object(Default::default()));
+            if let Some(meta) = meta.as_object_mut() {
+                meta.insert(
+                    crate::acp::events::TOKEN_TOTALS_EXCLUDE_BACKGROUND_META_KEY.to_string(),
+                    Value::Bool(true),
+                );
+            }
+        }
     }
 }
 
@@ -383,7 +410,7 @@ use crate::acp::connection::{
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
-    cancel_pending_elicitation_requests, elicitation_response_result, pending_elicitation_state,
+    cancel_pending_elicitation_requests, elicitation_response_result,
     remove_elicitation_signal_files, wait_for_elicitation_response_until_cancelled,
     write_pending_elicitation,
 };
@@ -406,15 +433,14 @@ use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, auto_accept_permission_option_id,
     bind_pending_permission_timeline_identity, cancel_pending_permission_requests,
     permission_response_file, remove_permission_signal_files, session_auto_accept_override,
-    wait_for_permission_response_until_cancelled, write_pending_permission,
+    wait_for_permission_response_until_cancelled, write_permission_response_if_pending,
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
-    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, RolledBackSessionConfig,
-    live_catalog_model_id, model_bound_catalogs_from_capabilities_value,
-    observe_session_model_bound_catalog, plan_explicit_session_scalar,
-    reconcile_session_config_overrides, retarget_live_model_bound_catalog,
-    rolled_back_session_config_params,
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, ModelBoundCatalogs,
+    RolledBackSessionConfig, live_catalog_model_id, observe_session_model_bound_catalog,
+    plan_explicit_session_scalar, reconcile_session_config_overrides,
+    retarget_live_model_bound_catalog, rolled_back_session_config_params,
 };
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
@@ -425,13 +451,13 @@ use crate::acp::usage::{
 };
 use crate::config::{
     AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,
-    ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
+    InteractionMode, ManagedAgentId, RuntimeConfig,
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
-    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpLiveTimelinePosition,
-    AcpResourceLinkBlock, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
-    gold_band_hidden_block, prepare_acp_mcp_servers,
+    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpLiveTimelinePosition, PromptBundle,
+    PromptVisibility, SkippedAcpMcpServer, gold_band_hidden_block, prepare_acp_mcp_servers,
+    prompt_text_with_files,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
@@ -662,6 +688,8 @@ fn initialize_params() -> Value {
     json!({
         "protocolVersion": 1,
         "clientCapabilities": {
+            "subagents": {},
+            "session": { "compaction": {} },
             "_meta": {
                 (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true,
                 (PARAMETERIZED_MODEL_PICKER_CAPABILITY): true
@@ -1788,6 +1816,12 @@ fn codex_prompt_failure(error: &Value) -> AcpPromptFailure {
 }
 
 fn acp_prompt_rpc_failure(error: &Value) -> anyhow::Error {
+    let code = match error.get("code").and_then(Value::as_i64) {
+        Some(code) if code == i64::from(i32::from(ProtocolErrorCode::AuthRequired)) => {
+            "provider.auth-required"
+        }
+        _ => "provider.acp-prompt-failed",
+    };
     let diagnostic = error
         .pointer("/data/message")
         .and_then(Value::as_str)
@@ -1796,7 +1830,7 @@ fn acp_prompt_rpc_failure(error: &Value) -> anyhow::Error {
         .unwrap_or("ACP session/prompt returned an error");
     let mut info = manual_runtime_error_info(
         RuntimeErrorDomain::Provider,
-        "provider.acp-prompt-failed",
+        code,
         diagnostic,
         json!({
             "rpcCode": error.get("code"),
@@ -1816,11 +1850,13 @@ pub struct AcpRuntimePolicy {
     pub adapter_connection_idle_ttl: Duration,
     pub max_idle_session_runtimes: usize,
     pub max_idle_adapter_connections: usize,
+    pub session_sweep_interval: Duration,
     pub timeline_compaction: TimelineCompactionPolicy,
     pub external_session_sync_enabled: bool,
     pub supports_system_prompt: bool,
     pub turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig,
     pub detailed_pipeline_diagnostics: bool,
+    pub interaction_mode: InteractionMode,
 }
 
 impl Default for AcpRuntimePolicy {
@@ -1835,11 +1871,13 @@ impl Default for AcpRuntimePolicy {
             adapter_connection_idle_ttl: Duration::from_secs(600),
             max_idle_session_runtimes: 8,
             max_idle_adapter_connections: 4,
+            session_sweep_interval: Duration::from_secs(60),
             timeline_compaction: TimelineCompactionPolicy::default(),
             external_session_sync_enabled: false,
             supports_system_prompt: false,
             turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig::default(),
             detailed_pipeline_diagnostics: false,
+            interaction_mode: InteractionMode::Interactive,
         }
     }
 }
@@ -1860,6 +1898,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
             ),
             max_idle_session_runtimes: config.acp_max_idle_session_runtimes,
             max_idle_adapter_connections: config.acp_max_idle_adapter_connections,
+            session_sweep_interval: Duration::from_secs(config.acp_session_sweep_interval_secs),
             timeline_compaction: TimelineCompactionPolicy {
                 max_size_bytes: config.acp_timeline_compact_max_size_bytes,
                 patch_ratio: config.acp_timeline_compact_patch_ratio,
@@ -1868,6 +1907,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
             supports_system_prompt: false,
             turn_file_capture: config.turn_files.into(),
             detailed_pipeline_diagnostics: config.log_level.allows(&tracing::Level::DEBUG),
+            interaction_mode: config.interaction_mode,
         }
     }
 }
@@ -1882,6 +1922,40 @@ impl AcpRuntimePolicy {
         self.supports_system_prompt = supported;
         self
     }
+}
+
+/// Without a responder a pending permission request is cancelled through the
+/// same first-writer-wins hand-off the desktop and IM responders use, so the
+/// response record and timeline stay identical to a human decision. Returns
+/// whether this call settled the request.
+pub(crate) fn settle_permission_without_responder(
+    mode: InteractionMode,
+    attempt_dir: &Utf8Path,
+    request_id: &str,
+) -> Result<bool> {
+    if mode != InteractionMode::Unattended {
+        return Ok(false);
+    }
+    write_permission_response_if_pending(attempt_dir, request_id, None, true, current_timestamp())
+}
+
+/// Without a responder a pending elicitation is declined, letting the agent
+/// continue on its own judgement. Returns whether this call settled it.
+pub(crate) fn settle_elicitation_without_responder(
+    mode: InteractionMode,
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+) -> Result<bool> {
+    if mode != InteractionMode::Unattended {
+        return Ok(false);
+    }
+    crate::acp::elicitation::write_elicitation_response_if_pending(
+        attempt_dir,
+        elicitation_id,
+        crate::acp::elicitation::ElicitationAction::Decline,
+        None,
+        current_timestamp(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1986,6 +2060,7 @@ fn evaluate_provider_revision(
 
 #[derive(Clone)]
 struct AttachedSessionRuntime {
+    direct: Option<Arc<direct::DirectRuntime>>,
     attempt_dir: Utf8PathBuf,
     connection: Arc<AdapterConnection>,
     connection_generation: u64,
@@ -2002,6 +2077,7 @@ struct AttachedSessionRuntime {
     external_session_sync_enabled: bool,
     sync_required: bool,
     usage: AcpUsageState,
+    native_subagents: NativeSubagents,
     last_activity_at: Instant,
     foreground_lease_until: Instant,
     active: bool,
@@ -2051,6 +2127,10 @@ impl AcpSessionRuntimeRegistry {
             || !Arc::ptr_eq(&entry.connection, connection)
             || connection.is_transport_closed()
             || connection.is_exited()
+            || entry
+                .direct
+                .as_ref()
+                .is_some_and(|direct| direct.abort_requested())
         {
             let stale = sessions.remove(&key);
             drop(sessions);
@@ -2072,6 +2152,7 @@ impl AcpSessionRuntimeRegistry {
             sessions.insert(entry.attempt_dir.to_string(), entry);
         }
         self.prune(policy);
+        ensure_retention_sweep(policy);
     }
 
     fn invalidate(&self, attempt_dir: &Utf8Path) -> bool {
@@ -2108,12 +2189,17 @@ impl AcpSessionRuntimeRegistry {
         session_id: &str,
         connection: &Arc<AdapterConnection>,
     ) -> Result<()> {
-        self.ensure_alias_transfer_available(attempt_dir, session_id, connection)?;
         let detached = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| anyhow!("ACP session runtime registry poisoned"))?;
+            Self::ensure_alias_transfer_available_locked(
+                &sessions,
+                attempt_dir,
+                session_id,
+                connection,
+            )?;
             let aliases = sessions
                 .iter()
                 .filter(|(key, entry)| {
@@ -2139,15 +2225,29 @@ impl AcpSessionRuntimeRegistry {
         session_id: &str,
         connection: &Arc<AdapterConnection>,
     ) -> Result<()> {
-        let active_attempt_dir = self
+        let sessions = self
             .sessions
             .lock()
-            .map_err(|_| anyhow!("ACP session runtime registry poisoned"))?
+            .map_err(|_| anyhow!("ACP session runtime registry poisoned"))?;
+        Self::ensure_alias_transfer_available_locked(&sessions, attempt_dir, session_id, connection)
+    }
+
+    fn ensure_alias_transfer_available_locked(
+        sessions: &HashMap<String, AttachedSessionRuntime>,
+        attempt_dir: &Utf8Path,
+        session_id: &str,
+        connection: &Arc<AdapterConnection>,
+    ) -> Result<()> {
+        let active_attempt_dir = sessions
             .iter()
             .find(|(key, entry)| {
                 key.as_str() != attempt_dir.as_str()
                     && same_provider_session(entry, session_id, connection)
-                    && entry.active
+                    && (entry.active
+                        || entry
+                            .direct
+                            .as_ref()
+                            .is_some_and(|direct| direct.protected()))
             })
             .map(|(_, entry)| entry.attempt_dir.clone());
         if active_attempt_dir.is_none()
@@ -2187,6 +2287,9 @@ impl AcpSessionRuntimeRegistry {
             .unwrap_or_default();
         let count = detached.len();
         for entry in detached {
+            if let Some(direct) = &entry.direct {
+                direct::abort_consumer(direct);
+            }
             entry.event_pump.close();
             entry.connection.unregister_session_route_if_generation(
                 &entry.session_id,
@@ -2207,38 +2310,27 @@ impl AcpSessionRuntimeRegistry {
         true
     }
 
+    /// Applies the shared retention selection to sessions without a Direct
+    /// consumer. Direct sessions must drain their consumer before closing, so
+    /// only the background sweep evicts them (see [`Self::sweep`]).
     fn prune(&self, policy: AcpRuntimePolicy) {
-        let now = Instant::now();
-        let mut evicted = Vec::new();
-        if let Ok(mut sessions) = self.sessions.lock() {
-            let expired = sessions
-                .iter()
-                .filter(|(_, entry)| {
-                    !entry.active
-                        && now >= entry.foreground_lease_until
-                        && now.duration_since(entry.last_activity_at) >= policy.session_idle_ttl
-                })
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<_>>();
-            for key in expired {
-                if let Some(entry) = sessions.remove(&key) {
-                    evicted.push(entry);
-                }
+        let evicted = match self.sessions.lock() {
+            Ok(mut sessions) => {
+                let selected = retention_selection(&sessions, policy, Instant::now())
+                    .into_iter()
+                    .filter(|key| {
+                        sessions
+                            .get(key)
+                            .is_some_and(|entry| entry.direct.is_none())
+                    })
+                    .collect::<Vec<_>>();
+                selected
+                    .into_iter()
+                    .filter_map(|key| sessions.remove(&key))
+                    .collect::<Vec<_>>()
             }
-
-            let mut idle = sessions
-                .iter()
-                .filter(|(_, entry)| !entry.active && now >= entry.foreground_lease_until)
-                .map(|(key, entry)| (key.clone(), entry.last_activity_at))
-                .collect::<Vec<_>>();
-            idle.sort_by_key(|(_, last_activity_at)| *last_activity_at);
-            let overflow = idle.len().saturating_sub(policy.max_idle_session_runtimes);
-            for (key, _) in idle.into_iter().take(overflow) {
-                if let Some(entry) = sessions.remove(&key) {
-                    evicted.push(entry);
-                }
-            }
-        }
+            Err(_) => Vec::new(),
+        };
         for entry in evicted {
             evict_attached_session(entry);
         }
@@ -2247,6 +2339,95 @@ impl AcpSessionRuntimeRegistry {
             policy.max_idle_adapter_connections,
         );
     }
+
+    fn sweep(&self, policy: AcpRuntimePolicy) {
+        self.prune(policy);
+        direct::evict_selected(policy);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sessions
+            .lock()
+            .map_or(true, |sessions| sessions.is_empty())
+    }
+}
+
+/// Sessions to close now: idle ones past the shared TTL or over the shared
+/// idle cap, plus Direct sessions whose consumer already aborted. Executors
+/// re-run this under the registry lock before closing anything.
+fn retention_selection(
+    sessions: &HashMap<String, AttachedSessionRuntime>,
+    policy: AcpRuntimePolicy,
+    now: Instant,
+) -> Vec<String> {
+    let mut references = HashMap::<(u64, &str), usize>::new();
+    for entry in sessions.values() {
+        *references
+            .entry((entry.connection_generation, entry.session_id.as_str()))
+            .or_default() += 1;
+    }
+    let candidates = sessions
+        .iter()
+        .map(|(key, entry)| crate::acp::retention::RetentionCandidate {
+            key: key.clone(),
+            last_activity: entry
+                .direct
+                .as_ref()
+                .map_or(entry.last_activity_at, |direct| direct.last_activity()),
+            protected: entry.active
+                || now < entry.foreground_lease_until
+                || entry.direct.as_ref().is_some_and(|direct| {
+                    // Direct closes by sessionId, so a shared alias is never closed.
+                    direct.protected()
+                        || references[&(entry.connection_generation, entry.session_id.as_str())] > 1
+                }),
+        })
+        .collect();
+    let mut selected = sessions
+        .iter()
+        .filter(|(_, entry)| {
+            !entry.active && entry.direct.as_ref().is_some_and(|direct| direct.aborted())
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in crate::acp::retention::eviction_candidates(
+        policy.session_idle_ttl,
+        policy.max_idle_session_runtimes,
+        now,
+        candidates,
+    ) {
+        if !selected.contains(&key) {
+            selected.push(key);
+        }
+    }
+    selected
+}
+
+static RETENTION_SWEEP_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Runs the retention sweep while any session runtime is retained, so idle
+/// sessions close on time even when no other prompt activity happens.
+fn ensure_retention_sweep(policy: AcpRuntimePolicy) {
+    use std::sync::atomic::Ordering;
+    if RETENTION_SWEEP_RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let registry = AcpSessionRuntimeRegistry::shared();
+        loop {
+            std::thread::sleep(policy.session_sweep_interval);
+            registry.sweep(policy);
+            if !registry.is_empty() {
+                continue;
+            }
+            RETENTION_SWEEP_RUNNING.store(false, Ordering::Release);
+            // A release racing the store above must not be left without a sweep.
+            if registry.is_empty() || RETENTION_SWEEP_RUNNING.swap(true, Ordering::AcqRel) {
+                break;
+            }
+        }
+    });
 }
 
 pub fn renew_session_foreground_lease(attempt_dir: &Utf8Path, ttl: Duration) -> bool {
@@ -2254,6 +2435,9 @@ pub fn renew_session_foreground_lease(attempt_dir: &Utf8Path, ttl: Duration) -> 
 }
 
 fn evict_attached_session(entry: AttachedSessionRuntime) {
+    if let Some(direct) = &entry.direct {
+        direct::abort_consumer(direct);
+    }
     let binding = live_session_binding(&entry);
     let unregister_outcome = AdapterConnectionManager::shared()
         .begin_attempt_session_detach_if_matches(&entry.attempt_dir, &binding);
@@ -2272,6 +2456,9 @@ fn evict_attached_session(entry: AttachedSessionRuntime) {
 }
 
 fn detach_attached_session(entry: AttachedSessionRuntime) {
+    if let Some(direct) = &entry.direct {
+        direct::abort_consumer(direct);
+    }
     let binding = live_session_binding(&entry);
     AdapterConnectionManager::shared()
         .unregister_attempt_session_if_matches(&entry.attempt_dir, &binding);
@@ -2347,6 +2534,7 @@ fn turn_file_change_set_event(
 }
 
 struct AcpRuntime<'a> {
+    direct: Option<Arc<direct::DirectRuntime>>,
     doctor_deadline: Option<DoctorDeadline>,
     paths: AcpAttemptPaths,
     lifecycle_owner: Option<AcpLifecycleOwner>,
@@ -2359,14 +2547,14 @@ struct AcpRuntime<'a> {
     branch_timeline_stores: HashMap<String, TimelineStore>,
     timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
+    native_subagents: NativeSubagents,
     prompt_output: AcpPromptOutputAccumulator,
     prompt_terminal: AcpPromptTerminalState,
     session_update_phase: SessionUpdatePhase,
     provider_history_replay: ProviderHistoryReplay,
     current_turn_item_ids: HashSet<String>,
-    active_turn_file_branches: HashSet<String>,
-    active_turn_file_tool_outcomes:
-        HashMap<(String, String), Option<crate::acp::turn_files::TurnFileToolTerminalOutcome>>,
+    turn_file_worker: Option<crate::acp::turn_files::TurnFileWorker>,
+    turn_file_workspace: Utf8PathBuf,
     active_prompt_turn: Option<AcpPromptTurnIdentity>,
     /// Provider session notifications do not carry a prompt id. When an
     /// attached session is reused, content observed before the next prompt
@@ -2711,6 +2899,60 @@ fn doctor_in_dir(
     doctor_acp_dir: Utf8PathBuf,
     deadline: DoctorDeadline,
 ) -> Result<AcpDoctorProbe> {
+    probe_in_dir(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        doctor_acp_dir,
+        deadline,
+        None,
+    )
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("acp.model-config-unavailable")]
+pub struct ModelConfigUnavailable;
+
+/// Discovers exactly one model without sending session/prompt or borrowing a catalog.
+pub fn probe_model_config(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    model: &str,
+) -> Result<Value> {
+    let dir = GoldBandPaths::new(cwd.clone()).doctor_acp_dir(agent_id);
+    let probe = probe_in_dir(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        dir,
+        DoctorDeadline::default(),
+        Some(model),
+    )?;
+    probe
+        .capabilities
+        .get("configOptions")
+        .cloned()
+        .ok_or_else(|| ModelConfigUnavailable.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn probe_in_dir(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    doctor_acp_dir: Utf8PathBuf,
+    deadline: DoctorDeadline,
+    model: Option<&str>,
+) -> Result<AcpDoctorProbe> {
     deadline.remaining("adapter/start")?;
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
@@ -2742,16 +2984,23 @@ fn doctor_in_dir(
             &[],
             &[],
         )?;
-        runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
+        if let Some(model) = model {
+            runtime.probe_selected_model_config(model)?;
+        } else {
+            runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
+        }
         let commands = runtime.available_commands.clone().unwrap_or_default();
-        runtime.cleanup_diagnostic_session()?;
-        deadline.remaining("session/cleanup")?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(AcpDoctorProbe {
             capabilities,
             commands,
         })
     })();
+    // Cleanup also runs when model selection fails; it must not replace the original error.
+    let cleanup = runtime
+        .cleanup_diagnostic_session()
+        .and_then(|_| deadline.remaining("session/cleanup").map(|_| ()));
+    let result = result.and_then(|probe| cleanup.map(|_| probe));
     let result = result.map_err(|error| enrich_doctor_error(&runtime, error));
     runtime.shutdown();
     if result.is_ok() {
@@ -2816,7 +3065,8 @@ pub fn run_prompt(
     let mut lifecycle_terminal_guard = AcpLifecycleTerminalGuard::new(
         attempt_dir.join("acp.snapshot.json"),
         lifecycle_owner.clone(),
-    );
+    )
+    .with_notification(session_update);
     let result = lifecycle_terminal_guard.execute(|| {
         run_prompt_inner(
             provider_id,
@@ -2884,6 +3134,13 @@ fn run_prompt_inner(
     let _prompt_guard = prompt_lock
         .lock()
         .map_err(|_| anyhow!("ACP session prompt lock poisoned"))?;
+    let direct_session = direct::prepare_direct_session(&attempt_dir);
+    let _handoff = direct::PromptHandoff {
+        attempt: attempt_dir.clone(),
+        policy: runtime_policy,
+        raw_max: acp_raw_max_size_bytes,
+        raw_target: acp_raw_target_size_bytes,
+    };
     let mut prompt = prompt.clone();
     prepare_runtime_control_prompt(&attempt_dir, &mut prompt)?;
     let prompt = &prompt;
@@ -2910,6 +3167,7 @@ fn run_prompt_inner(
         stop_probe,
     )?;
     runtime.model_override = model.clone();
+    runtime.direct = direct_session;
     runtime.permission_mode_override = permission_mode.clone();
     runtime.auto_accept =
         session_auto_accept_override(&runtime.paths.attempt_dir).unwrap_or(auto_accept);
@@ -3016,6 +3274,16 @@ fn run_prompt_inner(
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
+    if runtime.direct.is_some()
+        && let Some(entry) = runtime.attached_entry()
+    {
+        runtime.retain_session_route = true;
+        AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .expect("ACP registry lock")
+            .insert(runtime.paths.attempt_dir.to_string(), entry);
+    }
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
     commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt)?;
@@ -3134,6 +3402,7 @@ fn run_prompt_inner(
                 );
             }
             runtime.control.mark_stopped();
+            runtime.settle_foreground_turn_tools();
             runtime.persist_adapter_stderr_diagnostics();
             // The outer lifecycle guard commits failure and its reason together.
             // A metadata-only failed write here would close its owner revision.
@@ -3172,12 +3441,22 @@ fn run_prompt_inner(
     )?;
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
-    runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)?;
     runtime.control.mark_stopped();
+    runtime.settle_foreground_turn_tools();
     runtime.persist_adapter_stderr_diagnostics();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
         let _ = session_update();
+    }
+    // Session completion is independent of derived file comparisons. The worker
+    // drains admitted edits before publishing the final change-set event.
+    if let Err(error) = runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir) {
+        append_structured_diagnostic_best_effort(
+            &runtime.paths.diagnostics,
+            "warn",
+            "turn-files.finalize-failed",
+            Some(json!({ "error": error.to_string(), "turnId": prompt_turn.id })),
+        );
     }
     let run = AcpPromptRun {
         session_id,
@@ -3477,16 +3756,24 @@ fn session_prompt_params(
     agent_capabilities: &AgentCapabilities,
 ) -> Value {
     let mut prompt_blocks: Vec<ProtocolContentBlock> = Vec::new();
+    let mut path_files = Vec::new();
 
-    // Project attachment intent through the current live ACP connection capabilities.
+    // Inline what the live ACP connection declares it accepts; list the rest by path.
     for block in &prompt.content_blocks {
-        prompt_blocks.push(project_prompt_content_block(
-            block,
-            &agent_capabilities.prompt_capabilities,
-        ));
+        match project_prompt_content_block(block, &agent_capabilities.prompt_capabilities) {
+            Some(projected) => prompt_blocks.push(projected),
+            None => path_files.push(block.file()),
+        }
     }
 
-    let text = session_prompt_text(provider_id, prompt, restored, supports_system_prompt);
+    let user_prompt = prompt_text_with_files(&prompt.user_prompt, &path_files, prompt.language);
+    let text = session_prompt_text(
+        provider_id,
+        prompt,
+        &user_prompt,
+        restored,
+        supports_system_prompt,
+    );
     if !text.is_empty() {
         prompt_blocks.push(ProtocolContentBlock::Text(TextContent::new(text)));
     }
@@ -3501,53 +3788,44 @@ fn parse_agent_capabilities(value: &Value) -> AgentCapabilities {
     serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
+/// The inline ACP block for `block`, or `None` when the Agent must read the file by path.
 fn project_prompt_content_block(
     block: &AcpContentBlock,
     prompt_capabilities: &PromptCapabilities,
-) -> ProtocolContentBlock {
+) -> Option<ProtocolContentBlock> {
     match block {
-        AcpContentBlock::Image(image) if prompt_capabilities.image => ProtocolContentBlock::Image(
-            ImageContent::new(image.data.clone(), image.mime_type.clone())
-                .uri(image.link.uri.clone()),
-        ),
-        AcpContentBlock::Resource(resource) if prompt_capabilities.embedded_context => {
-            ProtocolContentBlock::Resource(EmbeddedResource::new(
-                EmbeddedResourceResource::TextResourceContents(
-                    TextResourceContents::new(
-                        resource.resource.text.clone(),
-                        resource.link.uri.clone(),
-                    )
-                    .mime_type(resource.link.mime_type.clone()),
-                ),
+        AcpContentBlock::Image(image) if prompt_capabilities.image => {
+            Some(ProtocolContentBlock::Image(
+                ImageContent::new(image.data.clone(), image.mime_type.clone())
+                    .uri(image.file.uri()),
             ))
         }
-        AcpContentBlock::Image(image) => resource_link_content_block(&image.link),
-        AcpContentBlock::Resource(resource) => resource_link_content_block(&resource.link),
-        AcpContentBlock::ResourceLink(link) => resource_link_content_block(link),
+        AcpContentBlock::Resource(resource) if prompt_capabilities.embedded_context => {
+            Some(ProtocolContentBlock::Resource(EmbeddedResource::new(
+                EmbeddedResourceResource::TextResourceContents(
+                    TextResourceContents::new(resource.text.clone(), resource.file.uri())
+                        .mime_type(resource.mime_type.clone()),
+                ),
+            )))
+        }
+        AcpContentBlock::Image(_) | AcpContentBlock::Resource(_) | AcpContentBlock::File(_) => None,
     }
-}
-
-fn resource_link_content_block(link: &AcpResourceLinkBlock) -> ProtocolContentBlock {
-    ProtocolContentBlock::ResourceLink(
-        ResourceLink::new(link.name.clone(), link.uri.clone())
-            .mime_type(link.mime_type.clone())
-            .size(i64::try_from(link.size).ok()),
-    )
 }
 
 fn session_prompt_text(
     _provider_id: &str,
     prompt: &PromptBundle,
+    user_prompt: &str,
     restored: bool,
     supports_system_prompt: bool,
 ) -> String {
     if !restored && !supports_system_prompt && !prompt.system_prompt.trim().is_empty() {
         let system_prompt =
             gold_band_hidden_block("Gold Band stable system prompt", &prompt.system_prompt);
-        return format!("{}\n\n{}", system_prompt, prompt.user_prompt);
+        return format!("{}\n\n{}", system_prompt, user_prompt);
     }
 
-    prompt.user_prompt.clone()
+    user_prompt.to_string()
 }
 
 fn is_cancel_stop_reason(result: &Value) -> bool {
@@ -3975,6 +4253,7 @@ impl<'a> AcpRuntime<'a> {
         // Timeline prompt-index, or raw-log recovery before reuse.
         let usage = AcpUsageState::from_prior(prior, context_compaction);
         Ok(Self {
+            direct: None,
             doctor_deadline: None,
             paths,
             lifecycle_owner,
@@ -3987,13 +4266,14 @@ impl<'a> AcpRuntime<'a> {
             branch_timeline_stores,
             timeline_items,
             session_id: None,
+            native_subagents: NativeSubagents::default(),
             prompt_output: AcpPromptOutputAccumulator::default(),
             prompt_terminal: AcpPromptTerminalState::default(),
             session_update_phase: SessionUpdatePhase::Live,
             provider_history_replay,
             current_turn_item_ids: HashSet::new(),
-            active_turn_file_branches: HashSet::new(),
-            active_turn_file_tool_outcomes: HashMap::new(),
+            turn_file_worker: None,
+            turn_file_workspace: workspace_dir.clone(),
             active_prompt_turn: None,
             quarantined_provider_item_ids: HashSet::new(),
             pending_retry_prompt_event,
@@ -4185,6 +4465,7 @@ impl<'a> AcpRuntime<'a> {
                 initialize_params(),
                 timeout,
             )?;
+            subagents::validate_initialize_result(&result)?;
             Ok(result
                 .get("agentCapabilities")
                 .cloned()
@@ -4520,6 +4801,7 @@ impl<'a> AcpRuntime<'a> {
         self.model_bound_catalogs = entry.model_bound_catalogs.clone();
         self.config_catalog_observed_at = entry.config_catalog_observed_at.clone();
         self.usage = entry.usage.clone();
+        self.native_subagents = entry.native_subagents.clone();
         self.attempt_usage_ready = true;
         self.provider_freshness = entry.provider_freshness.clone();
         self.sync_required = attached_sync_required(
@@ -4532,7 +4814,11 @@ impl<'a> AcpRuntime<'a> {
         // previous session/prompt response. Keep them out of the next prompt
         // until its request is admitted; stable stream identities are fenced
         // so delayed chunks remain quarantined after admission.
-        self.session_update_phase = SessionUpdatePhase::AwaitingPromptAdmission;
+        self.session_update_phase = if self.direct.is_some() {
+            SessionUpdatePhase::Live
+        } else {
+            SessionUpdatePhase::AwaitingPromptAdmission
+        };
         self.quarantined_provider_item_ids.clear();
 
         let reuse_plan = plan_attached_session_reuse(
@@ -4616,6 +4902,9 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn set_session_id(&mut self, session_id: String) {
+        if self.session_id.as_deref() != Some(session_id.as_str()) {
+            self.native_subagents = NativeSubagents::default();
+        }
         if let Some(existing) = self.session_id.take() {
             if let Some(event_pump) = self.rx.as_ref() {
                 self.connection.unregister_session_route_if_generation(
@@ -4917,6 +5206,46 @@ impl<'a> AcpRuntime<'a> {
             self.capture_session_config(&result);
             self.retarget_session_model_catalog(&model, result.get("configOptions").is_some());
         }
+        Ok(())
+    }
+
+    fn probe_selected_model_config(&mut self, model: &str) -> Result<()> {
+        let options = self.config_options.as_ref().ok_or(ModelConfigUnavailable)?;
+        let selector = find_model_config_option(options).ok_or(ModelConfigUnavailable)?;
+        if selector.get("currentValue").and_then(Value::as_str) == Some(model) {
+            return Ok(());
+        }
+        if !selector
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.get("value").and_then(Value::as_str) == Some(model))
+            })
+        {
+            return Err(ModelConfigUnavailable.into());
+        }
+        let config_id = selector
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(ModelConfigUnavailable)?
+            .to_string();
+        let result = self.request(
+            "session/set_config_option",
+            json!({
+                "sessionId": self.session_id, "configId": config_id, "value": model,
+            }),
+        )?;
+        let returned = result.get("configOptions").ok_or(ModelConfigUnavailable)?;
+        if find_model_config_option(returned)
+            .and_then(|option| option.get("currentValue"))
+            .and_then(Value::as_str)
+            != Some(model)
+        {
+            return Err(ModelConfigUnavailable.into());
+        }
+        self.capture_session_config(&result);
         Ok(())
     }
 
@@ -5288,6 +5617,7 @@ impl<'a> AcpRuntime<'a> {
                 session_prompt_text(
                     provider_id,
                     prompt,
+                    &prompt.user_prompt,
                     restored,
                     self.runtime_policy.supports_system_prompt,
                 )
@@ -5381,8 +5711,18 @@ impl<'a> AcpRuntime<'a> {
                 })),
             );
         }
-        self.active_turn_file_branches.clear();
-        self.active_turn_file_tool_outcomes.clear();
+        let start_file_worker = if self.direct.is_some() {
+            crate::acp::turn_files::TurnFileWorker::start_retained
+        } else {
+            crate::acp::turn_files::TurnFileWorker::start
+        };
+        self.turn_file_worker = Some(start_file_worker(
+            turn_file_store,
+            self.turn_file_workspace.clone(),
+            identity.id.clone(),
+            identity.prompt_event_id.clone(),
+            identity.started_at.clone(),
+        )?);
         self.pending_retry_prompt_event = None;
         self.active_prompt_turn = Some(identity.clone());
         Ok(identity)
@@ -5587,7 +5927,11 @@ impl<'a> AcpRuntime<'a> {
                 "sessionId": self.session_id,
             }),
         );
-        let request = self.connection.begin_request(method, params)?;
+        let request = if self.direct.is_some() {
+            self.connection.begin_direct_request(method, params)?
+        } else {
+            self.connection.begin_request(method, params)?
+        };
         self.append_outbound_frame(&request.frame);
         let started_at = Instant::now();
         let mut last_title_refresh_at = Instant::now();
@@ -5988,6 +6332,11 @@ impl<'a> AcpRuntime<'a> {
             .map(str::to_string);
         let mut update = params.get("update").cloned().unwrap_or(params);
 
+        // Binding recovery is control-plane processing, independent of whether
+        // the caller permits importing external historical message bodies.
+        if self.handle_native_session_update(session_id.as_deref(), &update)? {
+            return Ok(());
+        }
         if self.session_update_phase == SessionUpdatePhase::RestoringWithoutReplay {
             if let Some(commands) = parse_available_commands(&update) {
                 self.available_commands = Some(commands);
@@ -6058,12 +6407,26 @@ impl<'a> AcpRuntime<'a> {
                 None
             };
 
+        if let Some(direct) = &self.direct {
+            // Client-owned provenance: this describes delivery outside a user prompt,
+            // not the provider's task identity or a task-completion signal.
+            let background = self.active_prompt_turn.is_none();
+            if !update.get("_meta").is_some_and(Value::is_object) {
+                update["_meta"] = json!({});
+            }
+            update["_meta"]["goldBandBackground"] = json!(background);
+            if direct.observe_update(&update, background) {
+                self.usage.background_work_observed = true;
+            }
+        }
         self.seq += 1;
         let event = normalize_session_update(self.seq, session_id, &update);
-        self.capture_turn_file_event(&event)?;
         self.prompt_output.observe(&update, &event);
         let confirmed_usage_before_event = self.usage.context.confirmed_used;
         self.persist_event(&event)?;
+        // Durable evidence precedes background derivation. Diff work never runs
+        // on the ACP ingress/render-publication path.
+        self.capture_turn_file_event(&event)?;
         if event.kind == "contextCompaction" {
             append_diagnostic_best_effort(
                 &self.paths.diagnostics,
@@ -6089,7 +6452,51 @@ impl<'a> AcpRuntime<'a> {
         if let Some(used) = usage_after_compaction {
             self.maybe_persist_context_compaction_usage(used)?;
         }
+        if event.kind == "usageUpdate" && self.direct.is_some() && self.active_prompt_turn.is_none()
+        {
+            self.persist_background_usage_snapshot()?;
+        }
         Ok(())
+    }
+
+    /// Prompt terminals write the session snapshot; background work has no
+    /// terminal, so its usage sample refreshes the snapshot's usage and
+    /// timing projection (read by reloads and analytics).
+    fn persist_background_usage_snapshot(&self) -> Result<()> {
+        if !self.paths.snapshot.exists() {
+            return Ok(());
+        }
+        let observed_at = current_timestamp();
+        let timing = self.timing_state.terminal_snapshot_at_with_revision(
+            parse_event_epoch_seconds(&observed_at),
+            Some(self.next_timing_revision()),
+            Some(observed_at),
+        );
+        crate::acp::events::patch_session_metadata(&self.paths.snapshot, |metadata| {
+            if let Some(used) = self.usage.context.confirmed_used {
+                metadata["usedTokens"] = json!(used);
+            }
+            if let Some(size) = self.usage.context.window_size {
+                metadata["contextWindowSize"] = json!(size);
+            }
+            if let Some(cost) = self.usage.total_cost_usd {
+                metadata["totalCostUsd"] = json!(cost);
+            }
+            if let Some(timing) = &timing {
+                metadata["timing"] = serde_json::to_value(timing)?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Canonical record of an accepted background stop; background-owned Agent
+    /// executions without later activity project as interrupted from it.
+    pub(super) fn persist_background_cancel_marker(&mut self) -> Result<()> {
+        self.seq = self.seq.saturating_add(1);
+        let event =
+            crate::acp::events::background_cancel_marker_event(self.seq, self.session_id.clone());
+        self.persist_event(&event)
     }
 
     fn persist_confirmed_context_usage(&mut self, session_id: Option<String>) -> Result<()> {
@@ -6106,99 +6513,102 @@ impl<'a> AcpRuntime<'a> {
         if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
             return Ok(());
         }
-        let (Some(turn), Some(tool_call_id), Some(raw)) = (
-            self.active_prompt_turn.as_ref(),
+        if self.turn_file_worker.is_none()
+            && self.direct.is_some()
+            && self.active_prompt_turn.is_none()
+        {
+            let metadata = load_session_metadata(&self.paths.snapshot, self.session_id.clone())?;
+            if let (Some(turn), Some(prompt)) = (metadata.turn_id, metadata.prompt_event_id) {
+                self.turn_file_worker =
+                    Some(crate::acp::turn_files::TurnFileWorker::start_background(
+                        crate::acp::turn_files::TurnFileStore::new(
+                            self.paths.attempt_dir.clone(),
+                            self.runtime_policy.turn_file_capture,
+                        ),
+                        self.turn_file_workspace.clone(),
+                        turn,
+                        prompt,
+                        current_timestamp(),
+                    )?);
+            }
+        }
+        let (Some(worker), Some(tool_call_id), Some(raw)) = (
+            self.turn_file_worker.as_ref(),
             event.tool_call_id.as_deref(),
             event.raw.as_ref(),
         ) else {
             return Ok(());
         };
         let branch_id = event_branch_id(event);
-        let store = crate::acp::turn_files::TurnFileStore::new(
-            self.paths.attempt_dir.clone(),
-            self.runtime_policy.turn_file_capture,
-        );
-        let captured = store.capture_event_diffs(
-            &turn.id,
-            &turn.prompt_event_id,
-            &branch_id,
-            tool_call_id,
+        worker.submit(
+            branch_id,
+            tool_call_id.to_string(),
             event.seq,
-            &event.timestamp,
+            event.timestamp.clone(),
             raw,
-        )?;
-        let tool_key = (branch_id.clone(), tool_call_id.to_string());
-        if captured > 0 {
-            self.active_turn_file_branches.insert(branch_id.clone());
-            self.active_turn_file_tool_outcomes
-                .entry(tool_key.clone())
-                .or_insert(None);
-        }
-        if let Some(outcome) = crate::acp::turn_files::TurnFileToolTerminalOutcome::from_status(
-            event.status.as_deref(),
-        ) && let Some(current) = self.active_turn_file_tool_outcomes.get_mut(&tool_key)
-            && current.is_none()
-        {
-            *current = Some(outcome);
-        }
+            crate::acp::turn_files::TurnFileToolTerminalOutcome::from_status(
+                event.status.as_deref(),
+            ),
+        );
         Ok(())
+    }
+
+    /// The foreground prompt turn owns its tool lifecycle: when the prompt
+    /// returns, tools without a provider terminal update are settled by the
+    /// turn boundary instead of waiting for the provider.
+    fn settle_foreground_turn_tools(&self) {
+        if let Some(direct) = &self.direct {
+            direct.settle_tools_owned_by(direct::ActiveToolOwner::ForegroundTurn);
+        }
     }
 
     fn finalize_turn_file_changes(
         &mut self,
-        turn: &AcpPromptTurnIdentity,
-        workspace_dir: &Utf8Path,
+        _turn: &AcpPromptTurnIdentity,
+        _workspace_dir: &Utf8Path,
     ) -> Result<()> {
-        let store = crate::acp::turn_files::TurnFileStore::new(
-            self.paths.attempt_dir.clone(),
-            self.runtime_policy.turn_file_capture,
-        );
-        let finished_at = current_timestamp();
-        let attachment_delta = store.collect_turn_attachment_delta(&turn.id)?;
-        let mut branches = self
-            .active_turn_file_branches
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        if !branches.iter().any(|branch_id| branch_id == ROOT_BRANCH_ID) {
-            branches.push(ROOT_BRANCH_ID.to_string());
+        let Some(worker) = self.turn_file_worker.take() else {
+            return Ok(());
+        };
+        self.persist_file_change_sets(worker.finish()?)?;
+        self.active_prompt_turn = None;
+        Ok(())
+    }
+
+    fn flush_background_file_changes(&mut self, finish: bool) -> Result<()> {
+        let sets = if finish {
+            self.turn_file_worker
+                .take()
+                .map(|worker| worker.finish())
+                .transpose()?
+        } else {
+            self.turn_file_worker
+                .as_ref()
+                .and_then(|worker| worker.take_updates())
+        };
+        if let Some(sets) = sets {
+            self.persist_file_change_sets(sets)?;
         }
-        for branch_id in branches {
-            let tool_outcomes = self
-                .active_turn_file_tool_outcomes
-                .iter()
-                .filter_map(|((outcome_branch_id, tool_call_id), outcome)| {
-                    (outcome_branch_id == &branch_id)
-                        .then_some(outcome.map(|outcome| (tool_call_id.clone(), outcome)))
-                        .flatten()
-                })
-                .collect::<HashMap<_, _>>();
-            let Some(change_set) = store.finalize_turn_branch_with_attachments(
-                &turn.id,
-                &turn.prompt_event_id,
-                &branch_id,
-                &turn.started_at,
-                &finished_at,
-                &tool_outcomes,
-                Some(workspace_dir),
-                &attachment_delta,
-                branch_id == ROOT_BRANCH_ID,
-            )?
-            else {
-                continue;
-            };
+        Ok(())
+    }
+
+    fn persist_file_change_sets(
+        &mut self,
+        sets: Vec<crate::acp::turn_files::TurnFileChangeSet>,
+    ) -> Result<()> {
+        for change_set in sets {
             self.seq = self.seq.saturating_add(1);
             let event = turn_file_change_set_event(
                 self.seq,
                 self.session_id.clone(),
-                finished_at.clone(),
+                change_set
+                    .finished_at
+                    .clone()
+                    .unwrap_or_else(current_timestamp),
                 &change_set,
             );
             self.persist_event(&event)?;
         }
-        self.active_prompt_turn = None;
-        self.active_turn_file_branches.clear();
-        self.active_turn_file_tool_outcomes.clear();
         Ok(())
     }
 
@@ -6332,6 +6742,9 @@ impl<'a> AcpRuntime<'a> {
         session_id: &Option<String>,
         update: &Value,
     ) -> bool {
+        if self.direct.is_some() && self.session_update_phase == SessionUpdatePhase::Live {
+            return false;
+        }
         let timeline_store = &self.timeline_store;
         let branch_timeline_stores = &self.branch_timeline_stores;
         should_suppress_attached_session_update(
@@ -6350,35 +6763,46 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn handle_permission_request(&mut self, value: Value) -> Result<()> {
+        if let Some(direct) = &self.direct {
+            direct.touch();
+        }
+        // Captured when the request frame arrived, so a background stop
+        // accepted anywhere after that settles this waiter.
+        let background_epoch = self.background_interaction_epoch();
         let rpc_id = value
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP permission request missing JSON-RPC id"))?;
         let request_id = rpc_id_to_string(&rpc_id);
-        let Some(prompt_turn) = self.active_prompt_turn.as_ref() else {
-            append_diagnostic_best_effort(
-                &self.paths.diagnostics,
-                "warn",
-                "ACP permission request arrived without an active prompt turn",
-                Some(json!({
-                    "code": "acp.permission-without-active-turn",
-                    "requestId": request_id,
-                    "sessionId": self.session_id,
-                })),
-            );
+        let session_id = if self.direct.is_some() {
+            Some(
+                self.session_id
+                    .clone()
+                    .ok_or_else(|| anyhow!("acp.session-missing"))?,
+            )
+        } else {
+            None
+        };
+        let interaction_identity = if let Some(prompt_turn) = &self.active_prompt_turn {
+            AcpPromptInteractionIdentity::for_turn_and_session(
+                request_id.clone(),
+                AcpPromptInteractionKind::Permission,
+                prompt_turn.id.clone(),
+                prompt_turn.prompt_event_id.clone(),
+                session_id,
+            )
+        } else if let Some(session_id) = session_id {
+            AcpPromptInteractionIdentity::for_session(
+                request_id.clone(),
+                AcpPromptInteractionKind::Permission,
+                session_id,
+            )
+        } else {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
         };
-        let turn_id = prompt_turn.id.clone();
-        let prompt_event_id = prompt_turn.prompt_event_id.clone();
-        let interaction_identity = AcpPromptInteractionIdentity::new(
-            request_id.clone(),
-            AcpPromptInteractionKind::Permission,
-            turn_id.clone(),
-            prompt_event_id.clone(),
-        );
         self.session_update_phase = SessionUpdatePhase::Live;
-        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
-        if self.is_prompt_cancel_requested() {
+        let mut params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        if !self.annotate_native_interaction(&mut params) || self.is_prompt_cancel_requested() {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
         }
         self.seq += 1;
@@ -6393,11 +6817,9 @@ impl<'a> AcpRuntime<'a> {
                 option_id,
             );
         }
-        write_pending_permission(
+        crate::acp::permission::write_pending_permission_with_identity(
             &self.paths.attempt_dir,
-            &request_id,
-            &turn_id,
-            &prompt_event_id,
+            interaction_identity.clone(),
             params.clone(),
             current_timestamp(),
         )?;
@@ -6429,10 +6851,14 @@ impl<'a> AcpRuntime<'a> {
                 },
             )?;
         }
+        self.settle_unattended_permission(&request_id)?;
         let response = wait_for_permission_response_until_cancelled(
             &self.paths.attempt_dir,
             &request_id,
-            || self.is_prompt_cancel_requested(),
+            || {
+                self.is_prompt_cancel_requested()
+                    || self.background_stop_settles_interactions(background_epoch)
+            },
         )?;
         let settled =
             crate::acp::timeline::read_indexed_timeline_item(&timeline_path, &permission_item_id)?
@@ -6447,14 +6873,22 @@ impl<'a> AcpRuntime<'a> {
             )?;
         } else {
             self.seq += 1;
-            let decision_event = permission_decision_timeline_event(
+            let mut decision_event = permission_decision_timeline_event(
                 self.seq,
                 &request_id,
                 &permission_item_id,
                 &response,
                 self.timeline_items.get(&permission_item_id),
             );
-            self.persist_event(&decision_event)?;
+            // The decision updates an interaction-owned item; it must carry
+            // the interaction identity even when the hot cache missed the
+            // pending item.
+            if branch_id != ROOT_BRANCH_ID {
+                decision_event.session_id = self.session_id.clone();
+                decision_event.raw.get_or_insert_with(|| json!({}))["_meta"]["goldBandConversation"] =
+                    json!({"branchId": branch_id});
+            }
+            self.persist_event_inner(&decision_event, true, Some(&interaction_identity))?;
         }
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
@@ -6465,6 +6899,24 @@ impl<'a> AcpRuntime<'a> {
         });
         self.append_outbound_frame(&frame);
         self.connection.send_response(rpc_id, result)
+    }
+
+    fn settle_unattended_permission(&self, request_id: &str) -> Result<()> {
+        settle_permission_without_responder(
+            self.runtime_policy.interaction_mode,
+            &self.paths.attempt_dir,
+            request_id,
+        )
+        .map(drop)
+    }
+
+    fn settle_unattended_elicitation(&self, elicitation_id: &str) -> Result<()> {
+        settle_elicitation_without_responder(
+            self.runtime_policy.interaction_mode,
+            &self.paths.attempt_dir,
+            elicitation_id,
+        )
+        .map(drop)
     }
 
     fn send_auto_accepted_permission_response(
@@ -6517,11 +6969,30 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn is_prompt_cancel_requested(&self) -> bool {
-        self.control.state() == ProviderControlState::CancelRequested
+        self.direct
+            .as_ref()
+            .is_some_and(|direct| direct.abort_requested() || self.connection.is_transport_closed())
+            || self.control.state() == ProviderControlState::CancelRequested
             || self
                 .stop_probe
                 .as_ref()
                 .is_some_and(RuntimeStopProbe::is_stopped)
+    }
+
+    /// Epoch an interaction waiter observed when it started waiting. A Direct
+    /// background stop accepted after that point settles this waiter.
+    fn background_interaction_epoch(&self) -> Option<u64> {
+        self.direct
+            .as_ref()
+            .map(|direct| direct.background_cancel_epoch())
+    }
+
+    fn background_stop_settles_interactions(&self, epoch: Option<u64>) -> bool {
+        epoch.is_some_and(|epoch| {
+            self.direct
+                .as_ref()
+                .is_some_and(|direct| direct.background_cancel_epoch() != epoch)
+        })
     }
 
     fn observe_prompt_cancel_request(&mut self) -> Result<()> {
@@ -6573,40 +7044,54 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
+        if let Some(direct) = &self.direct {
+            direct.touch();
+        }
+        // Captured when the request frame arrived, so a background stop
+        // accepted anywhere after that settles this waiter.
+        let background_epoch = self.background_interaction_epoch();
         let rpc_id = value
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
         let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
-        let Some(prompt_turn) = self.active_prompt_turn.as_ref() else {
-            append_diagnostic_best_effort(
-                &self.paths.diagnostics,
-                "warn",
-                "ACP elicitation request arrived without an active prompt turn",
-                Some(json!({
-                    "code": "acp.elicitation-without-active-turn",
-                    "elicitationId": elicitation_id,
-                    "sessionId": self.session_id,
-                })),
-            );
-            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+        let session_id = if self.direct.is_some() {
+            Some(
+                self.session_id
+                    .clone()
+                    .ok_or_else(|| anyhow!("acp.session-missing"))?,
+            )
+        } else {
+            None
         };
-        let turn_id = prompt_turn.id.clone();
-        let prompt_event_id = prompt_turn.prompt_event_id.clone();
-        let interaction_identity = AcpPromptInteractionIdentity::new(
-            elicitation_id.clone(),
-            AcpPromptInteractionKind::Elicitation,
-            turn_id.clone(),
-            prompt_event_id.clone(),
-        );
+        let interaction_identity = if let Some(prompt_turn) = &self.active_prompt_turn {
+            AcpPromptInteractionIdentity::for_turn_and_session(
+                elicitation_id.clone(),
+                AcpPromptInteractionKind::Elicitation,
+                prompt_turn.id.clone(),
+                prompt_turn.prompt_event_id.clone(),
+                session_id,
+            )
+        } else if let Some(session_id) = session_id {
+            AcpPromptInteractionIdentity::for_session(
+                elicitation_id.clone(),
+                AcpPromptInteractionKind::Elicitation,
+                session_id,
+            )
+        } else {
+            return self.send_cancelled_elicitation_response(rpc_id, &elicitation_id);
+        };
         self.session_update_phase = SessionUpdatePhase::Live;
         if self.is_prompt_cancel_requested() {
-            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+            return self.send_cancelled_elicitation_response(rpc_id, &elicitation_id);
         }
-        let params = value
+        let mut params = value
             .get("params")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing params"))?;
+        if !self.annotate_native_interaction(&mut params) {
+            return self.send_cancelled_elicitation_response(rpc_id, &elicitation_id);
+        }
         let request = serde_json::from_value::<
             agent_client_protocol_schema::v1::CreateElicitationRequest,
         >(params)
@@ -6615,14 +7100,15 @@ impl<'a> AcpRuntime<'a> {
         // 1. 持久化请求到 attempt dir
         write_pending_elicitation(
             &self.paths.attempt_dir,
-            &pending_elicitation_state(
-                elicitation_id.clone(),
-                turn_id.clone(),
-                prompt_event_id.clone(),
-                rpc_id.clone(),
-                request.clone(),
-                current_timestamp(),
-            ),
+            &crate::acp::interaction::PendingAcpPromptInteractionState {
+                identity: interaction_identity.clone(),
+                payload: crate::acp::elicitation::PendingElicitationPayload {
+                    jsonrpc_id: rpc_id.clone(),
+                    request: request.clone(),
+                },
+                created_at: current_timestamp(),
+                timeline_identity: None,
+            },
         )?;
 
         // 2. 发送 UI 事件给前端
@@ -6650,11 +7136,15 @@ impl<'a> AcpRuntime<'a> {
         }
 
         // 3. 同步阻塞等待用户响应（含超时保护）
+        self.settle_unattended_elicitation(&elicitation_id)?;
         let response = wait_for_elicitation_response_until_cancelled(
             &self.paths.attempt_dir,
             &elicitation_id,
             ELICITATION_DEFAULT_TIMEOUT,
-            || self.is_prompt_cancel_requested(),
+            || {
+                self.is_prompt_cancel_requested()
+                    || self.background_stop_settles_interactions(background_epoch)
+            },
         )?;
         // 4. 构造 JSON-RPC response 并发送
         let result = elicitation_response_result(&response);
@@ -6673,15 +7163,21 @@ impl<'a> AcpRuntime<'a> {
         .is_none()
         {
             self.seq += 1;
-            let response_event = crate::acp::events::elicitation_response_event(
+            let mut response_event = crate::acp::events::elicitation_response_event(
                 self.seq,
                 elicitation_id.clone(),
                 match response.action {
                     crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
                     crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+                    crate::acp::elicitation::ElicitationAction::Cancel => "cancel".to_string(),
                 },
                 response.content.clone(),
             );
+            if branch_id != ROOT_BRANCH_ID {
+                response_event.session_id = self.session_id.clone();
+                response_event.raw.get_or_insert_with(|| json!({}))["_meta"]["goldBandConversation"] =
+                    json!({"branchId": branch_id});
+            }
             self.persist_event(&response_event)?;
         }
         let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
@@ -6689,14 +7185,14 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
-    fn send_declined_elicitation_response(
+    fn send_cancelled_elicitation_response(
         &self,
         rpc_id: Value,
         elicitation_id: &str,
     ) -> Result<()> {
         let response = crate::acp::elicitation::ElicitationResponseState {
             elicitation_id: elicitation_id.to_string(),
-            action: ElicitationAction::Decline,
+            action: ElicitationAction::Cancel,
             content: None,
             decided_at: current_timestamp(),
         };
@@ -7275,7 +7771,16 @@ impl<'a> AcpRuntime<'a> {
         event: &crate::acp::events::AcpUiEvent,
         identity: &AcpPromptInteractionIdentity,
     ) -> Result<()> {
-        self.persist_event_inner(event, true, Some(identity))
+        let mut event = event.clone();
+        if event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/goldBandNativeSessionId"))
+            .is_some()
+        {
+            event.session_id = self.session_id.clone();
+        }
+        self.persist_event_inner(&event, true, Some(identity))
     }
 
     fn persist_event_inner(
@@ -7287,7 +7792,9 @@ impl<'a> AcpRuntime<'a> {
         if event.kind == "contextCompaction" {
             let existing = if let Some(id) = compaction_tool_item_id(event) {
                 let branch_id = event_branch_id(event);
-                if branch_id == ROOT_BRANCH_ID {
+                if let Some(item) = self.timeline_items.get(&id) {
+                    Some(item.clone())
+                } else if branch_id == ROOT_BRANCH_ID {
                     self.timeline_store.read_item(&id)?
                 } else if let Some(store) = self.branch_timeline_stores.get_mut(&branch_id) {
                     store.read_item(&id)?
@@ -7316,25 +7823,117 @@ impl<'a> AcpRuntime<'a> {
         self.persist_projected_event(event, emit_live_update, prompt_interaction)
     }
 
+    // A Direct background message may resume after another message or a new
+    // user turn. Rehydrate just that identified item, without retaining history.
+    fn prepare_direct_item_continuation(&mut self, event: &AcpUiEvent) -> Result<()> {
+        if self.direct.is_none() || self.session_update_phase != SessionUpdatePhase::Live {
+            return Ok(());
+        }
+        let branch = event_branch_id(event);
+        let (id, source) = match event.kind.as_str() {
+            "textDelta" => (
+                stable_message_item_id(event),
+                stable_message_stream_identity(event),
+            ),
+            "thoughtDelta" => (
+                stable_thought_item_id(event),
+                stable_thought_stream_identity(event),
+            ),
+            "plan" => (
+                stable_plan_item_id(event),
+                stable_plan_stream_identity(event),
+            ),
+            "toolCall" | "toolCallUpdate" => {
+                let Some(tool) = event.tool_call_id.as_deref() else {
+                    return Ok(());
+                };
+                (
+                    canonical_tool_item_id(tool, native_tool_branch(event.raw.as_ref())),
+                    None,
+                )
+            }
+            _ => return Ok(()),
+        };
+        let is_tool = matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate");
+        if !is_tool && source.is_none() {
+            return Ok(());
+        }
+        if is_tool && self.timeline_items.contains_key(&id) {
+            return Ok(());
+        }
+        if let Some(streams) = self.active_timeline_streams.get(&branch) {
+            let slot = match event.kind.as_str() {
+                "textDelta" => &streams.text,
+                "thoughtDelta" => &streams.thought,
+                _ => &streams.plan,
+            };
+            if !is_tool
+                && slot
+                    .current
+                    .iter()
+                    .chain(slot.suspended_stable.iter())
+                    .any(|s| s.source_id == source)
+            {
+                return Ok(());
+            }
+        }
+        let prior = if let Some(patch) = self.pending_timeline_patches.get(&id) {
+            Some(patch.item.clone())
+        } else if branch == ROOT_BRANCH_ID {
+            self.timeline_store.read_item(&id)?
+        } else if let Some(store) = self.branch_timeline_stores.get_mut(&branch) {
+            store.read_item(&id)?
+        } else {
+            None
+        };
+        let Some(prior) = prior else {
+            return Ok(());
+        };
+        if is_tool {
+            self.timeline_items.insert(id, prior);
+            return Ok(());
+        }
+        let content = prior.content.unwrap_or_default();
+        let stream = AcpTimelineStreamState {
+            item_id: id,
+            source_id: source,
+            started_seq: prior.started_seq.unwrap_or(prior.seq),
+            started_at: prior.started_at.unwrap_or(prior.timestamp),
+            content_chars: content.chars().count(),
+            content,
+        };
+        let streams = self.active_timeline_streams.entry(branch).or_default();
+        match event.kind.as_str() {
+            "textDelta" => streams.text.restore_snapshot(stream),
+            "thoughtDelta" => streams.thought.restore_snapshot(stream),
+            _ => streams.plan.restore_snapshot(stream),
+        }
+        Ok(())
+    }
+
     fn persist_projected_event(
         &mut self,
         event: &crate::acp::events::AcpUiEvent,
         emit_live_update: bool,
         prompt_interaction: Option<&AcpPromptInteractionIdentity>,
     ) -> Result<()> {
+        self.prepare_direct_item_continuation(event)?;
         let mut timeline_item = self.timeline_item_for_event(event);
         if is_semantically_empty_agent_content(event) {
             return Ok(());
         }
         let agent_prompt = agent_prompt_event(&timeline_item);
-        let agent_result = agent_result_event(&timeline_item).filter(|result| {
-            !self.timeline_items.values().any(|existing| {
-                event_branch_id(existing) == event_branch_id(result)
-                    && existing.kind == "textDelta"
-                    && existing.content.as_deref().map(str::trim)
-                        == result.content.as_deref().map(str::trim)
-            })
-        });
+        let agent_result = (!self.native_subagents.owns_launch(&timeline_item))
+            .then(|| agent_result_event(&timeline_item))
+            .flatten()
+            .filter(|result| {
+                !self.timeline_items.values().any(|existing| {
+                    event_branch_id(existing) == event_branch_id(result)
+                        && existing.kind == "textDelta"
+                        && existing.content.as_deref().map(str::trim)
+                            == result.content.as_deref().map(str::trim)
+                })
+            });
         annotate_event_branch(&mut timeline_item);
         if let Some(identity) = prompt_interaction {
             annotate_prompt_interaction_identity(&mut timeline_item, identity);
@@ -7877,7 +8476,8 @@ impl<'a> AcpRuntime<'a> {
         let mut item = event.clone();
         if matches!(item.kind.as_str(), "toolCall" | "toolCallUpdate") {
             if let Some(tool_call_id) = item.tool_call_id.as_deref() {
-                item.id = format!("tool-call-{tool_call_id}");
+                item.id =
+                    canonical_tool_item_id(tool_call_id, native_tool_branch(item.raw.as_ref()));
             }
             if let Some(previous) = self.timeline_items.get(&item.id) {
                 merge_tool_revision(&mut item, previous);
@@ -7931,13 +8531,21 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "contextCompaction" => {
-                Self::clear_timeline_streams(&mut streams);
+                if item.started_seq.is_none_or(|started| started == seq) {
+                    Self::clear_timeline_streams(&mut streams);
+                }
             }
             "usageUpdate" => {
                 item.id = item
                     .session_id
                     .as_deref()
-                    .map(|session_id| format!("session-usage-{session_id}"))
+                    .map(|session_id| {
+                        if branch_id == ROOT_BRANCH_ID {
+                            format!("session-usage-{session_id}")
+                        } else {
+                            format!("session-usage-{session_id}-{branch_id}")
+                        }
+                    })
                     .unwrap_or_else(|| "session-usage-current".to_string());
                 Self::finalize_non_streaming_event(
                     (&mut streams.text, &mut streams.thought, &mut streams.plan),
@@ -7994,7 +8602,10 @@ impl<'a> AcpRuntime<'a> {
         // An elicitation request is an intervention inside the current turn,
         // not a transcript boundary. Other kinds close only anonymous
         // contiguous segments; stable provider identities remain resumable.
-        if item.kind != "elicitationRequest" {
+        if item.kind != "elicitationRequest"
+            && !(item.kind == "contextCompaction"
+                && item.started_seq.is_some_and(|started| started != seq))
+        {
             if item.kind != "textDelta" {
                 streams.text.close_anonymous();
             }
@@ -8036,48 +8647,54 @@ impl<'a> AcpRuntime<'a> {
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
 
+    fn attached_entry(&self) -> Option<AttachedSessionRuntime> {
+        let connection_key = self.connection_key.clone()?;
+        let session_id = self.session_id.clone()?;
+        let event_pump = self.rx.clone()?;
+        let config_fingerprint = self.attached_config_fingerprint?;
+        let now = Instant::now();
+        Some(AttachedSessionRuntime {
+            direct: self.direct.clone(),
+            attempt_dir: self.paths.attempt_dir.clone(),
+            connection: Arc::clone(&self.connection),
+            connection_generation: self.connection.generation(),
+            session_id: session_id.clone(),
+            event_pump,
+            models: self.models.clone(),
+            modes: self.modes.clone(),
+            config_options: self.config_options.clone(),
+            model_bound_catalogs: self.model_bound_catalogs.clone(),
+            config_catalog_observed_at: self.config_catalog_observed_at.clone(),
+            config_fingerprint,
+            provider_freshness: self.provider_freshness.clone(),
+            connection_key,
+            external_session_sync_enabled: self.runtime_policy.external_session_sync_enabled,
+            sync_required: self.sync_required,
+            usage: self.usage.clone(),
+            native_subagents: self.native_subagents.clone(),
+            last_activity_at: now,
+            foreground_lease_until: now + self.runtime_policy.foreground_lease_ttl,
+            active: true,
+        })
+    }
+
     fn release_managed_session(mut self) {
+        if let Some(direct) = &self.direct {
+            direct.touch();
+        }
         let _ = self.flush_pending_timeline_patches(None);
         let _ = self.flush_pending_live_updates();
         if self.connection_key.is_none() {
             self.shutdown();
             return;
         }
-        let (Some(connection_key), Some(session_id), Some(event_pump), Some(config_fingerprint)) = (
-            self.connection_key.clone(),
-            self.session_id.clone(),
-            self.rx.clone(),
-            self.attached_config_fingerprint,
-        ) else {
+        let Some(entry) = self.attached_entry() else {
             self.shutdown();
             return;
         };
+        let session_id = entry.session_id.clone();
         self.retain_session_route = true;
-        let now = Instant::now();
-        AcpSessionRuntimeRegistry::shared().release(
-            AttachedSessionRuntime {
-                attempt_dir: self.paths.attempt_dir.clone(),
-                connection: Arc::clone(&self.connection),
-                connection_generation: self.connection.generation(),
-                session_id: session_id.clone(),
-                event_pump,
-                models: self.models.clone(),
-                modes: self.modes.clone(),
-                config_options: self.config_options.clone(),
-                model_bound_catalogs: self.model_bound_catalogs.clone(),
-                config_catalog_observed_at: self.config_catalog_observed_at.clone(),
-                config_fingerprint,
-                provider_freshness: self.provider_freshness.clone(),
-                connection_key,
-                external_session_sync_enabled: self.runtime_policy.external_session_sync_enabled,
-                sync_required: self.sync_required,
-                usage: self.usage.clone(),
-                last_activity_at: now,
-                foreground_lease_until: now + self.runtime_policy.foreground_lease_ttl,
-                active: false,
-            },
-            self.runtime_policy,
-        );
+        AcpSessionRuntimeRegistry::shared().release(entry, self.runtime_policy);
         let _ = append_diagnostic(
             &self.paths.diagnostics,
             "info",
@@ -8088,6 +8705,16 @@ impl<'a> AcpRuntime<'a> {
                 "connectionGeneration": self.connection.generation(),
             })),
         );
+        if self.direct.is_some() {
+            let (attempt, policy, raw_max, raw_target) = (
+                self.paths.attempt_dir.clone(),
+                self.runtime_policy,
+                self.raw_max_size,
+                self.raw_target_size,
+            );
+            drop(self);
+            direct::start_consumer(&attempt, policy, raw_max, raw_target);
+        }
     }
 }
 
@@ -8112,6 +8739,14 @@ impl Drop for AcpRuntime<'_> {
 }
 
 fn compaction_tool_item_id(event: &AcpUiEvent) -> Option<String> {
+    if let Some(id) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("compactionId"))
+        .and_then(Value::as_str)
+    {
+        return Some(format!("context-compaction-id-{id}"));
+    }
     event
         .tool_call_id
         .as_deref()
@@ -8125,6 +8760,15 @@ fn context_compaction_updates(
     existing: Option<&AcpUiEvent>,
     active: Option<&AcpUiEvent>,
 ) -> Vec<AcpUiEvent> {
+    if event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionUpdate"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "compaction_update" | "compaction_summary_chunk"))
+    {
+        return standard_compaction_updates(usage, event, existing, active);
+    }
     if let Some(previous) = existing.filter(|item| item.status.as_deref() != Some("running")) {
         // Completion can still receive its confirmed usage, but never restart its lifecycle.
         let confirms_usage = previous.status.as_deref() == Some("completed")
@@ -8175,6 +8819,130 @@ fn context_compaction_updates(
     updates
 }
 
+/// Fold ACP v1 compaction patches into the same durable timeline entity as the
+/// existing usage lifecycle. The provider ID owns placement; usage is separate.
+fn standard_compaction_updates(
+    usage: &mut AcpUsageState,
+    event: &AcpUiEvent,
+    existing: Option<&AcpUiEvent>,
+    active: Option<&AcpUiEvent>,
+) -> Vec<AcpUiEvent> {
+    let Some(raw) = event.raw.as_ref() else {
+        return Vec::new();
+    };
+    let Some(id) = raw.get("compactionId").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let is_chunk = raw["sessionUpdate"] == "compaction_summary_chunk";
+    if is_chunk {
+        let Some(previous) = existing.filter(|item| item.status.as_deref() == Some("running"))
+        else {
+            return Vec::new();
+        };
+        let Some(content) = raw.get("content").filter(|value| value.is_object()) else {
+            return Vec::new();
+        };
+        let mut item = previous.clone();
+        item.seq = event.seq;
+        item.timestamp = event.timestamp.clone();
+        let stored = item.raw.as_mut().expect("compaction has raw data");
+        if !stored["summary"].is_array() {
+            stored["summary"] = json!([]);
+        }
+        stored["summary"]
+            .as_array_mut()
+            .unwrap()
+            .push(content.clone());
+        return vec![item];
+    }
+    let Some(status) = raw.get("status").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let terminal = |status: Option<&str>| matches!(status, Some("completed" | "interrupted"));
+    if let Some(previous) = existing.filter(|item| terminal(item.status.as_deref())) {
+        // A materialized replay/patch may refresh a terminal entity, never reopen it.
+        if previous
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("status"))
+            .and_then(Value::as_str)
+            != Some(status)
+        {
+            return Vec::new();
+        }
+    }
+    let mut item = event.clone();
+    item.id = format!("context-compaction-id-{id}");
+    let item_raw = item.raw.as_mut().unwrap();
+    if let Some(previous_raw) = existing.and_then(|item| item.raw.as_ref()) {
+        for key in ["summary", "error", "_meta", "contextCompaction"] {
+            if key == "contextCompaction" || !raw.as_object().unwrap().contains_key(key) {
+                if let Some(value) = previous_raw.get(key) {
+                    item_raw[key] = value.clone();
+                }
+            }
+        }
+    }
+    let mut updates = Vec::with_capacity(2);
+    let known = matches!(status, "in_progress" | "completed" | "failed" | "cancelled");
+    let different = usage
+        .compaction
+        .as_ref()
+        .is_some_and(|state| state.item_id != item.id);
+    if status == "in_progress" && different {
+        if let Some(previous) = active.filter(|item| item.status.as_deref() == Some("running")) {
+            let mut interrupted = previous.clone();
+            interrupted.status = Some("interrupted".into());
+            interrupted.seq = event.seq;
+            interrupted.timestamp = event.timestamp.clone();
+            interrupted.raw.as_mut().unwrap()["contextCompaction"]["reason"] = json!("superseded");
+            AcpRuntime::apply_context_compaction_event(
+                usage,
+                &mut interrupted,
+                event.seq,
+                &event.timestamp,
+            );
+            updates.push(interrupted);
+        }
+    }
+    if known && !existing.is_some_and(|item| terminal(item.status.as_deref())) {
+        if different && status != "in_progress" {
+            // Completed-only history must not settle a different live compaction.
+            let mut detached_usage = AcpUsageState::default();
+            AcpRuntime::apply_context_compaction_event(
+                &mut detached_usage,
+                &mut item,
+                event.seq,
+                &event.timestamp,
+            );
+        } else {
+            AcpRuntime::apply_context_compaction_event(
+                usage,
+                &mut item,
+                event.seq,
+                &event.timestamp,
+            );
+        }
+    }
+    item.started_seq = Some(
+        existing
+            .and_then(|item| item.started_seq)
+            .unwrap_or(event.seq),
+    );
+    item.started_at = Some(
+        existing
+            .and_then(|item| item.started_at.clone())
+            .unwrap_or_else(|| event.timestamp.clone()),
+    );
+    if let Some(previous) = existing.filter(|item| terminal(item.status.as_deref())) {
+        item.ended_seq = previous.ended_seq;
+        item.ended_at = previous.ended_at.clone();
+    }
+    // Unknown statuses stay opaque: no synthetic completion, reset or spinner.
+    updates.push(item);
+    updates
+}
+
 fn upsert_context_compaction_raw(
     item: &mut crate::acp::events::AcpUiEvent,
     phase: &str,
@@ -8188,7 +8956,7 @@ fn upsert_context_compaction_raw(
     }
     raw["contextCompaction"] = json!({
         "phase": phase,
-        "detectionSource": "providerControlMessage",
+        "detectionSource": if raw.get("compactionId").is_some() { "acpCompaction" } else { "providerControlMessage" },
         "contextUsedBefore": context_used_before,
         "contextSize": context_size,
         "contextUsedAfter": context_used_after,
@@ -8228,6 +8996,9 @@ fn merge_tool_revision(
     if new_item.title.is_none() {
         new_item.title.clone_from(&prev.title);
     }
+    if new_item.status.is_none() {
+        new_item.status.clone_from(&prev.status);
+    }
     let Some(previous_raw) = prev.raw.as_ref() else {
         return;
     };
@@ -8237,6 +9008,7 @@ fn merge_tool_revision(
 
 fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
+        || (event.kind == "contextCompaction" && event.status.as_deref() == Some("running"))
         || (matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate")
             && event.tool_call_id.is_some()
             && !is_terminal_tool_status(event.status.as_deref()))
@@ -8481,6 +9253,10 @@ fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Op
             .get("toolCallId")
             .and_then(Value::as_str)
             .map(|tool_call_id| format!("tool-call-{tool_call_id}")),
+        "compaction_update" | "compaction_summary_chunk" => update
+            .get("compactionId")
+            .and_then(Value::as_str)
+            .map(|id| format!("context-compaction-id-{id}")),
         "plan" => session_id.map(|session_id| format!("session-plan-{session_id}")),
         _ => None,
     }
@@ -8489,7 +9265,14 @@ fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Op
 fn is_current_turn_content_update(update: &Value) -> bool {
     matches!(
         update.get("sessionUpdate").and_then(Value::as_str),
-        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")
+        Some(
+            "agent_message_chunk"
+                | "agent_thought_chunk"
+                | "tool_call"
+                | "tool_call_update"
+                | "compaction_update"
+                | "compaction_summary_chunk"
+        )
     )
 }
 
@@ -8565,9 +9348,14 @@ fn should_suppress_attached_session_update(
 /// suppress a legitimate next-turn plan update.
 fn attached_session_stream_identity(session_id: Option<&str>, update: &Value) -> Option<String> {
     match update.get("sessionUpdate").and_then(Value::as_str) {
-        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update") => {
-            stable_session_update_item_id(session_id, update)
-        }
+        Some(
+            "agent_message_chunk"
+            | "agent_thought_chunk"
+            | "tool_call"
+            | "tool_call_update"
+            | "compaction_update"
+            | "compaction_summary_chunk",
+        ) => stable_session_update_item_id(session_id, update),
         _ => None,
     }
 }
@@ -8840,14 +9628,10 @@ fn authoring_model_bound_catalogs_for_provider(
     if provider_id.is_empty() {
         return BTreeMap::new();
     }
-    let path = GoldBandPaths::new(workspace_dir).agent_diagnostics_file();
-    let Ok(diagnostics) = read_json::<BTreeMap<String, ProviderDiagnosticSnapshot>>(&path) else {
-        return BTreeMap::new();
-    };
-    diagnostics
-        .get(provider_id)
-        .and_then(|diagnostic| diagnostic.capabilities.as_ref())
-        .map(|capabilities| model_bound_catalogs_from_capabilities_value(Some(capabilities)))
+    let path = GoldBandPaths::new(workspace_dir).agent_model_catalogs_file();
+    read_json::<BTreeMap<String, ModelBoundCatalogs>>(&path)
+        .ok()
+        .and_then(|mut catalogs| catalogs.remove(provider_id))
         .unwrap_or_default()
 }
 
@@ -8952,6 +9736,11 @@ mod tests {
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
 
+    /// Direct fixture tests share the process-wide session registry and each
+    /// spawn an adapter subprocess; serializing them keeps their timing
+    /// budgets deterministic under the parallel test load.
+    static DIRECT_FIXTURE_ORDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     use crate::domain::{SessionMode, TurnControlMode};
 
     use super::{
@@ -8993,14 +9782,951 @@ mod tests {
     };
 
     #[test]
+    fn native_subagent_state_reaches_existing_branch() {
+        use crate::acp::branches::{branch_timeline_path, stable_agent_execution_id};
+        use crate::acp::events::load_timeline_items;
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "native-subagent-fixture",
+            &doctor_fixture_config("none"),
+            cwd,
+            attempt.clone(),
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        runtime.session_id = Some("parent".into());
+        runtime.session_update_phase = SessionUpdatePhase::Live;
+        for (session, update) in [
+            (
+                "parent",
+                json!({"sessionUpdate":"tool_call", "toolCallId":"launch",
+                "title":"Agent", "status":"in_progress", "rawInput":{"prompt":"inspect"},
+                "_meta":{"claudeCode":{"toolName":"Agent"}}}),
+            ),
+            (
+                "parent",
+                json!({"sessionUpdate":"subagent_update", "sessionId":"child",
+                "title":"general-purpose", "description":"inspect", "state":{"state":"running"}}),
+            ),
+            (
+                "child",
+                json!({"sessionUpdate":"session_message", "messageId":"launch",
+                "senderSessionId":"parent", "recipientSessionId":"child",
+                "content":[{"type":"text", "text":"inspect"}]}),
+            ),
+            (
+                "parent",
+                json!({"sessionUpdate":"subagent_update", "sessionId":"child",
+                "state":{"state":"idle", "stopReason":"end_turn"}}),
+            ),
+        ] {
+            runtime
+                .handle_session_update(json!({"method":"session/update",
+                "params":{"sessionId":session, "update":update}}))
+                .unwrap();
+        }
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch = stable_agent_execution_id("parent", "launch");
+        let events = load_timeline_items(&branch_timeline_path(&attempt, &branch)).unwrap();
+        assert!(
+            events.iter().any(|event| event.kind == "agentState"
+                && event.status.as_deref() == Some("completed")
+                && event.content.is_none()),
+            "official idle/end_turn must persist a content-free branch state; branch events: {events:?}"
+        );
+        runtime.shutdown();
+    }
+
+    fn native_subagent_fixture() -> (tempfile::TempDir, AcpRuntime<'static>) {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "native-subagent-fixture",
+            &doctor_fixture_config("none"),
+            cwd,
+            attempt,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        runtime.session_id = Some("parent".into());
+        runtime.session_update_phase = SessionUpdatePhase::Live;
+        (root, runtime)
+    }
+
+    fn native_update(runtime: &mut AcpRuntime<'_>, session: &str, update: Value) {
+        runtime
+            .handle_session_update(json!({"method":"session/update",
+            "params":{"sessionId":session,"update":update}}))
+            .unwrap();
+    }
+
+    fn native_launch(runtime: &mut AcpRuntime<'_>, parent: &str, child: &str, launch: &str) {
+        native_update(
+            runtime,
+            parent,
+            json!({"sessionUpdate":"tool_call", "toolCallId":launch,
+            "title":"Agent", "status":"in_progress", "rawInput":{"prompt":"inspect"},
+            "_meta":{"claudeCode":{"toolName":"Agent"}}}),
+        );
+        native_update(
+            runtime,
+            parent,
+            json!({"sessionUpdate":"subagent_update", "sessionId":child,
+            "title":"general-purpose", "description":"inspect", "state":{"state":"running"}}),
+        );
+        native_update(
+            runtime,
+            child,
+            json!({"sessionUpdate":"session_message", "messageId":launch,
+            "senderSessionId":parent,"recipientSessionId":child,
+            "content":[{"type":"text","text":"inspect"}]}),
+        );
+    }
+
+    fn native_branch_items(
+        runtime: &mut AcpRuntime<'_>,
+        launch: &str,
+    ) -> Vec<crate::acp::events::AcpUiEvent> {
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch = crate::acp::branches::stable_agent_execution_id("parent", launch);
+        crate::acp::events::load_timeline_items(&crate::acp::branches::branch_timeline_path(
+            &runtime.paths.attempt_dir,
+            &branch,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn native_subagent_children_send_message_and_nested_launch_are_isolated() {
+        use crate::acp::branches::{
+            event_branch_id, indexed_agent_index, stable_agent_execution_id,
+        };
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_launch(&mut runtime, "parent", "two", "launch-two");
+        for (child, text) in [("one", "answer one"), ("two", "answer two")] {
+            native_update(
+                &mut runtime,
+                child,
+                json!({"sessionUpdate":"agent_message_chunk",
+                "messageId":"same-provider-message-id", "content":{"type":"text","text":text}}),
+            );
+        }
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"session_message", "messageId":"send-again",
+            "senderSessionId":"parent", "recipientSessionId":"one", "content":[{"type":"text","text":"follow up"}]}),
+        );
+        native_launch(&mut runtime, "one", "nested", "nested-launch");
+        native_update(
+            &mut runtime,
+            "nested",
+            json!({"sessionUpdate":"agent_message_chunk",
+            "messageId":"nested-answer", "content":{"type":"text","text":"nested answer"}}),
+        );
+        let one = native_branch_items(&mut runtime, "launch-one");
+        let two = native_branch_items(&mut runtime, "launch-two");
+        let nested = native_branch_items(&mut runtime, "nested-launch");
+        assert!(
+            one.iter()
+                .any(|event| event.content.as_deref() == Some("answer one"))
+        );
+        assert!(
+            two.iter()
+                .any(|event| event.content.as_deref() == Some("answer two"))
+        );
+        assert!(
+            nested
+                .iter()
+                .any(|event| event.content.as_deref() == Some("nested answer"))
+        );
+        assert!(
+            !one.iter()
+                .any(|event| event.content.as_deref() == Some("answer two"))
+        );
+        assert_eq!(
+            one.iter()
+                .filter(|event| event.kind == "userTextDelta")
+                .count(),
+            2,
+            "one original prompt plus one SendMessage, no duplicate initial prompt"
+        );
+        assert!(
+            one.iter()
+                .any(|event| event.content.as_deref() == Some("follow up"))
+        );
+        assert!(
+            one.iter()
+                .chain(&two)
+                .chain(&nested)
+                .all(|event| event.session_id.as_deref() == Some("parent"))
+        );
+        let nested_launch = one
+            .iter()
+            .find(|event| event.tool_call_id.as_deref() == Some("nested-launch"))
+            .unwrap();
+        assert_eq!(
+            event_branch_id(nested_launch),
+            stable_agent_execution_id("parent", "launch-one")
+        );
+        let index = indexed_agent_index(&runtime.paths.attempt_dir, "running").unwrap();
+        assert_eq!(index.len(), 3, "SendMessage does not create a fourth Agent");
+        assert_eq!(
+            index
+                .iter()
+                .find(|agent| agent.launch_tool_call_id == "nested-launch")
+                .unwrap()
+                .parent_agent_execution_id
+                .as_deref(),
+            Some(stable_agent_execution_id("parent", "launch-one").as_str())
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_child_output_usage_config_and_compaction_do_not_mutate_parent() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"usage_update", "used":23,"size":1000}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"agent_message_chunk",
+            "messageId":"parent-answer", "content":{"type":"text","text":"parent only"}}),
+        );
+        let original_output = runtime.prompt_output.output.clone();
+        let original_usage = runtime.usage.context.confirmed_used;
+        let original_config = runtime.config_options.clone();
+        for update in [
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"child-answer", "content":{"type":"text","text":"child only"}}),
+            json!({"sessionUpdate":"usage_update", "used":999, "size":2000}),
+            json!({"sessionUpdate":"config_option_update", "configOptions":[{"id":"model", "currentValue":"child"}]}),
+            json!({"sessionUpdate":"compaction_update", "status":"in_progress"}),
+            json!({"sessionUpdate":"available_commands_update", "availableCommands":[{"name":"child-command"}]}),
+        ] {
+            native_update(&mut runtime, "one", update);
+        }
+        assert_eq!(runtime.prompt_output.output, original_output);
+        assert_eq!(runtime.usage.context.confirmed_used, original_usage);
+        assert_eq!(runtime.config_options, original_config);
+        assert!(runtime.usage.compaction.is_none());
+        assert!(runtime.available_commands.is_none());
+        let child = native_branch_items(&mut runtime, "launch-one");
+        assert!(child.iter().any(|event| event.kind == "usageUpdate"));
+        assert!(
+            child
+                .iter()
+                .any(|event| event.content.as_deref() == Some("child only"))
+        );
+        let root_items = crate::acp::events::load_timeline_items(&runtime.paths.timeline).unwrap();
+        assert!(
+            !root_items
+                .iter()
+                .any(|event| event.content.as_deref() == Some("child only"))
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_state_transitions_preserve_facts_without_synthetic_result() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        for (state, reason) in [
+            ("requires_action", None),
+            ("idle", Some("end_turn")),
+            ("running", None),
+            ("idle", Some("cancelled")),
+            ("idle", Some("error")),
+            ("idle", None),
+            ("unknown", None),
+        ] {
+            let mut update = json!({"sessionUpdate":"subagent_update", "sessionId":"one", "state":{"state":state}});
+            if let Some(reason) = reason {
+                update["state"]["stopReason"] = json!(reason);
+            }
+            native_update(&mut runtime, "parent", update);
+        }
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"tool_call_update", "toolCallId":"launch-one",
+            "status":"completed", "_meta":{"claudeCode":{"toolName":"Agent"},
+            "agentTranscript":{"agentLaunch":true,"toolOutput":"must not synthesize a result"}}}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let states = events
+            .iter()
+            .filter(|event| event.kind == "agentState")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states
+                .iter()
+                .map(|event| event.status.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "running",
+                "waiting_permission",
+                "completed",
+                "running",
+                "interrupted",
+                "failed",
+                "unknown",
+                "unknown"
+            ]
+        );
+        assert!(states.iter().all(|event| event.content.is_none()
+            && event.raw.as_ref().unwrap()["source"] == "nativeSubagentState"));
+        assert!(
+            states
+                .windows(2)
+                .all(|events| events[0].seq < events[1].seq && events[0].id != events[1].id)
+        );
+        assert!(!events.iter().any(|event| {
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("source"))
+                .and_then(Value::as_str)
+                == Some("agentBranchResult")
+        }));
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_unknown_and_conflicting_children_never_fall_back_to_root() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_launch(&mut runtime, "parent", "two", "launch-two");
+        let seq = runtime.seq;
+        native_update(
+            &mut runtime,
+            "unknown",
+            json!({"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"reject unknown"}}),
+        );
+        native_update(
+            &mut runtime,
+            "two",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one", "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"session_message", "messageId":"launch-two",
+            "senderSessionId":"parent", "recipientSessionId":"one", "content":[{"type":"text","text":"reject conflict"}]}),
+        );
+        assert_eq!(
+            runtime.seq, seq,
+            "rejected frames produce diagnostics, not root/child canonical events"
+        );
+        let diagnostics = std::fs::read_to_string(&runtime.paths.diagnostics).unwrap();
+        for code in [
+            "unknown-child-session",
+            "conflicting-parent",
+            "conflicting-launch-binding",
+        ] {
+            assert!(diagnostics.contains(code));
+        }
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_official_replay_binds_pending_launch_without_history_scan() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+        runtime.runtime_policy.external_session_sync_enabled = true;
+        runtime.provider_history_replay.begin("claude", "parent");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"user_message_chunk", "content":{"type":"text","text":"external turn"}}),
+        );
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        assert!(
+            runtime
+                .provider_history_replay
+                .has_pending_agent_launch("root", "launch-one")
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"replayed-answer",
+            "content":{"type":"text","text":"official replay answer"}}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        runtime
+            .finish_provider_history_replay(Some("parent".into()))
+            .unwrap();
+        assert!(
+            !runtime
+                .provider_history_replay
+                .has_pending_agent_launch("root", "launch-one")
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.content.as_deref() == Some("official replay answer"))
+        );
+        assert!(events.iter().any(
+            |event| event.kind == "agentState" && event.status.as_deref() == Some("completed")
+        ));
+        assert!(runtime.prompt_output.output.visible_text.is_empty());
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_restore_without_external_import_recovers_binding_only() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"ongoing",
+            "content":{"type":"text","text":"prefix"}}),
+        );
+        native_branch_items(&mut runtime, "launch-one");
+        runtime.native_subagents = Default::default();
+        runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+        runtime.runtime_policy.external_session_sync_enabled = false;
+        let seq_before = runtime.seq;
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"available_commands_update",
+            "availableCommands":[{"name":"root-command","description":"root"}]}),
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"available_commands_update",
+            "availableCommands":[{"name":"child-command","description":"child"}]}),
+        );
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"ongoing",
+            "content":{"type":"text","text":"historical body must not append"}}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        native_launch(&mut runtime, "parent", "external", "unrecorded-launch");
+        assert_eq!(
+            runtime.seq, seq_before,
+            "disabled external import must not write replay body/state/launches"
+        );
+        runtime.session_update_phase = SessionUpdatePhase::Live;
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"ongoing",
+            "content":{"type":"text","text":" suffix"}}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event.kind == "textDelta")
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("prefix suffix"),
+            "official control-plane replay must restore binding without clearing the retained stream"
+        );
+        assert_eq!(
+            runtime.available_commands.as_ref().unwrap()[0].name,
+            "root-command"
+        );
+        let before_unknown = runtime.seq;
+        native_update(
+            &mut runtime,
+            "external",
+            json!({"sessionUpdate":"agent_message_chunk",
+            "content":{"type":"text","text":"must stay rejected"}}),
+        );
+        assert_eq!(
+            runtime.seq, before_unknown,
+            "unrecorded external launch must not become a binding"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_child_local_tool_ids_do_not_share_revisions() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_launch(&mut runtime, "parent", "two", "launch-two");
+        for (child, command) in [("one", "A"), ("two", "B")] {
+            native_update(
+                &mut runtime,
+                child,
+                json!({"sessionUpdate":"tool_call", "toolCallId":"t",
+                "title":"Bash", "status":"in_progress", "rawInput":{"command":command}}),
+            );
+        }
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"tool_call_update", "toolCallId":"t", "status":"completed"}),
+        );
+        let one = native_branch_items(&mut runtime, "launch-one");
+        let two = native_branch_items(&mut runtime, "launch-two");
+        let a = one
+            .iter()
+            .find(|event| event.tool_call_id.as_deref() == Some("t"))
+            .unwrap();
+        assert_eq!(
+            a.raw.as_ref().unwrap()["rawInput"]["command"],
+            "A",
+            "A status-only revision must not inherit B input"
+        );
+        let b = two
+            .iter()
+            .find(|event| event.tool_call_id.as_deref() == Some("t"))
+            .expect("B tool stays in its own branch");
+        assert_eq!(b.raw.as_ref().unwrap()["rawInput"]["command"], "B");
+        assert_eq!(a.status.as_deref(), Some("completed"));
+        assert_eq!(b.status.as_deref(), Some("in_progress"));
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.raw.as_ref().unwrap()["toolCallId"], "t");
+        assert_eq!(b.raw.as_ref().unwrap()["toolCallId"], "t");
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_attached_binding_clone_preserves_child_routing() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        let attached_binding = runtime.native_subagents.clone();
+        runtime.native_subagents = Default::default();
+        // Foreground/background handoff shares the retained root binding facts,
+        // not a fresh name-based reconstruction or provider-log scan.
+        runtime.native_subagents = attached_binding;
+        native_update(
+            &mut runtime,
+            "one",
+            json!({"sessionUpdate":"agent_message_chunk", "messageId":"after-handoff",
+            "content":{"type":"text","text":"retained child"}}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.content.as_deref() == Some("retained child"))
+        );
+        assert!(runtime.prompt_output.output.visible_text.is_empty());
+        runtime.shutdown();
+    }
+
+    #[test]
+    #[ignore = "requires read-only official ACP captures in GOLD_BAND_NATIVE_TRACE_DIR"]
+    fn native_subagent_official_captures_reach_canonical_branches() {
+        use crate::acp::branches::{branch_timeline_path, indexed_agent_index};
+        use crate::acp::events::load_timeline_items;
+        let captures = Utf8PathBuf::from(
+            std::env::var("GOLD_BAND_NATIVE_TRACE_DIR")
+                .expect("set GOLD_BAND_NATIVE_TRACE_DIR to the official probe capture directory"),
+        );
+        for (case, expected_state) in [
+            ("on", "completed"),
+            ("async", "completed"),
+            ("cancel", "interrupted"),
+            ("resume", "completed"),
+            ("replay", "completed"),
+        ] {
+            let lines = std::fs::read_to_string(captures.join(format!("{case}.ndjson"))).unwrap();
+            let frames = lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            let root_id = frames
+                .iter()
+                .filter(|entry| entry["direction"] == "adapter")
+                .find_map(|entry| {
+                    entry
+                        .pointer("/frame/result/sessionId")
+                        .and_then(Value::as_str)
+                })
+                .unwrap()
+                .to_string();
+            let (_root, mut runtime) = native_subagent_fixture();
+            runtime.session_id = Some(root_id.clone());
+            let mut child_texts = std::collections::BTreeMap::<String, String>::new();
+            for entry in frames {
+                let frame = &entry["frame"];
+                if entry["direction"] == "client" && frame["method"] == "session/load" {
+                    runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+                    runtime.runtime_policy.external_session_sync_enabled = true;
+                    runtime.provider_history_replay.begin("claude", &root_id);
+                    child_texts.clear();
+                }
+                if entry["direction"] != "adapter" || frame["method"] != "session/update" {
+                    continue;
+                }
+                let params = &frame["params"];
+                if params["sessionId"] != root_id
+                    && params["update"]["sessionUpdate"] == "agent_message_chunk"
+                {
+                    let id = params["update"]["messageId"]
+                        .as_str()
+                        .expect("official fixture stable message identity");
+                    let text = params["update"]["content"]["text"].as_str().unwrap();
+                    child_texts
+                        .entry(id.to_string())
+                        .or_default()
+                        .push_str(text);
+                }
+                runtime.handle_session_update(frame.clone()).unwrap();
+            }
+            if runtime.session_update_phase == SessionUpdatePhase::ReplayingHistory {
+                runtime
+                    .finish_provider_history_replay(Some(root_id.clone()))
+                    .unwrap();
+            }
+            runtime.flush_pending_timeline_patches(None).unwrap();
+            let agents = indexed_agent_index(&runtime.paths.attempt_dir, "stopped").unwrap();
+            assert_eq!(
+                agents.len(),
+                1,
+                "{case}: official child creates exactly one launch card"
+            );
+            assert_eq!(
+                agents[0].status, expected_state,
+                "{case}: official final state is authoritative"
+            );
+            let events = load_timeline_items(&branch_timeline_path(
+                &runtime.paths.attempt_dir,
+                &agents[0].agent_execution_id,
+            ))
+            .unwrap();
+            let actual = events
+                .iter()
+                .filter(|event| event.kind == "textDelta")
+                .map(|event| event.content.clone().unwrap_or_default())
+                .collect::<std::collections::BTreeSet<_>>();
+            let expected = child_texts
+                .values()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                actual, expected,
+                "{case}: no synthetic or duplicate child report"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == "textDelta")
+                    .count(),
+                child_texts.len(),
+                "{case}: one canonical message per official message ID"
+            );
+            for text in child_texts.values().filter(|text| !text.is_empty()) {
+                assert!(
+                    !runtime.prompt_output.output.visible_text.contains(text),
+                    "{case}: child output contaminated parent"
+                );
+            }
+            let diagnostics =
+                std::fs::read_to_string(&runtime.paths.diagnostics).unwrap_or_default();
+            assert!(
+                !diagnostics.contains("acp.native-subagent-frame-rejected"),
+                "{case}: official frames were rejected: {diagnostics}"
+            );
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
+    fn native_subagent_pending_announcements_are_bounded_and_root_scoped() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        for index in 0..=super::subagents::MAX_PENDING_NATIVE_ANNOUNCEMENTS {
+            native_update(
+                &mut runtime,
+                "parent",
+                json!({"sessionUpdate":"subagent_update",
+                "sessionId":format!("unbound-{index}"),"state":{"state":"running"}}),
+            );
+        }
+        assert_eq!(
+            runtime.seq, 0,
+            "announcements alone do not create Agent cards or branch states"
+        );
+        let diagnostics = std::fs::read_to_string(&runtime.paths.diagnostics).unwrap();
+        assert!(diagnostics.contains("announcement-capacity"));
+        runtime.set_session_id("replacement".to_string());
+        native_launch(&mut runtime, "replacement", "child", "launch-new-root");
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch =
+            crate::acp::branches::stable_agent_execution_id("replacement", "launch-new-root");
+        let events = crate::acp::events::load_timeline_items(
+            &crate::acp::branches::branch_timeline_path(&runtime.paths.attempt_dir, &branch),
+        )
+        .unwrap();
+        assert!(events.iter().any(|event| event.kind == "agentState"
+            && event.session_id.as_deref() == Some("replacement")));
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_metadata_only_update_does_not_clear_state() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "state":{"state":"idle","stopReason":"end_turn"}}),
+        );
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one",
+            "title":"renamed", "description":"updated description"}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let states = events
+            .iter()
+            .filter(|event| event.kind == "agentState")
+            .collect::<Vec<_>>();
+        assert_eq!(states.len(), 2, "omitted state is not a new unknown state");
+        assert_eq!(states.last().unwrap().status.as_deref(), Some("completed"));
+        native_update(
+            &mut runtime,
+            "parent",
+            json!({"sessionUpdate":"subagent_update", "sessionId":"one", "state":null}),
+        );
+        let events = native_branch_items(&mut runtime, "launch-one");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "agentState")
+                .last()
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("unknown")
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_replay_replaces_stream_instead_of_appending_history_twice() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        let answer = json!({"sessionUpdate":"agent_message_chunk", "messageId":"answer",
+            "content":{"type":"text","text":"answer"}});
+        native_update(&mut runtime, "one", answer.clone());
+        native_branch_items(&mut runtime, "launch-one");
+        runtime.session_update_phase = SessionUpdatePhase::ReplayingHistory;
+        runtime.runtime_policy.external_session_sync_enabled = true;
+        runtime.provider_history_replay.begin("claude", "parent");
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        native_update(&mut runtime, "one", answer);
+        runtime
+            .finish_provider_history_replay(Some("parent".into()))
+            .unwrap();
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let texts = events
+            .iter()
+            .filter(|event| event.kind == "textDelta")
+            .collect::<Vec<_>>();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(
+            texts[0].content.as_deref(),
+            Some("answer"),
+            "official replay is not a live continuation delta"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn native_subagent_permission_keeps_rpc_child_and_canonical_root_identity() {
+        let (_root, mut runtime) = native_subagent_fixture();
+        native_launch(&mut runtime, "parent", "one", "launch-one");
+        runtime.auto_accept = true;
+        runtime.active_prompt_turn = Some(super::AcpPromptTurnIdentity {
+            id: "turn".into(),
+            prompt_event_id: "prompt".into(),
+            usage_transaction_id: "usage".into(),
+            usage_transaction_seq: 1,
+            started_at: "1Z".into(),
+            event: crate::acp::events::normalize_session_update(
+                1,
+                Some("parent".into()),
+                &json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"prompt"}}),
+            ),
+        });
+        runtime
+            .handle_permission_request(json!({"jsonrpc":"2.0", "id":"permission-one",
+            "method":"session/request_permission", "params":{"sessionId":"one",
+                "toolCall":{"toolCallId":"child-tool","title":"Bash"},
+                "options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}))
+            .unwrap();
+        let events = native_branch_items(&mut runtime, "launch-one");
+        let permission = events
+            .iter()
+            .find(|event| event.kind == "permissionRequest")
+            .unwrap();
+        assert_eq!(permission.session_id.as_deref(), Some("parent"));
+        assert_eq!(permission.status.as_deref(), Some("selected"));
+        assert_eq!(
+            permission.raw.as_ref().unwrap()["sessionId"],
+            "one",
+            "RPC payload must retain child identity"
+        );
+        assert_eq!(
+            permission.raw.as_ref().unwrap()["requestId"],
+            "permission-one"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn synchronous_agent_result_records_completion_after_stream_body_released() {
+        use crate::acp::branches::{
+            branch_timeline_path, indexed_agent_index, stable_agent_execution_id,
+        };
+        use crate::acp::events::{load_timeline_items, normalize_session_update};
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "sync-agent-result-fixture",
+            &doctor_fixture_config("none"),
+            cwd,
+            attempt.clone(),
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        let launch = normalize_session_update(
+            1,
+            Some("session-sync".into()),
+            &json!({
+                "sessionUpdate": "tool_call", "toolCallId": "child",
+                "title": "Agent", "status": "in_progress",
+                "rawInput": {"prompt": "inspect"},
+                "_meta": {"agentTranscript": {"agentLaunch": true}}
+            }),
+        );
+        runtime.persist_event(&launch).unwrap();
+        let text = normalize_session_update(
+            2,
+            Some("session-sync".into()),
+            &json!({
+                "sessionUpdate": "agent_message_chunk", "messageId": "child-answer",
+                "content": {"type": "text", "text": "verified final answer"},
+                "_meta": {"agentTranscript": {"parentToolCallId": "child"}}
+            }),
+        );
+        runtime.persist_event(&text).unwrap();
+        runtime.flush_pending_timeline_patches(None).unwrap();
+        let branch_id = stable_agent_execution_id("session-sync", "child");
+        let path = branch_timeline_path(&attempt, &branch_id);
+        let before = load_timeline_items(&path).unwrap();
+        let original = before
+            .iter()
+            .find(|event| event.kind == "textDelta")
+            .unwrap();
+        assert!(
+            runtime
+                .timeline_items
+                .values()
+                .all(|event| event.kind != "textDelta")
+        );
+        let completed = normalize_session_update(
+            3,
+            Some("session-sync".into()),
+            &json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "child",
+                "status": "completed",
+                "_meta": {"agentTranscript": {
+                    "agentLaunch": true, "toolOutput": "verified final answer"
+                }}
+            }),
+        );
+        for _ in 0..2 {
+            runtime.persist_event(&completed).unwrap();
+            runtime.flush_pending_timeline_patches(None).unwrap();
+            let events = load_timeline_items(&path).unwrap();
+            let results = events
+                .iter()
+                .filter(|event| {
+                    event
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.get("source"))
+                        .and_then(Value::as_str)
+                        == Some("agentBranchResult")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results.len(),
+                1,
+                "repeated synchronous results retain one formal completion"
+            );
+            let result = results[0];
+            assert_eq!(result.content, original.content);
+            assert_eq!(result.ended_seq, Some(3));
+            assert_eq!(result.status.as_deref(), Some("completed"));
+            assert_eq!(
+                indexed_agent_index(&attempt, "running").unwrap()[0].status,
+                "completed"
+            );
+            assert_eq!(
+                indexed_agent_index(&attempt, "stopped").unwrap()[0].status,
+                "completed"
+            );
+        }
+        runtime.shutdown();
+    }
+
+    const DOCTOR_FIXTURE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
+    const DOCTOR_FIXTURE_RESCUE_DELAY: Duration = Duration::from_secs(10);
+
+    #[test]
     fn doctor_session_new_timeout_reclaims_adapter_and_retains_evidence() {
-        assert_doctor_stage_timeout("session/new", Duration::from_millis(500));
+        assert_doctor_stage_timeout("session/new", DOCTOR_FIXTURE_STAGE_TIMEOUT);
     }
 
     #[test]
     fn doctor_initialize_and_cleanup_share_the_deadline() {
         for method in ["initialize", "session/delete", "session/close"] {
-            assert_doctor_stage_timeout(method, Duration::from_secs(1));
+            assert_doctor_stage_timeout(method, DOCTOR_FIXTURE_STAGE_TIMEOUT);
         }
     }
 
@@ -9091,6 +10817,43 @@ mod tests {
         let diagnostic = super::doctor_diagnostic_error(&error);
         assert_eq!(diagnostic.code, "acp.adapter-exited");
         assert_eq!(diagnostic.params, json!({}));
+    }
+
+    #[test]
+    fn model_config_probe_never_prompts_and_cleans_up_on_success_or_missing_catalog() {
+        for mode in ["model-config-ok", "model-config-omit", "model-config-wrong"] {
+            let root = tempfile::tempdir().unwrap();
+            let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+            let attempt = cwd.join("doctor");
+            let result = super::probe_in_dir(
+                &"model-config-fixture".parse().unwrap(),
+                &doctor_fixture_config(mode),
+                cwd.clone(),
+                false,
+                false,
+                attempt.clone(),
+                super::DoctorDeadline::default(),
+                Some("target"),
+            );
+            if mode == "model-config-ok" {
+                let probe = result.unwrap();
+                assert_eq!(
+                    probe.capabilities["configOptions"][0]["currentValue"],
+                    "target"
+                );
+                assert_eq!(probe.capabilities["configOptions"][1]["id"], "effort");
+                assert!(!attempt.exists());
+            } else {
+                assert!(result.is_err());
+                assert!(!attempt.join("provider.pid").exists());
+            }
+            let methods = std::fs::read_to_string(cwd.join("fixture-methods")).unwrap();
+            assert!(methods.contains("session/set_config_option"));
+            assert!(methods.contains("session/delete"));
+            assert!(!methods.contains("session/prompt"));
+            let address = std::fs::read_to_string(cwd.join("fixture-address")).unwrap();
+            assert!(std::net::TcpStream::connect(address).is_err());
+        }
     }
 
     #[test]
@@ -9204,7 +10967,96 @@ mod tests {
             if frame.get("id").is_none() {
                 continue;
             }
-            let response = if frame["method"] == "session/prompt"
+            if frame.get("method").is_none() {
+                println!(
+                    "{}",
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":{"sessionUpdate":"agent_message_chunk","messageId":format!("answered-{}",frame["id"]),"content":{"type":"text","text":"background answered"}}}})
+                );
+                std::io::stdout().flush().unwrap();
+                continue;
+            }
+            if stall_method.starts_with("model-config-") {
+                let mut methods = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("fixture-methods")
+                    .unwrap();
+                writeln!(methods, "{}", frame["method"].as_str().unwrap()).unwrap();
+            }
+            if stall_method.starts_with("upgraded-acp") && frame["method"] == "initialize" {
+                assert_eq!(
+                    frame["params"]["clientCapabilities"]["session"]["compaction"],
+                    json!({})
+                );
+                assert!(
+                    frame["params"]["clientCapabilities"]["_meta"]
+                        .get("jetbrains")
+                        .is_none()
+                );
+            }
+            let response = if frame["method"] == "test/request" {
+                println!("{}", frame["params"]["request"]);
+                json!({"result":{}})
+            } else if frame["method"] == "test/wake" {
+                println!(
+                    "{}",
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":frame["params"]["update"]}})
+                );
+                json!({"result":{}})
+            } else if stall_method == "direct-foreground-tool"
+                && frame["method"] == "session/prompt"
+            {
+                // A tool starts inside the foreground turn and the prompt
+                // returns without any terminal update for it.
+                println!(
+                    "{}",
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":{
+                        "sessionUpdate":"tool_call", "toolCallId":"fg-never-ends", "status":"pending", "kind":"execute", "title":"Never settles"
+                    }}})
+                );
+                std::io::stdout().flush().unwrap();
+                json!({"result": {"stopReason": "end_turn"}})
+            } else if stall_method == "direct-in-turn-interaction"
+                && frame["method"] == "session/prompt"
+            {
+                // Server-raised interactions delivered while the prompt is
+                // still in flight, before the prompt result.
+                println!(
+                    "{}",
+                    json!({
+                        "jsonrpc": "2.0", "id": "in-turn-permission", "method": "session/request_permission",
+                        "params": {
+                            "sessionId": "doctor-fixture-session",
+                            "toolCall": {"toolCallId": "in-turn-edit", "title": "Edit file", "kind": "edit"},
+                            "options": [{"optionId": "allow-once", "name": "Yes", "kind": "allow_once"}]
+                        }
+                    })
+                );
+                println!(
+                    "{}",
+                    json!({
+                        "jsonrpc": "2.0", "id": "in-turn-question", "method": "elicitation/create",
+                        "params": {
+                            "sessionId": "doctor-fixture-session",
+                            "mode": "form",
+                            "message": "In-turn question",
+                            "requestedSchema": {"type": "object", "properties": {"answer": {"type": "string"}}}
+                        }
+                    })
+                );
+                std::io::stdout().flush().unwrap();
+                json!({"result": {"stopReason": "end_turn"}})
+            } else if stall_method.starts_with("upgraded-acp")
+                && frame["method"] == "session/prompt"
+            {
+                for update in upgraded_acp_mock_updates() {
+                    println!(
+                        "{}",
+                        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":update}})
+                    );
+                }
+                json!({"result":{"stopReason":"end_turn"}})
+            } else if frame["method"] == "session/prompt"
                 && stall_method.starts_with("prompt-failure")
             {
                 if stall_method == "prompt-failure-worker-ref" {
@@ -9214,15 +11066,39 @@ mod tests {
                     }
                     std::fs::create_dir(worker_ref).unwrap();
                 }
-                json!({"error": {"code": -32000, "message": "ORIGINAL_PROMPT_FAILURE"}})
+                json!({"error": {"code": -32603, "message": "ORIGINAL_PROMPT_FAILURE"}})
             } else if frame["method"] == stall_method {
                 // Rescue the unfixed implementation without mistaking rescue for a timeout.
-                std::thread::sleep(Duration::from_secs(2));
+                std::thread::sleep(DOCTOR_FIXTURE_RESCUE_DELAY);
                 json!({"error": {"code": -32000, "message": "fixture rescue"}})
             } else if frame["method"] == "session/delete" && stall_method == "session/close" {
                 json!({"error": {"code": -32601, "message": "unsupported"}})
+            } else if frame["method"] == "session/close"
+                && stall_method == "upgraded-acp-close-fails"
+            {
+                json!({"error":{"code":-32603,"message":"fixture close failure"}})
+            } else if frame["method"] == "session/close" && stall_method == "upgraded-acp-close" {
+                println!(
+                    "{}",
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"doctor-fixture-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"closing","content":{"type":"text","text":"final close output"}}}})
+                );
+                json!({"result":{}})
             } else if frame["method"] == "initialize" {
-                json!({"result": {"protocolVersion": 1, "agentCapabilities": {}}})
+                json!({"result": {"protocolVersion": 1, "agentCapabilities": if stall_method.starts_with("upgraded-acp-close") {json!({"sessionCapabilities":{"close":{}}})} else {json!({})}}})
+            } else if stall_method.starts_with("model-config-") && frame["method"] == "session/new"
+            {
+                json!({"result": {"sessionId": "fixture", "configOptions": [{"id": "model", "category": "model", "currentValue": "initial", "options": [{"value": "initial"}, {"value": "target"}]}]}})
+            } else if stall_method.starts_with("model-config-")
+                && frame["method"] == "session/set_config_option"
+            {
+                if stall_method == "model-config-omit" {
+                    json!({"result": {}})
+                } else {
+                    json!({"result": {"configOptions": [
+                        {"id": "model", "category": "model", "currentValue": if stall_method == "model-config-wrong" { "initial" } else { "target" }, "options": [{"value": "target"}]},
+                        {"id": "effort", "category": "thought_level", "currentValue": "high", "options": [{"value": "high"}]}
+                    ]}})
+                }
             } else {
                 json!({"result": {"sessionId": "doctor-fixture-session", "models": {"currentModelId": "test-model", "availableModels": [{"modelId": "test-model", "name": "Test"}]}}})
             };
@@ -9258,6 +11134,135 @@ mod tests {
             &mut deadline,
             slow_write_completed_at
         ));
+    }
+
+    #[test]
+    fn unattended_host_cancels_pending_permission_without_waiting() {
+        use crate::acp::events::current_timestamp;
+        use crate::acp::permission::{
+            permission_response_file, wait_for_permission_response_until_cancelled,
+        };
+        use crate::config::InteractionMode;
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt_dir).unwrap();
+        crate::acp::permission::write_pending_permission(
+            &attempt_dir,
+            "request-1",
+            "turn-1",
+            "prompt-turn-1",
+            json!({ "options": [{ "optionId": "reject", "kind": "reject_once" }] }),
+            current_timestamp(),
+        )
+        .unwrap();
+        let response_file = permission_response_file(&attempt_dir, "request-1");
+
+        assert!(
+            !super::settle_permission_without_responder(
+                InteractionMode::Interactive,
+                &attempt_dir,
+                "request-1"
+            )
+            .unwrap()
+        );
+        assert!(!response_file.exists());
+
+        assert!(
+            super::settle_permission_without_responder(
+                InteractionMode::Unattended,
+                &attempt_dir,
+                "request-1"
+            )
+            .unwrap()
+        );
+        assert!(response_file.exists());
+        // A second responder never overrides the first decision.
+        assert!(
+            !super::settle_permission_without_responder(
+                InteractionMode::Unattended,
+                &attempt_dir,
+                "request-1"
+            )
+            .unwrap()
+        );
+        // The response file exists, so the wait returns on its first poll.
+        let response =
+            wait_for_permission_response_until_cancelled(&attempt_dir, "request-1", || false)
+                .unwrap();
+        assert!(response.cancelled);
+        assert!(response.option_id.is_none());
+    }
+
+    #[test]
+    fn unattended_host_declines_pending_elicitation_without_waiting() {
+        use crate::acp::elicitation::{
+            ElicitationAction, elicitation_response_file, pending_elicitation_state,
+            wait_for_elicitation_response, write_pending_elicitation,
+        };
+        use crate::acp::events::current_timestamp;
+        use crate::config::InteractionMode;
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt_dir).unwrap();
+        let request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-test",
+            "toolCallId": "tool-test",
+            "message": "Pick one",
+            "requestedSchema": { "type": "object", "properties": {} }
+        }))
+        .unwrap();
+        write_pending_elicitation(
+            &attempt_dir,
+            &pending_elicitation_state(
+                "elicitation-1",
+                "turn-1",
+                "prompt-turn-1",
+                json!(7),
+                request,
+                current_timestamp(),
+            ),
+        )
+        .unwrap();
+        let response_file = elicitation_response_file(&attempt_dir, "elicitation-1");
+
+        assert!(
+            !super::settle_elicitation_without_responder(
+                InteractionMode::Interactive,
+                &attempt_dir,
+                "elicitation-1"
+            )
+            .unwrap()
+        );
+        assert!(!response_file.exists());
+
+        assert!(
+            super::settle_elicitation_without_responder(
+                InteractionMode::Unattended,
+                &attempt_dir,
+                "elicitation-1"
+            )
+            .unwrap()
+        );
+        let response =
+            wait_for_elicitation_response(&attempt_dir, "elicitation-1", Duration::ZERO).unwrap();
+        assert!(response_file.exists());
+        assert_eq!(response.action, ElicitationAction::Decline);
+    }
+
+    #[test]
+    fn interaction_mode_follows_runtime_config() {
+        use crate::config::InteractionMode;
+        let mut config = RuntimeConfig::default();
+        assert_eq!(
+            AcpRuntimePolicy::from(&config).interaction_mode,
+            InteractionMode::Interactive
+        );
+        config.interaction_mode = InteractionMode::Unattended;
+        assert_eq!(
+            AcpRuntimePolicy::from(&config).interaction_mode,
+            InteractionMode::Unattended
+        );
     }
 
     #[test]
@@ -9322,6 +11327,7 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         }
     }
 
@@ -9623,6 +11629,10 @@ mod tests {
     #[test]
     fn initialize_requests_nested_agent_transcripts_at_the_adapter_boundary() {
         let params = initialize_params();
+        assert_eq!(
+            params.pointer("/clientCapabilities/subagents"),
+            Some(&json!({}))
+        );
         let meta = params.pointer("/clientCapabilities/_meta");
 
         assert_eq!(
@@ -10198,6 +12208,17 @@ mod tests {
         assert_eq!(info.recovery, RecoveryMode::Manual);
         assert!(info.retry_policy.is_none());
         assert_eq!(info.params["providerErrorCode"], "usageLimitExceeded");
+    }
+
+    #[test]
+    fn prompt_rpc_auth_required_uses_protocol_code_not_message() {
+        let raw = json!({"code": -32000, "message": "请先完成登录"});
+        let info = normalize_runtime_error(&acp_prompt_rpc_failure(&raw));
+        assert_eq!(info.code_str(), "provider.auth-required");
+        assert_eq!(info.recovery, RecoveryMode::Manual);
+        assert!(info.retry_policy.is_none());
+        assert_eq!(info.params["rpcCode"], -32000);
+        assert_eq!(info.raw, Some(raw));
     }
 
     #[test]
@@ -11052,6 +13073,7 @@ mod tests {
             changes: Vec::new(),
             attachments: Vec::new(),
             limitation_codes: Vec::new(),
+            workspace_root: None,
         };
 
         let mut event = turn_file_change_set_event(
@@ -11222,6 +13244,1873 @@ mod tests {
         assert_eq!(hot.len(), 2);
         assert!(hot.contains_key("tool-call-pending"));
         assert!(hot.contains_key("permission-1"));
+    }
+
+    #[test]
+    fn upgraded_acp_stdio_mock_persists_compaction_and_tool_output() {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fixture".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        let result = super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fixture"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        result.unwrap();
+        let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+        let compactions: Vec<_> = items
+            .iter()
+            .filter(|item| item.kind == "contextCompaction")
+            .collect();
+        assert_eq!(compactions.len(), 1);
+        let compaction = compactions[0];
+        assert_eq!(compaction.status.as_deref(), Some("completed"));
+        assert_eq!(
+            compaction.raw.as_ref().unwrap()["summary"],
+            json!([{"type":"text","text":"retained summary"}])
+        );
+        let tool = items
+            .iter()
+            .find(|item| item.tool_call_id.as_deref() == Some("shell"))
+            .unwrap();
+        assert_eq!(tool.status.as_deref(), Some("completed"));
+        assert_eq!(
+            tool.raw
+                .as_ref()
+                .unwrap()
+                .pointer("/_meta/goldBandConversation/toolOutput"),
+            Some(&json!("hello world"))
+        );
+        let answer = items
+            .iter()
+            .find(|item| item.content.as_deref() == Some("before after"))
+            .unwrap();
+        assert!(compaction.started_seq < answer.started_seq);
+        let store = crate::acp::timeline::TimelineStore::open(
+            attempt.join("acp.timeline.jsonl"),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(store.contains_provider_history_identity("context-compaction-id-cmp"));
+    }
+
+    #[test]
+    fn direct_retained_session_delivers_continuation_after_end_turn() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fixture".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                project_id: "test".into(),
+                task_id: "direct".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fixture"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let entry = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        let request = entry.connection.begin_request("test/wake", json!({"sessionId":"doctor-fixture-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{"type":"text","text":" continued"}}})).unwrap();
+        let response = request
+            .recv_timeout_with_session_route_watermark(Duration::from_secs(5))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entry
+            .event_pump
+            .has_consumed(response.session_route_watermark.unwrap())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let tool_update = entry.connection.begin_request("test/wake", json!({"sessionId":"doctor-fixture-session","update":{
+            "sessionUpdate":"tool_call", "toolCallId":"background-edit", "status":"completed", "kind":"edit", "title":"Background edit",
+            "content":[{"type":"diff","path":"background.txt","oldText":"old\n","newText":"new\n"}]
+        }})).unwrap();
+        tool_update.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            if events.iter().any(|event| event.kind == "fileChangeSet") {
+                assert!(events.iter().any(|event| {
+                    event.kind == "textDelta"
+                        && event
+                            .raw
+                            .as_ref()
+                            .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+                            == Some(&json!(true))
+                }));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background file changes publish before any next prompt"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Prompt completion must not cancel a new session-owned permission.
+        let background = entry.connection.begin_request("test/request", json!({"request":{
+            "jsonrpc":"2.0", "id":"background-permission", "method":"session/request_permission",
+            "params":{"sessionId":"doctor-fixture-session","toolCall":{"toolCallId":"bg","title":"Background write","kind":"execute"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}
+        }})).unwrap();
+        background.recv_timeout(Duration::from_secs(5)).unwrap();
+        let path =
+            crate::acp::permission::pending_permission_file(&attempt, "background-permission");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let pending = loop {
+            if let Ok(pending) =
+                crate::storage::read_json::<crate::acp::permission::PendingPermissionState>(&path)
+                && pending.timeline_identity.is_some()
+            {
+                break pending;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background permission must remain pending"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            pending.identity.session_id.as_deref(),
+            Some("doctor-fixture-session")
+        );
+        assert!(pending.identity.turn_id.is_none());
+        assert!(entry.direct.as_ref().unwrap().protected());
+        assert!(
+            crate::acp::permission::write_permission_response_if_pending(
+                &attempt,
+                "background-permission",
+                Some("allow".into()),
+                false,
+                super::current_timestamp()
+            )
+            .unwrap()
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!path.exists(), "reply must release the background waiter");
+        let question = entry.connection.begin_request("test/request", json!({"request":{
+            "jsonrpc":"2.0", "id":"background-question", "method":"elicitation/create",
+            "params":{"sessionId":"doctor-fixture-session","mode":"form","message":"Choose","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}}}}
+        }})).unwrap();
+        question.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let question_id = loop {
+            let pending = std::fs::read_dir(&attempt)
+                .unwrap()
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    if !path
+                        .file_name()?
+                        .to_str()?
+                        .starts_with("acp.elicitation-request.")
+                    {
+                        return None;
+                    }
+                    let pending: crate::acp::elicitation::PendingElicitationState =
+                        serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                    pending.timeline_identity.is_some().then_some(pending)
+                })
+                .next();
+            if let Some(pending) = pending {
+                assert_eq!(
+                    pending.identity.session_id.as_deref(),
+                    Some("doctor-fixture-session")
+                );
+                assert!(pending.identity.turn_id.is_none());
+                break pending.identity.interaction_id;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background question must remain pending"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            crate::acp::elicitation::write_elicitation_response_if_pending(
+                &attempt,
+                &question_id,
+                crate::acp::elicitation::ElicitationAction::Accept,
+                Some(json!({"answer":"yes"})),
+                super::current_timestamp()
+            )
+            .unwrap()
+        );
+        // New prompt hand-off must wait for the interaction and use the same
+        // retention identity; the pin applies to the active session as well.
+        super::set_direct_session_resident("test", "direct", true);
+        assert!(entry.direct.as_ref().unwrap().protected());
+        let control = super::direct_background_control(&attempt)
+            .expect("background control available after end_turn");
+        let task_root = attempt.parent().unwrap();
+        assert!(
+            super::prompt_activity_under(task_root).is_none(),
+            "the prompt turn is idle"
+        );
+        assert_eq!(
+            super::direct_background_control_under(task_root).as_ref(),
+            Some(&control),
+            "task activity sees the busy background"
+        );
+        assert!(
+            super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))
+                .unwrap()
+        );
+        assert!(
+            super::direct_background_control(&attempt).is_none(),
+            "accepted background stop ends the Stop window"
+        );
+        assert!(super::direct_background_control_under(task_root).is_none());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            if let Some(marker) = events
+                .iter()
+                .find(|event| crate::acp::events::is_background_cancel_marker(event))
+            {
+                // Provider frames only; interaction responses are written by their own owners.
+                let last_provider_frame = events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind.as_str(),
+                            "textDelta" | "toolCall" | "fileChangeSet"
+                        )
+                    })
+                    .map(|event| event.ended_seq.unwrap_or(event.seq))
+                    .max()
+                    .unwrap();
+                assert!(
+                    marker.seq > last_provider_frame,
+                    "stop is recorded after frames received before it"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "accepted background stop is recorded on the canonical timeline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-next".into(),
+            operation_id: "op-next".into(),
+            ..submission
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("follow-up ownership")
+        };
+        assert!(
+            !super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))
+                .unwrap(),
+            "old background cancellation cannot reach a newer prompt"
+        );
+        super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-next"),
+            SessionMode::Continue,
+            None,
+            false,
+            None,
+            Default::default(),
+            Some(json!({"acpSessionId":"doctor-fixture-session"})),
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let next = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        assert!(std::sync::Arc::ptr_eq(
+            entry.direct.as_ref().unwrap(),
+            next.direct.as_ref().unwrap()
+        ));
+        super::close_direct_conversation("test", "direct").unwrap();
+        assert!(
+            entry.connection.is_transport_closed(),
+            "unsupported close may release a sole unshared connection"
+        );
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+        let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+        assert!(
+            items.iter().any(|item| item
+                .content
+                .as_deref()
+                .is_some_and(|text| text.starts_with("before after continued"))),
+            "retained live update must extend its existing provider message: {items:?}"
+        );
+    }
+
+    #[test]
+    fn direct_in_turn_interactions_are_bound_to_the_active_prompt_turn() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-in-turn".into(),
+            operation_id: "op".into(),
+            adapter_id: "direct-in-turn-interaction".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                // Unique ids: close_direct_conversation scopes by them, so
+                // this teardown must never touch other tests' sessions.
+                project_id: "test".into(),
+                task_id: "direct-in-turn".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        let prompt_cwd = cwd.clone();
+        let prompt_attempt = attempt.clone();
+        let handle = std::thread::spawn(move || {
+            super::run_prompt(
+                "direct-in-turn-interaction",
+                &doctor_fixture_config("direct-in-turn-interaction"),
+                prompt_cwd.clone(),
+                prompt_cwd.clone(),
+                prompt_attempt.clone(),
+                &non_runtime_control_test_prompt("turn-in-turn"),
+                SessionMode::New,
+                None,
+                false,
+                None,
+                Default::default(),
+                None,
+                false,
+                false,
+                false,
+                1_000_000,
+                500_000,
+                AcpRuntimePolicy::default(),
+                owner,
+                None,
+                &[],
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let permission_path =
+            crate::acp::permission::pending_permission_file(&attempt, "in-turn-permission");
+        loop {
+            if permission_path.exists() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "permission must be raised while the prompt turn is active"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pending: crate::acp::permission::PendingPermissionState =
+            crate::storage::read_json(&permission_path).unwrap();
+        assert_eq!(pending.identity.turn_id.as_deref(), Some("turn-in-turn"));
+        assert!(
+            pending.identity.prompt_event_id.is_some(),
+            "in-turn permission must reference its prompt event"
+        );
+        assert_eq!(
+            pending.identity.session_id.as_deref(),
+            Some("doctor-fixture-session")
+        );
+        // The pending timeline item must already carry the owning turn id.
+        let deadline_pending_item = Instant::now() + Duration::from_secs(5);
+        loop {
+            let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            let pending_item = items
+                .iter()
+                .find(|item| item.kind == "permissionRequest")
+                .filter(|item| item.status.as_deref() == Some("pending"));
+            if let Some(item) = pending_item {
+                assert_eq!(
+                    item.raw
+                        .as_ref()
+                        .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+                    Some(&json!("turn-in-turn")),
+                    "pending permission timeline item must carry the owning turn id: {:?}",
+                    item.raw
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline_pending_item,
+                "pending permission timeline item must exist"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            crate::acp::permission::write_permission_response_if_pending(
+                &attempt,
+                "in-turn-permission",
+                Some("allow-once".into()),
+                false,
+                super::current_timestamp(),
+            )
+            .unwrap()
+        );
+        let pending_elicitation = loop {
+            let found = std::fs::read_dir(&attempt)
+                .unwrap()
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    if !path
+                        .file_name()?
+                        .to_str()?
+                        .starts_with("acp.elicitation-request.")
+                    {
+                        return None;
+                    }
+                    let pending: crate::acp::elicitation::PendingElicitationState =
+                        serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                    pending.timeline_identity.is_some().then_some(pending)
+                })
+                .next();
+            if let Some(pending) = found {
+                break pending;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "in-turn question must be raised while the prompt turn is active"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            pending_elicitation.identity.turn_id.as_deref(),
+            Some("turn-in-turn")
+        );
+        assert!(
+            pending_elicitation.identity.prompt_event_id.is_some(),
+            "in-turn question must reference its prompt event"
+        );
+        assert_eq!(
+            pending_elicitation.identity.session_id.as_deref(),
+            Some("doctor-fixture-session")
+        );
+        assert!(
+            crate::acp::elicitation::write_elicitation_response_if_pending(
+                &attempt,
+                &pending_elicitation.identity.interaction_id,
+                crate::acp::elicitation::ElicitationAction::Accept,
+                Some(json!({"answer": "ok"})),
+                super::current_timestamp(),
+            )
+            .unwrap()
+        );
+        handle.join().unwrap();
+        let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+        let permission_event = items
+            .iter()
+            .find(|item| item.kind == "permissionRequest")
+            .expect("in-turn permission timeline item");
+        assert_eq!(
+            permission_event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+            Some(&json!("turn-in-turn")),
+            "in-turn permission event must carry the owning turn id: {:?}",
+            permission_event.raw
+        );
+        let question_event = items
+            .iter()
+            .find(|item| item.kind == "elicitationRequest")
+            .expect("in-turn question timeline item");
+        assert_eq!(
+            question_event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+            Some(&json!("turn-in-turn")),
+            "in-turn question event must carry the owning turn id: {:?}",
+            question_event.raw
+        );
+        super::close_direct_conversation("test", "direct-in-turn").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    fn background_stop_settles_a_pending_session_interaction() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-bg-stop".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                // Unique ids: close_direct_conversation scopes by them, so
+                // this teardown must never touch other tests' sessions.
+                project_id: "test".into(),
+                task_id: "direct-bg-stop".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-bg-stop"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let entry = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        // The tool call that asks the question opens the background activity
+        // window first; the elicitation request itself does not.
+        let tool_update = entry
+            .connection
+            .begin_request(
+                "test/wake",
+                json!({"sessionId":"doctor-fixture-session","update":{
+                    "sessionUpdate":"tool_call", "toolCallId":"bg-ask-stop", "status":"pending", "kind":"execute", "title":"Asking for your input"
+                }}),
+            )
+            .unwrap();
+        tool_update.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if super::direct_background_control(&attempt)
+                .is_some_and(|control| control.active_tools > 0)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background tool activity must open the stop window"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A session-owned question arrives after end_turn and stays pending.
+        let question = entry
+            .connection
+            .begin_request(
+                "test/request",
+                json!({"request":{
+                    "jsonrpc":"2.0", "id":"background-question-stop", "method":"elicitation/create",
+                    "params":{"sessionId":"doctor-fixture-session","mode":"form","message":"Choose","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}}}}
+                }}),
+            )
+            .unwrap();
+        question.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let pending = std::fs::read_dir(&attempt).unwrap().any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("acp.elicitation-request."))
+            });
+            if pending {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background question must be pending"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let control = super::direct_background_control(&attempt)
+            .expect("background control available while the question is pending");
+        assert!(
+            super::cancel_retained_direct_session(&attempt, &control, Some("turn-bg-stop"))
+                .unwrap(),
+            "background stop must be accepted while a session-owned question is pending"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let raw = std::fs::read_to_string(attempt.join("acp.raw.jsonl")).unwrap_or_default();
+            if raw.contains("background-question-stop") && raw.contains("\"action\":\"cancel\"") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background stop must settle the pending question with action=cancel"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let still_pending = std::fs::read_dir(&attempt).unwrap().any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("acp.elicitation-request."))
+            });
+            if !still_pending {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "settled question must release its pending request file; diagnostics: {}",
+                std::fs::read_to_string(attempt.join("acp.diagnostics.jsonl"))
+                    .unwrap_or_default()
+                    .lines()
+                    .rev()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            if events
+                .iter()
+                .any(|event| crate::acp::events::is_background_cancel_marker(event))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "accepted background stop is recorded on the canonical timeline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The provider never sent a terminal update for `bg-ask-stop`; the
+        // accepted stop owns that episode and must settle its tools, or the
+        // sidebar keeps showing an active background forever.
+        let settled = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            settled.direct.as_ref().unwrap().active_tool_count(),
+            0,
+            "accepted background stop settles tools without a provider terminal update"
+        );
+        super::close_direct_conversation("test", "direct-bg-stop").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    fn direct_turn_end_settles_foreground_tools_without_terminal_updates() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fg-tool".into(),
+            operation_id: "op".into(),
+            adapter_id: "direct-foreground-tool".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                // Unique ids: close_direct_conversation scopes by them, so
+                // this teardown must never touch other tests' sessions.
+                project_id: "test".into(),
+                task_id: "direct-fg-tool".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "direct-foreground-tool",
+            &doctor_fixture_config("direct-foreground-tool"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fg-tool"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // The prompt returned end_turn without any terminal update for
+        // `fg-never-ends`; the turn boundary is the tool lifecycle authority,
+        // so the retained session must not carry it as running forever.
+        let settled = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            settled.direct.as_ref().unwrap().active_tool_count(),
+            0,
+            "a returned prompt turn settles its tools without provider terminal updates"
+        );
+        super::close_direct_conversation("test", "direct-fg-tool").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    fn direct_background_usage_marks_token_totals_and_refreshes_snapshot() {
+        let _direct_order = DIRECT_FIXTURE_ORDER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-bg-usage".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                project_id: "test".into(),
+                task_id: "direct-bg-usage".into(),
+                resident: false,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: None,
+            },
+        );
+        super::run_prompt(
+            "upgraded-acp",
+            &doctor_fixture_config("upgraded-acp"),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-bg-usage"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let snapshot_path = attempt.join("acp.snapshot.json");
+        let timeline_path = attempt.join("acp.timeline.jsonl");
+        let foreground_usage =
+            crate::acp::timeline::read_indexed_timeline_page(&timeline_path, None, None, None, 1)
+                .unwrap()
+                .usage;
+        assert!(
+            !foreground_usage.is_some_and(|usage| usage.token_totals_exclude_background),
+            "a prompt-only session has complete token totals"
+        );
+        let entry = super::AcpSessionRuntimeRegistry::shared()
+            .sessions
+            .lock()
+            .unwrap()
+            .get(attempt.as_str())
+            .unwrap()
+            .clone();
+        let send = |update: Value| {
+            let response = entry
+                .connection
+                .begin_request(
+                    "test/wake",
+                    json!({"sessionId":"doctor-fixture-session","update":update}),
+                )
+                .unwrap()
+                .recv_timeout_with_session_route_watermark(Duration::from_secs(5))
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !entry
+                .event_pump
+                .has_consumed(response.session_route_watermark.unwrap())
+            {
+                assert!(Instant::now() < deadline, "background frame consumed");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        send(
+            json!({"sessionUpdate":"agent_message_chunk","messageId":"wake","content":{"type":"text","text":"timer fired"}}),
+        );
+        send(
+            json!({"sessionUpdate":"usage_update","used":4_321,"size":200_000,"cost":{"amount":1.25,"currency":"USD"}}),
+        );
+
+        let usage =
+            crate::acp::timeline::read_indexed_timeline_page(&timeline_path, None, None, None, 1)
+                .unwrap()
+                .usage
+                .unwrap();
+        assert!(usage.token_totals_exclude_background);
+        assert_eq!(usage.cost_amount_usd, Some(1.25));
+        let snapshot: Value = crate::storage::read_json(&snapshot_path).unwrap();
+        assert_eq!(snapshot["totalCostUsd"], json!(1.25));
+        // This fixture compacts context, so `used` follows the compaction
+        // gauge rules; the snapshot must match the canonical index gauge.
+        assert_eq!(snapshot["usedTokens"].as_u64(), usage.used);
+        assert_eq!(snapshot["contextWindowSize"], json!(200_000));
+        assert!(snapshot["timing"]["sessionElapsedSeconds"].is_u64());
+        super::close_direct_conversation("test", "direct-bg-usage").unwrap();
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+    }
+
+    #[test]
+    #[ignore = "requires authenticated Claude and an explicit timer test prompt"]
+    fn direct_real_agent_timer_after_end_turn() {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fixture".into(),
+            operation_id: "op".into(),
+            adapter_id: "upgraded-acp".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                .unwrap()
+        else {
+            panic!("turn ownership")
+        };
+        let mut prompt = non_runtime_control_test_prompt("turn-fixture");
+        prompt.user_prompt =
+            std::env::var("GOLD_BAND_DIRECT_TIMER_TEST_PROMPT").expect("explicit test prompt");
+        let package =
+            std::env::var("GOLD_BAND_DIRECT_TIMER_TEST_PACKAGE").expect("explicit adapter version");
+        let config = crate::config::AcpAdapterConfig {
+            command: "npx".into(),
+            args: vec!["-y".into(), package],
+            env: Default::default(),
+            display_name: "Direct timer acceptance".into(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        super::register_direct_session(
+            &attempt,
+            crate::acp::retention::DirectSessionRegistration {
+                project_id: "real-timer-acceptance".into(),
+                task_id: "direct".into(),
+                resident: true,
+                background_stop_grace: Duration::from_secs(10),
+                live_update: Some(std::sync::Arc::new(move |event, _| {
+                    if event.kind == "textDelta" {
+                        let _ = tx.send(event.content.clone().unwrap_or_default());
+                    }
+                    Ok(())
+                })),
+            },
+        );
+        let initial = super::run_prompt(
+            "real-timer-acceptance",
+            &config,
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &prompt,
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            true,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        eprintln!("Initial prompt returned: {}", initial.is_ok());
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let mut received = false;
+        if initial.is_ok() {
+            while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                match rx.recv_timeout(remaining) {
+                    Ok(text) if text.contains("DIRECT_TIMER_WAKE_VERIFIED") => {
+                        received = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+        let closed = super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(5));
+        super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+        initial.unwrap();
+        closed.unwrap();
+        assert!(
+            received,
+            "real scheduled wake must publish through the retained consumer"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual retained-session resource envelope (1/8/20 fixture processes)"]
+    fn direct_retention_resource_envelope() {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let mut workspaces = Vec::new();
+        let start = Instant::now();
+        for index in 0..20 {
+            let temp = tempfile::tempdir().unwrap();
+            let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+            let attempt = cwd.join("attempt");
+            crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+            let submission = AcpPromptSubmission {
+                turn_id: "turn-fixture".into(),
+                operation_id: "op".into(),
+                adapter_id: "upgraded-acp".into(),
+                adapter_display_name: "Fixture".into(),
+                cwd: cwd.to_string(),
+                input: crate::provider::ConversationPromptInput {
+                    display_text: "test".into(),
+                    quotes: vec![],
+                    role: None,
+                    workspace_files: vec![],
+                },
+                attachment_paths: vec![],
+                admitted_at: super::current_timestamp(),
+            };
+            let AcpTurnExecutionClaim::Claimed(owner) =
+                admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                    .unwrap()
+            else {
+                panic!("turn ownership")
+            };
+            super::register_direct_session(
+                &attempt,
+                crate::acp::retention::DirectSessionRegistration {
+                    project_id: format!("resource-{index}"),
+                    task_id: "direct".into(),
+                    resident: true,
+                    background_stop_grace: Duration::from_secs(10),
+                    live_update: None,
+                },
+            );
+            super::run_prompt(
+                "upgraded-acp",
+                &doctor_fixture_config("upgraded-acp"),
+                cwd.clone(),
+                cwd.clone(),
+                attempt.clone(),
+                &non_runtime_control_test_prompt("turn-fixture"),
+                SessionMode::New,
+                None,
+                false,
+                None,
+                Default::default(),
+                None,
+                false,
+                false,
+                false,
+                1_000_000,
+                500_000,
+                AcpRuntimePolicy::default(),
+                owner,
+                None,
+                &[],
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            workspaces.push((temp, cwd, attempt));
+            if matches!(index + 1, 1 | 8 | 20) {
+                eprintln!(
+                    "retained={} setup_ms={} private_bytes={:?}",
+                    index + 1,
+                    start.elapsed().as_millis(),
+                    direct_test_process_tree_private_bytes()
+                );
+            }
+        }
+        for (_, cwd, attempt) in &workspaces {
+            super::AdapterConnectionManager::shared()
+                .close_workspace_connections_bounded(cwd, Duration::from_secs(2))
+                .unwrap();
+            super::AcpSessionRuntimeRegistry::shared().invalidate(attempt);
+        }
+        assert!(
+            !super::AcpSessionRuntimeRegistry::shared()
+                .sessions
+                .lock()
+                .unwrap()
+                .values()
+                .any(|entry| workspaces
+                    .iter()
+                    .any(|(_, _, attempt)| &entry.attempt_dir == attempt))
+        );
+    }
+
+    fn direct_test_process_tree_private_bytes() -> Option<u64> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let script = r#"$rootTestPid = ROOT_TEST_PID
+$processRows = Get-CimInstance Win32_Process
+$knownPids = @($rootTestPid)
+do {
+    $previousCount = $knownPids.Count
+    $knownPids += @($processRows | Where-Object { $_.ParentProcessId -in $knownPids -and $_.ProcessId -notin $knownPids -and $_.ProcessId -ne $PID } | Select-Object -ExpandProperty ProcessId)
+} while ($knownPids.Count -gt $previousCount)
+(Get-Process -Id $knownPids -ErrorAction SilentlyContinue | Measure-Object -Property PrivateMemorySize64 -Sum).Sum
+"#.replace("ROOT_TEST_PID", &std::process::id().to_string());
+        let output = crate::process::background_command("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+    }
+
+    #[test]
+    fn direct_close_drains_final_output_and_failure_keeps_the_session() {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        for mode in ["upgraded-acp-close", "upgraded-acp-close-fails"] {
+            let temp = tempfile::tempdir().unwrap();
+            let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+            let attempt = cwd.join("attempt");
+            crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+            let submission = AcpPromptSubmission {
+                turn_id: "turn-fixture".into(),
+                operation_id: "op".into(),
+                adapter_id: "upgraded-acp".into(),
+                adapter_display_name: "Fixture".into(),
+                cwd: cwd.to_string(),
+                input: crate::provider::ConversationPromptInput {
+                    display_text: "test".into(),
+                    quotes: vec![],
+                    role: None,
+                    workspace_files: vec![],
+                },
+                attachment_paths: vec![],
+                admitted_at: super::current_timestamp(),
+            };
+            let AcpTurnExecutionClaim::Claimed(owner) =
+                admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+                    .unwrap()
+            else {
+                panic!("turn ownership")
+            };
+            super::register_direct_session(
+                &attempt,
+                crate::acp::retention::DirectSessionRegistration {
+                    project_id: mode.into(),
+                    task_id: "direct".into(),
+                    resident: false,
+                    background_stop_grace: Duration::from_secs(10),
+                    live_update: None,
+                },
+            );
+            super::run_prompt(
+                "upgraded-acp",
+                &doctor_fixture_config(mode),
+                cwd.clone(),
+                cwd.clone(),
+                attempt.clone(),
+                &non_runtime_control_test_prompt("turn-fixture"),
+                SessionMode::New,
+                None,
+                false,
+                None,
+                Default::default(),
+                None,
+                false,
+                false,
+                false,
+                1_000_000,
+                500_000,
+                AcpRuntimePolicy::default(),
+                owner,
+                None,
+                &[],
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let entry = super::AcpSessionRuntimeRegistry::shared()
+                .sessions
+                .lock()
+                .unwrap()
+                .get(attempt.as_str())
+                .unwrap()
+                .clone();
+            super::direct::assert_registry_retention_scope(&entry);
+            let closed = super::close_direct_conversation(mode, "direct");
+            let retained = super::AcpSessionRuntimeRegistry::shared()
+                .sessions
+                .lock()
+                .unwrap()
+                .contains_key(attempt.as_str());
+            let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            let _ = super::AdapterConnectionManager::shared()
+                .close_workspace_connections_bounded(&cwd, Duration::from_secs(2));
+            super::AcpSessionRuntimeRegistry::shared().invalidate(&attempt);
+            if mode.ends_with("fails") {
+                assert!(closed.is_err());
+                assert!(retained);
+            } else {
+                closed.unwrap();
+                assert!(!retained);
+                assert!(
+                    items
+                        .iter()
+                        .any(|item| item.content.as_deref() == Some("final close output"))
+                );
+            }
+        }
+    }
+
+    fn upgraded_acp_mock_updates() -> Vec<Value> {
+        vec![
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"in_progress"}),
+            json!({"sessionUpdate":"compaction_summary_chunk","compactionId":"cmp","content":{"type":"text","text":"retained summary"}}),
+            json!({"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{"type":"text","text":"before "}}),
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed"}),
+            json!({"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{"type":"text","text":"after"}}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"shell","title":"Run","kind":"execute","status":"in_progress","rawInput":{"command":"echo hello"}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"hello "}}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"world"}}}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","status":"completed"}),
+        ]
+    }
+
+    #[test]
+    fn upgraded_acp_auth_failure_settles_and_allows_an_explicit_retry() {
+        assert_upgraded_acp_terminal_recovery("auth");
+    }
+
+    #[test]
+    fn upgraded_acp_cancel_settles_tools_and_allows_a_follow_up() {
+        assert_upgraded_acp_terminal_recovery("cancel");
+    }
+
+    fn assert_upgraded_acp_terminal_recovery(scenario: &str) {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let snapshot = attempt.join("acp.snapshot.json");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let mut config = doctor_fixture_config(scenario);
+        config.args = [
+            "--ignored",
+            "--exact",
+            "acp::client::tests::upgraded_acp_terminal_adapter_fixture",
+            "--nocapture",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let assertions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for turn in [1, 2] {
+                let turn_id = format!("upgrade-turn-{turn}");
+                let submission = AcpPromptSubmission {
+                    turn_id: turn_id.clone(),
+                    operation_id: format!("upgrade-operation-{turn}"),
+                    adapter_id: "upgrade-terminal".into(),
+                    adapter_display_name: "Fixture".into(),
+                    cwd: cwd.to_string(),
+                    input: crate::provider::ConversationPromptInput {
+                        display_text: "test".into(),
+                        quotes: vec![],
+                        role: None,
+                        workspace_files: vec![],
+                    },
+                    attachment_paths: vec![],
+                    admitted_at: super::current_timestamp(),
+                };
+                let AcpTurnExecutionClaim::Claimed(owner) =
+                    admit_session_turn_for_execution(&snapshot, &submission, false).unwrap()
+                else {
+                    panic!("terminal must release turn ownership")
+                };
+                let cancellation_requested = std::cell::Cell::new(false);
+                let on_live = |event: &AcpUiEvent, _: crate::provider::AcpLiveTimelinePosition| {
+                    if scenario == "cancel"
+                        && turn == 1
+                        && event.tool_call_id.as_deref() == Some("pending-tool")
+                        && !cancellation_requested.replace(true)
+                    {
+                        assert!(super::request_prompt_cancel(&attempt));
+                    }
+                    Ok(())
+                };
+                let published = std::cell::RefCell::new(Vec::<Value>::new());
+                let on_snapshot = || {
+                    published
+                        .borrow_mut()
+                        .push(crate::storage::read_json::<Value>(&snapshot)?);
+                    Ok(())
+                };
+                let result = super::run_prompt(
+                    "upgrade-terminal",
+                    &config,
+                    cwd.clone(),
+                    cwd.clone(),
+                    attempt.clone(),
+                    &non_runtime_control_test_prompt(&turn_id),
+                    if turn == 1 {
+                        SessionMode::New
+                    } else {
+                        SessionMode::Continue
+                    },
+                    None,
+                    false,
+                    None,
+                    Default::default(),
+                    (turn == 2).then(|| json!({"acpSessionId":"upgrade-session"})),
+                    false,
+                    false,
+                    false,
+                    1_000_000,
+                    500_000,
+                    AcpRuntimePolicy::default(),
+                    owner,
+                    Some(&on_live),
+                    &[],
+                    Some(&on_snapshot),
+                    None,
+                    None,
+                );
+                let expected_status = if turn == 2 {
+                    "completed"
+                } else if scenario == "auth" {
+                    "failed"
+                } else {
+                    "cancelled"
+                };
+                if turn == 1 && scenario == "auth" {
+                    let error = result.err().expect("AuthRequired must fail the turn");
+                    let info = normalize_runtime_error(&error);
+                    assert_eq!(info.code_str(), "provider.auth-required");
+                    assert_eq!(info.recovery, RecoveryMode::Manual);
+                    assert!(
+                        info.retry_policy.is_none(),
+                        "must not loop retrying missing credentials"
+                    );
+                } else {
+                    result.unwrap();
+                }
+                let terminal = crate::storage::read_json::<Value>(&snapshot).unwrap();
+                assert_eq!(terminal["latestTurnStatus"], expected_status);
+                assert_eq!(terminal["liveTurnActivity"], "idle");
+                assert!(
+                    published
+                        .borrow()
+                        .iter()
+                        .any(|value| value["latestTurnStatus"] == expected_status)
+                );
+                if turn == 1 && scenario == "auth" {
+                    assert_eq!(
+                        terminal["turnError"]["code"]["code"],
+                        "provider.auth-required"
+                    );
+                }
+                if turn == 2 {
+                    assert!(terminal["turnError"].is_null());
+                }
+            }
+            let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.content.as_deref() == Some("Recovered response"))
+            );
+            if scenario == "cancel" {
+                let tool = items
+                    .iter()
+                    .find(|item| item.tool_call_id.as_deref() == Some("pending-tool"))
+                    .unwrap();
+                assert_eq!(tool.status.as_deref(), Some("failed"));
+                assert!(tool.ended_seq.is_some());
+            }
+            let methods = std::fs::read_to_string(cwd.join("upgrade-methods")).unwrap();
+            assert_eq!(
+                methods
+                    .lines()
+                    .filter(|line| *line == "session/prompt")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                methods
+                    .lines()
+                    .filter(|line| *line == "session/cancel")
+                    .count(),
+                usize::from(scenario == "cancel")
+            );
+        }));
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        if let Err(panic) = assertions {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn upgraded_acp_terminal_adapter_fixture() {
+        use std::io::{BufRead, Write};
+        let Ok(scenario) = std::env::var("GOLD_BAND_DOCTOR_FIXTURE") else {
+            return;
+        };
+        let mut pending_prompt = None;
+        let update = |value: Value| {
+            println!(
+                "{}",
+                json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"upgrade-session","update":value}})
+            );
+        };
+        println!();
+        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lock().lines() {
+            let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let method = frame["method"].as_str().unwrap();
+            let mut trace = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("upgrade-methods")
+                .unwrap();
+            writeln!(trace, "{method}").unwrap();
+            if method == "session/cancel" {
+                // Claude terminates unfinished tools before the cancelled prompt response.
+                update(
+                    json!({"sessionUpdate":"tool_call_update","toolCallId":"pending-tool","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Tool execution cancelled"}}]}),
+                );
+                println!(
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":pending_prompt.take().expect("cancel follows prompt"),"result":{"stopReason":"cancelled"}})
+                );
+                std::io::stdout().flush().unwrap();
+                continue;
+            }
+            let result = match method {
+                "initialize" => {
+                    json!({"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})
+                }
+                "session/new" | "session/load" => json!({"result":{"sessionId":"upgrade-session"}}),
+                "session/prompt" if !std::path::Path::new("upgrade-first-done").exists() => {
+                    std::fs::write("upgrade-first-done", "done").unwrap();
+                    if scenario == "auth" {
+                        // ACP AuthRequired emitted by Claude 0.87.0 and Codex 2.1.1.
+                        json!({"error":{"code":-32000,"message":"Authentication required"}})
+                    } else {
+                        pending_prompt = Some(frame["id"].clone());
+                        update(
+                            json!({"sessionUpdate":"tool_call","toolCallId":"pending-tool","title":"Run command","kind":"execute","status":"in_progress","rawInput":{"command":"long-command"}}),
+                        );
+                        std::io::stdout().flush().unwrap();
+                        continue;
+                    }
+                }
+                "session/prompt" => {
+                    update(
+                        json!({"sessionUpdate":"agent_message_chunk","messageId":"recovered","content":{"type":"text","text":"Recovered response"}}),
+                    );
+                    json!({"result":{"stopReason":"end_turn"}})
+                }
+                _ => json!({"result":{}}),
+            };
+            let mut reply = result;
+            reply["jsonrpc"] = json!("2.0");
+            reply["id"] = frame["id"].clone();
+            println!("{reply}");
+            std::io::stdout().flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_tool_patches_preserve_state_and_accumulate_output() {
+        let normalize =
+            |seq, raw: Value| crate::acp::events::normalize_session_update(seq, None, &raw);
+        let initial = normalize(
+            1,
+            json!({"sessionUpdate":"tool_call","toolCallId":"shell", "title":"Run", "kind":"execute", "status":"in_progress", "rawInput":{"command":"echo hello"}, "content":[{"type":"terminal","terminalId":"shell"}]}),
+        );
+        let mut first = normalize(
+            2,
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"hello "}}}),
+        );
+        merge_tool_revision(&mut first, &initial);
+        let mut second = normalize(
+            3,
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","_meta":{"terminal_output_delta":{"terminal_id":"shell","data":"world"}}}),
+        );
+        merge_tool_revision(&mut second, &first);
+        assert_eq!(second.status.as_deref(), Some("in_progress"));
+        assert_eq!(second.raw.as_ref().unwrap()["kind"], "execute");
+        let mut completed = normalize(
+            4,
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","status":"completed"}),
+        );
+        merge_tool_revision(&mut completed, &second);
+        assert_eq!(
+            crate::acp::events::agent_transcript_tool_output(completed.raw.as_ref().unwrap()),
+            Some(&json!("hello world"))
+        );
+        let mut cleared = normalize(
+            5,
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"shell","content":[],"rawInput":null}),
+        );
+        merge_tool_revision(&mut cleared, &completed);
+        assert_eq!(cleared.raw.as_ref().unwrap()["content"], json!([]));
+        assert_eq!(cleared.raw.as_ref().unwrap()["rawInput"], Value::Null);
+    }
+
+    #[test]
+    fn upgraded_acp_compaction_admits_turn_start_and_rejects_old_identity() {
+        let update = json!({"sessionUpdate":"compaction_update","compactionId":"new","status":"in_progress"});
+        let mut phase = SessionUpdatePhase::AwaitingTurnStart;
+        let mut ids = std::collections::HashSet::new();
+        assert!(!super::should_suppress_session_update(
+            &mut phase,
+            |_| false,
+            &mut ids,
+            Some("session"),
+            &update
+        ));
+        assert_eq!(
+            super::stable_session_update_item_id(Some("session"), &update).as_deref(),
+            Some("context-compaction-id-new")
+        );
+        assert!(super::should_suppress_session_update(
+            &mut phase,
+            |_| true,
+            &mut ids,
+            Some("session"),
+            &json!({"sessionUpdate":"compaction_update","compactionId":"old","status":"completed"})
+        ));
+    }
+
+    #[test]
+    fn upgraded_acp_compaction_preserves_patch_semantics_and_opaque_statuses() {
+        let mut usage = AcpUsageState::default();
+        let mut stored: Option<AcpUiEvent> = None;
+        let mut apply = |raw: Value| {
+            let event = crate::acp::events::normalize_session_update(
+                stored.as_ref().map_or(1, |item| item.seq + 1),
+                None,
+                &raw,
+            );
+            let updates = super::context_compaction_updates(
+                &mut usage,
+                &event,
+                stored.as_ref(),
+                stored.as_ref(),
+            );
+            if let Some(item) = updates.last() {
+                stored = Some(item.clone());
+            }
+            stored.clone()
+        };
+        let chunk = json!({"sessionUpdate":"compaction_summary_chunk","compactionId":"cmp","content":{"type":"text","text":"partial"}});
+        assert!(apply(chunk.clone()).is_none());
+        apply(
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"in_progress","_meta":{"provider":"test"}}),
+        );
+        apply(chunk.clone());
+        let done = apply(json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[{"type":"text","text":"replacement"}]})).unwrap();
+        assert_eq!(
+            done.raw.as_ref().unwrap()["summary"][0]["text"],
+            "replacement"
+        );
+        assert_eq!(
+            done.raw.as_ref().unwrap()["_meta"],
+            json!({"provider":"test"})
+        );
+        assert_eq!(apply(chunk).unwrap().seq, done.seq);
+        let cleared = apply(json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[],"_meta":null})).unwrap();
+        assert_eq!(cleared.raw.as_ref().unwrap()["summary"], json!([]));
+        assert!(cleared.raw.as_ref().unwrap()["_meta"].is_null());
+        for status in ["failed", "cancelled", "_future", "future"] {
+            let event = crate::acp::events::normalize_session_update(
+                30,
+                None,
+                &json!({"sessionUpdate":"compaction_update","compactionId":status,"status":status,"error":"details"}),
+            );
+            let mut usage = AcpUsageState::default();
+            let item = super::context_compaction_updates(&mut usage, &event, None, None)
+                .pop()
+                .unwrap();
+            if matches!(status, "failed" | "cancelled") {
+                assert_eq!(item.status.as_deref(), Some("interrupted"));
+                assert_eq!(item.ended_seq, Some(30));
+            } else {
+                assert_eq!(item.status.as_deref(), Some(status));
+                assert!(item.ended_seq.is_none());
+            }
+            assert!(usage.compaction.is_none());
+            assert_eq!(item.raw.as_ref().unwrap()["status"], status);
+        }
+    }
+
+    #[test]
+    fn upgraded_acp_compaction_materializes_chunks_and_replay() {
+        let normalize =
+            |seq, raw: Value| crate::acp::events::normalize_session_update(seq, None, &raw);
+        let mut usage = AcpUsageState::default();
+        let first = normalize(
+            10,
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"in_progress"}),
+        );
+        assert_eq!(first.kind, "contextCompaction");
+        let mut item = super::context_compaction_updates(&mut usage, &first, None, None)
+            .pop()
+            .unwrap();
+        let identity = item.id.clone();
+        for (seq, text) in [(11, "one "), (12, "two")] {
+            let chunk = normalize(
+                seq,
+                json!({"sessionUpdate":"compaction_summary_chunk","compactionId":"cmp","content":{"type":"text","text":text}}),
+            );
+            item = super::context_compaction_updates(&mut usage, &chunk, Some(&item), Some(&item))
+                .pop()
+                .unwrap();
+            assert_eq!(item.id, identity);
+            assert_eq!(item.started_seq, Some(10));
+            assert_eq!(item.status.as_deref(), Some("running"));
+        }
+        let done = normalize(
+            13,
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed"}),
+        );
+        item = super::context_compaction_updates(&mut usage, &done, Some(&item), Some(&item))
+            .pop()
+            .unwrap();
+        assert_eq!(
+            item.raw.as_ref().unwrap()["summary"],
+            json!([{"type":"text","text":"one "},{"type":"text","text":"two"}])
+        );
+        assert_eq!(item.started_seq, Some(10));
+        assert_eq!(item.ended_seq, Some(13));
+        let clear = normalize(
+            14,
+            json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":null}),
+        );
+        item = super::context_compaction_updates(&mut usage, &clear, Some(&item), None)
+            .pop()
+            .unwrap();
+        assert!(item.raw.as_ref().unwrap()["summary"].is_null());
+        let replay = normalize(
+            15,
+            json!({"sessionUpdate":"compaction_update","compactionId":"past","status":"completed","summary":[{"type":"text","text":"retained"}]}),
+        );
+        let replayed = super::context_compaction_updates(&mut usage, &replay, None, None)
+            .pop()
+            .unwrap();
+        assert_eq!(replayed.status.as_deref(), Some("completed"));
+        assert_ne!(replayed.id, identity);
+        assert_eq!(
+            super::initialize_params()["clientCapabilities"]["session"]["compaction"],
+            json!({})
+        );
     }
 
     #[test]
@@ -12621,32 +16510,44 @@ mod tests {
         assert!(resume_params.get("_meta").is_none());
     }
 
-    #[test]
-    fn session_prompt_projects_supported_attachment_content_from_live_capabilities() {
-        let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
-        prompt.content_blocks = vec![
+    fn test_file(path: &str, size: u64) -> crate::provider::AcpFileRef {
+        crate::provider::AcpFileRef {
+            path: path.to_string(),
+            size,
+        }
+    }
+
+    fn inline_test_blocks() -> Vec<crate::provider::AcpContentBlock> {
+        let root = std::env::temp_dir();
+        vec![
             crate::provider::AcpContentBlock::Image(crate::provider::AcpImageBlock {
                 data: "aW1hZ2U=".to_string(),
                 mime_type: "image/png".to_string(),
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "diagram.png".to_string(),
-                    uri: "file:///tmp/diagram.png".to_string(),
-                    mime_type: "image/png".to_string(),
-                    size: 5,
-                },
+                file: test_file(&root.join("diagram.png").to_string_lossy(), 5),
             }),
             crate::provider::AcpContentBlock::Resource(crate::provider::AcpResourceBlock {
-                resource: crate::provider::AcpTextResourceContents {
-                    text: "notes".to_string(),
-                },
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "notes.txt".to_string(),
-                    uri: "file:///tmp/notes.txt".to_string(),
-                    mime_type: "text/plain".to_string(),
-                    size: 5,
-                },
+                text: "notes".to_string(),
+                mime_type: "text/plain".to_string(),
+                file: test_file(&root.join("notes.txt").to_string_lossy(), 5),
             }),
-        ];
+        ]
+    }
+
+    fn prompt_block_types(params: &Value) -> Vec<&str> {
+        params["prompt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn session_prompt_projects_supported_attachment_content_from_live_capabilities() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
+        prompt.content_blocks = inline_test_blocks();
+        let image_uri = prompt.content_blocks[0].file().uri();
+        let notes_uri = prompt.content_blocks[1].file().uri();
         let capabilities = parse_agent_capabilities(&json!({
             "promptCapabilities": {
                 "image": true,
@@ -12663,13 +16564,14 @@ mod tests {
             &capabilities,
         );
 
+        assert!(image_uri.starts_with("file:"));
         assert_eq!(
             params["prompt"][0],
             json!({
                 "type": "image",
                 "data": "aW1hZ2U=",
                 "mimeType": "image/png",
-                "uri": "file:///tmp/diagram.png"
+                "uri": image_uri
             })
         );
         assert_eq!(
@@ -12678,7 +16580,7 @@ mod tests {
                 "type": "resource",
                 "resource": {
                     "text": "notes",
-                    "uri": "file:///tmp/notes.txt",
+                    "uri": notes_uri,
                     "mimeType": "text/plain"
                 }
             })
@@ -12690,16 +16592,12 @@ mod tests {
     }
 
     #[test]
-    fn explicit_resource_link_is_not_reexpanded_when_optional_capabilities_exist() {
+    fn path_files_are_listed_in_the_prompt_text_even_with_optional_capabilities() {
         let mut prompt = non_runtime_control_test_prompt("prompt-large-attachment");
-        prompt.content_blocks = vec![crate::provider::AcpContentBlock::ResourceLink(
-            crate::provider::AcpResourceLinkBlock {
-                name: "large.md".to_string(),
-                uri: "file:///tmp/large.md".to_string(),
-                mime_type: "text/markdown".to_string(),
-                size: 64_001,
-            },
-        )];
+        prompt.content_blocks = vec![
+            crate::provider::AcpContentBlock::File(test_file("D:/work/large.md", 64_001)),
+            crate::provider::AcpContentBlock::File(test_file("D:/work/tool.exe", 2_048)),
+        ];
         let capabilities = parse_agent_capabilities(&json!({
             "promptCapabilities": {
                 "image": true,
@@ -12716,44 +16614,21 @@ mod tests {
             &capabilities,
         );
 
+        assert_eq!(prompt_block_types(&params), vec!["text"]);
         assert_eq!(
-            params["prompt"][0],
-            json!({
-                "type": "resource_link",
-                "name": "large.md",
-                "uri": "file:///tmp/large.md",
-                "mimeType": "text/markdown",
-                "size": 64_001
-            })
+            params["prompt"][0]["text"],
+            "The user provided the following files. Their contents are not included in this message; read them by path when needed:\n\
+             - `D:/work/large.md` (64001 bytes)\n\
+             - `D:/work/tool.exe` (2048 bytes)\n\nclarify"
         );
     }
 
     #[test]
-    fn session_prompt_falls_back_to_resource_links_without_optional_capabilities() {
+    fn session_prompt_lists_inline_content_by_path_without_optional_capabilities() {
         let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
-        prompt.content_blocks = vec![
-            crate::provider::AcpContentBlock::Image(crate::provider::AcpImageBlock {
-                data: "aW1hZ2U=".to_string(),
-                mime_type: "image/png".to_string(),
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "diagram.png".to_string(),
-                    uri: "file:///tmp/diagram.png".to_string(),
-                    mime_type: "image/png".to_string(),
-                    size: 5,
-                },
-            }),
-            crate::provider::AcpContentBlock::Resource(crate::provider::AcpResourceBlock {
-                resource: crate::provider::AcpTextResourceContents {
-                    text: "notes".to_string(),
-                },
-                link: crate::provider::AcpResourceLinkBlock {
-                    name: "notes.txt".to_string(),
-                    uri: "file:///tmp/notes.txt".to_string(),
-                    mime_type: "text/plain".to_string(),
-                    size: 5,
-                },
-            }),
-        ];
+        prompt.content_blocks = inline_test_blocks();
+        let image_path = prompt.content_blocks[0].file().path.clone();
+        let notes_path = prompt.content_blocks[1].file().path.clone();
 
         let params = session_prompt_params(
             "claude-acp",
@@ -12764,30 +16639,37 @@ mod tests {
             &agent_client_protocol_schema::v1::AgentCapabilities::default(),
         );
 
-        assert_eq!(
-            params["prompt"][0],
-            json!({
-                "type": "resource_link",
-                "name": "diagram.png",
-                "uri": "file:///tmp/diagram.png",
-                "mimeType": "image/png",
-                "size": 5
-            })
+        assert_eq!(prompt_block_types(&params), vec!["text"]);
+        let text = params["prompt"][0]["text"].as_str().unwrap();
+        assert!(text.contains(&format!("- `{image_path}` (5 bytes)")));
+        assert!(text.contains(&format!("- `{notes_path}` (5 bytes)")));
+        assert!(text.ends_with("\n\nclarify"));
+    }
+
+    #[test]
+    fn listed_files_follow_the_prompt_language_and_precede_the_system_prompt_fallback() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-language");
+        prompt.language = crate::config::DesktopLanguage::ZhCn;
+        prompt.system_prompt = "stable rules".to_string();
+        prompt.content_blocks = vec![crate::provider::AcpContentBlock::File(test_file(
+            "D:/work/a.bin",
+            3,
+        ))];
+
+        let params = session_prompt_params(
+            "codex-acp",
+            "session-123",
+            &prompt,
+            false,
+            false,
+            &agent_client_protocol_schema::v1::AgentCapabilities::default(),
         );
-        assert_eq!(
-            params["prompt"][1],
-            json!({
-                "type": "resource_link",
-                "name": "notes.txt",
-                "uri": "file:///tmp/notes.txt",
-                "mimeType": "text/plain",
-                "size": 5
-            })
-        );
-        assert_eq!(
-            params["prompt"][2],
-            json!({"type": "text", "text": "clarify"})
-        );
+
+        let text = params["prompt"][0]["text"].as_str().unwrap();
+        let system_at = text.find("stable rules").unwrap();
+        let listing_at = text.find("- `D:/work/a.bin`（3 字节）").unwrap();
+        assert!(system_at < listing_at);
+        assert!(text.ends_with("\n\nclarify"));
     }
 
     #[test]
@@ -12828,9 +16710,10 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         };
 
-        let text = session_prompt_text("codex-acp", &prompt, false, false);
+        let text = session_prompt_text("codex-acp", &prompt, &prompt.user_prompt, false, false);
         assert!(text.contains(
             "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
         ));
@@ -12869,9 +16752,10 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         };
 
-        let text = session_prompt_text("codex-acp", &prompt, true, false);
+        let text = session_prompt_text("codex-acp", &prompt, &prompt.user_prompt, true, false);
         assert_eq!(text, "follow up");
         assert!(!text.contains("Gold Band stable system prompt"));
         assert!(!text.contains("node constraints"));
@@ -12898,8 +16782,13 @@ mod tests {
         );
         for restored in [false, true] {
             for supports_system_prompt in [true, false] {
-                let text =
-                    session_prompt_text("any-provider", &prompt, restored, supports_system_prompt);
+                let text = session_prompt_text(
+                    "any-provider",
+                    &prompt,
+                    &prompt.user_prompt,
+                    restored,
+                    supports_system_prompt,
+                );
                 assert_eq!(text.matches("context=value").count(), 1);
                 assert!(text.contains("data-gold-band-hidden"));
                 assert_eq!(
@@ -12931,14 +16820,15 @@ mod tests {
             content_blocks: Vec::new(),
             scheduled_trigger: None,
             workspace_files: Vec::new(),
+            language: crate::config::DesktopLanguage::En,
         };
 
         assert_eq!(
-            session_prompt_text("claude-acp", &prompt, false, true),
+            session_prompt_text("claude-acp", &prompt, &prompt.user_prompt, false, true),
             "do the task"
         );
         assert_eq!(
-            session_prompt_text("claude-acp", &prompt, true, true),
+            session_prompt_text("claude-acp", &prompt, &prompt.user_prompt, true, true),
             "do the task"
         );
     }

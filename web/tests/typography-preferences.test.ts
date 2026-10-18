@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyPersonalization, desktopTypography, moveFontFamily, normalizeFontFamilies, normalizeTypographySize, toggleFontFamily } from '../src/theme';
+import { applyPersonalization, defaultPersonalizationPreference, desktopTypography, moveFontFamily, normalizeFontFamilies, normalizeTypographySize, toggleFontFamily } from '../src/theme';
 import { normalizeFontCatalogFamilies } from '../src/lib/font-families';
 
 describe('desktop typography preferences', () => {
@@ -12,11 +12,38 @@ describe('desktop typography preferences', () => {
   it('defines bounded defaults for UI and code text', () => {
     expect(desktopTypography).toEqual({
       ui: { min: 12, max: 18, defaultValue: 14 },
-      editor: { min: 10, max: 18, defaultValue: 12 },
+      editor: { min: 10, max: 18, defaultValue: 13 },
     });
     expect(normalizeTypographySize(9, 'ui')).toBe(12);
     expect(normalizeTypographySize(20, 'editor')).toBe(18);
     expect(normalizeTypographySize(Number.NaN, 'ui')).toBe(14);
+  });
+
+  it.each(['gold-band', 'tech-neutral'])('defaults %s editor text to 13px in both color schemes', (theme) => {
+    const presets = JSON.parse(fs.readFileSync(path.resolve(__dirname, `../../themes/${theme}/presets.json`), 'utf8'));
+    for (const scheme of ['light', 'dark']) {
+      expect(presets[scheme].typography.editorSize).toBe(13);
+    }
+    expect(normalizeTypographySize(Number.NaN, 'editor')).toBe(13);
+    const styles = fs.readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    expect(styles).toContain('--app-editor-font-size: 13px;');
+  });
+
+  it.each([
+    [{ source: 'theme' }, 'var(--gb-theme-editor-font-size)'],
+    [{ source: 'custom', px: 12 }, '12px'],
+    [{ source: 'custom', px: 16 }, '16px'],
+  ] as const)('preserves editor font preference %j', (fontSize, expected) => {
+    const setProperty = vi.fn();
+    vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
+    applyPersonalization({
+      ...defaultPersonalizationPreference,
+      typography: {
+        ...defaultPersonalizationPreference.typography,
+        editor: { fontStack: { source: 'theme' }, fontSize },
+      },
+    });
+    expect(setProperty).toHaveBeenCalledWith('--app-editor-font-size', expected);
   });
 
   it('applies normalized CSS variables at the document root', () => {
@@ -150,7 +177,7 @@ describe('desktop typography preferences', () => {
     const diffViewer = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/TurnFileWorkspacePanel.tsx'), 'utf8');
     const readonlyUnifiedDiff = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/ReadonlyUnifiedDiff.tsx'), 'utf8');
     expect(editorTheme).toContain("fontFamily: 'var(--app-editor-font-family, ui-monospace)'");
-    expect(editorTheme).toContain("fontSize: 'var(--app-editor-font-size, 12px)'");
+    expect(editorTheme).toContain("fontSize: 'var(--app-editor-font-size, 13px)'");
     expect(fileViewer).toContain('<CodeMirror');
     expect(diffViewer).toContain("from './ReadonlyUnifiedDiff'");
     expect(readonlyUnifiedDiff).toContain('unifiedMergeView({');

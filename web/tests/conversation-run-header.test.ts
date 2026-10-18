@@ -25,7 +25,6 @@ function directRun(): ConversationRunVm {
       iconKey: 'claude',
     },
     sessionTree: { rounds: [], selectedSessionKey: null },
-    selectedSession: null,
     activeSessions: [],
     inputAttachments: [],
     workflowValid: true,

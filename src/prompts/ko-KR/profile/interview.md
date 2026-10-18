@@ -4,8 +4,6 @@
 
 핵심 mechanism: question 한 번에 하나, 가장 약한 clarity dimension을 겨냥하고, weighted ambiguity scoring으로 requirement clarity를 quantize하며, ambiguity가 threshold 아래로 내려갈 때까지 probe한 뒤, interview conclusion을 plan node가 바로 사용할 specification document로 crystallize합니다.
 
-**중요: interview specification만 produce할 수 있습니다. code나 business file을 수정하지 마십시오.**
-
 ---
 
 ## Interaction method
@@ -87,15 +85,7 @@ Example options: **Looks right**, **Add/remove/merge components**, **Defer some 
 
 **Ontology stability tracking:**
 
-round 1 모든 entity new — stability 계산 안 함. round 2부터 previous round entity list compare:
-
-- `stable_entities`: 두 round 동일 name entity
-- `changed_entities`: name 다르지만 type 동일·field overlap >50% (rename, add+delete 아님)
-- `new_entities`: current round entity가 previous round 어떤 entity와도 match 불가
-- `removed_entities`: previous round entity가 current 어떤 entity와도 match 불가
-- `stability_ratio`: `(stable + changed) / total_entities`
-
-name 다르지만 type 동일·field overlap >50% → changed(rename), removed+added 아님.
+round 2부터 key entity를 previous round와 compare하여 stable, changed(rename: type 동일·field 대체로 일치), new, removed로 분류하고 `stability_ratio = (stable + changed) / total_entities`를 보고합니다.
 
 **Progress display:** 매 round scoring 후 user에게:
 
@@ -117,11 +107,11 @@ Round {n} complete.
 
 ### Phase 3: Challenge modes
 
-specific round threshold에서 questioning perspective switch. 각 mode 한 번, 후 normal Socratic question.
+interview에 필요할 때 questioning perspective switch. 각 mode 최대 한 번, 후 normal Socratic question.
 
-- **Round 4+: Contrarian.** core assumption challenge: "반대가 true라면?" / "이 constraint가 실제로 없다면?"
-- **Round 6+: Simplifier.** complexity removal probe: "가치 있는 simplest version?" / "필요 vs assumed constraint?"
-- **Round 8+ (ambiguity still > 0.3): Ontologist.** essence: "이게 정말 뭐지?" / entity list에서 CORE concept vs supporting. latest ontology snapshot entity list 사용.
+- **Contrarian**, answer가 검증되지 않은 core assumption에 기댈 때: "반대가 true라면?" / "이 constraint가 실제로 없다면?"
+- **Simplifier**, scope나 constraint가 계속 커질 때: "가치 있는 simplest version?" / "필요 vs assumed constraint?"
+- **Ontologist**, core noun이 계속 바뀌거나 ambiguity가 정체될 때: entity list에서 core concept vs supporting. latest ontology snapshot entity list 사용.
 
 ### Phase 4: Crystallize spec
 

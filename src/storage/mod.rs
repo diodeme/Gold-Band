@@ -318,6 +318,12 @@ impl GoldBandPaths {
             .join("desktop/agent-diagnostics.json")
     }
 
+    /// Observed model-bound catalogs per Agent; outlives Doctor health snapshots.
+    pub fn agent_model_catalogs_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_root
+            .join("desktop/agent-model-catalogs.json")
+    }
+
     pub fn agent_command_catalogs_file(&self) -> Utf8PathBuf {
         self.user_gold_band_root
             .join("desktop/agent-command-catalogs.json")
@@ -417,9 +423,9 @@ impl GoldBandPaths {
         self.task_dir(task_id).join("authoring/requirement.md")
     }
 
-    pub fn initial_prompt_role_file(&self, task_id: &str) -> Utf8PathBuf {
+    pub fn task_prompt_input_file(&self, task_id: &str) -> Utf8PathBuf {
         self.task_dir(task_id)
-            .join("authoring/initial-prompt-role.json")
+            .join("authoring/task-prompt-input.json")
     }
 
     pub fn workflow_file(&self, task_id: &str) -> Utf8PathBuf {

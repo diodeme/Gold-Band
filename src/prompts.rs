@@ -114,6 +114,8 @@ pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE: LocalizedText =
 pub const RUNTIME_WORKFLOW_RESUME: LocalizedText = localized_prompt!("runtime/workflow_resume.md");
 pub const RUNTIME_USER_ROLE_MESSAGE: LocalizedText =
     localized_prompt!("runtime/user_role_message.md");
+pub const RUNTIME_USER_QUOTE: LocalizedText = localized_prompt!("runtime/user_quote.md");
+pub const RUNTIME_USER_FILES: LocalizedText = localized_prompt!("runtime/user_files.md");
 pub const CICD_GOAL: LocalizedText = localized_prompt_zh_en!("runtime/cicd-goal.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR: LocalizedText =
     localized_prompt!("runtime/ai-dynamic/proposal_repair.md");
@@ -252,6 +254,8 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     ),
     ("runtime/workflow_resume.md", RUNTIME_WORKFLOW_RESUME),
     ("runtime/user_role_message.md", RUNTIME_USER_ROLE_MESSAGE),
+    ("runtime/user_quote.md", RUNTIME_USER_QUOTE),
+    ("runtime/user_files.md", RUNTIME_USER_FILES),
     ("runtime/cicd-goal.md", CICD_GOAL),
     (
         "runtime/ai-dynamic/proposal_repair.md",
@@ -477,9 +481,10 @@ mod tests {
         assert_prompt_contract(
             AI_DYNAMIC_SYSTEM_ZH_CN,
             &[
-                "人类最新指令 > 原始需求与明确非目标",
+                "人类最新指令 > 原始需求及其中或用户明确声明的非目标",
                 "运行前已纳入范围的项目契约",
-                "低层内容只能细化执行，不能扩大高层范围",
+                "低层内容只能细化执行，不能扩大或缩小高层范围",
+                "不能把需求原文提到的内容划为非目标",
                 "runtime 任务可以拆解已授权工作",
                 "本轮新增内容只能提供证据或建议",
                 "省略后会失败的既定结果",
@@ -491,9 +496,10 @@ mod tests {
         assert_prompt_contract(
             AI_DYNAMIC_SYSTEM_EN,
             &[
-                "latest relevant human instruction > original requirement and explicit non-goals",
+                "latest relevant human instruction > original requirement and non-goals stated in it or explicitly declared by the user",
                 "pre-run project contracts already in scope",
-                "cannot expand higher-authority scope",
+                "cannot expand or narrow higher-authority scope",
+                "cannot classify content mentioned in the original requirement text as a non-goal",
                 "runtime tasks may decompose authorized work",
                 "content added during this run provide evidence or suggestions",
                 "established outcome that would fail without it",
@@ -525,8 +531,10 @@ mod tests {
                     "不属于任何已批准验收条款",
                     "`PARTIAL`",
                     "`MISSING`",
-                    "仅因环境或人工条件无法执行的验证记为 `FOLLOW_UP`",
-                    "不属于本轮需求所要求范围的问题记为 `FOLLOW_UP`",
+                    "`FOLLOW_UP` 只用于三类观察",
+                    "仅因环境或人工条件无法执行的验证",
+                    "不属于本轮需求所要求范围的问题",
+                    "本轮需求所要求的条款一律不得降为 `FOLLOW_UP`",
                 ],
             );
         }
@@ -549,8 +557,10 @@ mod tests {
                     "does not belong to any approved acceptance criterion",
                     "`PARTIAL`",
                     "`MISSING`",
-                    "A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`",
-                    "A problem outside the scope required by this round's requirement is a `FOLLOW_UP`",
+                    "`FOLLOW_UP` is limited to three kinds of observation",
+                    "a check that cannot be executed solely because of environment or manual conditions",
+                    "problems outside the scope this round's requirement asks for",
+                    "A criterion this round's requirement asks for is never downgraded to `FOLLOW_UP`",
                 ],
             );
         }
@@ -627,6 +637,36 @@ mod tests {
                 "satisfy the scope contract",
                 "remove or narrow",
             ],
+        );
+    }
+
+    #[test]
+    fn routing_prompts_end_only_after_acceptance() {
+        assert_prompt_contract(
+            AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
+            &[
+                "整个需求的开发全部完成后，必须交给验收节点对照需求统一收尾",
+                "中间阶段完成时不单独验收",
+                "验收不通过继续指派节点修复，修复后再次验收",
+                "只有验收通过后才使用 `next.type=\"end\"`",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
+            &[
+                "Once development of the whole requirement is complete, hand off to an acceptance node",
+                "do not run acceptance for intermediate stages",
+                "keep assigning nodes to fix it and run acceptance again",
+                "Use `next.type=\"end\"` only after acceptance passes",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_SYSTEM_ZH_CN,
+            &["整个需求的交付已通过验收、没有后续工作"],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_SYSTEM_EN,
+            &["the delivery of the whole requirement has passed acceptance and no work remains"],
         );
     }
 

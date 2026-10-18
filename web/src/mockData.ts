@@ -32,11 +32,13 @@ import {
   DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
 } from './lib/acp-chat-pagination';
 import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from './lib/acp-chat-resource-cache';
+import { DEFAULT_BROWSER_HIDDEN_RELEASE_SECS } from './components/workspace/browser/browser-config';
 
 const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, browser: { schemaVersion: 1, searchEngine: 'baidu', openLocalLinksInBrowser: true, openWebLinksInBrowser: true }, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,
+  releaseNotesUrl: 'https://github.com/diodeme/Gold-Band/releases',
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
@@ -59,7 +61,6 @@ export const mockUpdateStatus: UpdateStatusVm = {
 export const mockUpdateBadges: UpdateBadgeStateVm = {
   settingsEntrySeenVersion: null,
   settingsAdvancedSeenVersion: null,
-  announcementClosedVersion: null,
 };
 const profileTimestamp = localTimestamp();
 
@@ -208,6 +209,7 @@ const graph = {
     { from: 'test', to: 'validate', label: 'success' },
     { from: 'validate', to: 'finalize', label: 'success' },
   ],
+  groups: [],
 };
 
 const failedAcceptanceGraph = {
@@ -218,6 +220,7 @@ const failedAcceptanceGraph = {
   edges: [
     { from: 'dev', to: 'accept', label: 'observed' },
   ],
+  groups: [],
 };
 
 const errorBlockedGraph = {
@@ -228,6 +231,7 @@ const errorBlockedGraph = {
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
   ],
+  groups: [],
 };
 
 const errorBlockedLifecycle = {
@@ -255,6 +259,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
   adapterId: 'claude-acp',
   adapterDisplayName: 'Claude',
   adapterIconKey: 'claude',
+  workLocation: { kind: 'main' },
   cwd: null,
   status: 'cancelled',
   sessionStartedAt: '2026-05-02 16:08',
@@ -311,13 +316,13 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
           startedAt: '2026-05-02 16:08',
           finishedAt: '2026-05-02 16:08',
           sessionId: null,
+          workLocation: { kind: 'main' },
           artifactCount: 0,
           attachmentCount: 0,
         }],
       }],
     }],
   },
-  selectedSession: mockErrorBlockedConversationSession,
   activeSessions: [],
   inputAttachments: [],
   workflowStatus: 'valid',
@@ -360,6 +365,7 @@ const mockNodeDetail: NodeDetailVm = {
     adapterId: 'claude-agent-acp',
     adapterDisplayName: 'Claude ACP',
     adapterIconKey: 'claude',
+    workLocation: { kind: 'main' },
     cwd: 'D:\\Projects\\code\\ai\\Gold-Band',
     status: 'running',
     sessionElapsedSeconds: 240,
@@ -473,7 +479,6 @@ export const mockBootstrap: AppBootstrapVm = {
   metricsSettings: { enabled: false, toggleLocked: false, metricsBaseUrl: null, heartbeatEndpoint: null, nodeMetricsEndpoint: null, apiKeySet: false },
   updateStatus: mockUpdateStatus,
   updateBadges: mockUpdateBadges,
-  persistedAvailableUpdate: null,
   clientVersion: '',
   platform: 'windows',
   windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
@@ -483,6 +488,7 @@ export const mockBootstrap: AppBootstrapVm = {
     acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
     acpChatEventWindowPageCount: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
     acpChatResourceCacheSessionCount: DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+    browserHiddenReleaseSecs: DEFAULT_BROWSER_HIDDEN_RELEASE_SECS,
     conversationInlineContentMaxBytes: 20_000,
     conversationInlineImageMaxBytes: 4 * 1024 * 1024,
     conversationInlineImageMaxDimension: 2_560,
@@ -508,6 +514,7 @@ export const mockBootstrap: AppBootstrapVm = {
     },
     workspaceFiles: FALLBACK_WORKSPACE_FILES,
   },
+  remoteImageTrust: { schemaVersion: 1, trustedHosts: [] },
   needsWorkspace: false,
 };
 

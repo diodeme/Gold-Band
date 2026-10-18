@@ -13,7 +13,7 @@ import {
 } from '@/lib/conversation-sidebar-loading';
 
 describe('conversation sidebar progressive loading', () => {
-  it('distinguishes not-loaded from ready-empty and publishes workspace identity first', () => {
+  it('distinguishes not-loaded from ready and publishes workspace identity first', () => {
     const initial = createEmptyConversationSidebar();
     expect(initial.loadStatus).toBe('not-loaded');
 

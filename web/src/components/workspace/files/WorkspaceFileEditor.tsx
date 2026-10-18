@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { historyField } from '@codemirror/commands';
 import { foldGutter } from '@codemirror/language';
@@ -16,6 +16,8 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { isDocumentAnchorHref } from '@/lib/file-link';
+import { MARKDOWN_ALERT_TYPES, markdownAlertTitleKey, type MarkdownAlertType } from '@/lib/markdown-alerts';
+import { useRemoteImageTrust } from '@/lib/remote-image-trust-store';
 import type { FileTargetLocationVm } from '@/types';
 import type { MarkdownEditorMode, MarkdownImageState } from './file-content-store';
 import {
@@ -24,6 +26,7 @@ import {
 } from './markdown-live-preview';
 import {
   markdownImagePreview,
+  type MarkdownImagePreviewConfig,
   predecodeMarkdownImagesNearViewport,
   updateMarkdownImagePreview,
 } from './markdown-image-preview';
@@ -35,6 +38,7 @@ import {
   type MarkdownTableRowViewportAnchor,
 } from './markdown-table-viewport';
 import '@atomic-editor/editor/styles.css';
+import { EditorSelectionQuote } from './EditorSelectionQuote';
 import {
   loadWorkspaceLanguage,
   workspaceEditorTheme,
@@ -61,13 +65,14 @@ interface WorkspaceFileEditorProps {
   onLocationAdjusted?: (adjusted: boolean) => void;
   markdownMode?: MarkdownEditorMode | null;
   markdownLivePreviewAvailable?: boolean;
-  markdownContentWidth?: 'readable' | 'full';
   onMarkdownModeChange?: (mode: MarkdownEditorMode) => void;
   markdownImages?: ReadonlyMap<string, MarkdownImageState>;
   markdownHasTableImages?: boolean;
   onMarkdownImagePreviewError?: (rawSrc: string, failedToken: string) => void;
   onMarkdownLinkClick?: (href: string) => void;
   onOpenInBrowser?: () => void | Promise<void>;
+  /** Names the file in quotes taken from a selection; without it the editor offers no quoting. */
+  quoteLabel?: string | null;
 }
 
 export interface EditorViewportAnchor {
@@ -89,21 +94,18 @@ interface MarkdownPreviewProfile {
   extensions: Extension[];
 }
 
-interface MarkdownImagePreviewProfile {
-  images: ReadonlyMap<string, MarkdownImageState>;
-  onPreviewError: (rawSrc: string, failedToken: string) => void;
-  onLinkClick: (href: string) => void;
-}
+type MarkdownImagePreviewProfile = Required<MarkdownImagePreviewConfig>;
 
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
 const VIEWPORT_ANCHOR_INSET_PX = 1;
-const FULL_WIDTH_MARKDOWN_STYLE = { '--atomic-editor-measure': '100%' } as CSSProperties;
 
 function sameMarkdownImagePreviewProfile(
   left: MarkdownImagePreviewProfile | null,
   right: MarkdownImagePreviewProfile,
 ) {
   return left?.images === right.images
+    && left.trustedImageHosts === right.trustedImageHosts
+    && left.alertTitles === right.alertTitles
     && left.onPreviewError === right.onPreviewError
     && left.onLinkClick === right.onLinkClick;
 }
@@ -281,13 +283,13 @@ export function WorkspaceFileEditor({
   onLocationAdjusted,
   markdownMode = null,
   markdownLivePreviewAvailable = true,
-  markdownContentWidth = 'readable',
   onMarkdownModeChange,
   markdownImages = EMPTY_MARKDOWN_IMAGES,
   markdownHasTableImages = false,
   onMarkdownImagePreviewError,
   onMarkdownLinkClick,
   onOpenInBrowser,
+  quoteLabel = null,
 }: WorkspaceFileEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -377,11 +379,18 @@ export function WorkspaceFileEditor({
   const routeMarkdownImagePreviewError = useCallback((rawSrc: string, failedToken: string) => {
     onMarkdownImagePreviewErrorRef.current?.(rawSrc, failedToken);
   }, []);
+  const remoteImageTrust = useRemoteImageTrust();
+  const trustedImageHosts = useMemo(() => new Set(remoteImageTrust.trustedHosts), [remoteImageTrust]);
+  const alertTitles = useMemo(() => Object.fromEntries(
+    MARKDOWN_ALERT_TYPES.map((type) => [type, t(markdownAlertTitleKey(type))]),
+  ) as Record<MarkdownAlertType, string>, [t]);
   const markdownImagePreviewProfile = useMemo<MarkdownImagePreviewProfile>(() => ({
     images: markdownImages,
+    trustedImageHosts,
+    alertTitles,
     onPreviewError: routeMarkdownImagePreviewError,
     onLinkClick: routeMarkdownLink,
-  }), [markdownImages, routeMarkdownImagePreviewError, routeMarkdownLink]);
+  }), [alertTitles, markdownImages, routeMarkdownImagePreviewError, routeMarkdownLink, trustedImageHosts]);
 
   useEffect(() => {
     let active = true;
@@ -520,11 +529,7 @@ export function WorkspaceFileEditor({
     if (desiredEditorMode === 'live-preview' && markdownPreviewProfile) {
       return [
         ...markdownPreviewProfile.extensions,
-        markdownImagePreview(
-          markdownImagePreviewProfile.images,
-          markdownImagePreviewProfile.onPreviewError,
-          markdownImagePreviewProfile.onLinkClick,
-        ),
+        markdownImagePreview(markdownImagePreviewProfile),
         ...(highlight ? [highlightSelectionMatches()] : []),
       ];
     }
@@ -741,12 +746,7 @@ export function WorkspaceFileEditor({
         markdownImagePreviewProfile,
       )
     ) {
-      updateMarkdownImagePreview(
-        view,
-        markdownImagePreviewProfile.images,
-        markdownImagePreviewProfile.onPreviewError,
-        markdownImagePreviewProfile.onLinkClick,
-      );
+      updateMarkdownImagePreview(view, markdownImagePreviewProfile);
       appliedMarkdownImagePreviewProfileRef.current = markdownImagePreviewProfile;
     }
   }, [
@@ -918,14 +918,12 @@ export function WorkspaceFileEditor({
         className={desiredEditorMode === 'live-preview'
           ? 'atomic-cm-editor workspace-markdown-live-preview h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'
           : 'h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'}
-        style={desiredEditorMode === 'live-preview' && markdownContentWidth === 'full'
-          ? FULL_WIDTH_MARKDOWN_STYLE
-          : undefined}
         aria-label="workspace-file-editor"
       />
       ) : (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground" aria-label="workspace-markdown-loading">…</div>
       )}
+      <EditorSelectionQuote view={activeEditorView} label={quoteLabel} />
     </div>
   );
 }

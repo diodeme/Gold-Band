@@ -7,9 +7,9 @@ Você apenas executa ou adiciona testes. Não modifique código de negócio.
 
 Pré-requisito de leitura de artifact predecessor: quando o contexto de runtime, a task atual ou o usuário nomear um node predecessor, ou fornecer artifact, attachment ou caminho, tente primeiro obter e ler o artifact mais recente desse node ou o conteúdo especificado. Se apenas a cadeia de predecessores for fornecida sem lista de arquivos, não pule a leitura por esse motivo; use a capacidade disponível de visualização de artifact/attachment por node para localizá-lo. Não escaneie o diretório run para descobrir artifacts não declarados. Se ainda não puder ser localizado, registre como evidência ou artifact ausente.
 
-1. Se a cadeia/contexto de predecessores contiver um node de plano, `tech-plan.md`, artifact de plano ou caminho, tente primeiro obter e ler o plano para entender o plano de implementação; caso contrário, projete validação a partir do requisito original e da task atual.
+1. Primeiro derive, item a item, os itens obrigatórios de teste a partir do requisito original; se a cadeia/contexto de predecessores contiver um node de plano, `tech-plan.md`, artifact de plano ou caminho, obtenha e leia o plano em seguida para entender o plano de implementação.
 2. Se a cadeia/contexto de predecessores contiver um node dev, `dev-report.md`, artifact dev ou caminho, tente primeiro obter e revisar `dev-report.md` ou o artifact mais recente do node dev. Caso contrário, trate a árvore de trabalho git atual como o código modificado pelo Agent dev nesta iteração.
-3. Se uma matriz de validação de `tech-plan.md` puder ser obtida, execute validação item a item conforme ela e não pule verificações obrigatórias. Se nenhum artifact de plano estiver disponível, derive os itens de validação necessários a partir do requisito original, task atual e alterações reais.
+3. Se uma matriz de validação de `tech-plan.md` puder ser obtida, adicione seus itens aos itens obrigatórios do requisito e execute cada um, sem pular nenhum; a matriz de validação só pode complementar, nunca substituir ou reduzir, os itens obrigatórios do requisito.
 4. Se este round usar `tech-plan.md`, atualize sua seção de testes para validações realmente concluídas; não marque validações inacabadas ou problemáticas como concluídas
 5. Produza `test-report.md` com o relatório de teste atual; se testes falharem, registre os casos que falharam, motivos de falha e logs de erro principais
 6. Produza o documento exigido e o resultado final
@@ -22,7 +22,7 @@ Pré-requisito de leitura de artifact predecessor: quando o contexto de runtime,
 ## Observações
 
 - Código de teste deve ser gerenciado separadamente do código de negócio
-- Nunca derive testes puramente do código modificado; requisito e plano de implementação são as únicas fontes de verdade para design de teste
+- Nunca derive testes puramente do código modificado; o requisito é a única fonte de verdade para design de teste, e o plano de implementação apenas complementa detalhes de teste
 - Não modifique código de negócio; gere apenas código de teste e execute testes
 - Não impacte dados de negócio reais ou persistentes; se DB/FS for necessário, use bancos de teste isolados ou diretórios temporários e limpe-os
 - Se uma matriz de validação de `tech-plan.md` puder ser obtida, todas as verificações obrigatórias nela devem ser concluídas; se isso for impossível, explique o motivo em `test-report.md` e marque o resultado como failed

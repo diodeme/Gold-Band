@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BarChart3, Copy, MessageSquareWarning, Minus, PanelLeft, PanelRight, Square, X } from 'lucide-react';
+import { BarChart3, Copy, MessageSquareWarning, Minus, NotebookText, PanelLeft, PanelRight, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import type { DesktopPlatform } from '../types';
@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 
 interface AppTitleBarProps {
   trailingContent?: React.ReactNode;
+  updateAction?: React.ReactNode;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -22,6 +23,7 @@ interface AppTitleBarProps {
   rightWorkspaceOpen?: boolean;
   onToggleRightWorkspace?: () => void;
   onOpenPersonalAnalytics?: () => void;
+  onOpenReleaseNotes?: () => void;
 }
 
 export const APP_TITLE_BAR_LAYOUT = {
@@ -33,6 +35,7 @@ export const APP_TITLE_BAR_LAYOUT = {
 
 export function AppTitleBar({
   trailingContent,
+  updateAction,
   appName,
   feedbackEnabled = false,
   platform,
@@ -41,15 +44,23 @@ export function AppTitleBar({
   rightWorkspaceOpen = false,
   onToggleRightWorkspace,
   onOpenPersonalAnalytics,
+  onOpenReleaseNotes,
 }: AppTitleBarProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [windowState, setWindowState] = useState({ maximized: false, fullscreen: false });
+  const isMaximized = windowState.maximized;
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
-  const [helpTooltipOpen, setHelpTooltipOpen] = useState(false);
-  const [helpTooltipSuppressed, setHelpTooltipSuppressed] = useState(false);
   const helpNavigationPendingRef = useRef(false);
+  const hasHelpMenu = feedbackEnabled || Boolean(onOpenPersonalAnalytics) || Boolean(onOpenReleaseNotes);
+  // Close the menu first so the opened surface keeps focus instead of the help trigger.
+  const openFromHelpMenu = (open: () => void) => {
+    helpNavigationPendingRef.current = true;
+    setHelpMenuOpen(false);
+    requestAnimationFrame(open);
+  };
+  const syncWindowStateRef = useRef<() => void>(() => {});
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform, readOnly ? 'browser' : 'desktop');
 
@@ -57,17 +68,24 @@ export function AppTitleBar({
     if (!tauriRuntime) return undefined;
     const appWindow = getCurrentWindow();
     let active = true;
+    let revision = 0;
     let unlisten: (() => void) | undefined;
 
-    const syncMaximized = () => {
-      appWindow.isMaximized().then((value) => {
-        if (active) setIsMaximized(value);
+    const syncWindowState = () => {
+      const requestedRevision = ++revision;
+      Promise.all([appWindow.isMaximized(), appWindow.isFullscreen()]).then(([maximized, fullscreen]) => {
+        if (active && revision === requestedRevision) {
+          setWindowState((previous) => previous.maximized === maximized && previous.fullscreen === fullscreen
+            ? previous
+            : { maximized, fullscreen });
+        }
       }).catch(() => {});
     };
 
-    syncMaximized();
+    syncWindowStateRef.current = syncWindowState;
+    syncWindowState();
     appWindow.onResized(() => {
-      syncMaximized();
+      syncWindowState();
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -78,6 +96,7 @@ export function AppTitleBar({
 
     return () => {
       active = false;
+      syncWindowStateRef.current = () => {};
       unlisten?.();
     };
   }, [tauriRuntime]);
@@ -90,7 +109,7 @@ export function AppTitleBar({
   const handleToggleMaximize = () => {
     if (!tauriRuntime) return;
     getCurrentWindow().toggleMaximize().then(() => {
-      setIsMaximized((value) => !value);
+      syncWindowStateRef.current();
     }).catch(() => {});
   };
 
@@ -107,12 +126,13 @@ export function AppTitleBar({
       data-tauri-drag-region
       className={APP_TITLE_BAR_LAYOUT.rootClassName}
       data-theme-role="titlebar"
+      data-window-occludes-desktop={windowState.maximized || windowState.fullscreen}
     >
       <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <div data-tauri-drag-region data-titlebar-brand="true" className="flex h-full items-center gap-2 pr-3">
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandMarkClassName}>
-            <img src="/logo.svg" alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
+            <img src={`${import.meta.env.BASE_URL}logo.svg`} alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
           </span>
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandTitleClassName}>
             {appName}
@@ -146,7 +166,7 @@ export function AppTitleBar({
       />
 
       {trailingContent}
-      {feedbackEnabled || onOpenPersonalAnalytics || onToggleRightWorkspace ? (
+      {hasHelpMenu || onToggleRightWorkspace || updateAction ? (
         <div
           className={cn(
             'app-titlebar-no-drag flex h-full flex-none items-center gap-0.5',
@@ -155,35 +175,13 @@ export function AppTitleBar({
           data-titlebar-no-drag="true"
           data-titlebar-trailing-actions="true"
         >
-          {!readOnly && (feedbackEnabled || onOpenPersonalAnalytics) ? (
-            <DropdownMenu open={helpMenuOpen} onOpenChange={(open) => {
-              setHelpMenuOpen(open);
-              if (open) setHelpTooltipOpen(false);
-            }}>
-              <Tooltip
-                open={helpTooltipOpen && !helpMenuOpen && !helpTooltipSuppressed}
-                onOpenChange={(open) => {
-                  if (open && (helpMenuOpen || helpTooltipSuppressed)) return;
-                  setHelpTooltipOpen(open);
-                }}
-              >
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      className={APP_TITLE_BAR_LAYOUT.helpActionClassName}
-                      aria-label={t('common.help')}
-                      onPointerLeave={() => setHelpTooltipSuppressed(false)}
-                      onBlur={() => {
-                        if (!helpMenuOpen) setHelpTooltipSuppressed(false);
-                      }}
-                    >
-                      {t('common.help')}
-                    </button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent>{t('common.help')}</TooltipContent>
-              </Tooltip>
+          {!readOnly && hasHelpMenu ? (
+            <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button type="button" className={APP_TITLE_BAR_LAYOUT.helpActionClassName}>
+                  {t('common.help')}
+                </button>
+              </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
                 className="min-w-40"
@@ -194,38 +192,27 @@ export function AppTitleBar({
                 }}
               >
                 {onOpenPersonalAnalytics ? (
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      helpNavigationPendingRef.current = true;
-                      setHelpTooltipOpen(false);
-                      setHelpTooltipSuppressed(true);
-                      setHelpMenuOpen(false);
-                      requestAnimationFrame(onOpenPersonalAnalytics);
-                    }}
-                    className="gap-2"
-                  >
+                  <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenPersonalAnalytics)} className="gap-2">
                     <BarChart3 className="size-4" />
                     {t('common.personalAnalytics')}
                   </DropdownMenuItem>
                 ) : null}
                 {feedbackEnabled ? (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    helpNavigationPendingRef.current = true;
-                    setHelpTooltipOpen(false);
-                    setHelpTooltipSuppressed(true);
-                    setHelpMenuOpen(false);
-                    requestAnimationFrame(() => setFeedbackOpen(true));
-                  }}
-                  className="gap-2"
-                >
+                <DropdownMenuItem onSelect={() => openFromHelpMenu(() => setFeedbackOpen(true))} className="gap-2">
                   <MessageSquareWarning className="size-4" />
                   {t('common.userFeedback')}
                 </DropdownMenuItem>
                 ) : null}
+                {onOpenReleaseNotes ? (
+                  <DropdownMenuItem onSelect={() => openFromHelpMenu(onOpenReleaseNotes)} className="gap-2">
+                    <NotebookText className="size-4" />
+                    {t('common.releaseNotes')}
+                  </DropdownMenuItem>
+                ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
+          {updateAction}
           {onToggleRightWorkspace ? (
             <Tooltip>
               <TooltipTrigger asChild>

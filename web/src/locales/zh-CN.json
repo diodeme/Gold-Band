@@ -77,6 +77,7 @@
       "keepAwake": "保持系统唤醒",
       "keepAwakeState": {
         "effective": "已生效，{{count}} 个启用任务",
+        "effective_other": "已生效，{{count}} 个启用任务",
         "enabledInactive": "已启用，当前未生效",
         "disabled": "未启用"
       },
@@ -377,7 +378,30 @@
     "feedbackErrorUnconfigured": "反馈功能暂不可用",
     "feedbackErrorSession": "关联会话不存在或已被移除，请重新选择",
     "feedbackErrorAttachment": "截图无法读取或格式不受支持，请使用 PNG、JPEG 或 WebP",
-    "feedbackErrorTooLarge": "上传内容超过大小限制，请减少截图或取消关联会话"
+    "feedbackErrorTooLarge": "上传内容超过大小限制，请减少截图或取消关联会话",
+    "imagePreview": "图片预览",
+    "markdownAlert": {
+      "note": "说明",
+      "tip": "提示",
+      "important": "重要",
+      "warning": "警告",
+      "caution": "注意"
+    },
+    "mermaid": {
+      "title": "Mermaid 图表",
+      "open": "在工作区打开",
+      "showSource": "查看源码",
+      "showDiagram": "显示图表",
+      "errors": {
+        "renderFailed": "Mermaid 图表渲染失败",
+        "cacheFull": "图表过多，暂时无法渲染"
+      }
+    },
+    "releaseNotes": "更新日志",
+    "remoteImage": {
+      "load": "加载",
+      "trustFailed": "加载失败，请重试"
+    }
   },
   "personalAnalytics": {
     "title": "个人数据分析",
@@ -563,6 +587,7 @@
     "closeWorkspace": "收起右侧工作区",
     "openNewTab": "打开新标签页",
     "closeTab": "关闭标签页",
+    "panelFailed": "此标签页无法显示",
     "allTabs": "所有标签页",
     "attention": "需要处理",
     "files": "工作空间",
@@ -578,6 +603,7 @@
       "reload": "刷新",
       "stop": "停止载入",
       "openInSystemBrowser": "用系统浏览器打开",
+      "allowLocalAccess": "允许访问",
       "switchToMobile": "切换到移动版",
       "switchToDesktop": "切换到电脑版",
       "newPage": "新建标签页",
@@ -633,7 +659,6 @@
       "zoomOut": "缩小",
       "fitImage": "适应窗口",
       "originalSize": "原始大小",
-      "resetImage": "重置图片",
       "zoomIn": "放大",
       "copyImage": "复制图片",
       "saveImageAs": "图片另存为",
@@ -642,7 +667,7 @@
       "imageCopied": "图片已复制",
       "imageSaved": "图片已保存",
       "imageActionFailed": "图片操作失败，请重试",
-      "draftPreviewUnavailable": "此附件将在发送后提供工作区预览",
+      "attachmentPreviewUnavailable": "无法预览此文件",
       "unsupportedTitle": "无法在应用内查看此文件",
       "openWithSystem": "使用系统应用打开",
       "conflict": "文件已被其他程序修改。请选择保留磁盘内容或覆盖磁盘版本。",
@@ -656,6 +681,18 @@
       "openHtmlInBrowser": "在浏览器中打开",
       "externalMarkdownImages": "此文档引用了 {{count}} 张目录外本地图片",
       "loadExternalMarkdownImages": "加载这些图片",
+      "newFile": "新建文件",
+      "newFolder": "新建文件夹",
+      "rename": "重命名",
+      "delete": "删除",
+      "deleting": "正在删除…",
+      "cancel": "取消",
+      "entryName": "名称",
+      "deleteTitle": "删除“{{name}}”？",
+      "deleteFileDescription": "文件将移到回收站。",
+      "deleteDirectoryDescription": "文件夹及其中所有内容将移到回收站。",
+      "deleteUnsavedWarning": "其中未保存的修改将丢失。",
+      "operationFailed": "操作失败，请重试。",
       "limitations": {
         "workspace-file": {
           "too-large": "文件超过应用内查看上限，可使用系统应用打开。",
@@ -684,11 +721,27 @@
           "read-failed": "文件读取失败，请重试。",
           "write-failed": "文件保存失败，请重试。",
           "search-failed": "文件搜索失败，请重试。",
-          "watch-failed": "文件变化监听失败，请重试。"
+          "watch-failed": "文件变化监听失败，请重试。",
+          "already-exists": "已存在同名文件或文件夹。",
+          "name-invalid": "该名称不可用，请换一个名称。",
+          "not-a-directory": "所选路径不是文件夹。",
+          "trash-failed": "无法移到回收站，请重试。",
+          "restore-unavailable": "无法撤销：该项目已不在回收站中。",
+          "unsaved-changes": "未保存的修改写入失败，已取消重命名。",
+          "system-open-failed": "系统应用无法打开此文件。",
+          "workspace-unavailable": "会话工作树不可用，可能已被收回或删除。",
+          "workspace-outside-project": "该目录不属于当前项目的 Git 工作树。"
         }
-      }
+      },
+      "remoteMarkdownImages": "此文档包含 {{count}} 张来自 {{hosts}} 的网络图片",
+      "remoteMarkdownImageHostSeparator": "、"
     },
-    "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？"
+    "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
+    "rootUnavailable": {
+      "released": "会话工作树已收回",
+      "unresolved": "会话工作树不可用",
+      "browseMain": "浏览主工作区"
+    }
   },
   "executionPlan": {
     "configureAuto": "AUTO 配置",
@@ -720,6 +773,10 @@
     }
   },
   "errors": {
+    "npx-cache.busy": "已有缓存修复正在进行，请稍后重试。",
+    "npx-cache.unavailable": "无法确认可修复的 npx 缓存目录，请重新运行环境诊断。",
+    "npx-cache.changed": "诊断、配置或缓存已变化，请关闭弹窗后重试。",
+    "npx-cache.cleanup-failed": "缓存清理失败，文件可能正在使用或没有访问权限。",
     "browser": {
       "webview": {
         "create_failed": "无法创建内置浏览器页面，请重试。",
@@ -734,7 +791,12 @@
         "cancelled": "已取消保存。"
       },
       "local_html": {
-        "grant_failed": "无法授权打开该本地 HTML。"
+        "grant_failed": "无法授权打开该本地 HTML。",
+        "access_denied": "页面需要读取未授权的目录 {{directory}}。",
+        "access_denied_more": "页面需要读取 {{count}} 个未授权的目录，包括 {{directory}}。"
+      },
+      "system_open": {
+        "failed": "系统浏览器无法打开此页面。"
       },
       "page": {
         "limit_reached": "打开的网页过多，请先关闭部分标签。"
@@ -757,6 +819,12 @@
       "workspace-outside-project": "所选 Worktree 不属于当前项目。",
       "ref-changed": "更改列表已更新，请再试一次。",
       "sync-ref-changed": "分支已变化，请再试一次。",
+      "push-upstream-invalid": "无法解析此分支的上游，请检查上游配置后重试。",
+      "push-upstream-unsupported": "此分支跟踪的是本地分支，暂不支持向该上游推送。",
+      "push-branch-not-current": "当前分支已变化，请重新打开推送确认。",
+      "push-remote-required": "请选择发布到哪个远程仓库。",
+      "push-confirmation-required": "请先确认推送的源分支和目标。",
+      "push-target-changed": "推送的源分支或目标已变化，请重新确认。",
       "repository-locked": "仓库正在执行其他写操作。",
       "workspace-locked": "当前工作空间正在执行其他写操作。",
       "operation-in-progress": "当前 Git 流程尚未结束，请完成或中止后重试。",
@@ -811,6 +879,7 @@
       "commit-review-worker-failed": "提交变更汇总任务异常终止。",
       "commit-reachability-query-failed": "无法读取该提交的当前归属。",
       "diff-review-session-expired": "该 Diff 审阅会话已过期，请从提交历史重新打开。",
+      "discard-failed": "无法放弃文件更改。",
       "operation-failed": "Git 操作失败。"
     },
     "github": {
@@ -857,18 +926,21 @@
       "command-required": "请填写 Agent 启动命令。"
     },
     "acp": {
+      "model-config-unavailable": "未能获取此模型的配置，可以继续使用当前设置。",
       "composer-history-stale": "输入历史已更新，请清空输入后重试。",
       "composer-history-not-found": "该条输入历史已不可用。",
       "composer-history-query-failed": "输入历史加载失败，请重试。",
       "turn-execution-failed": "本次消息处理失败，请重试。",
       "session-request-failed": "会话准备失败，请重试。",
       "missing-provider": "当前节点缺少 provider 配置。",
+      "subagent-protocol-upgrade-required": "请将 Claude ACP 升级至 {{minimumVersion}} 或更高版本后重试。",
       "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
       "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
       "invalid-conversation-branch-id": "该 Agent 会话链接无效或已失效。",
       "session-query-failed": "会话内容加载失败，请重试。",
       "activity-detail-query-failed": "活动详情加载失败，请重试。",
       "tool-detail-query-failed": "工具详情加载失败，请重试。",
+      "compaction-summary-query-failed": "无法加载压缩摘要，请重试。",
       "adapter-exited": "Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。",
       "adapter-exited-with-code": "Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。",
       "adapter-start-failed": "无法启动 Agent：{{osError}}",
@@ -930,6 +1002,11 @@
       "invalid-outcome": "人工 check 结果无效。"
     },
     "runtime": {
+      "io": {
+        "storage-full": "磁盘空间不足，本次执行已中断。释放空间后可继续。",
+        "permission-denied": "无法写入会话数据，请检查目录的写入权限。",
+        "attachment-path-too-long": "当前会话的数据目录层级过深，无法保存附件「{{name}}」。请新建会话后再发送。"
+      },
       "conversation-not-available": "工作流正在运行，暂时不能发送普通消息。",
       "continue-not-available": "当前节点不需要继续，可能已经恢复或不再可继续。",
       "continue-already-active": "工作流正在恢复，请稍候。",
@@ -960,9 +1037,11 @@
       "prompt-empty": "请输入要发送的内容。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
       "prompt-quote-limit-exceeded": "引用内容总长度不能超过 {{maxChars}} 个字符。",
+      "prompt-quote-diff-limit-exceeded": "完整 diff 引用总大小不能超过 {{maxBytes}} 字节。",
       "prompt-quote-count-exceeded": "单条消息最多包含 {{maxQuotes}} 条引用。",
       "prompt-quote-metadata-too-long": "引用标识过长，请删除后重新引用。",
       "prompt-role-invalid": "角色数据无效，请重新选择角色后再发送。",
+      "prompt-role-direct-only": "只有 Direct 模式可以指定角色。",
       "prompt-role-metadata-too-long": "角色标识过长，请重新选择角色后再发送。",
       "prompt-role-limit-exceeded": "角色定义不能超过 {{maxChars}} 个字符。",
       "prompt-queue-full": "待发送队列已满，最多可保留 10 条。",
@@ -1010,7 +1089,10 @@
       "dynamic-agent-duplicate": "AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 重复。",
       "dynamic-agent-model-blank": "AI-DYNAMIC 节点 {{nodeId}} 的 agent {{provider}} 模型不能为空。",
       "agent-model-blank": "Agent {{provider}} 的模型不能为空。",
-      "invalid": "工作流配置无效。"
+      "invalid": "工作流配置无效。",
+      "output": {
+        "repair-exhausted": "节点输出经 {{repairAttempts}} 次修复仍不符合输出格式，工作流已暂停。"
+      }
     },
     "workspace": {
       "path-invalid-utf8": "选择的工作空间路径不是有效 UTF-8。",
@@ -1024,10 +1106,16 @@
     },
     "updater": {
       "invalid-url": "更新地址无效。",
-      "check-failed": "检查更新失败：{{message}}",
-      "install-failed": "安装更新失败：{{message}}",
+      "check-failed": "{{detail}}",
+      "install-failed": "{{detail}}",
       "no-update": "当前没有可安装更新。",
-      "context-unavailable": "无法获取更新上下文，请先选择工作空间。"
+      "context-unavailable": "无法获取更新上下文，请先选择工作空间。",
+      "download-failed": "{{detail}}",
+      "network": "网络连接失败（{{detail}}）",
+      "signature-invalid": "更新包签名校验失败。",
+      "manifest-invalid": "更新清单无效（{{detail}}）",
+      "io": "读写更新包失败（{{detail}}）",
+      "stale-package": "已下载的更新包不高于当前版本。"
     },
     "multica": {
       "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
@@ -1042,6 +1130,11 @@
       "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
       "workspace-already-bound": "该工作空间已绑定。",
       "workspace-not-found": "找不到该工作空间绑定。"
+    },
+    "dynamic": {
+      "completion": {
+        "repair-exhausted": "节点输出经 {{repairAttempts}} 次修复仍不符合协议，工作流已暂停。"
+      }
     }
   },
   "status": {
@@ -1103,6 +1196,19 @@
     }
   },
   "agentManagement": {
+    "cacheRepair": {
+      "action": "修复缓存",
+      "title": "修复 npx 缓存？",
+      "description": "将清理本次错误涉及的 npx 安装缓存，其他使用此缓存的应用可能也会受到影响。下次启动可能需要联网重新下载依赖。此操作不会删除项目文件、全局安装包或账号配置。 正在使用这些缓存的 Agent 可能中断，建议先停止相关任务。",
+      "confirm": "清理并重新检测",
+      "loading": "正在检查缓存目录…",
+      "repairing": "正在清理缓存…",
+      "diagnosing": "正在重新检测 Agent…",
+      "targets": "查看目标目录（{{count}}）",
+      "cleared": "已清理",
+      "complete": "缓存已清理，Agent 检测通过。",
+      "stillFailed": "缓存已清理，但 Agent 检测仍未通过。请查看诊断原因。"
+    },
     "deleteUsageLoading": "正在统计绑定引用…",
     "deleteUsageTemplates": "受影响的工作流模板",
     "deleteUsageTasks": "受影响的 Task",
@@ -1681,11 +1787,13 @@
       "cleanup": "清理",
       "aiDynamic": "AI 动态节点",
       "end": "结束",
-      "newRound": "新 Round"
+      "newRound": "新 Round",
+      "newRoundFrom": "新 Round · 从 {{node}}"
     },
     "edgeLabels": {
       "success": "成功",
-      "failure": "失败"
+      "failure": "失败",
+      "newRoundFrom": "{{outcome}} · 从 {{node}}"
     },
     "successPath": "成功字段路径",
     "successEquals": "期望值",
@@ -1761,7 +1869,13 @@
     "noAttachments": "暂无附件"
   },
   "turnFiles": {
-    "title": "本轮变更 {{count}} 个文件",
+    "title": "已记录变更 · {{count}} 个文件",
+    "incompleteTitle": "变更记录不完整",
+    "recordedOnly": "仅含工具已记录的修改；同一文件多次编辑的行数按次累加，不代表最终 Git diff。",
+    "editCount": "{{count}} 次编辑",
+    "editNumber": "第 {{number}} 次编辑",
+    "evidenceUnavailable": "修改证据不完整，无法展示此比较。",
+    "comparisonTooLarge": "此比较超过查看器的大小限制。",
     "attachmentsTitle": "本轮生成 {{count}} 个附件",
     "attachmentList": "本轮新增附件",
     "showMoreAttachments": "展开其余 {{count}} 个附件",
@@ -1780,18 +1894,24 @@
     "previewDeleted": "预览已删除文件 {{path}} 的差异",
     "previewLoading": "正在加载文件差异…",
     "previewLoadFailed": "无法加载该文件差异",
-    "previewUnavailable": "该文件差异过大或不支持悬浮预览，可点击后在右侧工作区查看",
+    "previewUnavailable": "修改证据不完整，无法展示此比较。",
     "diffPreview": "文件差异悬浮预览",
     "turnDiff": "本轮修改 Diff",
     "previousChange": "上一处变化",
     "nextChange": "下一处变化",
     "diffViewer": "文件差异查看器",
+    "quoteDiff": "引用完整 diff 到对话",
     "versionViewer": "历史文件查看器",
     "diffUnavailable": "该文件差异无法在当前查看器中展示",
     "assetLoadFailed": "无法加载该会话文件",
     "assetViewer": "会话文件查看器"
   },
   "sourceControl": {
+    "discardChange": "放弃更改",
+    "discardDescription": "将此文件还原至 HEAD，放弃已暂存和未暂存的更改。新增文件将被删除。此操作无法撤销。",
+    "discarding": "正在放弃更改…",
+    "reviewStatisticsLoading": "正在统计行数…",
+    "reviewStatisticsRetry": "重试行数统计",
     "title": "源码管理",
     "description": "查看并管理当前工作空间的 Git 状态",
     "loading": "正在读取 Git 状态…",
@@ -1887,6 +2007,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "目标远程仓库",
+    "pushPreparing": "正在准备推送目标…",
+    "pushSetUpstream": "发布成功后，将目标分支设为上游。",
     "remote": "远程仓库",
     "name": "名称",
     "startPoint": "起点",
@@ -2071,6 +2195,10 @@
     "noChangedFiles": "没有可查看的变更文件"
   },
   "acp": {
+    "modelConfigNotFetched": "尚未获取此模型的配置",
+    "fetchModelConfig": "获取模型配置",
+    "fetchingModelConfig": "正在获取…",
+    "retryModelConfig": "重试",
     "composerHistoryError": "输入历史加载失败，清空输入后可重试。",
     "restored": "已恢复",
     "sessionSuperseded": "此会话已由 <attempt>{{target}}</attempt> 接续，请前往该 attempt 继续。",
@@ -2134,14 +2262,24 @@
     "composerPlaceholder": "继续会话…",
     "quoteAction": "引用",
     "quoteLabel": "引用 {{index}}",
-    "removeQuote": "删除引用 {{index}}",
+    "quoteDiffLabel": "{{name}} 变更片段",
+    "quoteDiffFileLabel": "{{name}} 完整 diff",
+    "quoteFileSource": "{{path}} 第 {{lines}} 行",
+    "quoteDiffOrigin": {
+      "workingTreeStaged": "已暂存的更改",
+      "workingTreeUnstaged": "未暂存的更改",
+      "commit": "提交 {{revision}}",
+      "pullRequest": "PR {{revision}}",
+      "agentTurn": "Agent 本轮修改"
+    },
+    "removeQuote": "删除引用 {{name}}",
     "removeAttachment": "删除附件 {{name}}",
     "quoteDuplicate": "这段内容已经引用过了。",
-    "quoteLimitExceeded": "引用内容总长度不能超过 {{max}} 个字符。",
+    "quoteLimitExceeded": "该引用为 {{size}} 个字符，超出单条消息 {{max}} 个字符的引用上限，本条消息还可引用 {{remaining}} 个字符。",
+    "quoteDiffLimitExceeded": "该 diff 为 {{size}}，超出单条消息 {{max}} 的完整 diff 引用上限，本条消息还可引用 {{remaining}}。可选中部分内容引用。",
     "quoteCountExceeded": "最多添加 {{max}} 条引用。",
     "userQuoteCount": "{{count}} 条引用",
     "userQuoteTitle": "引用详情",
-    "userQuoteLabel": "引用 {{index}}",
     "currentModel": "模型",
     "thoughtLevel": "思考强度",
     "unspecifiedThoughtLevel": "不指定",
@@ -2157,6 +2295,12 @@
     "autoAccept": "自动批准",
     "autoAcceptGroup": "{{appName}}来帮你…",
     "slashAgentGroup": "Agent",
+    "mentionFiles": "文件",
+    "mentionRoles": "角色",
+    "mentionWorkspaceRoot": "工作空间",
+    "mentionLoading": "正在加载…",
+    "mentionEmpty": "没有匹配的文件",
+    "mentionError": "无法读取文件",
     "attachHint": "添加附件",
     "send": "发送",
     "sendMessage": "发送消息",
@@ -2209,6 +2353,10 @@
     "toolRunning": "工具调用中",
     "compactionRunning": "正在压缩上下文",
     "compactionCompleted": "上下文压缩完成",
+    "viewCompactionSummary": "查看摘要",
+    "compactionSummary": "压缩摘要",
+    "compactionSummaryLoading": "正在加载摘要…",
+    "compactionSummaryUnavailable": "摘要已清除或不可用",
     "compactionInterrupted": "上下文压缩已中断",
     "compactionDelayed": "耗时较长，仍在等待 Agent",
     "compactionUsageBefore": "压缩前 {{used}} / {{size}}",
@@ -2217,6 +2365,7 @@
     "sessionElapsed": "会话累计 {{duration}}",
     "timingSession": "会话累计",
     "sessionFailed": "ACP 会话失败",
+    "workflowPaused": "工作流已暂停",
     "retrying": "正在重试 {{current}}/{{total}} 次",
     "retryFailed": "重试 {{count}} 次后失败",
     "retryStopped": "重试 {{count}} 次后已停止",
@@ -2232,6 +2381,7 @@
     "toolSkill": "Skill",
     "toolArguments": "参数",
     "toolReady": "已就绪",
+    "toolResultUnconfirmed": "结果未确认",
     "toolNoOutput": "暂无工具输出",
     "activityThinking": "思考中",
     "activityCalling": "正在调用 {{name}}",
@@ -2284,7 +2434,8 @@
       "output": "输出",
       "cacheRead": "缓存读取",
       "cacheWrite": "缓存写入",
-      "total": "总计"
+      "total": "总计",
+      "excludesBackground": "不含后台唤醒的消耗"
     }
   },
   "graph": {
@@ -2299,7 +2450,9 @@
     "viewSession": "查看会话",
     "viewLog": "查看日志",
     "copyNodeId": "复制 node id",
-    "retryFromNode": "从该节点重试"
+    "retryFromNode": "从该节点重试",
+    "layoutPending": "正在排布工作流图",
+    "layoutFailed": "工作流图排布失败"
   },
   "settings": {
     "title": "设置",
@@ -2307,7 +2460,7 @@
     "appearance": "外观",
     "language": "语言",
     "typography": "字体",
-    "advanced": "高级",
+    "logging": "日志",
     "light": "浅色",
     "dark": "深色",
     "system": "跟随系统",
@@ -2599,17 +2752,7 @@
       "saveOverride": "保存地址",
       "resetToBuiltIn": "恢复内置地址",
       "checkNow": "检查更新",
-      "install": "下载并安装",
       "lastCheckedAt": "上次检查：{{time}}",
-      "announcement": {
-        "title": "发现新版本 {{version}}",
-        "description": "可前往 设置 → 高级 → 更新 查看并安装。",
-        "dismiss": "关闭",
-        "view": "查看更新",
-        "dialogTitle": "发现新版本 {{version}}",
-        "dialogDescription": "检测到新的客户端版本。请前往 设置 → 高级 → 更新 完成下载和安装。",
-        "goToSettings": "前往设置更新"
-      },
       "channel": {
         "default": "默认",
         "wb": "WB"
@@ -2620,8 +2763,54 @@
         "available": "发现新版本",
         "downloading": "正在下载更新...",
         "not-available": "已是最新版本",
-        "error": "检查失败"
+        "error": "检查失败",
+        "ready": "更新已下载"
+      },
+      "downloaded": "已下载 {{size}}",
+      "action": {
+        "available": "下载并安装",
+        "failed": "重新下载并安装",
+        "ready": "重启并安装"
+      },
+      "dialog": {
+        "title": "发现新版本 {{version}}",
+        "noNotes": "该版本没有更新说明。",
+        "action": {
+          "available": "立即更新",
+          "failed": "重试",
+          "ready": "重启并安装",
+          "downloading": "正在下载"
+        }
+      },
+      "titleBar": {
+        "available": "更新",
+        "failed": "更新失败",
+        "ready": "重启安装",
+        "downloading": "更新中",
+        "downloadingPercent": "更新中 {{percent}}%",
+        "tooltip": "新版本 {{version}}"
+      },
+      "failure": {
+        "check": "检查更新失败：{{reason}}",
+        "download": "下载更新失败：{{reason}}",
+        "install": "安装更新失败：{{reason}}"
+      },
+      "releaseNotes": {
+        "title": "{{appName}} {{version}} 更新日志",
+        "empty": "当前版本暂无更新日志。",
+        "loadFailed": "更新日志加载失败。",
+        "more": "更多"
       }
+    },
+    "remoteImages": {
+      "title": "受信任的图片域名",
+      "description": "Markdown 中来自这些域名的网络图片会直接加载。其他网络图片需要先点击“加载”。",
+      "empty": "还没有受信任的域名",
+      "remove": "移除 {{host}}",
+      "removeFailed": "移除失败，请重试",
+      "hiddenCount": "+{{count}}",
+      "showAll": "显示全部 {{count}} 个",
+      "showLess": "收起"
     }
   },
   "multica": {
@@ -2675,6 +2864,7 @@
       "content.required": "内容不能为空",
       "agent.required": "AUTO 模式需要选择 Agent",
       "direct.agent.required": "Direct 模式需要选择 Agent",
+      "role.direct-only": "只有 Direct 模式可以指定角色",
       "direct.agent.not-found": "所选 Direct Agent 尚未配置",
       "direct.agent.unavailable": "所选 Direct Agent 当前不可用",
       "direct.model.not-found": "所选模型不受当前 Direct Agent 支持",
@@ -2732,6 +2922,7 @@
       "retryRuns": "运行历史加载失败，点击重试",
       "loadMoreRuns": "加载更多运行记录",
       "terminalResult": {
+        "new-message": "有新消息",
         "completed": "已完成，尚未查看",
         "stopped": "已停止，尚未查看",
         "failed": "执行异常，尚未查看"
@@ -2762,7 +2953,12 @@
           "noServerWorkspaces": "服务端暂无可绑定的工作空间，请先在 multica Web 创建工作空间。",
           "allWorkspacesBound": "所有远程工作空间均已绑定。"
         }
-      }
+      },
+      "keepResident": "常驻会话",
+      "releaseResident": "解除常驻",
+      "keepResidentHint": "Agent 有定时任务等需要长时间运行的工作时，请开启常驻，避免会话空闲后被回收",
+      "releaseResidentHint": "已常驻，空闲时不会被回收。点击解除常驻",
+      "resident": "常驻会话"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { hoverTooltip } from './helpers/tooltip';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -27,6 +28,7 @@ describe('ACP config overflow tooltip', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     document.body.replaceChildren();
   });
 
@@ -59,9 +61,7 @@ describe('ACP config overflow tooltip', () => {
       scrollWidth: { configurable: true, value: 220 },
     });
 
-    await act(async () => {
-      button.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
-    });
+    await hoverTooltip(button);
 
     const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
     expect(tooltip?.textContent).toBe('Agent full access');
@@ -80,6 +80,23 @@ describe('ACP config overflow tooltip', () => {
     const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
     expect(tooltip?.textContent).toBe('Agent full access');
     expect(tooltip?.className).toContain('pointer-events-none');
+  });
+
+  it('does not show the truncated value when focus returns after a pointer selection', async () => {
+    const { button, value } = await renderPermissionMenu();
+    Object.defineProperties(value, {
+      clientWidth: { configurable: true, value: 96 },
+      scrollWidth: { configurable: true, value: 220 },
+    });
+    // jsdom treats every focus as focus-visible; Chromium does not after pointer interaction.
+    const matches = Element.prototype.matches;
+    vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+      return selector === ':focus-visible' ? false : matches.call(this, selector);
+    });
+
+    await act(async () => button.focus());
+
+    expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
   });
 
   it('does not show a tooltip when the selected value fits', async () => {

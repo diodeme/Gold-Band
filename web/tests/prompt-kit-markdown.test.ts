@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
+import { isLocalFileHref, Markdown } from '@/components/prompt-kit/markdown';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { isDocumentAnchorHref, isExternalUrlHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 
@@ -43,13 +43,6 @@ describe('prompt-kit Markdown', () => {
     expect(parseLocalFileLinkTarget('src/client.rs')).toBeNull();
   });
 
-  it('proxies only local Markdown destinations through the safe render URL', () => {
-    const proxied = proxyLocalFileLinks('[file](D:/repo/client.rs:10) [web](https://example.com) ![image](D:/repo/a.png)\n[file2](D:/repo/next.rs:20)');
-    expect(proxied).toContain('https://gold-band.local-file.invalid/?href=');
-    expect(proxied.match(/https:\/\/gold-band\.local-file\.invalid/g)).toHaveLength(2);
-    expect(proxied).toContain('[web](https://example.com)');
-    expect(proxied).toContain('![image](D:/repo/a.png)');
-  });
   it('renders complete Markdown in static mode', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '**完成内容**',
@@ -104,6 +97,41 @@ describe('prompt-kit Markdown', () => {
     expect(html).not.toContain('font-mono');
   });
 
+  it.each([
+    { flavor: 'chat', streaming: false },
+    { flavor: 'chat', streaming: true },
+    { flavor: 'document', streaming: false },
+    { flavor: 'github-release', streaming: false },
+  ] as const)('keeps $flavor tables full-width and wrappable (streaming=$streaming)', ({ flavor, streaming }) => {
+    const identifier = 'ConversationSidebarWithVeryLongContinuousIdentifier';
+    const url = `https://example.com/${'long-path-segment-'.repeat(8)}`;
+    const html = renderToStaticMarkup(createElement(Markdown, {
+      flavor,
+      streaming,
+      children: [
+        '| 时间 | 提交 | 发生了什么 |',
+        '| --- | --- | --- |',
+        `| 06-08 | \`${identifier}\` | 说明文字在当前消息宽度内自动换行，不截断内容。 |`,
+        `| 10-10 | 后台活动 | [${url}](${url}) |`,
+      ].join('\n'),
+    }));
+
+    const tableClass = html.match(/<table class="([^"]+)"/)?.[1].split(' ');
+    expect(tableClass).toContain('w-full');
+    expect(tableClass).toContain('table-auto');
+    expect(tableClass).not.toContain('min-w-max');
+    const cells = Array.from(html.matchAll(/<(?:th|td) class="([^"]+)"/g));
+    expect(cells).toHaveLength(9);
+    for (const [, className] of cells) {
+      expect(className.split(' ')).toEqual(expect.arrayContaining([
+        'whitespace-normal', '[overflow-wrap:anywhere]', 'align-top',
+      ]));
+    }
+    expect(renderedText(html)).toContain(identifier);
+    expect(renderedText(html)).toContain(url);
+    expect(renderedText(html)).toContain('说明文字在当前消息宽度内自动换行，不截断内容。');
+  });
+
   it('renders backend-separated thought blocks without rewriting content', () => {
     const thought = '**Designing routes.**\n\n**Planning branches.**';
     const html = renderToStaticMarkup(createElement(Markdown, {
@@ -140,6 +168,8 @@ describe('prompt-kit Markdown', () => {
       TooltipProvider,
       null,
       createElement(Markdown, {
+        // Release notes load remote images without host trust, so the loaded-image adapter renders.
+        flavor: 'github-release',
         children: '<img src="https://example.com/preview.png" alt="Preview" width="64" />',
       }),
     ));

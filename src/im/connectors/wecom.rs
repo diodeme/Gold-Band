@@ -2920,6 +2920,25 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_resolution_markdown_says_cancelled_instead_of_handled() {
+        let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
+        for (locale, expected) in [
+            (ImLocale::ZhCn, "**id=0012 已取消**"),
+            (ImLocale::En, "**id=0012 Cancelled**"),
+        ] {
+            let mut delivery = desktop_resolution_delivery(ImNotificationKind::Elicitation);
+            let ImDeliveryPayload::InterventionResolution { resolution, .. } =
+                &mut delivery.payload
+            else {
+                unreachable!()
+            };
+            resolution.outcome = crate::im::ImResolutionOutcome::ElicitationCancelled;
+            let request = send_request("req-1", &delivery, &codec, locale).unwrap();
+            assert_eq!(request["body"]["markdown"]["content"], expected);
+        }
+    }
+
+    #[test]
     fn only_pending_interventions_use_the_linked_detail_flow() {
         assert!(delivery_requires_linked_detail(&permission_delivery(vec![
             permission_option("cancel", "No", PermissionActionKind::RejectOnce),

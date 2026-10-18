@@ -153,14 +153,11 @@ pub(crate) fn resolution_payload_card_content(
         Some(resolution.resolved_by),
         locale,
     );
+    let title = resolution_title(&resolution.outcome, locale);
     if let Some(source) = source {
         let elements =
             source_terminal_elements(source, token, locale, Some(&resolution.outcome), &extra);
-        return terminal_interactive_card(
-            elements,
-            message_state_label(locale, crate::im::ImMessageState::Handled),
-        )
-        .content();
+        return terminal_interactive_card(elements, title).content();
     }
     let display_ref = resolution
         .display_ref
@@ -168,11 +165,16 @@ pub(crate) fn resolution_payload_card_content(
         .unwrap_or_else(|| "----".to_owned());
     let mut lines = vec![format!("**id={}**", display_ref)];
     lines.extend(extra);
-    terminal_read_only_card(
-        &lines.join("\n\n"),
-        message_state_label(locale, crate::im::ImMessageState::Handled),
-    )
-    .content()
+    terminal_read_only_card(&lines.join("\n\n"), title).content()
+}
+
+/// A cancelled request was answered by no one: label it cancelled, not handled.
+fn resolution_title(outcome: &ImResolutionOutcome, locale: ImLocale) -> &'static str {
+    if outcome.is_cancelled() {
+        localized(locale, "im.intervention.cancelled")
+    } else {
+        message_state_label(locale, crate::im::ImMessageState::Handled)
+    }
 }
 
 fn pending_elements(
@@ -803,6 +805,9 @@ fn terminal_details(
             outcome_copy(outcome, delivery, locale)
         ));
     }
+    // A cancelled request has no handling surface to attribute.
+    let resolved_by =
+        resolved_by.filter(|_| !outcome.is_some_and(ImResolutionOutcome::is_cancelled));
     if let Some(resolved_by) = resolved_by {
         extra.push(format!(
             "- {}: {}",
@@ -2004,6 +2009,78 @@ pub(super) mod tests {
             id < node && node < task && task < workspace && workspace < body,
             "context fields must sit directly under the id: {content}"
         );
+    }
+
+    #[test]
+    fn cancelled_resolution_is_not_rendered_as_a_decline_or_a_handled_answer() {
+        let source = delivery(
+            ImNotificationKind::Elicitation,
+            vec![
+                InterventionAllowedAction::ElicitationAccept,
+                InterventionAllowedAction::ElicitationDecline,
+            ],
+        );
+        let resolution = |outcome| ImDeliveryPayload::InterventionResolution {
+            version: crate::im::IM_PAYLOAD_VERSION,
+            resolution: crate::im::InterventionResolutionNotification {
+                canonical_event_id: crate::im::resolution_event_id("event-1"),
+                source_event_id: "event-1".into(),
+                notification_kind: ImNotificationKind::Elicitation,
+                locator: crate::im::ImNavigationLocator {
+                    project_id: "p".into(),
+                    task_id: None,
+                    run_id: None,
+                    round_id: None,
+                    node_id: None,
+                    attempt_id: None,
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                    scheduled_occurrence_id: None,
+                },
+                display_ref: Some(12),
+                resolved_by: ImResolvedBy::Desktop,
+                outcome,
+            },
+        };
+        for (locale, cancelled, declined, handled, source_label) in [
+            (ImLocale::ZhCn, "已取消", "拒绝", "已处理", "处理端"),
+            (
+                ImLocale::En,
+                "Cancelled",
+                "Decline",
+                "Handled",
+                "Handled on",
+            ),
+        ] {
+            for source in [Some(&source), None] {
+                let content = resolution_payload_card_content(
+                    &resolution(ImResolutionOutcome::ElicitationCancelled),
+                    locale,
+                    source,
+                    &codec(),
+                );
+                let card: Value = serde_json::from_str(&content).unwrap();
+                assert_eq!(card["header"]["title"]["content"], cancelled, "{content}");
+                assert!(content.contains(cancelled), "{content}");
+                assert!(!content.contains(&format!(": {declined}")), "{content}");
+                assert!(!content.contains(handled), "{content}");
+                assert!(
+                    !content.contains(source_label),
+                    "nobody handled a cancelled request: {content}"
+                );
+
+                let declined_content = resolution_payload_card_content(
+                    &resolution(ImResolutionOutcome::ElicitationDeclined),
+                    locale,
+                    source,
+                    &codec(),
+                );
+                let card: Value = serde_json::from_str(&declined_content).unwrap();
+                assert_eq!(card["header"]["title"]["content"], handled);
+                assert!(declined_content.contains(&format!(": {declined}")));
+                assert!(declined_content.contains(source_label));
+            }
+        }
     }
 
     #[test]

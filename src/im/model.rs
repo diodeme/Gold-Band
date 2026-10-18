@@ -292,6 +292,14 @@ impl From<&InterventionAction> for ImResolutionOutcome {
     }
 }
 
+impl ImResolutionOutcome {
+    /// Whether the request ended without anyone answering it (stop/expiry).
+    /// Such an outcome has no handling surface to attribute.
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(self, Self::ElicitationCancelled)
+    }
+}
+
 impl std::fmt::Debug for ImResolutionOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -754,6 +762,54 @@ mod tests {
                 .is_err(),
             "old payloads must be migrated, not silently decoded"
         );
+    }
+
+    #[test]
+    fn cancelled_elicitation_is_a_distinct_resolution_from_a_user_decline() {
+        let outcome = |action| {
+            ImResolutionOutcome::from(&InterventionAction::Elicitation {
+                action,
+                content: None,
+            })
+        };
+        let cancelled = outcome(ElicitationAction::Cancel);
+        let declined = outcome(ElicitationAction::Decline);
+        assert_eq!(cancelled, ImResolutionOutcome::ElicitationCancelled);
+        assert_eq!(declined, ImResolutionOutcome::ElicitationDeclined);
+        assert!(cancelled.is_cancelled());
+        assert!(!declined.is_cancelled());
+
+        // Additive variant inside the v3 payload: no payload/schema bump, and
+        // every previously persisted outcome kind still decodes unchanged.
+        let wire = serde_json::to_value(&cancelled).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "elicitationCancelled" }));
+        assert_eq!(
+            serde_json::from_value::<ImResolutionOutcome>(wire).unwrap(),
+            cancelled
+        );
+        assert_eq!(
+            serde_json::from_value::<ImResolutionOutcome>(
+                serde_json::json!({ "kind": "elicitationDeclined" })
+            )
+            .unwrap(),
+            declined
+        );
+        let payload: ImDeliveryPayload = serde_json::from_value(serde_json::json!({
+            "kind": "interventionResolution",
+            "data": {
+                "version": IM_PAYLOAD_VERSION,
+                "resolution": {
+                    "canonicalEventId": "event:resolved",
+                    "sourceEventId": "event",
+                    "notificationKind": "elicitation",
+                    "locator": { "projectId": "project-1" },
+                    "resolvedBy": { "kind": "desktop" },
+                    "outcome": { "kind": "elicitationCancelled" }
+                }
+            }
+        }))
+        .unwrap();
+        assert!(payload.validate_for(ImNotificationKind::Elicitation));
     }
 
     #[test]

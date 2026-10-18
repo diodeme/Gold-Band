@@ -2472,6 +2472,301 @@
     "toast": {
       "type": "info",
       "content": "Handled"
+    },
+    "card": {
+      "type": "raw",
+      "data": {
+        "schema": "2.0",
+        "config": {
+          "update_multi": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "Handled"
+          },
+          "template": "grey"
+        },
+        "body": {
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "**id=0007**\n\n**Previous model output**\n\nPrevious **output**\n\n**More information required**\n\nA task is waiting for your permission decision."
+            },
+            {
+              "tag": "form",
+              "name": "gb_form",
+              "elements": [
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "select_static",
+                  "name": "q0",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Select an option"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "开发"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "生产"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "Other (enter text)"
+                      },
+                      "value": "other"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "input",
+                  "name": "q0_other",
+                  "required": false,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Optional"
+                  },
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "multi_select_static",
+                  "name": "q1",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Select options"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "2"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "input",
+                  "name": "q2",
+                  "required": true,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Enter text"
+                  },
+                  "input_type": "multiline_text",
+                  "rows": 3,
+                  "auto_resize": true,
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "select_static",
+                  "name": "q3",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Select an option"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "Other (enter text)"
+                      },
+                      "value": "other"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "input",
+                  "name": "q3_other",
+                  "required": false,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Optional"
+                  },
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "multi_select_static",
+                  "name": "q4",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Select options"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "Other (enter text)"
+                      },
+                      "value": "other"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "input",
+                  "name": "q4_other",
+                  "required": false,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Optional"
+                  },
+                  "disabled": true
+                },
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "Submit"
+                  },
+                  "type": "primary",
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "deliveryId": "delivery-1",
+                        "actionToken": "eyJ2ZXJzaW9uIjoxLCJkZWxpdmVyeUlkIjoiZGVsaXZlcnktMSIsImNhbm9uaWNhbEV2ZW50SWQiOiJldmVudC0xIiwiY2hhbm5lbCI6ImZlaXNodSIsImRlc3RpbmF0aW9uSWQiOiJvdV9vd25lciIsImV4cGlyZXNBdE1zIjoxMDAwMH0.iyzv7CT06oLYFXKIcpRN9YdZh3Tz9-1aK-Ad-wmRGL4",
+                        "form": true
+                      }
+                    }
+                  ],
+                  "name": "gb_submit",
+                  "form_action_type": "submit",
+                  "disabled": true
+                }
+              ]
+            },
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "Decline"
+              },
+              "type": "danger",
+              "behaviors": [
+                {
+                  "type": "callback",
+                  "value": {
+                    "deliveryId": "delivery-1",
+                    "actionToken": "eyJ2ZXJzaW9uIjoxLCJkZWxpdmVyeUlkIjoiZGVsaXZlcnktMSIsImNhbm9uaWNhbEV2ZW50SWQiOiJldmVudC0xIiwiY2hhbm5lbCI6ImZlaXNodSIsImRlc3RpbmF0aW9uSWQiOiJvdV9vd25lciIsImV4cGlyZXNBdE1zIjoxMDAwMH0.iyzv7CT06oLYFXKIcpRN9YdZh3Tz9-1aK-Ad-wmRGL4",
+                    "decline": true
+                  }
+                }
+              ],
+              "disabled": true
+            },
+            {
+              "tag": "markdown",
+              "content": "- Handled on: Feishu"
+            }
+          ]
+        }
+      }
     }
   },
   "zh-CN/expired": {
@@ -4947,6 +5242,301 @@
     "toast": {
       "type": "info",
       "content": "已处理"
+    },
+    "card": {
+      "type": "raw",
+      "data": {
+        "schema": "2.0",
+        "config": {
+          "update_multi": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "已处理"
+          },
+          "template": "grey"
+        },
+        "body": {
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "**id=0007**\n\n**前序模型输出**\n\nPrevious **output**\n\n**需要补充信息**\n\n任务正在等待你的权限决定。"
+            },
+            {
+              "tag": "form",
+              "name": "gb_form",
+              "elements": [
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "select_static",
+                  "name": "q0",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "请选择"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "开发"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "生产"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "其他（自行填写）"
+                      },
+                      "value": "other"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "input",
+                  "name": "q0_other",
+                  "required": false,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "选填"
+                  },
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "multi_select_static",
+                  "name": "q1",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "可多选"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "2"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "input",
+                  "name": "q2",
+                  "required": true,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "请输入"
+                  },
+                  "input_type": "multiline_text",
+                  "rows": 3,
+                  "auto_resize": true,
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "select_static",
+                  "name": "q3",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "请选择"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "其他（自行填写）"
+                      },
+                      "value": "other"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "input",
+                  "name": "q3_other",
+                  "required": false,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "选填"
+                  },
+                  "disabled": true
+                },
+                {
+                  "tag": "markdown",
+                  "content": "**部署环境**"
+                },
+                {
+                  "tag": "multi_select_static",
+                  "name": "q4",
+                  "required": true,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "可多选"
+                  },
+                  "options": [
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "0"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "同名选项"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "其他（自行填写）"
+                      },
+                      "value": "other"
+                    }
+                  ],
+                  "disabled": true
+                },
+                {
+                  "tag": "input",
+                  "name": "q4_other",
+                  "required": false,
+                  "max_length": 100,
+                  "width": "fill",
+                  "placeholder": {
+                    "tag": "plain_text",
+                    "content": "选填"
+                  },
+                  "disabled": true
+                },
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "提交"
+                  },
+                  "type": "primary",
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "deliveryId": "delivery-1",
+                        "actionToken": "eyJ2ZXJzaW9uIjoxLCJkZWxpdmVyeUlkIjoiZGVsaXZlcnktMSIsImNhbm9uaWNhbEV2ZW50SWQiOiJldmVudC0xIiwiY2hhbm5lbCI6ImZlaXNodSIsImRlc3RpbmF0aW9uSWQiOiJvdV9vd25lciIsImV4cGlyZXNBdE1zIjoxMDAwMH0.iyzv7CT06oLYFXKIcpRN9YdZh3Tz9-1aK-Ad-wmRGL4",
+                        "form": true
+                      }
+                    }
+                  ],
+                  "name": "gb_submit",
+                  "form_action_type": "submit",
+                  "disabled": true
+                }
+              ]
+            },
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "拒绝"
+              },
+              "type": "danger",
+              "behaviors": [
+                {
+                  "type": "callback",
+                  "value": {
+                    "deliveryId": "delivery-1",
+                    "actionToken": "eyJ2ZXJzaW9uIjoxLCJkZWxpdmVyeUlkIjoiZGVsaXZlcnktMSIsImNhbm9uaWNhbEV2ZW50SWQiOiJldmVudC0xIiwiY2hhbm5lbCI6ImZlaXNodSIsImRlc3RpbmF0aW9uSWQiOiJvdV9vd25lciIsImV4cGlyZXNBdE1zIjoxMDAwMH0.iyzv7CT06oLYFXKIcpRN9YdZh3Tz9-1aK-Ad-wmRGL4",
+                    "decline": true
+                  }
+                }
+              ],
+              "disabled": true
+            },
+            {
+              "tag": "markdown",
+              "content": "- 处理端: 飞书"
+            }
+          ]
+        }
+      }
     }
   }
 }

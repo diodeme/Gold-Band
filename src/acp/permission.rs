@@ -9,13 +9,14 @@ use crate::{
     acp::{
         events::current_timestamp,
         interaction::{
-            AcpPromptInteractionIdentity, AcpPromptInteractionKind,
+            AcpInteractionSettlement, AcpPromptInteractionIdentity, AcpPromptInteractionKind,
             PendingAcpPromptInteractionState, bind_pending_prompt_interaction_timeline_identity,
             write_pending_prompt_interaction,
         },
         timeline::{
             TimelineIndexedItem, TimelineItemIdentity, TimelineSettleOutcome,
-            read_indexed_pending_permission, read_indexed_timeline_item, settle_permission_item,
+            read_indexed_pending_permission, read_indexed_permission_request_by_request_id,
+            read_indexed_timeline_item, settle_permission_item,
         },
     },
     storage::{ensure_parent_dir, read_json, with_file_lock, write_json},
@@ -360,6 +361,46 @@ fn sanitize_id(id: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Canonical settlement of one permission request. The response file is the
+/// first-writer reservation, so it wins over the timeline while it exists; once
+/// the runtime removed the signal files, the settled timeline item is the fact.
+/// A still-pending item without signal files belongs to a runtime that ended
+/// without answering it. `None` means the request is unknown here.
+pub fn permission_request_settlement(
+    attempt_dir: &Utf8Path,
+    request_id: &str,
+) -> Result<Option<AcpInteractionSettlement>> {
+    if let Ok(response) =
+        read_json::<PermissionResponseState>(&permission_response_file(attempt_dir, request_id))
+    {
+        return Ok(Some(if response.cancelled {
+            AcpInteractionSettlement::Cancelled
+        } else {
+            AcpInteractionSettlement::Answered
+        }));
+    }
+    if pending_permission_file(attempt_dir, request_id).exists() {
+        return Ok(Some(AcpInteractionSettlement::Pending));
+    }
+    let item_id = format!("permission-{request_id}");
+    for (_, path) in crate::acp::branches::existing_branch_timeline_paths(attempt_dir)? {
+        if !path.exists() {
+            continue;
+        }
+        let indexed = match read_indexed_timeline_item(&path, &item_id)? {
+            Some(indexed) => Some(indexed),
+            None => read_indexed_permission_request_by_request_id(&path, request_id)?,
+        };
+        if let Some(indexed) = indexed {
+            return Ok(Some(match indexed.event.status.as_deref() {
+                Some("pending" | "cancelled") => AcpInteractionSettlement::Cancelled,
+                _ => AcpInteractionSettlement::Answered,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn resolve_permission_identity(

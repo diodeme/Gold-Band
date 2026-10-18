@@ -220,12 +220,14 @@ pub struct InterventionResolutionNotification {
 }
 
 /// Which surface won the intervention. Only the side whose command was
-/// `Accepted` writes it.
+/// `Accepted` writes it; `Runtime` marks a request the runtime ended without
+/// an answer, observed from canonical settlement rather than a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "channel", rename_all = "camelCase")]
 pub enum ImResolvedBy {
     Desktop,
     Channel(ImChannelKind),
+    Runtime,
 }
 
 /// How a per-target resolution record is written. `Send` is delivered by the
@@ -255,9 +257,10 @@ pub enum ImResolutionOutcome {
     ResultUnavailable,
     /// The user explicitly rejected the elicitation.
     ElicitationDeclined,
-    /// The execution was stopped or expired before anyone answered. Only the
-    /// desktop/runtime stop paths produce it; remote channels cannot submit it.
-    ElicitationCancelled,
+    /// The request ended without an answer: the execution was stopped, timed
+    /// out or abandoned. Only the desktop and the runtime settlement produce
+    /// it; remote channels cannot submit it.
+    Cancelled,
     ManualCheck {
         outcome: NodeOutcome,
     },
@@ -286,7 +289,7 @@ impl From<&InterventionAction> for ImResolutionOutcome {
             InterventionAction::Elicitation {
                 action: ElicitationAction::Cancel,
                 ..
-            } => Self::ElicitationCancelled,
+            } => Self::Cancelled,
             InterventionAction::ManualCheck { outcome } => Self::ManualCheck { outcome: *outcome },
         }
     }
@@ -296,7 +299,7 @@ impl ImResolutionOutcome {
     /// Whether the request ended without anyone answering it (stop/expiry).
     /// Such an outcome has no handling surface to attribute.
     pub const fn is_cancelled(&self) -> bool {
-        matches!(self, Self::ElicitationCancelled)
+        matches!(self, Self::Cancelled)
     }
 }
 
@@ -308,7 +311,7 @@ impl std::fmt::Debug for ImResolutionOutcome {
             }
             Self::ResultUnavailable => f.write_str("ResultUnavailable"),
             Self::ElicitationDeclined => f.write_str("ElicitationDeclined"),
-            Self::ElicitationCancelled => f.write_str("ElicitationCancelled"),
+            Self::Cancelled => f.write_str("Cancelled"),
             Self::PermissionOption { option_id } => f
                 .debug_struct("PermissionOption")
                 .field("option_id", option_id)
@@ -774,7 +777,7 @@ mod tests {
         };
         let cancelled = outcome(ElicitationAction::Cancel);
         let declined = outcome(ElicitationAction::Decline);
-        assert_eq!(cancelled, ImResolutionOutcome::ElicitationCancelled);
+        assert_eq!(cancelled, ImResolutionOutcome::Cancelled);
         assert_eq!(declined, ImResolutionOutcome::ElicitationDeclined);
         assert!(cancelled.is_cancelled());
         assert!(!declined.is_cancelled());
@@ -782,7 +785,7 @@ mod tests {
         // Additive variant inside the v3 payload: no payload/schema bump, and
         // every previously persisted outcome kind still decodes unchanged.
         let wire = serde_json::to_value(&cancelled).unwrap();
-        assert_eq!(wire, serde_json::json!({ "kind": "elicitationCancelled" }));
+        assert_eq!(wire, serde_json::json!({ "kind": "cancelled" }));
         assert_eq!(
             serde_json::from_value::<ImResolutionOutcome>(wire).unwrap(),
             cancelled
@@ -803,8 +806,8 @@ mod tests {
                     "sourceEventId": "event",
                     "notificationKind": "elicitation",
                     "locator": { "projectId": "project-1" },
-                    "resolvedBy": { "kind": "desktop" },
-                    "outcome": { "kind": "elicitationCancelled" }
+                    "resolvedBy": { "kind": "runtime" },
+                    "outcome": { "kind": "cancelled" }
                 }
             }
         }))

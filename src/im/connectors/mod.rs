@@ -144,6 +144,7 @@ pub(crate) fn resolved_by_copy(resolved_by: super::ImResolvedBy, locale: ImLocal
         ImResolvedBy::Desktop => "im.intervention.resolvedBy.desktop",
         ImResolvedBy::Channel(ImChannelKind::WeCom) => "im.intervention.resolvedBy.wecom",
         ImResolvedBy::Channel(ImChannelKind::Feishu) => "im.intervention.resolvedBy.feishu",
+        ImResolvedBy::Runtime => "im.intervention.resolvedBy.runtime",
     };
     localized(locale, key)
 }
@@ -392,6 +393,7 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
         (ImLocale::ZhCn, "im.intervention.resolvedBy.desktop") => "桌面端",
         (ImLocale::ZhCn, "im.intervention.resolvedBy.wecom") => "企业微信",
         (ImLocale::ZhCn, "im.intervention.resolvedBy.feishu") => "飞书",
+        (ImLocale::ZhCn, "im.intervention.resolvedBy.runtime") => "运行时",
         (ImLocale::ZhCn, "im.manualCheck.vote.linkedSubtitle") => {
             "模型输出见上一条消息，请选择检查结果后提交"
         }
@@ -518,6 +520,7 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
         (ImLocale::En, "im.intervention.resolvedBy.desktop") => "Desktop",
         (ImLocale::En, "im.intervention.resolvedBy.wecom") => "WeCom",
         (ImLocale::En, "im.intervention.resolvedBy.feishu") => "Feishu",
+        (ImLocale::En, "im.intervention.resolvedBy.runtime") => "Runtime",
         _ => key,
     }
 }

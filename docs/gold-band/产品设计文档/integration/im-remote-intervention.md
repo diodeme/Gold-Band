@@ -148,7 +148,7 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 `InterventionCommandService` 的 expected state 校验保持 first-writer-wins，但指纹输入必须与数据所有权一致：pending permission/elicitation 文件中的 `timelineIdentity` 只是展示索引回写，不改变用户待决策的问题、选项、expiry 或 canonical request。指纹序列化显式排除该字段；修改 params/request schema 或允许动作仍必须产生 `INTERVENTION_REVISION_CONFLICT`。
 
-企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；AlreadyHandled/RevisionConflict 收敛为已处理，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
+企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；已结算请求的 AlreadyHandled/RevisionConflict 收敛为已处理，请求仍待处理的 RevisionConflict（卡片快照已过期）收敛为已过期，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
 
 桌面 Runtime 在 blocking 边界返回通用 `ProcessedInboundAction { delivery, handling, settled_resolution }`。不在通用层保留企微专用类型；平台回包上下文由 connector 持有和解释。每个 InboundAction 独立任务处理，runtime 长期持有同一个 `ImInboundActionService` 和 ActionLocks，重复同一事件只执行一次。
 
@@ -186,10 +186,12 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 | 飞书 | 共享应用边界刷新 session | 另发同编号“已在飞书处理”文本 | 回调终态 + 相同结果的幂等 PATCH |
 
 - 终态投影只处理当前 eligible target（启用、有凭据/私聊绑定、具备投递/卡片能力且启用对应通知）。已有源 delivery 的目标写 Send/pending；没有源 delivery 的目标只写 TombstoneOnly/expired，拦截迟到源投影，不发送、不唤醒 worker、不计 active 配额。
-- 企微是来源时仅回调更新，不重复广播到自身；飞书来源仍写终态，确保超时和 generation 切换后可由 worker 补齐。
+- 企微是来源时仅回调更新，不重复广播到自身：被点击的企微目标写 TombstoneOnly/expired 保存赢家结果并关闭源卡，不另发第二条；飞书来源仍写终态，确保超时和 generation 切换后可由 worker 补齐。
+- Runtime 停止路径（Run 停止/节点 teardown、ACP 会话关闭、Direct 后台停止、Runtime 已消失的遗留请求）不经过桌面命令，统一由 canonical settlement 收敛：领域 `InterventionCommandService::settlement` 依据响应文件 → 待处理文件 → timeline 已结算项判定 `Pending | Answered | Cancelled`（无信号文件但 timeline 仍待处理视为被遗弃的取消）。IM 侧 settlement reconciler 在 RunCompleted / NodeCompleted / AcpTurnFinished / DirectTurnLifecycle 后（1 秒去抖）及每 30 秒扫描未结算的开放源卡（pending/sending/sent、未过期、无 `:resolved`），只为 `Cancelled` 写 `resolved_by=Runtime` 的取消终态；`Answered` 留给 Accepted 的一端写入，保持单赢家规则，重复扫描靠终态唯一键幂等。
+- 点击已结算请求的卡片时：已有终态直接回填；canonical 为取消则当场投影取消终态并回填；答案仍在写入途中则回“已处理”并禁用原卡，等待后续 PATCH 补齐结果；请求仍待处理（卡片快照过期，永远无法成功）则按“操作已过期”禁用原卡。领域对已结算请求返回 `INTERVENTION_ALREADY_HANDLED`，不再误报 `INTERVENTION_REQUEST_NOT_FOUND`。
 - 回调最多等待 2.5 秒，超时只返回“处理中”toast，原输入不被清除。Accepted 后的持久终态继续 PATCH；校验失败保持可编辑。
 - 只有消息撤回、删除或超过更新期限的 `MessageUpdateUnavailable` 才另发源上下文完整的只读终态卡；限流/网络错误退避重试，鉴权/缺权限/卡片协议失败不另发掩盖错误。
-- 两端竞争只允许一个 Accepted。迟到提交从已有终态读取赢家答案；没有可读取的赢家结果时只回已处理 toast，不使用后到答案填卡。领域 Accepted 与 IM 写入间崩溃的恢复限制保留，不新增跨库事务。
+- 两端竞争只允许一个 Accepted。迟到提交从已有终态读取赢家答案；没有可读取的赢家结果时回“已处理”并禁用原卡，不使用后到答案填卡。领域 Accepted 与 IM 写入间崩溃的恢复限制保留，不新增跨库事务。
 
 ## 7. 领域与数据所有权
 
@@ -221,9 +223,9 @@ IM 数据库不得保存 `approved/failed/completed` 作为工作流事实。它
 - `ImSubmittedAction` 为 PublishedAction、PermissionOption、ManualCheck、ElicitationForm、ElicitationDecline；平台类型不越过 connector。
 - `ImDeliveryPayload` 为带 version 的 Intervention、Information、InterventionResolution。只有 Intervention 可产生可执行入站；终态仅用于投递，不可再次提交。
 - `InterventionResolutionNotification` 保存 source_event_id、canonical_event_id、notification_kind、locator、display_ref、resolved_by、outcome。
-- `ImResolvedBy { Desktop, Channel(ImChannelKind) }`；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答（ElicitationDeclined）、执行停止或过期导致的取消（ElicitationCancelled）、人工检查结果或显式 ResultUnavailable。
-- 只有用户真实拒绝才是 Declined；领域 `ElicitationAction::Cancel` 映射为 Cancelled，只能由桌面/Runtime 的停止、超时与孤儿清理路径产生。`ImSubmittedAction` 没有取消变体，已发布的 allowed actions 也不包含取消，远程入站无法提交 Cancel。取消终态不归属任何处理端：飞书卡片标题和结果均显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”，不得显示为“拒绝”或“已在某端处理”。
-- ElicitationCancelled 是 payload v3 内的追加 serde 变体，不升级 payload/schema 版本：旧数据不可能包含它，已有变体的编码不变，无需迁移；按开发阶段策略不支持新库回退旧客户端。
+- `ImResolvedBy { Desktop, Channel(ImChannelKind), Runtime }`，`Runtime` 只标记由 canonical settlement 观察到的取消；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答（ElicitationDeclined）、请求未获回答即结束的取消（Cancelled，适用权限、追问与人工检查）、人工检查结果或显式 ResultUnavailable。
+- 只有用户真实拒绝才是 Declined；领域 `ElicitationAction::Cancel` 与 settlement 的 `Cancelled` 映射为 Cancelled，只能由桌面/Runtime 的停止、超时与孤儿清理路径产生。`ImSubmittedAction` 没有取消变体，已发布的 allowed actions 也不包含取消，远程入站无法提交 Cancel。取消终态不归属任何处理端：飞书卡片标题和结果均显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”，不得显示为“拒绝”或“已在某端处理”。
+- Cancelled（wire `cancelled`）与 `ImResolvedBy::Runtime` 是 payload v3 内的追加 serde 变体，不升级 payload/schema 版本：旧数据不可能包含它们，已有变体的编码不变，无需迁移；按开发阶段策略不支持新库回退旧客户端。
 - `ImResolutionDispatch { Send, TombstoneOnly }` 分离持久化事实与发送副作用。终态事件 identity 为 `<source_event_id>:resolved`，delivery identity 为 channel + destination + notification_kind + canonical_event_id 的稳定哈希。
 - `ImConnectionState` 为 Disabled、Connecting、Reconnecting、Connected、AuthenticationRequired、Error；快照携带 generation、capabilities、identity、binding、last_error_code。
 

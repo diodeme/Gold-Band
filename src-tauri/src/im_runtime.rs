@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use gold_band::app::intervention::InterventionLocator;
+use gold_band::app::intervention::{
+    InterventionCommandService, InterventionLocator, InterventionSettlement,
+};
 use gold_band::app::{App, RuntimeLifecycleEvent};
 use gold_band::im::{
     FeishuConnector, FeishuScanAuthClient, FeishuScanAuthError, FeishuScanAuthorization,
@@ -18,7 +20,7 @@ use gold_band::im::{
     ImMessageUpdateMode, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
     ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget,
     ImRepository, ImRepositoryError, ImResolutionDispatch, ImResolutionOutcome, ImResolvedBy,
-    ImWorkerSignal, InterventionResolutionNotification, OsImCredentialStore,
+    ImWorkerSignal, InterventionRef, InterventionResolutionNotification, OsImCredentialStore,
     ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector, WeComScanAuthClient,
     WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
     im_lifecycle_projection_channel, im_worker_channel, resolution_event_id,
@@ -32,8 +34,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app_with_emitters,
-    resolve_command_app_with_workspace_label,
+    CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app,
+    resolve_command_app_with_emitters, resolve_command_app_with_workspace_label,
 };
 use crate::im_scan_session::{ScanSessionSlot, ScanSlotError};
 use crate::state::DesktopState;
@@ -46,6 +48,8 @@ const IM_PROJECTION_ALERT_COOLDOWN_MS: i64 = 30_000;
 const IM_PROJECTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const IM_CHANNEL_CLEANUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const IM_WORKER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const IM_SETTLEMENT_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const IM_SETTLEMENT_SIGNAL_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,7 +175,23 @@ struct ActiveBindingPersistenceRetry {
 struct ProcessedInboundAction {
     delivery: Option<ImDelivery>,
     handling: std::result::Result<ImInboundHandling, ImErrorCode>,
-    settled_resolution: Option<InterventionResolutionNotification>,
+    settled_resolution: Option<SettledResult>,
+}
+
+/// The winner of a request that was already settled when the click arrived.
+#[derive(Debug, Clone)]
+struct SettledResult {
+    resolved_by: ImResolvedBy,
+    outcome: ImResolutionOutcome,
+}
+
+impl From<InterventionResolutionNotification> for SettledResult {
+    fn from(resolution: InterventionResolutionNotification) -> Self {
+        Self {
+            resolved_by: resolution.resolved_by,
+            outcome: resolution.outcome,
+        }
+    }
 }
 
 /// Resolution to broadcast after a channel's command was `Accepted`.
@@ -218,6 +238,9 @@ pub struct DesktopImRuntime {
     binding_persistence_retries: Mutex<HashMap<ImChannelKind, ActiveBindingPersistenceRetry>>,
     last_projection_alert_at_ms: AtomicI64,
     inbound_timing_sequence: AtomicU64,
+    /// Coalescing wake-up for the settlement reconciler (capacity 1).
+    settlement_signal: mpsc::Sender<()>,
+    settlement_receiver: Mutex<Option<mpsc::Receiver<()>>>,
     cancellation: CancellationToken,
 }
 
@@ -266,6 +289,7 @@ impl DesktopImRuntime {
             worker_senders.insert(channel, sender);
             worker_receivers.insert(channel, receiver);
         }
+        let (settlement_signal, settlement_receiver) = mpsc::channel(1);
         Ok(Arc::new(Self {
             repository,
             credential_store,
@@ -288,6 +312,8 @@ impl DesktopImRuntime {
             binding_persistence_retries: Mutex::new(HashMap::new()),
             last_projection_alert_at_ms: AtomicI64::new(i64::MIN),
             inbound_timing_sequence: AtomicU64::new(0),
+            settlement_signal,
+            settlement_receiver: Mutex::new(Some(settlement_receiver)),
             cancellation: CancellationToken::new(),
         }))
     }
@@ -391,6 +417,21 @@ impl DesktopImRuntime {
         }
         let maintenance = ImMaintenanceWorker::new(Arc::clone(&self.repository));
         tauri::async_runtime::spawn(maintenance.run(self.cancellation.child_token()));
+        let settlement_receiver = self
+            .settlement_receiver
+            .lock()
+            .expect("IM settlement receiver lock poisoned")
+            .take();
+        if let Some(receiver) = settlement_receiver {
+            let runtime = Arc::clone(&self);
+            let handle = app_handle.clone();
+            let cancellation = self.cancellation.child_token();
+            tauri::async_runtime::spawn(async move {
+                runtime
+                    .run_settlement_reconciler(handle, receiver, cancellation)
+                    .await;
+            });
+        }
         let cleanup_runtime = Arc::clone(&self);
         let cleanup_handle = app_handle.clone();
         let cleanup_cancellation = self.cancellation.child_token();
@@ -399,6 +440,71 @@ impl DesktopImRuntime {
                 .run_channel_cleanup_recovery(cleanup_handle, cleanup_cancellation)
                 .await;
         });
+    }
+
+    /// Finalizes cards of requests the runtime ended without an answer. A
+    /// lifecycle boundary wakes it (debounced so teardown finishes first); the
+    /// interval covers stop paths that emit no lifecycle event.
+    async fn run_settlement_reconciler(
+        self: Arc<Self>,
+        app_handle: AppHandle,
+        mut signals: mpsc::Receiver<()>,
+        cancellation: CancellationToken,
+    ) {
+        let mut interval = tokio::time::interval(IM_SETTLEMENT_RECONCILE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                _ = interval.tick() => {}
+                signal = signals.recv() => {
+                    if signal.is_none() {
+                        break;
+                    }
+                    tokio::time::sleep(IM_SETTLEMENT_SIGNAL_DEBOUNCE).await;
+                }
+            }
+            self.reconcile_runtime_cancellations(&app_handle).await;
+        }
+    }
+
+    async fn reconcile_runtime_cancellations(self: &Arc<Self>, app_handle: &AppHandle) {
+        let Ok(Some(targets)) = actionable_projection_target_snapshot(&self.targets) else {
+            return;
+        };
+        let runtime = Arc::clone(self);
+        let handle = app_handle.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let sources = runtime.repository.open_intervention_sources(now_ms)?;
+            if sources.is_empty() {
+                return Ok(0);
+            }
+            let state = handle.state::<DesktopState>();
+            let mut apps = HashMap::new();
+            project_runtime_cancellations(
+                &runtime.repository,
+                &runtime.worker_senders,
+                &targets,
+                &sources,
+                None,
+                now_ms,
+                |reference| published_request_settlement(state.inner(), &mut apps, reference),
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(0)) => {}
+            Ok(Ok(projected)) => info!(projected, "IM runtime cancellations projected"),
+            Ok(Err(error)) => warn!(
+                error_code = error.code(),
+                "IM runtime cancellation projection failed"
+            ),
+            Err(_) => warn!(
+                error_code = "IM_RUNTIME_UNAVAILABLE",
+                "IM runtime cancellation task failed"
+            ),
+        }
     }
 
     async fn run_channel_cleanup_recovery(
@@ -583,6 +689,9 @@ impl DesktopImRuntime {
         let registered = app.lifecycle_bus.subscribe_named(
             "desktop.im-projection",
             Arc::new(move |event| {
+                if ends_pending_interventions(&event) {
+                    let _ = runtime.settlement_signal.try_send(());
+                }
                 let canonical_event_id = event_canonical_id(&event).to_string();
                 let Some(project_id) = event_project_id(&event) else {
                     return;
@@ -1303,23 +1412,13 @@ impl DesktopImRuntime {
         };
         timing.delivery_lookup_ms = InboundTiming::elapsed_ms(delivery_started);
         let handling = self.process_inbound_delivery(app_handle, &envelope, &delivery, &mut timing);
-        let settled_resolution = if handling
+        let (handling, settled_resolution) = if handling
             .as_ref()
             .is_ok_and(|handling| handling.result.outcome == ImInboundOutcome::AlreadyApplied)
         {
-            match stored_intervention_resolution(&self.repository, &delivery) {
-                Ok(resolution) => resolution,
-                Err(_) => {
-                    warn!(
-                        channel = envelope.channel.as_str(),
-                        error_code = ImErrorCode::StorageUnavailable.as_str(),
-                        "IM settled result lookup failed"
-                    );
-                    None
-                }
-            }
+            self.settled_inbound_result(app_handle, envelope.channel, &delivery, handling)
         } else {
-            None
+            (handling, None)
         };
         let error_code = handling.as_ref().err().copied();
         self.log_inbound_timing(&envelope, error_code, timing, total_started);
@@ -1327,6 +1426,72 @@ impl DesktopImRuntime {
             delivery: Some(delivery),
             handling,
             settled_resolution,
+        }
+    }
+
+    /// Result of a click on a request that was no longer open. A stored
+    /// resolution answers it directly; otherwise the canonical settlement
+    /// decides: a cancellation is projected now, an answer in flight renders as
+    /// handled, and a still-pending request means this card's snapshot is
+    /// stale and can never succeed, so it is reported as expired.
+    fn settled_inbound_result(
+        &self,
+        app_handle: &AppHandle,
+        channel: ImChannelKind,
+        delivery: &ImDelivery,
+        handling: std::result::Result<ImInboundHandling, ImErrorCode>,
+    ) -> (
+        std::result::Result<ImInboundHandling, ImErrorCode>,
+        Option<SettledResult>,
+    ) {
+        match stored_intervention_resolution(&self.repository, delivery) {
+            Ok(Some(resolution)) => return (handling, Some(resolution.into())),
+            Ok(None) => {}
+            Err(_) => {
+                warn!(
+                    channel = channel.as_str(),
+                    error_code = ImErrorCode::StorageUnavailable.as_str(),
+                    "IM settled result lookup failed"
+                );
+                return (handling, None);
+            }
+        }
+        let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
+            return (handling, None);
+        };
+        let state = app_handle.state::<DesktopState>();
+        match published_request_settlement(state.inner(), &mut HashMap::new(), reference) {
+            Some(InterventionSettlement::Pending) => (Err(ImErrorCode::ActionExpired), None),
+            Some(InterventionSettlement::Cancelled) => {
+                let targets = self
+                    .targets
+                    .read()
+                    .map(|targets| targets.clone())
+                    .unwrap_or_default();
+                if let Err(error) = project_runtime_cancellations(
+                    &self.repository,
+                    &self.worker_senders,
+                    &targets,
+                    std::slice::from_ref(delivery),
+                    Some(&delivery.delivery_id),
+                    chrono::Utc::now().timestamp_millis(),
+                    |_| Some(InterventionSettlement::Cancelled),
+                ) {
+                    warn!(
+                        channel = channel.as_str(),
+                        error_code = error.code(),
+                        "IM runtime cancellation projection failed"
+                    );
+                }
+                // The callback replaces this card itself, even where the
+                // channel's own record was skipped as `CallbackOnly`.
+                let cancelled = SettledResult {
+                    resolved_by: ImResolvedBy::Runtime,
+                    outcome: ImResolutionOutcome::Cancelled,
+                };
+                (handling, Some(cancelled))
+            }
+            Some(InterventionSettlement::Answered) | None => (handling, None),
         }
     }
 
@@ -1548,8 +1713,9 @@ pub struct InterventionResolution<'a> {
 
 /// Writes one resolution record per eligible target (§9.2): targets that showed
 /// the card get a `Send` record, others a `TombstoneOnly` record that blocks a
-/// late source projection. A `CallbackOnly` channel that resolved the action
-/// already replaced its only card inside the callback and is skipped.
+/// late source projection. A `CallbackOnly` channel whose clicked card the
+/// callback already replaced gets a `TombstoneOnly` record too: it keeps the
+/// winner for later clicks and closes the source without a second card.
 fn project_intervention_resolution(
     repository: &ImRepository,
     worker_senders: &HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
@@ -1573,15 +1739,15 @@ fn project_intervention_resolution(
                 && source.destination.destination_id == destination.destination_id
                 && source.notification_kind == resolution.notification_kind
         });
-        if let Some(source) = source
-            && resolution.source_delivery_id == Some(source.delivery_id.as_str())
-            && target.capabilities.message_update == ImMessageUpdateMode::CallbackOnly
-        {
-            result.skipped += 1;
-            continue;
-        }
+        let replaced_in_callback = source.is_some_and(|source| {
+            resolution.source_delivery_id == Some(source.delivery_id.as_str())
+                && target.capabilities.message_update == ImMessageUpdateMode::CallbackOnly
+        });
         let (dispatch, display_ref) = match source {
-            Some(source) => (ImResolutionDispatch::Send, source.display_ref),
+            Some(source) if !replaced_in_callback => {
+                (ImResolutionDispatch::Send, source.display_ref)
+            }
+            Some(source) => (ImResolutionDispatch::TombstoneOnly, source.display_ref),
             None => (ImResolutionDispatch::TombstoneOnly, None),
         };
         let delivery =
@@ -1604,6 +1770,72 @@ fn project_intervention_resolution(
         }
     }
     Ok(result)
+}
+
+/// Projects `Cancelled` for each source whose request the runtime ended without
+/// an answer (§9.2). Every runtime stop path — run stop, session close, Direct
+/// background stop, abandoned runs — converges on the canonical settlement, so
+/// this is the single place that finalizes their cards. Answered requests are
+/// left to the surface whose command was `Accepted` (one winner per event);
+/// pending or unknown requests are untouched, which keeps passes idempotent.
+/// `clicked_delivery_id` marks a source whose card the current callback
+/// replaces, so a `CallbackOnly` channel is not sent a second card.
+fn project_runtime_cancellations(
+    repository: &ImRepository,
+    worker_senders: &HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
+    targets: &[ImProjectionTarget],
+    sources: &[ImDelivery],
+    clicked_delivery_id: Option<&str>,
+    now_ms: i64,
+    mut settle: impl FnMut(&InterventionRef) -> Option<InterventionSettlement>,
+) -> std::result::Result<usize, ImRepositoryError> {
+    let mut settled_events = std::collections::BTreeSet::new();
+    let mut projected = 0;
+    for source in sources {
+        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
+            continue;
+        };
+        if !settled_events.insert(source.canonical_event_id.as_str()) {
+            continue;
+        }
+        if settle(reference) != Some(InterventionSettlement::Cancelled) {
+            continue;
+        }
+        let result = project_intervention_resolution(
+            repository,
+            worker_senders,
+            targets,
+            &InterventionResolution {
+                source_event_id: &source.canonical_event_id,
+                notification_kind: source.notification_kind,
+                locator: &reference.locator,
+                resolved_by: ImResolvedBy::Runtime,
+                source_delivery_id: clicked_delivery_id
+                    .filter(|clicked| *clicked == source.delivery_id),
+                outcome: ImResolutionOutcome::Cancelled,
+            },
+            now_ms,
+        )?;
+        projected += result.inserted;
+    }
+    Ok(projected)
+}
+
+/// Canonical settlement of a published request, read in the request's own
+/// workspace. `apps` caches the workspace per project for one pass.
+fn published_request_settlement(
+    state: &DesktopState,
+    apps: &mut HashMap<String, Option<App>>,
+    reference: &InterventionRef,
+) -> Option<InterventionSettlement> {
+    let project_id = &reference.locator.project_id;
+    let app = apps
+        .entry(project_id.clone())
+        .or_insert_with(|| resolve_command_app(state, Some(project_id)).ok())
+        .as_ref()?;
+    InterventionCommandService::new(app)
+        .settlement(&reference.locator, &reference.request)
+        .ok()
 }
 
 fn resolution_delivery(
@@ -2585,6 +2817,17 @@ fn event_project_id(event: &RuntimeLifecycleEvent) -> Option<&str> {
     }
 }
 
+/// Boundaries after which a runtime may have ended requests without an answer.
+fn ends_pending_interventions(event: &RuntimeLifecycleEvent) -> bool {
+    matches!(
+        event,
+        RuntimeLifecycleEvent::RunCompleted { .. }
+            | RuntimeLifecycleEvent::NodeCompleted { .. }
+            | RuntimeLifecycleEvent::AcpTurnFinished { .. }
+            | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+    )
+}
+
 fn event_canonical_id(event: &RuntimeLifecycleEvent) -> &str {
     match event {
         RuntimeLifecycleEvent::RunPaused { event_id, .. }
@@ -3524,9 +3767,145 @@ mod tests {
             101,
         )
         .unwrap();
-        assert_eq!(result.skipped, 1);
-        assert_eq!(result.inserted, 0);
+        assert_eq!(result.inserted, 1, "the winner is kept as a tombstone");
+        assert!(receiver.try_recv().is_err(), "no second card is sent");
+        assert_eq!(
+            stored_intervention_resolution(&repository, &source)
+                .unwrap()
+                .map(|stored| stored.resolved_by),
+            Some(ImResolvedBy::Channel(ImChannelKind::WeCom))
+        );
+        assert!(
+            repository
+                .open_intervention_sources(102)
+                .unwrap()
+                .is_empty(),
+            "the replaced card is closed"
+        );
+    }
+
+    fn source_for_request(event_id: &str, request_id: &str) -> ImDelivery {
+        let mut source = vote_delivery();
+        source.canonical_event_id = event_id.into();
+        if let ImDeliveryPayload::Intervention { reference, .. } = &mut source.payload {
+            reference.request =
+                gold_band::app::intervention::InterventionRequestIdentity::Permission {
+                    request_id: request_id.into(),
+                };
+        }
+        source.refresh_id();
+        source
+    }
+
+    fn settle_by_request(reference: &InterventionRef) -> Option<InterventionSettlement> {
+        let gold_band::app::intervention::InterventionRequestIdentity::Permission { request_id } =
+            &reference.request
+        else {
+            return None;
+        };
+        match request_id.as_str() {
+            "cancelled" => Some(InterventionSettlement::Cancelled),
+            "answered" => Some(InterventionSettlement::Answered),
+            "pending" => Some(InterventionSettlement::Pending),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn runtime_cancellation_finalizes_only_cancelled_open_sources_once() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(8);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+        let cancelled = source_for_request("event-cancelled", "cancelled");
+        let answered = source_for_request("event-answered", "answered");
+        let pending = source_for_request("event-pending", "pending");
+        let unknown = source_for_request("event-unknown", "unknown");
+        for source in [&cancelled, &answered, &pending, &unknown] {
+            repository.enqueue(source, 100).unwrap();
+        }
+        let targets = [wecom_target(&cancelled.destination)];
+
+        let sources = repository.open_intervention_sources(200).unwrap();
+        assert_eq!(sources.len(), 4);
+        let projected = project_runtime_cancellations(
+            &repository,
+            &worker_senders,
+            &targets,
+            &sources,
+            None,
+            200,
+            settle_by_request,
+        )
+        .unwrap();
+
+        assert_eq!(projected, 1);
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            ImWorkerSignal::DeliveryAvailable
+        );
+        let ImDeliveryPayload::InterventionResolution { resolution, .. } =
+            resolution_record(&repository, &cancelled).payload
+        else {
+            panic!("expected resolution payload");
+        };
+        assert_eq!(resolution.resolved_by, ImResolvedBy::Runtime);
+        assert_eq!(resolution.outcome, ImResolutionOutcome::Cancelled);
+        for open in [&answered, &pending, &unknown] {
+            assert!(
+                stored_intervention_resolution(&repository, open)
+                    .unwrap()
+                    .is_none(),
+                "only the surface that won writes an answered result"
+            );
+        }
+
+        let remaining = repository.open_intervention_sources(300).unwrap();
+        assert_eq!(remaining.len(), 3, "a resolved source is no longer open");
+        let replay = project_runtime_cancellations(
+            &repository,
+            &worker_senders,
+            &targets,
+            &sources,
+            None,
+            300,
+            settle_by_request,
+        )
+        .unwrap();
+        assert_eq!(replay, 0, "a second pass is idempotent");
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn runtime_cancellation_for_a_clicked_callback_only_card_is_not_sent_twice() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+        let source = source_for_request("event-cancelled", "cancelled");
+        repository.enqueue(&source, 100).unwrap();
+
+        let projected = project_runtime_cancellations(
+            &repository,
+            &worker_senders,
+            &[wecom_target(&source.destination)],
+            std::slice::from_ref(&source),
+            Some(&source.delivery_id),
+            200,
+            settle_by_request,
+        )
+        .unwrap();
+
+        assert_eq!(projected, 1, "the cancellation is kept as a tombstone");
+        assert!(
+            receiver.try_recv().is_err(),
+            "the callback replaces the clicked card itself"
+        );
+        assert!(
+            repository
+                .open_intervention_sources(300)
+                .unwrap()
+                .is_empty(),
+            "a later periodic pass cannot send a second card"
+        );
     }
 
     #[test]
@@ -3578,18 +3957,12 @@ mod tests {
             for (index, source) in sources.iter().enumerate() {
                 let callback_only_winner =
                     index == 0 && winner == ImResolvedBy::Channel(ImChannelKind::WeCom);
-                let stored = stored_intervention_resolution(&repository, source).unwrap();
-                assert_eq!(
-                    stored.is_none(),
-                    callback_only_winner,
-                    "{winner:?} -> {:?}",
-                    source.channel
-                );
+                let stored = stored_intervention_resolution(&repository, source)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{winner:?} -> {:?}", source.channel));
                 assert_eq!(receivers[index].try_recv().is_ok(), !callback_only_winner);
-                if let Some(stored) = stored {
-                    assert_eq!(stored.resolved_by, winner);
-                    assert_eq!(stored.outcome, outcome);
-                }
+                assert_eq!(stored.resolved_by, winner);
+                assert_eq!(stored.outcome, outcome);
             }
             // Replaying the winner cannot send or mutate another terminal result.
             let replay =
@@ -3658,7 +4031,9 @@ mod tests {
             101,
         )
         .unwrap();
-        let settled_resolution = stored_intervention_resolution(&repository, &source).unwrap();
+        let settled_resolution = stored_intervention_resolution(&repository, &source)
+            .unwrap()
+            .map(Into::into);
         let losing = ProcessedInboundAction {
             delivery: Some(source),
             handling: Ok(ImInboundHandling {

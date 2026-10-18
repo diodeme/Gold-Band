@@ -15,12 +15,12 @@ use tokio_util::time::{DelayQueue, delay_queue::Key as DelayKey};
 use uuid::Uuid;
 
 use super::{
-    RenderedAction, action_name, intervention_actions, localized, message_state_label,
-    notification_markdown, presentation_detail_text,
+    AcceptedAnswer, RenderedAction, accepted_answers, action_name, intervention_actions, join_list,
+    localized, message_state_label, notification_markdown, presentation_detail_text,
 };
 use crate::app::intervention::{
     ElicitationQuestionKind, InterventionAllowedAction, PermissionActionKind,
-    PermissionActionQualifier, RemoteElicitationAnswer, RemoteElicitationForm,
+    PermissionActionQualifier, RemoteElicitationAnswer, RemoteElicitationForm, RemoteQuestion,
     permission_action_qualifier,
 };
 use crate::im::{
@@ -722,13 +722,7 @@ fn remote_action_rank(action: &RenderedAction) -> usize {
 fn delivery_elicitation_form(
     reference: &crate::im::InterventionRef,
 ) -> Result<&RemoteElicitationForm, ImIntegrationError> {
-    reference
-        .allowed_actions
-        .iter()
-        .find_map(|action| match action {
-            InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
-            _ => None,
-        })
+    InterventionAllowedAction::fixed_form(&reference.allowed_actions)
         .ok_or_else(|| ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid))
 }
 
@@ -1261,22 +1255,27 @@ fn action_response_request(
             selections,
         } => {
             let delivered_form = intervention.and_then(|(delivery, reference)| {
-                reference
-                    .allowed_actions
-                    .iter()
-                    .find_map(|action| match action {
-                        InterventionAllowedAction::ElicitationFixedForm { form } => {
-                            Some((form, delivery.display_ref))
-                        }
-                        _ => None,
-                    })
+                InterventionAllowedAction::fixed_form(&reference.allowed_actions)
+                    .map(|form| (form, delivery.display_ref))
             });
+            let form = delivered_form.map(|(form, _)| form);
+            let accepted = match (state, form, response.outcome.as_ref()) {
+                (
+                    ImMessageState::Handled,
+                    Some(form),
+                    Some(ImResolutionOutcome::ElicitationSubmitted { content }),
+                ) => accepted_answers(form, content),
+                _ => Vec::new(),
+            };
             let accepted_selections;
             let selections = if state == ImMessageState::Handled {
-                accepted_selections = accepted_form_selections(
-                    delivered_form.map(|(form, _)| form),
-                    response.outcome.as_ref(),
-                );
+                accepted_selections = accepted
+                    .iter()
+                    .map(|answer| WeComFormItem {
+                        selector_key: answer.question.selector_key.clone(),
+                        option_ids: answer.option_ids().to_vec(),
+                    })
+                    .collect::<Vec<_>>();
                 accepted_selections.as_slice()
             } else {
                 selections.as_slice()
@@ -1287,10 +1286,10 @@ fn action_response_request(
                 state,
                 locale,
                 &WeComFormRender {
-                    card_kind: delivered_form
-                        .map_or(*card_kind, |(form, _)| WeComFormCardKind::for_form(form)),
+                    card_kind: form.map_or(*card_kind, WeComFormCardKind::for_form),
                     selections,
-                    form: delivered_form.map(|(form, _)| form),
+                    form,
+                    accepted: &accepted,
                     display_ref: delivered_form.and_then(|(_, display_ref)| display_ref),
                 },
             );
@@ -1407,42 +1406,6 @@ fn accepted_vote_index(
     })
 }
 
-fn accepted_form_selections(
-    form: Option<&RemoteElicitationForm>,
-    outcome: Option<&ImResolutionOutcome>,
-) -> Vec<WeComFormItem> {
-    let (Some(form), Some(ImResolutionOutcome::ElicitationSubmitted { content })) = (form, outcome)
-    else {
-        return Vec::new();
-    };
-    form.questions
-        .iter()
-        .map(|question| {
-            let answer = content.get(&question.question.field_name);
-            let option_ids = question
-                .question
-                .options
-                .iter()
-                .enumerate()
-                .filter_map(|(index, option)| {
-                    let selected = match question.question.question_kind {
-                        ElicitationQuestionKind::MultiSelect => answer
-                            .and_then(Value::as_array)
-                            .is_some_and(|values| values.contains(&option.value)),
-                        ElicitationQuestionKind::SingleSelect => answer == Some(&option.value),
-                        ElicitationQuestionKind::FreeText => false,
-                    };
-                    selected.then(|| index.to_string())
-                })
-                .collect();
-            WeComFormItem {
-                selector_key: question.selector_key.clone(),
-                option_ids,
-            }
-        })
-        .collect()
-}
-
 fn vote_card_summary_key(actions: &[InterventionAllowedAction]) -> &'static str {
     if actions.iter().any(|action| {
         matches!(
@@ -1461,6 +1424,8 @@ struct WeComFormRender<'a> {
     card_kind: WeComFormCardKind,
     selections: &'a [WeComFormItem],
     form: Option<&'a RemoteElicitationForm>,
+    /// Accepted answers of a handled card; empty otherwise.
+    accepted: &'a [AcceptedAnswer<'a>],
     display_ref: Option<u16>,
 }
 
@@ -1493,31 +1458,30 @@ fn form_terminal_summary(
     let Some(form) = form_selection.form else {
         return message_state_label(locale, state).to_owned();
     };
+    let display = |question: &RemoteQuestion| {
+        form_selection
+            .accepted
+            .iter()
+            .find(|answer| answer.question.selector_key == question.selector_key)
+            .and_then(|answer| answer.display(locale))
+    };
     match (form_selection.card_kind, form.questions.as_slice()) {
         (WeComFormCardKind::VoteSingle | WeComFormCardKind::VoteMulti, [question, ..]) => {
-            let selected = selected_form_option_ids(form_selection, &question.selector_key);
-            selected
-                .iter()
-                .filter_map(|option_id| option_id.parse::<usize>().ok())
-                .filter_map(|index| question.question.options.get(index))
-                .map(|option| option.label.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            display(question).unwrap_or_default()
         }
-        (_, questions) => questions
-            .iter()
-            .map(|question| {
-                let selected = selected_form_option_ids(form_selection, &question.selector_key);
-                let label = selected
-                    .first()
-                    .and_then(|option_id| option_id.parse::<usize>().ok())
-                    .and_then(|index| question.question.options.get(index))
-                    .map(|option| option.label.as_str())
-                    .unwrap_or("-");
-                format!("{}: {label}", question.question.title)
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
+        (_, questions) => join_list(
+            locale,
+            &questions
+                .iter()
+                .map(|question| {
+                    format!(
+                        "{}: {}",
+                        question.question.title,
+                        display(question).as_deref().unwrap_or("-")
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
     }
 }
 
@@ -4330,7 +4294,7 @@ mod tests {
             format!("{}:submit", card_task_id("delivery-1", "req-1"))
         );
         assert!(card["submit_button"].get("disable").is_none());
-        assert_eq!(card["main_title"]["title"], "id=0080 已处理：选项A, 选项B");
+        assert_eq!(card["main_title"]["title"], "id=0080 已处理：选项A、选项B");
 
         let questions_form = RemoteElicitationForm {
             questions: vec![
@@ -4389,6 +4353,55 @@ mod tests {
                 .unwrap()
                 .contains("id=0080")
         );
+    }
+
+    /// A custom "other" answer accepted elsewhere (desktop or Feishu) is the
+    /// accepted result: the WeCom terminal title must show it, not nothing.
+    #[test]
+    fn elicitation_terminal_title_shows_an_accepted_custom_answer() {
+        let mut question = choice_question(
+            "q0",
+            "database",
+            ElicitationQuestionKind::SingleSelect,
+            vec![ElicitationQuestionOption {
+                value: json!("mysql"),
+                label: "MySQL".into(),
+                description: None,
+            }],
+            false,
+        );
+        question.question.allows_custom_answer = true;
+        question.custom_answer_key = Some("database_custom".into());
+        let form = RemoteElicitationForm {
+            questions: vec![question],
+            decline_allowed: false,
+        };
+        let mut delivery =
+            permission_delivery(vec![InterventionAllowedAction::ElicitationFixedForm {
+                form: form.clone(),
+            }]);
+        delivery.display_ref = Some(80);
+        let handle = WeComResponseHandle {
+            req_id: "callback-req-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
+            selection: WeComCallbackSelection::Form {
+                card_kind: WeComFormCardKind::VoteSingle,
+                selections: Vec::new(),
+            },
+        };
+        let update = action_response_request(
+            &handle,
+            &ImActionResponse {
+                outcome: Some(ImResolutionOutcome::ElicitationSubmitted {
+                    content: json!({ "database_custom": "SQLite" }),
+                }),
+                ..response_with(ImActionResponseState::AlreadyHandled, Some(delivery))
+            },
+            ImLocale::ZhCn,
+        );
+        let card = &update["body"]["template_card"];
+        assert_eq!(card["main_title"]["title"], "id=0080 已处理：SQLite");
+        assert_eq!(card["checkbox"]["option_list"][0]["is_checked"], false);
     }
 
     #[test]

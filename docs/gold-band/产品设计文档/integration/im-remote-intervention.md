@@ -218,7 +218,7 @@ IM 数据库不得保存 `approved/failed/completed` 作为工作流事实。它
 - `ImChannelKind { WeCom, Feishu }`。
 - `ImChannelCapabilities { proactive_delivery, card_actions, private_chat, message_update, interaction }`；`message_update` 为 `None | CallbackOnly | Anytime`。
 - `ImInteractionCapabilities` 包含 permission_max_options、max_questions、单题/多题单选容量、multi_choice、free_text、custom_answer、decline。
-- `RemoteElicitationForm { questions: Vec<RemoteQuestion>, decline_allowed }`；RemoteQuestion 包含 selector_key、领域 ElicitationQuestion、constraints 与 custom_answer_key。文本、多选、“其他”以同一领域 content 构建函数提交 schema-shaped JSON。
+- `RemoteElicitationForm { questions: Vec<RemoteQuestion>, decline_allowed }`；RemoteQuestion 包含 selector_key、领域 ElicitationQuestion、constraints 与 custom_answer_key。文本、多选、“其他”以同一领域 content 构建函数提交 schema-shaped JSON；反向由 `remote_question_answer` 把已接受的 content 逐题解码为 `RemoteElicitationAnswer`（选项 id、“其他”文本或文本），飞书禁用控件回填、“提交内容”行与企微终态标题都只消费这一投影（`connectors::accepted_answers`），按发布副本解码失败的题按未回答展示。发布副本里的固定表单统一经 `InterventionAllowedAction::fixed_form` 查找。
 - `InterventionRef { locator, request, expected_state, allowed_actions, expires_at_ms }`；request 区分 Permission request_id、Elicitation elicitation_id、ManualCheck。locator 包含 project/task/run/round/node/attempt 与可选 outer locator。
 - `ImSubmittedAction` 为 PublishedAction、PermissionOption、ManualCheck、ElicitationForm、ElicitationDecline；平台类型不越过 connector。
 - `ImDeliveryPayload` 为带 version 的 Intervention、Information、InterventionResolution。只有 Intervention 可产生可执行入站；终态仅用于投递，不可再次提交。

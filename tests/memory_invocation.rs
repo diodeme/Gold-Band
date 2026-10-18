@@ -247,7 +247,7 @@ fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         resume_prompt_visibility: PromptVisibility::Visible,
         stream_mode: StreamMode::StreamJson,
         log_prompts: false,
-        automatic_prompt_retry: false,
+        automatic_retry_of: None,
         attachments_dir: None,
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),

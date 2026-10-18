@@ -1596,7 +1596,6 @@ mod tests {
                 attachment_paths: Vec::new(),
                 admitted_at: "2026-08-27T00:00:00Z".to_string(),
             },
-            false,
         )
         .unwrap();
         crate::acp::events::write_timeline_items(

@@ -1015,7 +1015,7 @@ pub struct AdapterConnection {
     exit_status_logged: AtomicBool,
     stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
     stderr_failures: Mutex<StderrFailureLog>,
-    stderr_diagnostics: Mutex<String>,
+    stderr_diagnostics: Mutex<StderrDiagnosticTail>,
     stderr_failures_changed: Condvar,
 }
 
@@ -1023,6 +1023,50 @@ pub struct AdapterConnection {
 struct StderrFailureLog {
     text: String,
     finished: bool,
+}
+
+/// The most recent non-noise adapter stderr lines, bounded by characters.
+///
+/// The connection is pooled per adapter and workspace, so these lines cannot
+/// be attributed to one session. They only explain a connection-level
+/// failure such as a request timeout.
+#[derive(Default)]
+struct StderrDiagnosticTail {
+    lines: VecDeque<String>,
+    chars: usize,
+}
+
+impl StderrDiagnosticTail {
+    fn push(&mut self, line: &str) {
+        let line = line.trim_end();
+        if line.is_empty() {
+            return;
+        }
+        let line_chars = line.chars().count();
+        let line = if line_chars > STDERR_DIAGNOSTIC_MAX_CHARS {
+            line.chars()
+                .skip(line_chars - STDERR_DIAGNOSTIC_MAX_CHARS)
+                .collect()
+        } else {
+            line.to_string()
+        };
+        self.chars += line.chars().count() + 1;
+        self.lines.push_back(line);
+        while self.chars > STDERR_DIAGNOSTIC_MAX_CHARS + 1 {
+            let Some(oldest) = self.lines.pop_front() else {
+                break;
+            };
+            self.chars -= oldest.chars().count() + 1;
+        }
+    }
+
+    fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 pub struct ActivePromptGuard {
@@ -1237,7 +1281,7 @@ impl AdapterConnection {
             exit_status_logged: AtomicBool::new(false),
             stderr_noise_counts: Mutex::new(BTreeMap::new()),
             stderr_failures: Mutex::new(StderrFailureLog::default()),
-            stderr_diagnostics: Mutex::new(String::new()),
+            stderr_diagnostics: Mutex::new(StderrDiagnosticTail::default()),
             stderr_failures_changed: Condvar::new(),
         });
 
@@ -1344,31 +1388,16 @@ impl AdapterConnection {
     }
 
     fn record_stderr_diagnostic(&self, line: &str) {
-        let Ok(mut diagnostics) = self.stderr_diagnostics.lock() else {
-            return;
-        };
-        append_failure_stderr_text(&mut diagnostics, line);
-        if diagnostics.chars().count() > STDERR_DIAGNOSTIC_MAX_CHARS {
-            *diagnostics = diagnostics
-                .chars()
-                .skip(diagnostics.chars().count() - STDERR_DIAGNOSTIC_MAX_CHARS)
-                .collect();
+        if let Ok(mut diagnostics) = self.stderr_diagnostics.lock() {
+            diagnostics.push(line);
         }
     }
 
-    pub fn stderr_diagnostic_tail(&self, max_chars: usize) -> String {
-        let diagnostics = self
-            .stderr_diagnostics
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default();
-        tail_text(&diagnostics, max_chars)
-    }
-
-    pub fn take_stderr_diagnostics(&self) -> String {
+    /// Latest bounded non-noise stderr of this adapter connection.
+    pub fn stderr_diagnostic_tail(&self) -> String {
         self.stderr_diagnostics
             .lock()
-            .map(|mut value| std::mem::take(&mut *value))
+            .map(|diagnostics| diagnostics.text())
             .unwrap_or_default()
     }
 
@@ -2121,14 +2150,6 @@ fn append_failure_stderr_text(target: &mut String, line: &str) {
     if target.chars().count() > STDERR_FAILURE_MAX_CHARS {
         *target = target.chars().take(STDERR_FAILURE_MAX_CHARS).collect();
     }
-}
-
-fn tail_text(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return text.to_string();
-    }
-    text.chars().skip(char_count - max_chars).collect()
 }
 
 fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
@@ -3479,6 +3500,24 @@ mod tests {
         append_failure_stderr_text(&mut bounded, "npm error extra");
         assert_eq!(bounded.chars().count(), STDERR_FAILURE_MAX_CHARS);
         assert!(!bounded.contains("extra"));
+    }
+
+    #[test]
+    fn stderr_diagnostic_tail_keeps_the_latest_lines_within_its_bound() {
+        let mut tail = super::StderrDiagnosticTail::default();
+        for index in 0..400 {
+            tail.push(&format!("adapter diagnostic line {index:04}"));
+        }
+        let text = tail.text();
+        assert!(text.chars().count() <= super::STDERR_DIAGNOSTIC_MAX_CHARS);
+        assert!(text.ends_with("adapter diagnostic line 0399"), "{text}");
+        assert!(!text.contains("adapter diagnostic line 0000"));
+
+        tail.push(&"x".repeat(super::STDERR_DIAGNOSTIC_MAX_CHARS + 10));
+        tail.push("final line");
+        let text = tail.text();
+        assert!(text.chars().count() <= super::STDERR_DIAGNOSTIC_MAX_CHARS);
+        assert!(text.ends_with("final line"), "{text}");
     }
 
     #[test]

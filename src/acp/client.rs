@@ -25,36 +25,6 @@ pub use direct::{
 };
 use subagents::{NativeSubagents, canonical_tool_item_id, native_tool_branch};
 
-fn stderr_tail(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return text.to_string();
-    }
-    text.chars().skip(char_count - max_chars).collect()
-}
-
-fn node_version_hint() -> String {
-    if let Ok(version) = std::env::var("npm_config_node_version") {
-        if !version.trim().is_empty() {
-            return version;
-        }
-    }
-    if let Ok(version) = std::env::var("NODE_VERSION") {
-        if !version.trim().is_empty() {
-            return version;
-        }
-    }
-    crate::process::background_command("node")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|version| version.trim().to_string())
-        .filter(|version| !version.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
     item_id: String,
@@ -3403,7 +3373,6 @@ fn run_prompt_inner(
             }
             runtime.control.mark_stopped();
             runtime.settle_foreground_turn_tools();
-            runtime.persist_adapter_stderr_diagnostics();
             // The outer lifecycle guard commits failure and its reason together.
             // A metadata-only failed write here would close its owner revision.
             runtime.shutdown();
@@ -3443,7 +3412,6 @@ fn run_prompt_inner(
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
     runtime.control.mark_stopped();
     runtime.settle_foreground_turn_tools();
-    runtime.persist_adapter_stderr_diagnostics();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
         let _ = session_update();
@@ -5849,58 +5817,42 @@ impl<'a> AcpRuntime<'a> {
         self.request_with_progress(method, params, Some(timeout), None, false)
     }
 
+    /// A request timeout keeps the code and recovery that text normalization
+    /// already assigns to "timed out", and adds only non-sensitive adapter
+    /// identity plus the connection's recent stderr as raw evidence. Adapter
+    /// args and environment can carry tokens or private paths.
     fn transport_timeout_error(&self, method: &str, timeout: Duration) -> anyhow::Error {
         let adapter = self.connection.adapter();
-        let path_head = std::env::var("PATH")
-            .unwrap_or_default()
-            .chars()
-            .take(200)
-            .collect::<String>();
-        let mut stderr = self
-            .connection
-            .wait_for_failure_stderr(crate::acp::connection::STDERR_FAILURE_DRAIN_TIMEOUT);
-        let diagnostic_stderr = self
-            .connection
-            .stderr_diagnostic_tail(4_000);
-        if !diagnostic_stderr.is_empty() {
-            if !stderr.is_empty() {
-                stderr.push('\n');
-            }
-            stderr.push_str(&diagnostic_stderr);
-        }
-        let params = serde_json::json!({
-            "method": method,
-            "timeoutSeconds": timeout.as_secs(),
-            "adapter": {
-                "command": adapter.command,
-                "args": adapter.args,
-            },
-            "pathHead": path_head,
-            "nodeVersion": node_version_hint(),
-            "stderrTail": stderr_tail(&stderr, 2_000),
-        });
+        let adapter_command = std::path::Path::new(&adapter.command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let stderr = [
+            self.connection
+                .wait_for_failure_stderr(crate::acp::connection::STDERR_FAILURE_DRAIN_TIMEOUT),
+            self.connection.stderr_diagnostic_tail(),
+        ]
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
         let info = crate::runtime_error::RuntimeErrorInfo::new(
             crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
             "runtime.transport-interrupted",
             crate::runtime_error::RecoveryMode::Auto,
-            format!("ACP `{method}` timed out after {} seconds", timeout.as_secs()),
-            params,
-            None,
+            format!(
+                "ACP `{method}` timed out after {} seconds",
+                timeout.as_secs()
+            ),
+            json!({
+                "method": method,
+                "timeoutSeconds": timeout.as_secs(),
+                "adapterId": adapter.adapter_id,
+                "adapterCommand": adapter_command,
+            }),
+            (!stderr.is_empty()).then(|| json!({ "stderrTail": stderr })),
         );
         crate::runtime_error::runtime_error(info)
-    }
-
-    fn persist_adapter_stderr_diagnostics(&self) {
-        let stderr = self.connection.take_stderr_diagnostics();
-        if stderr.trim().is_empty() {
-            return;
-        }
-        append_structured_diagnostic_best_effort(
-            &self.paths.diagnostics,
-            "warning",
-            "acp.adapter-stderr-diagnostic",
-            Some(json!({ "stderrTail": stderr_tail(&stderr, 2_000) })),
-        );
     }
 
     fn request_with_progress(
@@ -11067,6 +11019,14 @@ mod tests {
                     std::fs::create_dir(worker_ref).unwrap();
                 }
                 json!({"error": {"code": -32603, "message": "ORIGINAL_PROMPT_FAILURE"}})
+            } else if stall_method == "session-new-timeout-failure"
+                && frame["method"] == "session/new"
+            {
+                json!({"error": {"code": -32603, "message": "STARTUP_FAILURE"}})
+            } else if stall_method == "prompt-timeout-failure"
+                && frame["method"] == "session/prompt"
+            {
+                json!({"error": {"code": -32603, "message": "DISPATCHED_FAILURE"}})
             } else if frame["method"] == stall_method {
                 // Rescue the unfixed implementation without mistaking rescue for a timeout.
                 std::thread::sleep(DOCTOR_FIXTURE_RESCUE_DELAY);
@@ -11396,6 +11356,123 @@ mod tests {
         assert_prompt_execution_failure("prompt-failure-worker-ref");
     }
 
+    /// Runs one real prompt attempt against the fixture adapter and returns
+    /// the attempt it owned together with the error it ended with.
+    fn run_failing_fixture_attempt(
+        fixture: &str,
+    ) -> (
+        tempfile::TempDir,
+        Utf8PathBuf,
+        crate::acp::events::AcpPromptSubmission,
+        crate::acp::events::AcpLifecycleOwner,
+        anyhow::Error,
+    ) {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let snapshot = attempt.join("acp.snapshot.json");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-retry-fixture".into(),
+            operation_id: "operation-first".into(),
+            adapter_id: "retry-fixture".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+                role: None,
+                workspace_files: Vec::new(),
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&snapshot, &submission, None).unwrap()
+        else {
+            panic!("fixture must own its turn")
+        };
+        let result = super::run_prompt(
+            "retry-fixture",
+            &doctor_fixture_config(fixture),
+            cwd.clone(),
+            cwd.clone(),
+            attempt,
+            &non_runtime_control_test_prompt("turn-retry-fixture"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner.clone(),
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        let error = result.err().expect("fixture attempt must fail");
+        (root, snapshot, submission, owner, error)
+    }
+
+    #[test]
+    fn automatic_retry_reopens_only_attempts_whose_prompt_was_never_dispatched() {
+        use crate::acp::events::{
+            AcpFailedPromptAttempt, AcpLatestTurnStatus, AcpPromptSubmission,
+            AcpTurnExecutionClaim, admit_session_turn_for_execution, read_lifecycle_header,
+        };
+        for (fixture, reopens) in [
+            ("session-new-timeout-failure", true),
+            ("prompt-timeout-failure", false),
+        ] {
+            let (_root, snapshot, submission, owner, error) = run_failing_fixture_attempt(fixture);
+            let failed = read_lifecycle_header(&snapshot).unwrap().unwrap();
+            assert_eq!(
+                failed.latest_turn_status,
+                AcpLatestTurnStatus::Failed,
+                "{error:#}"
+            );
+            // The fixture fails with a JSON-RPC error. Classify it as an
+            // auto-recoverable failure so only the dispatch fact varies.
+            let mut value = crate::storage::read_json::<Value>(&snapshot).unwrap();
+            let mut turn_error = failed
+                .turn_error
+                .clone()
+                .expect("failure must persist its error");
+            turn_error.recovery = RecoveryMode::Auto;
+            value["turnError"] = serde_json::to_value(turn_error).unwrap();
+            crate::storage::write_json(&snapshot, &value).unwrap();
+            let retry = AcpPromptSubmission {
+                operation_id: "operation-retry".into(),
+                ..submission
+            };
+            let claim = admit_session_turn_for_execution(
+                &snapshot,
+                &retry,
+                Some(&AcpFailedPromptAttempt::of_owner(&owner)),
+            )
+            .unwrap();
+            assert_eq!(
+                matches!(claim, AcpTurnExecutionClaim::Claimed(_)),
+                reopens,
+                "{fixture}: {claim:?}"
+            );
+        }
+    }
+
     fn assert_prompt_execution_failure(fixture: &str) {
         use crate::acp::events::{
             AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
@@ -11421,7 +11498,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&snapshot, &submission, false).unwrap()
+            admit_session_turn_for_execution(&snapshot, &submission, None).unwrap()
         else {
             panic!("fixture must own its turn")
         };
@@ -13271,7 +13348,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -13371,7 +13448,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -13609,7 +13686,7 @@ mod tests {
             ..submission
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("follow-up ownership")
@@ -13704,7 +13781,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -13922,7 +13999,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -14135,7 +14212,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -14229,7 +14306,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -14361,7 +14438,7 @@ mod tests {
             admitted_at: super::current_timestamp(),
         };
         let AcpTurnExecutionClaim::Claimed(owner) =
-            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
+            admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, None)
                 .unwrap()
         else {
             panic!("turn ownership")
@@ -14473,10 +14550,12 @@ mod tests {
                 attachment_paths: vec![],
                 admitted_at: super::current_timestamp(),
             };
-            let AcpTurnExecutionClaim::Claimed(owner) =
-                admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
-                    .unwrap()
-            else {
+            let AcpTurnExecutionClaim::Claimed(owner) = admit_session_turn_for_execution(
+                &attempt.join("acp.snapshot.json"),
+                &submission,
+                None,
+            )
+            .unwrap() else {
                 panic!("turn ownership")
             };
             super::register_direct_session(
@@ -14589,10 +14668,12 @@ do {
                 attachment_paths: vec![],
                 admitted_at: super::current_timestamp(),
             };
-            let AcpTurnExecutionClaim::Claimed(owner) =
-                admit_session_turn_for_execution(&attempt.join("acp.snapshot.json"), &submission, false)
-                    .unwrap()
-            else {
+            let AcpTurnExecutionClaim::Claimed(owner) = admit_session_turn_for_execution(
+                &attempt.join("acp.snapshot.json"),
+                &submission,
+                None,
+            )
+            .unwrap() else {
                 panic!("turn ownership")
             };
             super::register_direct_session(
@@ -14726,7 +14807,7 @@ do {
                     admitted_at: super::current_timestamp(),
                 };
                 let AcpTurnExecutionClaim::Claimed(owner) =
-                    admit_session_turn_for_execution(&snapshot, &submission, false).unwrap()
+                    admit_session_turn_for_execution(&snapshot, &submission, None).unwrap()
                 else {
                     panic!("terminal must release turn ownership")
                 };

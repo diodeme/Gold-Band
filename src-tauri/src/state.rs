@@ -25,8 +25,8 @@ use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
 };
 use gold_band::config::{
-    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
-    SettingsConfig, StateConfig,
+    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
+    StateConfig,
 };
 use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;

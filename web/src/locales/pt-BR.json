@@ -2346,7 +2346,6 @@
     "stopFailed": "Falha ao parar",
     "stopHint": "Parar a sessão ACP atual",
     "noEvents": "Nenhum evento ACP",
-    "launchingClaude": "Iniciando Agent",
     "preparingAgent": "Preparando Agent",
     "processing": "Processando",
     "thinkingNow": "Pensando",

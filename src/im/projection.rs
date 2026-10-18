@@ -573,10 +573,7 @@ pub(crate) fn project_for_channel(
             usize::from(capabilities.permission_max_options),
         )),
         ImNotificationKind::Elicitation => {
-            let form = actions.iter().find_map(|action| match action {
-                InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
-                _ => None,
-            })?;
+            let form = InterventionAllowedAction::fixed_form(actions)?;
             let mut form = fit_form(form, capabilities)?;
             form.decline_allowed &= actions
                 .iter()

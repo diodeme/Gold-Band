@@ -130,6 +130,16 @@ pub enum InterventionAllowedAction {
     ManualFailure,
 }
 
+impl InterventionAllowedAction {
+    /// The fixed form published among `actions`, if any.
+    pub fn fixed_form(actions: &[Self]) -> Option<&RemoteElicitationForm> {
+        actions.iter().find_map(|action| match action {
+            Self::ElicitationFixedForm { form } => Some(form),
+            _ => None,
+        })
+    }
+}
+
 pub fn intervention_action_for_allowed(action: &InterventionAllowedAction) -> InterventionAction {
     match action {
         InterventionAllowedAction::PermissionOption { option_id, .. } => {
@@ -1876,6 +1886,55 @@ fn remote_option_index(option_id: &str, option_count: usize) -> Option<usize> {
     (index < option_count && index.to_string() == option_id).then_some(index)
 }
 
+/// Decodes one question's answer from canonical elicitation content: the
+/// inverse of `encode_remote_answer`. `None` means the question is unanswered.
+/// Multi choices keep the content order; option ids are canonical indexes.
+pub fn remote_question_answer(
+    question: &RemoteQuestion,
+    content: &Value,
+) -> Result<Option<RemoteElicitationAnswer>, RemoteFormViolation> {
+    let option_id = |value: &Value| {
+        question
+            .question
+            .options
+            .iter()
+            .position(|option| option.value == *value)
+            .map(|index| index.to_string())
+            .ok_or(RemoteFormViolation::OptionInvalid)
+    };
+    let value = content.get(&question.question.field_name);
+    let custom = question
+        .custom_answer_key
+        .as_ref()
+        .and_then(|key| content.get(key));
+    Ok(Some(
+        match (&question.question.question_kind, value, custom) {
+            (_, None, None) => return Ok(None),
+            (_, Some(_), Some(_)) => return Err(RemoteFormViolation::AnswerInvalid),
+            (_, None, Some(Value::String(text))) => RemoteElicitationAnswer::Choice {
+                option_ids: Vec::new(),
+                custom_text: Some(text.clone()),
+            },
+            (ElicitationQuestionKind::FreeText, Some(Value::String(text)), None) => {
+                RemoteElicitationAnswer::Text { text: text.clone() }
+            }
+            (ElicitationQuestionKind::SingleSelect, Some(value), None) if !value.is_array() => {
+                RemoteElicitationAnswer::Choice {
+                    option_ids: vec![option_id(value)?],
+                    custom_text: None,
+                }
+            }
+            (ElicitationQuestionKind::MultiSelect, Some(Value::Array(values)), None) => {
+                RemoteElicitationAnswer::Choice {
+                    option_ids: values.iter().map(option_id).collect::<Result<_, _>>()?,
+                    custom_text: None,
+                }
+            }
+            _ => return Err(RemoteFormViolation::AnswerInvalid),
+        },
+    ))
+}
+
 /// Validates canonical content against a remote form by decoding it back to
 /// answers and re-encoding through `remote_form_content`.
 pub fn remote_elicitation_form_allows_content(
@@ -1894,50 +1953,11 @@ pub fn remote_elicitation_form_allows_content(
     if fields.keys().any(|field| !known(field)) {
         return Err(RemoteFormViolation::AnswerInvalid);
     }
-    let option_id = |question: &RemoteQuestion, value: &Value| {
-        question
-            .question
-            .options
-            .iter()
-            .position(|option| option.value == *value)
-            .map(|index| index.to_string())
-            .ok_or(RemoteFormViolation::OptionInvalid)
-    };
     let mut answers = BTreeMap::new();
     for question in &form.questions {
-        let value = fields.get(&question.question.field_name);
-        let custom = question
-            .custom_answer_key
-            .as_ref()
-            .and_then(|key| fields.get(key));
-        let answer = match (&question.question.question_kind, value, custom) {
-            (_, None, None) => continue,
-            (_, Some(_), Some(_)) => return Err(RemoteFormViolation::AnswerInvalid),
-            (_, None, Some(Value::String(text))) => RemoteElicitationAnswer::Choice {
-                option_ids: Vec::new(),
-                custom_text: Some(text.clone()),
-            },
-            (ElicitationQuestionKind::FreeText, Some(Value::String(text)), None) => {
-                RemoteElicitationAnswer::Text { text: text.clone() }
-            }
-            (ElicitationQuestionKind::SingleSelect, Some(value), None) if !value.is_array() => {
-                RemoteElicitationAnswer::Choice {
-                    option_ids: vec![option_id(question, value)?],
-                    custom_text: None,
-                }
-            }
-            (ElicitationQuestionKind::MultiSelect, Some(Value::Array(values)), None) => {
-                RemoteElicitationAnswer::Choice {
-                    option_ids: values
-                        .iter()
-                        .map(|value| option_id(question, value))
-                        .collect::<Result<_, _>>()?,
-                    custom_text: None,
-                }
-            }
-            _ => return Err(RemoteFormViolation::AnswerInvalid),
-        };
-        answers.insert(question.selector_key.clone(), answer);
+        if let Some(answer) = remote_question_answer(question, content)? {
+            answers.insert(question.selector_key.clone(), answer);
+        }
     }
     if remote_form_content(form, &answers)? == *content {
         Ok(())

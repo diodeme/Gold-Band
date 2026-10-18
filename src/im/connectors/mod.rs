@@ -2,10 +2,12 @@ pub mod feishu;
 pub mod wecom;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::app::intervention::{
     InterventionAction, InterventionAllowedAction, PermissionActionKind, PermissionActionQualifier,
-    intervention_action_for_allowed, permission_action_qualifier,
+    RemoteElicitationAnswer, RemoteElicitationForm, RemoteQuestion,
+    intervention_action_for_allowed, permission_action_qualifier, remote_question_answer,
 };
 
 use super::{
@@ -296,6 +298,70 @@ pub(crate) fn join_list(locale: ImLocale, items: &[String]) -> String {
     items.join(localized(locale, "im.list.separator"))
 }
 
+/// One published question with the answer accepted for it.
+pub(crate) struct AcceptedAnswer<'a> {
+    pub question: &'a RemoteQuestion,
+    pub answer: Option<RemoteElicitationAnswer>,
+}
+
+impl AcceptedAnswer<'_> {
+    /// Selected published option ids; empty for text and custom answers.
+    pub fn option_ids(&self) -> &[String] {
+        match &self.answer {
+            Some(RemoteElicitationAnswer::Choice { option_ids, .. }) => option_ids,
+            _ => &[],
+        }
+    }
+
+    pub fn custom_text(&self) -> Option<&str> {
+        match &self.answer {
+            Some(RemoteElicitationAnswer::Choice {
+                custom_text: Some(text),
+                ..
+            }) => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn text(&self) -> Option<&str> {
+        match &self.answer {
+            Some(RemoteElicitationAnswer::Text { text }) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The answer as the user sees it: option labels, custom or free text.
+    pub fn display(&self, locale: ImLocale) -> Option<String> {
+        if let Some(text) = self.custom_text().or(self.text()) {
+            return Some(text.to_owned());
+        }
+        let labels = self
+            .option_ids()
+            .iter()
+            .filter_map(|option_id| option_id.parse::<usize>().ok())
+            .filter_map(|index| self.question.question.options.get(index))
+            .map(|option| option.label.clone())
+            .collect::<Vec<_>>();
+        (!labels.is_empty()).then(|| join_list(locale, &labels))
+    }
+}
+
+/// Projects accepted elicitation content onto a delivery's published form.
+/// A question whose content does not decode against that copy (for example a
+/// desktop answer outside the fitted form) is shown unanswered.
+pub(crate) fn accepted_answers<'a>(
+    form: &'a RemoteElicitationForm,
+    content: &Value,
+) -> Vec<AcceptedAnswer<'a>> {
+    form.questions
+        .iter()
+        .map(|question| AcceptedAnswer {
+            question,
+            answer: remote_question_answer(question, content).ok().flatten(),
+        })
+        .collect()
+}
+
 type CopyCatalog = std::collections::HashMap<String, String>;
 
 /// One keyed copy table per desktop language, embedded at compile time.
@@ -449,6 +515,75 @@ mod tests {
         );
         assert_eq!(join_list(ImLocale::ZhTw, &["A".into(), "B".into()]), "A、B");
         assert_eq!(join_list(ImLocale::Es, &["A".into(), "B".into()]), "A, B");
+    }
+
+    #[test]
+    fn accepted_answers_project_options_custom_text_and_missing_answers() {
+        use crate::app::intervention::{
+            ElicitationQuestion, ElicitationQuestionKind, ElicitationQuestionOption,
+            RemoteQuestionConstraints,
+        };
+        let question =
+            |selector: &str, kind: ElicitationQuestionKind, custom: bool| RemoteQuestion {
+                selector_key: selector.into(),
+                question: ElicitationQuestion {
+                    field_name: format!("{selector}_field"),
+                    title: selector.into(),
+                    description: None,
+                    question_kind: kind,
+                    options: ["a", "b", "c"]
+                        .into_iter()
+                        .map(|value| ElicitationQuestionOption {
+                            value: serde_json::json!(value),
+                            label: value.to_uppercase(),
+                            description: None,
+                        })
+                        .collect(),
+                    allows_custom_answer: custom,
+                },
+                constraints: RemoteQuestionConstraints {
+                    required: false,
+                    allows_empty: true,
+                    max_chars: 100,
+                    multiline: false,
+                },
+                custom_answer_key: custom.then(|| format!("{selector}_custom")),
+            };
+        let form = RemoteElicitationForm {
+            questions: vec![
+                question("multi", ElicitationQuestionKind::MultiSelect, false),
+                question("single", ElicitationQuestionKind::SingleSelect, true),
+                question("text", ElicitationQuestionKind::FreeText, false),
+                question("missing", ElicitationQuestionKind::SingleSelect, false),
+            ],
+            decline_allowed: false,
+        };
+        let content = serde_json::json!({
+            "multi_field": ["c", "a"],
+            "single_custom": "Other answer",
+            "text_field": "Free text",
+        });
+        let answers = accepted_answers(&form, &content);
+        let display = |locale| {
+            answers
+                .iter()
+                .map(|answer| answer.display(locale))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            display(ImLocale::ZhCn),
+            [
+                Some("C、A".to_owned()),
+                Some("Other answer".to_owned()),
+                Some("Free text".to_owned()),
+                None,
+            ]
+        );
+        assert_eq!(display(ImLocale::En)[0].as_deref(), Some("C, A"));
+        assert_eq!(answers[0].option_ids(), ["2", "0"]);
+        assert!(answers[1].option_ids().is_empty());
+        assert_eq!(answers[1].custom_text(), Some("Other answer"));
+        assert_eq!(answers[2].text(), Some("Free text"));
     }
 
     fn placeholders(text: &str) -> std::collections::BTreeSet<&str> {

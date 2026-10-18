@@ -19,6 +19,20 @@ pub const DEFAULT_IM_OUTBOX_ACTIVE_LIMIT: usize = 1_000;
 pub const MAX_IM_DUE_BATCH: usize = 32;
 pub const MAX_IM_CLEANUP_BATCH: usize = 200;
 const IM_DELIVERY_DISPLAY_REF_MODULUS: i64 = 10_000;
+/// Predicate on an `im_outbox` row: an intervention source whose per-target
+/// resolution already exists. Such a source must never be (re)sent.
+fn source_is_resolved_sql() -> String {
+    // The suffix is a compile-time constant, not caller input.
+    let suffix = resolution_event_id("");
+    format!(
+        "(payload_kind = 'intervention' AND EXISTS (
+            SELECT 1 FROM im_outbox AS resolution
+            WHERE resolution.channel_kind = im_outbox.channel_kind
+              AND resolution.destination_id = im_outbox.destination_id
+              AND resolution.notification_kind = im_outbox.notification_kind
+              AND resolution.canonical_event_id = im_outbox.canonical_event_id || '{suffix}'))"
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImDeliveryInsertResult {
@@ -513,17 +527,22 @@ impl ImRepository {
         requested_limit: usize,
     ) -> Result<usize, ImRepositoryError> {
         let limit = requested_limit.clamp(1, MAX_IM_CLEANUP_BATCH);
+        let resolved = source_is_resolved_sql();
         self.with_connection(|connection| {
             let changed = connection.execute(
-                "UPDATE im_outbox
-                 SET state = CASE WHEN expires_at_ms <= ?1 THEN 'expired' ELSE 'pending' END,
-                     next_attempt_at_ms = CASE WHEN expires_at_ms <= ?1 THEN NULL ELSE ?1 END,
+                &format!(
+                    "UPDATE im_outbox
+                 SET state = CASE WHEN expires_at_ms <= ?1 OR {resolved}
+                                  THEN 'expired' ELSE 'pending' END,
+                     next_attempt_at_ms = CASE WHEN expires_at_ms <= ?1 OR {resolved}
+                                  THEN NULL ELSE ?1 END,
                      updated_at_ms = ?1
                  WHERE delivery_id IN (
                     SELECT delivery_id FROM im_outbox INDEXED BY idx_im_outbox_due
                     WHERE state = 'sending' AND next_attempt_at_ms <= ?1
                     ORDER BY next_attempt_at_ms, delivery_id LIMIT ?2
-                 )",
+                 )"
+                ),
                 params![now_ms, limit],
             )?;
             Ok(changed)
@@ -598,12 +617,20 @@ impl ImRepository {
         } else {
             ImDeliveryState::DeadLetter
         };
+        let resolved = source_is_resolved_sql();
         self.with_connection(|connection| {
+            // A retry never resurrects a source whose resolution is already
+            // recorded; it expires in the same statement instead.
             let changed = connection.execute(
-                "UPDATE im_outbox
-                 SET state = ?1, next_attempt_at_ms = ?2,
+                &format!(
+                    "UPDATE im_outbox
+                 SET state = CASE WHEN ?1 = 'pending' AND {resolved}
+                                  THEN 'expired' ELSE ?1 END,
+                     next_attempt_at_ms = CASE WHEN ?1 = 'pending' AND {resolved}
+                                  THEN NULL ELSE ?2 END,
                      last_error_code = ?3, updated_at_ms = ?4
-                 WHERE delivery_id = ?5 AND state = 'sending' AND attempt_count = ?6",
+                 WHERE delivery_id = ?5 AND state = 'sending' AND attempt_count = ?6"
+                ),
                 params![
                     state.as_str(),
                     retry_at_ms,
@@ -1438,6 +1465,62 @@ mod tests {
             expires_at_ms: 20_000,
             display_ref: source.display_ref,
         }
+    }
+
+    #[test]
+    fn a_resolved_source_is_never_requeued_by_failure_or_lease_recovery() {
+        let (_temp, repository) = repository(10);
+        let failed = intervention_delivery(ImChannelKind::Feishu, "user-1", "event-failed");
+        let leased = intervention_delivery(ImChannelKind::Feishu, "user-1", "event-leased");
+        let unresolved = intervention_delivery(ImChannelKind::Feishu, "user-1", "event-open");
+        for delivery in [&failed, &leased, &unresolved] {
+            repository.enqueue(delivery, 100).unwrap();
+        }
+        let claimed = repository
+            .claim_due(ImChannelKind::Feishu, 100, Duration::from_millis(50), 10)
+            .unwrap();
+        assert_eq!(claimed.len(), 3);
+        // The intervention resolves while its source card is still being sent.
+        for source in [&failed, &leased] {
+            repository
+                .enqueue_resolution_and_expire_pending_source(
+                    &source.canonical_event_id,
+                    &resolution_delivery(source),
+                    ImResolutionDispatch::Send,
+                    120,
+                )
+                .unwrap();
+        }
+
+        repository
+            .mark_failed(&failed.delivery_id, 1, Some(130), "IM_NETWORK", 125)
+            .unwrap();
+        repository
+            .mark_failed(&unresolved.delivery_id, 1, Some(130), "IM_NETWORK", 125)
+            .unwrap();
+        assert_eq!(repository.recover_expired_leases(150, 10).unwrap(), 1);
+
+        for (source, expected) in [
+            (&failed, ImDeliveryState::Expired),
+            (&leased, ImDeliveryState::Expired),
+            (&unresolved, ImDeliveryState::Pending),
+        ] {
+            assert_eq!(
+                repository.delivery_state(&source.delivery_id).unwrap(),
+                Some(expected),
+                "{}",
+                source.canonical_event_id
+            );
+        }
+        let resent = repository
+            .claim_due(ImChannelKind::Feishu, 200, Duration::from_millis(50), 10)
+            .unwrap()
+            .into_iter()
+            .map(|claimed| claimed.delivery.canonical_event_id)
+            .collect::<Vec<_>>();
+        assert!(!resent.contains(&failed.canonical_event_id));
+        assert!(!resent.contains(&leased.canonical_event_id));
+        assert!(resent.contains(&unresolved.canonical_event_id));
     }
 
     #[test]

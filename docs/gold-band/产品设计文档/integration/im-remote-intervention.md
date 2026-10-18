@@ -170,6 +170,7 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 - 飞书卡片初态与终态均按 `id → 节点 → 任务 → 工作空间 → 题目` 展示。提交成功后保留原表单结构，单选、多选、自定义回答和文本回填 Accepted 的答案，控件禁用，展示处理来源。
 - 终态投递先读取源 outbox 生命周期：源消息仍在 pending / sending（包括失败重试、租约恢复）时，终态留在现有 outbox 延期，不能把尚未取得消息 ID 当成永久不可更新。源发送结算并持久化绑定后更新原卡；源已过期、永久失败或结算后无绑定时，才允许另发只读终态。
+- 源消息发送失败重试与租约回收只在同一 SQL 语句内确认该目标尚无 `:resolved` 终态时才回到 pending；终态已存在时源 delivery 直接转为 expired，已结算的源卡片不得被重发。
 - 即时回调、后台 PATCH、超时后的补写和不可更新后的另发消息使用同一份结构化终态结果。不得让后续 PATCH 清空回调已显示的答案；迟到或失败的提交不得显示成赢家答案。
 - Runtime 仍是唯一业务事实源。终态 outbox 的 `ElicitationSubmitted { content }` 只保存已接受答案的投递快照（最大 8 KiB，随 outbox 7 天保留策略清理）；回包不再有独立瞬态 submission。答案不写日志，Debug 脱敏。旧终态没有保存答案时明确显示结果详情不可用。
 - payload v3 / IM schema v5 的一次性迁移保留源卡片、消息绑定、rowid/display_ref、终态及 tombstone；旧无答案终态转成 `ResultUnavailable`，不伪造空回答。新读取路径不兼容旧格式。处理来源仍仅由获得 Accepted 的一端写入。

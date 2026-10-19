@@ -4460,14 +4460,17 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         // Matches a real direct-agent attempt under the default data directory.
         let attempt_dir = attachment_test_attempt_dir_with_length(&root, 160);
-        let long_name = format!("{}.png", "需求截圖".repeat(30));
-        for (index, name) in [
-            "24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg",
-            long_name.as_str(),
+        // Keep the source filename valid on byte-limited filesystems (e.g. Linux).
+        // The deep destination must still force the Chinese filename to shorten.
+        let long_name = format!("{}.png", "需求截圖".repeat(20));
+        for (index, (name, expects_shortening)) in [
+            ("24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg", false),
+            (long_name.as_str(), true),
         ]
         .into_iter()
         .enumerate()
         {
+            assert!(name.len() <= USER_INPUT_ATTACHMENT_NAME_MAX_UNITS);
             let source = root.join(index.to_string()).join(name);
             std::fs::create_dir_all(source.parent().unwrap()).unwrap();
             let bytes = test_png(2 + index as u32, 2);
@@ -4480,6 +4483,13 @@ mod tests {
             .unwrap()
             .remove(0);
             let destination = attempt_dir.join(&resolved.meta.path);
+            let unshortened_destination = destination.parent().unwrap().join(name);
+            assert_eq!(
+                unshortened_destination.as_str().encode_utf16().count()
+                    > USER_INPUT_ATTACHMENT_PATH_MAX_UNITS,
+                expects_shortening
+            );
+            assert_eq!(destination.file_name() != Some(name), expects_shortening);
             assert!(
                 destination.as_str().encode_utf16().count() <= USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
             );

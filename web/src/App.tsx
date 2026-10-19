@@ -608,7 +608,7 @@ export function App() {
     });
   }, []);
 
-  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null) => {
+  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null, refresh = false) => {
     const append = Boolean(cursor);
     const flightKey = `workspace:${projectId}`;
     return conversationSidebarFlights.run(flightKey, async () => {
@@ -636,7 +636,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationPinnedTasks = useCallback((cursor?: string | null) => {
@@ -673,6 +673,7 @@ export function App() {
   const loadConversationRunHistory = useCallback((
     task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
     cursor?: string | null,
+    refresh = false,
   ) => {
     const append = Boolean(cursor);
     const flightKey = `runs:${task.projectId}:${task.taskUuid ?? task.taskId}`;
@@ -706,7 +707,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationSidebarBootstrap = useCallback(() => conversationSidebarFlights.run('bootstrap', async () => {
@@ -1177,9 +1178,9 @@ export function App() {
         activeProjectId,
       );
       if (refreshTarget?.kind === 'workspace-tasks') {
-        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+        void loadConversationWorkspaceTasks(refreshTarget.projectId, null, true).catch(() => {});
       } else if (refreshTarget?.kind === 'task-runs') {
-        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+        void loadConversationRunHistory(refreshTarget.task, null, true).catch(() => {});
       }
       if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {

@@ -15,6 +15,11 @@
 - 验收：`composer-menu-catalog-freshness` 两项在修复前分别得到 `['old-skill']` 与 `[]`，修复后列出挂载后新增的 SKILL 与角色；`profile-catalog` 覆盖错误重试、多消费者共享与重读发布、in-flight 重读合并且不显示被取代列表、后台失败保留列表、禁用不读取；`agent-command-refresh` 覆盖 revalidate 合并与内容不变时投影引用不变。桌面 crate command_catalog 5 项通过。
 - 过度设计与性能评审：不新增事件通道、watcher、缓存层或持久字段，删除一条重型刷新路径并把三份角色状态合一。打开菜单只多一次轻量读取（角色 JSON、SKILL 元数据扫描，均为数十到数百条），复用既有 single-flight；内容不变不触发重渲染。无需专项 benchmark。
 
+## 2026-10-19 附件路径测试夹具跨平台修复
+
+- Linux 附件用例的源文件名原为 364 个 UTF-8 字节，在调用附件接口前就超过文件系统单段上限；改为 244 字节，并断言源文件名合法、深目录下原名确实超预算、最终存储名确实缩短，同时保留原名 metadata、扩展名和内容验收。附件生产实现不变。
+- 过度设计与性能评审：只修正测试夹具，复用现有路径预算常量，不增加依赖、运行时状态、请求或 I/O。
+
 ## 2026-10-18 IM 远程干预迁移后续修复
 
 - 取消路径终态：根因是 Run 停止 teardown、ACP 会话关闭、Direct 后台停止与遗留请求只结算 ACP 信号文件与 timeline，不经过三个桌面命令，IM 卡片停留到过期，点击还被领域误报 `INTERVENTION_REQUEST_NOT_FOUND`（显示“回答无效”）。修复为统一 canonical settlement：ACP 层 `permission_request_settlement` / `elicitation_request_settlement` 按响应文件 → 待处理文件 → timeline 已结算项判定，领域 `InterventionCommandService::settlement` 补人工检查；已结算请求的 inspect 返回 `INTERVENTION_ALREADY_HANDLED`。IM settlement reconciler 由生命周期边界（去抖 1 秒）与 30 秒间隔触发，只为 `Cancelled` 投影 `resolved_by=Runtime` 的取消终态，Answered 仍由 Accepted 一端写入。`ElicitationCancelled` 更名为通用 `Cancelled`（wire `cancelled`）。点击已结算卡片：取消当场投影，答案在途回“已处理”并禁用原卡，快照过期按“操作已过期”。CallbackOnly 渠道被点击的源卡改写 TombstoneOnly 保存赢家并关闭源卡，避免后续扫描另发第二条。

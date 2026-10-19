@@ -2,6 +2,33 @@ import { describe, expect, it } from 'vitest';
 import { DESKTOP_LANGUAGE_OPTIONS, supportedLocaleTag, themeDisplayLocale } from '../src/languages';
 
 describe('desktop language catalog', () => {
+  it.each([
+    ['zh-Hans', 'zh-CN'],
+    ['zh-Hans-CN', 'zh-CN'],
+    ['zh-Hans-SG', 'zh-CN'],
+    ['zh-Hans-HK', 'zh-CN'],
+    ['zh-Hans-TW', 'zh-CN'],
+    ['zh-Hans-MO', 'zh-CN'],
+    ['zh-Hant', 'zh-TW'],
+    ['zh-Hant-CN', 'zh-TW'],
+    ['zh-Hant-SG', 'zh-TW'],
+    ['zh-Hant-HK', 'zh-TW'],
+    [' ZH_hAnS_hK ', 'zh-CN'],
+  ])('uses explicit Chinese script before region for %s', (tag, expected) => {
+    expect(supportedLocaleTag(tag)).toBe(expected);
+  });
+
+  it.each([
+    ['zh', 'zh-CN'],
+    ['zh-CN', 'zh-CN'],
+    ['zh-SG', 'zh-CN'],
+    ['zh-TW', 'zh-TW'],
+    ['zh-HK', 'zh-TW'],
+    ['zh-MO', 'zh-TW'],
+  ])('uses Chinese region when script is absent for %s', (tag, expected) => {
+    expect(supportedLocaleTag(tag)).toBe(expected);
+  });
+
   it('lists endonyms in the settings order', () => {
     expect(DESKTOP_LANGUAGE_OPTIONS.map((option) => [option.value, option.label])).toEqual([
       ['zh-cn', '中文'],

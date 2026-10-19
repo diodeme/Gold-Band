@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
 import type { ConversationSearchResultVm } from '../../types';
@@ -36,6 +36,34 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
   const [results, setResults] = useState<ConversationSearchResultVm[]>([]);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const handleFindShortcut = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey
+        || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f'
+      ) return;
+
+      const target = event.target instanceof Element ? event.target : document.activeElement;
+      const activeOverlay = target?.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]');
+      if (activeOverlay && !activeOverlay.contains(inputRef.current)) return;
+
+      event.preventDefault();
+      if (open) {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      } else {
+        returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        onOpenChange(true);
+      }
+    };
+
+    // Focused editors handle their own find command before the application does.
+    window.addEventListener('keydown', handleFindShortcut);
+    return () => window.removeEventListener('keydown', handleFindShortcut);
+  }, [open, onOpenChange]);
 
   useEffect(() => {
     if (!open) {
@@ -83,7 +111,17 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg gap-0 p-0">
+      <DialogContent
+        className="max-w-lg gap-0 p-0"
+        onCloseAutoFocus={(event) => {
+          const returnFocus = returnFocusRef.current;
+          returnFocusRef.current = null;
+          if (returnFocus?.isConnected) {
+            event.preventDefault();
+            returnFocus.focus();
+          }
+        }}
+      >
         <DialogHeader className="px-4 pt-4 pb-2">
           <DialogTitle className="text-base">{t('conversation.search.title')}</DialogTitle>
         </DialogHeader>
@@ -91,6 +129,7 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
+              ref={inputRef}
               className="h-9 pl-8 text-sm"
               placeholder={t('conversation.search.placeholder')}
               value={query}

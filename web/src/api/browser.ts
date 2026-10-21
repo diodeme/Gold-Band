@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -868,6 +868,24 @@ const browserQueuedPromptDrafts = [
   },
 ];
 
+/// Browser-demo queue state, mutable through the mock mode/clear/send-now
+/// commands so the queue controls can be exercised without a desktop backend.
+let browserQueuedPromptQueueMode: 'auto' | 'manual' = 'auto';
+let browserQueuedPromptSuspended = false;
+const browserRemovedQueuedPromptIds: string[] = [];
+const browserQueuedExplicitDrafts: {
+  id: string;
+  content: string;
+  createdAt: string;
+}[] = [];
+let browserQueuedPromptRevision = 5;
+
+/// Queue mutations must return a fresh lifecycle projection, exactly like the
+/// desktop backend does, or the UI cannot converge on the new queue state.
+function browserQueuedPromptQueueLifecycle(): ConversationAttemptLifecycleVm | null {
+  return browserQueuedConversationRun().sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle ?? null;
+}
+
 function browserQueuedConversationRun(): ConversationRunVm {
   const run = browserCompletedConversationRun();
   run.runId = 'run-053';
@@ -905,17 +923,34 @@ function browserQueuedConversationRun(): ConversationRunVm {
         lockInput: false,
       },
       promptQueue: {
-        revision: 5,
+        revision: browserQueuedPromptRevision,
         maxItems: 10,
-        items: browserQueuedPromptDrafts.map((item) => ({
-          id: item.id,
-          content: item.content,
-          attachmentCount: item.attachmentPaths.length,
-          quoteCount: item.quotes.length,
-          workspaceFileCount: item.workspaceFiles?.length ?? 0,
-          ...('role' in item && item.role ? { roleName: item.role.name } : {}),
-          createdAt: item.createdAt,
-        })),
+        dispatchMode: browserQueuedPromptQueueMode,
+        autoDispatchSuspended: browserQueuedPromptSuspended,
+        suspensionReason: browserQueuedPromptSuspended ? 'stopped' : null,
+        items: [
+          ...browserQueuedPromptDrafts
+            .filter((item) => browserRemovedQueuedPromptIds.indexOf(item.id) < 0)
+            .map((item) => ({
+              id: item.id,
+              content: item.content,
+              attachmentCount: item.attachmentPaths.length,
+              quoteCount: item.quotes.length,
+              workspaceFileCount: item.workspaceFiles?.length ?? 0,
+              ...('role' in item && item.role ? { roleName: item.role.name } : {}),
+              createdAt: item.createdAt,
+            })),
+          ...browserQueuedExplicitDrafts
+            .filter((item) => browserRemovedQueuedPromptIds.indexOf(item.id) < 0)
+            .map((item) => ({
+              id: item.id,
+              content: item.content,
+              attachmentCount: 0,
+              quoteCount: 0,
+              workspaceFileCount: 0,
+              createdAt: item.createdAt,
+            })),
+        ],
       },
     };
   }
@@ -2293,9 +2328,27 @@ export const browserApi: RuntimeApi = {
   subscribeAppExitRequested() {
     return Promise.resolve(() => {});
   },
-  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths, forceQueue) {
     if (isBrowserPausedWorkflowSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId)) {
-      return Promise.resolve(submitBrowserPausedWorkflowPrompt(_input, _promptId));
+      return Promise.resolve(submitBrowserPausedWorkflowPrompt(input, _promptId));
+    }
+    // Explicit draft-box submissions park in the mock queue like the backend.
+    if (forceQueue) {
+      browserQueuedExplicitDrafts.push({
+        id: `browser-queued-explicit-${browserQueuedExplicitDrafts.length + 1}`,
+        content: input.displayText,
+        createdAt: `2026-08-07T08:00:0${5 + browserQueuedExplicitDrafts.length}Z`,
+      });
+      browserQueuedPromptRevision += 1;
+      return Promise.resolve({
+        kind: 'queued',
+        turnId: null,
+        revision: null,
+        operationId: null,
+        session: null,
+        run: null,
+        lifecycle: browserQueuedPromptQueueLifecycle(),
+      });
     }
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
@@ -2316,11 +2369,38 @@ export const browserApi: RuntimeApi = {
       lifecycle: null,
     });
   },
-  deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
-    return Promise.resolve({ lifecycle: null });
+  deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
+    const index = browserRemovedQueuedPromptIds.indexOf(itemId);
+    if (index < 0) browserRemovedQueuedPromptIds.push(itemId);
+    browserQueuedPromptRevision += 1;
+    return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
   },
-  useConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
-    return Promise.resolve({ kind: 'acp-session', session: null, run: null, lifecycle: null });
+  setConversationPromptQueueMode(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, mode, _outerNodeId, _outerAttemptId) {
+    browserQueuedPromptQueueMode = mode;
+    browserQueuedPromptSuspended = false;
+    browserQueuedPromptRevision += 1;
+    return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
+  },
+  clearConversationQueuedPrompts(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+    for (const draft of browserQueuedPromptDrafts) {
+      if (browserRemovedQueuedPromptIds.indexOf(draft.id) < 0) {
+        browserRemovedQueuedPromptIds.push(draft.id);
+      }
+    }
+    for (const draft of browserQueuedExplicitDrafts) {
+      if (browserRemovedQueuedPromptIds.indexOf(draft.id) < 0) {
+        browserRemovedQueuedPromptIds.push(draft.id);
+      }
+    }
+    browserQueuedPromptSuspended = false;
+    browserQueuedPromptRevision += 1;
+    return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
+  },
+  useConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _interruptActive, _outerNodeId, _outerAttemptId) {
+    const index = browserRemovedQueuedPromptIds.indexOf(itemId);
+    if (index < 0) browserRemovedQueuedPromptIds.push(itemId);
+    browserQueuedPromptRevision += 1;
+    return Promise.resolve({ kind: 'acp-session', session: null, run: null, lifecycle: browserQueuedPromptQueueLifecycle() });
   },
   setAcpSessionModel(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _modelId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);

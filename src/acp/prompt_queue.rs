@@ -38,6 +38,33 @@ pub enum QueuedPromptState {
     Dispatching,
 }
 
+/// User's durable choice of how queued prompts leave the queue.
+///
+/// `Auto` keeps the post-turn automatic dispatch chain; `Manual` holds every
+/// item until the user sends one explicitly. User submissions and manual
+/// claims must never flip this back — only the explicit mode command does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DispatchMode {
+    Auto,
+    Manual,
+}
+
+impl Default for DispatchMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Why automatic dispatch is currently suspended. The flag without a reason
+/// is legacy stop data and is inferred as `Stopped` on load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SuspensionReason {
+    Stopped,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedPrompt {
@@ -64,6 +91,10 @@ pub struct PromptQueue {
     #[serde(default)]
     pub auto_dispatch_suspended: bool,
     #[serde(default)]
+    pub suspension_reason: Option<SuspensionReason>,
+    #[serde(default)]
+    pub dispatch_mode: DispatchMode,
+    #[serde(default)]
     pub items: Vec<QueuedPrompt>,
 }
 
@@ -73,6 +104,8 @@ impl Default for PromptQueue {
             version: PROMPT_QUEUE_VERSION,
             revision: 0,
             auto_dispatch_suspended: false,
+            suspension_reason: None,
+            dispatch_mode: DispatchMode::Auto,
             items: Vec::new(),
         }
     }
@@ -118,6 +151,7 @@ pub enum AutoClaimResult {
     Empty,
     Preempted,
     Suspended,
+    ManualMode,
 }
 
 /// Resolution of a dispatch whose prior logical turn is already terminal.
@@ -273,24 +307,121 @@ pub fn take_queued_prompt(
 }
 
 /// Records a real user submission so a pending automatic claim can observe
-/// the revision change and yield. The queue is unchanged.
+/// the revision change and yield. Transient suspension is cleared; the user's
+/// dispatch-mode choice is intentionally preserved.
 pub fn mark_user_priority(attempt_dir: &Utf8Path) -> Result<u64> {
     with_queue_lock(attempt_dir, || {
         let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
         queue.auto_dispatch_suspended = false;
+        queue.suspension_reason = None;
         persist_mutation_unlocked(attempt_dir, &mut queue)?;
         clear_auto_dispatch_suspension(attempt_dir)?;
         Ok(queue.revision)
     })
 }
 
-pub fn suspend_auto_dispatch(attempt_dir: &Utf8Path) -> Result<u64> {
+/// Clears a transient suspension without creating queue storage. Ordinary
+/// non-queue prompts in Direct conversations must keep the "no queue file is
+/// created" contract, so this only writes when a suspension actually exists.
+pub fn resume_auto_dispatch(attempt_dir: &Utf8Path) -> Result<()> {
+    clear_auto_dispatch_suspension(attempt_dir)?;
+    if !queue_path(attempt_dir).exists() {
+        return Ok(());
+    }
+    with_queue_lock(attempt_dir, || {
+        let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
+        if !queue.auto_dispatch_suspended && queue.suspension_reason.is_none() {
+            return Ok(());
+        }
+        queue.auto_dispatch_suspended = false;
+        queue.suspension_reason = None;
+        persist_mutation_unlocked(attempt_dir, &mut queue)?;
+        Ok(())
+    })
+}
+
+pub fn suspend_auto_dispatch(attempt_dir: &Utf8Path, reason: SuspensionReason) -> Result<u64> {
     request_auto_dispatch_suspension(attempt_dir)?;
     with_queue_lock(attempt_dir, || {
         let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
         queue.auto_dispatch_suspended = true;
+        queue.suspension_reason = Some(reason);
         persist_mutation_unlocked(attempt_dir, &mut queue)?;
         Ok(queue.revision)
+    })
+}
+
+/// Persists the failed-turn pause behind two fences: no newer turn may be
+/// in flight, and the queue revision must still match the one the drain
+/// observed when the failing turn finished. Without the revision fence, a
+/// late failure event (e.g. an interrupted stop settling after its cancel
+/// drain timeout) would write the suspension back over a concurrent manual
+/// claim that had just cleared it, stalling the queue under a phantom pause.
+/// Returns whether the suspension was written.
+pub fn suspend_after_failed_turn(
+    attempt_dir: &Utf8Path,
+    expected_revision: u64,
+    newer_turn_live: bool,
+) -> Result<bool> {
+    if newer_turn_live {
+        return Ok(false);
+    }
+    request_auto_dispatch_suspension(attempt_dir)?;
+    with_queue_lock(attempt_dir, || {
+        let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
+        if queue.revision != expected_revision
+            || queue.dispatch_mode == DispatchMode::Manual
+            || queue.auto_dispatch_suspended
+            || !queue
+                .items
+                .iter()
+                .any(|item| item.state == QueuedPromptState::Queued)
+        {
+            return Ok(false);
+        }
+        queue.auto_dispatch_suspended = true;
+        queue.suspension_reason = Some(SuspensionReason::Failed);
+        persist_mutation_unlocked(attempt_dir, &mut queue)?;
+        Ok(true)
+    })
+}
+
+/// Sets the user's durable dispatch-mode choice and clears any transient
+/// suspension: switching modes is itself an explicit user resumption of
+/// control, so no stale stopped/failed pause may survive the toggle.
+pub fn set_dispatch_mode(attempt_dir: &Utf8Path, mode: DispatchMode) -> Result<PromptQueue> {
+    with_queue_lock(attempt_dir, || {
+        let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
+        queue.dispatch_mode = mode;
+        queue.auto_dispatch_suspended = false;
+        queue.suspension_reason = None;
+        persist_mutation_unlocked(attempt_dir, &mut queue)?;
+        Ok(queue)
+    })
+}
+
+/// Removes every queued item while keeping in-flight dispatches. Clearing is
+/// the user declaring the pending batch void, so a stale suspension flag
+/// must not linger to block future enqueues from auto-dispatching.
+pub fn clear_queued_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue, PromptQueueError> {
+    with_typed_queue_lock(attempt_dir, || {
+        let mut queue =
+            load_and_reconcile_unlocked(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
+        let has_queued = queue
+            .items
+            .iter()
+            .any(|item| item.state == QueuedPromptState::Queued);
+        if !has_queued && !queue.auto_dispatch_suspended && queue.suspension_reason.is_none() {
+            return Ok(queue);
+        }
+        queue
+            .items
+            .retain(|item| item.state != QueuedPromptState::Queued);
+        queue.auto_dispatch_suspended = false;
+        queue.suspension_reason = None;
+        persist_mutation_unlocked(attempt_dir, &mut queue)
+            .map_err(|_| PromptQueueError::Storage)?;
+        Ok(queue)
     })
 }
 
@@ -366,6 +497,11 @@ pub fn claim_next_for_auto_dispatch(
         if queue.auto_dispatch_suspended || auto_dispatch_is_suspended(attempt_dir) {
             return Ok(AutoClaimResult::Suspended);
         }
+        // The mode gate lives here — not only in the command layer — so a
+        // toggle during the user-priority grace window cannot be claimed past.
+        if queue.dispatch_mode == DispatchMode::Manual {
+            return Ok(AutoClaimResult::ManualMode);
+        }
         let Some(item) = queue
             .items
             .iter_mut()
@@ -397,6 +533,7 @@ pub fn claim_queued_prompt(
             return Err(PromptQueueError::Dispatching);
         }
         queue.auto_dispatch_suspended = false;
+        queue.suspension_reason = None;
         clear_auto_dispatch_suspension(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
         item.state = QueuedPromptState::Dispatching;
         let claimed = item.clone();
@@ -577,11 +714,18 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     let has_orphaned_dispatch = queue.items.iter().any(|item| {
         item.state == QueuedPromptState::Dispatching && !dispatch_is_active(attempt_dir, item)
     });
-    if !needs_version_reconciliation && !has_orphaned_dispatch {
+    // Suspensions persisted before reasons existed can only originate from a
+    // user stop; infer that instead of presenting an unexplained pause.
+    let has_legacy_suspension = queue.auto_dispatch_suspended && queue.suspension_reason.is_none();
+    if !needs_version_reconciliation && !has_orphaned_dispatch && !has_legacy_suspension {
         return Ok(queue);
     }
     let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
     let mut changed = needs_version_reconciliation;
+    if has_legacy_suspension {
+        queue.suspension_reason = Some(SuspensionReason::Stopped);
+        changed = true;
+    }
     if needs_version_reconciliation {
         for item in &mut queue.items {
             item.quotes.retain(|quote| !quote.text.trim().is_empty());
@@ -1321,8 +1465,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = attempt_dir(&temp);
         enqueue_prompt(&dir, "wait after stop".to_string(), Vec::new()).unwrap();
-        suspend_auto_dispatch(&dir).unwrap();
+        suspend_auto_dispatch(&dir, SuspensionReason::Stopped).unwrap();
         let suspended_revision = current_revision(&dir).unwrap();
+        assert_eq!(
+            load_prompt_queue(&dir).unwrap().suspension_reason,
+            Some(SuspensionReason::Stopped)
+        );
 
         assert_eq!(
             claim_next_for_auto_dispatch(&dir, suspended_revision).unwrap(),
@@ -1331,6 +1479,9 @@ mod tests {
         assert_eq!(load_prompt_queue(&dir).unwrap().items.len(), 1);
 
         let resumed_revision = mark_user_priority(&dir).unwrap();
+        let resumed = load_prompt_queue(&dir).unwrap();
+        assert!(!resumed.auto_dispatch_suspended);
+        assert_eq!(resumed.suspension_reason, None);
         assert!(matches!(
             claim_next_for_auto_dispatch(&dir, resumed_revision).unwrap(),
             AutoClaimResult::Claimed(_)
@@ -1342,9 +1493,181 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = attempt_dir(&temp);
         let item = enqueue_prompt(&dir, "manual".to_string(), Vec::new()).unwrap();
-        suspend_auto_dispatch(&dir).unwrap();
+        suspend_auto_dispatch(&dir, SuspensionReason::Stopped).unwrap();
 
         claim_queued_prompt(&dir, &item.id).unwrap();
+        let queue = load_prompt_queue(&dir).unwrap();
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
+    }
+
+    #[test]
+    fn manual_mode_blocks_auto_claims_even_with_a_fresh_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        enqueue_prompt(&dir, "held".to_string(), Vec::new()).unwrap();
+        set_dispatch_mode(&dir, DispatchMode::Manual).unwrap();
+        let manual_revision = current_revision(&dir).unwrap();
+
+        assert_eq!(
+            claim_next_for_auto_dispatch(&dir, manual_revision).unwrap(),
+            AutoClaimResult::ManualMode
+        );
+        assert_eq!(load_prompt_queue(&dir).unwrap().items.len(), 1);
+
+        set_dispatch_mode(&dir, DispatchMode::Auto).unwrap();
+        let auto_revision = current_revision(&dir).unwrap();
+        assert!(matches!(
+            claim_next_for_auto_dispatch(&dir, auto_revision).unwrap(),
+            AutoClaimResult::Claimed(_)
+        ));
+    }
+
+    #[test]
+    fn user_submissions_and_manual_claims_preserve_manual_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let first = enqueue_prompt(&dir, "first".to_string(), Vec::new()).unwrap();
+        enqueue_prompt(&dir, "second".to_string(), Vec::new()).unwrap();
+        set_dispatch_mode(&dir, DispatchMode::Manual).unwrap();
+        suspend_auto_dispatch(&dir, SuspensionReason::Failed).unwrap();
+
+        mark_user_priority(&dir).unwrap();
+        let queue = load_prompt_queue(&dir).unwrap();
+        assert_eq!(queue.dispatch_mode, DispatchMode::Manual);
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
+
+        claim_queued_prompt(&dir, &first.id).unwrap();
+        assert_eq!(
+            load_prompt_queue(&dir).unwrap().dispatch_mode,
+            DispatchMode::Manual
+        );
+    }
+
+    #[test]
+    fn clearing_queued_prompts_keeps_dispatching_items_and_lifts_suspension() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(&dir, "queued".to_string(), Vec::new()).unwrap();
+        let dispatching = enqueue_prompt(&dir, "in flight".to_string(), Vec::new()).unwrap();
+        claim_queued_prompt(&dir, &dispatching.id).unwrap();
+        suspend_auto_dispatch(&dir, SuspensionReason::Failed).unwrap();
+
+        let queue = clear_queued_prompts(&dir).unwrap();
+
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].id, dispatching.id);
+        assert_eq!(queue.items[0].state, QueuedPromptState::Dispatching);
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
+        assert_eq!(
+            delete_queued_prompt(&dir, &queued.id),
+            Err(PromptQueueError::NotFound)
+        );
+    }
+
+    #[test]
+    fn clearing_an_empty_unsuspended_queue_is_a_no_op_without_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+
+        let queue = clear_queued_prompts(&dir).unwrap();
+
+        assert!(queue.items.is_empty());
+        assert!(!queue_path(&dir).exists());
+    }
+
+    #[test]
+    fn resuming_auto_dispatch_does_not_create_queue_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+
+        resume_auto_dispatch(&dir).unwrap();
+        assert!(!queue_path(&dir).exists());
+
+        enqueue_prompt(&dir, "queued".to_string(), Vec::new()).unwrap();
+        resume_auto_dispatch(&dir).unwrap();
+        assert!(queue_path(&dir).exists());
+    }
+
+    #[test]
+    fn resuming_auto_dispatch_clears_a_durable_suspension() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        enqueue_prompt(&dir, "queued".to_string(), Vec::new()).unwrap();
+        suspend_auto_dispatch(&dir, SuspensionReason::Stopped).unwrap();
+        assert!(load_prompt_queue(&dir).unwrap().auto_dispatch_suspended);
+
+        resume_auto_dispatch(&dir).unwrap();
+
+        let queue = load_prompt_queue(&dir).unwrap();
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
+    }
+
+    #[test]
+    fn failed_turn_suspension_requires_a_stable_queue_and_no_newer_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        enqueue_prompt(&dir, "queued".to_string(), Vec::new()).unwrap();
+        let revision = current_revision(&dir).unwrap();
+
+        assert!(suspend_after_failed_turn(&dir, revision, false).unwrap());
+        let queue = load_prompt_queue(&dir).unwrap();
+        assert!(queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, Some(SuspensionReason::Failed));
+
+        // A newer turn in flight fences the write entirely.
+        enqueue_prompt(&dir, "another".to_string(), Vec::new()).unwrap();
+        let next_revision = current_revision(&dir).unwrap();
+        assert!(!suspend_after_failed_turn(&dir, next_revision, true).unwrap());
+    }
+
+    #[test]
+    fn late_failed_turn_cannot_rewrite_over_a_concurrent_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item = enqueue_prompt(&dir, "sent now".to_string(), Vec::new()).unwrap();
+        let drained_revision = current_revision(&dir).unwrap();
+
+        // Send-now claims the item, bumping the revision the drain observed.
+        claim_queued_prompt(&dir, &item.id).unwrap();
+
+        assert!(!suspend_after_failed_turn(&dir, drained_revision, false).unwrap());
+        let queue = load_prompt_queue(&dir).unwrap();
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
+    }
+
+    #[test]
+    fn failed_turn_suspension_skips_manual_mode_and_empty_or_suspended_queues() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let manual = enqueue_prompt(&dir, "manual".to_string(), Vec::new()).unwrap();
+        set_dispatch_mode(&dir, DispatchMode::Manual).unwrap();
+        let manual_revision = current_revision(&dir).unwrap();
+        assert!(!suspend_after_failed_turn(&dir, manual_revision, false).unwrap());
         assert!(!load_prompt_queue(&dir).unwrap().auto_dispatch_suspended);
+        let _ = manual;
+
+        set_dispatch_mode(&dir, DispatchMode::Auto).unwrap();
+        clear_queued_prompts(&dir).unwrap();
+        let empty_revision = current_revision(&dir).unwrap();
+        assert!(!suspend_after_failed_turn(&dir, empty_revision, false).unwrap());
+    }
+
+    #[test]
+    fn legacy_suspension_without_a_reason_is_inferred_as_stopped() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        enqueue_prompt(&dir, "legacy".to_string(), Vec::new()).unwrap();
+        let mut legacy = load_prompt_queue(&dir).unwrap();
+        legacy.auto_dispatch_suspended = true;
+        write_json(&queue_path(&dir), &legacy).unwrap();
+
+        let queue = load_prompt_queue(&dir).unwrap();
+
+        assert_eq!(queue.suspension_reason, Some(SuspensionReason::Stopped));
     }
 }

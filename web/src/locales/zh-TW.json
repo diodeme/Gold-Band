@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "待傳送佇列為空。",
       "prompt-queue-revision-conflict": "待傳送順序已發生變化，請在清單更新後重試。",
       "prompt-queue-invalid-order": "待傳送順序無效，請重試。",
+      "prompt-queue-invalid-mode": "傳送模式無效。",
       "prompt-queue-session-busy": "目前工作階段仍在執行，請停止後再手動使用。",
+      "prompt-queue-interrupt-timeout": "目前回覆仍在停止中，這條內容已保留在佇列，可稍後重試。",
+      "prompt-queue-dispatch-settling": "上一條回覆尚未完全結束，這條內容已放回佇列，請稍後重試。",
       "prompt-session-busy": "上一則訊息仍在處理中，請稍候或先停止目前回覆。",
       "prompt-submission-conflict": "這則訊息的傳送識別碼已被其他內容使用，請重新傳送。",
       "prompt-submission-missing": "已接納的訊息內容無法讀取，請重新傳送。",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "請先處理輸入框中的目前草稿",
       "restoreDraftConflict": "輸入框狀態已變化，無法還原這條待傳送內容。",
       "reorder": "調整排隊順序",
-      "use": "使用",
+      "sendNow": "立即傳送",
       "delete": "刪除",
-      "enqueue": "加入佇列"
+      "enqueue": "加入佇列",
+      "modeToggle": "切換傳送模式",
+      "mode": {
+        "auto": "自動傳送",
+        "manual": "手動傳送"
+      },
+      "modeTooltip": "自動傳送：每輪回覆結束後自動依次傳送待傳送內容。手動傳送：內容只保留在佇列中，由你逐條「立即傳送」。",
+      "paused": {
+        "stopped": "已暫停：工作階段已停止",
+        "failed": "已暫停：上一輪傳送失敗"
+      },
+      "resume": "恢復自動傳送",
+      "moreActions": "更多操作",
+      "clear": "清空待傳送",
+      "clearConfirmTitle": "清空待傳送佇列？",
+      "clearConfirmDescription": "將移除 {{count}} 條待傳送訊息，此操作無法復原。",
+      "clearConfirmAction": "清空待傳送",
+      "saveToBox": "存入草稿箱"
     },
     "sending": "傳送中",
     "sendFailed": "傳送失敗",

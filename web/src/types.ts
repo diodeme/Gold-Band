@@ -2898,6 +2898,9 @@ export interface ConversationPromptQueueVm {
   revision: number;
   items: ConversationQueuedPromptVm[];
   maxItems: number;
+  dispatchMode: 'auto' | 'manual';
+  autoDispatchSuspended: boolean;
+  suspensionReason?: 'stopped' | 'failed' | null;
 }
 
 export interface ConversationAttemptLifecycleVm {

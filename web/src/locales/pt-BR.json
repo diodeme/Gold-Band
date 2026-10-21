@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "A fila pendente está vazia.",
       "prompt-queue-revision-conflict": "A ordem pendente mudou. Tente novamente após a lista atualizar.",
       "prompt-queue-invalid-order": "A ordem pendente é inválida. Tente novamente.",
+      "prompt-queue-invalid-mode": "O modo de envio é inválido.",
       "prompt-queue-session-busy": "Pare a sessão ativa antes de usar manualmente um item da fila.",
+      "prompt-queue-interrupt-timeout": "A resposta atual ainda está sendo interrompida. A mensagem permanece na fila; tente novamente em instantes.",
+      "prompt-queue-dispatch-settling": "A resposta anterior ainda não terminou completamente. A mensagem foi devolvida à fila; tente novamente em instantes.",
       "prompt-session-busy": "A mensagem anterior ainda está sendo processada. Aguarde ou pare a resposta atual primeiro.",
       "prompt-submission-conflict": "Este identificador de mensagem já está associado a conteúdo diferente. Envie novamente.",
       "prompt-submission-missing": "O conteúdo da mensagem aceita não pôde ser lido. Envie novamente.",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "Termine primeiro o rascunho atual do campo de entrada",
       "restoreDraftConflict": "O campo de entrada mudou e esta mensagem pendente não pode ser restaurada.",
       "reorder": "Reordenar mensagem na fila",
-      "use": "Usar",
+      "sendNow": "Enviar agora",
       "delete": "Excluir",
-      "enqueue": "Adicionar à fila"
+      "enqueue": "Adicionar à fila",
+      "modeToggle": "Alternar modo de envio",
+      "mode": {
+        "auto": "Envio automático",
+        "manual": "Envio manual"
+      },
+      "modeTooltip": "Envio automático: as mensagens pendentes são enviadas uma a uma após cada resposta terminar. Envio manual: as mensagens ficam na fila até você usar Enviar agora em cada uma.",
+      "paused": {
+        "stopped": "Pausado: sessão interrompida",
+        "failed": "Pausado: o último envio falhou"
+      },
+      "resume": "Retomar envio automático",
+      "moreActions": "Mais ações",
+      "clear": "Limpar pendentes",
+      "clearConfirmTitle": "Limpar a fila de pendentes?",
+      "clearConfirmDescription": "{{count}} mensagens pendentes serão removidas. Isso não pode ser desfeito.",
+      "clearConfirmAction": "Limpar pendentes",
+      "saveToBox": "Salvar na caixa de rascunhos"
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",

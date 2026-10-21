@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "The pending queue is empty.",
       "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
       "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
+      "prompt-queue-invalid-mode": "The send mode is invalid.",
       "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+      "prompt-queue-interrupt-timeout": "The current reply is still stopping. The message stays queued; try again shortly.",
+      "prompt-queue-dispatch-settling": "The previous reply has not fully finished. The message was returned to the queue; try again shortly.",
       "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
       "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
       "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "Finish the current composer draft first",
       "restoreDraftConflict": "The composer changed before this queued message could be restored.",
       "reorder": "Reorder queue",
-      "use": "Use",
+      "sendNow": "Send now",
       "delete": "Delete",
-      "enqueue": "Add to queue"
+      "enqueue": "Add to queue",
+      "modeToggle": "Toggle send mode",
+      "mode": {
+        "auto": "Auto send",
+        "manual": "Manual send"
+      },
+      "modeTooltip": "Auto send: queued messages are sent one by one after each reply finishes. Manual send: messages are kept in the queue until you use Send now on each.",
+      "paused": {
+        "stopped": "Paused: session stopped",
+        "failed": "Paused: last send failed"
+      },
+      "resume": "Resume auto send",
+      "moreActions": "More actions",
+      "clear": "Clear pending",
+      "clearConfirmTitle": "Clear the pending queue?",
+      "clearConfirmDescription": "{{count}} pending messages will be removed. This cannot be undone.",
+      "clearConfirmAction": "Clear pending",
+      "saveToBox": "Save to draft box"
     },
     "sending": "Sending",
     "sendFailed": "Send failed",

@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
       "prompt-queue-invalid-order": "送信待ちの順序が無効です。もう一度試してください。",
+      "prompt-queue-invalid-mode": "送信モードが無効です。",
       "prompt-queue-session-busy": "キューに入れられたプロンプトを手動で使用する前に、アクティブなセッションを停止してください。",
+      "prompt-queue-interrupt-timeout": "現在の返信はまだ停止中です。このメッセージはキューに残ります。少し待ってから再試行してください。",
+      "prompt-queue-dispatch-settling": "前の返信が完全に終わっていません。このメッセージはキューに戻されました。少し待ってから再試行してください。",
       "prompt-session-busy": "前のメッセージはまだ処理中です。まず現在の応答を待つか停止してください。",
       "prompt-submission-conflict": "このメッセージ識別子は、すでに別のコンテンツに関連付けられています。もう一度送信してください。",
       "prompt-submission-missing": "受け付けられたメッセージの内容を読み取れませんでした。もう一度送信してください。",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "先に入力欄の現在の下書きを処理してください",
       "restoreDraftConflict": "入力欄の状態が変わったため、この送信待ちの内容を復元できません。",
       "reorder": "キューに入れられたメッセージを並べ替える",
-      "use": "使用",
+      "sendNow": "今すぐ送信",
       "delete": "削除",
-      "enqueue": "キューに追加"
+      "enqueue": "キューに追加",
+      "modeToggle": "送信モードを切り替える",
+      "mode": {
+        "auto": "自動送信",
+        "manual": "手動送信"
+      },
+      "modeTooltip": "自動送信：各返信が終わるたびに、キューのメッセージが順番に送信されます。手動送信：メッセージはキューに保持され、それぞれ「今すぐ送信」で送信します。",
+      "paused": {
+        "stopped": "一時停止中：セッションを停止しました",
+        "failed": "一時停止中：前回の送信に失敗しました"
+      },
+      "resume": "自動送信を再開",
+      "moreActions": "その他の操作",
+      "clear": "送信待ちをクリア",
+      "clearConfirmTitle": "送信待ちキューをクリアしますか？",
+      "clearConfirmDescription": "送信待ちメッセージ {{count}} 件が削除されます。この操作は元に戻せません。",
+      "clearConfirmAction": "送信待ちをクリア",
+      "saveToBox": "下書きボックスに保存"
     },
     "sending": "送信中",
     "sendFailed": "送信に失敗しました",

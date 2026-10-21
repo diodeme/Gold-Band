@@ -1658,9 +1658,78 @@ describe('ACP Direct queue submission', () => {
         undefined,
         undefined,
         undefined,
+        false,
       );
       expect(textarea?.value).toBe('');
       expect(container.textContent).not.toContain('unexpected prompt queue response');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('restores the complete composer draft when the queue rejects the submission', async () => {
+    const { container, root } = await renderActiveDirectDialog();
+    apiMocks.submitConversationPrompt.mockRejectedValue({
+      code: 'conversation.prompt-queue-full',
+      params: {},
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '入队失败的这条内容必须完整保留');
+
+      const sendButton = container.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+      expect(sendButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        sendButton?.click();
+      });
+
+      // 成功即全清、失败即还原：正文留在输入框，错误就地可见，可再次提交。
+      expect(container.textContent).toContain('待发送队列已满');
+      expect(textarea?.value).toBe('入队失败的这条内容必须完整保留');
+      expect(sendButton?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('parks the current draft in the queue through the explicit draft-box button', async () => {
+    const { container, id, root, session } = await renderActiveDirectDialog();
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'queued',
+      turnId: null,
+      revision: null,
+      operationId: null,
+      session: null,
+      run: null,
+      lifecycle: null,
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '先存进草稿箱的这句话');
+
+      const draftBoxButton = container.querySelector<HTMLButtonElement>('[data-acp-queue-draft="true"]');
+      expect(draftBoxButton).toBeTruthy();
+      expect(draftBoxButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        draftBoxButton?.click();
+      });
+
+      expect(apiMocks.submitConversationPrompt).toHaveBeenCalledWith(
+        `project-${id}`,
+        `task-${id}`,
+        `run-${id}`,
+        session.roundId,
+        session.nodeId,
+        session.attemptId,
+        { displayText: '先存进草稿箱的这句话', quotes: [], workspaceFiles: [] },
+        null,
+        expect.any(Object),
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+      expect(textarea?.value).toBe('');
     } finally {
       await unmount(root);
     }

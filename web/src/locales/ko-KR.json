@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "대기열이 비어 있습니다.",
       "prompt-queue-revision-conflict": "대기 순서가 변경되었습니다. 목록이 업데이트된 뒤 다시 시도해 주세요.",
       "prompt-queue-invalid-order": "대기 순서가 유효하지 않습니다. 다시 시도해 주세요.",
+      "prompt-queue-invalid-mode": "전송 모드가 유효하지 않습니다.",
       "prompt-queue-session-busy": "대기 중인 프롬프트를 수동으로 사용하기 전에 활성 세션을 중지해 주세요.",
+      "prompt-queue-interrupt-timeout": "현재 응답이 아직 중지 중입니다. 이 메시지는 대기열에 유지되며 잠시 후 다시 시도할 수 있습니다.",
+      "prompt-queue-dispatch-settling": "이전 응답이 완전히 끝나지 않았습니다. 이 메시지는 대기열로 돌아갔습니다. 잠시 후 다시 시도해 주세요.",
       "prompt-session-busy": "이전 메시지가 아직 처리 중입니다. 기다리거나 현재 응답을 먼저 중지해 주세요.",
       "prompt-submission-conflict": "이 메시지 식별자가 이미 다른 내용과 연결되어 있습니다. 다시 보내 주세요.",
       "prompt-submission-missing": "수락된 메시지 내용을 읽을 수 없습니다. 다시 보내 주세요.",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "입력창의 현재 초안을 먼저 처리하세요",
       "restoreDraftConflict": "입력창 상태가 바뀌어 이 대기 내용을 되돌릴 수 없습니다.",
       "reorder": "대기 메시지 순서 변경",
-      "use": "사용",
+      "sendNow": "지금 보내기",
       "delete": "삭제",
-      "enqueue": "대기열에 추가"
+      "enqueue": "대기열에 추가",
+      "modeToggle": "전송 모드 전환",
+      "mode": {
+        "auto": "자동 전송",
+        "manual": "수동 전송"
+      },
+      "modeTooltip": "자동 전송: 각 응답이 끝날 때마다 대기 중인 메시지가 순서대로 전송됩니다. 수동 전송: 메시지는 대기열에 유지되며 각각 '지금 보내기'로 전송합니다.",
+      "paused": {
+        "stopped": "일시중지됨: 세션이 중지됨",
+        "failed": "일시중지됨: 지난 전송이 실패함"
+      },
+      "resume": "자동 전송 재개",
+      "moreActions": "더 보기",
+      "clear": "대기 중 항목 비우기",
+      "clearConfirmTitle": "대기열을 비우시겠습니까?",
+      "clearConfirmDescription": "대기 중인 메시지 {{count}}개가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+      "clearConfirmAction": "대기 중 항목 비우기",
+      "saveToBox": "임시 보관함에 저장"
     },
     "sending": "전송 중",
     "sendFailed": "전송 실패",

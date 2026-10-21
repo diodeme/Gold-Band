@@ -499,6 +499,8 @@ fn run() -> anyhow::Result<()> {
             restore_conversation_queued_prompt,
             delete_conversation_queued_prompt,
             use_conversation_queued_prompt,
+            commands::set_conversation_prompt_queue_mode,
+            commands::clear_conversation_queued_prompts,
             set_acp_session_model,
             set_acp_session_config_option,
             set_acp_session_permission_mode,

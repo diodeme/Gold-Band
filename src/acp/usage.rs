@@ -490,7 +490,9 @@ fn append_prompt_completed_inner(
         let completed = prompt_completions_from_journal_unlocked(journal_path)?;
         // One RPC is completed once, whichever turn identity asks to record it.
         if completed.contains_key(turn_id)
-            || completed.values().any(|(completed_seq, _)| *completed_seq == turn_seq)
+            || completed
+                .values()
+                .any(|(completed_seq, _)| *completed_seq == turn_seq)
         {
             return Ok(false);
         }
@@ -593,7 +595,10 @@ pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageS
             _ => {}
         }
     }
-    let mut segments = by_seq.into_values().map(|(_, segment)| segment).collect::<Vec<_>>();
+    let mut segments = by_seq
+        .into_values()
+        .map(|(_, segment)| segment)
+        .collect::<Vec<_>>();
     segments.sort_by_key(|segment| segment.turn_seq);
     segments
 }
@@ -617,7 +622,12 @@ fn prompt_completions_from_journal_unlocked(
             ..
         } = entry
         {
-            keep_one_completion_per_rpc(&mut by_seq, turn_seq, recovered_from_raw, (turn_id, usage));
+            keep_one_completion_per_rpc(
+                &mut by_seq,
+                turn_seq,
+                recovered_from_raw,
+                (turn_id, usage),
+            );
         }
     }
     Ok(by_seq
@@ -1240,8 +1250,16 @@ mod tests {
         )
         .unwrap();
         for frame in [
-            raw_frame("100Z", "outbound", json!({"jsonrpc":"2.0","id":41,"method":"session/prompt","params":{}})),
-            raw_frame("110Z", "inbound", json!({"jsonrpc":"2.0","id":41,"result":{"usage":{"inputTokens":20,"outputTokens":12248,"totalTokens":800237}}})),
+            raw_frame(
+                "100Z",
+                "outbound",
+                json!({"jsonrpc":"2.0","id":41,"method":"session/prompt","params":{}}),
+            ),
+            raw_frame(
+                "110Z",
+                "inbound",
+                json!({"jsonrpc":"2.0","id":41,"result":{"usage":{"inputTokens":20,"outputTokens":12248,"totalTokens":800237}}}),
+            ),
         ] {
             append_jsonl(&paths.raw, &frame).unwrap();
         }
@@ -1255,7 +1273,15 @@ mod tests {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
         write_transaction_keyed_prompt(&paths);
         // A later prompt on a fresh runtime is active, which enables raw recovery.
-        append_prompt_started(&paths.prompt_usage, "gold-band-user-prompt-9:attempt-0:9", 9, "500Z", None, None).unwrap();
+        append_prompt_started(
+            &paths.prompt_usage,
+            "gold-band-user-prompt-9:attempt-0:9",
+            9,
+            "500Z",
+            None,
+            None,
+        )
+        .unwrap();
 
         let recovered = repair_attempt_usage(
             &paths.snapshot,

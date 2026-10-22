@@ -7374,17 +7374,41 @@ pub fn set_conversation_prompt_queue_mode(
         // Switching back to auto (or resuming a pause) on an idle session
         // must drive one dispatch round itself: the drain's only event
         // source is a turn finishing, and an idle session has no next turn.
-        kick_idle_prompt_queue_drain_if_pending(&app, &locator);
+        kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id.clone(), &locator);
     }
     Ok(ConversationPromptQueueMutationVm {
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
 }
 
+/// Whether an idle-session dispatch kick applies to this queue. Pure so the
+/// gating contract stays testable without a live runtime.
+fn idle_prompt_queue_kick_is_due(
+    queue: &gold_band::acp::prompt_queue::PromptQueue,
+    session_idle: bool,
+) -> bool {
+    session_idle
+        && queue.dispatch_mode == DispatchMode::Auto
+        && queue
+            .items
+            .iter()
+            .any(|item| item.state == gold_band::acp::prompt_queue::QueuedPromptState::Queued)
+}
+
 /// Drives one automatic dispatch round when the queue is pending, the mode is
 /// auto, and the session is idle. No-ops otherwise (manual mode, empty queue,
 /// live turn — a live turn's own `Finished` event will reschedule the drain).
-fn kick_idle_prompt_queue_drain_if_pending(app: &App, locator: &AttemptLocator) {
+///
+/// This schedules the drain directly: command apps resolved from the global
+/// state do not carry the runtime's prompt-lifecycle callbacks, and a
+/// synthetic `Finished` notification would also surface a completion notice
+/// for a turn that never ran.
+fn kick_idle_prompt_queue_drain_if_pending(
+    app_handle: &AppHandle,
+    app: &App,
+    project_id: Option<String>,
+    locator: &AttemptLocator,
+) {
     let attempt_dir = locator.attempt_dir(app);
     let queue = match load_prompt_queue(&attempt_dir) {
         Ok(queue) => queue,
@@ -7399,42 +7423,20 @@ fn kick_idle_prompt_queue_drain_if_pending(app: &App, locator: &AttemptLocator) 
             return;
         }
     };
-    let has_queued = queue
-        .items
-        .iter()
-        .any(|item| item.state == gold_band::acp::prompt_queue::QueuedPromptState::Queued);
-    if !has_queued
-        || queue.dispatch_mode == DispatchMode::Manual
-        || !session_idle_for_dispatch(app, locator, &attempt_dir)
-    {
+    if !idle_prompt_queue_kick_is_due(
+        &queue,
+        session_idle_for_dispatch(app, locator, &attempt_dir),
+    ) {
         return;
     }
-    let task_uuid = acp_turn_task_uuid(app, locator);
-    if let Err(error) = app.notify_prompt_turn_finished(
-        acp_live_event_context(
-            &locator.task_id,
-            task_uuid,
-            &locator.run_id,
-            &locator.round_id,
-            &locator.node_id,
-            &locator.attempt_id,
-            locator.outer_node_id.clone(),
-            locator.outer_attempt_id.clone(),
-        ),
-        None,
+    schedule_direct_prompt_queue_drain(
+        app_handle.clone(),
+        project_id,
+        direct_prompt_queue_drain_app(app),
+        locator.clone(),
         AcpTurnOutcome::Completed,
-    ) {
-        warn!(
-            project_id = %app.paths.project_id,
-            task_id = %locator.task_id,
-            run_id = %locator.run_id,
-            round_id = %locator.round_id,
-            node_id = %locator.node_id,
-            attempt_id = %locator.attempt_id,
-            %error,
-            "failed to kick the idle prompt queue drain after switching back to auto dispatch"
-        );
-    }
+        None,
+    );
 }
 
 #[tauri::command]
@@ -7854,7 +7856,7 @@ async fn submit_conversation_prompt_inner(
         emit_acp_session_update(
             &app_handle,
             &app,
-            project_id,
+            project_id.clone(),
             &locator.task_id,
             &locator.run_id,
             &locator.round_id,
@@ -7865,37 +7867,9 @@ async fn submit_conversation_prompt_inner(
             None,
         );
         let lifecycle = lifecycle_for_locator(&app, &locator);
-        if client::prompt_activity(&attempt_dir).is_none()
-            && app
-                .run_status(&locator.task_id, &locator.run_id)
-                .is_ok_and(|run| run.status == RunStatus::Completed)
-        {
-            if let Err(error) = app.notify_prompt_turn_finished(
-                acp_live_event_context(
-                    &locator.task_id,
-                    run.task_uuid.clone(),
-                    &locator.run_id,
-                    &locator.round_id,
-                    &locator.node_id,
-                    &locator.attempt_id,
-                    locator.outer_node_id.clone(),
-                    locator.outer_attempt_id.clone(),
-                ),
-                None,
-                AcpTurnOutcome::Completed,
-            ) {
-                warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    %error,
-                    "failed to dispatch queued conversation prompt after terminal run"
-                );
-            }
-        }
+        // Unified idle kick: a queue-targeted submission landing on an idle
+        // session has no upcoming turn-finished event to schedule the drain.
+        kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id, &locator);
         return Ok(ConversationPromptSubmitVm {
             kind: "queued".to_string(),
             turn_id: None,
@@ -14867,13 +14841,13 @@ mod tests {
     }
 
     #[test]
-    fn switching_back_to_auto_kicks_an_idle_pending_queue_drain() {
+    fn idle_prompt_queue_kick_gates_on_mode_items_and_session_idleness() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-prompt-queue-auto-kick-test-{}",
             uuid::Uuid::new_v4()
         ));
         let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
-        let base_app = App::new(repo_root);
+        let app = App::new(repo_root);
         let locator = AttemptLocator::new(
             "task-001".to_string(),
             "run-001".to_string(),
@@ -14883,83 +14857,36 @@ mod tests {
             None,
             None,
         );
-        let attempt_dir = locator.attempt_dir(&base_app);
+        let attempt_dir = locator.attempt_dir(&app);
         enqueue_prompt(&attempt_dir, "first".to_string(), Vec::new()).unwrap();
-        enqueue_prompt(&attempt_dir, "second".to_string(), Vec::new()).unwrap();
+
+        // Manual mode holds the queue even on an idle session.
         gold_band::acp::prompt_queue::set_dispatch_mode(
             &attempt_dir,
             gold_band::acp::prompt_queue::DispatchMode::Manual,
         )
         .unwrap();
+        let manual_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!idle_prompt_queue_kick_is_due(&manual_queue, true));
 
-        let finished_events = Arc::new(Mutex::new(Vec::<AcpTurnOutcome>::new()));
-        let claimed = Arc::new(Mutex::new(None::<String>));
-        let callback_app = base_app.clone_for_background();
-        let callback_locator = locator.clone();
-        let callback_finished = Arc::clone(&finished_events);
-        let callback_claimed = Arc::clone(&claimed);
-        let app = base_app.with_prompt_turn_lifecycle(Arc::new(
-            move |_context, event| -> anyhow::Result<()> {
-                let finished_outcome = match &event {
-                    AcpPromptLifecycleEvent::Finished { outcome, .. } => Some(*outcome),
-                    _ => None,
-                };
-                process_prompt_turn_lifecycle(
-                    &callback_app,
-                    callback_locator.clone(),
-                    event,
-                    |_locator, _outcome, _completion| {
-                        if let Some(outcome) = finished_outcome {
-                            callback_finished.lock().unwrap().push(outcome);
-                        }
-                        let queue = load_prompt_queue(&callback_locator.attempt_dir(&callback_app))
-                            .unwrap();
-                        if let AutoClaimResult::Claimed(item) = claim_next_for_auto_dispatch(
-                            &callback_locator.attempt_dir(&callback_app),
-                            queue.revision,
-                        )
-                        .unwrap()
-                        {
-                            *callback_claimed.lock().unwrap() = Some(item.content);
-                        }
-                    },
-                )
-            },
-        ));
-
-        // Manual mode holds the queue: the kick must not fire any dispatch.
-        kick_idle_prompt_queue_drain_if_pending(&app, &locator);
-        assert!(finished_events.lock().unwrap().is_empty());
-        assert!(claimed.lock().unwrap().is_none());
-
-        // Empty-queue guard.
+        // Switching back to auto with a pending item and an idle session is
+        // exactly the scenario the kick exists for: no turn-finished event
+        // will ever arrive to schedule the drain on its own.
         gold_band::acp::prompt_queue::set_dispatch_mode(
             &attempt_dir,
             gold_band::acp::prompt_queue::DispatchMode::Auto,
         )
         .unwrap();
-        gold_band::acp::prompt_queue::clear_queued_prompts(&attempt_dir).unwrap();
-        kick_idle_prompt_queue_drain_if_pending(&app, &locator);
-        assert!(finished_events.lock().unwrap().is_empty());
+        let auto_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(idle_prompt_queue_kick_is_due(&auto_queue, true));
 
-        // Auto mode + idle + pending: the kick drives exactly the finished
-        // turn event the automatic dispatch chain feeds on.
-        let first = enqueue_prompt(
-            &attempt_dir,
-            "queued after auto switch".to_string(),
-            Vec::new(),
-        )
-        .unwrap();
-        let _ = first;
-        kick_idle_prompt_queue_drain_if_pending(&app, &locator);
-        assert_eq!(
-            *finished_events.lock().unwrap(),
-            vec![AcpTurnOutcome::Completed]
-        );
-        assert_eq!(
-            claimed.lock().unwrap().as_deref(),
-            Some("queued after auto switch")
-        );
+        // A live turn schedules the drain through its own finished event.
+        assert!(!idle_prompt_queue_kick_is_due(&auto_queue, false));
+
+        // Nothing pending, nothing to kick.
+        gold_band::acp::prompt_queue::clear_queued_prompts(&attempt_dir).unwrap();
+        let empty_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!idle_prompt_queue_kick_is_due(&empty_queue, true));
         let _ = std::fs::remove_dir_all(root);
     }
 

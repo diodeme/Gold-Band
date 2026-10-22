@@ -71,7 +71,7 @@ describe('IM settings boundary', () => {
   it('configures Feishu through its own scan session without exposing credentials', async () => {
     await browserApi.deleteImChannel('feishu');
     const sessionId = crypto.randomUUID();
-    const authorization = await browserApi.startFeishuScanAuthorization(sessionId, false);
+    const authorization = await browserApi.startFeishuScanAuthorization(sessionId, 'selectOrCreate');
     expect(authorization).toMatchObject({ sessionId });
     expect(authorization.qrUrl).toBeTruthy();
     const settings = await browserApi.completeFeishuScanAuthorization(sessionId);
@@ -91,7 +91,7 @@ describe('IM settings boundary', () => {
 
   it('keeps the browser capability limits aligned with each connector', async () => {
     const feishuSessionId = crypto.randomUUID();
-    await browserApi.startFeishuScanAuthorization(feishuSessionId, false);
+    await browserApi.startFeishuScanAuthorization(feishuSessionId, 'selectOrCreate');
     await browserApi.completeFeishuScanAuthorization(feishuSessionId);
     const sessionId = crypto.randomUUID();
     await browserApi.startWeComScanAuthorization(sessionId);

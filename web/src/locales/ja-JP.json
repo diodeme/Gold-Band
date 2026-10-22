@@ -2551,6 +2551,8 @@
         "notConfigured": "{{channel}} が接続されていません。接続してリモート介入と通知を設定します。",
         "connect": "スキャンして接続する",
         "reauthorize": "再度認可する",
+        "changeApp": "Feishu アプリを変更",
+        "changeAppWarning": "認可が完了すると現在の Feishu アプリが置き換えられ、既存のプライベートチャット連携が解除されます。新しいボットで連携し直してください。",
         "generating": "QRコードを生成中…",
         "waiting": "{{channel}} でスキャンし、認可を確認してください",
         "expiresIn": "QR コードは {{countdown}} 後に期限切れになります。",

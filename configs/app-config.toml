@@ -29,8 +29,7 @@ source = "maling"
 
 [im.feishuScanAuth]
 source = "maling"
-appName = "Gold Band"
-appDescription = "Gold Band remote intervention"
+appDescriptionSuffix = "remote intervention"
 
 [projectIdentity]
 maxLength = 80

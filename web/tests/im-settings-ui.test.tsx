@@ -161,7 +161,7 @@ describe('IM settings production interaction', () => {
     expect(host.textContent).toContain('一个机器人只连接一台设备');
     const consent = [...dialog.querySelectorAll('button')].find((b) => b.textContent === '同意并生成二维码')!;
     await act(async () => consent.click());
-    expect(api.startFeishuScanAuthorization).toHaveBeenCalledWith(expect.any(String), false);
+    expect(api.startFeishuScanAuthorization).toHaveBeenCalledWith(expect.any(String), 'selectOrCreate');
     expect(dialog.textContent).toContain('正在生成二维码');
     const session = api.startFeishuScanAuthorization.mock.calls[0][0];
     const close = [...dialog.querySelectorAll('button')].find((b) => b.textContent === '关闭')!;
@@ -185,7 +185,7 @@ describe('IM settings production interaction', () => {
     const dialog = document.body.querySelector('[role="dialog"]')!;
     const consent = [...dialog.querySelectorAll('button')].find((b) => b.textContent === '同意并生成二维码')!;
     await act(async () => consent.click());
-    expect(api.startFeishuScanAuthorization).toHaveBeenCalledWith(expect.any(String), true);
+    expect(api.startFeishuScanAuthorization).toHaveBeenCalledWith(expect.any(String), 'reauthorizeCurrent');
     expect(dialog.querySelector('canvas[aria-label="飞书授权二维码"]')).not.toBeNull();
     const waiting = structuredClone(currentSettings);
     waiting.channels[0].connection = { ...channel.connection!, state: 'connected', lastErrorCode: null };
@@ -199,6 +199,53 @@ describe('IM settings production interaction', () => {
     expect(host.textContent).toContain('已绑定一对一私聊');
     expect(host.querySelector('[data-im-status="ready"]')).not.toBeNull();
     expect(api.startWeComScanAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('keeps first-time Feishu authorization titled as connect after credentials arrive', async () => {
+    currentSettings = settingsFixture(false);
+    currentSettings.channels[0].kind = 'feishu';
+    const pending = createDeferred<ImSettingsVm>();
+    api.startFeishuScanAuthorization.mockImplementation(async (sessionId) => ({
+      sessionId,
+      qrUrl: 'https://example.test/qr',
+      expiresAtMs: Date.now() + 60_000,
+    }));
+    api.completeFeishuScanAuthorization.mockReturnValue(pending.promise);
+    await renderSettings();
+    await act(async () => [...host.querySelectorAll('button')].find((button) => button.textContent === '扫码接入')!.click());
+    await act(async () => [...document.body.querySelectorAll('[role="dialog"] button')]
+      .find((button) => button.textContent === '同意并生成二维码')!.click());
+    const waiting = settingsFixture(true);
+    waiting.channels[0].kind = 'feishu';
+    await act(async () => pending.resolve(waiting));
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('扫码接入飞书');
+    expect(dialog.textContent).not.toContain('更换飞书应用');
+  });
+
+  it('offers Feishu app replacement through the native existing-app selection flow', async () => {
+    const channel = currentSettings.channels[0];
+    channel.kind = 'feishu';
+    const pending = createDeferred<never>();
+    api.startFeishuScanAuthorization.mockReturnValue(pending.promise);
+    await renderSettings();
+    const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
+    await act(async () => {
+      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+    });
+    const changeApp = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .find((item) => item.textContent === '更换飞书应用')!;
+    expect(changeApp).toBeTruthy();
+    await act(async () => {
+      changeApp.focus();
+      changeApp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('更换飞书应用');
+    expect(dialog.textContent).toContain('完成授权后将替换当前飞书应用');
+    const consent = [...dialog.querySelectorAll('button')].find((button) => button.textContent === '同意并生成二维码')!;
+    await act(async () => consent.click());
+    expect(api.startFeishuScanAuthorization).toHaveBeenCalledWith(expect.any(String), 'selectOrCreate');
   });
 
   it('keeps WeCom scan automatic and does not call Feishu authorization', async () => {

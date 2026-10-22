@@ -2551,6 +2551,8 @@
         "notConfigured": "{{channel}} não está conectado. Conecte-o para configurar intervenção remota e notificações.",
         "connect": "Escanear para conectar",
         "reauthorize": "Autorizar novamente",
+        "changeApp": "Alterar aplicativo do Feishu",
+        "changeAppWarning": "Concluir a autorização substitui o aplicativo Feishu atual e remove a vinculação de chat privado existente. Vincule novamente com o novo bot.",
         "generating": "Gerando código QR…",
         "waiting": "Escaneie com {{channel}} e confirme a autorização",
         "expiresIn": "Código QR expira em {{countdown}}",

@@ -2551,6 +2551,8 @@
         "notConfigured": "{{channel}}이 연결되어 있지 않습니다. 원격 개입 및 알림을 구성하려면 연결해 주세요.",
         "connect": "스캔하여 연결",
         "reauthorize": "다시 인증",
+        "changeApp": "Feishu 앱 변경",
+        "changeAppWarning": "인증을 완료하면 현재 Feishu 앱이 교체되고 기존 비공개 채팅 바인딩이 해제됩니다. 새 봇으로 다시 바인딩하세요.",
         "generating": "QR 코드 생성 중…",
         "waiting": "{{channel}}으로 스캔하고 인증을 확인하세요",
         "expiresIn": "QR 코드가 {{countdown}} 후 만료됩니다",

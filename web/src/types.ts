@@ -2267,6 +2267,8 @@ export interface ImGenerationInputVm {
     expectedGeneration: number;
 }
 
+export type FeishuScanMode = 'selectOrCreate' | 'reauthorizeCurrent';
+
 export interface ImScanAuthorizationVm {
   sessionId: string;
   qrUrl: string;

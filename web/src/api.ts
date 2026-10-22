@@ -1,7 +1,7 @@
 import { getRuntimeApi } from './api/client';
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, ResolvedColorScheme, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -464,8 +464,8 @@ export function cancelWeComScanAuthorization(sessionId: string) {
   return getRuntimeApi().cancelWeComScanAuthorization(sessionId);
 }
 
-export function startFeishuScanAuthorization(sessionId: string, reauthorize: boolean) {
-  return getRuntimeApi().startFeishuScanAuthorization(sessionId, reauthorize);
+export function startFeishuScanAuthorization(sessionId: string, mode: FeishuScanMode) {
+  return getRuntimeApi().startFeishuScanAuthorization(sessionId, mode);
 }
 
 export function completeFeishuScanAuthorization(sessionId: string) {

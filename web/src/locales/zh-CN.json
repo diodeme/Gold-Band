@@ -2551,6 +2551,8 @@
         "notConfigured": "尚未接入{{channel}}。接入后可设置远程干预与通知。",
         "connect": "扫码接入",
         "reauthorize": "重新授权",
+        "changeApp": "更换飞书应用",
+        "changeAppWarning": "完成授权后将替换当前飞书应用，并清除现有私聊绑定。请使用新机器人重新完成绑定。",
         "generating": "正在生成二维码…",
         "waiting": "请使用{{channel}}扫码并确认授权",
         "expiresIn": "二维码将在 {{countdown}} 后过期",

@@ -16,7 +16,9 @@ use crate::view_models::{
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
-use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
+use gold_band::acp::prompt_queue::{
+    DispatchMode, MAX_QUEUED_PROMPTS, QueuedPromptState, SuspensionReason, load_prompt_queue,
+};
 use gold_band::app::{
     App, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference, is_run_continuable,
 };
@@ -767,6 +769,10 @@ pub struct ConversationPromptQueueVm {
     pub revision: u64,
     pub items: Vec<ConversationQueuedPromptVm>,
     pub max_items: usize,
+    pub dispatch_mode: String,
+    pub auto_dispatch_suspended: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspension_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1168,6 +1174,15 @@ fn direct_prompt_queue_vm(
             })
             .collect(),
         max_items: MAX_QUEUED_PROMPTS,
+        dispatch_mode: match queue.dispatch_mode {
+            DispatchMode::Auto => "auto".to_string(),
+            DispatchMode::Manual => "manual".to_string(),
+        },
+        auto_dispatch_suspended: queue.auto_dispatch_suspended,
+        suspension_reason: queue.suspension_reason.map(|reason| match reason {
+            SuspensionReason::Stopped => "stopped".to_string(),
+            SuspensionReason::Failed => "failed".to_string(),
+        }),
     })
 }
 
@@ -4825,7 +4840,10 @@ mod tests {
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
-    use gold_band::acp::prompt_queue::enqueue_prompt;
+    use gold_band::acp::prompt_queue::{
+        DispatchMode, SuspensionReason, enqueue_prompt, mark_user_priority, set_dispatch_mode,
+        suspend_auto_dispatch,
+    };
     use gold_band::app::{
         App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
     };
@@ -7735,6 +7753,63 @@ mod tests {
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "persist after stop");
         assert_eq!(queue.items[0].workspace_file_count, 1);
+    }
+
+    #[test]
+    fn direct_prompt_queue_vm_projects_mode_and_suspension() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        enqueue_prompt(&attempt_dir, "paused".to_string(), Vec::new()).unwrap();
+        suspend_auto_dispatch(&attempt_dir, SuspensionReason::Failed).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        assert_eq!(queue.dispatch_mode, "auto");
+        assert!(queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason.as_deref(), Some("failed"));
+
+        set_dispatch_mode(&attempt_dir, DispatchMode::Manual).unwrap();
+        mark_user_priority(&attempt_dir).unwrap();
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+        assert_eq!(queue.dispatch_mode, "manual");
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
     }
 
     #[test]

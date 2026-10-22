@@ -1,5 +1,6 @@
 import {
   CircleStop,
+  Inbox,
   Loader2,
   Paperclip,
   Play,
@@ -94,6 +95,11 @@ export interface AcpConversationComposerProps {
   attachedPanelVisible: boolean;
   integratedInfoTab: boolean;
   queueSubmit: boolean;
+  queueDraft?: {
+    canSubmit: boolean;
+    busy: boolean;
+    onSubmit: () => void | Promise<void>;
+  } | null;
   supersededSession?: {
     label: string;
     href: string;
@@ -184,6 +190,7 @@ function AcpConversationComposerContent({
   attachedPanelVisible,
   integratedInfoTab,
   queueSubmit,
+  queueDraft,
   supersededSession,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
@@ -347,6 +354,21 @@ function AcpConversationComposerContent({
                   <Paperclip className="size-3.5" />
                 </Button>
               </PromptInputAction>
+              {queueDraft ? (
+                <PromptInputAction tooltip={t('acp.promptQueue.saveToBox')}>
+                  <Button
+                    className="size-7 rounded-full"
+                    size="icon"
+                    variant="ghost"
+                    disabled={inputDisabled || !queueDraft.canSubmit || queueDraft.busy}
+                    aria-label={t('acp.promptQueue.saveToBox')}
+                    onClick={() => { void queueDraft.onSubmit(); }}
+                    data-acp-queue-draft="true"
+                  >
+                    <Inbox className="size-3.5" />
+                  </Button>
+                </PromptInputAction>
+              ) : null}
               <div className="min-w-0 flex-1">{configBar}</div>
             </div>
             <PromptInputActions className={ACP_SESSION_COMPOSER_LAYOUT.trailingActionsClassName}>

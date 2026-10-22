@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "La cola pendiente está vacía.",
       "prompt-queue-revision-conflict": "El orden pendiente cambió. Inténtelo de nuevo después de que se actualice la lista.",
       "prompt-queue-invalid-order": "El orden pendiente no es válido. Vuelva a intentarlo.",
+      "prompt-queue-invalid-mode": "El modo de envío no es válido.",
       "prompt-queue-session-busy": "Detenga la sesión activa antes de usar manualmente un prompt en cola.",
+      "prompt-queue-interrupt-timeout": "La respuesta actual aún se está deteniendo. El mensaje permanece en la cola; inténtelo de nuevo en breve.",
+      "prompt-queue-dispatch-settling": "La respuesta anterior aún no ha terminado del todo. El mensaje fue devuelto a la cola; inténtelo de nuevo en breve.",
       "prompt-session-busy": "El mensaje anterior aún se está procesando. Espere o detenga primero la respuesta actual.",
       "prompt-submission-conflict": "Este identificador de mensaje ya está asociado con contenido diferente. Envíelo de nuevo.",
       "prompt-submission-missing": "No se pudo leer el contenido del mensaje aceptado. Envíelo de nuevo.",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "Termina primero el borrador actual del campo de entrada",
       "restoreDraftConflict": "El campo de entrada cambió y no se puede restaurar este mensaje pendiente.",
       "reorder": "Reordenar mensaje en cola",
-      "use": "Usar",
+      "sendNow": "Enviar ahora",
       "delete": "Eliminar",
-      "enqueue": "Agregar a la cola"
+      "enqueue": "Agregar a la cola",
+      "modeToggle": "Cambiar modo de envío",
+      "mode": {
+        "auto": "Envío automático",
+        "manual": "Envío manual"
+      },
+      "modeTooltip": "Envío automático: los mensajes en cola se envían uno a uno cuando termina cada respuesta. Envío manual: los mensajes permanecen en la cola hasta que uses Enviar ahora en cada uno.",
+      "paused": {
+        "stopped": "En pausa: sesión detenida",
+        "failed": "En pausa: el último envío falló"
+      },
+      "resume": "Reanudar envío automático",
+      "moreActions": "Más acciones",
+      "clear": "Vaciar pendientes",
+      "clearConfirmTitle": "¿Vaciar la cola de pendientes?",
+      "clearConfirmDescription": "Se eliminarán {{count}} mensajes pendientes. Esta acción no se puede deshacer.",
+      "clearConfirmAction": "Vaciar pendientes",
+      "saveToBox": "Guardar en borradores"
     },
     "sending": "Enviando",
     "sendFailed": "Error al enviar",

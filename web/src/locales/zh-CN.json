@@ -1050,7 +1050,10 @@
       "prompt-queue-empty": "待发送队列为空。",
       "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
       "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
+      "prompt-queue-invalid-mode": "发送模式无效。",
       "prompt-queue-session-busy": "当前会话仍在运行，请停止后再手动使用。",
+      "prompt-queue-interrupt-timeout": "当前回复仍在停止中，这条内容已保留在队列，可稍后重试。",
+      "prompt-queue-dispatch-settling": "上一条回复尚未完全结束，这条内容已放回队列，请稍后重试。",
       "prompt-session-busy": "上一条消息仍在处理中，请稍候或先停止当前回复。",
       "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
       "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
@@ -2313,9 +2316,26 @@
       "editDraftOccupied": "请先处理输入框中的当前草稿",
       "restoreDraftConflict": "输入框状态已变化，无法恢复这条待发送内容。",
       "reorder": "调整排队顺序",
-      "use": "使用",
+      "sendNow": "立即发送",
       "delete": "删除",
-      "enqueue": "加入队列"
+      "enqueue": "加入队列",
+      "modeToggle": "切换发送模式",
+      "mode": {
+        "auto": "自动发送",
+        "manual": "手动发送"
+      },
+      "modeTooltip": "自动发送：每轮回复结束后自动依次发送待发送内容。手动发送：内容只保留在队列中，由你逐条“立即发送”。",
+      "paused": {
+        "stopped": "已暂停：会话已停止",
+        "failed": "已暂停：上一轮发送失败"
+      },
+      "resume": "恢复自动发送",
+      "moreActions": "更多操作",
+      "clear": "清空待发送",
+      "clearConfirmTitle": "清空待发送队列？",
+      "clearConfirmDescription": "将移除 {{count}} 条待发送消息，此操作无法撤销。",
+      "clearConfirmAction": "清空待发送",
+      "saveToBox": "存入草稿箱"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",

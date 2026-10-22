@@ -518,7 +518,7 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 ### 10.2 飞书 Connector
 
-- feishu_scan_auth：RFC 8628 begin/poll、配置驱动二维码参数、重新授权 clientID、授权拒绝/过期/cancel；成功后 token、bot_info、scopes 自检再安装凭据。
+- feishu_scan_auth：RFC 8628 begin/poll、渠道产品名驱动的二维码参数、`selectOrCreate` 原生应用选择、`reauthorizeCurrent` 的 clientID、授权拒绝/过期/cancel；成功后 token、bot_info、scopes 自检再安装凭据。
 - api：reqwest + 单份 tenant token single-flight；create/PATCH；230020 限流可重试；230027 缺权限；仅 PATCH 的 230011/230031/230110 映射 MessageUpdateUnavailable。其他鉴权/卡片错误不得降级另发。
 - `ws` 模块私有化 prost Frame/Header/FrameKind，管理 protobuf、分片容量/超时、ACK、连接循环、心跳与半开检测；对 connector 只暴露入站 payload、一次性回包句柄、时限及连接接口。连接所属的处理任务随 socket 结束清理。日志不含 URL query、access_key、ticket 或 payload。
 - card：原始 schema/header/event wire 解码；deliveryId/actionToken/selector 编码；Card JSON 2.0 update_multi；表单能力为 5 题、单选 20 项、多选 4 项、文本 500 字符、“其他”100 字符。超限整单跳过，绝不截断提交身份。
@@ -553,7 +553,7 @@ get_im_settings() -> ImSettingsVm
 start_wecom_scan_authorization(session_id) -> ImScanAuthorizationVm
 complete_wecom_scan_authorization(session_id) -> ImSettingsVm
 cancel_wecom_scan_authorization(session_id) -> ()
-start_feishu_scan_authorization(session_id, reauthorize) -> ImScanAuthorizationVm
+start_feishu_scan_authorization(session_id, mode) -> ImScanAuthorizationVm  # selectOrCreate | reauthorizeCurrent
 complete_feishu_scan_authorization(session_id) -> ImSettingsVm
 cancel_feishu_scan_authorization(session_id) -> ()
 set_im_channel_enabled(kind, enabled) -> ImSettingsVm
@@ -766,7 +766,7 @@ ImErrorCode 是枚举，序列化为 IM_ 前缀，不做字符串包含匹配。
 - ACP permission 使用接收 JSON-RPC 时固化的 typed `raw.requestId` 做 Runtime pending/response 查找；timeline/lifecycle 使用 Gold Band 从 `requestId + toolCallId` 生成的 `_goldBandPermissionItemId`，provider 缺失 toolCallId 时使用 durable sequence。前端 reducer 以 attempt/session scope、event kind 与 `AcpUiEvent.id` 作为 occurrence key，同 occurrence 的 pending/terminal snapshot 合并。elicitation 使用 Gold Band 生成并同时写入 pending state/`AcpUiEvent.id` 的 identity。测试必须证明同一 requestId 的不同 event ID 不被前端或 outbox 聚合、同一 occurrence/replay 仍幂等、不同 attempt 不串项，且两者不靠前缀裁剪或 event ID 反查；在线但未收到私聊 binding 时显示“等待绑定”，收到同一 actor 私聊后局部收敛为已连接。
 - `askUserQuestion` 卡片包含真实 message、全部问题标题/描述、单选/多选类型和固定选项；fixture 覆盖 scalar `oneOf/enum`、array `items.anyOf/oneOf/enum`、自由文本与 custom-answer companion。企微仅对单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选题生成远程表单；unsupported 场景无 outbox 行且不得静默丢字段或生成无内容接受动作。
 - typed event 只更新目标 channel，旧 generation 不覆盖新 snapshot。
-- 飞书权限确认前不得 begin；重新授权携带 reauthorize=true；扫码完成后等待 canonical binding 才可用，关闭 cancels 同一 session。企微仍自动 begin，飞书修改不得调用企微 API。
+- 飞书权限确认前不得 begin；首次接入和“更换飞书应用”携带 mode=selectOrCreate，重新授权当前应用携带 mode=reauthorizeCurrent；扫码完成后等待 canonical binding 才可用，关闭 cancels 同一 session。企微仍自动 begin，飞书修改不得调用企微 API。
 - 窄宽度下标签、状态和操作不溢出；键盘导航与 screen reader label 完整。
 
 ### 15.3 集成与手工验证

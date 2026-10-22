@@ -229,9 +229,16 @@ export function syncChatContainerFooterHeight(
   }
   const height = Math.max(0, footerRect.bottom - top)
   const frame = footer.closest<HTMLElement>('[data-conversation-viewport-frame]')
+  const viewport = frame?.querySelector<HTMLElement>('[data-conversation-viewport]')?.firstElementChild
+  const wasAtBottom = viewport ? isChatContainerViewportAtBottom(viewport) : false
   const next = `${height}px`
   if (frame && frame.style.getPropertyValue('--conversation-viewport-footer-height') !== next) {
     frame.style.setProperty('--conversation-viewport-footer-height', next)
+    if (wasAtBottom && viewport) {
+      // Footer height is part of the scrollable geometry. Updating it without
+      // moving scrollTop makes an at-bottom viewport jump upward by the delta.
+      alignChatContainerViewportToBottomBeforePaint(viewport)
+    }
   }
   return height
 }

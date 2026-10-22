@@ -1455,8 +1455,7 @@ pub struct ImAppConfig {
 #[serde(rename_all = "camelCase")]
 pub struct FeishuScanAuthConfig {
     pub source: String,
-    pub app_name: String,
-    pub app_description: String,
+    pub app_description_suffix: String,
 }
 
 impl FeishuScanAuthConfig {
@@ -1467,9 +1466,9 @@ impl FeishuScanAuthConfig {
                 "Feishu scan auth source must be non-empty ASCII with at most 64 bytes"
             ));
         }
-        if self.app_name.trim().is_empty() || self.app_description.trim().is_empty() {
+        if self.app_description_suffix.trim().is_empty() {
             return Err(anyhow!(
-                "Feishu scan auth app name and description must be non-empty"
+                "Feishu scan auth app description suffix must be non-empty"
             ));
         }
         Ok(())
@@ -3141,9 +3140,13 @@ mod tests {
     }
 
     #[test]
-    fn embedded_app_config_defines_wecom_scan_source() {
+    fn embedded_app_config_defines_scan_sources_and_feishu_description_suffix() {
         assert_eq!(super::wecom_scan_auth_config().source, "maling");
         assert!(super::wecom_scan_auth_config().validate().is_ok());
+        assert_eq!(
+            super::feishu_scan_auth_config().app_description_suffix,
+            "remote intervention"
+        );
         assert!(super::feishu_scan_auth_config().validate().is_ok());
     }
 

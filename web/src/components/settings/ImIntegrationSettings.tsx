@@ -5,6 +5,7 @@ import {
   Loader2,
   MoreHorizontal,
   QrCode,
+  Repeat2,
   RefreshCw,
   RotateCcw,
   Save,
@@ -68,6 +69,7 @@ import {
 } from '@/lib/im-settings';
 import { useImSettings } from './useImSettings';
 import type {
+  FeishuScanMode,
   ImChannelKind,
   ImChannelSettingsVm,
   ImNotificationPreferencesVm,
@@ -130,7 +132,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [destructiveBusy, setDestructiveBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [scanOpen, setScanOpen] = useState(false);
+  const [scanRequest, setScanRequest] = useState<ImScanRequest>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const display = imChannelDisplayModel(channel);
@@ -256,7 +258,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
       {!channel.credentialConfigured ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="min-w-0 text-sm text-muted-foreground">{t('settings.im.scan.notConfigured', { channel: channelTitle })}</p>
-          <Button type="button" size="sm" onClick={() => setScanOpen(true)}>
+          <Button type="button" size="sm" onClick={() => setScanRequest({ mode: 'selectOrCreate', replacesConfiguredApp: false })}>
             <QrCode className="size-4" />
             {t('settings.im.scan.connect')}
           </Button>
@@ -268,7 +270,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
             channelTitle={channelTitle}
             recoveryBusy={recoveryBusy}
             onReconnect={() => void reconnect()}
-            onReauthorize={() => setScanOpen(true)}
+            onReauthorize={() => setScanRequest({ mode: 'reauthorizeCurrent', replacesConfiguredApp: false })}
           />
           <Separator />
           <NotificationPreferencesForm channel={channel} onSettings={onSettings} />
@@ -291,7 +293,13 @@ const ImChannelEditor = memo(function ImChannelEditor({
                       {t(`${resetCopy}.action`)}
                     </DropdownMenuItem>
                   ) : null}
-                  <DropdownMenuItem onSelect={() => setScanOpen(true)}>
+                  {channel.kind === 'feishu' ? (
+                    <DropdownMenuItem onSelect={() => setScanRequest({ mode: 'selectOrCreate', replacesConfiguredApp: true })}>
+                      <Repeat2 />
+                      {t('settings.im.scan.changeApp')}
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuItem onSelect={() => setScanRequest({ mode: 'reauthorizeCurrent', replacesConfiguredApp: false })}>
                     <QrCode />
                     {t('settings.im.scan.reauthorize')}
                   </DropdownMenuItem>
@@ -313,8 +321,12 @@ const ImChannelEditor = memo(function ImChannelEditor({
       <ImScanDialog
         channel={channel}
         channelTitle={channelTitle}
-        open={scanOpen}
-        onOpenChange={setScanOpen}
+        mode={scanRequest?.mode ?? 'selectOrCreate'}
+        replacesConfiguredApp={scanRequest?.replacesConfiguredApp ?? false}
+        open={scanRequest !== null}
+        onOpenChange={(open) => {
+          if (!open) setScanRequest(null);
+        }}
         onSettings={onSettings}
       />
       <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
@@ -487,6 +499,8 @@ function NotificationPreferencesForm({
   );
 }
 
+type ImScanRequest = { mode: FeishuScanMode; replacesConfiguredApp: boolean } | null;
+
 type ImScanState =
   | { kind: 'idle' | 'starting' }
   | { kind: 'waitingQr'; qrUrl: string; expiresAtMs: number }
@@ -511,7 +525,7 @@ function ImQrCanvas({ value, label, onError }: { value: string; label: string; o
 }
 
 const IM_SCAN_AUTHORIZATION: Record<ImChannelKind, {
-  start: (sessionId: string, reauthorize: boolean) => Promise<ImScanAuthorizationVm>;
+  start: (sessionId: string, mode: FeishuScanMode) => Promise<ImScanAuthorizationVm>;
   complete: (sessionId: string) => Promise<ImSettingsVm>;
   cancel: (sessionId: string) => Promise<void>;
 }> = {
@@ -530,12 +544,16 @@ const IM_SCAN_AUTHORIZATION: Record<ImChannelKind, {
 function ImScanDialog({
   channel,
   channelTitle,
+  mode,
+  replacesConfiguredApp,
   open,
   onOpenChange,
   onSettings,
 }: {
   channel: ImChannelSettingsVm;
   channelTitle: string;
+  mode: FeishuScanMode;
+  replacesConfiguredApp: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSettings: (settings: ImSettingsVm) => void;
@@ -545,7 +563,6 @@ function ImScanDialog({
   const [now, setNow] = useState(() => Date.now());
   const activeSessionRef = useRef<string | null>(null);
   const scan = IM_SCAN_AUTHORIZATION[channel.kind];
-  const reauthorize = channel.credentialConfigured;
 
   const cancelActive = useCallback(() => {
     const sessionId = activeSessionRef.current;
@@ -565,7 +582,7 @@ function ImScanDialog({
     activeSessionRef.current = sessionId;
     setState({ kind: 'starting' });
     try {
-      const authorization = await scan.start(sessionId, reauthorize);
+      const authorization = await scan.start(sessionId, mode);
       if (activeSessionRef.current !== sessionId) return;
       setNow(Date.now());
       setState({ kind: 'waitingQr', qrUrl: authorization.qrUrl, expiresAtMs: authorization.expiresAtMs });
@@ -584,7 +601,7 @@ function ImScanDialog({
       activeSessionRef.current = null;
       setState({ kind: 'error', error });
     }
-  }, [cancelActive, channel.kind, close, onSettings, reauthorize, scan]);
+  }, [cancelActive, channel.kind, close, mode, onSettings, scan]);
 
   useEffect(() => {
     if (!open || state.kind !== 'idle' || channel.kind === 'feishu') return;
@@ -617,7 +634,11 @@ function ImScanDialog({
     <Dialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>{t('settings.im.scan.title', { channel: channelTitle })}</DialogTitle>
+          <DialogTitle>
+            {channel.kind === 'feishu' && replacesConfiguredApp && mode === 'selectOrCreate'
+              ? t('settings.im.scan.changeApp')
+              : t('settings.im.scan.title', { channel: channelTitle })}
+          </DialogTitle>
           <DialogDescription>{t('settings.im.scan.description', { channel: channelTitle })}</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-64 flex-col items-center justify-center gap-4 py-2" data-im-scan-state={state.kind}>
@@ -629,6 +650,11 @@ function ImScanDialog({
                   <li key={permission}>{t(`settings.im.channels.feishu.permissions.${permission}`)}</li>
                 ))}
               </ul>
+              {replacesConfiguredApp && mode === 'selectOrCreate' ? (
+                <p className="text-xs text-muted-foreground" role="status">
+                  {t('settings.im.scan.changeAppWarning')}
+                </p>
+              ) : null}
               <Button type="button" className="w-full" onClick={() => void start()}>
                 <QrCode className="size-4" />
                 {t('settings.im.channels.feishu.permissions.confirm')}

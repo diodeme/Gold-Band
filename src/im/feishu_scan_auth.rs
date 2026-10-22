@@ -153,29 +153,48 @@ impl fmt::Debug for FeishuScanCredentials {
     }
 }
 
+/// The app the Feishu registration page should target.
+///
+/// `SelectOrCreate` intentionally omits both `clientID` and `createOnly`: the
+/// launcher then presents its native existing-app list and the create entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeishuRegistrationTarget<'a> {
+    SelectOrCreate,
+    Existing(&'a str),
+}
+
 #[derive(Clone)]
 pub struct FeishuScanAuthClient {
     client: Client,
     hosts: FeishuHostTable,
     config: FeishuScanAuthConfig,
+    app_name: String,
     slow_down_step: Duration,
 }
 
 impl FeishuScanAuthClient {
-    pub fn new(config: &FeishuScanAuthConfig) -> Result<Self, FeishuScanAuthError> {
+    pub fn new(
+        config: &FeishuScanAuthConfig,
+        app_name: impl Into<String>,
+    ) -> Result<Self, FeishuScanAuthError> {
+        let app_name = app_name.into();
+        if app_name.trim().is_empty() || config.app_description_suffix.trim().is_empty() {
+            return Err(FeishuScanAuthError::ConfigInvalid);
+        }
         Ok(Self {
             client: feishu_http_client().map_err(|_| FeishuScanAuthError::NetworkUnavailable)?,
             hosts: FeishuHostTable::production(),
             config: config.clone(),
+            app_name: app_name.trim().to_owned(),
             slow_down_step: SLOW_DOWN_STEP,
         })
     }
 
-    /// Starts a registration. `existing_app_id` re-authorizes that app instead
-    /// of creating a new one.
+    /// Starts a registration for the selected target. No target is forced into
+    /// a create-only flow, so the platform can present its native app list.
     pub async fn begin(
         &self,
-        existing_app_id: Option<&str>,
+        target: FeishuRegistrationTarget<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FeishuScanAuthorization, FeishuScanAuthError> {
         let response = self
@@ -200,13 +219,19 @@ impl FeishuScanAuthClient {
             let mut query = qr_url.query_pairs_mut();
             query
                 .append_pair("source", self.config.source.trim())
-                .append_pair("name", &self.config.app_name)
-                .append_pair("desc", &self.config.app_description)
+                .append_pair("name", &self.app_name)
+                .append_pair(
+                    "desc",
+                    &format!(
+                        "{} {}",
+                        self.app_name,
+                        self.config.app_description_suffix.trim()
+                    ),
+                )
                 .append_pair("addons", &encoded_addons()?);
-            match existing_app_id {
-                Some(app_id) => query.append_pair("clientID", app_id),
-                None => query.append_pair("createOnly", "true"),
-            };
+            if let FeishuRegistrationTarget::Existing(app_id) = target {
+                query.append_pair("clientID", app_id);
+            }
         }
         Ok(FeishuScanAuthorization {
             device_code,
@@ -355,15 +380,15 @@ impl FeishuScanAuthClient {
     }
 
     #[cfg(test)]
-    fn for_test(hosts: FeishuHostTable) -> Self {
+    fn for_test(hosts: FeishuHostTable, app_name: &str) -> Self {
         Self {
             client: crate::im::connectors::feishu::api::test_server::test_client(),
             hosts,
             config: FeishuScanAuthConfig {
                 source: "maling".to_owned(),
-                app_name: "Gold Band".to_owned(),
-                app_description: "Gold Band remote intervention".to_owned(),
+                app_description_suffix: "remote intervention".to_owned(),
             },
+            app_name: app_name.to_owned(),
             slow_down_step: Duration::from_millis(20),
         }
     }
@@ -438,7 +463,11 @@ mod tests {
     const BEGIN_OK: &str = r#"{"device_code":"dc-1","verification_uri_complete":"https://accounts.feishu.cn/page/register?user_code=U1","interval":0,"expires_in":30}"#;
 
     fn client_for(url: Url) -> FeishuScanAuthClient {
-        FeishuScanAuthClient::for_test(FeishuHostTable::for_test(url.clone(), url))
+        client_for_named(url, "MALING")
+    }
+
+    fn client_for_named(url: Url, app_name: &str) -> FeishuScanAuthClient {
+        FeishuScanAuthClient::for_test(FeishuHostTable::for_test(url.clone(), url), app_name)
     }
 
     fn authorization(interval: Duration, expires_in: Duration) -> FeishuScanAuthorization {
@@ -470,22 +499,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn begin_appends_presets_and_least_privilege_addons() {
+    async fn begin_uses_channel_name_and_least_privilege_addons() {
         let (url, requests) =
             fixture_server(vec![(200, BEGIN_OK.into()), (200, BEGIN_OK.into())]).await;
         let client = client_for(url);
         let cancellation = CancellationToken::new();
 
-        let created = client.begin(None, &cancellation).await.unwrap();
+        let created = client
+            .begin(FeishuRegistrationTarget::SelectOrCreate, &cancellation)
+            .await
+            .unwrap();
         assert_eq!(created.device_code, "dc-1");
         assert_eq!(created.interval, Duration::ZERO);
         assert_eq!(created.expires_in, Duration::from_secs(30));
         let pairs = query(&created.qr_url);
         assert_eq!(param(&pairs, "user_code"), Some("U1"));
         assert_eq!(param(&pairs, "source"), Some("maling"));
-        assert_eq!(param(&pairs, "name"), Some("Gold Band"));
-        assert_eq!(param(&pairs, "desc"), Some("Gold Band remote intervention"));
-        assert_eq!(param(&pairs, "createOnly"), Some("true"));
+        assert_eq!(param(&pairs, "name"), Some("MALING"));
+        assert_eq!(param(&pairs, "desc"), Some("MALING remote intervention"));
+        assert_eq!(param(&pairs, "createOnly"), None);
         assert_eq!(param(&pairs, "clientID"), None);
         assert!(param(&pairs, "from").is_none() && param(&pairs, "tp").is_none());
 
@@ -513,7 +545,10 @@ mod tests {
         );
 
         let reauthorized = client
-            .begin(Some("cli_existing"), &cancellation)
+            .begin(
+                FeishuRegistrationTarget::Existing("cli_existing"),
+                &cancellation,
+            )
             .await
             .unwrap();
         let pairs = query(&reauthorized.qr_url);
@@ -533,6 +568,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn begin_uses_the_default_channel_product_name() {
+        let (url, _) = fixture_server(vec![(200, BEGIN_OK.into())]).await;
+        let created = client_for_named(url, "Gold Band")
+            .begin(
+                FeishuRegistrationTarget::SelectOrCreate,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let pairs = query(&created.qr_url);
+        assert_eq!(param(&pairs, "name"), Some("Gold Band"));
+        assert_eq!(param(&pairs, "desc"), Some("Gold Band remote intervention"));
+        assert_eq!(param(&pairs, "createOnly"), None);
+        assert_eq!(param(&pairs, "clientID"), None);
+    }
+
+    #[tokio::test]
     async fn begin_rejects_a_non_https_qr_url_and_missing_device_code() {
         let (url, _) = fixture_server(vec![
             (
@@ -549,7 +601,10 @@ mod tests {
         let cancellation = CancellationToken::new();
         for _ in 0..2 {
             assert_eq!(
-                client.begin(None, &cancellation).await.unwrap_err(),
+                client
+                    .begin(FeishuRegistrationTarget::SelectOrCreate, &cancellation)
+                    .await
+                    .unwrap_err(),
                 FeishuScanAuthError::ProtocolInvalid
             );
         }
@@ -603,7 +658,8 @@ mod tests {
                 .into(),
         )])
         .await;
-        let client = FeishuScanAuthClient::for_test(FeishuHostTable::for_test(feishu, lark));
+        let client =
+            FeishuScanAuthClient::for_test(FeishuHostTable::for_test(feishu, lark), "MALING");
         let credentials = client
             .poll(
                 &authorization(Duration::from_millis(300), Duration::from_secs(60)),

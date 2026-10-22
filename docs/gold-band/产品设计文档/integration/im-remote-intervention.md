@@ -162,11 +162,11 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 两渠道扫码会话均持续到配置提交完成，不能在平台授权成功时提前结束。凭据库写入期间仍可取消或替换会话；提交配置时以当前 session ID 为准，与取消/替换互斥。取消/替换先完成则拒绝旧提交并删除本次暂存凭据，保留已有配置、凭据和新会话；配置提交先完成则保留已提交结果，后续关闭不撤销配置。网络与凭据库操作不持有会话/设置锁。
 
-1. 在设置页点击扫码接入，先确认“发送消息、读取发给机器人的私聊消息、更新机器人卡片、读取你的姓名”四项权限，再发起扫码。取消或关闭会话使迟到结果失效。扫码 addons 在三项必需 IM 权限之外追加 `contact:contact.base:readonly`（通讯录 API 基础权限）与 `contact:user.base:readonly`（返回 `name` 的字段权限）；这两项不进入自检的必需权限，缺失不触发重新授权。
-2. 后端轮询授权，把 app_secret、扫码人 open_id、brand 写入 keyring；前端只收到 sessionId、qrUrl、expiresAtMs 和非敏感设置。新建应用使用 createOnly，重新授权复用已有 app_id。
+1. 在设置页点击扫码接入，先确认“发送消息、读取发给机器人的私聊消息、更新机器人卡片、读取你的姓名”四项权限，再发起扫码。取消或关闭会话使迟到结果失效。首次接入和已配置后的“更换飞书应用”都使用飞书原生选择页，可选择已有应用或新建应用。扫码 addons 在三项必需 IM 权限之外追加 `contact:contact.base:readonly`（通讯录 API 基础权限）与 `contact:user.base:readonly`（返回 `name` 的字段权限）；这两项不进入自检的必需权限，缺失不触发重新授权。
+2. 后端轮询授权，把 app_secret、扫码人 open_id、brand 写入 keyring；前端只收到 sessionId、qrUrl、expiresAtMs 和非敏感设置。新建应用的预填名称取自渠道产品名（`wb` 为 `MALING`，`default` 为 `Gold Band`）；选择或新建模式不发送 `createOnly`，重新授权当前应用才发送已有 app_id 作为 `clientID`。
 3. 授权后，扫码账号向机器人发送一条私聊消息完成绑定；持久 binding 与当前 generation snapshot 一致后才显示“可用”。其他账号不能抢占绑定。
 4. 接收账号姓名：connector 每次 `connect` 在 bot 自检后用 tenant token 调用一次 `GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id` 读取扫码账号 `name`，随该连接上报的 `BindingObserved.display_name` 持久到 `ImBindingSummary.display_name`（`Option`）。不按消息查询；查询失败（缺权限、不在通讯录范围 41050、网络）只记 warn，绑定照常完成，设置页显示中性文案“已绑定一对一私聊”，不再展示 open_id。连接成功（`Connected.owner` 携带已解析的 owner open_id 与姓名）后，runtime 在阻塞线程池内对同一 owner 的已有绑定立即采纳该姓名（例如替换旧版写入的 open_id），仅在姓名变化时写设置并刷新快照，无需等待下一条消息；查询失败时 `owner` 为空，不会抹掉已知姓名。企微保持原样（userid 即展示名）。
-5. 支持启停、六类通知偏好、重新授权、真实重连和删除。重新绑定只清除私聊绑定，仍由扫码账号发消息绑定；更换授权账号需重新授权。缺权限引导重新授权，不无效重连。
+5. 支持启停、六类通知偏好、重新授权当前应用、更换飞书应用、真实重连和删除。更换飞书应用完成后替换当前应用并清除旧私聊绑定；重新授权只针对当前应用。重新绑定只清除私聊绑定，仍由扫码账号发消息绑定。缺权限引导重新授权，不无效重连。
 6. 页面显示 App ID、运行期机器人名称和单设备提醒。Secret、扫码 ticket、access_key 不进入前端或日志。
 
 - 飞书卡片初态与终态均按 `id → 节点 → 任务 → 工作空间 → 题目` 展示。提交成功后保留原表单结构，单选、多选、自定义回答和文本回填 Accepted 的答案，控件禁用，展示处理来源。
@@ -252,7 +252,7 @@ payload v3 / IM schema v5：v3→v4 在 IMMEDIATE 事务内删除旧 v1 干预�
 
 ## 8. 设置与连接管理
 
-设置页“通用”页新增“IM 远程干预与通知”区域，按接入生命周期逐渠道展示企业微信和飞书状态。未配置凭据时只提供“扫码接入”；凭据存在后，总开关、状态引导和六项通知始终可见。连接在线但尚无 canonical 私聊 binding 时派生显示“等待绑定”；只有 durable binding 已落盘、delivery target 已重建且当前 generation snapshot 携带同一 binding 时才显示“可用”。该展示模型不落盘。两渠道都只提供扫码接入/重新授权，不保留 Bot ID/Secret 手工输入，Secret 不进入前端状态。
+设置页“通用”页新增“IM 远程干预与通知”区域，按接入生命周期逐渠道展示企业微信和飞书状态。未配置凭据时只提供“扫码接入”；凭据存在后，总开关、状态引导和六项通知始终可见。连接在线但尚无 canonical 私聊 binding 时派生显示“等待绑定”；只有 durable binding 已落盘、delivery target 已重建且当前 generation snapshot 携带同一 binding 时才显示“可用”。该展示模型不落盘。两渠道都只提供扫码接入/重新授权；飞书额外提供“更换飞书应用”，复用飞书原生已有应用列表。不保留 Bot ID/Secret 手工输入，Secret 不进入前端状态。
 
 设置页 IM 区块使用与定时任务运行设置相同的前端 stale-while-revalidate 投影：App 启动预取、模块级缓存命中后立即渲染，已有数据时刷新不得退回「加载中…」。该缓存不是第二事实源；保存、启停、扫码、删除仍以后端返回的最新 VM 为准，connection snapshot 按 generation 单调合入。
 
@@ -507,3 +507,13 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 - 重构前后中英文 36 份完整 JSON 严格相等，保留原卡片字段、控件行为与能力上限；核心 IM 189 项和桌面 IM Runtime 21 项回归通过。两项偏差的实施、静态检查与证据边界见[实施记录](../../开发计划/IM接入/飞书封装与类型化实施记录-2026-10-16.md)。
 
 方案复核：沿用现有 serde、Tokio、prost 和连接生命周期，只类型化实际组件，不增加依赖、持久状态、缓存、队列或网络请求；处理规模仍受当前卡片能力约束，没有新增历史读取或 UI 刷新范围。
+
+## 17. 2026-10-21 飞书扫码应用选择与渠道名称
+
+- 飞书新建应用的机器人名称等于渠道产品名：`wb` 为 `MALING`，`default` 为 `Gold Band`。全局扫码配置只保留描述后缀，不重复保存渠道身份。
+- 首次接入和已配置后的“更换飞书应用”使用 `selectOrCreate` 模式，不发送 `clientID` 和 `createOnly`，由飞书原生 launcher 展示已有应用列表与新建入口。
+- “重新授权”使用 `reauthorizeCurrent` 模式，只把当前 `public_identity` 作为 `clientID`；该入口用于补权限或恢复凭据，不承担切换应用职责。
+- 更换应用完成后沿用既有扫码提交事务：替换凭据、清除旧私聊 binding、保留通知偏好，并等待新账号完成私聊绑定。取消扫码不修改当前配置。
+- 不新增应用清单接口、缓存、数据库字段或持久状态；应用选择完全由飞书平台承担，前端只保留单次扫码模式。
+
+方案复核：新增复杂度仅为命令层类型化模式和一条配置描述后缀，没有新增网络请求、全量扫描、状态订阅或无界并发。

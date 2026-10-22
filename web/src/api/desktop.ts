@@ -670,8 +670,8 @@ export const desktopApi: RuntimeApi = {
   cancelWeComScanAuthorization(sessionId) {
     return invokeCommand('cancel_wecom_scan_authorization', { input: { sessionId } });
   },
-  startFeishuScanAuthorization(sessionId, reauthorize) {
-    return invokeCommand('start_feishu_scan_authorization', { input: { sessionId, reauthorize } });
+  startFeishuScanAuthorization(sessionId, mode) {
+    return invokeCommand('start_feishu_scan_authorization', { input: { sessionId, mode } });
   },
   completeFeishuScanAuthorization(sessionId) {
     return invokeCommand<ImSettingsVm>('complete_feishu_scan_authorization', { input: { sessionId } });

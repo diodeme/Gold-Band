@@ -2551,6 +2551,8 @@
         "notConfigured": "尚未接入{{channel}}。接入後可設定遠端干預與通知。",
         "connect": "掃碼接入",
         "reauthorize": "重新授權",
+        "changeApp": "更換飛書應用",
+        "changeAppWarning": "完成授權後將取代目前的飛書應用，並清除現有私聊綁定。請使用新機器人重新完成綁定。",
         "generating": "正在生成二維條碼…",
         "waiting": "請使用{{channel}}掃碼並確認授權",
         "expiresIn": "二維條碼將在 {{countdown}} 後過期",

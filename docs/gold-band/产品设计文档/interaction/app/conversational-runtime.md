@@ -436,7 +436,7 @@ ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `ac
 | lifecycle 顶层 | `displayStatus / runtimeDisplay / continueKind` | 作为 session tree、activeSessions 与 composer 的基础派生事实源 |
 | composer facet | `mode / submitTarget / processingKind / statusKey / canStop / lockInput` | 作为 composer 输入、停止、状态文案和提交目标的唯一业务规则源 |
 
-自动重试的 attempt 结算不等于 logical turn 终态：`latestTurnStatus=failed + turnError.recovery=auto` 只表示该 attempt 已结算。scheduler 自动重试时必须携带 provider 错误中返回的失败 attempt 身份（`turnId + operationId`），admission 在同一 metadata lock 内校验它等于持久化 lifecycle owner，且该 turn 的 prompt 从未派发给 Agent（`promptRetry.promptId` 尚未指向该 turn），满足时才以普通 `PromptAdmitted` 转换重开：保留 `turnId`、更换 `operationId`、递增 `revision`。prompt 已派发后的失败、身份不匹配的重试、`recovery=manual/blocked`、`completed`、`cancelled` 与 `cancelRequested` 都不得重开。重试身份只对紧随其后的那一次调用有效，repair、confirm 等新 turn 不继承。初始化阶段复用 `initializing` 投影，composer 与运行页在 Agent 尚未准备完成时统一展示「正在准备 Agent」（`acp.preparingAgent`），不新增平行状态机。
+自动重试的 attempt 结算不等于 logical turn 终态：`latestTurnStatus=failed + turnError.recovery=auto` 只表示该 attempt 已结算。scheduler 自动重试时必须携带 provider 错误中返回的失败 attempt 身份（`turnId + operationId`），admission 在同一 metadata lock 内校验它等于持久化 lifecycle owner，且该 turn 的 prompt 从未派发给 Agent（`promptRetry.promptId` 尚未指向该 turn），满足时才以普通 `PromptAdmitted` 转换重开：保留 `turnId`、更换 `operationId`、递增 `revision`。prompt 已派发后的失败在结算点（terminal guard / 失败持久化，依据同一 `promptRetry` 事实）即定为 `recovery=manual`，调度方据此不发起自动重试，UI 直接进入人工恢复状态；身份不匹配的重试、`recovery=manual/blocked`、`completed`、`cancelled` 与 `cancelRequested` 都不得重开。重试身份只对紧随其后的那一次调用有效，repair、confirm 等新 turn 不继承。初始化阶段复用 `initializing` 投影，composer 与运行页在 Agent 尚未准备完成时统一展示「正在准备 Agent」（`acp.preparingAgent`），不新增平行状态机。
 
 `status` 与 `runtimeDisplay` 仍可作为兼容字段暴露，但必须由 lifecycle 同一个派生函数产出，不能在前端或其他 VM 中重新拼优先级。
 

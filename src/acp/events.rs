@@ -321,9 +321,22 @@ impl<'a> AcpLifecycleTerminalGuard<'a> {
     }
 
     pub(crate) fn execute<T>(&mut self, execute: impl FnOnce() -> Result<T>) -> Result<T> {
-        let result = execute();
+        let mut result = execute();
         if let Err(error) = &result {
             let mut info = normalize_runtime_error(error);
+            let raw_recovery = info.recovery;
+            if let Err(read_error) = settled_failure_recovery(&self.path, &self.owner, &mut info) {
+                tracing::warn!(path = %self.path, error = %read_error, "ACP dispatch fact unreadable");
+            }
+            if info.recovery != raw_recovery {
+                // Callers decide retries from the returned error, so it must
+                // carry the settled recovery while keeping the original chain.
+                let mut settled = info.clone();
+                settled.diagnostic = "ACP prompt failed after the agent received it".to_string();
+                result = result.map_err(|error| {
+                    error.context(crate::runtime_error::RuntimeError::new(settled))
+                });
+            }
             if observe_session_execution_error(&self.path, &self.owner, &info) {
                 if let Some(notify) = self.notification {
                     let _ = notify();
@@ -2663,6 +2676,32 @@ fn turn_prompt_was_dispatched(value: &Value, turn_id: &str) -> bool {
         == Some(turn_id)
 }
 
+/// Settles the recovery of a failed attempt against the dispatch fact.
+///
+/// Once the agent has received the prompt, replaying it could duplicate
+/// partial side effects, and admission would refuse to reopen the turn. Such
+/// a failure is therefore settled for explicit user recovery, so the stored
+/// lifecycle and the scheduler's retry decision agree.
+fn settle_failure_recovery(value: &Value, turn_id: &str, error: &mut RuntimeErrorInfo) {
+    if error.recovery == RecoveryMode::Auto && turn_prompt_was_dispatched(value, turn_id) {
+        error.recovery = RecoveryMode::Manual;
+        error.retry_policy = None;
+    }
+}
+
+/// Reads the dispatch fact for an attempt that is about to be settled.
+fn settled_failure_recovery(
+    path: &Utf8Path,
+    owner: &AcpLifecycleOwner,
+    error: &mut RuntimeErrorInfo,
+) -> Result<()> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    if let Some(value) = admission_metadata_base(path)? {
+        settle_failure_recovery(&value, &owner.turn_id, error);
+    }
+    Ok(())
+}
+
 /// An automatic retry may replace a failed attempt only when it names the
 /// exact durable owner, the failure is auto-recoverable, and the failure
 /// happened before the prompt reached the agent. Replaying a dispatched
@@ -3265,6 +3304,12 @@ fn persist_session_turn_terminal_with_error_owned(
     {
         return Ok(None);
     }
+    let settled_error = error.map(|error| {
+        let mut error = error.clone();
+        settle_failure_recovery(&value, turn_id, &mut error);
+        error
+    });
+    let error = settled_error.as_ref();
     if lifecycle_is_terminal(&current) {
         if should_upgrade_failed_turn_error(&current, latest_turn_status, error) {
             let mut terminal = current;
@@ -7958,6 +8003,81 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// Settles one attempt through the shared terminal guard, the way
+    /// `client::run_prompt` does, and returns the error it hands upward.
+    fn settle_through_guard(
+        path: &Utf8Path,
+        owner: &super::AcpLifecycleOwner,
+        error: crate::runtime_error::RuntimeErrorInfo,
+    ) -> anyhow::Error {
+        super::AcpLifecycleTerminalGuard::new(path.to_path_buf(), owner.clone())
+            .execute(|| -> anyhow::Result<()> { Err(crate::runtime_error::runtime_error(error)) })
+            .unwrap_err()
+    }
+
+    fn auto_transport_error(method: &str) -> crate::runtime_error::RuntimeErrorInfo {
+        crate::runtime_error::auto_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            format!("ACP `{method}` timed out after 60 seconds"),
+            serde_json::json!({"method": method}),
+        )
+    }
+
+    #[test]
+    fn failure_after_prompt_dispatch_settles_as_manual_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let owner = started_owner(&admit_started(
+            &path,
+            &prompt_submission("turn-dispatched-failure", "operation-1"),
+        ));
+        record_prompt_dispatch(&path, "turn-dispatched-failure");
+
+        let returned = settle_through_guard(&path, &owner, auto_transport_error("session/prompt"));
+
+        let persisted = super::read_lifecycle_header(&path).unwrap().unwrap();
+        let settled = persisted
+            .turn_error
+            .expect("failure must persist its error");
+        assert_eq!(settled.code_str(), "runtime.transport-interrupted");
+        assert_eq!(settled.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(settled.retry_policy.is_none());
+        // The scheduler decides from the returned error; it must agree with
+        // the settled lifecycle so no doomed automatic retry is issued.
+        let decided = crate::runtime_error::normalize_runtime_error(&returned);
+        assert_eq!(decided.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(decided.retry_policy.is_none());
+    }
+
+    #[test]
+    fn startup_failure_settles_as_auto_recovery_and_reopens() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let first = prompt_submission("turn-startup-failure", "operation-1");
+        let owner = started_owner(&admit_started(&path, &first));
+
+        let returned = settle_through_guard(&path, &owner, auto_transport_error("initialize"));
+
+        let persisted = super::read_lifecycle_header(&path).unwrap().unwrap();
+        assert_eq!(
+            persisted.turn_error.map(|error| error.recovery),
+            Some(crate::runtime_error::RecoveryMode::Auto)
+        );
+        let decided = crate::runtime_error::normalize_runtime_error(&returned);
+        assert_eq!(decided.recovery, crate::runtime_error::RecoveryMode::Auto);
+        let retry = prompt_submission("turn-startup-failure", "operation-2");
+        assert!(matches!(
+            super::admit_session_turn_for_execution(
+                &path,
+                &retry,
+                Some(&super::AcpFailedPromptAttempt::of_owner(&owner)),
+            )
+            .unwrap(),
+            super::AcpTurnExecutionClaim::Claimed(_)
+        ));
     }
 
     #[test]

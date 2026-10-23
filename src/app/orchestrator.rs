@@ -17786,6 +17786,66 @@ mod tests {
         );
     }
 
+    /// The scheduler's retry decision must follow the settled lifecycle: a
+    /// dispatched prompt failure is never retried automatically, while a
+    /// startup failure keeps its automatic retry.
+    #[test]
+    fn automatic_retry_decision_follows_the_settled_dispatch_fact() {
+        use crate::acp::events::{
+            AcpLifecycleTerminalGuard, AcpPromptSubmission, AcpTurnExecutionClaim,
+            admit_session_turn_for_execution, patch_session_metadata,
+        };
+        for (dispatched, retries) in [(true, false), (false, true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+            let submission = AcpPromptSubmission {
+                turn_id: "turn-decision".to_string(),
+                operation_id: "operation-1".to_string(),
+                adapter_id: "codex-acp".to_string(),
+                adapter_display_name: "Codex".to_string(),
+                cwd: "C:/tmp/attempt".to_string(),
+                input: crate::provider::ConversationPromptInput {
+                    display_text: "hello".to_string(),
+                    quotes: Vec::new(),
+                    role: None,
+                    workspace_files: Vec::new(),
+                },
+                attachment_paths: Vec::new(),
+                admitted_at: "2026-10-23T00:00:00Z".to_string(),
+            };
+            let AcpTurnExecutionClaim::Claimed(owner) =
+                admit_session_turn_for_execution(&path, &submission, None).unwrap()
+            else {
+                panic!("fixture must own its turn");
+            };
+            if dispatched {
+                patch_session_metadata(&path, |value| {
+                    value["promptRetry"] =
+                        serde_json::json!({"promptId": "turn-decision", "retryAttempt": 0});
+                    Ok(())
+                })
+                .unwrap();
+            }
+            let error = AcpLifecycleTerminalGuard::new(path.clone(), owner)
+                .execute(|| -> Result<()> {
+                    Err(crate::runtime_error::runtime_error(
+                        crate::runtime_error::auto_runtime_error_info(
+                            RuntimeErrorDomain::RuntimeTransport,
+                            "runtime.transport-interrupted",
+                            "ACP request timed out",
+                            serde_json::json!({}),
+                        ),
+                    ))
+                })
+                .unwrap_err();
+            assert_eq!(
+                auto_retry_delay_ms(&normalize_runtime_error(&error), 0).is_some(),
+                retries,
+                "dispatched={dispatched}"
+            );
+        }
+    }
+
     #[test]
     fn automatic_retry_wait_aborts_when_attempt_is_no_longer_active() {
         let mut checks = 0;

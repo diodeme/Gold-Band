@@ -2147,7 +2147,21 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
+/// Classifies a prompt run that returned. A returned run means the agent
+/// received the prompt (unaccepted interruptions carry no runtime error), so
+/// replaying it could duplicate partial side effects: every failure here is
+/// settled for explicit user recovery, matching the lifecycle settlement of
+/// dispatched failures in `acp::events`.
 fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
+    let mut outcome = classify_acp_prompt_stop(run);
+    if let Some(runtime_error) = outcome.runtime_error.as_mut() {
+        runtime_error.recovery = RecoveryMode::Manual;
+        runtime_error.retry_policy = None;
+    }
+    outcome
+}
+
+fn classify_acp_prompt_stop(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
         let raw = Some(serde_json::json!({
             "adapterId": run.adapter_id,
@@ -2155,16 +2169,11 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             "stopReason": run.stop_reason,
             "terminalFailure": failure,
         }));
-        let mut runtime_error = normalize_provider_runtime_failure(
+        let runtime_error = normalize_provider_runtime_failure(
             run.stop_reason.as_deref(),
             failure.diagnostic(),
             raw,
         );
-        // A structured terminal failure proves that the current prompt has
-        // ended abnormally. Replaying a business prompt could duplicate
-        // partial side effects, so recovery is always an explicit user action.
-        runtime_error.recovery = RecoveryMode::Manual;
-        runtime_error.retry_policy = None;
         return ProviderTerminalOutcome {
             status: ProviderRunStatus::Failure,
             runtime_error: Some(runtime_error),
@@ -4875,6 +4884,19 @@ mod tests {
         let error = outcome
             .runtime_error
             .expect("fatal error must be preserved");
+        assert_eq!(error.code_str(), "provider.server-unavailable");
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
+    }
+
+    #[test]
+    fn dispatched_prompt_error_stop_reason_is_never_auto_retried() {
+        let mut run = acp_prompt_run(Some("error"), None);
+        run.output.visible_text = "503 upstream overloaded".to_string();
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        let error = outcome.runtime_error.expect("error stop reason must fail");
         assert_eq!(error.code_str(), "provider.server-unavailable");
         assert_eq!(error.recovery, RecoveryMode::Manual);
         assert!(error.retry_policy.is_none());

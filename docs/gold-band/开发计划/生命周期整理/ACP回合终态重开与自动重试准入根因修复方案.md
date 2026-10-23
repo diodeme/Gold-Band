@@ -101,7 +101,7 @@ worker 路径（`drive_from_node_with_initial_session -> execute_ai_node`）与 
 | 现有终态 | 重试意图 | 结果 |
 | --- | --- | --- |
 | `failed + auto`，prompt 未派发，身份匹配 | 有 | 重开，`Claimed`（新 operation id） |
-| `failed + auto`，prompt 已派发 | 有 | `AlreadySettled` |
+| `failed + auto`，prompt 已派发 | — | 不会出现：结算时已定为 `manual` |
 | `failed + auto`，身份不匹配或已被消费 | 有 | `AlreadySettled` |
 | `failed + manual / blocked` | 有 | `AlreadySettled` |
 | `failed`（任意） | 无 | `AlreadySettled` |
@@ -138,11 +138,16 @@ worker 路径（`drive_from_node_with_initial_session -> execute_ai_node`）与 
 - `provider::tests::provider_passes_the_named_failed_attempt_to_admission`：provider 错误携带失败身份，点名重试真正重新执行，未点名或过期身份被拒。
 - `tests/worker_bootstrap.rs::automatic_retry_names_only_the_failed_attempt_it_replaces`、`tests/ai_dynamic_node.rs::ai_dynamic_repair_turn_does_not_inherit_the_startup_retry_intent`：orchestrator 只把身份交给紧随其后的一次调用。
 - `acp::connection::tests::stderr_diagnostic_tail_keeps_the_latest_lines_within_its_bound`：stderr 缓冲保留尾部。
+- `acp::events::tests::failure_after_prompt_dispatch_settles_as_manual_recovery`、`startup_failure_settles_as_auto_recovery_and_reopens`、`app::orchestrator::tests::automatic_retry_decision_follows_the_settled_dispatch_fact`、`provider::tests::dispatched_prompt_error_stop_reason_is_never_auto_retried`：派发后失败结算为人工恢复且调度方不自动重试；启动失败保持自动重试。
 
 ## 九、影响面与风险
 
 - 影响：仅 ACP provider 执行准入路径。Direct 对话准入（`begin_session_turn`）不变。
-- 已知遗留：prompt 已派发后的 auto 失败（如 `session/prompt` 超时）仍会被 orchestrator 自动重试一次并以 `acp.prompt-execution-already-settled` 结束，原始错误保留在 lifecycle `turnError` 与 `runtime_auto_retry` 事件中。是否在结算时把派发后失败降为 manual，需单独评审 main 既有的 auto 分类（如 `prompt_terminal_route_convergence_errors_are_auto_recoverable`）。
+- 派发后失败在结算时定为人工恢复（用户决策）：结算点与重开准入使用同一个持久化事实 `promptRetry.promptId`。
+  - Err 路径：`AcpLifecycleTerminalGuard` 在登记执行错误与持久化前读取派发事实，`persist_session_turn_failure_owned` 在元数据锁内再次按同一事实结算；`recovery=auto` 且已派发时改为 `manual`、`retryPolicy=None`。返回给调度方的错误以 `RuntimeError` context 携带结算后的 recovery（保留原错误链），orchestrator 的 `normalize_runtime_error -> auto_retry_delay_ms` 因此与持久化 `turnError` 一致，不再发起必被准入拒绝的自动重试。
+  - Ok 路径：provider `classify_acp_prompt_run` 只处理已返回的 prompt run（未派发的中断不带 runtime error），其全部 runtime error 一律 `manual`，与既有结构化终态失败的原则一致。
+  - 启动阶段失败（prompt 未派发）保持 `auto`，仍按第五节重开。
+  - UI 影响：派发后的超时、路由收敛失败、`stopReason=error` 的 503/overloaded 等不再显示自动重试中，直接进入人工恢复状态；Direct 会话（`commands.rs` 同一结算函数）的派发后失败也持久化为 `manual`。
 - `initial-direct-turn` 是全局常量，多轮复用同一 id；本方案不改变轮次身份生成契约。
 
 ## 十、方案自评审

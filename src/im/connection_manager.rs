@@ -273,6 +273,7 @@ mod tests {
                     bot_id: "old".into(),
                     display_name: "old".into(),
                 },
+                owner: None,
             },
             10,
         ));
@@ -284,6 +285,7 @@ mod tests {
                     bot_id: "new".into(),
                     display_name: "new".into(),
                 },
+                owner: None,
             },
             20,
         ));

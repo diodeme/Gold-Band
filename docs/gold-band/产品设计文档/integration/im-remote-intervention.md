@@ -165,7 +165,7 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 1. 在设置页点击扫码接入，先确认“发送消息、读取发给机器人的私聊消息、更新机器人卡片、读取你的姓名”四项权限，再发起扫码。取消或关闭会话使迟到结果失效。扫码 addons 在三项必需 IM 权限之外追加 `contact:contact.base:readonly`（通讯录 API 基础权限）与 `contact:user.base:readonly`（返回 `name` 的字段权限）；这两项不进入自检的必需权限，缺失不触发重新授权。
 2. 后端轮询授权，把 app_secret、扫码人 open_id、brand 写入 keyring；前端只收到 sessionId、qrUrl、expiresAtMs 和非敏感设置。新建应用使用 createOnly，重新授权复用已有 app_id。
 3. 授权后，扫码账号向机器人发送一条私聊消息完成绑定；持久 binding 与当前 generation snapshot 一致后才显示“可用”。其他账号不能抢占绑定。
-4. 接收账号姓名：connector 每次 `connect` 在 bot 自检后用 tenant token 调用一次 `GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id` 读取扫码账号 `name`，随该连接上报的 `BindingObserved.display_name` 持久到 `ImBindingSummary.display_name`（`Option`）。不按消息查询；查询失败（缺权限、不在通讯录范围 41050、网络）只记 warn，绑定照常完成，设置页显示中性文案“已绑定一对一私聊”，不再展示 open_id。已有绑定在下次 owner 消息时采纳新解析到的姓名，查询失败不会抹掉已知姓名。企微保持原样（userid 即展示名）。
+4. 接收账号姓名：connector 每次 `connect` 在 bot 自检后用 tenant token 调用一次 `GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id` 读取扫码账号 `name`，随该连接上报的 `BindingObserved.display_name` 持久到 `ImBindingSummary.display_name`（`Option`）。不按消息查询；查询失败（缺权限、不在通讯录范围 41050、网络）只记 warn，绑定照常完成，设置页显示中性文案“已绑定一对一私聊”，不再展示 open_id。连接成功（`Connected.owner` 携带已解析的 owner open_id 与姓名）后，runtime 在阻塞线程池内对同一 owner 的已有绑定立即采纳该姓名（例如替换旧版写入的 open_id），仅在姓名变化时写设置并刷新快照，无需等待下一条消息；查询失败时 `owner` 为空，不会抹掉已知姓名。企微保持原样（userid 即展示名）。
 5. 支持启停、六类通知偏好、重新授权、真实重连和删除。重新绑定只清除私聊绑定，仍由扫码账号发消息绑定；更换授权账号需重新授权。缺权限引导重新授权，不无效重连。
 6. 页面显示 App ID、运行期机器人名称和单设备提醒。Secret、扫码 ticket、access_key 不进入前端或日志。
 

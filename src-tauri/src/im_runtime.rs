@@ -18,11 +18,11 @@ use gold_band::im::{
     ImInboundHandling, ImInboundOutcome, ImIntegrationSettings, ImLifecycleProjectionJob,
     ImLifecycleProjectionQueueItem, ImLifecycleProjector, ImLocale, ImMaintenanceWorker,
     ImMessageUpdateMode, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
-    ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget,
-    ImRepository, ImRepositoryError, ImResolutionDispatch, ImResolutionOutcome, ImResolvedBy,
-    ImWorkerSignal, InterventionRef, InterventionResolutionNotification, OsImCredentialStore,
-    ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector, WeComScanAuthClient,
-    WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
+    ImOwnerProfile, ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult,
+    ImProjectionTarget, ImRepository, ImRepositoryError, ImResolutionDispatch, ImResolutionOutcome,
+    ImResolvedBy, ImWorkerSignal, InterventionRef, InterventionResolutionNotification,
+    OsImCredentialStore, ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector,
+    WeComScanAuthClient, WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
     im_lifecycle_projection_channel, im_worker_channel, resolution_event_id,
     try_enqueue_projection,
 };
@@ -1255,6 +1255,30 @@ impl DesktopImRuntime {
                         ));
                     }
                 }
+                ImConnectorEvent::Connected {
+                    generation,
+                    owner: Some(owner),
+                    ..
+                } => {
+                    let runtime = Arc::clone(&self);
+                    let handle = app_handle.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        runtime.persist_owner_display_name(&handle, channel, generation, &owner)
+                    })
+                    .await;
+                    if let Some(error) = match result {
+                        Ok(Ok(_)) => None,
+                        Ok(Err(error)) => Some(error.to_string()),
+                        Err(error) => Some(error.to_string()),
+                    } {
+                        warn!(
+                            channel = channel.as_str(),
+                            generation,
+                            error = %error,
+                            "persist IM owner display name failed"
+                        );
+                    }
+                }
                 _ => {}
             }
             emit_snapshot(&app_handle, self.connection_manager.snapshot(channel));
@@ -1635,6 +1659,58 @@ impl DesktopImRuntime {
         }
     }
 
+    /// Adopts the connect-time owner name for the current binding. Writes only
+    /// when it changed; a connection without a resolved name never gets here,
+    /// so a failed lookup never clears a known name.
+    fn persist_owner_display_name(
+        &self,
+        app_handle: &AppHandle,
+        channel: ImChannelKind,
+        generation: u64,
+        owner: &ImOwnerProfile,
+    ) -> Result<bool> {
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))?;
+        if self
+            .connection_manager
+            .snapshot(channel)
+            .is_none_or(|snapshot| snapshot.generation != generation)
+        {
+            return Ok(false);
+        }
+        let state = app_handle.state::<DesktopState>();
+        let app = state.app()?;
+        let mut settings = app.load_settings()?;
+        let Some(channel_settings) = settings
+            .im_integrations
+            .channels
+            .iter_mut()
+            .find(|candidate| candidate.kind == channel)
+        else {
+            return Ok(false);
+        };
+        if !adopt_owner_display_name(channel_settings, owner) {
+            return Ok(false);
+        }
+        app.save_settings(&settings)?;
+        state.update_settings_config(&settings)?;
+        *self.targets.write().expect("IM target lock poisoned") =
+            projection_targets(&settings.im_integrations, &self.connectors);
+        if let Some(mut binding) = self
+            .connection_manager
+            .snapshot(channel)
+            .and_then(|snapshot| snapshot.binding)
+            .filter(|binding| binding.actor_id == owner.actor_id)
+        {
+            binding.display_name = Some(owner.display_name.clone());
+            self.connection_manager
+                .commit_binding(channel, generation, binding);
+        }
+        Ok(true)
+    }
+
     fn persist_binding(
         &self,
         app_handle: &AppHandle,
@@ -1702,6 +1778,24 @@ fn apply_observed_binding(
     }
     existing.display_name = binding.display_name.clone();
     Ok(true)
+}
+
+/// Adopts the owner name resolved at connect for the existing binding of that
+/// same owner, e.g. replacing a legacy open_id. Returns whether it changed.
+fn adopt_owner_display_name(
+    channel_settings: &mut ImChannelSettings,
+    owner: &ImOwnerProfile,
+) -> bool {
+    let Some(binding) = &mut channel_settings.binding else {
+        return false;
+    };
+    if binding.authorized_actor_id != owner.actor_id
+        || binding.display_name.as_deref() == Some(owner.display_name.as_str())
+    {
+        return false;
+    }
+    binding.display_name = Some(owner.display_name.clone());
+    true
 }
 
 fn persist_binding_then_commit(
@@ -3320,6 +3414,45 @@ mod tests {
         assert_eq!(
             channel.binding.as_ref().unwrap().authorized_actor_id,
             "ou_owner"
+        );
+    }
+
+    /// A binding persisted before names were resolved (display name = open_id)
+    /// adopts the connect-time name of the same owner without a new message.
+    #[test]
+    fn connect_time_owner_name_replaces_a_legacy_display_name_once() {
+        let owner = ImOwnerProfile {
+            actor_id: "ou_owner".into(),
+            display_name: "Zhang San".into(),
+        };
+        let mut channel = disabled_channel(ImChannelKind::Feishu);
+        assert!(
+            !adopt_owner_display_name(&mut channel, &owner),
+            "no binding yet"
+        );
+        assert!(channel.binding.is_none());
+
+        channel.binding = Some(ImBindingSummary {
+            destination_id: "ou_owner".into(),
+            conversation_id: "oc_private".into(),
+            authorized_actor_id: "ou_owner".into(),
+            display_name: Some("ou_owner".into()),
+        });
+        assert!(adopt_owner_display_name(&mut channel, &owner));
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+        assert!(!adopt_owner_display_name(&mut channel, &owner), "unchanged");
+
+        let stranger = ImOwnerProfile {
+            actor_id: "ou_other".into(),
+            display_name: "Li Si".into(),
+        };
+        assert!(!adopt_owner_display_name(&mut channel, &stranger));
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
         );
     }
 

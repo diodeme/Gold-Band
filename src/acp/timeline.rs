@@ -2538,7 +2538,19 @@ fn runtime_context_is_active(event: &AcpUiEvent) -> bool {
 /// Prompt locators are enough for usage recovery and provider history anchors;
 /// only the small prompt records are read and their raw Blob references remain
 /// untouched.
-pub fn read_indexed_prompt_starts(path: &Utf8Path) -> Result<Vec<(String, u64, String)>> {
+/// A Gold Band prompt anchor as the usage journal needs it: `event_id` is the
+/// canonical prompt event, which prefixes every usage transaction id of its
+/// RPCs; `prompt_id` is the logical prompt identity used to name a start the
+/// journal never recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedPromptStart {
+    pub event_id: String,
+    pub prompt_id: String,
+    pub seq: u64,
+    pub timestamp: String,
+}
+
+pub fn read_indexed_prompt_starts(path: &Utf8Path) -> Result<Vec<IndexedPromptStart>> {
     let policy = TimelineCheckpointPolicy::default();
     let index_path = timeline_index_path(path);
     with_jsonl_file_lock(path, || {
@@ -2552,12 +2564,11 @@ pub fn read_indexed_prompt_starts(path: &Utf8Path) -> Result<Vec<(String, u64, S
         starts.sort_by_key(|(_, locator)| (locator.started_seq, locator.seq));
         Ok(starts
             .into_iter()
-            .map(|(item_id, locator)| {
-                (
-                    locator.prompt_id.clone().unwrap_or(item_id),
-                    locator.started_seq,
-                    locator.timestamp.clone(),
-                )
+            .map(|(item_id, locator)| IndexedPromptStart {
+                prompt_id: locator.prompt_id.clone().unwrap_or_else(|| item_id.clone()),
+                event_id: item_id,
+                seq: locator.started_seq,
+                timestamp: locator.timestamp.clone(),
             })
             .collect())
     })

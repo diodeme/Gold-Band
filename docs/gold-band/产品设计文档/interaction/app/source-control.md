@@ -178,7 +178,7 @@ GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs
 - 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
 - commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
 - commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
-- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
+- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。每组端点执行一次不带 pathspec 的 numstat，再按审阅文件路径在进程内过滤；路径不进入命令行参数，避免大合并提交超过 Windows 32767 字符命令行上限。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
 - 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
 
 - 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。

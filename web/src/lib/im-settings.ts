@@ -111,9 +111,8 @@ export function mergeImChannelSnapshot(settings: ImSettingsVm, snapshot: ImChann
         destinationId: snapshot.binding.destinationId,
         conversationId: snapshot.binding.conversationId,
         authorizedActorId: snapshot.binding.actorId,
-        displayName: channel.binding?.authorizedActorId === snapshot.binding.actorId
-          ? channel.binding.displayName
-          : snapshot.binding.actorId,
+        displayName: snapshot.binding.displayName
+          ?? (channel.binding?.authorizedActorId === snapshot.binding.actorId ? channel.binding.displayName : null),
       } : null;
       return { ...channel, enabled: snapshot.enabled, binding, connection: snapshot };
     }),

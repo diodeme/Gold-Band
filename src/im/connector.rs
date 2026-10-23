@@ -134,6 +134,8 @@ pub struct ImObservedBinding {
     pub conversation_id: String,
     pub actor_id: String,
     pub is_private: bool,
+    /// Platform display name of the actor, resolved once per connection.
+    pub display_name: Option<String>,
 }
 
 /// Serialized as [`ImErrorCode::as_str`], the single wire form shared with the frontend.

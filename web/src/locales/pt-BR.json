@@ -2530,6 +2530,7 @@
       "title": "Intervenção remota e notificações de IM",
       "enabled": "Habilitado",
       "privateBinding": "Chat privado: {{name}}",
+      "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificação",
       "notificationGroups": {
         "needsAction": "Precisa da sua ação",
@@ -2573,6 +2574,7 @@
             "send": "Enviar mensagens para você",
             "receive": "Ler mensagens privadas que você envia ao bot",
             "update": "Atualizar cartões enviados pelo bot",
+            "profile": "Ler seu nome para mostrar a conta de recebimento",
             "confirm": "Concordar e gerar código QR"
           },
           "resetBinding": {

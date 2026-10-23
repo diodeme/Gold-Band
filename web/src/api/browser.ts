@@ -158,7 +158,7 @@ function initialBrowserImSettings(): ImSettingsVm {
         kind: 'weCom', enabled, generation, state,
         capabilities: browserImCapabilities.weCom,
         identity: browserImIdentities.weCom,
-        binding: bound ? { destinationId: 'user-1', conversationId: 'user-1', actorId: 'user-1', isPrivate: true } : null,
+        binding: bound ? { destinationId: 'user-1', conversationId: 'user-1', actorId: 'user-1', isPrivate: true, displayName: 'Kelvin Zhou' } : null,
         lastConnectedAtMs: state === 'connected' ? Date.now() : null,
         lastErrorCode,
       } : null,

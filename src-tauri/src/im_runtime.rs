@@ -1664,20 +1664,7 @@ impl DesktopImRuntime {
         else {
             return Ok(());
         };
-        if let Some(existing) = &channel_settings.binding {
-            if existing.authorized_actor_id != binding.actor_id
-                || existing.conversation_id != binding.conversation_id
-                || existing.destination_id != binding.destination_id
-            {
-                anyhow::bail!("IM_BINDING_CONFLICT");
-            }
-        } else {
-            channel_settings.binding = Some(ImBindingSummary {
-                destination_id: binding.destination_id.clone(),
-                conversation_id: binding.conversation_id.clone(),
-                authorized_actor_id: binding.actor_id.clone(),
-                display_name: binding.actor_id.clone(),
-            });
+        if apply_observed_binding(channel_settings, binding)? {
             app.save_settings(&settings)?;
         }
         state.update_settings_config(&settings)?;
@@ -1685,6 +1672,36 @@ impl DesktopImRuntime {
             projection_targets(&settings.im_integrations, &self.connectors);
         Ok(())
     }
+}
+
+/// Applies an observed private binding to the channel settings. The binding is
+/// created once; afterwards only a newly resolved display name of the same
+/// account is adopted, so a failed name lookup never erases a known name.
+/// Returns whether the settings changed.
+fn apply_observed_binding(
+    channel_settings: &mut ImChannelSettings,
+    binding: &ImObservedBinding,
+) -> Result<bool> {
+    let Some(existing) = &mut channel_settings.binding else {
+        channel_settings.binding = Some(ImBindingSummary {
+            destination_id: binding.destination_id.clone(),
+            conversation_id: binding.conversation_id.clone(),
+            authorized_actor_id: binding.actor_id.clone(),
+            display_name: binding.display_name.clone(),
+        });
+        return Ok(true);
+    };
+    if existing.authorized_actor_id != binding.actor_id
+        || existing.conversation_id != binding.conversation_id
+        || existing.destination_id != binding.destination_id
+    {
+        anyhow::bail!("IM_BINDING_CONFLICT");
+    }
+    if binding.display_name.is_none() || existing.display_name == binding.display_name {
+        return Ok(false);
+    }
+    existing.display_name = binding.display_name.clone();
+    Ok(true)
 }
 
 fn persist_binding_then_commit(
@@ -2819,6 +2836,7 @@ fn observed_binding(binding: &ImBindingSummary) -> ImObservedBinding {
         conversation_id: binding.conversation_id.clone(),
         actor_id: binding.authorized_actor_id.clone(),
         is_private: true,
+        display_name: binding.display_name.clone(),
     }
 }
 
@@ -3056,7 +3074,7 @@ mod tests {
                     destination_id: "user-1".into(),
                     conversation_id: "private-chat".into(),
                     authorized_actor_id: "user-1".into(),
-                    display_name: "User".into(),
+                    display_name: Some("User".into()),
                 }),
                 notifications: Default::default(),
             }],
@@ -3266,6 +3284,45 @@ mod tests {
         }
     }
 
+    /// The binding is created once with the resolved name (or none); a later
+    /// observation of the same account only adopts a newly resolved name, and
+    /// never erases a known one or rebinds another account.
+    #[test]
+    fn observed_binding_creates_once_and_only_adopts_a_resolved_display_name() {
+        let observed = |display_name: Option<&str>| ImObservedBinding {
+            destination_id: "ou_owner".into(),
+            conversation_id: "oc_private".into(),
+            actor_id: "ou_owner".into(),
+            is_private: true,
+            display_name: display_name.map(str::to_owned),
+        };
+        let mut channel = disabled_channel(ImChannelKind::Feishu);
+
+        assert!(apply_observed_binding(&mut channel, &observed(None)).unwrap());
+        assert_eq!(channel.binding.as_ref().unwrap().display_name, None);
+        assert!(!apply_observed_binding(&mut channel, &observed(None)).unwrap());
+
+        assert!(apply_observed_binding(&mut channel, &observed(Some("Zhang San"))).unwrap());
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+        assert!(!apply_observed_binding(&mut channel, &observed(Some("Zhang San"))).unwrap());
+        assert!(!apply_observed_binding(&mut channel, &observed(None)).unwrap());
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+
+        let mut other = observed(Some("Li Si"));
+        other.actor_id = "ou_other".into();
+        assert!(apply_observed_binding(&mut channel, &other).is_err());
+        assert_eq!(
+            channel.binding.as_ref().unwrap().authorized_actor_id,
+            "ou_owner"
+        );
+    }
+
     #[test]
     fn scanned_credentials_require_fresh_binding_even_for_the_same_app() {
         for kind in ImChannelKind::ALL {
@@ -3276,7 +3333,7 @@ mod tests {
                 destination_id: "old-owner".into(),
                 conversation_id: "old-chat".into(),
                 authorized_actor_id: "old-owner".into(),
-                display_name: "Old owner".into(),
+                display_name: Some("Old owner".into()),
             });
             existing.notifications.manual_check = false;
             let installed = scanned_channel_settings(
@@ -3314,7 +3371,7 @@ mod tests {
                     destination_id: "user-1".into(),
                     conversation_id: "private-chat".into(),
                     authorized_actor_id: "user-1".into(),
-                    display_name: "User".into(),
+                    display_name: Some("User".into()),
                 }),
                 notifications: Default::default(),
             }],
@@ -3337,7 +3394,7 @@ mod tests {
             destination_id: "user-1".into(),
             conversation_id: "user-1".into(),
             authorized_actor_id: "user-1".into(),
-            display_name: "User".into(),
+            display_name: Some("User".into()),
         };
         let settings = |binding| ImIntegrationSettings {
             channels: vec![ImChannelSettings {
@@ -3449,7 +3506,7 @@ mod tests {
             destination_id: "user-1".into(),
             conversation_id: "chat-1".into(),
             authorized_actor_id: "user-1".into(),
-            display_name: "User".into(),
+            display_name: Some("User".into()),
         };
         let mut settings = ImIntegrationSettings {
             channels: vec![ImChannelSettings {
@@ -3533,6 +3590,7 @@ mod tests {
             conversation_id: "chat-1".into(),
             actor_id: "user-1".into(),
             is_private: true,
+            display_name: None,
         };
 
         let failed = persist_binding_then_commit(

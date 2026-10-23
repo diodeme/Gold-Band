@@ -1808,6 +1808,8 @@ fn observed_binding(value: &Value) -> Option<ImObservedBinding> {
     Some(ImObservedBinding {
         destination_id: actor_id.clone(),
         conversation_id,
+        // The WeCom userid is the account name shown in the WeCom admin.
+        display_name: Some(actor_id.clone()),
         actor_id,
         is_private,
     })

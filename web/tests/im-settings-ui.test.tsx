@@ -157,6 +157,7 @@ describe('IM settings production interaction', () => {
     expect(dialog.textContent).toContain('向你发送消息');
     expect(dialog.textContent).toContain('读取你发给机器人的私聊消息');
     expect(dialog.textContent).toContain('更新机器人发送的卡片');
+    expect(dialog.textContent).toContain('读取你的姓名，用于显示接收账号');
     expect(host.textContent).toContain('一个机器人只连接一台设备');
     const consent = [...dialog.querySelectorAll('button')].find((b) => b.textContent === '同意并生成二维码')!;
     await act(async () => consent.click());
@@ -192,9 +193,10 @@ describe('IM settings production interaction', () => {
     expect(dialog.textContent).toContain('授权完成，等待绑定接收账号');
     await act(async () => channelListener?.({
       ...waiting.channels[0].connection!,
-      binding: { destinationId: 'owner', conversationId: 'chat', actorId: 'owner', isPrivate: true },
+      binding: { destinationId: 'owner', conversationId: 'chat', actorId: 'owner', isPrivate: true, displayName: null },
     }));
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(host.textContent).toContain('已绑定一对一私聊');
     expect(host.querySelector('[data-im-status="ready"]')).not.toBeNull();
     expect(api.startWeComScanAuthorization).not.toHaveBeenCalled();
   });
@@ -213,7 +215,7 @@ describe('IM settings production interaction', () => {
     const channel = currentSettings.channels[0];
     channel.kind = kind;
     channel.binding = { destinationId: 'old', conversationId: 'old-chat', authorizedActorId: 'old', displayName: 'Old' };
-    channel.connection = { ...channel.connection!, kind, binding: { destinationId: 'old', conversationId: 'old-chat', actorId: 'old', isPrivate: true } };
+    channel.connection = { ...channel.connection!, kind, binding: { destinationId: 'old', conversationId: 'old-chat', actorId: 'old', isPrivate: true, displayName: 'Old' } };
     const old = structuredClone(channel.connection);
     channel.connection = { ...old, state: 'authenticationRequired', lastErrorCode: 'IM_AUTHENTICATION_REQUIRED' };
     const pending = createDeferred<ImSettingsVm>();

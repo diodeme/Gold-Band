@@ -2530,6 +2530,7 @@
       "title": "IM 원격 개입 및 알림",
       "enabled": "사용",
       "privateBinding": "1:1 채팅: {{name}}",
+      "privateBindingUnnamed": "1:1 채팅 바인딩됨",
       "notificationKinds": "알림 유형",
       "notificationGroups": {
         "needsAction": "조치 필요",
@@ -2573,6 +2574,7 @@
             "send": "나에게 메시지 보내기",
             "receive": "내가 봇에 보낸 개인 메시지 읽기",
             "update": "봇이 보낸 카드 업데이트",
+            "profile": "받는 계정을 표시하기 위해 이름 읽기",
             "confirm": "동의하고 QR 코드 생성"
           },
           "resetBinding": {

@@ -2179,7 +2179,8 @@ export interface ImBindingSummaryVm {
   destinationId: string;
   conversationId: string;
   authorizedActorId: string;
-  displayName: string;
+  /** Platform name of the bound account; null shows a neutral label. */
+  displayName: string | null;
 }
 
 export interface ImObservedBindingVm {
@@ -2187,6 +2188,7 @@ export interface ImObservedBindingVm {
   conversationId: string;
   actorId: string;
   isPrivate: boolean;
+  displayName: string | null;
 }
 
 export type ImMessageUpdateMode = 'none' | 'callbackOnly' | 'anytime';

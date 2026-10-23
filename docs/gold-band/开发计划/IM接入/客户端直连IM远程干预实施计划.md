@@ -581,7 +581,7 @@ im-projection-diagnostic
 - 配置表单复用 shadcn/ui `Dialog`/`Sheet`、`Input`、`Switch`、`Button`、`Alert`，选择器复用项目现有 shadcn Select。
 - 企业微信只显示扫码接入/重新授权，二维码 URL 与倒计时只存在于 Dialog 局部状态；关闭 Dialog、重新生成或应用退出都会取消后端活动会话。
 - 企业微信 Bot ID/Secret 手工入口删除；授权成功后后端直接把 Secret 写入 OS credential store，Tauri response 和前端状态永不包含 Secret。
-- 飞书扫码前先展示三项权限，用户确认后才 begin；提示一个机器人只连接一台设备。飞书“重新绑定”要求原扫码账号发消息，更换授权账号走重新授权；不展示微信占位入口。
+- 飞书扫码前先展示四项权限（含读取姓名，用于显示接收账号），用户确认后才 begin；提示一个机器人只连接一台设备。飞书“重新绑定”要求原扫码账号发消息，更换授权账号走重新授权；不展示微信占位入口。
 - 状态包括：未接入、等待绑定、连接中、正在重连、可用、已暂停、需要重新授权、连接被占用。
 - 不提供测试连接和独立断开入口；总开关即时启停，冲突恢复使用带 expected generation 的一次真实重连。
 - 七语言 UI 与错误码映射同步加入 web/src/locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json。

@@ -20,7 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::FeishuScanAuthConfig;
 use crate::im::connectors::feishu::api::{
-    FEISHU_REQUIRED_SCOPES, FeishuBrand, FeishuHostTable, FeishuOpenApi, feishu_http_client,
+    FEISHU_PROFILE_SCOPES, FEISHU_REQUIRED_SCOPES, FeishuBrand, FeishuHostTable, FeishuOpenApi,
+    feishu_http_client,
 };
 use crate::im::connectors::feishu::{
     FEISHU_APP_SECRET_FIELD, FEISHU_BRAND_FIELD, FEISHU_OPEN_ID_FIELD,
@@ -390,9 +391,15 @@ struct RegistrationUserInfo {
 /// platform template, then only the declared scopes, event and callback apply.
 /// Encoding is fixed by the platform: JSON → gzip → base64url without padding.
 fn encoded_addons() -> Result<String, FeishuScanAuthError> {
+    // Profile scopes are requested but optional: the self-check never needs them.
+    let scopes = [
+        FEISHU_REQUIRED_SCOPES.as_slice(),
+        FEISHU_PROFILE_SCOPES.as_slice(),
+    ]
+    .concat();
     let addons = json!({
         "preset": false,
-        "scopes": { "tenant": FEISHU_REQUIRED_SCOPES },
+        "scopes": { "tenant": scopes },
         "events": { "items": { "tenant": [RECEIVE_MESSAGE_EVENT] } },
         "callbacks": { "items": [CARD_ACTION_CALLBACK] },
     });
@@ -496,7 +503,9 @@ mod tests {
                 "scopes": { "tenant": [
                     "im:message:send_as_bot",
                     "im:message.p2p_msg:readonly",
-                    "im:message:update"
+                    "im:message:update",
+                    "contact:contact.base:readonly",
+                    "contact:user.base:readonly"
                 ] },
                 "events": { "items": { "tenant": ["im.message.receive_v1"] } },
                 "callbacks": { "items": ["card.action.trigger"] },

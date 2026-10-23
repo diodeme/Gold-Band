@@ -647,7 +647,10 @@ pub struct ImBindingSummary {
     pub destination_id: String,
     pub conversation_id: String,
     pub authorized_actor_id: String,
-    pub display_name: String,
+    /// Platform display name of the bound account; `None` when the platform
+    /// did not provide one. The frontend then shows a neutral label.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

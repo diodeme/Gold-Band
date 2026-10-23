@@ -133,6 +133,9 @@ struct SessionContext {
     generation: u64,
     app_id: Arc<str>,
     owner_open_id: Arc<str>,
+    /// Owner display name, resolved once per `connect`; unset when the
+    /// contact API is not granted or the lookup failed.
+    owner_display_name: Arc<std::sync::OnceLock<String>>,
     locale: ImLocale,
     events: mpsc::Sender<ImConnectorEvent>,
 }
@@ -277,6 +280,23 @@ impl FeishuConnector {
                 bot_id: api.app_id().to_owned(),
                 display_name: bot.app_name,
             });
+            // Optional profile scope: a failed lookup only leaves the binding
+            // without a name, it never fails the connection.
+            let name = tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                name = api.user_display_name(&context.owner_open_id) => name,
+            };
+            match name {
+                Ok(name) => {
+                    let _ = context.owner_display_name.set(name);
+                }
+                Err(error) => tracing::warn!(
+                    generation = context.generation,
+                    error_code = error.code.as_str(),
+                    platform_code = ?error.platform_code,
+                    "Feishu owner display name unavailable"
+                ),
+            }
         }
         // Every attempt pulls a fresh endpoint: the URL embeds a one-time ticket.
         let endpoint = tokio::select! {
@@ -505,6 +525,7 @@ async fn observe_binding(event: Value, context: &SessionContext) -> FeishuAckRes
                 conversation_id: event.message.chat_id,
                 actor_id: sender,
                 is_private: event.message.chat_type == CHAT_TYPE_P2P,
+                display_name: context.owner_display_name.get().cloned(),
             },
         })
         .await;
@@ -586,6 +607,7 @@ impl ImConnector for FeishuConnector {
             generation,
             app_id: Arc::from(app_id),
             owner_open_id: Arc::from(owner_open_id),
+            owner_display_name: Arc::default(),
             locale: config.locale,
             events,
         };

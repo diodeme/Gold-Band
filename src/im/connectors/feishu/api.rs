@@ -24,6 +24,7 @@ const TENANT_TOKEN_PATH: &str = "open-apis/auth/v3/tenant_access_token/internal"
 const BOT_INFO_PATH: &str = "open-apis/bot/v3/info";
 const APP_SCOPES_PATH: &str = "open-apis/application/v6/scopes";
 const MESSAGES_PATH: &str = "open-apis/im/v1/messages";
+const CONTACT_USERS_PATH: &str = "open-apis/contact/v3/users";
 const WS_ENDPOINT_PATH: &str = "callback/ws/endpoint";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(300);
 const BOT_ACTIVE_STATUS: i64 = 2;
@@ -46,6 +47,14 @@ pub(crate) const FEISHU_REQUIRED_SCOPES: [&str; 3] = [
     "im:message:send_as_bot",
     "im:message.p2p_msg:readonly",
     "im:message:update",
+];
+
+/// Scopes behind the bound account's display name: the contact API base scope
+/// and the field scope that returns `name`. Requested with the app but not
+/// required: without them the binding shows a neutral label.
+pub(crate) const FEISHU_PROFILE_SCOPES: [&str; 2] = [
+    "contact:contact.base:readonly",
+    "contact:user.base:readonly",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +289,16 @@ struct WsEndpointData {
 }
 
 #[derive(Deserialize)]
+struct UserData {
+    user: Option<RawUser>,
+}
+
+#[derive(Deserialize)]
+struct RawUser {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct MessageData {
     message_id: Option<String>,
     chat_id: Option<String>,
@@ -342,6 +361,27 @@ impl FeishuOpenApi {
             .filter(|scope| !granted.contains(**scope))
             .map(|scope| (*scope).to_owned())
             .collect())
+    }
+
+    /// Display name of a user in the app's contact range. Fails without the
+    /// profile scopes (`FEISHU_PROFILE_SCOPES`) or outside that range.
+    pub async fn user_display_name(&self, open_id: &str) -> Result<String, ImIntegrationError> {
+        if open_id.is_empty()
+            || !open_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "_-".contains(character))
+        {
+            return Err(ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid));
+        }
+        let path = format!("{CONTACT_USERS_PATH}/{open_id}?user_id_type=open_id");
+        let response: Envelope<UserData> = self.authorized(Method::GET, &path, None).await?;
+        ensure_success(response.code)?;
+        non_empty(
+            response
+                .data
+                .and_then(|data| data.user)
+                .and_then(|user| user.name),
+        )
     }
 
     /// Pulls a fresh long-connection URL; the URL embeds one-shot credentials.
@@ -924,6 +964,56 @@ mod tests {
         assert_eq!(
             api.bot_info().await.unwrap_err().code,
             ImErrorCode::ConfigInvalid
+        );
+    }
+
+    #[tokio::test]
+    async fn user_display_name_reads_the_contact_name_with_the_tenant_token() {
+        let (url, requests) = fixture_server(vec![
+            (
+                200,
+                r#"{"code":0,"tenant_access_token":"t-1","expire":7200}"#.into(),
+            ),
+            (
+                200,
+                r#"{"code":0,"data":{"user":{"open_id":"ou_owner","name":"张三"}}}"#.into(),
+            ),
+            (200, r#"{"code":41050,"msg":"no user authority"}"#.into()),
+            (
+                200,
+                r#"{"code":0,"data":{"user":{"open_id":"ou_owner"}}}"#.into(),
+            ),
+        ])
+        .await;
+        let api = api(url);
+        assert_eq!(api.user_display_name("ou_owner").await.unwrap(), "张三");
+        assert_eq!(
+            api.user_display_name("ou_owner")
+                .await
+                .unwrap_err()
+                .platform_code,
+            Some(41050)
+        );
+        // Without the field scope the user object comes back without `name`.
+        assert!(api.user_display_name("ou_owner").await.is_err());
+        assert_eq!(
+            api.user_display_name("ou/../x").await.unwrap_err().code,
+            ImErrorCode::ProtocolInvalid
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            4,
+            "one token, three lookups, no path injection"
+        );
+        assert!(
+            requests[1]
+                .starts_with("GET /open-apis/contact/v3/users/ou_owner?user_id_type=open_id ")
+        );
+        assert!(
+            requests[1]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer t-1")
         );
     }
 

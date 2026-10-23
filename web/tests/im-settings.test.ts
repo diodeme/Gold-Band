@@ -132,7 +132,7 @@ describe('IM settings boundary', () => {
       binding,
       connection: {
         ...channelFixture().connection!,
-        binding: { destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1', isPrivate: true },
+        binding: { destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1', isPrivate: true, displayName: null },
       },
     })).status).toBe('ready');
   });
@@ -183,7 +183,14 @@ describe('IM settings boundary', () => {
       binding: { destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1', isPrivate: true },
     };
     const bound = mergeImChannelSnapshot(base, persistedBinding);
-    expect(bound.channels[0].binding).toMatchObject({ authorizedActorId: 'user-1' });
+    expect(bound.channels[0].binding).toMatchObject({ authorizedActorId: 'user-1', displayName: null });
+    const named = mergeImChannelSnapshot(base, {
+      ...persistedBinding,
+      binding: { ...persistedBinding.binding, displayName: 'Zhang San' },
+    });
+    expect(named.channels[0].binding?.displayName).toBe('Zhang San');
+    const keepsKnownName = mergeImChannelSnapshot(named, { ...persistedBinding, generation: 5 });
+    expect(keepsKnownName.channels[0].binding?.displayName).toBe('Zhang San');
     expect(imChannelDisplayModel(bound.channels[0]).status).toBe('ready');
 
     const current = mergeImChannelSnapshot(base, newer);

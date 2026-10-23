@@ -2530,6 +2530,7 @@
       "title": "IM 远程干预与通知",
       "enabled": "启用",
       "privateBinding": "一对一私聊：{{name}}",
+      "privateBindingUnnamed": "已绑定一对一私聊",
       "notificationKinds": "通知类型",
       "notificationGroups": {
         "needsAction": "需要你处理",
@@ -2573,6 +2574,7 @@
             "send": "向你发送消息",
             "receive": "读取你发给机器人的私聊消息",
             "update": "更新机器人发送的卡片",
+            "profile": "读取你的姓名，用于显示接收账号",
             "confirm": "同意并生成二维码"
           },
           "resetBinding": {

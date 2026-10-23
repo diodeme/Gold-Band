@@ -127,6 +127,13 @@ pub struct ImConnectionIdentity {
     pub display_name: String,
 }
 
+/// Authorized owner as resolved by the platform at connect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImOwnerProfile {
+    pub actor_id: String,
+    pub display_name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImObservedBinding {
@@ -319,6 +326,9 @@ pub enum ImConnectorEvent {
     Connected {
         generation: u64,
         identity: ImConnectionIdentity,
+        /// Profile of the authorized owner when the platform resolved it at
+        /// connect; lets an existing binding adopt the current name.
+        owner: Option<ImOwnerProfile>,
     },
     ReconnectScheduled {
         generation: u64,

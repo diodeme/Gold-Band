@@ -33,7 +33,7 @@ use crate::im::{
     ImChannelCapabilities, ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent,
     ImCustomAnswerSupport, ImDelivery, ImDeliveryBinding, ImDeliveryPayload, ImDeliveryReceipt,
     ImErrorCode, ImFreeTextCapability, ImIntegrationError, ImInteractionCapabilities, ImLocale,
-    ImMessageUpdateMode, ImMultiChoiceCapability, ImObservedBinding, ImOptionLimit,
+    ImMessageUpdateMode, ImMultiChoiceCapability, ImObservedBinding, ImOptionLimit, ImOwnerProfile,
     ResolvedImChannelConfig,
 };
 
@@ -328,6 +328,13 @@ impl FeishuConnector {
             .send(ImConnectorEvent::Connected {
                 generation: context.generation,
                 identity: identity.clone().ok_or_else(network_unavailable)?,
+                owner: context
+                    .owner_display_name
+                    .get()
+                    .map(|display_name| ImOwnerProfile {
+                        actor_id: context.owner_open_id.to_string(),
+                        display_name: display_name.clone(),
+                    }),
             })
             .await
             .map_err(|_| ImIntegrationError::permanent(ImErrorCode::NetworkUnavailable))?;

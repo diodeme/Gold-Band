@@ -444,6 +444,10 @@ async fn owner_message_is_acked_and_observes_the_private_binding() {
                 bot_id: APP_ID.to_owned(),
                 display_name: "Gold Band".to_owned(),
             },
+            owner: Some(crate::im::ImOwnerProfile {
+                actor_id: OWNER.to_owned(),
+                display_name: "Fixture Owner".to_owned(),
+            }),
         }
     );
 
@@ -499,7 +503,7 @@ async fn owner_lookup_failure_keeps_the_binding_without_a_name() {
     let mut server = accept(&listener).await;
     assert!(matches!(
         next_event(&mut events).await,
-        ImConnectorEvent::Connected { .. }
+        ImConnectorEvent::Connected { owner: None, .. }
     ));
     send_frame(&mut server, &event_frame(30, "m-owner", RECEIVE_FIXTURE)).await;
     next_data_frame(&mut server).await;

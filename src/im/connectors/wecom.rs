@@ -222,6 +222,7 @@ impl WeComConnector {
                     bot_id: bot_id.to_owned(),
                     display_name: bot_id.to_owned(),
                 },
+                owner: None,
             })
             .await
             .map_err(|_| ImIntegrationError::permanent(ImErrorCode::NetworkUnavailable))?;

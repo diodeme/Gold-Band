@@ -14,7 +14,8 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::runtime_error::{
-    RuntimeErrorDomain, RuntimeErrorInfo, manual_runtime_error_info, normalize_runtime_error,
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, manual_runtime_error_info,
+    normalize_runtime_error,
 };
 use crate::storage::{
     append_jsonl, append_jsonl_lines_flushed_unlocked, atomic_write_file, ensure_parent_dir,
@@ -240,6 +241,42 @@ pub struct AcpLifecycleOwner {
     pub revision: u64,
 }
 
+/// Identity of one provider prompt attempt that ended with an error.
+///
+/// The provider attaches it to the returned error. A scheduler that retries
+/// automatically hands the same value back, so admission can compare it with
+/// the durable lifecycle owner instead of trusting a generic "retry" flag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpFailedPromptAttempt {
+    pub turn_id: String,
+    pub operation_id: String,
+}
+
+impl AcpFailedPromptAttempt {
+    pub fn of_owner(owner: &AcpLifecycleOwner) -> Self {
+        Self {
+            turn_id: owner.turn_id.clone(),
+            operation_id: owner.operation_id.clone(),
+        }
+    }
+
+    /// Returns the failed attempt carried by a provider error chain.
+    pub fn from_error(error: &anyhow::Error) -> Option<Self> {
+        error.downcast_ref::<Self>().cloned()
+    }
+}
+
+impl std::fmt::Display for AcpFailedPromptAttempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ACP prompt attempt `{}` of turn `{}` failed",
+            self.operation_id, self.turn_id
+        )
+    }
+}
+
 /// An exited execution observed in this process, not a committed lifecycle revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,9 +321,22 @@ impl<'a> AcpLifecycleTerminalGuard<'a> {
     }
 
     pub(crate) fn execute<T>(&mut self, execute: impl FnOnce() -> Result<T>) -> Result<T> {
-        let result = execute();
+        let mut result = execute();
         if let Err(error) = &result {
             let mut info = normalize_runtime_error(error);
+            let raw_recovery = info.recovery;
+            if let Err(read_error) = settled_failure_recovery(&self.path, &self.owner, &mut info) {
+                tracing::warn!(path = %self.path, error = %read_error, "ACP dispatch fact unreadable");
+            }
+            if info.recovery != raw_recovery {
+                // Callers decide retries from the returned error, so it must
+                // carry the settled recovery while keeping the original chain.
+                let mut settled = info.clone();
+                settled.diagnostic = "ACP prompt failed after the agent received it".to_string();
+                result = result.map_err(|error| {
+                    error.context(crate::runtime_error::RuntimeError::new(settled))
+                });
+            }
             if observe_session_execution_error(&self.path, &self.owner, &info) {
                 if let Some(notify) = self.notification {
                     let _ = notify();
@@ -2606,13 +2656,80 @@ fn prompt_submission_from_value(value: &Value) -> Result<Option<AcpPromptSubmiss
         .map_err(Into::into)
 }
 
+enum ExistingTurnClassification {
+    /// No lifecycle exists for this turn, or the named failed attempt may be
+    /// replaced by a new admission of the same logical turn.
+    Admissible,
+    Existing(AcpTurnAdmission),
+}
+
+/// Whether the provider has been handed this turn's prompt.
+///
+/// `promptRetry` is the durable prompt identity the runtime records together
+/// with the user prompt event and writes with the `running` snapshot before it
+/// sends `session/prompt`. Until it names this turn, the agent cannot have
+/// received the prompt, so no business side effect can exist yet.
+fn turn_prompt_was_dispatched(value: &Value, turn_id: &str) -> bool {
+    value
+        .pointer("/promptRetry/promptId")
+        .and_then(Value::as_str)
+        == Some(turn_id)
+}
+
+/// Settles the recovery of a failed attempt against the dispatch fact.
+///
+/// Once the agent has received the prompt, replaying it could duplicate
+/// partial side effects, and admission would refuse to reopen the turn. Such
+/// a failure is therefore settled for explicit user recovery, so the stored
+/// lifecycle and the scheduler's retry decision agree.
+fn settle_failure_recovery(value: &Value, turn_id: &str, error: &mut RuntimeErrorInfo) {
+    if error.recovery == RecoveryMode::Auto && turn_prompt_was_dispatched(value, turn_id) {
+        error.recovery = RecoveryMode::Manual;
+        error.retry_policy = None;
+    }
+}
+
+/// Reads the dispatch fact for an attempt that is about to be settled.
+fn settled_failure_recovery(
+    path: &Utf8Path,
+    owner: &AcpLifecycleOwner,
+    error: &mut RuntimeErrorInfo,
+) -> Result<()> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    if let Some(value) = admission_metadata_base(path)? {
+        settle_failure_recovery(&value, &owner.turn_id, error);
+    }
+    Ok(())
+}
+
+/// An automatic retry may replace a failed attempt only when it names the
+/// exact durable owner, the failure is auto-recoverable, and the failure
+/// happened before the prompt reached the agent. Replaying a dispatched
+/// business prompt could duplicate partial side effects.
+fn failed_attempt_is_reopenable(
+    value: &Value,
+    current: &AcpLifecycleHeader,
+    retry_of: &AcpFailedPromptAttempt,
+) -> bool {
+    current.turn_id.as_deref() == Some(retry_of.turn_id.as_str())
+        && current.operation_id.as_deref() == Some(retry_of.operation_id.as_str())
+        && lifecycle_is_terminal(current)
+        && current.latest_turn_status == AcpLatestTurnStatus::Failed
+        && current
+            .turn_error
+            .as_ref()
+            .is_some_and(|error| error.recovery == RecoveryMode::Auto)
+        && !turn_prompt_was_dispatched(value, &retry_of.turn_id)
+}
+
 fn classify_existing_turn(
     value: &Value,
     submission: &AcpPromptSubmission,
-) -> Result<Option<AcpTurnAdmission>> {
+    retry_of: Option<&AcpFailedPromptAttempt>,
+) -> Result<ExistingTurnClassification> {
     let current = lifecycle_header_from_value(value);
     if current.turn_id.as_deref() != Some(submission.turn_id.as_str()) {
-        return Ok(None);
+        return Ok(ExistingTurnClassification::Admissible);
     }
     if let Some(persisted) = prompt_submission_from_value(value)?
         && (persisted.input != submission.input
@@ -2620,10 +2737,16 @@ fn classify_existing_turn(
     {
         anyhow::bail!("acp.prompt-submission-conflict");
     }
-    if lifecycle_is_terminal(&current) || lifecycle_is_stopping(&current) {
-        Ok(Some(AcpTurnAdmission::ExistingTerminal(current)))
+    if retry_of.is_some_and(|retry_of| failed_attempt_is_reopenable(value, &current, retry_of)) {
+        Ok(ExistingTurnClassification::Admissible)
+    } else if lifecycle_is_terminal(&current) || lifecycle_is_stopping(&current) {
+        Ok(ExistingTurnClassification::Existing(
+            AcpTurnAdmission::ExistingTerminal(current),
+        ))
     } else {
-        Ok(Some(AcpTurnAdmission::ExistingActive(current)))
+        Ok(ExistingTurnClassification::Existing(
+            AcpTurnAdmission::ExistingActive(current),
+        ))
     }
 }
 
@@ -2638,7 +2761,14 @@ pub fn inspect_session_turn(
     let _guard = session_metadata_lock(path).lock().unwrap();
     admission_metadata_base(path)?
         .as_ref()
-        .map(|value| classify_existing_turn(value, submission))
+        .map(|value| {
+            classify_existing_turn(value, submission, None).map(|classification| {
+                match classification {
+                    ExistingTurnClassification::Admissible => None,
+                    ExistingTurnClassification::Existing(admission) => Some(admission),
+                }
+            })
+        })
         .transpose()
         .map(Option::flatten)
 }
@@ -2709,11 +2839,17 @@ pub fn claim_session_turn_for_execution(
 /// owner can be reused. A stop or terminal transition always wins because the
 /// header is rechecked under the metadata lock before an existing owner is
 /// returned.
+///
+/// After a recoverable failure the guard settles the attempt as `failed`. An
+/// automatic retry of that same turn passes the failed attempt identity in
+/// `retry_of`; admission reopens the turn only for that exact durable owner
+/// and only when the prompt was never dispatched to the agent.
 pub fn admit_session_turn_for_execution(
     path: &Utf8Path,
     submission: &AcpPromptSubmission,
+    retry_of: Option<&AcpFailedPromptAttempt>,
 ) -> Result<AcpTurnExecutionClaim> {
-    let admission = begin_session_turn(path, submission)?;
+    let admission = admit_session_turn(path, submission, retry_of)?;
     let header = admission.header();
     match admission {
         AcpTurnAdmission::ExistingTerminal(header) => {
@@ -3015,6 +3151,17 @@ pub fn begin_session_turn(
     path: &Utf8Path,
     submission: &AcpPromptSubmission,
 ) -> Result<AcpTurnAdmission> {
+    admit_session_turn(path, submission, None)
+}
+
+/// A reopened turn takes the ordinary admission transition: the same logical
+/// turn gets a new operation owner and a fresh revision, so every late write
+/// from the replaced attempt fails its owner CAS.
+fn admit_session_turn(
+    path: &Utf8Path,
+    submission: &AcpPromptSubmission,
+    retry_of: Option<&AcpFailedPromptAttempt>,
+) -> Result<AcpTurnAdmission> {
     let _guard = session_metadata_lock(path).lock().unwrap();
     let mut value = admission_metadata_base(path)?.unwrap_or_else(|| {
         serde_json::json!({
@@ -3029,8 +3176,10 @@ pub fn begin_session_turn(
             "updatedAt": submission.admitted_at,
         })
     });
-    if let Some(existing) = classify_existing_turn(&value, submission)? {
-        return Ok(existing);
+    if let ExistingTurnClassification::Existing(admission) =
+        classify_existing_turn(&value, submission, retry_of)?
+    {
+        return Ok(admission);
     }
     let current = lifecycle_header_from_value(&value);
     if current.live_turn_activity != AcpLiveTurnActivity::Idle {
@@ -3155,6 +3304,12 @@ fn persist_session_turn_terminal_with_error_owned(
     {
         return Ok(None);
     }
+    let settled_error = error.map(|error| {
+        let mut error = error.clone();
+        settle_failure_recovery(&value, turn_id, &mut error);
+        error
+    });
+    let error = settled_error.as_ref();
     if lifecycle_is_terminal(&current) {
         if should_upgrade_failed_turn_error(&current, latest_turn_status, error) {
             let mut terminal = current;
@@ -4094,10 +4249,10 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
-        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent, ScheduledTriggerPayload,
-        agent_transcript_tool_output, annotate_runtime_control_output, append_raw_frame,
-        append_structured_diagnostic, append_timeline_patch, begin_session_turn,
+        AcpLatestTurnStatus, AcpLifecycleHeader, AcpLiveTurnActivity, AcpPromptSubmission,
+        AcpSessionAvailability, AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
+        ScheduledTriggerPayload, agent_transcript_tool_output, annotate_runtime_control_output,
+        append_raw_frame, append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
@@ -4108,7 +4263,7 @@ mod tests {
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
-    use camino::Utf8PathBuf;
+    use camino::{Utf8Path, Utf8PathBuf};
     use serde_json::{Value, json};
 
     fn scheduled_trigger_payload(
@@ -7800,5 +7955,354 @@ mod tests {
         .unwrap();
         let roll = second.roll.expect("raw log rewrite stats");
         assert!(roll.before_bytes > roll.after_bytes);
+    }
+
+    fn started_owner(header: &AcpLifecycleHeader) -> super::AcpLifecycleOwner {
+        super::AcpLifecycleOwner {
+            turn_id: header.turn_id.clone().unwrap(),
+            operation_id: header.operation_id.clone().unwrap(),
+            revision: header.revision,
+        }
+    }
+
+    fn admit_started(path: &Utf8Path, submission: &AcpPromptSubmission) -> AcpLifecycleHeader {
+        let AcpTurnAdmission::Started(started) = begin_session_turn(path, submission).unwrap()
+        else {
+            panic!("fixture admission must start the turn");
+        };
+        started
+    }
+
+    fn settle_failure(
+        path: &Utf8Path,
+        owner: &super::AcpLifecycleOwner,
+        recovery: crate::runtime_error::RecoveryMode,
+    ) -> AcpLifecycleHeader {
+        let error = crate::runtime_error::RuntimeErrorInfo::new(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            recovery,
+            "ACP `initialize` timed out after 60 seconds",
+            serde_json::json!({"method": "initialize"}),
+            None,
+        );
+        super::persist_session_turn_failure_owned(path, owner, &error, "2026-09-23T00:00:01Z")
+            .unwrap()
+            .expect("fixture failure must settle the attempt")
+    }
+
+    /// Mirrors the `running` snapshot the runtime writes right before it
+    /// sends `session/prompt`.
+    fn record_prompt_dispatch(path: &Utf8Path, turn_id: &str) {
+        super::patch_session_metadata(path, |value| {
+            value["promptRetry"] = serde_json::json!({
+                "promptId": turn_id,
+                "retryAttempt": 0,
+                "promptEventId": format!("{turn_id}-event"),
+            });
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Settles one attempt through the shared terminal guard, the way
+    /// `client::run_prompt` does, and returns the error it hands upward.
+    fn settle_through_guard(
+        path: &Utf8Path,
+        owner: &super::AcpLifecycleOwner,
+        error: crate::runtime_error::RuntimeErrorInfo,
+    ) -> anyhow::Error {
+        super::AcpLifecycleTerminalGuard::new(path.to_path_buf(), owner.clone())
+            .execute(|| -> anyhow::Result<()> { Err(crate::runtime_error::runtime_error(error)) })
+            .unwrap_err()
+    }
+
+    fn auto_transport_error(method: &str) -> crate::runtime_error::RuntimeErrorInfo {
+        crate::runtime_error::auto_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            format!("ACP `{method}` timed out after 60 seconds"),
+            serde_json::json!({"method": method}),
+        )
+    }
+
+    #[test]
+    fn failure_after_prompt_dispatch_settles_as_manual_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let owner = started_owner(&admit_started(
+            &path,
+            &prompt_submission("turn-dispatched-failure", "operation-1"),
+        ));
+        record_prompt_dispatch(&path, "turn-dispatched-failure");
+
+        let returned = settle_through_guard(&path, &owner, auto_transport_error("session/prompt"));
+
+        let persisted = super::read_lifecycle_header(&path).unwrap().unwrap();
+        let settled = persisted
+            .turn_error
+            .expect("failure must persist its error");
+        assert_eq!(settled.code_str(), "runtime.transport-interrupted");
+        assert_eq!(settled.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(settled.retry_policy.is_none());
+        // The scheduler decides from the returned error; it must agree with
+        // the settled lifecycle so no doomed automatic retry is issued.
+        let decided = crate::runtime_error::normalize_runtime_error(&returned);
+        assert_eq!(decided.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(decided.retry_policy.is_none());
+    }
+
+    #[test]
+    fn startup_failure_settles_as_auto_recovery_and_reopens() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let first = prompt_submission("turn-startup-failure", "operation-1");
+        let owner = started_owner(&admit_started(&path, &first));
+
+        let returned = settle_through_guard(&path, &owner, auto_transport_error("initialize"));
+
+        let persisted = super::read_lifecycle_header(&path).unwrap().unwrap();
+        assert_eq!(
+            persisted.turn_error.map(|error| error.recovery),
+            Some(crate::runtime_error::RecoveryMode::Auto)
+        );
+        let decided = crate::runtime_error::normalize_runtime_error(&returned);
+        assert_eq!(decided.recovery, crate::runtime_error::RecoveryMode::Auto);
+        let retry = prompt_submission("turn-startup-failure", "operation-2");
+        assert!(matches!(
+            super::admit_session_turn_for_execution(
+                &path,
+                &retry,
+                Some(&super::AcpFailedPromptAttempt::of_owner(&owner)),
+            )
+            .unwrap(),
+            super::AcpTurnExecutionClaim::Claimed(_)
+        ));
+    }
+
+    #[test]
+    fn automatic_retry_reopens_the_named_startup_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let first = prompt_submission("turn-auto-retry", "operation-1");
+        let owner = started_owner(&admit_started(&path, &first));
+        let failed = settle_failure(&path, &owner, crate::runtime_error::RecoveryMode::Auto);
+        assert_eq!(failed.latest_turn_status, AcpLatestTurnStatus::Failed);
+
+        let retry_of = super::AcpFailedPromptAttempt::of_owner(&owner);
+        let retry = prompt_submission("turn-auto-retry", "operation-2");
+        let super::AcpTurnExecutionClaim::Claimed(claimed) =
+            super::admit_session_turn_for_execution(&path, &retry, Some(&retry_of)).unwrap()
+        else {
+            panic!("a startup failure named by its retry must be reopened");
+        };
+        assert_eq!(claimed.turn_id, "turn-auto-retry");
+        assert_eq!(claimed.operation_id, "operation-2");
+        assert_eq!(claimed.revision, failed.revision + 2);
+        let current = super::read_lifecycle_header(&path).unwrap().unwrap();
+        assert_eq!(current.live_turn_activity, AcpLiveTurnActivity::Accepted);
+        assert_eq!(current.latest_turn_status, AcpLatestTurnStatus::None);
+        assert!(current.turn_error.is_none());
+        assert!(super::session_turn_is_active(
+            &path,
+            Some("turn-auto-retry")
+        ));
+    }
+
+    #[test]
+    fn automatic_retry_does_not_reopen_after_the_prompt_was_dispatched() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let first = prompt_submission("turn-dispatched", "operation-1");
+        let owner = started_owner(&admit_started(&path, &first));
+        record_prompt_dispatch(&path, "turn-dispatched");
+        let failed = settle_failure(&path, &owner, crate::runtime_error::RecoveryMode::Auto);
+
+        let retry_of = super::AcpFailedPromptAttempt::of_owner(&owner);
+        let retry = prompt_submission("turn-dispatched", "operation-2");
+        let claim =
+            super::admit_session_turn_for_execution(&path, &retry, Some(&retry_of)).unwrap();
+        assert!(
+            matches!(claim, super::AcpTurnExecutionClaim::AlreadySettled(_)),
+            "a dispatched business prompt must never be replayed automatically: {claim:?}"
+        );
+        assert_eq!(
+            super::read_lifecycle_header(&path).unwrap().unwrap(),
+            failed
+        );
+    }
+
+    #[test]
+    fn automatic_retry_naming_a_stale_attempt_does_not_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let first = prompt_submission("turn-stale", "operation-1");
+        let owner = started_owner(&admit_started(&path, &first));
+        let failed = settle_failure(&path, &owner, crate::runtime_error::RecoveryMode::Auto);
+
+        let stale = super::AcpFailedPromptAttempt {
+            turn_id: "turn-stale".to_string(),
+            operation_id: "operation-replaced".to_string(),
+        };
+        let retry = prompt_submission("turn-stale", "operation-2");
+        assert!(matches!(
+            super::admit_session_turn_for_execution(&path, &retry, Some(&stale)).unwrap(),
+            super::AcpTurnExecutionClaim::AlreadySettled(_)
+        ));
+        assert_eq!(
+            super::read_lifecycle_header(&path).unwrap().unwrap(),
+            failed
+        );
+
+        // The named attempt is consumed by its first reopen; handing the same
+        // identity back after the replacement failed is stale as well.
+        let retry_of = super::AcpFailedPromptAttempt::of_owner(&owner);
+        let super::AcpTurnExecutionClaim::Claimed(second) =
+            super::admit_session_turn_for_execution(&path, &retry, Some(&retry_of)).unwrap()
+        else {
+            panic!("the exact failed attempt must reopen once");
+        };
+        settle_failure(&path, &second, crate::runtime_error::RecoveryMode::Auto);
+        let third = prompt_submission("turn-stale", "operation-3");
+        assert!(matches!(
+            super::admit_session_turn_for_execution(&path, &third, Some(&retry_of)).unwrap(),
+            super::AcpTurnExecutionClaim::AlreadySettled(_)
+        ));
+    }
+
+    #[test]
+    fn automatic_retry_rejects_non_recoverable_or_unnamed_terminal_turns() {
+        let cases = [
+            (crate::runtime_error::RecoveryMode::Manual, true),
+            (crate::runtime_error::RecoveryMode::Blocked, true),
+            (crate::runtime_error::RecoveryMode::Auto, false),
+        ];
+        for (recovery, names_attempt) in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+            let owner = started_owner(&admit_started(
+                &path,
+                &prompt_submission("turn-reject", "operation-1"),
+            ));
+            settle_failure(&path, &owner, recovery);
+            let retry_of = super::AcpFailedPromptAttempt::of_owner(&owner);
+            let retry = prompt_submission("turn-reject", "operation-2");
+            assert!(matches!(
+                super::admit_session_turn_for_execution(
+                    &path,
+                    &retry,
+                    names_attempt.then_some(&retry_of)
+                )
+                .unwrap(),
+                super::AcpTurnExecutionClaim::AlreadySettled(_)
+            ));
+        }
+
+        for status in [
+            AcpLatestTurnStatus::Completed,
+            AcpLatestTurnStatus::Cancelled,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+            let started = admit_started(&path, &prompt_submission("turn-terminal", "operation-1"));
+            super::persist_session_turn_terminal_owned(
+                &path,
+                "turn-terminal",
+                Some("operation-1"),
+                started.revision,
+                status,
+                "terminal",
+                "2026-09-23T00:00:01Z",
+            )
+            .unwrap()
+            .unwrap();
+            let retry_of = super::AcpFailedPromptAttempt::of_owner(&started_owner(&started));
+            let retry = prompt_submission("turn-terminal", "operation-2");
+            assert!(matches!(
+                super::admit_session_turn_for_execution(&path, &retry, Some(&retry_of)).unwrap(),
+                super::AcpTurnExecutionClaim::AlreadySettled(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn automatic_retry_reopens_from_a_legacy_session_only_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let legacy = snapshot.with_file_name("acp.session.json");
+        let error = crate::runtime_error::auto_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            "ACP `initialize` timed out after 60 seconds",
+            serde_json::json!({}),
+        );
+        write_json(
+            &legacy,
+            &serde_json::json!({
+                "adapterId": "codex-acp",
+                "cwd": "C:/tmp/attempt",
+                "acpRevision": 3,
+                "turnId": "turn-legacy",
+                "lifecycleOperationId": "operation-1",
+                "availability": "unavailable",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "failed",
+                "stopReason": "runtime-error",
+                "turnError": error,
+                "promptSubmission": prompt_submission("turn-legacy", "operation-1"),
+            }),
+        )
+        .unwrap();
+        let retry_of = super::AcpFailedPromptAttempt {
+            turn_id: "turn-legacy".to_string(),
+            operation_id: "operation-1".to_string(),
+        };
+        let retry = prompt_submission("turn-legacy", "operation-2");
+        let super::AcpTurnExecutionClaim::Claimed(owner) =
+            super::admit_session_turn_for_execution(&snapshot, &retry, Some(&retry_of)).unwrap()
+        else {
+            panic!("legacy lifecycle must reopen through the admission base");
+        };
+        assert_eq!(owner.operation_id, "operation-2");
+        assert_eq!(owner.revision, 5);
+    }
+
+    #[test]
+    fn late_settlement_from_replaced_operation_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let owner = started_owner(&admit_started(
+            &path,
+            &prompt_submission("turn-late", "operation-1"),
+        ));
+        settle_failure(&path, &owner, crate::runtime_error::RecoveryMode::Auto);
+        let retry_of = super::AcpFailedPromptAttempt::of_owner(&owner);
+        let retry = prompt_submission("turn-late", "operation-2");
+        let super::AcpTurnExecutionClaim::Claimed(replacement) =
+            super::admit_session_turn_for_execution(&path, &retry, Some(&retry_of)).unwrap()
+        else {
+            panic!("automatic retry must claim the reopened turn");
+        };
+        let error = crate::runtime_error::auto_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+            "runtime.transport-interrupted",
+            "late",
+            serde_json::json!({}),
+        );
+        let late = super::persist_session_turn_failure_owned(
+            &path,
+            &owner,
+            &error,
+            "2026-09-23T00:00:02Z",
+        )
+        .unwrap();
+        assert!(late.is_none());
+        let current = super::read_lifecycle_header(&path).unwrap().unwrap();
+        assert_eq!(
+            current.operation_id.as_deref(),
+            Some(replacement.operation_id.as_str())
+        );
+        assert_eq!(current.latest_turn_status, AcpLatestTurnStatus::None);
+        assert!(current.turn_error.is_none());
     }
 }

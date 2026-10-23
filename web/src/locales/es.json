@@ -2346,7 +2346,7 @@
     "stopFailed": "Error al detener",
     "stopHint": "Detener la sesión ACP actual",
     "noEvents": "No hay eventos ACP",
-    "launchingClaude": "Iniciando Agent",
+    "preparingAgent": "Preparando Agent",
     "processing": "Procesando",
     "thinkingNow": "Razonando",
     "toolRunning": "Ejecutando herramienta",

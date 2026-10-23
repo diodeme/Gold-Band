@@ -2376,3 +2376,141 @@ fn error_blocked_run_is_not_continuable() {
 
     assert!(!is_run_continuable(&run));
 }
+
+/// Fails every provider call. The first failure names its attempt, the second
+/// is auto-recoverable but anonymous, the third is manual and ends the run.
+#[derive(Clone, Default)]
+struct AutoRetryIntentProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+}
+
+fn auto_retry_intent_attempt() -> gold_band::acp::events::AcpFailedPromptAttempt {
+    gold_band::acp::events::AcpFailedPromptAttempt {
+        turn_id: "turn-from-provider".to_string(),
+        operation_id: "prompt:first-attempt".to_string(),
+    }
+}
+
+fn fast_auto_runtime_error() -> gold_band::runtime_error::RuntimeErrorInfo {
+    let mut info = gold_band::runtime_error::auto_runtime_error_info(
+        gold_band::runtime_error::RuntimeErrorDomain::RuntimeTransport,
+        "runtime.transport-interrupted",
+        "ACP `initialize` timed out after 60 seconds",
+        serde_json::json!({}),
+    );
+    info.retry_policy = Some(gold_band::runtime_error::RetryPolicy {
+        max_attempts: 3,
+        backoff_ms: vec![1],
+        jitter: false,
+    });
+    info
+}
+
+impl ProviderAdapter for AutoRetryIntentProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        RecordingProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        RecordingProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let call = {
+            let mut invocations = self.invocations.lock().unwrap();
+            invocations.push(req);
+            invocations.len()
+        };
+        match call {
+            1 => Err(
+                gold_band::runtime_error::runtime_error(fast_auto_runtime_error())
+                    .context(auto_retry_intent_attempt()),
+            ),
+            2 => Err(gold_band::runtime_error::runtime_error(
+                fast_auto_runtime_error(),
+            )),
+            _ => Err(gold_band::runtime_error::runtime_error(
+                gold_band::runtime_error::manual_runtime_error_info(
+                    gold_band::runtime_error::RuntimeErrorDomain::Provider,
+                    "provider.execution-error",
+                    "stop retrying",
+                    serde_json::json!({}),
+                ),
+            )),
+        }
+    }
+
+    fn open_session(&self, _worker_ref: &SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(&self, _worker_ref: &SessionRef) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn automatic_retry_names_only_the_failed_attempt_it_replaces() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-auto-retry-intent";
+    let provider = AutoRetryIntentProvider::default();
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Retry only the failed startup attempt",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "auto-retry-intent-flow",
+          "entry": "accept",
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        format!(r#"{{"version":"0.1","id":"{task_id}"}}"#),
+    )
+    .unwrap();
+
+    let paused = app.run_start(task_id, None).unwrap();
+
+    assert_eq!(paused.status, RunStatus::Paused);
+    let invocations = provider.invocations.lock().unwrap();
+    let retry_intents: Vec<_> = invocations
+        .iter()
+        .map(|invocation| invocation.automatic_retry_of.clone())
+        .collect();
+    assert_eq!(
+        retry_intents,
+        vec![None, Some(auto_retry_intent_attempt()), None],
+        "each retry must name exactly the attempt that just failed"
+    );
+    let logical_turns: std::collections::BTreeSet<_> = invocations
+        .iter()
+        .map(|invocation| invocation.resume_prompt_id.clone())
+        .collect();
+    assert_eq!(logical_turns.len(), 1, "retries keep one logical turn");
+}

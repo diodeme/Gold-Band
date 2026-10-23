@@ -2346,7 +2346,7 @@
     "stopFailed": "停止に失敗しました",
     "stopHint": "現在の ACP セッションを停止します",
     "noEvents": "ACP イベントはありません",
-    "launchingClaude": "Agent を起動中",
+    "preparingAgent": "Agent を準備中",
     "processing": "処理中",
     "thinkingNow": "思考中",
     "toolRunning": "ツールを実行中",

@@ -2638,23 +2638,12 @@ impl GitSourceControlService {
             None
         };
         for ((before_oid, after_oid), indexes) in endpoint_groups {
-            let mut paths = Vec::new();
-            for index in &indexes {
-                let file = &files[*index];
-                if let Some(before_path) = file.before_path.as_ref()
-                    && !paths.contains(before_path)
-                {
-                    paths.push(before_path.clone());
-                }
-                if !paths.contains(&file.path) {
-                    paths.push(file.path.clone());
-                }
-            }
+            // Paths are filtered in-process: passing them as pathspecs overflows the OS
+            // command-line limit for large reviews, and `git diff` has no `--pathspec-from-file`.
             let stats = self.commit_numstat(
                 cwd,
                 before_oid.as_deref().or(empty_tree.as_deref()),
                 &after_oid,
-                &paths,
             )?;
             for index in indexes {
                 let file = &mut files[index];
@@ -2674,7 +2663,6 @@ impl GitSourceControlService {
         cwd: &Utf8Path,
         before_oid: Option<&str>,
         after_oid: &str,
-        paths: &[String],
     ) -> Result<HashMap<String, CommitFileStats>> {
         let empty_tree_oid;
         let before_oid = if let Some(before_oid) = before_oid {
@@ -2691,22 +2679,11 @@ impl GitSourceControlService {
                 .stdout_text();
             empty_tree_oid.as_str()
         };
-        let mut args = vec![
-            "--literal-pathspecs".to_string(),
-            "diff".to_string(),
-            "--numstat".to_string(),
-            "-z".to_string(),
-            "-M".to_string(),
-            "-C".to_string(),
-            before_oid.to_string(),
-            after_oid.to_string(),
-            "--".to_string(),
-        ];
-        args.extend(paths.iter().cloned());
-        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        let output = self
-            .runner
-            .require(cwd, &args, "git.commit-diff-query-failed")?;
+        let output = self.runner.require(
+            cwd,
+            &["diff", "--numstat", "-z", "-M", "-C", before_oid, after_oid],
+            "git.commit-diff-query-failed",
+        )?;
         parse_commit_numstat(&output.stdout)
     }
 
@@ -2853,7 +2830,7 @@ impl GitSourceControlService {
         after_oid: &str,
     ) -> Result<Vec<GitCommitFileChange>> {
         let mut files = self.commit_name_status(cwd, before_oid, after_oid)?;
-        let stats = self.commit_numstat(cwd, before_oid, after_oid, &[])?;
+        let stats = self.commit_numstat(cwd, before_oid, after_oid)?;
         for file in &mut files {
             let Some(file_stats) = stats.get(&file.path) else {
                 continue;
@@ -6579,6 +6556,55 @@ mod tests {
                 .iter()
                 .all(|file| file.binary.is_none() && file.added_lines.is_none())
         );
+    }
+
+    #[test]
+    fn commit_review_statistics_supports_path_lists_beyond_command_line_limit() {
+        let (_temp, root) = initialized_repository();
+        let directory = format!("{}/{}", "a".repeat(48), "b".repeat(48));
+        std::fs::create_dir_all(root.join(&directory)).unwrap();
+        let file_count = 360;
+        for index in 0..file_count {
+            std::fs::write(
+                root.join(format!("{directory}/file-{index:04}.txt")),
+                "one\n",
+            )
+            .unwrap();
+        }
+        let runner = GitCommandRunner;
+        assert!(runner.run(&root, &["add", "-A"]).unwrap().success);
+        assert!(
+            runner
+                .run(&root, &["commit", "-m", "bulk"])
+                .unwrap()
+                .success
+        );
+        let oid = runner.run(&root, &["rev-parse", "HEAD"]).unwrap().stdout;
+        let service = GitSourceControlService::default();
+        let review = service
+            .commit_review(
+                &root,
+                &GitCommitReviewQuery {
+                    selected_oids: vec![oid],
+                    revision: None,
+                },
+            )
+            .unwrap();
+        // Windows CreateProcess rejects command lines longer than 32,767 characters.
+        assert!(
+            review
+                .files
+                .iter()
+                .map(|file| file.path.len())
+                .sum::<usize>()
+                > 32_767
+        );
+
+        let review = service.commit_review_statistics(&root, review).unwrap();
+        assert_eq!(review.files.len(), file_count);
+        assert!(review.files.iter().all(|file| file.binary == Some(false)
+            && file.added_lines == Some(1)
+            && file.deleted_lines == Some(0)));
     }
 
     #[test]

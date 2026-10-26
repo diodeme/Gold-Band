@@ -1,12 +1,11 @@
-# Direct 会话未物化恢复与失败投影完整修复方案
+# Direct 会话未物化恢复与失败投影修复方案
 
-- 状态：设计修订完成，待实施、待红绿测试与客户端验收
-- 日期：2026-10-22
+- 状态：核心设计评审通过，按三阶段交付；第一阶段“失败投影与空历史加载”已完成，第二、三阶段未开始
+- 日期：2026-10-26
 - 适用版本：0.20.0 后续修复版本，实际发布版本在验收后确定
-- 方案定位：修复会话建立事实、发送内容、并发与持久化、失败展示四个边界；以完整正确性为目标，不再受“只修改四个文件、不能增加持久字段”的限制。
-- 本次交付范围：只更新本方案文档，不代表实现已经完成。
+- 方案定位：修复普通 Direct Attempt 在 Provider session 未物化时的恢复、创建副作用防重、身份提交、失败投影和前端加载边界；不采用针对单一现场的补丁式判断。
+- 本次交付范围：第一阶段代码、接口/DOM 测试、生产构建、浏览器回归与相关文档同步；create fence、identity、`session/new`、Prompt、snapshot schemaVersion 和恢复按钮仍属于后续阶段。
 - 关联文档：
-  - `docs/gold-band/开发计划/生命周期整理/Direct会话未物化恢复与失败投影修复方案-影响评估.md`
   - `docs/gold-band/产品设计文档/interaction/app/conversational-runtime.md`
   - `docs/gold-band/产品设计文档/runtime/control.md`
   - `docs/gold-band/开发计划/acp接入/acp-ui.md`
@@ -15,25 +14,25 @@
 
 ## 1. 结论与设计取舍
 
-本方案保留 Direct 初始化期间的停止能力，完整支持可证明未开始创建 Provider session 的当前普通 Attempt 在下一次用户发送时原地恢复；同时修复结构化错误丢失与无效加载。
+本问题不是单一空值判断错误，而是三项边界同时缺失：
 
-采用以下设计：
+1. Attempt 存在被错误等价为 Provider session 已存在，命令层提前决定 Continue。
+2. 本地缺少“该 Attempt 是否已经授权过 `session/new`”的 durable 事实，无法区分从未创建与创建结果不确定。
+3. 后端把“没有已物化会话”错误解释为“没有可返回详情”，导致 durable `turnError` 无法进入 UI，前端再以消息内容是否出现判断加载完成。
 
-1. 在现有 ACP snapshot 内增加一项有类型的“首次 session/new 请求授权事实”，与现有 lifecycle、session identity 由 ACP 领域统一管理。
-2. 会话目标由 ACP 领域解析；桌面命令层只提交调用意图和已校验的业务上下文，不解析 Raw JSONL、不推断 Provider 身份。
-3. 最终目标选择、请求授权与身份提交进入既有 attempt prompt 串行执行通道，复用现有 owner / revision CAS。
-4. 会话传输方式与 Prompt 内容语义分开。Direct 首次恢复明确组合原始需求上下文和本轮消息，实际发送正文、附件、引用和隐藏上下文都必须验收。
-5. 所有模式保留有效结构化失败详情；前端区分“详情已加载”和“会话已建立”，继续保留 Workflow/AUTO 初始化失败、中断页面。
-6. 已发出或可能发出 session/new、但没有可用 sessionId 的场景，不自动再次 New；历史缺少新事实的场景也不靠日志补造确定性，提供显式重新发起入口。
+新方案做以下修复：
 
-必须说明的能力边界：
+1. 在现有 `acp.snapshot.json` 中增加最小创建副作用栅栏 `ProviderSessionCreateFence`：只有 `Open` 可以为普通 Direct Attempt 授权一次 `session/new`；授权前原子转换为 `Sealed { operationId }`。缺失、损坏或未知格式统一解析为 `Unknown`，永不自动创建。
+2. Provider session attachment 的 canonical identity 是 `AdapterConnectionKey + connectionGeneration + ACP sessionId`；snapshot 保存跨进程可恢复的 durable reference，重启后必须重新 attach 才能取得新的 canonical attached identity。worker-ref 只是可重建投影，不再参与“会话是否存在”的双重裁决。
+3. 桌面命令层只提交 Direct Prompt intent，不再因 Attempt 已存在就构造 Continue。最终目标在 Attempt 的 Prompt 串行执行通道内解析为 `Continue`、`CreateDirectSession` 或 `Blocked`。
+4. Provider 传输目标与 Prompt 内容语义分离。普通 Direct 恢复创建使用 `DirectRecoveryBootstrap`，只组合冻结的原始 Direct 用户输入与本轮 durable `promptSubmission`，不注入 Runtime hidden/profile/system 内容；两次用户输入在 UI timeline 中各保留一个 canonical 事件。
+5. 扩展现有 snapshot metadata transaction，使 lifecycle、create fence、durable session reference、Runtime control 和 Provider metadata 通过同一文件锁、最新值重读、owner/revision 校验与原子写入维护；禁止调用方用旧内存对象整份覆盖新事实，不另建平行事务框架。
+6. `session/new` 前先完成可失败的本地准备与 initialize，最后复核 Stop / owner，再将栅栏从 `Open` 封闭并取得有类型 permit；调用创建成功后立即提交 durable reference，再写 worker-ref、timeline 和发送 `session/prompt`。
+7. 后端返回 Attempt 级 ACP 投影。只要 Attempt 的 snapshot 存在，即使 unavailable、没有 sessionId、timeline 为空，也返回 lifecycle 和结构化 `turnError`。
+8. 前端分别管理查询状态、会话物化状态、历史空或非空、Runtime lifecycle；成功查询到空 VM 即进入 `ready-empty`，删除约 32 秒的内容驱动轮询。
+9. `Sealed + no durable reference` 和 `Unknown + no durable reference` 不在旧 Attempt 上重置栅栏。桌面提供“重新发起会话”，显式创建新 Attempt，保留旧 Attempt 的证据与失败状态。
 
-- 本地不能仅凭没有 sessionId、没有 Raw 记录，证明远端从未建立过会话。
-- 未获 Provider 明确幂等或查询能力保证时，客户端无法同时承诺“创建响应丢失后自动恢复”和“远端恰好创建一次”。
-- 本方案保证：对于受保护的 Direct 首次创建，结果不确定后不自动重发 session/new；不会静默丢弃已知历史，也不会把未知状态当成未创建。
-- 历史现场可立即得到具体失败原因与可执行恢复入口，但不承诺所有旧记录都能无确认地原地恢复。
-
-这些边界是最终产品契约，不在实现时回退成“缺引用就 New”或“扫描日志没有找到就 New”。
+能力边界：ACP schema 1.6 的 `NewSessionRequest` 没有客户端可依赖的幂等键；`_meta` 也不保证 Provider 采用。因此客户端不能同时保证“创建响应丢失后自动恢复”和“远端只创建一次”。本方案选择不自动重复外部创建副作用，并把不确定状态明确投影给用户。
 
 ## 2. 背景、证据与根因
 
@@ -48,593 +47,767 @@
 1. 首次执行在 initialize 阶段停止，Run / Node 进入可继续暂停；本地没有有效 worker-ref、sessionId 和 timeline。
 2. 桌面 `existing_attempt_prompt_session_target` 将既有 Attempt 一律解释为 Continue。
 3. ACP 公共入口返回 `acp.session-restore-reference-missing`。
-4. durable turnError 已落盘，但后端将 unavailable、无 sessionId、无可展示 timeline 的快照提前返回 None。
+4. durable `turnError` 已落盘，但后端将 unavailable、无 sessionId、无可展示 timeline 的快照提前返回 `None`。
 5. 前端没有接受该失败详情，经过约 32 秒有界重试后显示通用缺会话原因。
 
-“现场 Raw 未见 session/new”只能解释现场现象，不能升级为对所有会话的完整性证明。
+“现场 Raw 未见 `session/new`”只能解释该次现场，不能证明所有同类记录都从未向 Provider 发出创建请求。当前写入顺序允许请求已经发送而 Raw 尚未记录，也允许 Provider 已创建但本地尚未持久化 identity。
 
 ### 2.2 已核实的代码证据
 
-以下行号是 2026-10-22 工作区定位参考，实施时按符号重新定位。
+以下行号是方案分析时的工作区定位参考，实施时必须按符号重新定位。
 
 | 证据 | 当前实现位置 | 含义 |
 |---|---|---|
 | 既有 Attempt 一律 Continue | `src-tauri/src/commands.rs:141` | Attempt 存在被错误等价为 Provider session 可恢复 |
-| 普通追问固定 Continue + UserMessage | `src/app/mod.rs:5783` | 只增加 SessionMode 参数不足以完成恢复 |
-| RawAgent New 读取 requirement，UserMessage 的 requirement 为空 | `src/provider/mod.rs:2380` | 直接 New + UserMessage 会丢失本轮实际发送正文 |
-| 准备接口清空首轮隐藏上下文 | `src/app/mod.rs:5828` | 恢复时不能沿用普通追问的上下文清理策略 |
-| prompt lock 在 run_prompt_inner 内获取 | `src/acp/client.rs:3094` | 锁外预判与复核不能形成原子授权 |
-| 先创建传输请求，后记录 outbound Raw | `src/acp/client.rs:5836` | 请求可能已经发送，但日志尚未记录 |
-| Raw 写入失败仍继续执行 | `src/acp/client.rs:1623` | 完整读到 Raw EOF 也不等于协议记录完整 |
-| worker-ref 在 session setup 成功后写入 | `src/acp/client.rs:3249` | 远端成功到本地引用持久化之间有故障窗口 |
-| unavailable 失败快照被提前丢弃 | `src-tauri/src/view_models.rs:4150` | 具体失败原因无法进入 UI |
-| 初始化 shell 使用 !baseSessionReady | `web/src/lib/acp-session-shell.ts:147` | 全局放宽 ready 会改变 Workflow/AUTO 页面 |
-| readiness 要求终态已有事件 | `web/src/components/acp/ACPChatDialog.tsx:12390` | 需要保留“历史尚未加载”的保护 |
-| 非 Completed Run 不允许 outcome | `src/runtime/mod.rs:431` | 现有校验已覆盖，不能误称完全缺少 Run.outcome 校验 |
+| 普通追问固定 Continue + UserMessage | `src/app/mod.rs:5783` | 只增加 SessionMode 分支无法完成正确恢复 |
+| 普通追问准备接口清空首轮输入区段 | `src/app/mod.rs:5828` | 恢复创建不能沿用普通追问的数据裁剪策略，但 Direct 仍不得重新引入 Runtime hidden context |
+| RawAgent New 读取 requirement，UserMessage 的 requirement 为空 | `src/provider/mod.rs:2380` | 直接改成 New + UserMessage 会丢失本轮实际正文 |
+| Prompt lock 在 `run_prompt_inner` 内获取 | `src/acp/client.rs:3095` | 锁外预判与锁内执行不能形成同一个创建授权边界 |
+| session setup 负责创建与恢复 | `src/acp/client.rs:4480` | 最终目标与创建 permit 应在该执行通道上游统一决定 |
+| `session/new` 后继续执行配置与记录 | `src/acp/client.rs:4674` | identity 提交过晚会扩大远端成功、本地未知的窗口 |
+| 先创建传输请求，后记录 outbound Raw | `src/acp/client.rs:5836` | Raw 缺失不能作为从未发送的否定性证据 |
+| unavailable 空会话被提前返回 `None` | `src-tauri/src/view_models.rs:4150` | durable 失败原因无法进入前端 |
+| 前端按内容缺失进行有界重试 | `web/src/components/acp/ACPChatDialog.tsx:4495` | 查询完成与有消息内容被错误绑定 |
+| ready 判定要求历史事件 | `web/src/components/acp/ACPChatDialog.tsx:12390` | 真实空历史和详情尚未加载无法区分 |
 
 ### 2.3 根因归类
 
-- **局部设计缺陷**：缺少可靠的“创建请求是否可能发出”事实；以 Attempt 存在决定 Continue；RawAgent 使用 SessionMode 隐式决定消息正文。
-- **实现不完整**：终态错误详情被丢弃，详情加载完成与会话已建立混用，派生 worker-ref 与身份事实的写入顺序不完整。
-- **分布式故障边界**：创建请求可能已成功但响应未可靠落盘。这不能用 UI 状态、固定延时或再次扫描诊断日志消除。
+**根本性设计缺陷：**
 
-## 3. 范围与用户可见行为
+- Attempt identity、Provider session identity 和 worker-ref 投影的职责没有分清，命令层以 Attempt 存在推断 Continue。
+- 缺少外部不可逆副作用的本地发送权事实，无法安全决定是否再次 `session/new`。
+- Provider 传输模式与 Prompt 内容语义耦合，导致恢复目标改变时冻结的原始 Direct 输入与当前消息不能按正确契约组合。
+- snapshot 存在多个整对象写入者，晚到写入可能清除 identity、错误或控制状态。
 
-### 3.1 行为矩阵
+**好设计上的实现不完整：**
 
-| 场景 | 后端行为 | 用户可见结果 |
+- 已有 Attempt Prompt 串行通道、owner / revision、原子文件写入和结构化 `turnError`，但最终目标解析、创建授权和 identity 提交没有统一放入这些机制。
+- 后端已经持久化失败事实，但查询投影和前端 readiness 没有消费。
+
+**不能在本地消除的分布式边界：**
+
+- 请求可能已到达 Provider，而响应未到达或未持久化。本地不能通过文件缺失、日志缺失、固定延时或重新 initialize 证明远端没有创建。
+
+因此必须修复身份、状态与副作用边界，不能用“缺 worker-ref 就 New”“Raw 中没有 `session/new` 就 New”或延长前端轮询解决。
+
+## 3. 目标、范围与用户行为
+
+### 3.1 目标
+
+1. 可证明栅栏仍为 `Open` 的普通 Direct Attempt，可以在下一次用户发送时原地完成首次 Provider session 创建。
+2. 已经或可能授权过创建、但没有 durable reference 的 Attempt，绝不自动重复 `session/new`。
+3. 已有合法 durable reference 的 Attempt 始终 Continue；派生 worker-ref 缺失时可以在写路径重建，并在当前连接代重新 attach。
+4. 所有失败 Attempt 都能立即显示结构化原因，不依赖 timeline 中先出现消息。
+5. Stop、并发发送、迟到响应、重启和写入失败下，创建次数、identity 与 lifecycle 保持单调一致。
+6. Direct 修复不放宽 Dynamic、Workflow、AUTO 等模式的严格恢复规则。
+
+### 3.2 用户可见行为
+
+| 场景 | 后端决策 | 用户结果 |
 |---|---|---|
-| 新格式 Direct 在 initialize 前或期间停止，创建授权尚未提交 | 下一次发送可在原 Attempt 创建 session | 保留停止能力，发送后正常进入新轮次 |
-| snapshot 或 worker-ref 提供一致、有效的既有身份 | Continue；必要时在写路径修复派生引用 | 继续原会话，不重复创建 |
-| session/new 已获授权，结果未知且无身份 | 结构化失败，禁止自动 New | 显示具体原因，提供“重新发起会话” |
-| 历史记录缺少新事实且无身份 | Unknown，禁止自动 New | 显示已知错误；通过显式入口重新发起 |
-| 已知身份冲突、配置归属冲突或记录损坏 | 结构化失败，保留原记录 | 显示对应错误，不静默选择某份身份 |
-| Direct 无 session、有效 turnError、真实空历史 | 返回失败详情，首个有效响应后结束加载 | 可见具体错误与允许的恢复操作 |
-| Workflow/AUTO 无 session、无历史的初始化失败或中断 | 返回可消费详情，保留初始化 shell 语义 | 显示失败或中断页面，隐藏普通聊天 composer |
-| 有历史但本页未加载 | 正常分页获取首批事件 | 不把“没加载”显示成空聊天 |
-| Dynamic / Workflow / AUTO 缺恢复引用 | 保持严格恢复 | 不因本次 Direct 修复自动 New |
+| 普通 Direct 首次执行在创建前停止，fence 为 Open | 下一次发送可解析为 `CreateDirectSession` | 原 Attempt 原地恢复并进入对话 |
+| snapshot 与 canonical 配置能构造合法 durable reference，worker-ref 缺失 | 修复投影并重新 attach 后 Continue | 原会话继续，不重复创建 |
+| fence 为 Sealed、无 durable reference | Blocked，禁止再次 New | 展示创建结果不确定，提供“重新发起会话” |
+| fence 为 Unknown、无 durable reference | Blocked，禁止推断式 New | 展示旧数据或状态无法确认，提供“重新发起会话” |
+| identity 冲突或 snapshot 损坏 | Blocked，保留现场 | 展示具体结构化错误 |
+| unavailable、timeline 为空、存在 turnError | 返回 Attempt VM | 首次查询即显示失败，不再等待约 32 秒 |
+| Direct 健康空会话 | 返回 ready-empty | 显示正常空态或 composer，不伪造消息 |
+| Workflow/AUTO 初始化失败或中断 | 保留各自 shell 语义 | 不因 Direct 修复显示普通聊天 composer |
+| Dynamic 或严格 Runtime 缺恢复引用 | 保持严格失败 | 不自动创建 Direct session |
 
-### 3.2 不扩大到的事项
+### 3.3 不扩大到的事项
 
-不引入新的会话 aggregate、业务 identity、通用重试平台、消息队列、缓存或 Provider 专用名称判断；不修改 Workflow/AUTO 的业务调度状态机，不给 Dynamic inner Attempt 开放 Direct 自动重建权限。
+- 不新增会话 aggregate、第二套 lifecycle、独立创建状态文件、通用重试平台、消息队列或后台扫描服务。
+- 不根据 Provider 名称或诊断字符串实现特例。
+- 不修改 Workflow/AUTO 的业务调度状态机，不给 Dynamic inner Attempt 开放普通 Direct 的首次创建资格。
+- 不为历史数据进行全量迁移，也不扫描全部 Raw、timeline 或 usage 补造事实。
+- 第一阶段只修改失败投影与空历史加载；Provider 创建副作用和恢复语义留到第二阶段，并在各阶段实现验证后同步对应产品设计文档和关联开发计划。
 
-共享 ACP 的持久化与错误投影需要同步完善，但 Direct 的首次创建限制不能直接套用到其他模式已经明确授权的 New / 自动重试策略。
+### 3.4 三阶段交付边界
+
+为降低跨 ACP、Runtime、Tauri 和 React 的一次性交付风险，本方案按以下阶段实施；阶段边界不改变最终正确性目标：
+
+1. **第一阶段：失败投影与空历史加载。** 后端在 snapshot 已存在且包含可查询 lifecycle / 合法 `turnError` 时，即使 unavailable、无 sessionId、timeline 为空也返回 Attempt VM；前端把非 active 的真实空历史视为 `ready-empty`，删除内容驱动重试，同时保留 `eventPage.total > 0` 的分页加载。此阶段不修改 Provider 副作用路径。
+2. **第二阶段：Direct 安全恢复闭环。** 实现 create fence、串行通道内目标解析、durable submission、DirectRecoveryBootstrap、迟到 durable reference 提交和显式新 Attempt 恢复。
+3. **第三阶段：snapshot / identity 基础设施治理。** 在第二阶段确有需要的边界上完成 schemaVersion、全量 writer 收口和类型传播；不得为了本次 Bug 一次性重写无关存储路径。
+
+第一阶段明确不包含 create fence、snapshot schemaVersion、identity 模型调整、`session/new`、Prompt 内容、“重新发起会话”按钮或 snapshot writer 重构。第一阶段验收通过后再进入第二阶段，不能把第二阶段的部分副作用逻辑提前混入。
 
 ## 4. 数据归属与权威事实
 
-### 4.1 现有事实继续负责原有职责
-
 | 数据 | 所属领域与职责 |
 |---|---|
-| Task authoring / Run snapshot / requirement / inputs | 原始需求、Agent 配置和输入来源；恢复不得读取别的 Task 或漂移到最新模板 |
-| Run / Round / Node | canonical current locator、Runtime 状态、控制权与继续资格 |
-| ACP snapshot | ACP lifecycle、Provider session identity、创建请求授权事实与 turnError |
-| worker-ref | 面向 Provider 的可恢复引用投影；不能成为独立生命周期 |
-| timeline / prompt usage | 用户消息、Agent 输出和统计事实；不反推远端不存在 |
-| Raw / diagnostics | 审计与定位；不作为自动 New 的否定性证据 |
-| Prompt Queue | 待发送输入与顺序；不保存另一套会话目标判断 |
+| Task definition、Run snapshot、requirement、inputs | 冻结的原始需求、Agent 配置和输入来源 |
+| Run / Round / Node / Attempt | canonical locator、Runtime lifecycle、控制权和继续资格 |
+| `acp.snapshot.json` | ACP lifecycle、create fence、跨进程 durable session reference、turnError、Provider metadata |
+| durable Provider session reference | 由 snapshot 中的 sessionId、adapter/workspace 绑定与 canonical Run 配置共同校验得到；用于重启后恢复 attach |
+| attached Provider session identity | `AdapterConnectionKey + connectionGeneration + ACP sessionId`，只在当前进程连接代内作为 canonical attachment identity |
+| worker-ref | 从 durable reference 与冻结配置生成的可恢复投影 |
+| timeline / prompt usage | 用户和 Agent 的可见历史、统计与去重事实 |
+| Raw / diagnostics | 审计和故障定位，不参与“从未创建”的证明 |
+| Prompt Queue | 待发送输入和顺序，不保存另一套目标或 identity |
 
-### 4.2 新增的最小 durable 事实
+关键不变量：
 
-在现有 `acp.snapshot.json` 增加可选、有类型的 `providerSessionCreation`：
+1. Attempt 存在不代表 Provider session 存在。
+2. durable Provider session reference 存在且校验通过时，目标只能是 Continue；执行前必须在当前连接代完成 attach，得到 canonical attached identity。
+3. 无法构造 durable reference 时，只有 fence 明确为 Open、没有矛盾的 Provider 正向事实且普通 Direct 资格成立，才允许创建。
+4. worker-ref 不得反向覆盖或否定 snapshot 中的 durable reference；旧 attached identity 也不得跨 connection generation 复用。
+5. lifecycle、create fence、session identity 分别表达不同事实；不得互相推断或复制成第二套状态机。
+6. timeline、Raw 或 diagnostics 的缺失只能表示本地没有相应记录，不能证明外部副作用未发生。
+
+## 5. Snapshot 事务与写入收口
+
+### 5.1 创建副作用栅栏
+
+在现有 snapshot 中增加有类型字段 `providerSessionCreateFence`。持久化类型与读取后的领域视图必须分开，避免未知字段导致整个 snapshot 无法读取：
 
 ```rust
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
-enum AcpProviderSessionCreation {
-    NotRequested,
-    Requested {
+enum StoredProviderSessionCreateFence {
+    Open,
+    Sealed {
         #[serde(rename = "operationId")]
         operation_id: String,
     },
 }
 ```
 
-外层字段通过现有 metadata 的 camelCase 序列化规则映射为 `providerSessionCreation`；未知与缺失值必须按下述显式规则解析，不能使用 enum 默认值补齐。
+读取后的领域视图为：
+
+```text
+Open
+Sealed(operationId)
+Unknown(reason)
+```
 
 语义：
 
-- 字段存在且为 NotRequested：新版本在真正的新 Attempt 创建路径中可靠初始化，尚未向该 Direct Attempt 授予首次 session/new 的发送权。
-- Requested：本地已为某个既有 operationId 提交发送授权；远端可能尚未收到、正在创建、已经创建或响应丢失。
-- 字段缺失、null、未知变体或损坏：Unknown，绝不默认 NotRequested。
-- 已建立身份继续使用现有 `sessionId`；不在新字段复制 sessionId、availability、turn status 或另一套 revision。
-- operationId 复用既有执行身份，仅用于绑定创建授权与响应，不新增 Provider identity。
+- `Open`：新版本在真正创建普通 Direct Attempt 时可靠写入，表示尚未授权过该 Attempt 的首次 `session/new`。
+- `Sealed { operationId }`：本地已提交一次创建发送权。Provider 可能尚未收到、正在处理、已经创建，或响应已经丢失。
+- `Unknown`：字段缺失、null、未知变体、格式损坏或高版本格式无法解释。`Unknown` 是读取和错误投影结果，不作为可写的正常初始值，也绝不降级为 `Open`。
 
-新增事实的必要性：当前 unavailable + no sessionId 既可能是“还没发请求”，也可能是“请求已成功但本地丢失响应”；现有 revision 只能区分本地写入代际，不能区分这两种外部副作用状态。新字段补齐这一不变量，不复制 lifecycle。
+`StoredProviderSessionCreateFence` 不直接作为整个 `AcpSessionMetadata` 的派生反序列化字段。读取必须先保留顶层 JSON envelope，再对 fence 做字段级解析，得到 `ProviderSessionCreateFenceView`。fence 局部损坏不能阻止 lifecycle、durable session reference、`turnError` 和 revision 的独立读取；只有 JSON 文件本身无法解析或 canonical Attempt 无法识别时，才返回 snapshot / query 级结构化错误。
 
-### 4.3 初始化与单调性
-
-1. 仅在真正分配新普通 Direct Attempt 的写入路径初始化 NotRequested，且必须先于任何 Provider 连接或请求副作用。
-2. 不能在 `begin_session_turn`、历史读取、缺文件补建、发送重试或进程重启时，因为“当前没文件”就补成 NotRequested。
-3. 新 Attempt 的 node 与 snapshot 采用现有创建边界和原子文件提交。中途失败且 Provider 尚未启动时允许保守停在 Unknown；不得对外发布可执行成功。
-4. 对受保护 Direct，NotRequested -> Requested 单调前进；取消、失败、重启、新 turn、队列重投都不能重置为 NotRequested。
-5. generic metadata rewrite、title/config 刷新、terminal settlement 与 legacy normalization 必须保留该事实以及已提交的身份；缺字段的旧内存对象不能清除它。
-6. 未知或更高格式不能静默当旧默认值读取；写路径返回结构化错误，查询保留可展示的其他已知字段。
-7. 不把该字段塞入 Node 的 timeline storage schema，也不为它增加全库启动扫描。
-
-## 5. ACP 领域接口与身份归一化
-
-### 5.1 解析与意图分开
-
-在 `src/acp/` 下集中定义类型和解析，建议模块 `session_target.rs`；具体命名以现有模块边界为准。
-
-对外表达两类输入：
-
-- **严格目标**：Runtime 或 Dynamic 已明确决定 New / Continue 的调用，沿用既有模式规则。
-- **Direct 恢复意图**：仅由经过 canonical 校验的普通 Direct 发送入口提交，允许在安全条件下从“继续”解析为首次创建。
-
-领域解析结果表达：
+状态转换只允许：
 
 ```text
-Continue(validated_restore_target)
-CreateDirectSession
-Blocked(structured_runtime_error)
+新普通 Direct Attempt创建 -> Open
+Open --seal(operationId)--> Sealed(operationId)
+Sealed -> Sealed
+Unknown -> Unknown
 ```
 
-解析结果是瞬时执行计划，不持久化。物化事实则从 snapshot、worker-ref 和新增创建授权事实读取，不能从桌面层传入一个未经复核的“未物化=true”。
+取消、失败、新 turn、队列重投、重启和普通 metadata 更新都不能重新打开栅栏。用户显式恢复通过创建新 Attempt 获得新的 `Open`，不修改旧 Attempt。
 
-### 5.2 身份归一化
+### 5.2 Snapshot envelope 与版本规则
 
-统一归一化 `acpSessionId` 与现存 `sessionId` 别名，供发送入口、VM、摘要与恢复校验共用：
+`acp.snapshot.json` 新增顶层 `schemaVersion`，本方案落地版本为 `1`。它只描述 snapshot 文档结构，不等同于 Runtime node 上用于存储迁移协调的 `acp_storage_schema_version`。
 
-1. 对每个候选分别验证类型、trim 后非空，再比较；不能让空 acpSessionId 遮蔽非空 sessionId。
-2. 同一对象两个非空别名不同，或 snapshot 与 worker-ref 身份不同，返回身份冲突，不猜测较新者。
-3. Provider、adapter 和 workspace 归属必须匹配 canonical Attempt 与冻结配置。不能仅凭任意非空字符串认为可恢复。
-4. Snapshot 有可信身份而 worker-ref 缺失时，可在用户发送的写路径重建 worker-ref，再严格 Continue。
-5. worker-ref 有可信身份而旧 snapshot 缺身份时，可在写路径补齐 snapshot。查询只投影，不顺便修复。
-6. Provider 工作目录从 canonical Run / worktree 配置解析；不能把旧 snapshot 中可能表示 attempt 目录的 cwd 直接当 Provider cwd。
-7. 非法、矛盾或归属不明的引用不会因归一化而转为允许 New。
-8. ACP 公共 Continue 校验与 setup_session 使用同一已校验类型，消除“一处接受 sessionId，另一处只接受 acpSessionId”的分叉。
+读取规则：
 
-新数据中 snapshot 的 session identity 是统一管理的 durable 事实，worker-ref 是可重建投影。读取旧引用只是既有事实归一化，不引入第二套新存储或双写生命周期。
+1. 缺少 `schemaVersion` 的现有文件按 legacy v0 读取；已知旧字段继续解析，但缺失 create fence 必须得到 `Unknown(Missing)`，不能补写 `Open`。
+2. `schemaVersion = 1` 按当前 envelope 和字段级 parser 读取。
+3. 大于当前版本的文件允许提取 canonical Attempt locator 和可安全识别的查询级诊断，但所有 mutation 必须拒绝，不能由旧代码降级覆盖。
+4. `schemaVersion` 类型错误、负数或 envelope 损坏时返回结构化诊断，并拒绝写入。
+5. 第一次合法 mutation 可以把可完整理解的 legacy v0 提升为 v1；升级时必须保留未知顶层字段。无法完整理解的数据不得借升级重写。
 
-## 6. 最终决策、持久化与副作用顺序
+### 5.3 扩展现有 metadata transaction
 
-### 6.1 复用既有串行执行通道
+不新增平行 snapshot 事务层。实施必须复用并收紧现有 `session_metadata_lock`、`patch_session_metadata`、owner/revision CAS 和 `write_json` 原子替换路径。事务必须：
 
-最终解析必须位于 `run_prompt_inner` 获取既有 attempt prompt lock 之后，而不是调用 run_prompt 前重复检查两次。
+1. 在 blocking worker 上进入短锁，读取最新 raw envelope 与 revision，而不是接收调用方持有的旧完整对象。
+2. 校验 snapshot schema version、canonical Attempt、mutation 所需的 owner / operationId 和允许的状态转换。
+3. 只应用有类型 mutation，并保留未参与修改的 lifecycle、fence、durable reference、turnError、Runtime control、Provider metadata 和未知顶层字段。
+4. 使用现有原子写入能力提交完整的新版本；写入失败时不对外宣称转换成功。
+5. 对未知高版本或无法安全理解的数据拒绝写入，避免旧代码整份重写并丢弃新字段。
+6. 返回提交后的 revision 和有类型结果，供后续副作用使用。
 
-- 复用当前完整 attempt 作用域的执行通道；不另建临时 Mutex 或第二张锁表。
-- snapshot metadata lock 只覆盖小文件读取、owner / revision CAS 和原子提交；不在此锁内等待 initialize、session/new、网络响应或附件转换。
-- 复用桌面 single-instance 与现有 workspace 写入约束；不把进程内 Mutex 宣称为跨机器或多进程锁。
-- 同一 workspace 被不受支持的旧进程、外部工具或同步盘并发改写，不在自动恢复保证范围；若产品后续允许多写入进程，应先补 workspace 级排他写入契约。
-
-### 6.2 接口调整
-
-`client::run_prompt` 接收明确的 session intent；对 Direct 恢复，允许在最终目标确定后调用 Prompt preparation factory。
-
-逻辑契约如下，签名细节在实施中按现有 Rust 类型整理：
+建议最小 mutation 集合：
 
 ```text
-run_prompt(session_intent, existing_owner, prepare_prompt_for_resolved_target, ...)
-    -> 获取既有 attempt prompt 执行通道
-    -> 重新校验 owner / canonical 业务资格
-    -> 解析最终 Continue / Create / Blocked
-    -> 只准备对应目标需要的 Prompt
-    -> 副作用前再次校验取消与创建授权
-    -> 执行 Provider 交互并提交事实
+InitializeDirectCreateFence
+SealDirectCreateFence(operationId)
+CommitProviderSessionReference(createOperationId, validatedDurableReference)
+UpdateLifecycle(expectedOwner, transition)
+UpdateRuntimeControl(expectedRevision, controlMutation)
+RecordTurnError(expectedOwner, errorInfo)
+UpdateProviderMetadata(metadataMutation)
 ```
 
-普通 Continue 不提前构建 bootstrap Prompt。目标在锁内由 New 变为 Continue 时，必须使用 Continue 的正文与附件，不能仅改一个 SessionMode 却继续发送已拼好的 bootstrap 内容。
+具体命名服从现有模块。现有 `write_session_metadata*` 一类从 typed object 重建完整 JSON 的入口必须删除、私有化或改为调用上述 mutation，不能只合并 lifecycle 后覆盖未知新字段。title、config、terminal settlement、repair 和 legacy normalization 等 snapshot 写路径都必须迁移到该现有事务，或明确证明只写独立文件。
 
-需要更新所有调用方与测试，不保留旧签名、隐式猜测目标的入口或兼容 wrapper。
+### 5.4 初始化时机
 
-### 6.3 首次创建的写入顺序
+1. 仅在真正分配新的普通 Direct Attempt 时写入 `Open`，并先于 Provider 连接、initialize 和任何 `session/new`。
+2. 历史读取、缺文件补建、发送重试、进程重启、repair 和 VM 查询不得补写 `Open`。
+3. 新 Attempt 的 canonical 元数据与 `Open` 必须在现有创建边界中可靠提交；提交失败时不得发布一个可继续执行的半成品 Attempt。
+4. 旧数据没有该字段时保持 `Unknown`，不做推断式迁移。
 
-受保护 Direct 的正常链路：
+## 6. Provider session reference 与 attached identity 归一化
+
+本方案区分两个生命周期不同的类型：
 
 ```text
-新 Attempt：可靠初始化 NotRequested
--> durable admission / claim
--> attempt prompt 串行执行通道
--> 完成 initialize，准备本次 Prompt
--> 短事务重新读取 owner、取消状态与创建事实
--> NotRequested -> Requested(operationId) 原子可靠提交
--> 提交成功后，最多调用一次 session/new
--> 得到合法 sessionId
--> 先单独可靠提交 Provider identity
--> 写入 / 修复 worker-ref 投影
--> 记录用户消息及已有 prompt identity
--> 校验本轮仍被允许执行
--> session/prompt
+ValidatedDurableProviderSessionReference
+  = canonical Attempt locator
+  + provider / adapter workspace binding
+  + canonical provider cwd / config binding
+  + ACP sessionId
+
+AttachedProviderSessionIdentity
+  = AdapterConnectionKey
+  + connectionGeneration
+  + ACP sessionId
 ```
 
-具体约束：
+snapshot 只持久化或引用构造 durable reference 所需的 restart-stable 事实；`connectionGeneration` 不跨进程持久化。Continue 执行时先校验 durable reference，再在当前连接代 restore / attach，取得 canonical attached identity。现存 `acpSessionId`、`sessionId` 别名和 worker-ref 必须通过一个归一化入口解析，不能由调用方分别取值。
 
-1. 创建授权提交失败，禁止调用 session/new。
-2. 授权成功后即使确定尚未发送就发生异常，也保守保留 Requested；不以捕获到某类通用异常为由重置。
-3. session/new 响应成功后，先提交轻量 identity，不等待 timeline checkpoint、标题刷新、usage 修复或完整 VM。
-4. identity 提交失败时，不发送用户 Prompt；保留 Requested，返回结构化持久化错误，后续不得自动再 New。
-5. identity 已提交而 worker-ref 写入失败时，后续发送修复投影并 Continue；不再创建 session。
-6. 保持消息记录与传输的现有持久化顺序；首次恢复不能造成重复可见气泡或绕过 prompt 去重。
-7. 已有业务数据与 NotRequested 矛盾时不得 New。真实非空 timeline / usage 可作为“禁止创建”的一致性拦截，只需固定文件 metadata，不扫描正文；日志不存在不能反向证明安全。
-8. 身份、创建授权和生命周期使用同一 ACP 存储适配层。不能临时另建一个 session-state 文件与 snapshot 双写。
-9. 可靠提交复用现有 atomic-write-file / write_json；实施时验证所用库在目标平台的原子替换与持久化保证，必要时在统一存储适配层补足 flush / sync，不在调用点自写临时文件协议。
+归一化规则：
 
-### 6.4 Stop、迟到响应与身份写入
+1. 每个 sessionId 候选值都先验证类型、trim 后非空；随后结合 canonical Attempt、Provider、adapter workspace、project/workspace 和 provider cwd 配置构造 durable reference。
+2. 同一对象内两个非空别名不同，返回 `SessionIdentityConflict`，不能挑一个看似较新的值。
+3. snapshot 与 worker-ref 中的非空 identity 不同，返回冲突，不能由时间戳或文件顺序裁决。
+4. snapshot 能构造合法 durable reference、worker-ref 缺失时，在用户发送的写路径重建 worker-ref，再在当前连接代 attach 后 Continue。
+5. 旧 worker-ref 有可信 sessionId、旧 snapshot 确实缺 reference 时，可在事务接口内结合 canonical 配置补齐 snapshot；查询路径只报告和投影，不执行维护写入。
+6. Provider cwd 从 canonical Run / worktree 冻结配置解析，不能把 snapshot 中可能表示 Attempt 目录的路径直接当作 Provider cwd。
+7. 非法、矛盾或归属不明的引用返回结构化错误，绝不能因为恢复失败而回退为 New。
+8. ACP Continue 校验、setup、VM 和摘要投影必须消费同一个 `ValidatedDurableProviderSessionReference`；只有实际 transport/session runtime 消费 `AttachedProviderSessionIdentity`。
+9. connection generation 变化使旧 attached identity 失效，但不清除 durable reference；必须重新 attach，不能把旧 route 或旧 runtime 当作仍然有效。
 
-创建授权提交是本地发送权的线性化点：
+worker-ref 只包含恢复 Provider 所需的派生数据。它写入失败不会改变 durable reference 已经存在的事实；下一次发送修复它并 Continue，而不是重新创建 Provider session。
 
-- Stop 先完成：CAS 失败，不创建 session。
-- 授权先完成：允许最多一个已获授权的创建请求继续收敛；Stop 不承诺撤回已经在途的外部创建。
-- Stop 后即使收到合法 sessionId，也应按创建授权中的 operationId 提交这一 Attempt 级身份事实；它不代表本轮重新 Running。
-- 身份提交必须使用专门的短事务：核对创建授权与身份一致性，只更新身份及必要连接元数据，保留当前 lifecycle header、turnError、revision 和取消结果。
-- 不能直接调用旧 turn 的整份 metadata rewrite：旧 owner 已失效时它可能丢弃身份，或把 cancelled 覆盖成 running。
-- 已取消或被替代的旧 turn 不能继续发送 session/prompt；下一轮拿到该身份后正常 Continue。
-- 新 turn 已接收而旧请求尚未释放执行通道时，新 turn 等待原通道收敛；进入后重新解析，不能沿用锁外的 Create 结果。
+## 7. 调用意图、目标解析与模式隔离
 
-这保证本地不会因为迟到事实重复授权创建；不保证 Provider 的创建行为具有跨系统事务或 exactly-once 语义。
+### 7.1 命令层只提交意图
 
-### 6.5 故障窗口处理矩阵
+桌面命令层不再执行以下判断：
 
-| 故障位置 | durable 事实 | 下一次发送 |
+- Attempt 已存在，因此 Continue；
+- worker-ref 缺失，因此 New；
+- Raw 中没有创建记录，因此 New；
+- 当前 timeline 为空，因此这是首轮。
+
+普通 Direct 发送入口只提交 `DirectPromptIntent`，其中包含 canonical locator、durable admission 的 `turnId + lifecycle operationId` 和经过现有权限校验的调用来源。正文、引用、附件和角色不得从 React 草稿、IPC 闭包参数或锁外提前生成的对象继续传入执行阶段；最终内容准备必须按 turn identity 重新读取 snapshot 中已持久化的 `promptSubmission`。命令层不传入一个自行推断的 `SessionMode`。
+
+Dynamic、Workflow、AUTO 或 Runtime 已明确指定的严格 New / Continue 继续使用各自有类型 intent，不与普通 Direct 的恢复资格合并。
+
+### 7.2 最终目标解析
+
+最终解析发生在 `run_prompt_inner` 获取既有 Attempt Prompt 串行执行通道之后，并重新读取最新 snapshot、owner 和 canonical Runtime 状态。
+
+解析结果：
+
+```text
+Continue(ValidatedDurableProviderSessionReference)
+CreateDirectSession(EligibleDirectCreateContext)
+Blocked(RuntimeErrorInfo)
+```
+
+普通 Direct 的规则顺序：
+
+1. 能构造合法 durable reference：`Continue`，与 fence 值无关；若 worker-ref 缺失，先修复投影，随后在当前连接代 attach。
+2. identity 冲突、损坏或归属不合法：`Blocked`。
+3. 无 durable reference，且不是当前 canonical 普通 Direct Attempt、已被替代、只读、Dynamic inner Attempt、Workflow/AUTO、或 Runtime 不允许发送：`Blocked`。
+4. 无 durable reference，fence 为 `Open`，但存在与“从未创建”矛盾的正向事实：`Blocked(SessionCreationEvidenceConflict)`。
+5. 无 durable reference，fence 为 `Open`，没有矛盾事实且生命周期允许用户发送：`CreateDirectSession`。
+6. 无 durable reference，fence 为 `Sealed`：`Blocked(SessionCreationUncertain)`。
+7. 无 durable reference，fence 为 `Unknown`：`Blocked(SessionCreateFenceUnknown)`。
+
+矛盾事实只用于否决，永不用于授权。允许使用的证据包括已校验的 worker-ref、Provider 派生的 assistant/tool timeline 摘要、Provider usage、已建立 session 的 metadata 或当前执行已经持有的明确创建发送回执；本地尚未发送的 user timeline item 不构成 Provider session 已创建的证据。不得为了证明可以创建而扫描全部 Raw、timeline 或 usage；任何证据缺失都不能把 Unknown / Sealed 推回 Open。
+
+目标解析是瞬时执行计划，不持久化第二份 mode。锁外可以做只读预检查以尽早返回明显错误，但任何预检查结果都不能直接授权 `session/new`。
+
+### 7.3 模式隔离
+
+- 只有普通 Direct 的当前 canonical Attempt 能从 `Open` 取得创建 permit。
+- Dynamic inner Attempt 缺 identity 时保持严格恢复失败，不因外层 Direct 而自动创建。
+- Workflow/AUTO 的初始化、新建和恢复继续由其调度状态机明确决定。
+- manual check、历史只读、非 current Attempt 和已终结不可继续状态不能取得 permit。
+- Provider 自身已有明确 New 调用的路径仍需使用现有 metadata transaction，但不复用 Direct 的“恢复时可首次创建”资格。
+
+## 8. Provider 传输与 Prompt 内容语义分离
+
+### 8.1 两个正交维度
+
+Provider 传输目标只表达：
+
+```text
+New(CreateSessionPermit)
+Continue(AttachedProviderSessionIdentity)
+```
+
+Prompt 内容语义只表达：
+
+```text
+DirectInitial
+DirectFollowUp
+DirectRecoveryBootstrap
+```
+
+目标解析先产生 `ValidatedDurableProviderSessionReference`，setup 在当前连接代 restore / attach 后才形成 transport 使用的 `AttachedProviderSessionIdentity`。`SessionMode` 不再隐式决定正文取 requirement 还是当前消息。调用者必须在最终目标解析后明确选择内容语义，Provider adapter 只接收已渲染的请求。本节仅冻结普通 Direct 的语义；RuntimeManaged、Workflow、AUTO 和 Dynamic 继续遵守各自 prompt 契约，不能复用 Direct bootstrap。
+
+### 8.2 内容契约
+
+**DirectInitial**
+
+- 用于正常新 Attempt 的首次执行。
+- 从冻结的 Direct authoring / task-prompt input 构造用户原始输入、引用与附件。
+- system prompt 保持空；不注入 Runtime hidden context、profile、goal/task 包装、predecessor、output contract、repair 或 AI-DYNAMIC 内容。
+- timeline 按 Direct 首轮产品规则投影一个 canonical user event。
+
+**DirectFollowUp**
+
+- 用于已有合法 durable reference 的普通追问。
+- 只发送从当前 durable `promptSubmission` 读取的用户输入、引用和本轮附件。
+- system prompt 保持空；不重复注入原始 Direct 输入，也不增加 Runtime hidden context。
+
+**DirectRecoveryBootstrap**
+
+- 用于普通 Direct Attempt 的 fence 仍为 `Open`，但本次用户发送才真正创建 Provider session。
+- 原始部分只能来自该 Attempt 创建时冻结的 Direct authoring / task-prompt input；当前部分只能来自本轮 durable `promptSubmission`，两者都保留用户原文、引用和附件身份，不从最新 Task definition、可变草稿或锁外闭包回填。
+- 使用专用模板明确区分“初始化中断前的原始用户输入”和“当前用户输入”，并声明当前输入具有本轮指令优先级；该模板只是重建缺失 Provider 对话上下文，不把原始输入伪装成 system prompt。
+- system prompt 仍为空，不注入 Runtime hidden context、profile、goal/task 包装、predecessor、output contract、repair、AI-DYNAMIC 或自动记忆正文。
+- 若冻结的原始 Direct 数据或当前 durable submission 无法完整取得，返回结构化错误，不用空字符串、最新 Task definition 或 UI 当前草稿替代。
+- UI timeline 必须让两次用户输入各出现一个 canonical user event：原始事件不存在时先按其稳定 prompt/event identity 幂等补建，再记录当前事件；已存在时只复用，不重复插入。Provider bootstrap 的包装标签不进入用户气泡。
+
+### 8.3 准备接口
+
+`run_prompt` 接收 intent 和一个按已解析目标准备内容的 factory。factory 输入只包含已校验 locator、turn identity 和解析结果，并在串行通道内重新读取 durable 数据：
+
+```text
+run_prompt(intent, prepare_for_resolved_target, ...)
+  -> 进入 Attempt Prompt 串行通道
+  -> 解析 Continue / Create / Blocked
+  -> 按最终结果准备 DirectFollowUp 或 DirectRecoveryBootstrap
+  -> 执行创建或恢复
+```
+
+目标在等待串行通道期间由 Create 变为 Continue 时，必须重新选择 `DirectFollowUp`；不能复用锁外提前拼好的 bootstrap。附件解析、workspace 文件和权限配置也按最终 durable submission 与内容语义准备并进行请求体测试。
+
+### 8.4 Prompt 管理
+
+如实施需要新增或修改 DirectRecoveryBootstrap 模板：
+
+1. 必须先遵守 `docs/gold-band/rules/prompt-authoring.md`。
+2. 模板统一放在 `src/prompts/`，不得把长文本硬编码在 Rust 实现中。
+3. 除规则明确豁免的提示词外，同步维护 `zh-CN`、`zh-TW`、`en`、`ja-JP`、`ko-KR`、`pt-BR`、`es` 相同相对路径。
+4. Direct system prompt 继续严格为空；DirectRecoveryBootstrap 模板及原始 / 当前两段用户输入只渲染到 user prompt，不把任何稳定运行时上下文转移到 system prompt。
+
+## 9. 创建、身份提交与 Prompt 副作用顺序
+
+### 9.1 正常顺序
+
+普通 Direct 首次恢复创建按以下顺序执行：
+
+```text
+进入 Attempt Prompt 串行通道
+-> 读取最新 snapshot 并解析为 CreateDirectSession
+-> 从冻结 Direct 输入与当前 durable promptSubmission 准备 DirectRecoveryBootstrap、附件和 Provider 配置
+-> 建立连接并完成 initialize
+-> 短事务最后复核 owner、Stop、Runtime 资格、durable reference 和 fence
+-> Open -> Sealed(createOperationId)，返回 CreateSessionPermit
+-> 使用 permit 最多调用一次 session/new
+-> 校验响应并立即提交 durable Provider session reference
+-> 写入或修复 worker-ref 投影
+-> 幂等确保原始与当前两个 canonical user timeline event 均存在
+-> 再次确认本轮仍允许继续
+-> 调用 session/prompt
+-> 按现有流程提交输出、usage 和 terminal lifecycle
+```
+
+关键约束：
+
+1. Prompt / 附件准备和 initialize 可以失败，但不得提前封闭 fence；这些步骤不能发送 `session/new`。
+2. 最后复核与 `Open -> Sealed` 在同一短事务中完成。失败时不返回 permit，底层 adapter 的 `session/new` 调用次数必须为 0。
+3. `createOperationId` 复用取得 permit 的 durable admission lifecycle operationId，并永久记录在 Sealed fence 中；permit 绑定 canonical Attempt、该 createOperationId、Provider 配置摘要和提交 revision，只能由当前执行调用一次。底层 transport 不得对 `session/new` 做透明自动重试。
+4. fence 一旦 Sealed，即使进程在真正发送前崩溃也保持 Sealed。客户端无法证明请求未到达，不能重新打开。
+5. 合法 sessionId 返回后，先用专门事务提交 durable reference，不等待标题、完整 timeline、usage、Raw 或 worker-ref。
+6. durable reference 提交失败时不发送 `session/prompt`，保留 Sealed 并记录结构化持久化错误。
+7. durable reference 已提交后，worker-ref 或 timeline 写入失败不能导致再次 New；后续从 durable reference 继续修复并重新 attach。
+8. Raw 记录是审计副作用，不作为 permit 消耗或 durable reference 成立的条件。
+
+### 9.2 durable reference 提交事务
+
+`CommitProviderSessionReference` 必须：
+
+- 校验 canonical Attempt 和 fence 为相同 createOperationId 的 Sealed，或校验已存在相同 durable reference 后幂等成功。
+- 拒绝把同一 Attempt 的已知 durable reference 改成另一个值。
+- 只更新 durable reference 与必要 restart-stable Provider metadata，保留最新 lifecycle、Stop、owner、turnError 和 Runtime control；不得持久化旧 connection generation。
+- createOperationId 的校验独立于当前 lifecycle owner。创建响应在 Stop 之后迟到时，旧 owner 即使已失效也允许提交相同 fence 对应的 durable reference，但不得把 cancelled / paused 生命周期改回 running。
+- 如果当前 lifecycle 已进入后续 turn，仍只允许相同 createOperationId 对空 reference 或相同 reference 做幂等提交；任何冲突都返回结构化错误，不能按时间戳覆盖。
+- 提交失败时返回稳定错误 code 和 diagnostic，不包含对客文案。
+
+### 9.3 正常 Continue
+
+正常 Continue 不读 create fence 来决定是否继续，不新增 fence 写入，也不构建 DirectRecoveryBootstrap。它只消费已校验 durable reference、在当前连接代取得 attached identity、准备 DirectFollowUp、修复必要的 worker-ref 投影并执行 `session/prompt`。
+
+## 10. Stop、并发、迟到响应与 Prompt Queue
+
+创建 fence 的封闭提交是本地 `session/new` 发送权的线性化点：
+
+- Stop 先提交：最后复核失败，fence 保持 Open，`session/new = 0`。
+- seal 先提交：当前执行最多允许一次 `session/new`；之后到达的 Stop 不能保证撤回已经获得的外部发送权。
+- Stop 后返回合法 sessionId：仍按 fence createOperationId 提交 durable reference，但不发送旧 turn 的 `session/prompt`，也不复活旧 lifecycle。
+- 新 turn 在旧创建请求收敛前到达：通过既有 Attempt Prompt 通道等待；进入后重新解析 identity / fence，不能沿用锁外 Create 结果。
+- 两个并发发送：只有一个事务能把 Open 转为 Sealed；另一个看到 identity 后 Continue，或在 identity 尚未提交时得到创建进行中 / 结果不确定的有类型状态，不能再次 New。
+- 应用重启：原样读取 Open、Sealed 或 Unknown，不做补写和重开。
+
+Prompt Queue 继续只负责输入顺序：
+
+1. 每个排队 turn 通过同一 admission 和最终目标解析入口执行。
+2. queue retry、进程重启和重复投递不能重置 fence 或重复创建。
+3. 创建成功不等于用户 Prompt 成功；`session/prompt` 失败时保留 identity，下一轮 Continue。
+4. 显式创建新 Attempt 时不暗中迁移或批量重放旧 Attempt 的 queue；未发送草稿由 UI 按现有草稿规则保留。
+
+锁范围要求：Attempt Prompt 串行通道可以覆盖一次完整执行；snapshot 文件锁只覆盖读取、校验和原子提交，不能在其中等待 initialize、网络响应、附件转换或模型输出。
+
+## 11. 故障窗口矩阵
+
+| 故障位置 | durable 事实 | 下一次行为 |
 |---|---|---|
-| initialize 前 / 期间停止或崩溃 | NotRequested，无身份 | 满足 Direct 资格后允许首次创建 |
-| 创建授权提交失败 | 未取得授权；可能保持 NotRequested | 修复存储问题后重新判定，不能假称请求已发送 |
-| 授权成功、请求尚未送达就崩溃 | Requested，无身份 | 不自动 New，进入显式恢复 |
-| 远端创建成功、响应丢失 | Requested，无身份 | 不自动 New，进入显式恢复 |
-| 收到 sessionId、身份提交失败 | Requested，无身份 | 不自动 New，明确持久化失败 |
-| 身份已提交、worker-ref 未提交 | 有一致身份 | 修复投影后 Continue |
-| worker-ref 成功、首条 Prompt 尚未发送 | 有一致身份 | Continue，原用户轮次去重规则继续生效 |
-| Stop 后收到迟到创建成功 | 身份可提交，turn 保持 cancelled | 下一轮 Continue，不复活旧 turn |
-| 旧 metadata / config 回写晚到 | 最新身份与创建授权已存在 | 不允许清除或回退事实 |
-| 旧格式无事实、无身份 | Unknown | 保留错误，显式重新发起 |
+| prepare / initialize 前或期间停止、失败或崩溃 | Open、无 durable reference | 普通 Direct 资格仍成立时允许再次尝试 |
+| 最后复核发现 Stop 或 owner 变化 | Open、无 durable reference | 不创建；按最新 lifecycle 投影 |
+| seal 写入失败 | Open 或原状态 | `session/new = 0`，修复存储后重新解析 |
+| seal 成功、请求实际发送前崩溃 | Sealed、无 durable reference | 不自动 New，提供显式重新发起 |
+| Provider 创建成功、响应丢失 | Sealed、无 durable reference | 不自动 New，显示创建结果不确定 |
+| 收到 sessionId、durable reference 提交失败 | Sealed、无 durable reference | 不发送 Prompt，显示持久化失败 |
+| durable reference 已提交、worker-ref 失败 | 有 durable reference | 修复投影并重新 attach 后 Continue |
+| durable reference 已提交、timeline 记录失败 | 有 durable reference | 按现有 turn 去重 / repair 契约恢复，不再 New |
+| worker-ref 成功、`session/prompt` 未发送 | 有 durable reference | 后续重新 attach / Continue |
+| Stop 后创建响应迟到 | 有 durable reference，lifecycle 保持停止结果 | 下一轮 Continue，不复活旧 turn |
+| 旧 metadata / config 写入迟到 | 最新事务 revision 已前进 | 拒绝或合并，不清除 fence / durable reference / Stop |
+| 旧格式缺 fence、无 durable reference | Unknown | 不自动 New，显式新 Attempt |
+| fence 损坏或未知格式 | Unknown + diagnostic | 不写回默认值，显示结构化错误 |
+| snapshot 与 worker-ref identity 冲突 | 冲突事实保留 | 阻止发送，等待显式处理 |
+| fence 为 Open，但已有 Provider 派生的建立证据 | EvidenceConflict | 只阻止 New，不反向补造 identity；展示结构化错误 |
 
-## 7. Direct 自动恢复资格与其他模式隔离
+## 12. Attempt 级失败投影与前端加载
 
-### 7.1 业务资格
+### 12.1 后端投影
 
-App 在预检与最终执行边界复用现有校验，至少保证：
+后端查询以 canonical Attempt 为单位构造 ACP ViewModel，而不是以“已存在 sessionId 或 timeline”为返回条件。
 
-- Task run mode 为 Direct，locator 为普通 Attempt，非 Dynamic inner。
-- 完整 project / task / run / round / node / attempt locator 与 canonical current 一致。
-- Run / Round / Node 先通过现有结构校验；Run 使用 `is_run_continuable`，复用 outcome、pause reason 与 current 检查。
-- Run / Round / Node 生命周期互相一致；Node 为可继续暂停、无 outcome、无 manual check pending、无运行中的旧 runtime execution。
-- 目标不只读、未被 successor 接续而替代，不处于 permission / manual check / error-blocked 等禁止通用恢复的干预态。
-- 不存在仍占有执行权的其他 Provider prompt。
-
-校验必须区分“旧执行仍活跃”和“本轮已经 admission / claim”：进入执行函数时，本轮 lifecycle 本来就是 Starting / Accepted，不能要求整个 snapshot 为 Idle，否则会把自己的合法恢复请求挡住。
-
-### 7.2 解析规则
-
-1. 有一致、可信、可恢复身份：Continue，必要时修复派生引用。
-2. 没有身份且显式 NotRequested，业务资格通过、无矛盾持久数据：CreateDirectSession。
-3. Requested、Unknown、损坏、身份冲突或资格不通过：Blocked。
-4. 桌面 Dynamic 调用路径只提交严格 Continue，不复用允许 Direct Create 的入口。
-5. Workflow / AUTO 的显式 runtime continue 继续严格恢复；不因 unavailable 或 turnError 自动新建。
-6. 既有显式 New 与自动重试入口必须逐项审计：普通 Direct 在已有身份时续接，在 Requested + no identity 时停止自动重试；其他模式按各自已授权的创建语义执行，不机械套用 Direct 的单次首次创建规则。
-
-## 8. Prompt 内容与输入恢复契约
-
-### 8.1 SessionMode 只负责传输
-
-修正 RawAgent 通过 SessionMode 选择 requirement / resume_prompt 的隐式耦合，正文应由明确的 UserPromptRenderMode 决定：
-
-| 内容语义 | Agent 实际收到 | UI 展示 |
-|---|---|---|
-| RequirementTask | 正常首轮需求及既有首轮上下文 | 正常首轮消息 |
-| UserMessage | 本轮正文、引用与角色输入 | 本轮输入 |
-| DirectSessionBootstrap（新增显式语义） | 原始需求上下文 + 本轮当前消息 + 必要首轮输入 | 仅本轮输入及其附件 |
-| RuntimeResume / Repair / Finalize 等 | 既有对应模板 | 既有可见性规则 |
-
-不能让 New + UserMessage 产生空 Prompt，也不能改成 RequirementTask 后丢掉本轮消息。对附件-only 输入，允许正文为空但必须有合法内容块；校验的是有效请求，不是强制非空字符串。
-
-### 8.2 DirectSessionBootstrap 内容
-
-仅在最终目标为 CreateDirectSession 时构建：
-
-1. 从当前 Task 的冻结输入 / Run 关联需求读取原始 requirement、引用、角色、workspace 文件和首轮隐藏区段。
-2. 从当前 durable prompt submission 读取本轮完整 ConversationPromptInput 与附件；不能从前端当前草稿或旧组件状态重建。
-3. 原始需求作为前序上下文，本轮消息作为当前指令；两者冲突时按本轮当前指令处理。用户停止的旧操作不能因为重建而自行重放执行。
-4. Agent 收到完整原始上下文与本轮消息；不把多次失败 submission 累积成无限历史。
-5. display_text、可见 quotes / role 与本轮输入一致，timeline 只创建本轮一个可见消息，不把原始需求重复伪装成本轮新发送的第二个气泡。
-6. 首轮隐藏区段按现有已批准的 Direct 首轮投影策略重发，不能沿用普通追问中的 `extra_hidden_sections.clear()`。
-7. Runtime 的路径、权限边界与协议约束仍按项目 system/user 标准管理；不得为了恢复向 RawAgent 注入整套 Gold Band runtime system prompt。
-
-若缺少必要原始输入或已声明附件不可读取，返回具体输入错误；不能静默发送空 Prompt、借其他 Task 文件补齐或截断原需求。
-
-### 8.3 附件、配置与去重
-
-- 首轮附件与本轮附件通过现有 resolve / 内容投影链处理，遵守 canonical root、稳定引用和现有内容大小限制。
-- 用现有 attachment identity 去重，不能只按文件名去重；明确区分 Agent 所需的原始附件与当前消息气泡的附件投影。
-- 首轮引用、角色和 workspace 文件进入 Agent 上下文；本轮引用不能在先渲染后只改 display_text 时丢失。
-- 模型、权限与 config options 使用当前 Attempt 已确认的会话覆盖值及冻结配置，不改成 Agent 的最新默认值。
-- 补齐 worker-ref 时不重置用户已选择的模型或权限，不顺便执行 Doctor 或加载全量能力目录。
-- promptId、operationId 继续使用 admission 分配的既有身份；准备失败或目标变化不生成第二个 turn。
-- 对重复 turnId 的请求沿用既有 admission 幂等；不同的新消息不得被按正文相同误去重。
-
-### 8.4 提示词管理
-
-若需要新的组合模板，在以下七种语言的相同相对路径建立 `runtime/direct-session-bootstrap-user.md`：
-
-`zh-CN`、`zh-TW`、`en`、`ja-JP`、`ko-KR`、`pt-BR`、`es`。
-
-先读取并遵守 `docs/gold-band/rules/prompt-authoring.md`，使用现有模板渲染与语言降级，不在 Rust / TS 中拼接长指令文本。模板仅表达恢复输入语义，不承担 lifecycle 决策。
-
-## 9. 失败详情投影与前端加载
-
-### 9.1 后端保留结构化失败详情
-
-普通与 Dynamic VM 使用一致规则：
-
-1. 在提前返回 None 之前，将 turnError 解析为 RuntimeErrorInfo；key 存在、null 或畸形对象不等于有效错误。
-2. unavailable、无 sessionId、无可展示历史、无 branch 时，只有同时没有有效 turnError 才维持占位 None 行为。
-3. 有效错误返回现有 AcpSessionVm，保留失败状态、sessionId=null、真实 eventPage 与原结构化错误；不新建“错误会话”持久实体。
-4. turnError 无效时不伪造业务错误或让整个会话树不可用；保留已有其他详情，并在诊断中记录格式问题。
-5. 查询不修 worker-ref、不初始化创建授权、不扫描 Raw 来决定安全恢复。
-6. sidebar / session tree 的 sessionEstablished 继续反映真实会话或历史，不因“返回了一个失败 VM”就变成 true。
-
-不能仅把 VM 例外限定给 Direct 来隐藏 Workflow/AUTO 的错误；共享投影应保留事实，由 shell 按业务模式决定呈现。
-
-### 9.2 分离两个现有判断职责
-
-- **详情已就绪**：本次响应足够结束初始数据获取，包括“已确认空历史的有效失败”。
-- **会话已建立 / 有可展示会话内容**：来自 canonical session availability、有效身份、已加载真实内容或既有明确 metadata 契约；单独 turnError 不成立。
-
-继续复用现有 shell resolver，不另建一套页面生命周期。
-
-readiness 增加失败详情分支时，至少要求：
+只要 Attempt 的 snapshot 存在且可识别，就返回至少以下事实，并在 Rust / TypeScript 两端冻结同名 DTO：
 
 ```text
-status == failed
-&& turnError 有效
-&& 当前 scope / generation 响应被接受
-&& 已加载可展示历史，或本次详情确认 eventPage.total == 0
+AcpSessionVm {
+  attempt locator
+  snapshotRevision: u64
+  lifecycle / availability
+  materialization: materialized | unmaterialized | unknown
+  historyState: pending | empty | non-empty | failed
+  eventPage: { total, ...existing cursor fields }
+  turnError?: RuntimeErrorInfo
+  recoveryAction: none | restart-attempt
+  recoveryReasonCode?: stable error code
+}
 ```
 
-- total > 0 且 events=[] 时继续首批分页加载，不能提前显示空聊天。
-- 事件是否存在以完整分页字段和既有可展示事件规则为准，不用任意 metadata 事件冒充聊天内容。
-- 分页失败时保留已知错误与局部重试入口，不清空已显示内容。
-- 只对仍在进行、尚未产生可用详情的初始化继续既有有界重试；已确定失败不再耗尽约 32 秒 missing-session 重试。
-- 读取失败与 Provider turn 失败分别处理，不能把网络错误误判成一个空历史终态。
+约束：
 
-### 9.3 模式与 shell 优先级
+1. unavailable、无 durable reference、timeline 为空时也返回 VM。
+2. 合法 `turnError` 原样以 `code + params + recovery + diagnostic` 投影；后端不生成对客文案。
+3. fence 或其他局部字段损坏时，使用 raw envelope 中仍可识别的 locator、revision、lifecycle 和 `turnError` 返回 Attempt VM；JSON envelope 本身损坏或无法识别 canonical Attempt 时才使用查询级结构化错误。
+4. `None` 只表示目标确实不存在或调用方没有权限，不再表示“存在但未物化”。
+5. `eventPage.total > 0` 但首批 events 尚未加载时返回 `historyState=pending`；`total = 0` 才是 `empty`，不能用空数组冒充真实空历史。
+6. 查询路径不顺便重建 worker-ref、补 fence 或清理错误。
+7. `materialization` 只能由合法 durable reference 或明确的 Provider 建立事实派生；本地 admission / user timeline event 单独存在时仍是 `unmaterialized`，不能继续沿用“任意非空 timeline 即 sessionEstablished”的旧规则。
 
-修正 `isAcpSessionInitializationFailed / Interrupted` 对 !baseSessionReady 的依赖，改为检查“尚无真实会话或可展示内容”，避免错误详情 ready 反过来取消初始化 shell。
+### 12.2 前端状态拆分
 
-1. 当前 scope 的 canonical 权限、只读与 Runtime 控制状态优先。
-2. Workflow/AUTO 没有真实 session / timeline / 明确可展示 metadata，且初始化已失败或中断：展示既有错误或中断页面，隐藏普通聊天 composer。
-3. Workflow/AUTO 已建立或有真实历史：加载并展示历史；不能因为摘要没有内嵌详情而退回初始化 shell。
-4. Direct 的安全未创建暂停可保留现有 cancelled shell；失败时展示具体横幅及允许的恢复操作。
-5. Direct 结果不确定时，显示失败详情和“重新发起会话”，不假装普通发送能够原地恢复。
-6. 健康空占位仍不提前 ready；停止 / 失败终态不能被旧 Starting、旧 VM 或旧 live event 回退。
-7. 新 turn admission 后旧 turnError 按既有 lifecycle 转换清理；新失败可重新显示，不能靠清除历史文件隐藏旧错误。
+前端必须分别表示四个维度：
 
-## 10. 历史数据与结果不确定时的恢复
+| 维度 | 示例状态 |
+|---|---|
+| query state | idle / loading / ready / failed |
+| session materialization | 直接消费 VM 的 materialized / unmaterialized / unknown |
+| history state | 直接消费 VM 的 pending / empty / non-empty / failed |
+| Runtime lifecycle | running / paused / cancelled / failed / completed 等 |
 
-### 10.1 不做推断式迁移
+`ready` 只表示详情查询已成功；不要求存在 durable reference 或至少一条历史事件。
 
-- 不根据 Raw 没有 session/new、文件不存在、文件为空、时间戳先后或诊断文本补写 NotRequested。
-- 有可信身份的旧数据继续恢复，并可在写路径修复派生引用。
-- 无身份且无创建授权事实的旧数据始终 Unknown；包括本次现场材料，除非还有可验证的权威事实，不能承诺自动原地恢复。
-- 不启动扫描全部 Task / Run / Raw 的迁移；仅对当前用户操作的目标进行读取或修复。
-- 旧数据的读取走现有存储归一化路径，不再增加一套 legacy fallback 模型。
+首个成功响应为 `historyState=empty` 时进入 `ready-empty`，立即展示由 lifecycle、turnError 和 recoveryAction 决定的 UI。删除约 32 秒的“等到消息出现”轮询及其通用 missing-session fallback。
 
-### 10.2 显式恢复操作
+`total > 0` 但当前页 events 为空时继续执行首批分页；这与真实空历史不同。分页、generation / revision 和迟到响应保护继续遵守现有历史加载规则。
 
-在 Direct 失败区域提供“重新发起会话”，复用现有重新运行会话 Task / 创建新 Run 的命令和返回值：
+### 12.3 Shell 与交互优先级
 
-1. 用户明确触发后创建新的 canonical Run / Attempt，使新旧 Provider 会话身份天然隔离；不在旧 Attempt 上清空 Requested 后重发。
-2. 保留旧 Run、错误、timeline、Raw、附件和创建事实，不删除原引用。
-3. 新 Run 正常使用原 Task 需求、配置和输入。用户尚未提交或发送失败后保留的当前草稿仍保留，不自动加入原始首轮或暗中重复发送。
-4. UI 明确显示已经切换到新的 Run；不要把新会话伪装成旧会话已恢复。
-5. 不提供自动带上当前草稿再次发送的第二套流程；用户在新会话中按普通发送操作提交即可。
-6. 该动作按现有 rerun 命令处理进行中状态与重复点击；补齐目标级防重入，禁止双击生成多个新 Run，不为此新建持久队列。
-7. 无需再要求用户确认一次纯粹的新 Run 创建；只有复用入口确实会停止其他活跃执行时，按既有冲突交互处理，不顺带停止无关运行。
-8. 结果不确定时可能遗留远端空会话，客户端不按名称猜测并关闭它；未来仅在 Provider 有明确可验证能力时另行设计收敛。
+1. 结构化失败或取消终态优先于旧 Starting / loading 投影，不能被迟到查询回退。
+2. Direct + Open + 可继续：显示可输入的安全未物化状态。
+3. Direct + Sealed/Unknown + 无 durable reference：显示具体原因和“重新发起会话”，不显示会再次尝试旧 Attempt 的普通发送暗示。
+4. Workflow/AUTO 初始化失败或中断：保留专用 shell，隐藏普通 composer。
+5. 已有历史：先完成必要分页，再展示 timeline；不能因为详情 VM 已 ready 就把未加载历史显示为空。
+6. 错误区域只展示帮助用户决策和操作的文案，不暴露 fence、CAS、Raw 等实现术语。
+7. 新按钮优先使用现有 shadcn/ui / prompt-kit copy-in 组件，不新增自研基础控件。
 
-界面文案只说明用户可执行的操作及业务后果，不展示创建授权、CAS、Raw 等实现术语。
+## 13. 显式恢复与结构化错误
 
-### 10.3 结构化错误
+### 13.1 “重新发起会话”
 
-- 缺引用沿用 `acp.session-restore-reference-missing`。
-- 根据最终错误目录补齐有类型的错误变体，至少区分创建结果不确定、身份冲突、创建事实损坏和身份持久化失败。
-- 对应稳定 code 建议为 `acp.session-creation-uncertain`、`acp.session-identity-conflict`、`acp.session-creation-state-invalid`、`acp.session-identity-persist-failed`；实施时先查重并统一注册，不能在各调用点散落字符串。
-- 错误复用 RuntimeErrorInfo 的 code、结构化 params、recovery 与 diagnostic；后端不生成对客文案，前端按 code 本地化。
-- 保留底层可诊断原因，但不把绝对路径、协议全文等实现细节堆进用户主提示。
-- 新增动作和错误文案同步七语言，遵守 ui-locale.md。
+对于 Sealed / Unknown 且无 durable reference 的普通 Direct Attempt，提供桌面可视化按钮“重新发起会话”。
 
-## 11. 停止、重启与 Prompt Queue
+行为契约：
 
-- 初始化期间继续允许停止，不以“首个回答前禁用停止”规避恢复缺陷。
-- 新增 durable 创建授权不接管 Run / Node 生命周期；取消与失败仍由既有 owner / revision 终态策略收敛。
-- 应用退出或 Provider 重载继续复用既有 draining、cancel、bounded shutdown，不增加无限等待。
-- 重启恢复在既有目标恢复路径中收敛遗留活跃 turn；NotRequested / Requested 与 sessionId 原样保留，不在普通详情查询中执行维护写入。
-- Prompt Queue 保留现有 durable 结构与顺序，通过同一 submit / admission / 最终目标解析入口执行。
-- bootstrap 准备或创建失败，队列按既有失败策略暂停排空，保留尚未实际接受的用户输入；不能把创建成功当成用户 Prompt 已发送成功。
-- 重复投递同一 turn 不重复 session/new 或消息；下一条不同 turn 重新读取最新身份与 owner。
-- 新建 Run 的显式恢复不自动迁移旧队列，旧输入可审计、可由用户管理，不暗中批量重放。
+1. 复用现有重新执行 / 新建会话领域命令创建新的 canonical Attempt；UI 不直接复制目录或改 snapshot。
+2. 新 Attempt 使用冻结或明确选择的 Task 配置，初始化自己的 Open fence；旧 Attempt 不重置、不删除、不伪装成已恢复。
+3. 保留旧 Attempt 的 snapshot、timeline、Raw、附件、错误、queue 和 diagnostic，便于审计。
+4. 当前未提交草稿按现有草稿归属保留；不把它暗中拼入新 Attempt 的首轮，也不自动重放失败消息。
+5. 动作完成后明确导航到新 Attempt；用户可以在新会话中正常发送。
+6. 复用现有进行中状态和目标级防重入，重复点击最多创建一个新 Attempt；不为此增加持久队列。
+7. 只有既有领域命令会影响其他活跃执行时，才沿用现有冲突确认；不额外保留 command bar / terminal 入口。
 
-## 12. 验证方案与验收证据
+### 13.2 结构化错误
 
-### 12.1 先红后绿
+实施时先检索现有错误目录并复用等价 code；缺失时增加有类型变体，至少覆盖：
 
-修改实现前，先针对当前实现建立稳定最小失败测试，并保存失败断言与状态：
+| 建议 code | 含义 |
+|---|---|
+| `acp.session-creation-uncertain` | fence 已封闭但没有可用 identity |
+| `acp.session-create-fence-unknown` | fence 缺失、损坏或版本未知 |
+| `acp.session-identity-conflict` | 多个 identity 来源不一致 |
+| `acp.session-creation-evidence-conflict` | fence 为 Open，但已有 Provider session 创建或活动的正向证据 |
+| `acp.session-identity-persist-failed` | Provider 已返回 identity，但本地提交失败 |
+| `acp.session-restore-reference-invalid` | 引用存在但类型、归属或配置不合法 |
+| `acp.snapshot-schema-unsupported` | snapshot schema version 高于当前实现，读取只投影安全诊断且拒绝写入 |
+| `acp.snapshot-invalid` | snapshot envelope 无法安全解析或 canonical Attempt 无法识别 |
 
-1. Direct initialize 早停后的后续发送错误选择 Continue。
-2. RawAgent New + UserMessage 的实际 user_prompt 丢失当前输入。
-3. unavailable + 有效 turnError + 空历史被投影为 None。
-4. 失败详情 readiness 不接受真实空历史。
+错误只包含稳定 `code`、结构化 `params`、`recovery` 与内部 `diagnostic`。后端不包含对客文案；前端在 `web/src/locales/` 按 code 本地化并同步七语言。绝对路径、协议全文和内部堆栈不进入用户主提示。
 
-另外先固定以下保护性场景，再用于约束新方案；它们不必在当前实现上失败，不能冒充已复现的现有 Bug：
+## 14. 先红后绿验证方案
 
-1. Workflow/AUTO 初始化 shell 在没有真实会话时仍为失败或中断，防止新增 readiness 分支后错误变为 available。
-2. 目标预判与进入执行通道之间出现迟到身份，最终只能 Continue，不能沿用旧 Create 计划。
-3. session/new 已交给 transport 而 Raw 写入失败，后续恢复不能依据 Raw 缺记录再次创建。旧方案的 Raw resolver 尚未实现，不能把它描述成当前已有的错误分支。
+### 14.1 当前缺陷的最小失败测试与阶段归属
 
-新增字段的状态转换与崩溃用例可以随后建立契约测试；不能把“缺少新字段导致 fixture 解析失败”当成当前 Bug 的复现。报告分别标注当前缺陷的红绿证据与新增不变量的契约验收。
+修改各阶段实现前必须先固定对应红灯：
 
-### 12.2 ACP 存储与目标解析测试
+1. 第二阶段：普通 Direct initialize 早停后，下一次发送被命令层错误选择为 Continue。
+2. 第二阶段：RawAgent 使用 New + UserMessage 时，adapter 实际收到的正文丢失当前用户输入。
+3. 第一阶段：unavailable + 有效 turnError + 无 sessionId + 空 timeline 被 VM 构造返回 `None`。
+4. 第一阶段：详情成功且真实空历史时，前端仍因没有事件进入有界重试。
 
-- 只有真正的新 Direct Attempt 初始化 NotRequested；旧记录字段缺失、null、未知或损坏均不变成 NotRequested。
-- 创建授权写失败时 fake adapter 的 session/new 调用次数为 0。
-- 同一受保护 Direct 创建事实最多授予一次发送权；失败、取消、队列重投或重启不重置。
-- 有效引用走 Continue，目标解析不读取 Raw、timeline 正文、全量 usage。
-- sessionId 别名、空值遮蔽、两个别名冲突、snapshot / worker-ref 冲突分别固定。
-- 有身份但缺 worker-ref 可从合法配置修复；cwd / adapter / project 不匹配时失败。
-- metadata / title / config / terminal 重写不能删除创建事实或覆盖新身份。
-- NotRequested 与非空历史矛盾时阻止自动 New，不做正文回扫。
-- 非 current、只读、manual check、active Runtime、Dynamic / Workflow / AUTO 严格路径不能取得 Direct 创建授权。
+测试必须断言当前实际错误结果；不能先加入新字段，再把 fixture 解析失败包装成“复现成功”。
 
-### 12.3 确定性竞态与故障注入
+### 14.2 存储与目标解析契约
 
-使用 fake adapter、可注入存储失败和 barrier/channel 控制顺序，不依赖固定 sleep：
+- 只有新普通 Direct Attempt 初始化 Open。
+- legacy v0 缺 schemaVersion 时仍能读取已知 lifecycle / turnError，但 fence 为 Unknown；第一次合法 mutation 才升级为 v1。
+- 字段缺失、null、未知 variant 和损坏数据均解析为 Unknown，不被写回 Open。
+- fence 局部损坏不会导致整个 snapshot typed parse 失败；未知高版本与损坏 envelope 的写入被拒绝。
+- seal 失败时 fake adapter 的 `session/new` 调用次数为 0。
+- 同一 Attempt 的 Open 只能成功 seal 一次，operationId 和 revision 正确。
+- Sealed / Unknown + no durable reference 永不自动 New，重启、队列重投和普通 retry 下同样成立。
+- Open + no durable reference 但存在 Provider 派生正向证据时只 Blocked，不自动 New；只有本地 user timeline item 时不误判为已物化。
+- 有合法 durable reference 时始终 Continue；worker-ref 缺失可重建，connection generation 变化后重新 attach。
+- identity 别名空值、别名冲突、snapshot / worker-ref 冲突和 Provider 归属不匹配分别固定。
+- lifecycle、title、config、terminal、repair 等事务不能清除 fence、identity 或较新的 turnError。
+- mutation 保留未知顶层字段；旧完整对象 writer 不能清除 v1 字段。
+- Dynamic、Workflow、AUTO、manual check、非 current 和只读路径不能取得 Direct create permit。
+
+### 14.3 确定性竞态与故障注入
+
+使用 fake adapter、可注入存储失败和 barrier / channel 控制顺序，不使用固定 sleep：
 
 | 用例 | 必须断言 |
 |---|---|
-| 两个请求同时进入同一 Attempt | admission / owner 去重与执行串行成立，无重复自动创建 |
-| 第一次锁外观察无身份，进入执行通道时已有身份 | 最终 Continue，使用 Continue Prompt，不发送 bootstrap |
-| Stop 赢得创建授权前的 CAS | session/new = 0 |
-| 授权赢得 CAS 后 Stop | session/new <= 1，取消 turn 不发送 session/prompt |
-| 远端返回身份后 Stop 已终态 | 身份保留、cancelled 不回退，后续 Continue |
-| 创建请求已发送但 Raw 追加失败 | Requested 保留，重启后不自动再次 New |
-| 请求响应丢失 / 进程在各提交边界退出 | 按第 6.5 节矩阵恢复，不补造 NotRequested |
-| 身份提交失败 | 不发送 Prompt，保留具体错误与不确定状态 |
-| 身份成功、worker-ref 失败 | 下次修复引用并 Continue，无新建 |
-| 旧 executor / metadata 晚返回 | 不覆盖新 owner、错误、身份或取消状态 |
+| 两个请求同时进入同一 Attempt | 只有一次 seal 成功，`session/new <= 1` |
+| 锁外观察无 durable reference，进入串行通道时已有 durable reference | 最终 Continue，使用 DirectFollowUp |
+| Stop 先于 seal 事务 | `session/new = 0`，fence 保持 Open |
+| seal 先于 Stop | `session/new <= 1`，停止后不发送旧 turn 的 prompt |
+| Stop 后 identity 迟到 | 旧 lifecycle owner 已失效时仍可按相同 fence createOperationId 提交 durable reference；lifecycle 不回退，下一轮 Continue |
+| seal 后、真正发送前退出 | 重启后 Sealed，不自动 New |
+| 请求发送后 Raw 写入失败 | Sealed 保留，不根据 Raw 缺失再次创建 |
+| Provider 响应丢失 | Sealed + no durable reference，展示明确恢复动作 |
+| durable reference 提交失败 | 不发送 `session/prompt`，错误可查询 |
+| durable reference 成功、worker-ref 失败 | 下次修复引用并 Continue |
+| 旧 snapshot writer 晚到 | CAS / 合并阻止其覆盖新 durable reference、Stop 或错误 |
 
-进程退出窗口优先用子进程夹具验证原子提交后的重启结果；测试外部命令复用项目隐藏窗口创建方式，验证结束清理资源。
+进程退出窗口优先用子进程夹具验证原子提交后的磁盘事实；测试外部命令必须复用项目隐藏窗口创建方式，并在结束后清理。
 
-### 12.4 Prompt 接口验收
+### 14.4 Prompt 请求体验收
 
-必须检查最终发给 fake adapter 的请求体，不只检查 display_text 或返回 SessionMode：
+必须检查 fake adapter 收到的最终请求体：
 
-- bootstrap 含原始需求上下文与当前消息，当前指令优先。
-- UI display_text 只等于本轮输入，timeline 只有一个本轮消息。
-- 首轮 / 本轮附件、引用、角色、workspace 文件与隐藏区段完整且不重复。
-- 普通 Continue 不重发原始需求或首轮隐藏区段。
-- New + UserMessage 不再丢失正文；附件-only 合法发送。
-- 模型、权限和 config options 沿用当前有效值。
-- 原始输入不可用时明确失败，不发送空替代 Prompt。
-- 新模板七语言路径与变量一致，RawAgent 不夹入 Runtime system prompt。
+- DirectInitial 严格保持空 system prompt，只包含冻结的 Direct 用户原始输入、引用和附件，不含 Runtime hidden/profile/goal/output/repair 内容。
+- DirectFollowUp 只包含本轮 durable `promptSubmission`，不重复原始输入。
+- DirectRecoveryBootstrap 同时包含冻结的原始 Direct 用户输入和当前 durable `promptSubmission`，当前指令优先，且不引入 Direct 禁止的隐藏上下文。
+- 锁外闭包、IPC 参数或最新 UI 草稿与 durable submission 不一致时，实际请求必须使用 durable submission。
+- UI timeline 中原始与当前两条用户输入各出现一次；bootstrap 的包装标签不进入气泡，重复恢复不产生重复事件。
+- Direct 契约允许的附件、引用、workspace 文件、模型、权限和 config options 不丢失、不重复；profile/role hidden content 不得借恢复路径重新注入。
+- 目标在等待期间由 Create 变为 Continue 时，实际使用 DirectFollowUp，不发送提前生成的 bootstrap。
+- 原始输入缺失时明确失败，不发送空替代 Prompt。
+- attachment-only 合法发送仍然成立。
 
-### 12.5 VM、前端状态与 DOM 测试
+### 14.5 VM、前端与 DOM 测试
 
-- 普通 / Dynamic 的有效 turnError 空历史保留；null / 畸形错误不能触发假失败 VM。
-- total=0 的有效失败详情结束加载，不进入约 32 秒 missing-session 重试。
-- total>0、events=[] 的失败详情继续首批分页，保留原有 terminal summary 测试。
-- Workflow/AUTO 的初始化失败与中断仍显示对应 shell，DOM 中没有普通 composer。
-- Workflow/AUTO 已建立历史先加载分页，不因详情尚未返回误判初始化中断。
-- Direct 安全未创建暂停可继续输入；未知状态显示重新发起操作与具体原因。
-- 结构化错误文案不退化为通用 missingSessionReason。
-- 新 turn 清除旧错误；旧 scope / generation 响应不覆盖新 turn。
-- “重新发起会话”重复点击只调用一次；新 Run 导航正确，草稿保留，旧队列不重放。
-- Composer 输入或错误关闭不引起无关历史树重渲染，不扩大 Context 订阅。
+- snapshot 存在、无 sessionId、空 timeline 时仍返回 Attempt VM。
+- 有效 turnError 被保留；fence 局部损坏、null 或畸形错误不会制造假失败或吞掉其他可读字段。
+- VM 明确返回 snapshotRevision、materialization、historyState 与 recoveryAction，前端不从 null / 空数组组合猜测。
+- `historyState=empty` 的成功详情进入 ready-empty，不启动约 32 秒重试。
+- `historyState=pending` 时继续首批分页，不误判为空会话。
+- Sealed / Unknown 展示具体错误和“重新发起会话”。
+- Workflow/AUTO 初始化失败与中断仍显示专用 shell，DOM 中没有普通 composer。
+- Dynamic 严格缺引用不 New。
+- 新 turn / 新 revision 不被旧 scope、旧 generation 或迟到 VM 覆盖。
+- “重新发起会话”重复点击只创建一个 Attempt，导航正确，旧数据和草稿策略正确。
+- composer 输入、错误展开和空态变化不引起无关历史树全量重渲染。
 
-### 12.6 命令、构建与客户端验收
+### 14.6 构建与客户端验收
 
-实施时执行并记录：
+1. 运行受影响的 ACP、Runtime、desktop command 和 fake adapter 定向 Rust 测试。
+2. 运行 `acp-chat-events`、`acp-session-shell`、新增 DOM / API 契约测试和 TypeScript 检查。
+3. 完成生产前端构建和项目要求的 Rust 检查。
+4. UI 验证优先使用当前 agent 内置 iab，无法完成时使用已连接 Chrome，最后才使用 agent-browser；deep link 到目标会话。
+5. 验证 Direct initialize 早停后原地恢复、创建结果不确定、具体失败投影、显式新 Attempt、第二条 Continue 和应用重启。
+6. 回归 Workflow/AUTO 初始化失败 / 中断、正常历史和 Dynamic 严格恢复。
+7. 涉及真实 Stop、退出和 Windows 客户端生命周期时补 EXE 验证，不能只用浏览器 mock 代替。
+8. 清理浏览器页面、fake adapter、测试进程、临时 workspace 和临时文件。
 
-1. 受影响 gold-band library、desktop 命令、ACP fake adapter 的定向 Rust 测试。
-2. `acp-chat-events`、`acp-session-shell` 及新增 DOM / API 契约 Web 测试。
-3. TypeScript 检查、生产前端构建、项目要求的 Rust 检查。
-4. 按规则先尝试内置 iab，不可用时再用连接的 Chrome，最后才用 agent-browser；deep link 到目标会话。
-5. 验证 Direct 初始化停止后重发、历史具体报错、结果未知后的重新发起、第二条 Continue 与重启恢复。
-6. 验证 Workflow/AUTO 初始化失败 / 中断与正常历史；Dynamic 严格缺引用不 New。
-7. 涉及真实停止或退出的客户端级行为时，补 EXE 验证，不能只用浏览器 mock 代替。
-8. 清理本次页面、fake adapter、测试进程、临时 workspace 和临时文件。
+## 15. 预计代码与文档影响范围
 
-此前已有测试通过只是基线，不代表上述新增契约已经验收。本方案所有实施验收项当前均未完成。
+### 15.1 预计代码修改
 
-## 13. 代码与文档影响范围
-
-### 13.1 预计代码修改
+第一阶段只涉及 `src-tauri/src/view_models.rs`、`web/src/components/acp/ACPChatDialog.tsx`、必要的 session shell/readiness helper 及对应 Rust/Web 测试；下表其余模块属于第二、三阶段，不得提前修改。
 
 | 模块 | 职责 |
 |---|---|
-| `src/acp/events.rs` | 创建事实类型与短事务、metadata 合并保留、身份提交与 owner/CAS |
-| `src/acp/session_target.rs`（建议）及模块导出 | 统一引用归一化、物化事实解析与有类型目标 |
-| `src/acp/client.rs` | 锁内最终解析、创建授权、早期身份提交、取消与迟到响应 |
-| `src/acp/connection.rs` | 核实传输发送边界；仅在需要暴露有类型发送结果或测试注入时修改 |
-| `src/app/mod.rs`、`node_executor.rs`、普通 Attempt 实际创建写入点 | 新 Attempt 初始化、业务资格、按目标准备 Prompt |
-| `src/provider/mod.rs` | 消除传输方式对内容语义的隐式决定、bootstrap 渲染、Direct 自动重试审计 |
-| `src-tauri/src/commands.rs` | 普通与 Dynamic 调用意图分离，复用 admission 和准备 factory |
-| `src-tauri/src/view_models.rs` 及 conversation 摘要投影 | 有效失败详情、统一身份与 sessionEstablished |
-| 现有 rerun 命令、API、恢复 UI | 复用新 Run 入口，补目标级重复点击保护与导航 |
-| `web/src/components/acp/ACPChatDialog.tsx`、`web/src/lib/acp-session-shell.ts` | 分离加载 ready 与会话 established，保留各模式 shell |
-| `src/prompts/<language>/runtime/`、`web/src/locales/` | bootstrap 模板、结构化错误和恢复操作的七语言文案 |
-| 现有结构化错误目录、Rust / Web 测试 | 注册错误变体，固定发送内容与持久化 / 并发不变量 |
+| `src/acp/events.rs` 或现有 snapshot 领域模块 | raw envelope、schemaVersion、fence 字段级解析、现有事务扩展、durable reference 提交与未知字段保留 |
+| `src/acp/session_target.rs`（建议） | durable reference / attached identity 归一化、deny-only evidence guard、Direct 资格与最终目标解析 |
+| `src/acp/client.rs` | 串行通道内解析、seal permit、创建顺序、迟到 identity |
+| `src/acp/connection.rs` | 禁止 `session/new` 透明重试；按需要提供发送边界测试注入 |
+| 普通 Direct Attempt 创建写入点 | 新 Attempt 初始化 Open |
+| `src/app/mod.rs`、`node_executor.rs` | 只携带 turn identity 的 intent、durable submission 重读、冻结 Direct 输入和按目标准备 Prompt |
+| `src/provider/mod.rs` | 传输目标与内容语义解耦、DirectInitial / DirectFollowUp / DirectRecoveryBootstrap 构造 |
+| `src-tauri/src/commands.rs` | 移除“Attempt 存在即 Continue”，只提交意图 |
+| `src-tauri/src/view_models.rs` | Attempt 级失败投影、snapshotRevision、materialization、historyState 与 recoveryAction |
+| 现有重新执行 / 新会话命令 | 显式新 Attempt 和防重复提交 |
+| `web/src/components/acp/ACPChatDialog.tsx`、`web/src/lib/acp-session-shell.ts` | 查询、物化、历史和 lifecycle 状态拆分 |
+| `src/prompts/<language>/runtime/`、`web/src/locales/` | DirectRecoveryBootstrap 与错误 / 动作文案 |
+| Rust / Web 测试 | 红绿证据、事务、竞态、请求体、VM 和 DOM 契约 |
 
-模块清单是影响面，不要求机械修改每个文件。实施不得为了维持原先“四个文件”限制，把领域逻辑塞进桌面命令或 UI。
+模块清单表示影响面，不要求机械修改每个文件；具体落点以实施时现有职责为准。不得为了少改文件把 ACP 领域逻辑塞进桌面命令或 React 组件。
 
-### 13.2 实施时必须同步的文档
+### 15.2 实施时必须同步的文档
 
-1. `产品设计文档/interaction/app/conversational-runtime.md`：安全未创建、未知与已有身份的用户行为；历史恢复动作；各模式初始化 shell。
-2. `产品设计文档/runtime/control.md`：session identity、创建授权、控制权正交、取消与迟到身份提交。
-3. `开发计划/acp接入/acp-ui.md`：有错误的无 session 详情、分页 readiness 与 shell 区别。
-4. `开发计划/direct模式/Direct模式完整设计与开发方案.md`：修正 8.2 等“一律 Continue”表述，补 bootstrap 内容与恢复边界。
-5. `开发计划/生命周期整理/工作流停止后Runtime控制与自由会话统一技术方案.md`：共享接口影响、严格恢复与终态不回退。
-6. `开发计划/gold-band-mvp-plan.md`：真实红绿证据、实施范围、客户端验收与发布版本。
-7. 与本方案相关的 ACP 存储 / 错误目录说明：增加新字段、错误与不确定状态；若已有同等章节则直接维护原真源。
+1. `产品设计文档/interaction/app/conversational-runtime.md`：把“Direct 未物化时直接重新 session/new”改为 fence 决策；区分 durable reference 与 attached identity；本地 user timeline item 不再单独构成 `sessionEstablished`；补 ready-empty 与显式恢复行为。
+2. `产品设计文档/runtime/control.md`：create fence、session identity、Stop 与迟到提交。
+3. `开发计划/acp接入/acp-ui.md`：Attempt VM、ready-empty、分页和 shell 优先级。
+4. `开发计划/direct模式/Direct模式完整设计与开发方案.md`：把“复用原 ACP session”拆分为已物化 Continue 与未物化 fence 决策；明确 DirectRecoveryBootstrap 是空 system prompt 契约下仅组合两次用户输入的恢复例外，不允许 Runtime hidden/profile/goal 内容。
+5. `开发计划/生命周期整理/工作流停止后Runtime控制与自由会话统一技术方案.md`：共享事务与严格模式隔离。
+6. `开发计划/gold-band-mvp-plan.md`：实施、测试、客户端验收和发布记录。
+7. 已有 ACP snapshot schema、结构化错误目录或存储说明真源：登记 snapshot `schemaVersion=1`、legacy v0、高版本拒写和字段级 Unknown 读取规则。
 
-影响评估文档保留其原版本评审背景；本方案明确吸收实际问题，不把评估中的可选类型设计全部变成强制实现要求。
+第一阶段已同步第 1、3、6 项中与失败投影、ready-empty、分页和 shell 边界相关的内容；其余 create fence、identity、Prompt、schema 与恢复动作相关文档继续在第二、三阶段实施并验证时同步。
 
-## 14. 实施顺序与交付要求
+## 16. 实施顺序
 
-1. 建立第 12.1 节失败证据；核对所有普通 Direct 初始执行、手动追问、队列与自动重试入口。
-2. 先实现 durable 创建事实、身份归一化与合并保留，完成存储 / 崩溃契约测试。
-3. 把最终解析与创建授权移入既有执行通道，补早期身份提交及迟到响应处理。
-4. 实现按最终目标构建的 Prompt，补 bootstrap 模板与实际请求体测试。
-5. 完善全模式失败 VM、前端 ready / established 分离和初始化 shell 回归。
-6. 接通显式新 Run 恢复动作、错误本地化与重复点击保护。
-7. 完成定向测试、生产构建、真实客户端验证与文档同步，最后发布。
+### 16.1 第一阶段：失败投影与空历史加载
 
-顺序用于降低实施风险，不是拆成只上线错误横幅的半成品。完整验收前不得把整个需求标记完成。
+1. 建立第 14.1 节第 3、4 项最小失败测试，保存红灯证据。
+2. 修改 Attempt VM：保留纯 runtime-control placeholder 的 `None` 语义，但 snapshot 已包含非 `none` lifecycle 或合法 `turnError` 时必须返回 VM。
+3. 修改前端 readiness：active 且尚未形成 canonical 内容的初始化继续等待；非 active 且 `eventPage.total = 0` 的成功响应立即进入 `ready-empty`；`total > 0` 且当前页为空继续分页。
+4. 回归 Direct、Workflow/AUTO、Dynamic shell、迟到 query/live generation 防护和现有分页窗口语义。
+5. 运行定向 Rust / Web 测试、TypeScript、生产构建和内置浏览器 deep-link 验收，记录结果并同步相关产品设计与开发计划。
 
-## 15. 方案自评审
+实施结果（2026-10-26）：
 
-### 15.1 过度设计评审
+- [x] 后端只过滤 unavailable、无 sessionId、无可展示 timeline、无 Agent branch、且没有非 `none` lifecycle / 合法 `turnError` 的纯 runtime-control placeholder；未物化失败 Attempt 返回 VM 并保留结构化错误。
+- [x] 前端拆分“详情查询 ready”与“canonical 内容已物化”语义；settled 且 `eventPage.total = 0` 的空响应进入 `ready-empty`，active 空响应（包括携带旧 `turnError`）继续等待，`eventPage.total > 0` 的空当前页继续分页。
+- [x] Workflow/AUTO 初始化中断/失败只消费 canonical 内容 helper，不被空失败 VM 覆盖；现有 Dynamic、迟到响应、分页窗口与重进收敛测试保持通过。
+- [x] `acp.session-restore-reference-missing` 七语言文案移至与错误码一致的 `errors.acp.*`，简体中文明确说明 Provider 会话引用缺失、原会话无法恢复以及新建会话后的恢复动作；错误横幅标题与原因分层展示并使用 alert 语义，不再只显示英文 diagnostic。
+- [x] 提示修正回归：最小映射测试原实现只返回英文 diagnostic；修复后相关 5 个 Web 测试文件 265/265、生产构建与 diff 校验通过。内置 iab 在 787px 视口验证标题/原因分层且无横向溢出；精确错误码文案由 DOM 用例验收。
+- [x] 红灯：Rust 最小用例在原实现上得到 `None`；Web idle/terminal 空响应仍不 ready；补充的 active + stale `turnError` 用例在原实现上错误返回 ready。
+- [x] 绿灯：Rust `acp_session_vm_` 过滤用例 5/5；Web 受影响 5 个文件 300/300，其中 DOM 用例固定未物化失败首个响应显示错误且 180ms 后仍只有 1 次查询，纯 placeholder 仍按既有路径重试。
+- [x] 静态与构建：`cargo fmt --all -- --check`、`cargo check -p gold-band-desktop --tests`、`npm run web:build`、`git diff --check` 通过。Rust 仅有 2 条既有 dead-code warning；Vite 仅有既有 dynamic import / 大 chunk warning。
+- [x] 浏览器：内置 iab deep link 验证 Direct settled 正文、active“回复生成中”、Workflow 暂停专用继续入口，以及 720px 窄窗口无横向溢出、恢复宽度后状态不丢失。浏览器 preview 没有“未物化 + 空 timeline 失败”fixture，该精确路径由 DOM 测试验收；未打包或验证真实 EXE 现场。
+- [x] 测试浏览器、Vite 开发服务和临时资源已清理。
+- [x] 完成后自评审：复用既有 snapshot lifecycle、Attempt VM、`eventPage.total`、readiness 重试和 shell 判定，不新增 DTO、持久字段、状态机、缓存、队列或依赖；每次查询只增加常数级字段判断，失败场景减少重复请求，timeline I/O、窗口上限与 React 订阅范围不变，无需专项 benchmark。
 
-结论：一项新增 durable 事实有必要；其余复用现有机制。
+### 16.2 第二阶段：Direct 安全恢复闭环
 
-- 现有 identity / revision / lifecycle 无法表达“没有创建过”与“创建结果丢失”，这是新增事实的具体依据。
-- 新事实放回已有 snapshot，由同一 ACP 领域写入；不新增 aggregate、会话主键、生命周期状态机、独立日志库、队列、缓存或后台修复服务。
-- Continue 引用类型、目标枚举和 Prompt render mode 只封装真实接口不变量，不为假设性 Provider 能力建扩展框架。
-- 保留现有 AtomicWriteFile、serde、owner/CAS、attempt prompt 通道、单实例机制、模板渲染和 shadcn/prompt-kit 错误 / 按钮组件。
-- 不需要新开源组件解决项目特定恢复规则；原子提交、结构化序列化与基础 UI 均已有成熟依赖，优先完善它们的使用契约。
-- 不能因用户允许完整修复而顺便重构整个 ACP、Runtime、历史分页或调度框架。
+1. 建立第 14.1 节第 1、2 项红灯。
+2. 实现 create fence、durable reference 与现有 metadata transaction 的必要写入保护及崩溃测试。
+3. 把 Direct intent 的最终目标解析移入 Attempt Prompt 串行通道，实现 deny-only evidence guard、seal permit 和 durable reference 立即提交。
+4. 解耦 Provider 传输与 Prompt 内容，实现从冻结 Direct 输入和 durable submission 构造的 DirectRecoveryBootstrap，并完成请求体与双用户事件测试。
+5. 接通结构化恢复错误和必要的桌面恢复动作，完成真实 Stop、重启和 EXE 验收。
 
-### 15.2 性能影响评审
+### 16.3 第三阶段：基础设施治理
 
-- 数据规模：每次恢复只涉及当前一个 Attempt 的固定小元数据、一个原始 requirement 与现有输入上限内的附件；不会随 workspace 总历史增长。
-- 目标解析复杂度 O(1)，不读 Raw 正文、不全量扫描 timeline / usage，不引入 N+1、诊断回扫、能力发现或全局启动迁移。
-- 普通 Continue 不构建 bootstrap，不新增创建授权写入；既有恢复链可能进行的 usage 修复应独立计量，不能宣称整个调用链永不读历史。
-- 受保护的首次 New 增加固定次数的授权与身份可靠提交；Provider 网络等待与附件处理不占 metadata / workspace 短锁。
-- 文件与解析操作进入既有 blocking worker，不阻塞 Tauri 事件线程或 UI 主线程。
-- 前端使用现有 generation / revision 和分页水位，不增加轮询、不扩大全局状态订阅；确定失败消除无效长重试。
-- bootstrap 内容增加只发生在首次安全恢复，沿用已有输入与附件边界，不累积所有失败消息，不做无界缓存。
-- 验收固定文件访问次数、无 Raw / 全历史读取、锁外网络等待和失败查询次数；记录新增原子写入耗时与正常 Continue 准备耗时。
-- 当前不预设存在显著性能瓶颈，不强制无意义 benchmark；若实测磁盘提交或准备路径形成明显退化，再按规则记录规模、基线和目标并专项验证。
+1. 根据第二阶段暴露的真实写入边界决定是否引入 snapshot schemaVersion 和更完整的 typed mutation；没有明确不变量需求时不扩建。
+2. 收口剩余旧完整对象 writer、完成 identity 类型传播和跨版本拒写测试。
+3. 同步第 15.2 节其余产品设计与开发计划，记录真实红绿证据后再标记整体完成。
 
-## 16. 发布、旧数据与回退
+顺序用于降低风险，不代表可以只上线错误提示或只放宽 New 分支。create fence、identity、Prompt 内容、失败投影和显式恢复构成一个完整正确性闭环。
 
-- 本次包含 snapshot 新事实，不再沿用旧方案“无持久化变化”的发布说明。
-- 不对历史数据补造 NotRequested，不进行全量迁移；字段缺失的历史按 Unknown 保守恢复。
-- 不删除旧 worker-ref、snapshot、timeline、Raw 或 diagnostics，不重写历史失败来伪装修复成功。
-- 上线前保留测试现场与必要快照备份，验证正常启动、崩溃重启和旧数据读取。
-- 不让不同版本同时写同一 workspace。旧版本可能丢弃未知字段，回退后重新升级时字段缺失必须仍是 Unknown，不能默认允许 New。
-- 回退应保留新事实与身份；不能通过删字段、清空 session 或重置创建状态恢复旧行为。
-- Provider 已创建但身份永远丢失的远端会话，明确保留为未知外部结果；不承诺无条件清理，也不自动重复业务执行。
+## 17. 过度设计与性能自评审
 
-## 17. 完整验收清单
+### 17.1 过度设计评审
 
-- [ ] 新 Direct Attempt 在任何 Provider 副作用前可靠初始化创建事实。
-- [ ] NotRequested 与 Unknown 可区分，历史缺失事实不会被补成“从未请求”。
-- [ ] session/new 前创建授权已提交，授权写入失败时无协议副作用。
-- [ ] Requested + no identity 不会自动重发，重启、重投与 Raw 失败均成立。
-- [ ] 有可信身份时 Continue；派生引用缺失可修复，身份冲突明确失败。
-- [ ] Stop 先于授权可阻止创建；授权后的迟到身份可保存且不复活旧 turn。
-- [ ] 最终目标在既有执行通道内决定，目标变化时正文与附件随之正确选择。
-- [ ] bootstrap 实际请求包含原需求上下文与本轮消息，UI 只显示本轮消息。
-- [ ] 附件、引用、角色、workspace 文件、首轮隐藏区段与配置均有请求体测试。
-- [ ] 有效 turnError 不被 VM 丢弃，真实空历史首次有效详情后结束加载。
-- [ ] 有历史未加载时不提前空白 ready，scope / generation 与终态单调成立。
-- [ ] Workflow/AUTO 初始化失败 / 中断 shell 与已建立历史均回归通过。
-- [ ] Dynamic 和严格 runtime continue 不会误走 Direct 自动创建。
-- [ ] 历史未知与创建结果未知均有显式新 Run 恢复入口，保留旧数据与草稿。
-- [ ] Prompt Queue 去重、排空与失败策略保持正确，不暗中迁移或重放。
-- [ ] 新错误与模板七语言齐全，没有后端对客文案或长 Prompt 硬编码。
-- [ ] 红绿证据、故障注入、Rust / Web 测试、类型检查与生产构建完成。
-- [ ] 内置浏览器与必要 EXE 验证完成，测试资源已清理。
-- [ ] 产品设计、开发计划、错误 / 存储说明和发布记录同步。
-- [ ] 完成后重新进行过度设计与性能影响自评审，记录真实结果。
+结论：新增一个单调 create fence、snapshot envelope version 和两个不同生命周期的 identity 类型，是解决外部创建副作用不确定性与连接代隔离的最小必要设计；snapshot 写入只扩展现有 metadata transaction，不新增第二套事务或 lifecycle。
+
+- 现有 sessionId、revision 和 lifecycle 无法表达“尚未授权创建”与“已经可能发出创建”之间的差异，因此 fence 有明确不变量依据。
+- fence 不复制 sessionId、availability 或 lifecycle，只表达一次性发送权。
+- 复用既有 Attempt Prompt 串行通道、metadata file lock、owner / revision、原子文件写入、Prompt Queue 和重新执行入口。
+- `ValidatedDurableProviderSessionReference` 与 `AttachedProviderSessionIdentity` 分别封装跨进程恢复和当前连接代 attachment 的现有真实不变量，不新增 aggregate 或复制 session 数据。
+- snapshot schemaVersion 只服务该单文件的安全演进；不建设通用迁移平台，也不与 Runtime node 的 `acp_storage_schema_version` 合并成新的全局版本系统。
+- DirectInitial、DirectFollowUp、DirectRecoveryBootstrap 和 typed permit 只封装真实接口不变量，不构建通用工作流框架。
+- 不新增数据库、后台 repair 服务、全局缓存、锁表、队列或 Provider 专用适配层。
+- 当前依赖已经能完成 serde、原子写入、结构化错误和 UI 控件，不需要引入新的开源库；实施前仍应核实既有 atomic-write-file 在 Windows 目标平台的替换与 flush 保证。
+
+### 17.2 性能影响评审
+
+- 数据规模：每次只读取和写入当前一个 Attempt 的固定小 snapshot；DirectRecoveryBootstrap 只读取该 Attempt 冻结输入和当前 durable submission，不随 workspace 总历史增长。
+- 目标解析和 identity 归一化为 O(1)，不扫描 Raw、全部 timeline、usage 或所有 Task。
+- 首次创建增加两次必要可靠提交：seal 和 identity；正常 Continue 不写 fence，也不构建 bootstrap。
+- 网络 initialize、`session/new`、附件处理和模型响应不持有 snapshot 文件锁。
+- snapshot、worker-ref、timeline index 和相关文件读取继续运行在 blocking worker pool，不占用 Tauri async/UI 调度线程。
+- deny-only evidence guard 只读取当前 snapshot、worker-ref 与有界 timeline/index 摘要，不扫描完整 Raw、timeline、usage 或全部 Task。
+- 不引入 N+1 请求、全量启动迁移、无界缓存、无界队列或重复诊断扫描。
+- 前端删除约 32 秒轮询，减少失败场景请求量；ready-empty 不增加全局订阅范围。
+- timeline 仍按现有分页加载；Attempt VM 只增加少量状态字段，不把历史正文嵌入摘要接口。
+- 实施验收应记录首次创建新增写入次数、正常 Continue 路径是否保持原有 I/O 量、失败查询请求次数和 React 渲染范围。
+- 当前没有证据表明需要 benchmark 或新缓存；若实测原子提交或 Prompt 准备明显退化，再定义数据规模、基线与目标后专项优化。
+
+## 18. 发布、旧数据与回退
+
+- snapshot `schemaVersion=1` 是向前演进边界。旧数据不全量迁移，缺版本按 legacy v0、缺 fence 按 Unknown 保守读取；只有发生合法 mutation 时才原位升级并保留未知字段。
+- 未知高版本允许只读投影安全诊断，但拒绝 mutation；不得由旧实现整份覆盖。
+- 不根据 Raw、timeline、文件时间戳或诊断文本补造 Open。
+- 能结合 canonical 配置构造可信 durable reference 的旧数据继续 Continue，并可在写路径补齐 snapshot / worker-ref；旧 attached identity 不跨 connection generation 复用。
+- 无 durable reference 的旧数据通过 Attempt VM 显示具体状态和“重新发起会话”。
+- 不删除或重写旧 snapshot、worker-ref、timeline、Raw、附件和错误来伪装修复成功。
+- 不允许新旧版本同时写同一 workspace。旧版本可能不保留新字段；回退后再升级时字段缺失仍必须是 Unknown。
+- 回退不能通过删除 fence、清空 durable reference 或重开旧 Attempt 恢复旧行为。
+- Provider 已创建但 durable reference 永远丢失的远端空会话保持外部未知结果；除非 Provider 将来提供可验证查询 / 幂等能力，否则客户端不按名称猜测、接管或清理。
+- 发布前保留测试现场和必要备份，验证旧数据读取、正常启动、崩溃重启和跨版本拒绝写入行为。
+
+## 19. 完整验收清单
+
+- [ ] 当前四个缺陷均有修改前红灯和修改后绿灯证据。
+- [ ] 新普通 Direct Attempt 在任何 Provider 副作用前可靠初始化 Open。
+- [ ] snapshot schemaVersion=1、legacy v0 读取、字段级 Unknown 和未知高版本拒写均有契约测试。
+- [ ] 缺失、null、损坏和未知 fence 均为 Unknown，不被默认或 repair 为 Open。
+- [ ] Open 只能原子转换一次 Sealed；seal 失败时 `session/new = 0`。
+- [ ] typed permit 绑定 Attempt、operationId、配置和 revision，`session/new` 无透明重试。
+- [ ] Sealed / Unknown + no durable reference 在重启、重投和并发下都不会自动 New。
+- [ ] Open + no durable reference 但存在 Provider 派生正向证据时只拒绝创建；本地 user event 不误判为 session 已物化。
+- [ ] durable reference 与 attached identity 分层正确；connection generation 变化时重新 attach，worker-ref 缺失可修复，冲突明确失败。
+- [ ] durable reference 在 Provider 返回后立即提交；Stop 后旧 owner 失效时仍按 fence createOperationId 保存，且不复活 lifecycle。
+- [ ] snapshot 所有相关写路径使用统一事务，不再由旧对象整份覆盖新事实。
+- [ ] 最终目标在 Attempt Prompt 串行通道内解析，命令层不按 Attempt 存在推断 Continue。
+- [ ] DirectInitial、DirectFollowUp、DirectRecoveryBootstrap 与 New / Continue 正交。
+- [ ] DirectRecoveryBootstrap 只包含冻结的原始 Direct 用户输入和当前 durable promptSubmission，system prompt 为空且不含 Runtime hidden/profile/goal/output/repair 内容。
+- [ ] UI timeline 中原始与当前用户输入各显示一次，bootstrap 包装标签不进入气泡，重试不产生重复事件。
+- [ ] 有效 turnError 在无 sessionId、空 timeline 时仍进入 Attempt VM。
+- [ ] Attempt VM 明确包含 snapshotRevision、materialization、historyState 和 recoveryAction。
+- [ ] `historyState=empty` 进入 ready-empty，不再执行约 32 秒内容驱动轮询。
+- [ ] 有历史未加载时继续分页，不误判真实空历史。
+- [ ] Workflow/AUTO 初始化 shell 和 Dynamic 严格恢复均回归通过。
+- [ ] Sealed / Unknown 提供桌面“重新发起会话”，创建新 Attempt，不重置旧 fence。
+- [ ] 新 Attempt 防重复创建，旧数据、草稿和 queue 按契约保留且不暗中重放。
+- [ ] 结构化错误只有 code / params / recovery / diagnostic，前端七语言本地化。
+- [ ] 新增或修改 Prompt 位于 `src/prompts/`，遵守 prompt authoring 和七语言规则。
+- [ ] 定向 Rust / Web 测试、类型检查、生产构建和故障注入通过。
+- [ ] 内置浏览器和必要 EXE 客户端验收完成，测试资源已清理。
+- [ ] 产品设计文档、关联开发计划、schema 与错误目录在实现完成时同步。
+- [ ] 完成后重新进行过度设计与性能影响评审，并记录真实数据。

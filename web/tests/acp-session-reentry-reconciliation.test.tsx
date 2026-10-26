@@ -1831,6 +1831,46 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('renders an unmaterialized terminal failure without readiness retries', async () => {
+    const failed = {
+      ...session([], 'failed'),
+      sessionId: null,
+      turnError: {
+        code: { domain: 'provider', code: 'acp.session-restore-reference-missing' },
+        domain: 'provider',
+        recovery: 'manual' as const,
+        params: { attemptId: locator.attemptId },
+        diagnostic: 'provider session was not materialized before the turn stopped',
+      },
+    };
+    const queryStates: string[] = [];
+    vi.mocked(getAcpSession).mockResolvedValue(failed);
+
+    const { container, root } = await renderDialog(
+      null,
+      'root',
+      (state) => queryStates.push(state),
+    );
+    try {
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      expect(queryStates.at(-1)).toBe('success');
+      expect(container.textContent).toContain('ACP 会话失败');
+      expect(container.textContent).toContain(
+        '当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。',
+      );
+      expect(container.textContent).toContain('provider session was not materialized before the turn stopped');
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('ACP 会话失败');
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('replays the latest background text and tool event over a stale snapshot on the first entry', async () => {
     const prompt = event('prompt-1', 1, 'userTextDelta', '检查项目', {
       raw: { source: 'goldBandPrompt', promptId: 'prompt-1' },

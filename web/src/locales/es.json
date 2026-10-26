@@ -2529,7 +2529,12 @@
     "im": {
       "title": "Intervención remota y notificaciones de IM",
       "enabled": "Activado",
-      "privateBinding": "Chat privado: {{name}}",
+      "channelEnabled": "Activar la intervención remota de {{channel}}",
+      "channelSubtitle": "Bot · Chat privado",
+      "expandChannel": "Expandir la configuración de {{channel}}",
+      "collapseChannel": "Contraer la configuración de {{channel}}",
+      "receiverAccount": "Cuenta receptora",
+      "robotName": "Nombre del bot",
       "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificación",
       "notificationGroups": {
@@ -2565,11 +2570,11 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
-          "identity": "ID del bot: {{id}}"
+          "identityLabel": "ID del bot"
         },
         "feishu": {
           "title": "Feishu / Lark",
-          "identity": "App ID: {{id}}",
+          "identityLabel": "App ID",
           "singleDeviceHint": "Conecta cada bot a un solo dispositivo para evitar que las acciones lleguen a otro dispositivo.",
           "permissions": {
             "title": "La conexión requiere estos permisos",

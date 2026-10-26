@@ -158,7 +158,6 @@ describe('IM settings production interaction', () => {
     expect(dialog.textContent).toContain('读取你发给机器人的私聊消息');
     expect(dialog.textContent).toContain('更新机器人发送的卡片');
     expect(dialog.textContent).toContain('读取你的姓名，用于显示接收账号');
-    expect(host.textContent).toContain('一个机器人只连接一台设备');
     const consent = [...dialog.querySelectorAll('button')].find((b) => b.textContent === '同意并生成二维码')!;
     await act(async () => consent.click());
     expect(api.startFeishuScanAuthorization).toHaveBeenCalledWith(expect.any(String), 'selectOrCreate');
@@ -229,7 +228,7 @@ describe('IM settings production interaction', () => {
     const pending = createDeferred<never>();
     api.startFeishuScanAuthorization.mockReturnValue(pending.promise);
     await renderSettings();
-    const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
+    const menu = host.querySelector<HTMLButtonElement>('[data-im-configuration-menu]')!;
     await act(async () => {
       menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
     });
@@ -310,6 +309,102 @@ describe('IM settings production interaction', () => {
     expect(host.querySelector('[data-im-status]')).toBeNull();
   });
 
+  it('orders channels as WeCom then Feishu and keeps both cards independently collapsed by default', async () => {
+    const weCom = settingsFixture().channels[0];
+    weCom.binding = { destinationId: 'owner', conversationId: 'wecom-chat', authorizedActorId: 'owner', displayName: 'Owner' };
+    weCom.connection = {
+      ...weCom.connection!,
+      binding: { destinationId: 'owner', conversationId: 'wecom-chat', actorId: 'owner', isPrivate: true },
+    };
+    const feishu = structuredClone(weCom);
+    feishu.kind = 'feishu';
+    feishu.binding = { ...feishu.binding!, conversationId: 'feishu-chat' };
+    feishu.connection = {
+      ...feishu.connection!, kind: 'feishu',
+      binding: { ...feishu.connection!.binding!, conversationId: 'feishu-chat' },
+    };
+    currentSettings = { channels: [feishu, weCom] };
+
+    await renderSettings();
+
+    const cards = [...host.querySelectorAll<HTMLElement>('[data-im-channel]')];
+    expect(cards.map((card) => card.dataset.imChannel)).toEqual(['weCom', 'feishu']);
+
+    const weComToggle = host.querySelector<HTMLButtonElement>('[aria-label="展开企业微信设置"]')!;
+    const feishuToggle = host.querySelector<HTMLButtonElement>('[aria-label="展开飞书设置"]')!;
+    expect(weComToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(feishuToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(cards[0].querySelector('[data-slot="collapsible-content"]')?.hasAttribute('hidden')).toBe(true);
+    expect(cards[1].querySelector('[data-slot="collapsible-content"]')?.hasAttribute('hidden')).toBe(true);
+
+    await act(async () => weComToggle.click());
+    expect(weComToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(feishuToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(cards[0].querySelector('[data-slot="collapsible-content"]')?.hasAttribute('hidden')).toBe(false);
+    expect(cards[1].querySelector('[data-slot="collapsible-content"]')?.hasAttribute('hidden')).toBe(true);
+    expect(cards[0].querySelector('[data-im-status="ready"]')?.className).toContain('text-gold-success');
+    expect(cards[0].querySelector('[data-im-guidance="ready"]')?.textContent).toContain('远程干预和已启用的通知');
+
+    await act(async () => feishuToggle.click());
+    expect(weComToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(feishuToggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('places configuration management before notification types and closes its menu when collapsed', async () => {
+    await renderSettings();
+    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="展开企业微信设置"]')!;
+    await act(async () => toggle.click());
+
+    const card = host.querySelector<HTMLElement>('[data-im-channel="weCom"]')!;
+    const configuration = card.querySelector('[data-im-configuration-section]')!;
+    const notifications = card.querySelector('fieldset')!;
+    expect(configuration.compareDocumentPosition(notifications) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const menu = card.querySelector<HTMLButtonElement>('[data-im-configuration-menu]')!;
+    expect(menu.dataset.variant).toBe('secondary');
+    await act(async () => {
+      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+    });
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+    await act(async () => toggle.click());
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it('stacks notification groups while laying out each group options horizontally', async () => {
+    await renderSettings();
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="展开企业微信设置"]')!.click());
+
+    const fieldset = host.querySelector('fieldset')!;
+    const groups = [...fieldset.querySelectorAll<HTMLElement>(':scope > div > div')];
+    expect(groups).toHaveLength(2);
+    expect(fieldset.querySelector(':scope > div')?.className).toContain('space-y-3');
+    for (const group of groups) {
+      const options = group.lastElementChild as HTMLElement;
+      expect(options.className).toContain('flex');
+      expect(options.className).toContain('flex-wrap');
+      expect(options.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
+    }
+  });
+
+  it('returns to the default collapsed state after the settings content remounts', async () => {
+    await renderSettings();
+    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="展开企业微信设置"]')!;
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <ImIntegrationSettings />
+        </TooltipProvider>,
+      );
+    });
+
+    expect(host.querySelector('[aria-label="展开企业微信设置"]')?.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('renders cached IM settings on the first paint without a loading flash', async () => {
     writeImSettingsCache(settingsFixture(false));
     mockPendingImSettings();
@@ -382,10 +477,12 @@ describe('IM settings production interaction', () => {
     enabledResult = new Promise((resolve) => { resolveEnabled = resolve; });
     await renderSettings();
     const toggle = host.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    const collapseToggle = host.querySelector<HTMLButtonElement>('[aria-label="展开企业微信设置"]')!;
 
     await act(async () => toggle.click());
     expect(toggle.getAttribute('aria-busy')).toBe('true');
     expect(toggle.disabled).toBe(true);
+    expect(collapseToggle.getAttribute('aria-expanded')).toBe('false');
 
     const paused = settingsFixture();
     paused.channels[0].enabled = false;
@@ -437,7 +534,7 @@ describe('IM settings production interaction', () => {
       isPrivate: true,
     };
     await renderSettings();
-    const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
+    const menu = host.querySelector<HTMLButtonElement>('[data-im-configuration-menu]')!;
 
     act(() => {
       menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
@@ -467,7 +564,7 @@ describe('IM settings production interaction', () => {
       binding: { destinationId: 'owner', conversationId: 'chat', actorId: 'owner', isPrivate: true },
     };
     await renderSettings();
-    const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
+    const menu = host.querySelector<HTMLButtonElement>('[data-im-configuration-menu]')!;
     await act(async () => {
       menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
     });
@@ -502,7 +599,7 @@ describe('IM settings production interaction', () => {
         </TooltipProvider>,
       );
     });
-    const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
+    const menu = host.querySelector<HTMLButtonElement>('[data-im-configuration-menu]')!;
 
     act(() => {
       menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));

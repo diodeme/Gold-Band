@@ -2529,7 +2529,12 @@
     "im": {
       "title": "IM 遠端干預與通知",
       "enabled": "啟用",
-      "privateBinding": "一對一私聊：{{name}}",
+      "channelEnabled": "啟用{{channel}}遠端干預",
+      "channelSubtitle": "機器人 · 一對一私聊",
+      "expandChannel": "展開{{channel}}設定",
+      "collapseChannel": "收合{{channel}}設定",
+      "receiverAccount": "接收帳號",
+      "robotName": "機器人名稱",
       "privateBindingUnnamed": "已綁定一對一私聊",
       "notificationKinds": "通知類型",
       "notificationGroups": {
@@ -2565,11 +2570,11 @@
       "channels": {
         "weCom": {
           "title": "企業微信",
-          "identity": "機器人 ID：{{id}}"
+          "identityLabel": "機器人 ID"
         },
         "feishu": {
           "title": "飛書",
-          "identity": "App ID：{{id}}",
+          "identityLabel": "App ID",
           "singleDeviceHint": "一個機器人只連線一台裝置，避免操作被其他裝置接收。",
           "permissions": {
             "title": "連線需要以下權限",

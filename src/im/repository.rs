@@ -6,15 +6,33 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use super::{
     ClaimedImDelivery, ImChannelKind, ImDelivery, ImDeliveryBinding, ImDeliveryPayload,
-    ImDeliveryState, ImDestination, ImInboundActionResult, ImNotificationKind,
-    MAX_IM_PRESENTATION_BYTES, desktop_resolution_event_id,
+    ImDeliveryState, ImDestination, ImInboundActionResult, ImInboundOutcome, ImNotificationKind,
+    ImResolutionDispatch, MAX_IM_PRESENTATION_BYTES, resolution_event_id,
 };
 
-const IM_SCHEMA_VERSION: i64 = 3;
+const IM_SCHEMA_VERSION: i64 = 5;
+/// Schema version that introduced payload v2; older intervention payloads and
+/// `desktop-resolved` records cannot be decoded and are removed on upgrade.
+const IM_PAYLOAD_V2_SCHEMA_VERSION: i64 = 4;
+const IM_RESOLUTION_CONTENT_SCHEMA_VERSION: i64 = 5;
 pub const DEFAULT_IM_OUTBOX_ACTIVE_LIMIT: usize = 1_000;
 pub const MAX_IM_DUE_BATCH: usize = 32;
 pub const MAX_IM_CLEANUP_BATCH: usize = 200;
 const IM_DELIVERY_DISPLAY_REF_MODULUS: i64 = 10_000;
+/// Predicate on an `im_outbox` row: an intervention source whose per-target
+/// resolution already exists. Such a source must never be (re)sent.
+fn source_is_resolved_sql() -> String {
+    // The suffix is a compile-time constant, not caller input.
+    let suffix = resolution_event_id("");
+    format!(
+        "(payload_kind = 'intervention' AND EXISTS (
+            SELECT 1 FROM im_outbox AS resolution
+            WHERE resolution.channel_kind = im_outbox.channel_kind
+              AND resolution.destination_id = im_outbox.destination_id
+              AND resolution.notification_kind = im_outbox.notification_kind
+              AND resolution.canonical_event_id = im_outbox.canonical_event_id || '{suffix}'))"
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImDeliveryInsertResult {
@@ -184,7 +202,7 @@ impl ImRepository {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             if matches!(&delivery.payload, ImDeliveryPayload::Intervention { .. }) {
-                let terminal_event_id = desktop_resolution_event_id(&delivery.canonical_event_id);
+                let terminal_event_id = resolution_event_id(&delivery.canonical_event_id);
                 let terminal_delivery_id = ImDelivery::deterministic_id(
                     delivery.channel,
                     &delivery.destination.destination_id,
@@ -292,10 +310,57 @@ impl ImRepository {
         })
     }
 
+    /// Intervention sources that are still actionable on their channel: not
+    /// expired, not dead-lettered and without a per-target resolution. Bounded
+    /// by the active outbox limit, so a settlement pass stays small.
+    pub fn open_intervention_sources(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<ImDelivery>, ImRepositoryError> {
+        let resolved = source_is_resolved_sql();
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT rowid, delivery_id, channel_kind, destination_json,
+                        notification_kind, canonical_event_id, payload_json,
+                        expires_at_ms, attempt_count
+                 FROM im_outbox
+                 WHERE state IN ('pending', 'sending', 'sent')
+                   AND payload_kind = 'intervention'
+                   AND expires_at_ms > ?1
+                   AND NOT {resolved}
+                 ORDER BY canonical_event_id, channel_kind, destination_id
+                 LIMIT ?2"
+            ))?;
+            let rows = statement.query_map(params![now_ms, self.active_limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(2)?,
+                    StoredDeliveryRow {
+                        row_id: row.get(0)?,
+                        delivery_id: row.get(1)?,
+                        destination_json: row.get(3)?,
+                        notification_kind: row.get(4)?,
+                        canonical_event_id: row.get(5)?,
+                        payload_json: row.get(6)?,
+                        expires_at_ms: row.get(7)?,
+                        attempt_count: row.get(8)?,
+                    },
+                ))
+            })?;
+            rows.map(|row| {
+                let (channel, row) = row?;
+                let channel =
+                    ImChannelKind::parse(&channel).ok_or(ImRepositoryError::InvalidStoredData)?;
+                row.into_delivery(channel)
+            })
+            .collect()
+        })
+    }
+
     pub fn enqueue_resolution_and_expire_pending_source(
         &self,
         source_event_id: &str,
         resolution: &ImDelivery,
+        dispatch: ImResolutionDispatch,
         now_ms: i64,
     ) -> Result<ImDeliveryInsertResult, ImRepositoryError> {
         validate_delivery(resolution)?;
@@ -346,16 +411,22 @@ impl ImRepository {
                 transaction.commit()?;
                 return Ok(ImDeliveryInsertResult::Duplicate);
             }
-            let active = transaction.query_row(
-                "SELECT COUNT(*) FROM im_outbox WHERE state IN ('pending', 'sending')",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?;
-            if active >= self.active_limit as i64 {
-                return Err(ImRepositoryError::Capacity {
-                    limit: self.active_limit,
-                });
-            }
+            let state = match dispatch {
+                ImResolutionDispatch::Send => {
+                    let active = transaction.query_row(
+                        "SELECT COUNT(*) FROM im_outbox WHERE state IN ('pending', 'sending')",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    if active >= self.active_limit as i64 {
+                        return Err(ImRepositoryError::Capacity {
+                            limit: self.active_limit,
+                        });
+                    }
+                    ImDeliveryState::Pending
+                }
+                ImResolutionDispatch::TombstoneOnly => ImDeliveryState::Expired,
+            };
             transaction.execute(
                 "INSERT INTO im_outbox (
                     delivery_id, channel_kind, destination_id, destination_json,
@@ -363,7 +434,7 @@ impl ImRepository {
                     state, attempt_count, next_attempt_at_ms, expires_at_ms,
                     created_at_ms, updated_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                           'pending', 0, ?9, ?10, ?9, ?9)",
+                           ?11, 0, ?9, ?10, ?9, ?9)",
                 params![
                     resolution.delivery_id,
                     resolution.channel.as_str(),
@@ -375,6 +446,7 @@ impl ImRepository {
                     payload_json,
                     now_ms,
                     resolution.expires_at_ms,
+                    state.as_str(),
                 ],
             )?;
             transaction.commit()?;
@@ -501,17 +573,22 @@ impl ImRepository {
         requested_limit: usize,
     ) -> Result<usize, ImRepositoryError> {
         let limit = requested_limit.clamp(1, MAX_IM_CLEANUP_BATCH);
+        let resolved = source_is_resolved_sql();
         self.with_connection(|connection| {
             let changed = connection.execute(
-                "UPDATE im_outbox
-                 SET state = CASE WHEN expires_at_ms <= ?1 THEN 'expired' ELSE 'pending' END,
-                     next_attempt_at_ms = CASE WHEN expires_at_ms <= ?1 THEN NULL ELSE ?1 END,
+                &format!(
+                    "UPDATE im_outbox
+                 SET state = CASE WHEN expires_at_ms <= ?1 OR {resolved}
+                                  THEN 'expired' ELSE 'pending' END,
+                     next_attempt_at_ms = CASE WHEN expires_at_ms <= ?1 OR {resolved}
+                                  THEN NULL ELSE ?1 END,
                      updated_at_ms = ?1
                  WHERE delivery_id IN (
                     SELECT delivery_id FROM im_outbox INDEXED BY idx_im_outbox_due
                     WHERE state = 'sending' AND next_attempt_at_ms <= ?1
                     ORDER BY next_attempt_at_ms, delivery_id LIMIT ?2
-                 )",
+                 )"
+                ),
                 params![now_ms, limit],
             )?;
             Ok(changed)
@@ -586,12 +663,20 @@ impl ImRepository {
         } else {
             ImDeliveryState::DeadLetter
         };
+        let resolved = source_is_resolved_sql();
         self.with_connection(|connection| {
+            // A retry never resurrects a source whose resolution is already
+            // recorded; it expires in the same statement instead.
             let changed = connection.execute(
-                "UPDATE im_outbox
-                 SET state = ?1, next_attempt_at_ms = ?2,
+                &format!(
+                    "UPDATE im_outbox
+                 SET state = CASE WHEN ?1 = 'pending' AND {resolved}
+                                  THEN 'expired' ELSE ?1 END,
+                     next_attempt_at_ms = CASE WHEN ?1 = 'pending' AND {resolved}
+                                  THEN NULL ELSE ?2 END,
                      last_error_code = ?3, updated_at_ms = ?4
-                 WHERE delivery_id = ?5 AND state = 'sending' AND attempt_count = ?6",
+                 WHERE delivery_id = ?5 AND state = 'sending' AND attempt_count = ?6"
+                ),
                 params![
                     state.as_str(),
                     retry_at_ms,
@@ -646,6 +731,48 @@ impl ImRepository {
         })
     }
 
+    /// Reschedules a claimed delivery whose prerequisite has not settled yet.
+    /// This is not a connector failure and must not overwrite its error history.
+    pub(crate) fn defer_delivery(
+        &self,
+        delivery_id: &str,
+        expected_attempt_count: u32,
+        retry_at_ms: i64,
+        now_ms: i64,
+    ) -> Result<ImDeliverySettlementResult, ImRepositoryError> {
+        self.with_connection(|connection| {
+            let changed = connection.execute(
+                "UPDATE im_outbox SET state = 'pending', next_attempt_at_ms = ?1, updated_at_ms = ?2
+                 WHERE delivery_id = ?3 AND state = 'sending' AND attempt_count = ?4",
+                params![retry_at_ms, now_ms, delivery_id, expected_attempt_count],
+            )?;
+            Ok(if changed == 1 {
+                ImDeliverySettlementResult::Applied
+            } else {
+                ImDeliverySettlementResult::StaleClaim
+            })
+        })
+    }
+
+    pub(crate) fn delivery_state(
+        &self,
+        delivery_id: &str,
+    ) -> Result<Option<ImDeliveryState>, ImRepositoryError> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state FROM im_outbox WHERE delivery_id = ?1",
+                    params![delivery_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|value| {
+                    ImDeliveryState::parse(&value).ok_or(ImRepositoryError::InvalidStoredData)
+                })
+                .transpose()
+        })
+    }
+
     pub fn record_inbound_result(
         &self,
         result: &ImInboundActionResult,
@@ -663,7 +790,7 @@ impl ImRepository {
                     result.canonical_event_id,
                     result.actor_id_hash,
                     result.platform_event_id,
-                    result.result_code,
+                    result.outcome.as_str(),
                     result.result_revision,
                     result.received_at_ms,
                     result.completed_at_ms,
@@ -687,21 +814,25 @@ impl ImRepository {
                      WHERE channel_kind = ?1 AND platform_event_id = ?2",
                     params![channel.as_str(), platform_event_id],
                     |row| {
-                        Ok(ImInboundActionResult {
-                            action_id: row.get(0)?,
-                            channel,
-                            canonical_event_id: row.get(1)?,
-                            actor_id_hash: row.get(2)?,
-                            platform_event_id: platform_event_id.to_string(),
-                            result_code: row.get(3)?,
-                            result_revision: row.get(4)?,
-                            received_at_ms: row.get(5)?,
-                            completed_at_ms: row.get(6)?,
-                        })
+                        Ok((
+                            ImInboundActionResult {
+                                action_id: row.get(0)?,
+                                channel,
+                                canonical_event_id: row.get(1)?,
+                                actor_id_hash: row.get(2)?,
+                                platform_event_id: platform_event_id.to_string(),
+                                outcome: ImInboundOutcome::Accepted,
+                                result_revision: row.get(4)?,
+                                received_at_ms: row.get(5)?,
+                                completed_at_ms: row.get(6)?,
+                            },
+                            row.get::<_, String>(3)?,
+                        ))
                     },
                 )
-                .optional()
-                .map_err(Into::into)
+                .optional()?
+                .map(with_stored_outcome)
+                .transpose()
         })
     }
 
@@ -718,26 +849,35 @@ impl ImRepository {
                      FROM im_inbound_actions INDEXED BY idx_im_inbound_actions_canonical_event
                      WHERE channel_kind = ?1
                        AND canonical_event_id = ?2
-                       AND result_code IN ('ACCEPTED', 'ALREADY_APPLIED')
+                       AND result_code IN (?3, ?4)
                      ORDER BY completed_at_ms DESC, action_id DESC
                      LIMIT 1",
-                    params![channel.as_str(), canonical_event_id],
+                    params![
+                        channel.as_str(),
+                        canonical_event_id,
+                        ImInboundOutcome::ACCEPTED,
+                        ImInboundOutcome::ALREADY_APPLIED,
+                    ],
                     |row| {
-                        Ok(ImInboundActionResult {
-                            action_id: row.get(0)?,
-                            channel,
-                            canonical_event_id: row.get(1)?,
-                            actor_id_hash: row.get(2)?,
-                            platform_event_id: row.get(3)?,
-                            result_code: row.get(4)?,
-                            result_revision: row.get(5)?,
-                            received_at_ms: row.get(6)?,
-                            completed_at_ms: row.get(7)?,
-                        })
+                        Ok((
+                            ImInboundActionResult {
+                                action_id: row.get(0)?,
+                                channel,
+                                canonical_event_id: row.get(1)?,
+                                actor_id_hash: row.get(2)?,
+                                platform_event_id: row.get(3)?,
+                                outcome: ImInboundOutcome::Accepted,
+                                result_revision: row.get(5)?,
+                                received_at_ms: row.get(6)?,
+                                completed_at_ms: row.get(7)?,
+                            },
+                            row.get::<_, String>(4)?,
+                        ))
                     },
                 )
-                .optional()
-                .map_err(Into::into)
+                .optional()?
+                .map(with_stored_outcome)
+                .transpose()
         })
     }
 
@@ -902,14 +1042,8 @@ impl ImRepository {
 
     #[cfg(test)]
     fn state(&self, delivery_id: &str) -> Result<ImDeliveryState, ImRepositoryError> {
-        self.with_connection(|connection| {
-            let value = connection.query_row(
-                "SELECT state FROM im_outbox WHERE delivery_id = ?1",
-                params![delivery_id],
-                |row| row.get::<_, String>(0),
-            )?;
-            ImDeliveryState::parse(&value).ok_or(ImRepositoryError::InvalidStoredData)
-        })
+        self.delivery_state(delivery_id)?
+            .ok_or(ImRepositoryError::InvalidStoredData)
     }
 
     fn with_connection<T>(
@@ -929,6 +1063,14 @@ impl ImRepository {
                 .expect("IM repository connection initialized"),
         )
     }
+}
+
+fn with_stored_outcome(
+    (mut result, outcome): (ImInboundActionResult, String),
+) -> Result<ImInboundActionResult, ImRepositoryError> {
+    result.outcome =
+        ImInboundOutcome::parse(&outcome).ok_or(ImRepositoryError::InvalidStoredData)?;
+    Ok(result)
 }
 
 fn cleanup_operation_from_row(
@@ -1135,6 +1277,31 @@ fn ensure_schema(connection: &mut Connection) -> Result<(), ImRepositoryError> {
             CHECK (phase IN ('prepared', 'settings_removed', 'projection_drained', 'outbox_removed'))
          );",
     )?;
+    if version.is_some_and(|found| found < IM_PAYLOAD_V2_SCHEMA_VERSION) {
+        transaction.execute_batch(
+            "DELETE FROM im_outbox WHERE payload_kind = 'intervention';
+             DELETE FROM im_outbox WHERE canonical_event_id LIKE '%:desktop-resolved';",
+        )?;
+    }
+    if version.is_some_and(|found| found < IM_RESOLUTION_CONTENT_SCHEMA_VERSION) {
+        // Keep identity, bindings and tombstones: dropping a resolution here
+        // would allow a delayed source projection to resurrect a handled card.
+        // Old rows never stored answers; make that absence explicit instead of
+        // inventing an empty submitted form or retaining a legacy decoder.
+        transaction.execute_batch(
+            "UPDATE im_outbox
+             SET payload_json = json_set(payload_json,
+                 '$.data.resolution.outcome', json('{\"kind\":\"resultUnavailable\"}'))
+             WHERE json_valid(payload_json)
+               AND json_extract(payload_json, '$.kind') = 'interventionResolution'
+               AND json_extract(payload_json, '$.data.version') = 2
+               AND json_extract(payload_json, '$.data.resolution.outcome.kind') = 'elicitationSubmitted';
+             UPDATE im_outbox
+             SET payload_json = json_set(payload_json, '$.data.version', 3)
+             WHERE json_valid(payload_json)
+               AND json_extract(payload_json, '$.data.version') IN (1, 2);",
+        )?;
+    }
     transaction.execute(
         "INSERT INTO core_schema(component, version)
          VALUES ('im_remote_intervention', ?1)
@@ -1157,8 +1324,9 @@ mod tests {
         InterventionAllowedAction, InterventionLocator, InterventionRequestIdentity,
     };
     use crate::im::{
-        IM_PAYLOAD_VERSION, ImNavigationLocator, InformationalNotification,
-        InterventionPresentation, InterventionRef, InterventionResolutionNotification,
+        IM_PAYLOAD_VERSION, ImNavigationLocator, ImResolutionOutcome, ImResolvedBy,
+        InformationalNotification, InterventionPresentation, InterventionRef,
+        InterventionResolutionNotification,
     };
 
     fn repository(limit: usize) -> (TempDir, ImRepository) {
@@ -1304,7 +1472,7 @@ mod tests {
     }
 
     fn resolution_delivery(source: &ImDelivery) -> ImDelivery {
-        let event_id = format!("{}:desktop-resolved", source.canonical_event_id);
+        let event_id = resolution_event_id(&source.canonical_event_id);
         ImDelivery {
             delivery_id: ImDelivery::deterministic_id(
                 source.channel,
@@ -1334,11 +1502,71 @@ mod tests {
                         scheduled_occurrence_id: None,
                     },
                     display_ref: source.display_ref,
+                    resolved_by: ImResolvedBy::Desktop,
+                    outcome: ImResolutionOutcome::PermissionOption {
+                        option_id: "allow".into(),
+                    },
                 },
             },
             expires_at_ms: 20_000,
             display_ref: source.display_ref,
         }
+    }
+
+    #[test]
+    fn a_resolved_source_is_never_requeued_by_failure_or_lease_recovery() {
+        let (_temp, repository) = repository(10);
+        let failed = intervention_delivery(ImChannelKind::Feishu, "user-1", "event-failed");
+        let leased = intervention_delivery(ImChannelKind::Feishu, "user-1", "event-leased");
+        let unresolved = intervention_delivery(ImChannelKind::Feishu, "user-1", "event-open");
+        for delivery in [&failed, &leased, &unresolved] {
+            repository.enqueue(delivery, 100).unwrap();
+        }
+        let claimed = repository
+            .claim_due(ImChannelKind::Feishu, 100, Duration::from_millis(50), 10)
+            .unwrap();
+        assert_eq!(claimed.len(), 3);
+        // The intervention resolves while its source card is still being sent.
+        for source in [&failed, &leased] {
+            repository
+                .enqueue_resolution_and_expire_pending_source(
+                    &source.canonical_event_id,
+                    &resolution_delivery(source),
+                    ImResolutionDispatch::Send,
+                    120,
+                )
+                .unwrap();
+        }
+
+        repository
+            .mark_failed(&failed.delivery_id, 1, Some(130), "IM_NETWORK", 125)
+            .unwrap();
+        repository
+            .mark_failed(&unresolved.delivery_id, 1, Some(130), "IM_NETWORK", 125)
+            .unwrap();
+        assert_eq!(repository.recover_expired_leases(150, 10).unwrap(), 1);
+
+        for (source, expected) in [
+            (&failed, ImDeliveryState::Expired),
+            (&leased, ImDeliveryState::Expired),
+            (&unresolved, ImDeliveryState::Pending),
+        ] {
+            assert_eq!(
+                repository.delivery_state(&source.delivery_id).unwrap(),
+                Some(expected),
+                "{}",
+                source.canonical_event_id
+            );
+        }
+        let resent = repository
+            .claim_due(ImChannelKind::Feishu, 200, Duration::from_millis(50), 10)
+            .unwrap()
+            .into_iter()
+            .map(|claimed| claimed.delivery.canonical_event_id)
+            .collect::<Vec<_>>();
+        assert!(!resent.contains(&failed.canonical_event_id));
+        assert!(!resent.contains(&leased.canonical_event_id));
+        assert!(resent.contains(&unresolved.canonical_event_id));
     }
 
     #[test]
@@ -1366,7 +1594,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_resolution_atomically_supersedes_pending_source_and_is_idempotent() {
+    fn send_resolution_atomically_supersedes_pending_source_and_is_idempotent() {
         let (_temp, repository) = repository(1);
         let source = intervention_delivery(ImChannelKind::WeCom, "user-1", "event-1");
         repository.enqueue(&source, 100).unwrap();
@@ -1379,7 +1607,12 @@ mod tests {
         let resolution = resolution_delivery(&indexed[0]);
         assert_eq!(
             repository
-                .enqueue_resolution_and_expire_pending_source("event-1", &resolution, 200)
+                .enqueue_resolution_and_expire_pending_source(
+                    "event-1",
+                    &resolution,
+                    ImResolutionDispatch::Send,
+                    200,
+                )
                 .unwrap(),
             ImDeliveryInsertResult::Inserted
         );
@@ -1393,14 +1626,19 @@ mod tests {
         );
         assert_eq!(
             repository
-                .enqueue_resolution_and_expire_pending_source("event-1", &resolution, 201)
+                .enqueue_resolution_and_expire_pending_source(
+                    "event-1",
+                    &resolution,
+                    ImResolutionDispatch::Send,
+                    201,
+                )
                 .unwrap(),
             ImDeliveryInsertResult::Duplicate
         );
     }
 
     #[test]
-    fn desktop_resolution_preserves_a_source_that_was_already_sent() {
+    fn send_resolution_preserves_a_source_that_was_already_sent() {
         let (_temp, repository) = repository(2);
         let source = intervention_delivery(ImChannelKind::WeCom, "user-1", "event-1");
         repository.enqueue(&source, 100).unwrap();
@@ -1418,7 +1656,12 @@ mod tests {
             .unwrap();
         let resolution = resolution_delivery(&claimed[0].delivery);
         repository
-            .enqueue_resolution_and_expire_pending_source("event-1", &resolution, 200)
+            .enqueue_resolution_and_expire_pending_source(
+                "event-1",
+                &resolution,
+                ImResolutionDispatch::Send,
+                200,
+            )
             .unwrap();
         assert_eq!(
             repository.state(&source.delivery_id).unwrap(),
@@ -1427,6 +1670,52 @@ mod tests {
         assert_eq!(
             repository.state(&resolution.delivery_id).unwrap(),
             ImDeliveryState::Pending
+        );
+    }
+
+    #[test]
+    fn tombstone_resolution_is_expired_uncounted_and_blocks_a_late_source() {
+        let (_temp, repository) = repository(1);
+        let busy = information_delivery(ImChannelKind::WeCom, "user-2", "event-busy");
+        repository.enqueue(&busy, 100).unwrap();
+        let source = intervention_delivery(ImChannelKind::WeCom, "user-1", "event-1");
+        let tombstone = resolution_delivery(&source);
+
+        assert_eq!(
+            repository
+                .enqueue_resolution_and_expire_pending_source(
+                    "event-1",
+                    &tombstone,
+                    ImResolutionDispatch::TombstoneOnly,
+                    200,
+                )
+                .unwrap(),
+            ImDeliveryInsertResult::Inserted
+        );
+        assert_eq!(
+            repository.state(&tombstone.delivery_id).unwrap(),
+            ImDeliveryState::Expired
+        );
+        assert_eq!(
+            repository.enqueue(&source, 300).unwrap(),
+            ImDeliveryInsertResult::Duplicate
+        );
+        assert!(repository.delivery(&source.delivery_id).unwrap().is_none());
+        let due = repository
+            .claim_due(ImChannelKind::WeCom, 300, Duration::from_secs(30), 10)
+            .unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].delivery.delivery_id, busy.delivery_id);
+        assert_eq!(
+            repository
+                .enqueue_resolution_and_expire_pending_source(
+                    "event-1",
+                    &tombstone,
+                    ImResolutionDispatch::TombstoneOnly,
+                    301,
+                )
+                .unwrap(),
+            ImDeliveryInsertResult::Duplicate
         );
     }
 
@@ -1713,7 +2002,7 @@ mod tests {
             canonical_event_id: Some("event-1".into()),
             actor_id_hash: "hash".into(),
             platform_event_id: "callback-1".into(),
-            result_code: "ACCEPTED".into(),
+            outcome: ImInboundOutcome::Accepted,
             result_revision: Some(1),
             received_at_ms: 100,
             completed_at_ms: 200,
@@ -1790,7 +2079,7 @@ mod tests {
                     [],
                     |row| row.get::<_, i64>(0),
                 )?;
-                assert_eq!(version, 3);
+                assert_eq!(version, IM_SCHEMA_VERSION);
                 let index_count = connection.query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_im_inbound_actions_canonical_event'",
                     [],
@@ -1806,6 +2095,351 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    fn stored_schema_version(path: &Utf8Path) -> i64 {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT version FROM core_schema WHERE component = 'im_remote_intervention'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    fn set_stored_schema_version(path: &Utf8Path, version: i64) {
+        Connection::open(path)
+            .unwrap()
+            .execute(
+                "UPDATE core_schema SET version = ?1 WHERE component = 'im_remote_intervention'",
+                params![version],
+            )
+            .unwrap();
+    }
+
+    fn outbox_count(path: &Utf8Path, table: &str) -> i64 {
+        Connection::open(path)
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    }
+
+    /// Seeds a v3 database with a sent intervention (with binding), an old
+    /// `desktop-resolved` record, an unrelated information delivery and an
+    /// inbound audit row.
+    fn seed_schema_v3(temp: &TempDir) -> (Utf8PathBuf, ImDelivery, ImDelivery) {
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap();
+        let repository = ImRepository::new(path.clone());
+        let intervention = intervention_delivery(ImChannelKind::WeCom, "user-1", "event-1");
+        repository.enqueue(&intervention, 100).unwrap();
+        let claimed = repository
+            .claim_due(ImChannelKind::WeCom, 100, Duration::from_secs(30), 1)
+            .unwrap();
+        repository
+            .mark_sent(
+                &intervention.delivery_id,
+                intervention.channel,
+                claimed[0].attempt_count,
+                Some(&ImDeliveryBinding {
+                    delivery_id: intervention.delivery_id.clone(),
+                    channel: ImChannelKind::WeCom,
+                    platform_message_id: "message-1".into(),
+                    platform_chat_id: "chat-1".into(),
+                    update_token_ref: None,
+                }),
+                110,
+            )
+            .unwrap();
+        let old_resolution =
+            information_delivery(ImChannelKind::WeCom, "user-1", "event-1:desktop-resolved");
+        repository.enqueue(&old_resolution, 120).unwrap();
+        let information = information_delivery(ImChannelKind::WeCom, "user-1", "event-2");
+        repository.enqueue(&information, 130).unwrap();
+        repository
+            .record_inbound_result(&ImInboundActionResult {
+                action_id: "action-1".into(),
+                channel: ImChannelKind::WeCom,
+                canonical_event_id: Some("event-1".into()),
+                actor_id_hash: "hash".into(),
+                platform_event_id: "callback-1".into(),
+                outcome: ImInboundOutcome::Accepted,
+                result_revision: None,
+                received_at_ms: 140,
+                completed_at_ms: 140,
+            })
+            .unwrap();
+        drop(repository);
+        set_stored_schema_version(&path, 3);
+        (path, intervention, information)
+    }
+
+    #[test]
+    fn schema_v4_upgrade_removes_v1_intervention_records_and_cascades_bindings() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, intervention, information) = seed_schema_v3(&temp);
+        assert_eq!(outbox_count(&path, "im_delivery_bindings"), 1);
+
+        let reopened = ImRepository::new(path.clone());
+        reopened
+            .with_connection(|connection| {
+                let foreign_keys =
+                    connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))?;
+                assert_eq!(foreign_keys, 1);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(stored_schema_version(&path), IM_SCHEMA_VERSION);
+        assert!(
+            reopened
+                .delivery(&intervention.delivery_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reopened
+                .intervention_deliveries_for_canonical_event("event-1")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            reopened
+                .delivery(&information.delivery_id)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(outbox_count(&path, "im_outbox"), 1);
+        assert_eq!(outbox_count(&path, "im_delivery_bindings"), 0);
+        assert!(
+            reopened
+                .inbound_result(ImChannelKind::WeCom, "callback-1")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn failed_schema_upgrade_rolls_back_and_retries_on_next_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, _, _) = seed_schema_v3(&temp);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER block_upgrade BEFORE DELETE ON im_outbox
+                 BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .unwrap();
+
+        let blocked = ImRepository::new(path.clone());
+        assert!(matches!(
+            blocked.with_connection(|_| Ok(())),
+            Err(ImRepositoryError::Sqlite(_))
+        ));
+        drop(blocked);
+        assert_eq!(stored_schema_version(&path), 3);
+        assert_eq!(outbox_count(&path, "im_outbox"), 3);
+        assert_eq!(outbox_count(&path, "im_delivery_bindings"), 1);
+
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TRIGGER block_upgrade;")
+            .unwrap();
+        let retried = ImRepository::new(path.clone());
+        retried.with_connection(|_| Ok(())).unwrap();
+        assert_eq!(stored_schema_version(&path), IM_SCHEMA_VERSION);
+        assert_eq!(outbox_count(&path, "im_outbox"), 1);
+    }
+
+    #[test]
+    fn schema_v5_preserves_sources_bindings_and_tombstones_without_inventing_answers() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, source, delayed_source, resolved) = seed_schema_v4(&temp);
+        let source_ref = source.display_ref;
+        let reopened = ImRepository::new(path.clone());
+        assert_eq!(
+            reopened
+                .delivery(&source.delivery_id)
+                .unwrap()
+                .unwrap()
+                .display_ref,
+            source_ref
+        );
+        assert_eq!(stored_schema_version(&path), IM_SCHEMA_VERSION);
+        assert!(reopened.binding(&source.delivery_id).unwrap().is_some());
+        let payload = reopened
+            .delivery(&resolved.delivery_id)
+            .unwrap()
+            .unwrap()
+            .payload;
+        let ImDeliveryPayload::InterventionResolution {
+            resolution,
+            version,
+        } = payload
+        else {
+            unreachable!()
+        };
+        assert_eq!(version, IM_PAYLOAD_VERSION);
+        assert_eq!(resolution.outcome, ImResolutionOutcome::ResultUnavailable);
+        assert_eq!(resolution.resolved_by, ImResolvedBy::Desktop);
+        assert_eq!(
+            reopened.enqueue(&delayed_source, 200).unwrap(),
+            ImDeliveryInsertResult::Duplicate
+        );
+        assert_eq!(outbox_count(&path, "im_outbox"), 3);
+        assert_eq!(outbox_count(&path, "im_delivery_bindings"), 1);
+        assert!(
+            reopened
+                .inbound_result(source.channel, "v4-action")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    fn seed_schema_v4(temp: &TempDir) -> (Utf8PathBuf, ImDelivery, ImDelivery, ImDelivery) {
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap();
+        let repository = ImRepository::new(path.clone());
+        let mut source = intervention_delivery(ImChannelKind::Feishu, "user-1", "answered");
+        source.notification_kind = ImNotificationKind::Elicitation;
+        if let ImDeliveryPayload::Intervention {
+            reference,
+            presentation,
+            ..
+        } = &mut source.payload
+        {
+            reference.request = InterventionRequestIdentity::Elicitation {
+                elicitation_id: "elicitation-1".into(),
+            };
+            reference.allowed_actions = vec![InterventionAllowedAction::ElicitationAccept];
+            presentation.title_key = "im.notification.elicitation.title".into();
+            presentation.summary_key = "im.notification.elicitation.summary".into();
+        }
+        source.refresh_id();
+        repository.enqueue(&source, 100).unwrap();
+        let source = repository.delivery(&source.delivery_id).unwrap().unwrap();
+        let claimed = repository
+            .claim_due(source.channel, 100, Duration::from_secs(30), 1)
+            .unwrap();
+        repository
+            .mark_sent(
+                &source.delivery_id,
+                source.channel,
+                claimed[0].attempt_count,
+                Some(&ImDeliveryBinding {
+                    delivery_id: source.delivery_id.clone(),
+                    channel: source.channel,
+                    platform_message_id: "v4-message".into(),
+                    platform_chat_id: "v4-chat".into(),
+                    update_token_ref: None,
+                }),
+                101,
+            )
+            .unwrap();
+        let mut resolved = resolution_delivery(&source);
+        if let ImDeliveryPayload::InterventionResolution { resolution, .. } = &mut resolved.payload
+        {
+            resolution.outcome = ImResolutionOutcome::ElicitationSubmitted {
+                content: serde_json::json!({"answer": "not stored in v2"}),
+            };
+        }
+        repository
+            .enqueue_resolution_and_expire_pending_source(
+                &source.canonical_event_id,
+                &resolved,
+                ImResolutionDispatch::Send,
+                102,
+            )
+            .unwrap();
+        let delayed_source = intervention_delivery(ImChannelKind::Feishu, "user-1", "late-source");
+        repository
+            .enqueue_resolution_and_expire_pending_source(
+                &delayed_source.canonical_event_id,
+                &resolution_delivery(&delayed_source),
+                ImResolutionDispatch::TombstoneOnly,
+                103,
+            )
+            .unwrap();
+        repository
+            .record_inbound_result(&ImInboundActionResult {
+                action_id: "v4-action".into(),
+                channel: source.channel,
+                canonical_event_id: Some(source.canonical_event_id.clone()),
+                actor_id_hash: "hash".into(),
+                platform_event_id: "v4-action".into(),
+                outcome: ImInboundOutcome::Accepted,
+                result_revision: None,
+                received_at_ms: 100,
+                completed_at_ms: 101,
+            })
+            .unwrap();
+        drop(repository);
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("UPDATE im_outbox SET payload_json = json_set(payload_json, '$.data.version', 2);
+            UPDATE im_outbox SET payload_json = json_set(payload_json, '$.data.resolution.outcome', json('{\"kind\":\"elicitationSubmitted\"}'))
+            WHERE canonical_event_id = 'answered:resolved';
+            UPDATE core_schema SET version = 4 WHERE component = 'im_remote_intervention';").unwrap();
+        (path, source, delayed_source, resolved)
+    }
+
+    #[test]
+    fn schema_v5_update_failure_rolls_back_payloads_and_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, source, _, resolved) = seed_schema_v4(&temp);
+        let connection = Connection::open(&path).unwrap();
+        // Fail the second migration statement, after the outcome conversion,
+        // to prove that partial changes also roll back in the same transaction.
+        connection
+            .execute_batch(
+                "CREATE TRIGGER block_v5 BEFORE UPDATE ON im_outbox
+            WHEN json_extract(NEW.payload_json, '$.data.version') = 3
+            BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .unwrap();
+        assert!(
+            ImRepository::new(path.clone())
+                .delivery(&source.delivery_id)
+                .is_err()
+        );
+        assert_eq!(stored_schema_version(&path), 4);
+        let version: i64 = connection
+            .query_row(
+                "SELECT json_extract(payload_json, '$.data.version') FROM im_outbox LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 2);
+        let outcome: String = connection.query_row(
+            "SELECT json_extract(payload_json, '$.data.resolution.outcome.kind') FROM im_outbox WHERE delivery_id = ?1",
+            [&resolved.delivery_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(outcome, "elicitationSubmitted");
+        assert_eq!(outbox_count(&path, "im_delivery_bindings"), 1);
+        connection.execute_batch("DROP TRIGGER block_v5;").unwrap();
+        assert!(
+            ImRepository::new(path.clone())
+                .delivery(&source.delivery_id)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(stored_schema_version(&path), IM_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, _, _) = seed_schema_v3(&temp);
+        set_stored_schema_version(&path, IM_SCHEMA_VERSION + 1);
+        let repository = ImRepository::new(path.clone());
+        let error = repository.with_connection(|_| Ok(())).unwrap_err();
+        assert!(matches!(
+            error,
+            ImRepositoryError::SchemaTooNew { found, supported }
+                if found == IM_SCHEMA_VERSION + 1 && supported == IM_SCHEMA_VERSION
+        ));
+        assert_eq!(error.code(), "IM_SCHEMA_TOO_NEW");
+        assert_eq!(outbox_count(&path, "im_outbox"), 3);
     }
 
     #[test]

@@ -2530,6 +2530,7 @@
       "title": "IM 원격 개입 및 알림",
       "enabled": "사용",
       "privateBinding": "1:1 채팅: {{name}}",
+      "privateBindingUnnamed": "1:1 채팅 바인딩됨",
       "notificationKinds": "알림 유형",
       "notificationGroups": {
         "needsAction": "조치 필요",
@@ -2545,24 +2546,43 @@
       "deleteDescription": "연결이 비활성화되고 OS 자격 증명 저장소에서 secret이 제거되며, 대기 중인 전달이 중지됩니다.",
       "confirmDelete": "삭제",
       "scan": {
-        "title": "QR 코드로 WeCom 연결",
-        "description": "WeCom 모바일 앱으로 스캔하고 인증을 확인하세요.",
-        "notConfigured": "WeCom이 연결되어 있지 않습니다. 원격 개입 및 알림을 구성하려면 연결해 주세요.",
-        "botId": "봇 ID: {{id}}",
+        "title": "QR 코드로 {{channel}} 연결",
+        "description": "{{channel}} 모바일 앱으로 스캔하고 인증을 확인하세요.",
+        "notConfigured": "{{channel}}이 연결되어 있지 않습니다. 원격 개입 및 알림을 구성하려면 연결해 주세요.",
         "connect": "스캔하여 연결",
         "reauthorize": "다시 인증",
         "generating": "QR 코드 생성 중…",
-        "waiting": "WeCom으로 스캔하고 인증을 확인하세요",
+        "waiting": "{{channel}}으로 스캔하고 인증을 확인하세요",
         "expiresIn": "QR 코드가 {{countdown}} 후 만료됩니다",
         "waitingBinding": "인증 완료, 수신자 대기 중",
-        "complete": "WeCom 사용 준비 완료",
-        "nextStep": "WeCom에서 봇에게 메시지를 보내 1:1 채팅 바인딩을 완료하세요.",
+        "complete": "{{channel}} 사용 준비 완료",
+        "nextStep": "{{channel}}에서 봇에게 메시지를 보내 1:1 채팅 바인딩을 완료하세요.",
         "retry": "다시 생성",
-        "qrCodeLabel": "WeCom 인증 QR 코드"
+        "qrCodeLabel": "{{channel}} 인증 QR 코드"
       },
       "channels": {
-        "wecom": {
-          "title": "WeCom"
+        "weCom": {
+          "title": "WeCom",
+          "identity": "봇 ID: {{id}}"
+        },
+        "feishu": {
+          "title": "Feishu / Lark",
+          "identity": "App ID: {{id}}",
+          "singleDeviceHint": "작업이 다른 기기에 전달되지 않도록 봇 하나는 기기 한 대에만 연결하세요.",
+          "permissions": {
+            "title": "연결에 필요한 권한",
+            "send": "나에게 메시지 보내기",
+            "receive": "내가 봇에 보낸 개인 메시지 읽기",
+            "update": "봇이 보낸 카드 업데이트",
+            "profile": "받는 계정을 표시하기 위해 이름 읽기",
+            "confirm": "동의하고 QR 코드 생성"
+          },
+          "resetBinding": {
+            "action": "수신 계정 다시 연결",
+            "title": "수신 계정을 다시 연결할까요?",
+            "description": "현재 개인 채팅 연결을 해제합니다. 승인에 사용한 계정으로 봇에게 메시지를 보내 다시 연결하세요. 다른 계정을 사용하려면 다시 승인하세요.",
+            "confirm": "다시 연결"
+          }
         }
       },
       "status": {
@@ -2578,12 +2598,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "WeCom 연결",
+          "title": "{{channel}} 연결",
           "description": "QR 코드로 인증한 뒤 1:1 채팅으로 수신자를 바인딩하세요."
         },
         "waitingBinding": {
           "title": "수신자 바인딩",
-          "description": "WeCom에서 봇에게 메시지를 보내세요. 바인딩이 저장되면 원격 개입을 사용할 수 있습니다."
+          "description": "{{channel}}에서 봇에게 메시지를 보내세요. 바인딩이 저장되면 원격 개입을 사용할 수 있습니다."
         },
         "connecting": {
           "title": "연결 설정 중",
@@ -2598,7 +2618,7 @@
           "description": "자동 복구를 계속할 수 없습니다. 다시 연결해 보세요."
         },
         "ready": {
-          "title": "WeCom 사용 준비 완료",
+          "title": "{{channel}} 사용 준비 완료",
           "description": "원격 개입 및 활성화된 알림이 바인딩된 1:1 채팅으로 전송됩니다."
         },
         "paused": {
@@ -2607,7 +2627,7 @@
         },
         "reauthorize": {
           "title": "인증 필요",
-          "description": "현재 자격 증명을 사용할 수 없습니다. 봇을 다시 인증해 주세요."
+          "description": "다시 스캔하여 승인을 확인하세요."
         },
         "conflict": {
           "title": "봇이 다른 곳에서 연결됨",
@@ -2657,10 +2677,12 @@
         "IM_SCAN_CANCELLED": "QR 인증이 취소되었습니다.",
         "IM_SCAN_EXPIRED": "QR 코드가 만료되었습니다. 새 코드를 생성해 주세요.",
         "IM_SCAN_TIMEOUT": "QR 인증 시간이 초과되었습니다. 새 코드를 생성해 주세요.",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "WeCom 인증 서비스에 일시적으로 연결할 수 없습니다.",
-        "IM_SCAN_PROTOCOL_INVALID": "WeCom 인증 응답이 유효하지 않습니다. 새 코드를 생성해 주세요.",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "인증 서비스에 일시적으로 연결할 수 없습니다.",
+        "IM_SCAN_PROTOCOL_INVALID": "인증 응답이 유효하지 않습니다. 새 코드를 생성해 주세요.",
         "IM_SCAN_SESSION_INVALID": "QR 세션이 유효하지 않습니다. 다시 열어 주세요.",
         "IM_SCAN_SESSION_CONFLICT": "QR 인증이 이미 진행 중입니다.",
+        "IM_SCAN_DENIED": "인증이 거부되었습니다.",
+        "IM_SCOPE_MISSING": "앱에 필요한 권한이 없습니다. 다시 인증해 주세요.",
         "IM_STALE_GENERATION": "연결 상태가 변경되었습니다. 최신 상태에서 다시 시도해 주세요.",
         "IM_RUNTIME_UNAVAILABLE": "IM 런타임이 아직 준비되지 않았습니다.",
         "IM_CHANNEL_CLEANUP_PENDING": "구성이 삭제되었습니다. 로컬 정리는 백그라운드에서 재시도됩니다.",

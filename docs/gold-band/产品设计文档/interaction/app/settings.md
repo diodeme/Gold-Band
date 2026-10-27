@@ -291,6 +291,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 ## 13. 多语言更新日志
 
+- 发布链路验收：两条 Release workflow 的 `updater-json` job 均等待构建完成，依次生成多语言清单、生成安装包校验和、上传 `release-output/latest*.json`、macOS 安装脚本与 `release-assets/*.sha256`。手动重建使用 `release-tools/scripts/`，自动发布使用 `scripts/`；契约测试解析 YAML 中的实际执行步骤并校验路径、发布版本与顺序，产物内容由生成器接口测试验证。
 - 发布准备必须明确 Git 起止范围、目标版本，以及用户确认的普通更新 / 关键更新选择；已明确回答的同版本选择直接复用，缺失或含糊时先询问，不得根据提交类型、破坏性变更、安全修复或更新日志措辞推断关键性。普通更新只提示、由用户手动触发下载与安装；关键更新后台下载签名包，在正常退出生命周期或既有后续启动安装路径中安装，不因发现或下载完成而强制重启、中断当前工作。
 - `release-notes/<version>/release.json` 是 default 渠道该版本关键性的唯一事实源，与七语言 Markdown 同时准备；完整对象只能是 `{"critical": false}` 或 `{"critical": true}`，普通更新也必须显式写入 false。覆盖已有文件前必须读取并核对用户选择，有冲突先确认；已有文件本身不能替代用户确认。git-changelog 完成时报告目标版本、最终普通 / 关键选择及文件清单。
 - 生成器从实际发布 SHA/tag 对应版本目录读取元数据；七语言正文和 `release.json` 必须进入该发布 SHA/tag，不能只存在于工作区或另一 workflow 分支。历史版本缺少 `release.json` 时按普通更新处理；文件存在时必须严格校验为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型或额外字段均在写入任何生成产物前失败，不能静默回落或留下部分输出。七个 locale manifest 与兼容 `latest.json` 共八份 default manifest 必须携带相同 `critical` 值；`wb` 的单 manifest 与既有关键更新构建参数保持不变，不消费该 default 元数据。

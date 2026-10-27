@@ -252,15 +252,16 @@ fn connection_state_for_error(error: &ImIntegrationError) -> ImConnectionState {
 mod tests {
     use super::*;
 
+    fn test_capabilities() -> ImChannelCapabilities {
+        crate::im::connector::test_support::capabilities(
+            crate::im::ImMessageUpdateMode::CallbackOnly,
+        )
+    }
+
     #[test]
     fn late_old_generation_events_cannot_replace_current_state() {
         let manager = ImConnectionManager::default();
-        let capabilities = ImChannelCapabilities {
-            proactive_delivery: true,
-            card_actions: true,
-            message_update: true,
-            private_chat: true,
-        };
+        let capabilities = test_capabilities();
         let first = manager.replace(ImChannelKind::WeCom, true, capabilities);
         let second = manager.replace(ImChannelKind::WeCom, true, capabilities);
         assert!(first.cancellation.is_cancelled());
@@ -272,6 +273,7 @@ mod tests {
                     bot_id: "old".into(),
                     display_name: "old".into(),
                 },
+                owner: None,
             },
             10,
         ));
@@ -283,6 +285,7 @@ mod tests {
                     bot_id: "new".into(),
                     display_name: "new".into(),
                 },
+                owner: None,
             },
             20,
         ));
@@ -294,7 +297,7 @@ mod tests {
     #[test]
     fn retry_progress_and_terminal_failure_have_distinct_states() {
         let manager = ImConnectionManager::default();
-        let start = manager.replace(ImChannelKind::WeCom, true, ImChannelCapabilities::default());
+        let start = manager.replace(ImChannelKind::WeCom, true, test_capabilities());
         let network_error = ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None);
         assert!(manager.apply_event(
             ImChannelKind::WeCom,
@@ -330,7 +333,7 @@ mod tests {
     #[test]
     fn group_binding_is_rejected_at_the_manager_boundary() {
         let manager = ImConnectionManager::default();
-        let start = manager.replace(ImChannelKind::WeCom, true, ImChannelCapabilities::default());
+        let start = manager.replace(ImChannelKind::WeCom, true, test_capabilities());
         assert!(manager.apply_event(
             ImChannelKind::WeCom,
             ImConnectorEvent::BindingObserved {
@@ -340,6 +343,7 @@ mod tests {
                     conversation_id: "group-chat".into(),
                     actor_id: "actor".into(),
                     is_private: false,
+                    display_name: None,
                 },
             },
             0,
@@ -359,12 +363,13 @@ mod tests {
         let start = manager.replace_with_binding(
             ImChannelKind::WeCom,
             true,
-            ImChannelCapabilities::default(),
+            test_capabilities(),
             Some(ImObservedBinding {
                 destination_id: "user-1".into(),
                 conversation_id: "chat-1".into(),
                 actor_id: "user-1".into(),
                 is_private: true,
+                display_name: None,
             }),
         );
         assert!(manager.apply_event(
@@ -376,6 +381,7 @@ mod tests {
                     conversation_id: "chat-2".into(),
                     actor_id: "user-2".into(),
                     is_private: true,
+                    display_name: None,
                 },
             },
             0,
@@ -388,12 +394,13 @@ mod tests {
     #[test]
     fn binding_can_be_validated_without_becoming_public() {
         let manager = ImConnectionManager::default();
-        let start = manager.replace(ImChannelKind::WeCom, true, ImChannelCapabilities::default());
+        let start = manager.replace(ImChannelKind::WeCom, true, test_capabilities());
         let binding = ImObservedBinding {
             destination_id: "user-1".into(),
             conversation_id: "chat-1".into(),
             actor_id: "user-1".into(),
             is_private: true,
+            display_name: None,
         };
 
         assert!(manager.prepare_binding(ImChannelKind::WeCom, start.generation, &binding));
@@ -421,15 +428,16 @@ mod tests {
     #[test]
     fn stale_generation_cannot_commit_a_persisted_binding() {
         let manager = ImConnectionManager::default();
-        let first = manager.replace(ImChannelKind::WeCom, true, ImChannelCapabilities::default());
+        let first = manager.replace(ImChannelKind::WeCom, true, test_capabilities());
         let binding = ImObservedBinding {
             destination_id: "user-1".into(),
             conversation_id: "chat-1".into(),
             actor_id: "user-1".into(),
             is_private: true,
+            display_name: None,
         };
         assert!(manager.prepare_binding(ImChannelKind::WeCom, first.generation, &binding));
-        let second = manager.replace(ImChannelKind::WeCom, true, ImChannelCapabilities::default());
+        let second = manager.replace(ImChannelKind::WeCom, true, test_capabilities());
 
         assert!(!manager.commit_binding(ImChannelKind::WeCom, first.generation, binding));
         let snapshot = manager.snapshot(ImChannelKind::WeCom).unwrap();

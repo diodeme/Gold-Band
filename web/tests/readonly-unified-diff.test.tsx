@@ -46,13 +46,13 @@ async function mountDiff() {
 /** A pointer over document position `pos`, or over the removed block. */
 type Pointer = number | 'removed';
 
-/** jsdom has no layout: the removed block sits below y = 1000 and x names the document position. */
-function pointerEvent(type: string, pointer: Pointer, detail = 1) {
+/** jsdom has no layout: y is relative to the editor document, x names its document position. */
+function pointerEvent(type: string, pointer: Pointer, detail: number, documentTop: number) {
   return new MouseEvent(type, {
     button: 0,
     detail,
     clientX: pointer === 'removed' ? 0 : pointer,
-    clientY: pointer === 'removed' ? 1000 : 0,
+    clientY: documentTop + (pointer === 'removed' ? 1000 : 0),
   });
 }
 
@@ -67,10 +67,10 @@ function stubLayout(view: EditorView) {
 function drag(view: EditorView, press: Pointer, over: Pointer = press, detail = 1) {
   stubLayout(view);
   const style = view.state.facet(EditorViewClass.mouseSelectionStyle)
-    .map((makeStyle) => makeStyle(view, pointerEvent('mousedown', press, detail)))
+    .map((makeStyle) => makeStyle(view, pointerEvent('mousedown', press, detail, view.documentTop)))
     .find((candidate) => candidate != null);
   if (!style) return null;
-  const { anchor, head } = style.get(pointerEvent('mousemove', over), false, false).main;
+  const { anchor, head } = style.get(pointerEvent('mousemove', over, detail, view.documentTop), false, false).main;
   return { anchor, head };
 }
 
@@ -97,8 +97,9 @@ describe('read-only unified diff selection', () => {
     expect(drag(view, 'removed', 'removed', 3)).toEqual({ anchor: CHUNK.from, head: CHUNK.to });
   });
 
-  it('keeps the whole change when a drag from the removed block leaves it', async () => {
+  it.each([0, 12])('keeps the whole change when a drag leaves the removed block at document offset %s', async (offset) => {
     const view = await mountDiff();
+    vi.spyOn(view, 'documentTop', 'get').mockReturnValue(offset);
 
     expect(drag(view, 'removed', LAST_LINE.to)).toEqual({ anchor: CHUNK.from, head: LAST_LINE.to });
     expect(drag(view, 'removed', 0)).toEqual({ anchor: CHUNK.to, head: 0 });

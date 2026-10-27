@@ -357,6 +357,26 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn bundled_prompt_line_endings_are_platform_independent() {
+        for (path, prompt) in BUNDLED_PROMPTS {
+            for text in [
+                Some(prompt.zh_cn),
+                Some(prompt.en),
+                prompt.zh_tw,
+                prompt.ja_jp,
+                prompt.ko_kr,
+                prompt.pt_br,
+                prompt.es,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(!text.contains('\r'), "{path} must use LF line endings");
+            }
+        }
+    }
+
     fn assert_fully_rendered(template: &str, context: serde_json::Value) -> String {
         let rendered =
             render(template, context).expect("prompt should render with strict variables");

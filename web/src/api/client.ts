@@ -72,7 +72,7 @@ import type {
   ImSettingsVm,
   SaveImNotificationPreferencesInputVm,
   SetImChannelEnabledInputVm,
-  WeComScanAuthorizationVm,
+  ImScanAuthorizationVm,
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
   MulticaWorkspaceRefVm,
@@ -517,9 +517,13 @@ export interface RuntimeApi {
   getScheduledRuntimeSettings(): Promise<ScheduledRuntimeSettingsVm>;
   saveScheduledRuntimeSettings(input: ScheduledRuntimeSettingsInputVm): Promise<ScheduledRuntimeSettingsVm>;
   getImSettings(): Promise<ImSettingsVm>;
-  startWeComScanAuthorization(sessionId: string): Promise<WeComScanAuthorizationVm>;
+  startWeComScanAuthorization(sessionId: string): Promise<ImScanAuthorizationVm>;
   completeWeComScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
   cancelWeComScanAuthorization(sessionId: string): Promise<void>;
+  /** `reauthorize` reuses the configured app instead of creating a new one. */
+  startFeishuScanAuthorization(sessionId: string, reauthorize: boolean): Promise<ImScanAuthorizationVm>;
+  completeFeishuScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
+  cancelFeishuScanAuthorization(sessionId: string): Promise<void>;
   setImChannelEnabled(input: SetImChannelEnabledInputVm): Promise<ImSettingsVm>;
   saveImNotificationPreferences(input: SaveImNotificationPreferencesInputVm): Promise<ImSettingsVm>;
   resetImChannelBinding(input: ImGenerationInputVm): Promise<ImSettingsVm>;

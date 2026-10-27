@@ -2530,6 +2530,7 @@
       "title": "Intervención remota y notificaciones de IM",
       "enabled": "Activado",
       "privateBinding": "Chat privado: {{name}}",
+      "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificación",
       "notificationGroups": {
         "needsAction": "Requiere tu acción",
@@ -2545,24 +2546,43 @@
       "deleteDescription": "Esto desactiva la conexión, elimina su secreto del almacén de credenciales del SO y detiene las entregas pendientes.",
       "confirmDelete": "Eliminar",
       "scan": {
-        "title": "Conectar WeCom mediante código QR",
-        "description": "Escanee con la aplicación móvil de WeCom y confirme la autorización.",
-        "notConfigured": "WeCom no está conectado. Conéctelo para configurar la intervención remota y las notificaciones.",
-        "botId": "ID del bot: {{id}}",
+        "title": "Conectar {{channel}} mediante código QR",
+        "description": "Escanee con la aplicación móvil de {{channel}} y confirme la autorización.",
+        "notConfigured": "{{channel}} no está conectado. Conéctelo para configurar la intervención remota y las notificaciones.",
         "connect": "Escanear para conectar",
         "reauthorize": "Autorizar de nuevo",
         "generating": "Generando código QR…",
-        "waiting": "Escanee con WeCom y confirme la autorización",
+        "waiting": "Escanee con {{channel}} y confirme la autorización",
         "expiresIn": "El código QR expira en {{countdown}}",
         "waitingBinding": "Autorizado, esperando un destinatario",
-        "complete": "WeCom está listo",
-        "nextStep": "Envíe un mensaje al bot en WeCom para completar el vínculo del chat privado.",
+        "complete": "{{channel}} está listo",
+        "nextStep": "Envíe un mensaje al bot en {{channel}} para completar el vínculo del chat privado.",
         "retry": "Generar de nuevo",
-        "qrCodeLabel": "Código QR de autorización de WeCom"
+        "qrCodeLabel": "Código QR de autorización de {{channel}}"
       },
       "channels": {
-        "wecom": {
-          "title": "WeCom"
+        "weCom": {
+          "title": "WeCom",
+          "identity": "ID del bot: {{id}}"
+        },
+        "feishu": {
+          "title": "Feishu / Lark",
+          "identity": "App ID: {{id}}",
+          "singleDeviceHint": "Conecta cada bot a un solo dispositivo para evitar que las acciones lleguen a otro dispositivo.",
+          "permissions": {
+            "title": "La conexión requiere estos permisos",
+            "send": "Enviarte mensajes",
+            "receive": "Leer los mensajes privados que envías al bot",
+            "update": "Actualizar las tarjetas enviadas por el bot",
+            "profile": "Leer su nombre para mostrar la cuenta receptora",
+            "confirm": "Aceptar y generar código QR"
+          },
+          "resetBinding": {
+            "action": "Volver a vincular destinatario",
+            "title": "¿Volver a vincular el destinatario?",
+            "description": "Se eliminará el vínculo actual del chat privado. Envía un mensaje al bot desde la cuenta usada en la autorización para volver a vincularla. Para usar otra cuenta, vuelve a autorizar el bot.",
+            "confirm": "Volver a vincular"
+          }
         }
       },
       "status": {
@@ -2578,12 +2598,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "Conectar WeCom",
+          "title": "Conectar {{channel}}",
           "description": "Autorice mediante código QR y, a continuación, vincule un destinatario mediante un chat privado."
         },
         "waitingBinding": {
           "title": "Vincular un destinatario",
-          "description": "Envía un mensaje al bot en WeCom. Podrás recibir la intervención remota cuando el vínculo permanente quede guardado."
+          "description": "Envía un mensaje al bot en {{channel}}. Podrás recibir la intervención remota cuando el vínculo permanente quede guardado."
         },
         "connecting": {
           "title": "Estableciendo conexión",
@@ -2598,7 +2618,7 @@
           "description": "La recuperación automática no puede continuar. Reconecte para intentarlo de nuevo."
         },
         "ready": {
-          "title": "WeCom está listo",
+          "title": "{{channel}} está listo",
           "description": "Las intervenciones remotas y las notificaciones activadas se envían al chat privado vinculado."
         },
         "paused": {
@@ -2607,7 +2627,7 @@
         },
         "reauthorize": {
           "title": "Autorización requerida",
-          "description": "Las credenciales actuales no están disponibles. Autorice el bot de nuevo."
+          "description": "Escanea de nuevo para confirmar la autorización."
         },
         "conflict": {
           "title": "El bot está conectado en otro lugar",
@@ -2657,10 +2677,12 @@
         "IM_SCAN_CANCELLED": "La autorización QR fue cancelada.",
         "IM_SCAN_EXPIRED": "El código QR expiró. Genere uno nuevo.",
         "IM_SCAN_TIMEOUT": "La autorización QR agotó el tiempo de espera. Genere un código nuevo.",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "El servicio de autorización de WeCom no es accesible temporalmente.",
-        "IM_SCAN_PROTOCOL_INVALID": "La respuesta de autorización de WeCom no fue válida. Genere un código nuevo.",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "El servicio de autorización no es accesible temporalmente.",
+        "IM_SCAN_PROTOCOL_INVALID": "La respuesta de autorización no fue válida. Genere un código nuevo.",
         "IM_SCAN_SESSION_INVALID": "La sesión QR no es válida. Ábrala de nuevo.",
         "IM_SCAN_SESSION_CONFLICT": "La autorización QR ya está en curso.",
+        "IM_SCAN_DENIED": "Se rechazó la autorización.",
+        "IM_SCOPE_MISSING": "A la aplicación le faltan permisos necesarios. Vuelva a autorizarla.",
         "IM_STALE_GENERATION": "El estado de la conexión cambió. Reintente desde el estado más reciente.",
         "IM_RUNTIME_UNAVAILABLE": "El runtime de IM no está listo.",
         "IM_CHANNEL_CLEANUP_PENDING": "La configuración fue eliminada. La limpieza local se reintentará en segundo plano.",

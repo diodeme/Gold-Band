@@ -464,6 +464,18 @@ export function cancelWeComScanAuthorization(sessionId: string) {
   return getRuntimeApi().cancelWeComScanAuthorization(sessionId);
 }
 
+export function startFeishuScanAuthorization(sessionId: string, reauthorize: boolean) {
+  return getRuntimeApi().startFeishuScanAuthorization(sessionId, reauthorize);
+}
+
+export function completeFeishuScanAuthorization(sessionId: string) {
+  return getRuntimeApi().completeFeishuScanAuthorization(sessionId);
+}
+
+export function cancelFeishuScanAuthorization(sessionId: string) {
+  return getRuntimeApi().cancelFeishuScanAuthorization(sessionId);
+}
+
 export function setImChannelEnabled(input: Parameters<RuntimeApi['setImChannelEnabled']>[0]) {
   return getRuntimeApi().setImChannelEnabled(input);
 }

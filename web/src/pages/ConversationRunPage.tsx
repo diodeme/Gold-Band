@@ -686,7 +686,7 @@ export function ConversationRunPage({
           />
         ) : (
           <ConversationEmptySessionState
-            label={showLaunchingSession ? t('acp.launchingClaude') : t('conversation.runtime.noActiveSession')}
+            label={showLaunchingSession ? t('acp.preparingAgent') : t('conversation.runtime.noActiveSession')}
             active={showLaunchingSession}
           />
         )}

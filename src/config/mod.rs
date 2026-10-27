@@ -867,7 +867,6 @@ pub struct SettingsConfig {
     pub settings_schema_version: SettingsSchemaVersion,
     pub log_level: Option<RuntimeLogLevel>,
     pub log_prompts: Option<bool>,
-    pub log_provider_command: Option<bool>,
     pub log_retention_days: Option<u64>,
     pub appearance: Option<AppearancePreference>,
     pub personalization: Option<PersonalizationPreference>,
@@ -1801,7 +1800,6 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub interaction_mode: InteractionMode,
     pub log_prompts: bool,
-    pub log_provider_command: bool,
     pub log_retention_days: u64,
     pub appearance: AppearancePreference,
     pub personalization: PersonalizationPreference,
@@ -1875,7 +1873,6 @@ impl Default for RuntimeConfig {
             log_level: RuntimeLogLevel::Info,
             interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
-            log_provider_command: true,
             log_retention_days: 30,
             appearance: AppearancePreference::default(),
             personalization: PersonalizationPreference::default(),
@@ -1942,9 +1939,6 @@ impl RuntimeConfig {
         }
         if let Some(log_prompts) = settings.log_prompts {
             self.log_prompts = log_prompts;
-        }
-        if let Some(log_provider_command) = settings.log_provider_command {
-            self.log_provider_command = log_provider_command;
         }
         if let Some(log_retention_days) = settings.log_retention_days {
             self.log_retention_days = log_retention_days;

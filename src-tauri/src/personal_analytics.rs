@@ -1367,13 +1367,17 @@ fn claim_agent_prompt_lifecycle(
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),
     };
-    match admit_session_turn_for_execution(&attempt_dir.join("acp.snapshot.json"), &submission)
-        .map_err(|error| {
-            analytics_error(
-                "analytics.execution-failed",
-                json!({ "reason": error.to_string() }),
-            )
-        })? {
+    match admit_session_turn_for_execution(
+        &attempt_dir.join("acp.snapshot.json"),
+        &submission,
+        None,
+    )
+    .map_err(|error| {
+        analytics_error(
+            "analytics.execution-failed",
+            json!({ "reason": error.to_string() }),
+        )
+    })? {
         AcpTurnExecutionClaim::Claimed(owner) => Ok(owner),
         AcpTurnExecutionClaim::AlreadySettled(_) => Err(analytics_error(
             "analytics.execution-failed",

@@ -14,7 +14,7 @@ use parking_lot::ReentrantMutex;
 use walkdir::WalkDir;
 
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
-use crate::acp::events::annotate_runtime_control_output;
+use crate::acp::events::{AcpFailedPromptAttempt, annotate_runtime_control_output};
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
 use crate::config::DesktopLanguage;
@@ -9308,6 +9308,9 @@ fn execute_dynamic_worker(
     let resume_permission_mode_override = prompt_state.permission_mode_override;
     let mut proposals = Vec::new();
     let mut auto_retry_attempts = 0;
+    // Names the failed attempt only for the immediately following invocation;
+    // repair and confirmation turns are new turns and must not inherit it.
+    let mut automatic_retry_of: Option<AcpFailedPromptAttempt> = None;
     let expected_execution_id = node
         .runtime_execution_id
         .clone()
@@ -9415,6 +9418,7 @@ fn execute_dynamic_worker(
             )
         })?;
         invocation.runtime_control_intent = runtime_control_intent;
+        invocation.automatic_retry_of = automatic_retry_of.take();
         dynamic_event_best_effort(
             ctx,
             "dynamic_worker_invocation_build_end",
@@ -9492,6 +9496,7 @@ fn execute_dynamic_worker(
                         return Ok(DynamicExecutionResult { node, proposals });
                     }
                     auto_retry_attempts += 1;
+                    automatic_retry_of = AcpFailedPromptAttempt::from_error(&error);
                     append_dynamic_event(
                         ctx,
                         "dynamic_runtime_auto_retry",
@@ -13297,7 +13302,7 @@ fn build_dynamic_worker_invocation(
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: ctx.app.config.log_prompts,
-        log_provider_command: ctx.app.config.log_provider_command,
+        automatic_retry_of: None,
         attachments_dir: Some(attachments_dir),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
@@ -16041,6 +16046,7 @@ fn drive_from_node_with_initial_session(
         // runtime (which is deliberately short lived).
         let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
         let mut auto_retry_attempts = 0;
+        let mut automatic_retry_of: Option<AcpFailedPromptAttempt> = None;
         let execution_result = loop {
             if !attempt_execution_is_still_current_running(
                 app,
@@ -16077,6 +16083,7 @@ fn drive_from_node_with_initial_session(
                             runtime_control_intent,
                             model_override.clone(),
                             permission_mode_override.clone(),
+                            automatic_retry_of.take(),
                         )
                     }),
                 NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
@@ -16120,6 +16127,7 @@ fn drive_from_node_with_initial_session(
                             return Ok(());
                         }
                         auto_retry_attempts += 1;
+                        automatic_retry_of = AcpFailedPromptAttempt::from_error(&err);
                         let summary = format!(
                             "auto retry {}/{} after {} at {}/{}/{}: {}",
                             auto_retry_attempts,
@@ -17776,6 +17784,66 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// The scheduler's retry decision must follow the settled lifecycle: a
+    /// dispatched prompt failure is never retried automatically, while a
+    /// startup failure keeps its automatic retry.
+    #[test]
+    fn automatic_retry_decision_follows_the_settled_dispatch_fact() {
+        use crate::acp::events::{
+            AcpLifecycleTerminalGuard, AcpPromptSubmission, AcpTurnExecutionClaim,
+            admit_session_turn_for_execution, patch_session_metadata,
+        };
+        for (dispatched, retries) in [(true, false), (false, true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+            let submission = AcpPromptSubmission {
+                turn_id: "turn-decision".to_string(),
+                operation_id: "operation-1".to_string(),
+                adapter_id: "codex-acp".to_string(),
+                adapter_display_name: "Codex".to_string(),
+                cwd: "C:/tmp/attempt".to_string(),
+                input: crate::provider::ConversationPromptInput {
+                    display_text: "hello".to_string(),
+                    quotes: Vec::new(),
+                    role: None,
+                    workspace_files: Vec::new(),
+                },
+                attachment_paths: Vec::new(),
+                admitted_at: "2026-10-23T00:00:00Z".to_string(),
+            };
+            let AcpTurnExecutionClaim::Claimed(owner) =
+                admit_session_turn_for_execution(&path, &submission, None).unwrap()
+            else {
+                panic!("fixture must own its turn");
+            };
+            if dispatched {
+                patch_session_metadata(&path, |value| {
+                    value["promptRetry"] =
+                        serde_json::json!({"promptId": "turn-decision", "retryAttempt": 0});
+                    Ok(())
+                })
+                .unwrap();
+            }
+            let error = AcpLifecycleTerminalGuard::new(path.clone(), owner)
+                .execute(|| -> Result<()> {
+                    Err(crate::runtime_error::runtime_error(
+                        crate::runtime_error::auto_runtime_error_info(
+                            RuntimeErrorDomain::RuntimeTransport,
+                            "runtime.transport-interrupted",
+                            "ACP request timed out",
+                            serde_json::json!({}),
+                        ),
+                    ))
+                })
+                .unwrap_err();
+            assert_eq!(
+                auto_retry_delay_ms(&normalize_runtime_error(&error), 0).is_some(),
+                retries,
+                "dispatched={dispatched}"
+            );
+        }
     }
 
     #[test]

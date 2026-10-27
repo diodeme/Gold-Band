@@ -116,6 +116,23 @@ describe('browserApi', () => {
     }
   });
 
+  it.each([
+    [undefined, 'completed'],
+    ['', 'completed'],
+    ['?compactionStatus=in_progress', 'running'],
+  ])('projects compaction with preview query %s, including without a DOM', async (search, status) => {
+    vi.stubGlobal('window', search === undefined ? undefined : { location: { search } });
+    try {
+      const session = await browserApi.getAcpSession(
+        'default', 'mock-task', 'run-052', 'round-001', 'dev', 'attempt-001',
+      );
+      expect(session?.events.find((event) => event.kind === 'contextCompaction'))
+        .toMatchObject({ status });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('keeps queued authoring payload out of lifecycle summaries and restores one item on demand', async () => {
     const run = await browserApi.getConversationRun('default', 'mock-task', 'run-053');
     const item = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle?.promptQueue?.items[0];

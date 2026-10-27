@@ -37,6 +37,7 @@ const reauthorizationErrors = new Set([
   'IM_AUTHENTICATION_REQUIRED',
   'IM_CREDENTIAL_INVALID',
   'IM_CREDENTIAL_UNAVAILABLE',
+  'IM_SCOPE_MISSING',
 ]);
 
 export function imChannelDisplayModel(channel: ImChannelSettingsVm): ImChannelDisplayModel {
@@ -110,9 +111,8 @@ export function mergeImChannelSnapshot(settings: ImSettingsVm, snapshot: ImChann
         destinationId: snapshot.binding.destinationId,
         conversationId: snapshot.binding.conversationId,
         authorizedActorId: snapshot.binding.actorId,
-        displayName: channel.binding?.authorizedActorId === snapshot.binding.actorId
-          ? channel.binding.displayName
-          : snapshot.binding.actorId,
+        displayName: snapshot.binding.displayName
+          ?? (channel.binding?.authorizedActorId === snapshot.binding.actorId ? channel.binding.displayName : null),
       } : null;
       return { ...channel, enabled: snapshot.enabled, binding, connection: snapshot };
     }),

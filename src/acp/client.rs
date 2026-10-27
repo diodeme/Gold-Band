@@ -13620,6 +13620,7 @@ mod tests {
         // retention identity; the pin applies to the active session as well.
         super::set_direct_session_resident("test", "direct", true);
         assert!(entry.direct.as_ref().unwrap().protected());
+        let observation_started = Instant::now();
         let control = super::direct_background_control(&attempt)
             .expect("background control available after end_turn");
         let task_root = attempt.parent().unwrap();
@@ -13627,10 +13628,19 @@ mod tests {
             super::prompt_activity_under(task_root).is_none(),
             "the prompt turn is idle"
         );
+        let task_control = super::direct_background_control_under(task_root)
+            .expect("task activity sees the busy background");
+        assert_eq!(task_control.session_id, control.session_id);
         assert_eq!(
-            super::direct_background_control_under(task_root).as_ref(),
-            Some(&control),
-            "task activity sees the busy background"
+            task_control.connection_generation,
+            control.connection_generation
+        );
+        assert_eq!(task_control.active_tools, control.active_tools);
+        let observation_ms = observation_started.elapsed().as_millis() as u64;
+        assert!(
+            task_control.expires_at_ms.abs_diff(control.expires_at_ms)
+                <= observation_ms.saturating_add(1),
+            "wall-clock projections of the same monotonic grace window stay within observation and rounding bounds",
         );
         assert!(
             super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))

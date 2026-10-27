@@ -2530,6 +2530,7 @@
       "title": "IM 遠端干預與通知",
       "enabled": "啟用",
       "privateBinding": "一對一私聊：{{name}}",
+      "privateBindingUnnamed": "已綁定一對一私聊",
       "notificationKinds": "通知類型",
       "notificationGroups": {
         "needsAction": "需要你處理",
@@ -2545,24 +2546,43 @@
       "deleteDescription": "將停用連線並從系統認證儲存中刪除 secret。待投遞訊息也會停止傳送。",
       "confirmDelete": "刪除",
       "scan": {
-        "title": "掃碼接入企業微信",
-        "description": "使用手機企業微信掃碼並確認授權。",
-        "notConfigured": "尚未接入企業微信。接入後可設定遠端干預與通知。",
-        "botId": "機器人 ID：{{id}}",
+        "title": "掃碼接入{{channel}}",
+        "description": "使用手機{{channel}}掃碼並確認授權。",
+        "notConfigured": "尚未接入{{channel}}。接入後可設定遠端干預與通知。",
         "connect": "掃碼接入",
         "reauthorize": "重新授權",
         "generating": "正在生成二維條碼…",
-        "waiting": "請使用企業微信掃碼並確認授權",
+        "waiting": "請使用{{channel}}掃碼並確認授權",
         "expiresIn": "二維條碼將在 {{countdown}} 後過期",
         "waitingBinding": "授權完成，等待綁定接收帳號",
-        "complete": "企業微信已可用",
-        "nextStep": "請在企業微信中給機器人傳送一則訊息，以完成一對一私聊綁定。",
+        "complete": "{{channel}}已可用",
+        "nextStep": "請在{{channel}}中給機器人傳送一則訊息，以完成一對一私聊綁定。",
         "retry": "重新生成",
-        "qrCodeLabel": "企業微信授權二維條碼"
+        "qrCodeLabel": "{{channel}}授權二維條碼"
       },
       "channels": {
-        "wecom": {
-          "title": "企業微信"
+        "weCom": {
+          "title": "企業微信",
+          "identity": "機器人 ID：{{id}}"
+        },
+        "feishu": {
+          "title": "飛書",
+          "identity": "App ID：{{id}}",
+          "singleDeviceHint": "一個機器人只連線一台裝置，避免操作被其他裝置接收。",
+          "permissions": {
+            "title": "連線需要以下權限",
+            "send": "傳送訊息給你",
+            "receive": "讀取你傳給機器人的私訊",
+            "update": "更新機器人傳送的卡片",
+            "profile": "讀取你的姓名，用於顯示接收帳號",
+            "confirm": "同意並產生 QR Code"
+          },
+          "resetBinding": {
+            "action": "重新綁定接收帳號",
+            "title": "重新綁定接收帳號？",
+            "description": "將清除目前的私訊綁定。請使用掃碼授權的帳號傳訊息給機器人以重新綁定；如需更換授權帳號，請重新授權。",
+            "confirm": "重新綁定"
+          }
         }
       },
       "status": {
@@ -2578,12 +2598,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "接入企業微信",
+          "title": "接入{{channel}}",
           "description": "掃碼授權後，透過一對一私聊綁定接收帳號。"
         },
         "waitingBinding": {
           "title": "綁定接收帳號",
-          "description": "請在企業微信中給機器人傳送一則訊息。持久綁定完成後即可接收干預。"
+          "description": "請在{{channel}}中給機器人傳送一則訊息。持久綁定完成後即可接收干預。"
         },
         "connecting": {
           "title": "正在建立連線",
@@ -2598,7 +2618,7 @@
           "description": "自動還原無法繼續，請重新連線。"
         },
         "ready": {
-          "title": "企業微信可用",
+          "title": "{{channel}}可用",
           "description": "遠端干預和已啟用的通知會傳送到已綁定私聊。"
         },
         "paused": {
@@ -2607,7 +2627,7 @@
         },
         "reauthorize": {
           "title": "需要重新授權",
-          "description": "目前認證不可用，請重新掃碼授權。"
+          "description": "請重新掃碼確認授權。"
         },
         "conflict": {
           "title": "機器人已在其他用戶端連線",
@@ -2657,10 +2677,12 @@
         "IM_SCAN_CANCELLED": "掃碼授權已取消。",
         "IM_SCAN_EXPIRED": "二維條碼已過期，請重新生成。",
         "IM_SCAN_TIMEOUT": "掃碼授權已逾時，請重新生成。",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "暫時無法連線企業微信授權服務。",
-        "IM_SCAN_PROTOCOL_INVALID": "企業微信授權回應無效，請重新生成。",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "暫時無法連線授權服務。",
+        "IM_SCAN_PROTOCOL_INVALID": "授權回應無效，請重新生成。",
         "IM_SCAN_SESSION_INVALID": "掃碼工作階段無效，請重新開啟。",
         "IM_SCAN_SESSION_CONFLICT": "掃碼授權正在處理中。",
+        "IM_SCAN_DENIED": "掃碼授權遭到拒絕。",
+        "IM_SCOPE_MISSING": "應用程式缺少必要權限，請重新授權。",
         "IM_STALE_GENERATION": "連線狀態已更新，請根據最新狀態重試。",
         "IM_RUNTIME_UNAVAILABLE": "IM 執行時尚未就緒。",
         "IM_CHANNEL_CLEANUP_PENDING": "設定已刪除，本機清理將在背景自動重試。",

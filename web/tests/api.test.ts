@@ -67,7 +67,17 @@ describe('api facade', () => {
 
     await stopActiveSession('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback as never, null, null);
 
-    expect(stopImpl).toHaveBeenCalledWith('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback, null, null);
+    expect(stopImpl).toHaveBeenCalledWith('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback, null, null, undefined, undefined);
+  });
+
+  it('preserves background control and turn identity when stopping a session', async () => {
+    const stopImpl = vi.fn().mockResolvedValue({ kind: 'session-cancelled', run: null, session: null });
+    const control = { sessionId: 'session-1', connectionGeneration: 4, activeTools: 1, expiresAtMs: 1234 };
+    vi.mocked(getRuntimeApi).mockReturnValue({ stopActiveSession: stopImpl } as never);
+
+    await stopActiveSession('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', undefined, 'outer', 'outer-attempt', control, 'turn-1');
+
+    expect(stopImpl).toHaveBeenCalledExactlyOnceWith('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', undefined, 'outer', 'outer-attempt', control, 'turn-1');
   });
 
   it('routes ordinary run stop through pauseRun', async () => {

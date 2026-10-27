@@ -1,0 +1,2582 @@
+{
+  "interaction.elicitation.indexOnFixedForm": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "rejectedCardState": "failed"
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "button_interaction",
+            "main_title": {
+              "title": "已处理"
+            },
+            "button_list": [
+              {
+                "text": "已处理",
+                "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+              }
+            ],
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "button_interaction",
+            "main_title": {
+              "title": "操作已过期"
+            },
+            "button_list": [
+              {
+                "text": "操作已过期",
+                "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+              }
+            ],
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "button_interaction",
+            "main_title": {
+              "title": "处理失败，请在桌面端查看"
+            },
+            "button_list": [
+              {
+                "text": "处理失败，请在桌面端查看",
+                "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+              }
+            ],
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "button_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看"
+          },
+          "button_list": [
+            {
+              "text": "处理失败，请在桌面端查看",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+            }
+          ],
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.elicitation.multi": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "elicitation",
+        "action": "accept",
+        "content": {
+          "features": [
+            "search",
+            "audit"
+          ]
+        }
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 1,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "搜索",
+                  "is_checked": true
+                },
+                {
+                  "id": "1",
+                  "text": "导出",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "审计日志",
+                  "is_checked": true
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 已处理：搜索、审计日志",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 1,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "搜索",
+                  "is_checked": true
+                },
+                {
+                  "id": "1",
+                  "text": "导出",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "审计日志",
+                  "is_checked": true
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 操作已过期",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 1,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "搜索",
+                  "is_checked": true
+                },
+                {
+                  "id": "1",
+                  "text": "导出",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "审计日志",
+                  "is_checked": true
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 处理失败，请在桌面端查看",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "checkbox": {
+            "question_key": "q0",
+            "mode": 1,
+            "disable": true,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "处理失败，请在桌...",
+                "is_checked": true
+              },
+              {
+                "id": "2",
+                "text": "处理失败，请在桌...",
+                "is_checked": true
+              }
+            ]
+          },
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.elicitation.multiEmpty": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "rejectedCardState": "failed"
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 1,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "搜索",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "导出",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "审计日志",
+                  "is_checked": false
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 已处理",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 1,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "搜索",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "导出",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "审计日志",
+                  "is_checked": false
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 操作已过期",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 1,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "搜索",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "导出",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "审计日志",
+                  "is_checked": false
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 处理失败，请在桌面端查看",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "checkbox": {
+            "question_key": "q0",
+            "mode": 1,
+            "disable": true,
+            "option_list": []
+          },
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.elicitation.multiple": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "elicitation",
+        "action": "accept",
+        "content": {
+          "database": "SQLite",
+          "region": "sg"
+        }
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ],
+                "selected_id": "2"
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ],
+                "selected_id": "1"
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 已处理：数据库选择: SQLi...",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ],
+                "selected_id": "2"
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ],
+                "selected_id": "1"
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 操作已过期",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ],
+                "selected_id": "2"
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ],
+                "selected_id": "1"
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 处理失败，请在桌面端查看",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "multiple_interaction",
+          "select_list": [
+            {
+              "question_key": "q0",
+              "title": "处理失败，请在桌面端查看",
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "2",
+                  "text": "处理失败，请在..."
+                }
+              ],
+              "selected_id": "2"
+            },
+            {
+              "question_key": "q1",
+              "title": "处理失败，请在桌面端查看",
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "1",
+                  "text": "处理失败，请在..."
+                }
+              ],
+              "selected_id": "1"
+            }
+          ],
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.elicitation.multipleOptionalOmitted": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "elicitation",
+        "action": "accept",
+        "content": {
+          "database": "MySQL"
+        }
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ],
+                "selected_id": "0"
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ]
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 已处理：数据库选择: MySQ...",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ],
+                "selected_id": "0"
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ]
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 操作已过期",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ],
+                "selected_id": "0"
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ]
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 处理失败，请在桌面端查看",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "multiple_interaction",
+          "select_list": [
+            {
+              "question_key": "q0",
+              "title": "处理失败，请在桌面端查看",
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "处理失败，请在..."
+                }
+              ],
+              "selected_id": "0"
+            }
+          ],
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.elicitation.multipleRequiredOmitted": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "rejectedCardState": "failed"
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ]
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ]
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 已处理：数据库选择: -、部署...",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ]
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ],
+                "selected_id": "0"
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 操作已过期",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "multiple_interaction",
+            "select_list": [
+              {
+                "question_key": "q0",
+                "title": "数据库选择",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "MySQL"
+                  },
+                  {
+                    "id": "1",
+                    "text": "PostgreSQL"
+                  },
+                  {
+                    "id": "2",
+                    "text": "SQLite"
+                  }
+                ]
+              },
+              {
+                "question_key": "q1",
+                "title": "部署区域",
+                "disable": true,
+                "option_list": [
+                  {
+                    "id": "0",
+                    "text": "中国大陆"
+                  },
+                  {
+                    "id": "1",
+                    "text": "新加坡"
+                  }
+                ],
+                "selected_id": "0"
+              }
+            ],
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 处理失败，请在桌面端查看",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "multiple_interaction",
+          "select_list": [
+            {
+              "question_key": "q1",
+              "title": "处理失败，请在桌面端查看",
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "处理失败，请在..."
+                }
+              ],
+              "selected_id": "0"
+            }
+          ],
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.elicitation.single": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "elicitation",
+        "action": "accept",
+        "content": {
+          "database": "PostgreSQL"
+        }
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "MySQL",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "PostgreSQL",
+                  "is_checked": true
+                },
+                {
+                  "id": "2",
+                  "text": "SQLite",
+                  "is_checked": false
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 已处理：PostgreSQL",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "MySQL",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "PostgreSQL",
+                  "is_checked": true
+                },
+                {
+                  "id": "2",
+                  "text": "SQLite",
+                  "is_checked": false
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 操作已过期",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "checkbox": {
+              "question_key": "q0",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "MySQL",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "PostgreSQL",
+                  "is_checked": true
+                },
+                {
+                  "id": "2",
+                  "text": "SQLite",
+                  "is_checked": false
+                }
+              ]
+            },
+            "source": {
+              "desc": "Gold Band"
+            },
+            "main_title": {
+              "title": "id=0080 处理失败，请在桌面端查看",
+              "desc": "任务正在等待你的回答。"
+            },
+            "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "checkbox": {
+            "question_key": "q0",
+            "mode": 0,
+            "disable": true,
+            "option_list": [
+              {
+                "id": "1",
+                "text": "处理失败，请在桌...",
+                "is_checked": true
+              }
+            ]
+          },
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.manualCheck.vote": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "manualCheck",
+        "outcome": "failure"
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "main_title": {
+              "title": "id=0123 已处理：失败",
+              "desc": "任务正在等待人工检查结果。"
+            },
+            "checkbox": {
+              "question_key": "permission_choice",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "成功",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "失败",
+                  "is_checked": true
+                }
+              ]
+            },
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "main_title": {
+              "title": "id=0123 操作已过期",
+              "desc": "任务正在等待人工检查结果。"
+            },
+            "checkbox": {
+              "question_key": "permission_choice",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "成功",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "失败",
+                  "is_checked": true
+                }
+              ]
+            },
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "main_title": {
+              "title": "id=0123 处理失败，请在桌面端查看",
+              "desc": "任务正在等待人工检查结果。"
+            },
+            "checkbox": {
+              "question_key": "permission_choice",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "成功",
+                  "is_checked": false
+                },
+                {
+                  "id": "1",
+                  "text": "失败",
+                  "is_checked": true
+                }
+              ]
+            },
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "Agent 请求执行命令"
+          },
+          "checkbox": {
+            "question_key": "permission_choice",
+            "mode": 0,
+            "disable": true,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "处理失败，请在桌...",
+                "is_checked": true
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.permission.button": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "permissionOption",
+        "option_id": "always"
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "button_interaction",
+            "main_title": {
+              "title": "已处理"
+            },
+            "button_list": [
+              {
+                "text": "已处理",
+                "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+              }
+            ],
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "button_interaction",
+            "main_title": {
+              "title": "操作已过期"
+            },
+            "button_list": [
+              {
+                "text": "操作已过期",
+                "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+              }
+            ],
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "button_interaction",
+            "main_title": {
+              "title": "处理失败，请在桌面端查看"
+            },
+            "button_list": [
+              {
+                "text": "处理失败，请在桌面端查看",
+                "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+              }
+            ],
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "button_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看"
+          },
+          "button_list": [
+            {
+              "text": "处理失败，请在桌面端查看",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+            }
+          ],
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "interaction.permission.vote": {
+    "envelope": {
+      "actionId": "ae8318ee3bdaf25e4841f5f0d4be00a934f4cbc0a6e6f92f623f72bff26fb7cd",
+      "channel": "weCom",
+      "platformEventId": "event-1",
+      "conversationId": "single-user",
+      "actorId": "single-user",
+      "deliveryId": "delivery-1"
+    },
+    "inbound": {
+      "action": {
+        "kind": "permissionOption",
+        "option_id": "reject"
+      }
+    },
+    "responses": {
+      "handled": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "main_title": {
+              "title": "id=0007 已处理：拒绝",
+              "desc": "Agent 请求执行命令"
+            },
+            "checkbox": {
+              "question_key": "permission_choice",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "1",
+                  "text": "本次会话允许",
+                  "is_checked": false
+                },
+                {
+                  "id": "0",
+                  "text": "仅允许一次",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "拒绝",
+                  "is_checked": true
+                },
+                {
+                  "id": "3",
+                  "text": "始终拒绝",
+                  "is_checked": false
+                }
+              ]
+            },
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "expired": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "main_title": {
+              "title": "id=0007 操作已过期",
+              "desc": "Agent 请求执行命令"
+            },
+            "checkbox": {
+              "question_key": "permission_choice",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "1",
+                  "text": "本次会话允许",
+                  "is_checked": false
+                },
+                {
+                  "id": "0",
+                  "text": "仅允许一次",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "拒绝",
+                  "is_checked": true
+                },
+                {
+                  "id": "3",
+                  "text": "始终拒绝",
+                  "is_checked": false
+                }
+              ]
+            },
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      },
+      "failed": {
+        "cmd": "aibot_respond_update_msg",
+        "headers": {
+          "req_id": "callback-req-1"
+        },
+        "body": {
+          "response_type": "update_template_card",
+          "template_card": {
+            "card_type": "vote_interaction",
+            "main_title": {
+              "title": "id=0007 处理失败，请在桌面端查看",
+              "desc": "Agent 请求执行命令"
+            },
+            "checkbox": {
+              "question_key": "permission_choice",
+              "mode": 0,
+              "disable": true,
+              "option_list": [
+                {
+                  "id": "1",
+                  "text": "本次会话允许",
+                  "is_checked": false
+                },
+                {
+                  "id": "0",
+                  "text": "仅允许一次",
+                  "is_checked": false
+                },
+                {
+                  "id": "2",
+                  "text": "拒绝",
+                  "is_checked": true
+                },
+                {
+                  "id": "3",
+                  "text": "始终拒绝",
+                  "is_checked": false
+                }
+              ]
+            },
+            "submit_button": {
+              "text": "已提交",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+            },
+            "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+          }
+        }
+      }
+    },
+    "missingDeliveryFailure": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "Agent 请求执行命令"
+          },
+          "checkbox": {
+            "question_key": "permission_choice",
+            "mode": 0,
+            "disable": true,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "处理失败，请在桌...",
+                "is_checked": true
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "已提交",
+            "key": "delivery-1@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "invalid.button.unknownCardType": {
+    "sentResponse": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "button_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看"
+          },
+          "button_list": [
+            {
+              "text": "处理失败，请在桌面端查看",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+            }
+          ],
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "invalid.multiple.duplicateQuestion": {
+    "sentResponse": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "button_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看"
+          },
+          "button_list": [
+            {
+              "text": "处理失败，请在桌面端查看",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+            }
+          ],
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "invalid.vote.optionIdNotNumeric": {
+    "sentResponse": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "button_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看"
+          },
+          "button_list": [
+            {
+              "text": "处理失败，请在桌面端查看",
+              "key": "delivery-1@b7d39761135b5423acd159eb0348174f:0"
+            }
+          ],
+          "task_id": "delivery-1@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "invalid.vote.taskMismatch": {
+    "sentResponse": {
+      "cmd": "aibot_respond_update_msg",
+      "headers": {
+        "req_id": "callback-req-1"
+      },
+      "body": {
+        "response_type": "update_template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "main_title": {
+            "title": "处理失败，请在桌面端查看",
+            "desc": "Agent 请求执行命令"
+          },
+          "checkbox": {
+            "question_key": "permission_choice",
+            "mode": 0,
+            "disable": true,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "处理失败，请在桌...",
+                "is_checked": true
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "已提交",
+            "key": "wrong-delivery@b7d39761135b5423acd159eb0348174f:submit"
+          },
+          "task_id": "wrong-delivery@b7d39761135b5423acd159eb0348174f"
+        }
+      }
+    }
+  },
+  "plan.elicitation.multi": {
+    "detail": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "detail-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "markdown",
+        "markdown": {
+          "content": "**补充信息（id=0080）**\n任务正在等待你的回答。\n- **工作空间**: Gold-Band\n- **任务**: Task\n- **节点**: Direct agent\n### 前序模型输出\n已有部署包含订单服务与用户服务。\n请确认部署配置？\n1. 功能选择 (多选)\n请选择要启用的功能\n- 搜索\n- 导出: 导出为 CSV\n- 审计日志\n问题详情见本消息，请在下一条补充信息卡片中选择。"
+        }
+      }
+    },
+    "card": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "card-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "补充信息（id=0080）",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "horizontal_content_list": [],
+          "checkbox": {
+            "question_key": "q0",
+            "mode": 1,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "搜索",
+                "is_checked": false
+              },
+              {
+                "id": "1",
+                "text": "导出",
+                "is_checked": false
+              },
+              {
+                "id": "2",
+                "text": "审计日志",
+                "is_checked": false
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "提交",
+            "key": "delivery-1@f5d276aba09254f297b994aa94741996:submit"
+          },
+          "task_id": "delivery-1@f5d276aba09254f297b994aa94741996"
+        }
+      }
+    }
+  },
+  "plan.elicitation.multiple": {
+    "detail": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "detail-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "markdown",
+        "markdown": {
+          "content": "**补充信息（id=0080）**\n任务正在等待你的回答。\n- **工作空间**: Gold-Band\n- **任务**: Task\n- **节点**: Direct agent\n### 前序模型输出\n已有部署包含订单服务与用户服务。\n请确认部署配置？\n1. 数据库选择 (单选)\n- MySQL: 默认数据库\n- PostgreSQL\n- SQLite\n\n2. 部署区域 (单选)\n可选\n- 中国大陆\n- 新加坡\n问题详情见本消息，请在下一条补充信息卡片中选择。"
+        }
+      }
+    },
+    "card": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "card-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "template_card",
+        "template_card": {
+          "card_type": "multiple_interaction",
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "补充信息（id=0080）",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "horizontal_content_list": [],
+          "select_list": [
+            {
+              "question_key": "q0",
+              "title": "数据库选择",
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "MySQL"
+                },
+                {
+                  "id": "1",
+                  "text": "PostgreSQL"
+                },
+                {
+                  "id": "2",
+                  "text": "SQLite"
+                }
+              ],
+              "selected_id": "0"
+            },
+            {
+              "question_key": "q1",
+              "title": "部署区域",
+              "option_list": [
+                {
+                  "id": "0",
+                  "text": "中国大陆"
+                },
+                {
+                  "id": "1",
+                  "text": "新加坡"
+                }
+              ],
+              "selected_id": "0"
+            }
+          ],
+          "submit_button": {
+            "text": "提交",
+            "key": "delivery-1@f5d276aba09254f297b994aa94741996:submit"
+          },
+          "task_id": "delivery-1@f5d276aba09254f297b994aa94741996"
+        }
+      }
+    }
+  },
+  "plan.elicitation.single": {
+    "detail": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "detail-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "markdown",
+        "markdown": {
+          "content": "**补充信息（id=0080）**\n任务正在等待你的回答。\n- **工作空间**: Gold-Band\n- **任务**: Task\n- **节点**: Direct agent\n### 前序模型输出\n已有部署包含订单服务与用户服务。\n请确认部署配置？\n1. 数据库选择 (单选)\n请选择要使用的数据库？\n- MySQL: 默认数据库\n- PostgreSQL\n- SQLite\n- 其他答案请在桌面端填写\n问题详情见本消息，请在下一条补充信息卡片中选择。"
+        }
+      }
+    },
+    "card": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "card-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "补充信息（id=0080）",
+            "desc": "任务正在等待你的回答。"
+          },
+          "sub_title_text": "问题详情见上一条消息，请完成选择后提交",
+          "horizontal_content_list": [],
+          "checkbox": {
+            "question_key": "q0",
+            "mode": 0,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "MySQL",
+                "is_checked": false
+              },
+              {
+                "id": "1",
+                "text": "PostgreSQL",
+                "is_checked": false
+              },
+              {
+                "id": "2",
+                "text": "SQLite",
+                "is_checked": false
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "提交",
+            "key": "delivery-1@f5d276aba09254f297b994aa94741996:submit"
+          },
+          "task_id": "delivery-1@f5d276aba09254f297b994aa94741996"
+        }
+      }
+    }
+  },
+  "plan.manualCheck": {
+    "detail": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "detail-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "markdown",
+        "markdown": {
+          "content": "**人工检查（id=0123）**\n任务正在等待人工检查结果。\n- **工作空间**: Gold-Band\n- **任务**: Prepare release\n- **节点**: Interview\n### 最后一轮模型输出\nlatest model output\n模型输出见本消息，请在下一条人工检查卡片中选择。"
+        }
+      }
+    },
+    "card": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "card-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "人工检查（id=0123）",
+            "desc": "任务正在等待人工检查结果。"
+          },
+          "sub_title_text": "模型输出见上一条消息，请选择检查结果后提交",
+          "horizontal_content_list": [],
+          "checkbox": {
+            "question_key": "permission_choice",
+            "mode": 0,
+            "option_list": [
+              {
+                "id": "0",
+                "text": "成功",
+                "is_checked": true
+              },
+              {
+                "id": "1",
+                "text": "失败",
+                "is_checked": false
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "提交",
+            "key": "delivery-1@f5d276aba09254f297b994aa94741996:submit"
+          },
+          "task_id": "delivery-1@f5d276aba09254f297b994aa94741996"
+        }
+      }
+    }
+  },
+  "plan.permission": {
+    "detail": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "detail-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "markdown",
+        "markdown": {
+          "content": "**权限审批（id=0007）**\nAgent 请求执行命令\n- **工作空间**: Gold-Band\n- **任务**: Repair download\n- **节点**: Reviewer\n- **说明**: command failed; retry without sandbox?\n- **工具**: Edit files\n- **命令**: cargo build --release\n- **路径**: D:\\work\n- **参数**: fallback\n请求详情见本消息，请在下一条权限审批卡片中选择。"
+        }
+      }
+    },
+    "card": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "card-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "权限审批（id=0007）",
+            "desc": "Agent 请求执行命令"
+          },
+          "sub_title_text": "请求详情见上一条消息，请选择授权范围后提交",
+          "horizontal_content_list": [
+            {
+              "keyname": "工具",
+              "value": "Edit files"
+            },
+            {
+              "keyname": "命令",
+              "value": "cargo build --release"
+            },
+            {
+              "keyname": "路径",
+              "value": "D:\\work"
+            },
+            {
+              "keyname": "参数",
+              "value": "fallback"
+            }
+          ],
+          "checkbox": {
+            "question_key": "permission_choice",
+            "mode": 0,
+            "option_list": [
+              {
+                "id": "1",
+                "text": "本次会话允许",
+                "is_checked": true
+              },
+              {
+                "id": "0",
+                "text": "仅允许一次",
+                "is_checked": false
+              },
+              {
+                "id": "2",
+                "text": "拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "3",
+                "text": "始终拒绝",
+                "is_checked": false
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "提交",
+            "key": "delivery-1@f5d276aba09254f297b994aa94741996:submit"
+          },
+          "task_id": "delivery-1@f5d276aba09254f297b994aa94741996"
+        }
+      }
+    }
+  },
+  "plan.permission.overflow": {
+    "detail": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "detail-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "markdown",
+        "markdown": {
+          "content": "**权限审批（id=0007）**\nAgent 请求执行命令\n- **工作空间**: Gold-Band\n- **任务**: Repair download\n- **节点**: Reviewer\n- **说明**: command failed; retry without sandbox?\n- **工具**: Edit files\n- **命令**: cargo build --release\n- **路径**: D:\\work\n- **参数**: fallback\n请求详情见本消息，请在下一条权限审批卡片中选择。"
+        }
+      }
+    },
+    "card": {
+      "cmd": "aibot_send_msg",
+      "headers": {
+        "req_id": "card-req-1"
+      },
+      "body": {
+        "chatid": "single-user",
+        "msgtype": "template_card",
+        "template_card": {
+          "card_type": "vote_interaction",
+          "source": {
+            "desc": "Gold Band"
+          },
+          "main_title": {
+            "title": "权限审批（id=0007）",
+            "desc": "Agent 请求执行命令"
+          },
+          "sub_title_text": "请求详情见上一条消息，请选择授权范围后提交",
+          "horizontal_content_list": [
+            {
+              "keyname": "工具",
+              "value": "Edit files"
+            },
+            {
+              "keyname": "命令",
+              "value": "cargo build --release"
+            },
+            {
+              "keyname": "路径",
+              "value": "D:\\work"
+            },
+            {
+              "keyname": "参数",
+              "value": "fallback"
+            }
+          ],
+          "checkbox": {
+            "question_key": "permission_choice",
+            "mode": 0,
+            "option_list": [
+              {
+                "id": "2",
+                "text": "本次会话允许",
+                "is_checked": true
+              },
+              {
+                "id": "7",
+                "text": "本次会话允许",
+                "is_checked": false
+              },
+              {
+                "id": "12",
+                "text": "本次会话允许",
+                "is_checked": false
+              },
+              {
+                "id": "17",
+                "text": "本次会话允许",
+                "is_checked": false
+              },
+              {
+                "id": "22",
+                "text": "本次会话允许",
+                "is_checked": false
+              },
+              {
+                "id": "0",
+                "text": "仅允许一次",
+                "is_checked": false
+              },
+              {
+                "id": "5",
+                "text": "仅允许一次",
+                "is_checked": false
+              },
+              {
+                "id": "10",
+                "text": "仅允许一次",
+                "is_checked": false
+              },
+              {
+                "id": "15",
+                "text": "仅允许一次",
+                "is_checked": false
+              },
+              {
+                "id": "20",
+                "text": "仅允许一次",
+                "is_checked": false
+              },
+              {
+                "id": "1",
+                "text": "拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "3",
+                "text": "始终拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "6",
+                "text": "拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "8",
+                "text": "始终拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "11",
+                "text": "拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "13",
+                "text": "始终拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "16",
+                "text": "拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "18",
+                "text": "始终拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "21",
+                "text": "拒绝",
+                "is_checked": false
+              },
+              {
+                "id": "23",
+                "text": "始终拒绝",
+                "is_checked": false
+              }
+            ]
+          },
+          "submit_button": {
+            "text": "提交",
+            "key": "delivery-1@f5d276aba09254f297b994aa94741996:submit"
+          },
+          "task_id": "delivery-1@f5d276aba09254f297b994aa94741996"
+        }
+      }
+    }
+  },
+  "send.desktopResolution.elicitation": {
+    "cmd": "aibot_send_msg",
+    "headers": {
+      "req_id": "req-1"
+    },
+    "body": {
+      "chatid": "single-user",
+      "msgtype": "markdown",
+      "markdown": {
+        "content": "**id=0012 已在桌面端处理**"
+      }
+    }
+  },
+  "send.desktopResolution.manualCheck": {
+    "cmd": "aibot_send_msg",
+    "headers": {
+      "req_id": "req-1"
+    },
+    "body": {
+      "chatid": "single-user",
+      "msgtype": "markdown",
+      "markdown": {
+        "content": "**id=0012 已在桌面端处理**"
+      }
+    }
+  },
+  "send.desktopResolution.permission": {
+    "cmd": "aibot_send_msg",
+    "headers": {
+      "req_id": "req-1"
+    },
+    "body": {
+      "chatid": "single-user",
+      "msgtype": "markdown",
+      "markdown": {
+        "content": "**id=0012 已在桌面端处理**"
+      }
+    }
+  },
+  "send.information": {
+    "cmd": "aibot_send_msg",
+    "headers": {
+      "req_id": "req-1"
+    },
+    "body": {
+      "chatid": "single-user",
+      "msgtype": "markdown",
+      "markdown": {
+        "content": "**im.notification.runFailure.summary**\n\n- 任务: Prepare release\n\n- 工作空间: Gold-Band"
+      }
+    }
+  }
+}

@@ -93,7 +93,11 @@ mod tests {
         assert!(builtin_agent("amp-acp").is_some());
         let pi = builtin_agent("pi-acp").unwrap();
         assert_eq!(pi.command, "npx");
-        assert_eq!(pi.args, ["-y", "pi-acp@0.0.33"]);
+        assert!(!pi.version.is_empty());
+        assert_eq!(
+            pi.args,
+            ["-y".to_string(), format!("pi-acp@{}", pi.version)]
+        );
         assert_eq!(pi.primary_agent_dir.as_deref(), Some(".pi/agent"));
         assert_eq!(pi.project_primary_agent_dir.as_deref(), Some(".pi"));
         assert_eq!(pi.compatible_agent_dirs, [".agents"]);

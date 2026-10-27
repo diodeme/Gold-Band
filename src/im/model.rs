@@ -3,14 +3,18 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::acp::elicitation::ElicitationAction;
+pub use crate::app::intervention::RemoteElicitationAnswer as ImAnswer;
 use crate::app::intervention::{
-    InterventionAllowedAction, InterventionLocator, InterventionRequestIdentity,
-    RemoteElicitationFormSelection,
+    InterventionAction, InterventionAllowedAction, InterventionLocator, InterventionRequestIdentity,
 };
+use crate::domain::NodeOutcome;
 
-pub const IM_PAYLOAD_VERSION: u16 = 1;
+use super::ImErrorCode;
+
+pub const IM_PAYLOAD_VERSION: u16 = 3;
 pub const MAX_IM_PRESENTATION_BYTES: usize = 32 * 1024;
-pub const IM_DESKTOP_RESOLUTION_EVENT_SUFFIX: &str = "desktop-resolved";
+pub const IM_RESOLUTION_EVENT_SUFFIX: &str = "resolved";
 pub const INTERVENTION_WORKSPACE_FIELD: &str = "workspaceLabel";
 pub const INTERVENTION_TASK_FIELD: &str = "taskTitle";
 pub const INTERVENTION_NODE_FIELD: &str = "nodeLabel";
@@ -24,28 +28,31 @@ pub fn is_intervention_context_field(key: &str) -> bool {
     INTERVENTION_CONTEXT_FIELDS.contains(&key)
 }
 
-pub fn desktop_resolution_event_id(source_event_id: &str) -> String {
-    format!("{source_event_id}:{IM_DESKTOP_RESOLUTION_EVENT_SUFFIX}")
+pub fn resolution_event_id(source_event_id: &str) -> String {
+    format!("{source_event_id}:{IM_RESOLUTION_EVENT_SUFFIX}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImChannelKind {
     WeCom,
+    Feishu,
 }
 
 impl ImChannelKind {
-    pub const ALL: [Self; 1] = [Self::WeCom];
+    pub const ALL: [Self; 2] = [Self::WeCom, Self::Feishu];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::WeCom => "wecom",
+            Self::Feishu => "feishu",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "wecom" => Some(Self::WeCom),
+            "feishu" => Some(Self::Feishu),
             _ => None,
         }
     }
@@ -208,6 +215,113 @@ pub struct InterventionResolutionNotification {
     pub locator: ImNavigationLocator,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_ref: Option<u16>,
+    pub resolved_by: ImResolvedBy,
+    pub outcome: ImResolutionOutcome,
+}
+
+/// Which surface won the intervention. Only the side whose command was
+/// `Accepted` writes it; `Runtime` marks a request the runtime ended without
+/// an answer, observed from canonical settlement rather than a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "channel", rename_all = "camelCase")]
+pub enum ImResolvedBy {
+    Desktop,
+    Channel(ImChannelKind),
+    Runtime,
+}
+
+/// How a per-target resolution record is written. `Send` is delivered by the
+/// worker; `TombstoneOnly` is persisted as `expired` only to block a late
+/// source projection for a target that never showed the card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImResolutionDispatch {
+    Send,
+    TombstoneOnly,
+}
+
+/// Structured result of a resolved intervention; carries no user-facing text.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ImResolutionOutcome {
+    PermissionOption {
+        option_id: String,
+    },
+    ElicitationSubmitted {
+        content: serde_json::Value,
+    },
+    /// The intervention is resolved, but its accepted result is unavailable.
+    ResultUnavailable,
+    /// The user explicitly rejected the elicitation.
+    ElicitationDeclined,
+    /// The request ended without an answer: the execution was stopped, timed
+    /// out or abandoned. Only the desktop and the runtime settlement produce
+    /// it; remote channels cannot submit it.
+    Cancelled,
+    ManualCheck {
+        outcome: NodeOutcome,
+    },
+}
+
+impl From<&InterventionAction> for ImResolutionOutcome {
+    fn from(action: &InterventionAction) -> Self {
+        match action {
+            InterventionAction::PermissionOption { option_id } => Self::PermissionOption {
+                option_id: option_id.clone(),
+            },
+            InterventionAction::Elicitation {
+                action: ElicitationAction::Accept,
+                content: Some(content),
+            } => Self::ElicitationSubmitted {
+                content: content.clone(),
+            },
+            InterventionAction::Elicitation {
+                action: ElicitationAction::Accept,
+                content: None,
+            } => Self::ResultUnavailable,
+            InterventionAction::Elicitation {
+                action: ElicitationAction::Decline,
+                ..
+            } => Self::ElicitationDeclined,
+            InterventionAction::Elicitation {
+                action: ElicitationAction::Cancel,
+                ..
+            } => Self::Cancelled,
+            InterventionAction::ManualCheck { outcome } => Self::ManualCheck { outcome: *outcome },
+        }
+    }
+}
+
+impl ImResolutionOutcome {
+    /// Whether the request ended without anyone answering it (stop/expiry).
+    /// Such an outcome has no handling surface to attribute.
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+}
+
+impl std::fmt::Debug for ImResolutionOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ElicitationSubmitted { .. } => {
+                f.write_str("ElicitationSubmitted { content: [REDACTED] }")
+            }
+            Self::ResultUnavailable => f.write_str("ResultUnavailable"),
+            Self::ElicitationDeclined => f.write_str("ElicitationDeclined"),
+            Self::Cancelled => f.write_str("Cancelled"),
+            Self::PermissionOption { option_id } => f
+                .debug_struct("PermissionOption")
+                .field("option_id", option_id)
+                .finish(),
+            Self::ManualCheck { outcome } => f
+                .debug_struct("ManualCheck")
+                .field("outcome", outcome)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -258,6 +372,16 @@ impl ImDeliveryPayload {
                     && resolution.notification_kind == notification_kind
                     && !resolution.source_event_id.trim().is_empty()
                     && !resolution.canonical_event_id.trim().is_empty()
+                    && match &resolution.outcome {
+                        ImResolutionOutcome::ElicitationSubmitted { content } => {
+                            content.is_object()
+                                && serde_json::to_vec(content).is_ok_and(|bytes| {
+                                    bytes.len()
+                                        <= crate::app::intervention::MAX_INTERVENTION_CONTENT_BYTES
+                                })
+                        }
+                        _ => true,
+                    }
             }
         }
     }
@@ -355,40 +479,52 @@ pub struct ImDeliveryBinding {
     pub update_token_ref: Option<String>,
 }
 
+/// Channel-neutral submission decoded by a connector. Conversion to an
+/// `InterventionAction` and its validation happen once, in the inbound service.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
-    tag = "source",
+    tag = "kind",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum ImInboundActionSelection {
-    Resolved {
-        action_token: String,
-        action: crate::app::intervention::InterventionAction,
-    },
-    LocalIndex {
+pub enum ImSubmittedAction {
+    /// Index into the delivery's published `allowed_actions`.
+    PublishedAction {
         index: usize,
     },
-    Form {
-        selections: Vec<RemoteElicitationFormSelection>,
+    PermissionOption {
+        option_id: String,
     },
+    ManualCheck {
+        outcome: NodeOutcome,
+    },
+    /// Answers keyed by `RemoteQuestion::selector_key`.
+    ElicitationForm {
+        answers: BTreeMap<String, ImAnswer>,
+    },
+    ElicitationDecline,
 }
 
-impl std::fmt::Debug for ImInboundActionSelection {
+impl std::fmt::Debug for ImSubmittedAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Resolved { action, .. } => formatter
-                .debug_struct("ResolvedImInboundAction")
-                .field("action", action)
-                .finish_non_exhaustive(),
-            Self::LocalIndex { index } => formatter
-                .debug_struct("LocalIndexImInboundAction")
+            Self::PublishedAction { index } => formatter
+                .debug_struct("PublishedAction")
                 .field("index", index)
                 .finish(),
-            Self::Form { selections } => formatter
-                .debug_struct("FormImInboundAction")
-                .field("selections", selections)
+            Self::PermissionOption { option_id } => formatter
+                .debug_struct("PermissionOption")
+                .field("option_id", option_id)
                 .finish(),
+            Self::ManualCheck { outcome } => formatter
+                .debug_struct("ManualCheck")
+                .field("outcome", outcome)
+                .finish(),
+            Self::ElicitationForm { answers } => formatter
+                .debug_struct("ElicitationForm")
+                .field("answer_count", &answers.len())
+                .finish_non_exhaustive(),
+            Self::ElicitationDecline => formatter.write_str("ElicitationDecline"),
         }
     }
 }
@@ -402,7 +538,9 @@ pub struct ImInboundEnvelope {
     pub conversation_id: String,
     pub actor_id: String,
     pub delivery_id: String,
-    pub action: ImInboundActionSelection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_token: Option<String>,
+    pub action: ImSubmittedAction,
 }
 
 impl std::fmt::Debug for ImInboundEnvelope {
@@ -413,6 +551,10 @@ impl std::fmt::Debug for ImInboundEnvelope {
             .field("channel", &self.channel)
             .field("delivery_id", &self.delivery_id)
             .field("action", &self.action)
+            .field(
+                "action_token",
+                &self.action_token.as_ref().map(|_| "[redacted]"),
+            )
             .field("actor", &"[redacted]")
             .field("conversation", &"[redacted]")
             .finish_non_exhaustive()
@@ -426,10 +568,40 @@ pub struct ImInboundActionResult {
     pub canonical_event_id: Option<String>,
     pub actor_id_hash: String,
     pub platform_event_id: String,
-    pub result_code: String,
+    pub outcome: ImInboundOutcome,
     pub result_revision: Option<i64>,
     pub received_at_ms: i64,
     pub completed_at_ms: i64,
+}
+
+/// Inbound processing outcome. Only accepted and replayed outcomes are
+/// persisted; rejections are returned to the connector without a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImInboundOutcome {
+    Accepted,
+    AlreadyApplied,
+    Rejected(ImErrorCode),
+}
+
+impl ImInboundOutcome {
+    pub const ACCEPTED: &str = "ACCEPTED";
+    pub const ALREADY_APPLIED: &str = "ALREADY_APPLIED";
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => Self::ACCEPTED,
+            Self::AlreadyApplied => Self::ALREADY_APPLIED,
+            Self::Rejected(code) => code.as_str(),
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            Self::ACCEPTED => Some(Self::Accepted),
+            Self::ALREADY_APPLIED => Some(Self::AlreadyApplied),
+            other => ImErrorCode::parse(other).map(Self::Rejected),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,7 +647,10 @@ pub struct ImBindingSummary {
     pub destination_id: String,
     pub conversation_id: String,
     pub authorized_actor_id: String,
-    pub display_name: String,
+    /// Platform display name of the bound account; `None` when the platform
+    /// did not provide one. The frontend then shows a neutral label.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,11 +720,14 @@ mod tests {
             conversation_id: "conversation-secret".into(),
             actor_id: "actor-secret".into(),
             delivery_id: "delivery-id".into(),
-            action: ImInboundActionSelection::Resolved {
-                action_token: "signed-action-token-secret".into(),
-                action: crate::app::intervention::InterventionAction::PermissionOption {
-                    option_id: "allow_once".into(),
-                },
+            action_token: Some("signed-action-token-secret".into()),
+            action: ImSubmittedAction::ElicitationForm {
+                answers: BTreeMap::from([(
+                    "q0".to_string(),
+                    ImAnswer::Text {
+                        text: "free-text-answer-secret".into(),
+                    },
+                )]),
             },
         };
         let debug = format!("{envelope:?}");
@@ -558,20 +736,125 @@ mod tests {
             "conversation-secret",
             "actor-secret",
             "signed-action-token-secret",
+            "free-text-answer-secret",
         ] {
             assert!(!debug.contains(forbidden), "debug leaked {forbidden}");
         }
         assert!(debug.contains("[redacted]"));
 
-        let context = crate::im::ImActionResponseContext::WeCom {
-            req_id: "callback-request-secret".into(),
-            task_id: "delivery-id".into(),
-            vote_selection: None,
-            form_selection: None,
-        };
+        let context =
+            crate::im::ImActionResponseContext::new("callback-request-secret".to_string());
         let debug = format!("{context:?}");
         assert!(!debug.contains("callback-request-secret"));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[opaque]"));
+    }
+
+    #[test]
+    fn resolution_content_is_durable_and_debug_redacted() {
+        let action = InterventionAction::Elicitation {
+            action: ElicitationAction::Accept,
+            content: Some(serde_json::json!({ "answer": "private-answer" })),
+        };
+        let outcome = ImResolutionOutcome::from(&action);
+        let wire = serde_json::to_string(&outcome).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ImResolutionOutcome>(&wire).unwrap(),
+            outcome
+        );
+        assert!(wire.contains("private-answer"));
+        assert!(!format!("{outcome:?}").contains("private-answer"));
+        assert!(
+            serde_json::from_str::<ImResolutionOutcome>(r#"{"kind":"elicitationSubmitted"}"#)
+                .is_err(),
+            "old payloads must be migrated, not silently decoded"
+        );
+    }
+
+    #[test]
+    fn cancelled_elicitation_is_a_distinct_resolution_from_a_user_decline() {
+        let outcome = |action| {
+            ImResolutionOutcome::from(&InterventionAction::Elicitation {
+                action,
+                content: None,
+            })
+        };
+        let cancelled = outcome(ElicitationAction::Cancel);
+        let declined = outcome(ElicitationAction::Decline);
+        assert_eq!(cancelled, ImResolutionOutcome::Cancelled);
+        assert_eq!(declined, ImResolutionOutcome::ElicitationDeclined);
+        assert!(cancelled.is_cancelled());
+        assert!(!declined.is_cancelled());
+
+        // Additive variant inside the v3 payload: no payload/schema bump, and
+        // every previously persisted outcome kind still decodes unchanged.
+        let wire = serde_json::to_value(&cancelled).unwrap();
+        assert_eq!(wire, serde_json::json!({ "kind": "cancelled" }));
+        assert_eq!(
+            serde_json::from_value::<ImResolutionOutcome>(wire).unwrap(),
+            cancelled
+        );
+        assert_eq!(
+            serde_json::from_value::<ImResolutionOutcome>(
+                serde_json::json!({ "kind": "elicitationDeclined" })
+            )
+            .unwrap(),
+            declined
+        );
+        let payload: ImDeliveryPayload = serde_json::from_value(serde_json::json!({
+            "kind": "interventionResolution",
+            "data": {
+                "version": IM_PAYLOAD_VERSION,
+                "resolution": {
+                    "canonicalEventId": "event:resolved",
+                    "sourceEventId": "event",
+                    "notificationKind": "elicitation",
+                    "locator": { "projectId": "project-1" },
+                    "resolvedBy": { "kind": "runtime" },
+                    "outcome": { "kind": "cancelled" }
+                }
+            }
+        }))
+        .unwrap();
+        assert!(payload.validate_for(ImNotificationKind::Elicitation));
+    }
+
+    #[test]
+    fn resolution_content_requires_an_object_within_the_domain_byte_limit() {
+        let limit = crate::app::intervention::MAX_INTERVENTION_CONTENT_BYTES;
+        let overhead = serde_json::to_vec(&serde_json::json!({ "answer": "" }))
+            .unwrap()
+            .len();
+        for (content, valid) in [
+            (serde_json::json!({}), true),
+            (
+                serde_json::json!({"answer": "a".repeat(limit - overhead)}),
+                true,
+            ),
+            (
+                serde_json::json!({"answer": "a".repeat(limit - overhead + 1)}),
+                false,
+            ),
+            (serde_json::json!({"answer": "汉".repeat(limit / 2)}), false),
+            (serde_json::json!([]), false),
+            (Value::Null, false),
+        ] {
+            let payload: ImDeliveryPayload = serde_json::from_value(serde_json::json!({
+                "kind": "interventionResolution",
+                "data": {
+                    "version": IM_PAYLOAD_VERSION,
+                    "resolution": {
+                        "canonicalEventId": "event:resolved",
+                        "sourceEventId": "event",
+                        "notificationKind": "elicitation",
+                        "locator": { "projectId": "project-1" },
+                        "resolvedBy": { "kind": "desktop" },
+                        "outcome": { "kind": "elicitationSubmitted", "content": content }
+                    }
+                }
+            }))
+            .unwrap();
+            assert_eq!(payload.validate_for(ImNotificationKind::Elicitation), valid);
+        }
     }
 
     #[test]
@@ -604,7 +887,7 @@ mod tests {
         let resolution = ImDeliveryPayload::InterventionResolution {
             version: IM_PAYLOAD_VERSION,
             resolution: InterventionResolutionNotification {
-                canonical_event_id: "event-1:desktop-resolved".into(),
+                canonical_event_id: resolution_event_id("event-1"),
                 source_event_id: "event-1".into(),
                 notification_kind: ImNotificationKind::Permission,
                 locator: ImNavigationLocator {
@@ -619,8 +902,16 @@ mod tests {
                     scheduled_occurrence_id: None,
                 },
                 display_ref: Some(12),
+                resolved_by: ImResolvedBy::Desktop,
+                outcome: ImResolutionOutcome::PermissionOption {
+                    option_id: "allow".into(),
+                },
             },
         };
+        assert_eq!(
+            resolution_event_id("event-1"),
+            format!("event-1:{IM_RESOLUTION_EVENT_SUFFIX}")
+        );
         assert_eq!(resolution.payload_kind(), "information");
         assert!(resolution.validate_for(ImNotificationKind::Permission));
         assert!(!resolution.validate_for(ImNotificationKind::RunFailure));

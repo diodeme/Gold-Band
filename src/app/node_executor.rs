@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use tracing::{info, warn};
 
-use crate::acp::events::annotate_runtime_control_output;
+use crate::acp::events::{AcpFailedPromptAttempt, annotate_runtime_control_output};
 use crate::artifacts::parse_json_artifact;
 use crate::domain::{
     InvocationKind, NodeOutcome, RunStatus, SessionMode, TurnControlMode, VERSION,
@@ -655,7 +655,7 @@ pub(crate) fn build_worker_invocation(
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: app.config.log_prompts,
-        log_provider_command: app.config.log_provider_command,
+        automatic_retry_of: None,
         attachments_dir: matches!(node_dsl, NodeDsl::Worker(_)).then(|| {
             app.paths
                 .attachments_dir(task_id, run_id, round_id, node_id, attempt_id)
@@ -694,6 +694,7 @@ pub(crate) fn execute_ai_node(
     runtime_control_intent: RuntimeControlIntent,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
+    automatic_retry_of: Option<AcpFailedPromptAttempt>,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let mut invocation = build_worker_invocation(
@@ -716,6 +717,7 @@ pub(crate) fn execute_ai_node(
         permission_mode_override,
     )?;
     invocation.runtime_control_intent = runtime_control_intent;
+    invocation.automatic_retry_of = automatic_retry_of;
 
     progress(&format!(
         "calling provider for {}/{}/{}",

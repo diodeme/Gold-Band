@@ -38,6 +38,7 @@ const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
 const STDERR_FAILURE_MAX_CHARS: usize = 2_000;
+const STDERR_DIAGNOSTIC_MAX_CHARS: usize = 4_000;
 pub(crate) const STDERR_FAILURE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const CONNECTION_DIAGNOSTIC_REQUEST_LIMIT: usize = 8;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -1014,6 +1015,7 @@ pub struct AdapterConnection {
     exit_status_logged: AtomicBool,
     stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
     stderr_failures: Mutex<StderrFailureLog>,
+    stderr_diagnostics: Mutex<StderrDiagnosticTail>,
     stderr_failures_changed: Condvar,
 }
 
@@ -1021,6 +1023,50 @@ pub struct AdapterConnection {
 struct StderrFailureLog {
     text: String,
     finished: bool,
+}
+
+/// The most recent non-noise adapter stderr lines, bounded by characters.
+///
+/// The connection is pooled per adapter and workspace, so these lines cannot
+/// be attributed to one session. They only explain a connection-level
+/// failure such as a request timeout.
+#[derive(Default)]
+struct StderrDiagnosticTail {
+    lines: VecDeque<String>,
+    chars: usize,
+}
+
+impl StderrDiagnosticTail {
+    fn push(&mut self, line: &str) {
+        let line = line.trim_end();
+        if line.is_empty() {
+            return;
+        }
+        let line_chars = line.chars().count();
+        let line = if line_chars > STDERR_DIAGNOSTIC_MAX_CHARS {
+            line.chars()
+                .skip(line_chars - STDERR_DIAGNOSTIC_MAX_CHARS)
+                .collect()
+        } else {
+            line.to_string()
+        };
+        self.chars += line.chars().count() + 1;
+        self.lines.push_back(line);
+        while self.chars > STDERR_DIAGNOSTIC_MAX_CHARS + 1 {
+            let Some(oldest) = self.lines.pop_front() else {
+                break;
+            };
+            self.chars -= oldest.chars().count() + 1;
+        }
+    }
+
+    fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 pub struct ActivePromptGuard {
@@ -1235,6 +1281,7 @@ impl AdapterConnection {
             exit_status_logged: AtomicBool::new(false),
             stderr_noise_counts: Mutex::new(BTreeMap::new()),
             stderr_failures: Mutex::new(StderrFailureLog::default()),
+            stderr_diagnostics: Mutex::new(StderrDiagnosticTail::default()),
             stderr_failures_changed: Condvar::new(),
         });
 
@@ -1338,6 +1385,20 @@ impl AdapterConnection {
         };
         append_failure_stderr_text(&mut log.text, line);
         self.stderr_failures_changed.notify_all();
+    }
+
+    fn record_stderr_diagnostic(&self, line: &str) {
+        if let Ok(mut diagnostics) = self.stderr_diagnostics.lock() {
+            diagnostics.push(line);
+        }
+    }
+
+    /// Latest bounded non-noise stderr of this adapter connection.
+    pub fn stderr_diagnostic_tail(&self) -> String {
+        self.stderr_diagnostics
+            .lock()
+            .map(|diagnostics| diagnostics.text())
+            .unwrap_or_default()
     }
 
     fn finish_failure_stderr(&self) {
@@ -2100,7 +2161,7 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
             return;
         }
         AdapterStderrKind::Failure => connection.record_failure_stderr(&line.text),
-        AdapterStderrKind::Diagnostic => {}
+        AdapterStderrKind::Diagnostic => connection.record_stderr_diagnostic(&line.text),
     }
     let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
     if line.encoding == "non-utf8" {
@@ -3439,6 +3500,24 @@ mod tests {
         append_failure_stderr_text(&mut bounded, "npm error extra");
         assert_eq!(bounded.chars().count(), STDERR_FAILURE_MAX_CHARS);
         assert!(!bounded.contains("extra"));
+    }
+
+    #[test]
+    fn stderr_diagnostic_tail_keeps_the_latest_lines_within_its_bound() {
+        let mut tail = super::StderrDiagnosticTail::default();
+        for index in 0..400 {
+            tail.push(&format!("adapter diagnostic line {index:04}"));
+        }
+        let text = tail.text();
+        assert!(text.chars().count() <= super::STDERR_DIAGNOSTIC_MAX_CHARS);
+        assert!(text.ends_with("adapter diagnostic line 0399"), "{text}");
+        assert!(!text.contains("adapter diagnostic line 0000"));
+
+        tail.push(&"x".repeat(super::STDERR_DIAGNOSTIC_MAX_CHARS + 10));
+        tail.push("final line");
+        let text = tail.text();
+        assert!(text.chars().count() <= super::STDERR_DIAGNOSTIC_MAX_CHARS);
+        assert!(text.ends_with("final line"), "{text}");
     }
 
     #[test]

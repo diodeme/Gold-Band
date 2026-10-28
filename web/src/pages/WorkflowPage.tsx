@@ -21,7 +21,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { isRunStoppable, normalizeTone } from '@/lib/status';
 import { formatCurrentNode } from '@/lib/nodes';
-import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { useProfileCatalog } from '@/lib/profile-catalog';
 
 interface WorkflowPageProps {
   vm: WorkflowVm | null;
@@ -65,7 +65,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onOpenRound, o
   const [workflowDrawerMode, setWorkflowDrawerMode] = useState<WorkflowDrawerMode | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
-  const profileCatalog = useWorkflowProfileCatalog(workflowDrawerMode !== null && workflowDrawerMode !== 'view');
+  const profileCatalog = useProfileCatalog(workflowDrawerMode !== null && workflowDrawerMode !== 'view');
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);

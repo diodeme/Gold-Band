@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { AcpCommandItemVm, WorkspaceDirectoryEntryVm, WorkspaceRootRef } from '@/types';
 import { useMentionWorkspaceFiles } from '@/hooks/useMentionWorkspaceFiles';
 import {
+  type ComposerMenuTrigger,
   type MentionMenuLabels,
   type MentionView,
   type SlashCatalogGroup,
@@ -43,6 +44,8 @@ interface UseSlashCommandControllerOptions {
     labels: MentionMenuLabels;
     onSelectWorkspaceFile: (entry: WorkspaceDirectoryEntryVm) => void;
   };
+  /** Called once each time the user starts a `/` or `@` query, so its catalog can be re-read. */
+  onMenuTrigger?: (trigger: ComposerMenuTrigger) => void;
 }
 
 function catalogGroups(
@@ -62,6 +65,7 @@ export function useSlashCommandController({
   onInputChange,
   textareaRef,
   mention,
+  onMenuTrigger,
 }: UseSlashCommandControllerOptions) {
   const catalog = useMemo(() => catalogGroups(groups, commands), [commands, groups]);
   const catalogItems = useMemo(() => flattenSlashCatalog(catalog), [catalog]);
@@ -100,6 +104,12 @@ export function useSlashCommandController({
     };
   }, [readCaret, textareaRef]);
   const menuQuery = useMemo(() => matchComposerMenuQueryAt(input, caret), [caret, input]);
+  const menuTrigger = menuQuery?.trigger ?? null;
+  const onMenuTriggerRef = useRef(onMenuTrigger);
+  onMenuTriggerRef.current = onMenuTrigger;
+  useEffect(() => {
+    if (menuTrigger) onMenuTriggerRef.current?.(menuTrigger);
+  }, [menuTrigger]);
 
   /** Commits the next input and puts the caret (and focus) at `nextCaret`. */
   const applyInput = useCallback((next: string, nextCaret: number) => {

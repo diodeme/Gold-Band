@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateWorkflowForSave } from '@/components/WorkflowEditor';
-import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { readyProfileCatalog } from '@/lib/profile-catalog';
 import { retainAcpModelBoundOverrides, projectAuthoringConfigOverrides } from '@/lib/acp-composite-config';
 import { updateAcpConfigOptionOverride } from '@/components/acp/AcpModelThoughtSelects';
 import type { ManagedAgentVm, WorkflowDsl } from '@/types';
@@ -22,7 +22,7 @@ const workflow: WorkflowDsl = {
   edges: [{ from: 'grill', to: '$end', on: 'success' }],
 };
 function validate(modelId: string, configOptions: Record<string, string>) {
-  return validateWorkflowForSave(workflow, readyWorkflowProfileCatalog([{ id: 'developer', name: 'Developer' }]),
+  return validateWorkflowForSave(workflow, readyProfileCatalog([{ id: 'developer', name: 'Developer' }]),
     [agent], (key, params) => `${key}:${params?.option ?? ''}`, null, null, null, true,
     { definitionRevision: '', bindingRevision: 0, bindings: [{ executionSlotId: 'slot', agentId: 'cursor', modelId, configOptions }] });
 }

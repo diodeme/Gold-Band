@@ -34,7 +34,11 @@ import type { AttachmentItem } from '@/lib/attachment-service';
 import type { ComposerQuote, ComposerWorkspaceFileRef } from '@/lib/composer-context';
 import type { SlashCatalogGroup, SlashCatalogItemKind } from '@/lib/slash-command';
 import { cn } from '@/lib/utils';
-import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import {
+  ACP_SESSION_COMPOSER_LAYOUT,
+  acpComposerStackShapeClassName,
+  type AcpComposerStackSlot,
+} from '@/lib/conversation-composer-layout';
 
 export interface AcpConversationComposerProps {
   historyLocator?: ComposerHistoryLocator | null;
@@ -91,8 +95,7 @@ export interface AcpConversationComposerProps {
   runtimeContinueSubmitting: boolean;
   onRuntimeContinue: (historyText?: string) => void | Promise<void>;
   configBar: ReactNode;
-  attachedPanelVisible: boolean;
-  integratedInfoTab: boolean;
+  stackSlot?: AcpComposerStackSlot;
   queueSubmit: boolean;
   supersededSession?: {
     label: string;
@@ -181,8 +184,7 @@ function AcpConversationComposerContent({
   runtimeContinueSubmitting,
   onRuntimeContinue,
   configBar,
-  attachedPanelVisible,
-  integratedInfoTab,
+  stackSlot,
   queueSubmit,
   supersededSession,
 }: AcpConversationComposerProps) {
@@ -247,8 +249,7 @@ function AcpConversationComposerContent({
             'bg-card !shadow-none transition-colors',
             ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
             ACP_SESSION_COMPOSER_LAYOUT.promptInputClassName,
-            attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
-            integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
+            acpComposerStackShapeClassName(stackSlot),
           )}
         >
           <ComposerContextArea

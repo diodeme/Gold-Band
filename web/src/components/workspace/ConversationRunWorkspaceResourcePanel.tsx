@@ -39,7 +39,7 @@ import {
 } from '@/lib/execution-plan-editor';
 import { readExecutionPlanDraft, writeExecutionPlanDraft } from '@/lib/execution-plan-draft-cache';
 import { readExecutionPlanSaveTarget, writeExecutionPlanSaveTarget } from '@/lib/execution-plan-preferences';
-import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { useProfileCatalog } from '@/lib/profile-catalog';
 import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
@@ -323,7 +323,7 @@ function WorkflowEditPanel({
   const [baselineWorkflow, setBaselineWorkflow] = useState<WorkflowDsl | null>(() => cached?.baselineWorkflow ?? null);
   const [baselineModelBindings, setBaselineModelBindings] = useState<WorkflowModelBindings | null>(() => cached?.baselineModelBindings ?? null);
   const [registry, setRegistry] = useState(initialAgentRegistry);
-  const profileCatalog = useWorkflowProfileCatalog();
+  const profileCatalog = useProfileCatalog();
   const [dependenciesLoading, setDependenciesLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);

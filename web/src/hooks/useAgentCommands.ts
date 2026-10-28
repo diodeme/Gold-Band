@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getAgentCommandCatalog } from '@/api';
 import { isTauriRuntime } from '@/api/shared';
@@ -35,6 +35,7 @@ function subscribe(key: string, agentType: string, workspacePath: string,
         try {
           const catalog = await getAgentCommandCatalog(agentType, workspacePath);
           if (subscriptions.get(key) !== created) return;
+          if (sameCatalog(created.catalog, catalog)) return;
           created.catalog = catalog;
           for (const notify of created.listeners) notify(catalog);
         } catch {
@@ -58,6 +59,20 @@ function subscribe(key: string, agentType: string, workspacePath: string,
   } };
 }
 
+function sameCommands(left: readonly AcpCommandItemVm[] | null | undefined, right: readonly AcpCommandItemVm[] | null | undefined) {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((item, index) => item.name === right[index].name
+    && item.description === right[index].description && item.inputHint === right[index].inputHint);
+}
+
+function sameCatalog(left: AcpCommandCatalogVm | null, right: AcpCommandCatalogVm | null) {
+  if (!left || !right) return left === right;
+  return left.projectId === right.projectId
+    && sameCommands(left.commands, right.commands)
+    && sameCommands(left.skillCommands, right.skillCommands);
+}
+
 export function useAgentCommands(
   agentType: string | null | undefined,
   workspacePath: string | null | undefined,
@@ -67,10 +82,12 @@ export function useAgentCommands(
     ? JSON.stringify([agentType.trim(), workspacePath.trim()])
     : null;
   const [snapshot, setSnapshot] = useState<{ key: string; catalog: AcpCommandCatalogVm | null } | null>(null);
+  const subscriptionRef = useRef<Subscription | null>(null);
   useEffect(() => {
     if (!requestKey || !agentType || !workspacePath) return;
     const lease = subscribe(requestKey, agentType, workspacePath,
       catalog => setSnapshot({ key: requestKey, catalog }));
+    subscriptionRef.current = lease.entry;
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
     if (isTauriRuntime()) void listen<CatalogUpdate>('gold-band://agent-commands-updated', ({ payload }) => {
@@ -85,9 +102,12 @@ export function useAgentCommands(
     return () => {
       disposed = true;
       unlisten?.();
+      if (subscriptionRef.current === lease.entry) subscriptionRef.current = null;
       lease.release();
     };
   }, [requestKey, agentType, workspacePath]);
+  // Skills live on disk and can change without any event; re-read when a menu opens.
+  const revalidate = useCallback(() => subscriptionRef.current?.refresh(), []);
 
   const catalog = snapshot?.key === requestKey ? snapshot?.catalog : null;
   const cachedCommands = catalog?.commands ?? EMPTY_AGENT_COMMANDS;
@@ -101,5 +121,6 @@ export function useAgentCommands(
   return {
     catalogKey: requestKey,
     commands,
+    revalidate,
   };
 }

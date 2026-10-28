@@ -2,11 +2,12 @@ import type { AcpSessionUpdatedEventVm } from '@/api/client';
 import { mergeAcpExecutionError } from '@/lib/acp-execution-error';
 import { getRuntimeApi } from '@/api/client';
 import type {
+  AcpAgentExecutionVm,
   AcpSessionVm,
   AcpUiEventVm,
   ConversationAttemptLifecycleVm,
 } from '@/types';
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import {
   recordAcpStreamingDiagnostic,
   summarizeAcpStreamingEvent,
@@ -23,8 +24,19 @@ const attemptListeners = new Map<string, Set<Listener>>();
 const branchSnapshots = new Map<string, ConversationBranchLiveSnapshot>();
 const branchReplayBuffers = new Map<string, ConversationBranchReplayBuffer>();
 const branchListeners = new Map<string, Set<() => void>>();
-const branchSnapshotOrder: string[] = [];
-const MAX_BRANCH_SNAPSHOTS = 64;
+const attemptBranchListeners = new Map<string, Set<() => void>>();
+const attemptBranchVersions = new Map<string, number>();
+/** Replay buffers hold transcript content, so they are evicted per branch. */
+const branchReplayOrder: string[] = [];
+const MAX_REPLAY_BRANCHES = 64;
+/**
+ * Branch snapshots hold lifecycle facts newer than any fetched projection, so
+ * they are evicted only as a whole attempt nobody observes: an observed view
+ * never falls back to a stale projected status, and a reopened attempt fetches
+ * a fresh projection.
+ */
+const snapshotAttemptOrder: string[] = [];
+const MAX_SNAPSHOT_ATTEMPTS = 16;
 const MAX_REPLAY_EVENTS_PER_BRANCH = 64;
 const MAX_REPLAY_BYTES_PER_BRANCH = 512 * 1024;
 const MAX_REPLAY_EVENT_BYTES = 256 * 1024;
@@ -76,7 +88,8 @@ export interface ConversationBranchReplaySnapshot {
 }
 
 export const CONVERSATION_EVENT_REPLAY_LIMITS = {
-  branchCount: MAX_BRANCH_SNAPSHOTS,
+  branchCount: MAX_REPLAY_BRANCHES,
+  snapshotAttempts: MAX_SNAPSHOT_ATTEMPTS,
   eventsPerBranch: MAX_REPLAY_EVENTS_PER_BRANCH,
   bytesPerBranch: MAX_REPLAY_BYTES_PER_BRANCH,
   eventBytes: MAX_REPLAY_EVENT_BYTES,
@@ -86,7 +99,8 @@ export const CONVERSATION_EVENT_REPLAY_LIMITS = {
 function hasConversationEventRouterSubscribers() {
   return listeners.size > 0
     || attemptListeners.size > 0
-    || branchListeners.size > 0;
+    || branchListeners.size > 0
+    || attemptBranchListeners.size > 0;
 }
 
 function clearConversationEventRouterRetry(resetAttempt = false) {
@@ -712,14 +726,38 @@ function isTerminalSessionStatus(status: string) {
 
 function storeBranchSnapshot(key: string, snapshot: ConversationBranchLiveSnapshot) {
   branchSnapshots.set(key, snapshot);
-  const existing = branchSnapshotOrder.indexOf(key);
-  if (existing >= 0) branchSnapshotOrder.splice(existing, 1);
-  branchSnapshotOrder.push(key);
-  while (branchSnapshotOrder.length > MAX_BRANCH_SNAPSHOTS) {
-    const oldest = branchSnapshotOrder.shift();
+  touchRecent(branchReplayOrder, key);
+  while (branchReplayOrder.length > MAX_REPLAY_BRANCHES) {
+    const oldest = branchReplayOrder.shift();
     if (!oldest) break;
-    branchSnapshots.delete(oldest);
     deleteBranchReplayBuffer(oldest);
+  }
+  touchRecent(snapshotAttemptOrder, attemptKeyOfBranchKey(key));
+  if (snapshotAttemptOrder.length > MAX_SNAPSHOT_ATTEMPTS) evictUnobservedSnapshotAttempt();
+}
+
+function touchRecent(order: string[], key: string) {
+  const existing = order.indexOf(key);
+  if (existing >= 0) order.splice(existing, 1);
+  order.push(key);
+}
+
+function isAttemptObserved(attempt: string) {
+  if (attemptListeners.has(attempt) || attemptBranchListeners.has(attempt)) return true;
+  const prefix = `${attempt}:`;
+  for (const key of branchListeners.keys()) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function evictUnobservedSnapshotAttempt() {
+  const index = snapshotAttemptOrder.findIndex((attempt) => !isAttemptObserved(attempt));
+  if (index < 0) return;
+  const [attempt] = snapshotAttemptOrder.splice(index, 1);
+  const prefix = `${attempt}:`;
+  for (const key of [...branchSnapshots.keys()]) {
+    if (key.startsWith(prefix)) branchSnapshots.delete(key);
   }
 }
 
@@ -825,7 +863,7 @@ function trimBranchReplayBuffer(buffer: ConversationBranchReplayBuffer) {
 
 function trimGlobalReplayBuffer(currentKey: string) {
   if (retainedReplayBytes <= MAX_REPLAY_BYTES_GLOBAL) return;
-  for (const key of branchSnapshotOrder) {
+  for (const key of branchReplayOrder) {
     if (retainedReplayBytes <= MAX_REPLAY_BYTES_GLOBAL) break;
     if (key === currentKey) continue;
     const buffer = branchReplayBuffers.get(key);
@@ -945,6 +983,134 @@ function estimateConversationEventBytes(event: AcpUiEventVm) {
 
 function notifyBranch(key: string) {
   for (const listener of branchListeners.get(key) ?? []) listener();
+  const attempt = attemptKeyOfBranchKey(key);
+  const attemptListenerSet = attemptBranchListeners.get(attempt);
+  if (!attemptListenerSet) return;
+  attemptBranchVersions.set(attempt, (attemptBranchVersions.get(attempt) ?? 0) + 1);
+  for (const listener of attemptListenerSet) listener();
+}
+
+// Branch ids never contain ':', so the attempt key ends at the last one.
+function attemptKeyOfBranchKey(key: string) {
+  return key.slice(0, key.lastIndexOf(':'));
+}
+
+const ACTIVE_AGENT_BRANCH_STATUSES = new Set(['queued', 'running', 'in_progress', 'waiting_permission']);
+
+export function isActiveAgentBranchStatus(status: string | null | undefined) {
+  return status != null && ACTIVE_AGENT_BRANCH_STATUSES.has(status.toLowerCase());
+}
+
+export interface ConversationRunningAgent {
+  agentExecutionId: string;
+  status: string;
+  attention: boolean;
+  /**
+   * The status comes from the provider's own Agent state machine (ordered by
+   * provider state sequence) rather than inferred from launch and turn evidence.
+   */
+  native: boolean;
+  /** Null while a live-launched Agent is not in the persisted projection yet. */
+  execution: AcpAgentExecutionVm | null;
+}
+
+/**
+ * Agents of one attempt whose resolved status is active. The persisted
+ * projection is the complete set; live snapshots only override status by
+ * provider state sequence, exactly as an Agent link card resolves it.
+ * `includeUnprojected` adds live branches the projection does not know yet;
+ * only the root view may use it, because the live store cannot tell which
+ * branch launched them.
+ */
+export function selectConversationRunningAgents(
+  locator: ConversationAttemptLocator,
+  projectionAgents: readonly AcpAgentExecutionVm[],
+  includeUnprojected: boolean,
+): ConversationRunningAgent[] {
+  const running: ConversationRunningAgent[] = [];
+  const projected = new Set<string>();
+  for (const execution of projectionAgents) {
+    if (projected.has(execution.agentExecutionId)) continue;
+    projected.add(execution.agentExecutionId);
+    const live = branchSnapshots.get(conversationBranchStoreKey(locator, execution.agentExecutionId));
+    const status = resolveConversationBranchDisplayStatus(
+      execution.executionStatus,
+      live?.status,
+      execution.providerStateSeq,
+      live?.providerStateSeq,
+    );
+    if (!status || !isActiveAgentBranchStatus(status)) continue;
+    running.push({
+      agentExecutionId: execution.agentExecutionId,
+      status,
+      attention: live && live.revision > 0 ? live.attention : execution.hasAttention,
+      native: (live?.providerStateSeq ?? execution.providerStateSeq) != null,
+      execution,
+    });
+  }
+  if (!includeUnprojected) return running;
+  const prefix = `${attemptKey(locator)}:`;
+  for (const [key, live] of branchSnapshots) {
+    if (!key.startsWith(prefix)) continue;
+    const branchId = key.slice(prefix.length);
+    if (branchId === 'root' || projected.has(branchId)) continue;
+    if (!live.status || !isActiveAgentBranchStatus(live.status)) continue;
+    running.push({
+      agentExecutionId: branchId,
+      status: live.status,
+      attention: live.attention,
+      native: live.providerStateSeq != null,
+      execution: null,
+    });
+  }
+  return running;
+}
+
+function sameRunningAgents(left: readonly ConversationRunningAgent[], right: readonly ConversationRunningAgent[]) {
+  return left.length === right.length && left.every((agent, index) => {
+    const other = right[index];
+    return agent.agentExecutionId === other.agentExecutionId
+      && agent.status === other.status
+      && agent.attention === other.attention
+      && agent.native === other.native
+      && agent.execution === other.execution;
+  });
+}
+
+const NO_RUNNING_AGENTS: ConversationRunningAgent[] = [];
+
+/** One attempt-level subscription; the result keeps its identity until the running set changes. */
+export function useConversationRunningAgents(
+  locator: ConversationAttemptLocator,
+  projectionAgents: readonly AcpAgentExecutionVm[],
+  includeUnprojected: boolean,
+) {
+  const key = attemptKey(locator);
+  const subscribe = useCallback((listener: () => void) => {
+    const set = attemptBranchListeners.get(key) ?? new Set<() => void>();
+    set.add(listener);
+    attemptBranchListeners.set(key, set);
+    void requestConversationEventRouterStart();
+    return () => {
+      set.delete(listener);
+      if (set.size === 0) {
+        attemptBranchListeners.delete(key);
+        attemptBranchVersions.delete(key);
+      }
+      stopConversationEventRouterRetryWhenIdle();
+    };
+  }, [key]);
+  const getVersion = useCallback(() => attemptBranchVersions.get(key) ?? 0, [key]);
+  const version = useSyncExternalStore(subscribe, getVersion, () => 0);
+  const previous = useRef<ConversationRunningAgent[]>(NO_RUNNING_AGENTS);
+  return useMemo(() => {
+    void version;
+    const next = selectConversationRunningAgents(locator, projectionAgents, includeUnprojected);
+    if (sameRunningAgents(previous.current, next)) return previous.current;
+    previous.current = next.length === 0 ? NO_RUNNING_AGENTS : next;
+    return previous.current;
+    // The locator is identified by its attempt key.
+  }, [key, version, projectionAgents, includeUnprojected]);
 }
 
 export function useConversationBranchLiveSnapshot(locator: Parameters<typeof attemptKey>[0], branchId: string) {
@@ -1147,6 +1313,7 @@ export function acknowledgeConversationBranchReplay(
 export function resetConversationEventRouterSnapshots() {
   branchSnapshots.clear();
   branchReplayBuffers.clear();
-  branchSnapshotOrder.splice(0, branchSnapshotOrder.length);
+  branchReplayOrder.splice(0, branchReplayOrder.length);
+  snapshotAttemptOrder.splice(0, snapshotAttemptOrder.length);
   retainedReplayBytes = 0;
 }

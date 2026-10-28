@@ -78,10 +78,11 @@ describe('conversation visual hierarchy contract', () => {
     expect(usagePanel).not.toContain('<svg');
     expect(usagePanel).not.toContain('<path');
     expect(usagePanel).not.toContain('stroke=');
-    expect(dialog).toContain('composerInfoTabTarget === "todo"');
-    expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "queue"}');
-    expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "composer"}');
-    expect(composer).toContain("integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none'");
+    expect(dialog).toContain('stackSlot={composerStack.agents}');
+    expect(dialog).toContain('stackSlot={composerStack.todo}');
+    expect(dialog).toContain('stackSlot={composerStack.queue}');
+    expect(dialog).toContain('stackSlot={composerStack.composer}');
+    expect(composer).toContain('acpComposerStackShapeClassName(stackSlot)');
     expect(composer).toContain('bg-card !shadow-none transition-colors');
     expect(composer).toContain('ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName');
     expect(composerLayout).toMatch(
@@ -102,6 +103,8 @@ describe('conversation visual hierarchy contract', () => {
     expect(composer).not.toContain('data-acp-composer-command-bar="true">\n            <div className="min-w-0 flex-1">');
     expect(composer).not.toContain('promptInputHint');
     expect(quickComposer).not.toContain('promptInputHint');
+    expect(dialog.lastIndexOf('<AcpUsagePanel')).toBeLessThan(dialog.lastIndexOf('<AcpRunningAgentsStrip'));
+    expect(dialog.lastIndexOf('<AcpRunningAgentsStrip')).toBeLessThan(dialog.lastIndexOf('<AcpTodoPanel'));
     expect(dialog.lastIndexOf('<AcpUsagePanel')).toBeLessThan(dialog.lastIndexOf('<ConversationPromptQueue'));
     expect(dialog.lastIndexOf('<AcpUsagePanel')).toBeLessThan(dialog.lastIndexOf('<AcpTodoPanel'));
     expect(dialog.lastIndexOf('<AcpTodoPanel')).toBeLessThan(dialog.lastIndexOf('<ConversationPromptQueue'));

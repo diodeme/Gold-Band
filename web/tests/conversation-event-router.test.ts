@@ -11,6 +11,7 @@ import {
   reconcileConversationBranchSession,
   resetConversationEventRouterSnapshots,
   resolveConversationBranchDisplayStatus,
+  subscribeConversationAttemptEvents,
 } from '@/lib/conversation-event-router';
 import type { AcpAgentExecutionVm, AcpSessionVm, AcpUiEventVm } from '@/types';
 
@@ -791,7 +792,7 @@ describe('conversation event router', () => {
     expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 0, 0, null, 0)).toBe(true);
   });
 
-  it('strictly caps retained branch snapshots and replay buffers', () => {
+  it('caps replay buffers per branch without dropping the branch lifecycle snapshot', () => {
     for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.branchCount; index += 1) {
       applyConversationEventToBranchSnapshots(live(`branch-${index}`, {
         ...uiEvent('textDelta'),
@@ -802,14 +803,39 @@ describe('conversation event router', () => {
     }
 
     expect(readConversationBranchLiveSnapshot(locator, 'branch-0')).toMatchObject({
-      revision: 0,
-      contentRevision: 0,
+      status: 'running',
+      contentRevision: 1,
     });
     expect(readConversationBranchReplaySnapshot(locator, 'branch-0').events).toHaveLength(0);
     expect(readConversationBranchReplaySnapshot(
       locator,
       `branch-${CONVERSATION_EVENT_REPLAY_LIMITS.branchCount}`,
     ).events).toHaveLength(1);
+  });
+
+  it('evicts snapshots only as a whole attempt nobody observes', () => {
+    const attemptLocator = (index: number) => ({ ...locator, attemptId: `attempt-${index}` });
+    const stopObserving = subscribeConversationAttemptEvents(attemptLocator(0), () => {});
+    try {
+      for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.snapshotAttempts; index += 1) {
+        for (const branchId of ['agent-a', 'agent-b']) {
+          applyConversationEventToBranchSnapshots({
+            ...live(branchId, { ...uiEvent('textDelta'), id: `answer-${index}-${branchId}` }),
+            attemptId: `attempt-${index}`,
+          });
+        }
+      }
+
+      // The observed attempt survives although it is the least recently touched.
+      expect(readConversationBranchLiveSnapshot(attemptLocator(0), 'agent-a').status).toBe('running');
+      // The oldest unobserved attempt loses all of its branches together.
+      expect(readConversationBranchLiveSnapshot(attemptLocator(1), 'agent-a').revision).toBe(0);
+      expect(readConversationBranchLiveSnapshot(attemptLocator(1), 'agent-b').revision).toBe(0);
+      expect(readConversationBranchLiveSnapshot(attemptLocator(2), 'agent-a').status).toBe('running');
+      expect(readConversationBranchLiveSnapshot(attemptLocator(2), 'agent-b').status).toBe('running');
+    } finally {
+      stopObserving();
+    }
   });
 
   it('keeps an Agent queued when only its synthetic prompt has arrived', () => {

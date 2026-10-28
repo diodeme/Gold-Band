@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-26 `/` Skill 与 `@` 角色目录在打开菜单时重新校验
+
+- 根因：两条独立的设计遗留。① SKILL：07-26 `67a71ba3` 时持久目录是 ACP 命令与 SKILL 的合并事实源，SKILL 写入后只能经 Doctor 重建目录；08-25 `c1ed59d1` 把查询改为实时扫描、目录只缓存 ACP 原生命令后，写入后的 Doctor 刷新没有随之删除；09-09 `a127ec9a` 又把事件收紧为“内容变化且落盘”并按 `projectId` 过滤。结果是 Agent 探测失败、全局 SKILL、worktree 会话和应用外安装都收不到通知，已挂载 composer 的 `/` 菜单停留在旧列表，正常路径也要等每个 Agent 进程启动探测。② 角色：09-16 `69c2e521` 把 `@` 角色接入菜单时，首页复用 App 为 Workflow 校验加载的一次性快照（该场景发送前会再读一次），会话详情另写挂载时读取一次，Workflow 选择器又各持一份；角色管理页增删改不通知任何一份，启动后新建的自定义角色要重启才可见。
+- 实现：新增 `profile-catalog` 共享 store（`useSyncExternalStore`），替换 App、`ACPChatDialog`、`workflow-profile-catalog` 三处副本；挂载时 join 进行中的读取，显式重读期间的触发合并为一次 trailing read，被取代的结果不发布，后台失败保留已加载列表。角色管理页的刷新改为重读该 store。`useSlashCommandController` 新增 `onMenuTrigger`，每次进入 `/` 或 `@` 查询通知一次；新增 `useComposerMenuCatalog` 统一两个 composer 的菜单目录，`/` 调用 `useAgentCommands().revalidate`，`@` 重读角色 store。`useAgentCommands` 在内容不变时不发布新快照。后端删除 `write_skill / delete_skill / update_skill_sync_targets` 后的 `schedule_agent_command_catalog_refresh`，Doctor 只服务 ACP 原生命令。
+- 验收：`composer-menu-catalog-freshness` 两项在修复前分别得到 `['old-skill']` 与 `[]`，修复后列出挂载后新增的 SKILL 与角色；`profile-catalog` 覆盖错误重试、多消费者共享与重读发布、in-flight 重读合并且不显示被取代列表、后台失败保留列表、禁用不读取；`agent-command-refresh` 覆盖 revalidate 合并与内容不变时投影引用不变。桌面 crate command_catalog 5 项通过。
+- 过度设计与性能评审：不新增事件通道、watcher、缓存层或持久字段，删除一条重型刷新路径并把三份角色状态合一。打开菜单只多一次轻量读取（角色 JSON、SKILL 元数据扫描，均为数十到数百条），复用既有 single-flight；内容不变不触发重渲染。无需专项 benchmark。
+
 ## 2026-10-18 IM 远程干预迁移后续修复
 
 - 取消路径终态：根因是 Run 停止 teardown、ACP 会话关闭、Direct 后台停止与遗留请求只结算 ACP 信号文件与 timeline，不经过三个桌面命令，IM 卡片停留到过期，点击还被领域误报 `INTERVENTION_REQUEST_NOT_FOUND`（显示“回答无效”）。修复为统一 canonical settlement：ACP 层 `permission_request_settlement` / `elicitation_request_settlement` 按响应文件 → 待处理文件 → timeline 已结算项判定，领域 `InterventionCommandService::settlement` 补人工检查；已结算请求的 inspect 返回 `INTERVENTION_ALREADY_HANDLED`。IM settlement reconciler 由生命周期边界（去抖 1 秒）与 30 秒间隔触发，只为 `Cancelled` 投影 `resolved_by=Runtime` 的取消终态，Answered 仍由 Accepted 一端写入。`ElicitationCancelled` 更名为通用 `Cancelled`（wire `cancelled`）。点击已结算卡片：取消当场投影，答案在途回“已处理”并禁用原卡，快照过期按“操作已过期”。CallbackOnly 渠道被点击的源卡改写 TombstoneOnly 保存赢家并关闭源卡，避免后续扫描另发第二条。

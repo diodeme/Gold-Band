@@ -39,7 +39,7 @@ vi.mock('@/components/ui/resizable', async () => {
 
 import { WorkflowEditor, type WorkflowEditorSessionDraft } from '@/components/WorkflowEditor';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { readyProfileCatalog } from '@/lib/profile-catalog';
 import type { AgentRegistryVm, WorkflowDsl, WorkflowModelBindings } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -118,7 +118,7 @@ describe('WorkflowEditor JSON authoring', () => {
           value={workflow}
           modelBindings={modelBindings}
           agentRegistry={agentRegistry}
-          profileCatalog={readyWorkflowProfileCatalog([{ id: 'pf-builtin-accept', name: 'Accept' }])}
+          profileCatalog={readyProfileCatalog([{ id: 'pf-builtin-accept', name: 'Accept' }])}
           initialSessionDraft={initialSessionDraft}
           onSessionDraftChange={onSessionDraftChange}
           onSave={() => undefined}

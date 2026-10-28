@@ -86,8 +86,6 @@ describe('read-only conversation composer', () => {
               runtimeContinueSubmitting={false}
               onRuntimeContinue={noop}
               configBar={null}
-              attachedPanelVisible={false}
-              integratedInfoTab={false}
               queueSubmit={false}
             />
           </ReadOnlyExperience.Provider>

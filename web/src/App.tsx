@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { applyAgentDiagnosticUpdate, applyAgentModelConfigUpdate, AGENT_MODEL_CONFIG_UPDATED_EVENT, type AgentModelConfigUpdate } from '@/lib/agent-diagnostic-update';
 import { setChannelAppName } from '@/lib/channel-app-name';
+import { revalidateProfileCatalog, useProfileCatalog } from '@/lib/profile-catalog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
@@ -20,7 +21,6 @@ import {
   getConversationSidebarBootstrap,
   getConversationTaskPage,
   acknowledgeConversationTerminalResult,
-  getProfiles,
   getWorkflowTemplates,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
@@ -261,7 +261,6 @@ import type {
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
   CreateTaskInput,
-  ProfileVm,
   DesktopLanguage,
   AppearancePreference,
   PersonalizationPreference,
@@ -851,7 +850,6 @@ export function App() {
   );
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
-  const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
   const composerDraftRef = useRef<ConversationComposerDraftBoundaryHandle | null>(null);
@@ -967,11 +965,7 @@ export function App() {
     });
   }, []);
 
-  const loadProfiles = useCallback(async () => {
-    const result = await getProfiles();
-    setProfiles(result.profiles);
-    return result.profiles;
-  }, []);
+  const loadProfiles = revalidateProfileCatalog;
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
@@ -1151,6 +1145,7 @@ export function App() {
 
   const appSessionReady = bootstrap != null;
   const conversationShellReady = appSessionReady && uiMode === 'conversation';
+  const { profiles } = useProfileCatalog(conversationShellReady);
 
   // Publish workspace identity first, then load only the visible task page and pinned summaries.
   // Preference / updater patches replace the bootstrap object; they must not retrigger this load.
@@ -1299,9 +1294,8 @@ export function App() {
 
   useEffect(() => {
     if (!conversationShellReady) return;
-    loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
-  }, [conversationShellReady, loadProfiles]);
+  }, [conversationShellReady]);
 
   useEffect(() => {
     if (!conversationShellReady || !defaultProjectId) return;

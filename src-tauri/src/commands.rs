@@ -11587,7 +11587,6 @@ pub fn read_skill(
 
 #[tauri::command]
 pub fn write_skill(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -11599,10 +11598,6 @@ pub fn write_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let refresh_workspace = workspace_path
-        .as_deref()
-        .map(Utf8PathBuf::from)
-        .unwrap_or_else(|| app.paths.repo_root.clone());
 
     app.skill_manager()
         .write_instance(
@@ -11616,14 +11611,11 @@ pub fn write_skill(
         )
         .map_err(command_error)?;
 
-    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
-
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
 #[tauri::command]
 pub fn delete_skill(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -11632,10 +11624,6 @@ pub fn delete_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let refresh_workspace = workspace_path
-        .as_deref()
-        .map(Utf8PathBuf::from)
-        .unwrap_or_else(|| app.paths.repo_root.clone());
 
     if let Some(ref dir_path) = directory_path {
         app.cleanup_skill_instance_links(
@@ -11649,7 +11637,6 @@ pub fn delete_skill(
         app.skill_manager()
             .delete_at_path(&dir)
             .map_err(command_error)?;
-        schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
         return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
     }
 
@@ -11669,7 +11656,6 @@ pub fn delete_skill(
             );
             std::fs::remove_dir_all(skill_dir.as_std_path())
                 .map_err(|e| command_error(anyhow::anyhow!(e)))?;
-            schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
             return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
         }
     }
@@ -11695,13 +11681,11 @@ pub fn delete_skill(
     );
     app.delete_skill(&name, skill_source)
         .map_err(command_error)?;
-    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
 #[tauri::command]
 pub fn update_skill_sync_targets(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -11711,10 +11695,6 @@ pub fn update_skill_sync_targets(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let refresh_workspace = workspace_path
-        .as_deref()
-        .map(Utf8PathBuf::from)
-        .unwrap_or_else(|| app.paths.repo_root.clone());
     app.reconcile_skill_instance_links(
         &name,
         &directory_path,
@@ -11723,15 +11703,7 @@ pub fn update_skill_sync_targets(
         Some(sync_targets.as_slice()),
     )
     .map_err(command_error)?;
-    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
-}
-
-fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8PathBuf) {
-    std::thread::spawn(move || {
-        let state = app_handle.state::<DesktopState>();
-        let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
-    });
 }
 
 /// 查询指定 SKILL 在各 agent 目录中的同步状态（软链即状态）

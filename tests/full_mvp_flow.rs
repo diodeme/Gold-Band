@@ -164,8 +164,6 @@ fn run_start_completes_worker_test_accept_happy_path() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
-    let gold_band_home = repo_root.join("gold-band-home");
-    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
     let provider = SequencedProvider::default();
     let app = app_with_available_claude_provider(repo_root.clone(), Box::new(provider.clone()));
     write_happy_path_fixture(&app, &repo_root, task_id);

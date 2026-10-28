@@ -111,8 +111,6 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    let gold_band_home = repo_root.join("gold-band-home");
-    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
     let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()))
         .with_provider_diagnostics_source(std::sync::Arc::new(|| {
             Ok(std::collections::BTreeMap::from([(

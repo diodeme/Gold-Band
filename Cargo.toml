@@ -88,3 +88,12 @@ uzers = { version = "0.12", default-features = false }
 # cannot silently exercise a different tao implementation.
 tao = { git = "https://github.com/tauri-apps/tao", rev = "c704261c519c58cfdd0bc2d58ba24e06a0b71c92", default-features = false, features = ["rwh_06"] }
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[features]
+# Test builds only: per-repo user storage under `<repo>/gold-band-home`, so tests
+# never touch the real user data root or state file. Enabled via the self
+# dev-dependency below; release builds never activate it.
+test-isolated-home = []
+
+[dev-dependencies]
+gold-band = { path = ".", features = ["test-isolated-home"] }

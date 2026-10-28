@@ -59,8 +59,32 @@ pub struct GoldBandPaths {
     pub runtime_root: Utf8PathBuf,
     pub project_id: String,
     pub normalized_repo_root: String,
+    user_state_file: Utf8PathBuf,
     path_config: StoragePathConfig,
 }
+
+/// 用户级存储位置。数据根与全局 `state.json` 必须由同一来源解析，不得各自兜底：
+/// 否则一方被隔离、另一方仍落到真实用户目录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UserStorageRoots {
+    data_root: Utf8PathBuf,
+    state_file: Utf8PathBuf,
+}
+
+/// 未设置 home 环境变量时的用户级存储策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserHomeFallback {
+    /// 正式运行：数据根位于用户 home，`state.json` 位于系统本地数据目录。
+    System,
+    /// 测试构建：每个 repo 独立的 `<repo>/<app_key>-home`，测试不得触达真实用户目录。
+    PerRepo,
+}
+
+const USER_HOME_FALLBACK: UserHomeFallback = if cfg!(any(test, feature = "test-isolated-home")) {
+    UserHomeFallback::PerRepo
+} else {
+    UserHomeFallback::System
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -154,7 +178,15 @@ impl GoldBandPaths {
         let normalized_repo_root = normalize_workspace_path(&repo_root);
         let project_id = project_id_from_normalized(&normalized_repo_root, identity_config);
         let repo_gold_band_root = repo_root.join(path_config.config_dir_name);
-        let user_gold_band_root = user_gold_band_root(&repo_root, path_config);
+        let UserStorageRoots {
+            data_root: user_gold_band_root,
+            state_file: user_state_file,
+        } = resolve_user_storage_roots(
+            &repo_root,
+            path_config,
+            std::env::var(path_config.home_env_var).ok(),
+            USER_HOME_FALLBACK,
+        );
         let runtime_root = user_gold_band_root.join("projects").join(&project_id);
         Self {
             repo_root,
@@ -163,6 +195,7 @@ impl GoldBandPaths {
             runtime_root,
             project_id,
             normalized_repo_root,
+            user_state_file,
             path_config,
         }
     }
@@ -255,18 +288,7 @@ impl GoldBandPaths {
     }
 
     pub fn user_state_file(&self) -> Utf8PathBuf {
-        if let Some(home) = std::env::var(self.path_config.home_env_var)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-        {
-            return Utf8PathBuf::from(home)
-                .join(self.path_config.config_dir_name)
-                .join("state.json");
-        }
-        let dir = dirs::data_local_dir()
-            .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
-            .unwrap_or_else(|| Utf8PathBuf::from("."));
-        dir.join(self.path_config.app_key).join("state.json")
+        self.user_state_file.clone()
     }
 
     pub fn user_presets_dir(&self) -> Utf8PathBuf {
@@ -953,33 +975,39 @@ impl GoldBandPaths {
     }
 }
 
-fn user_gold_band_root(repo_root: &Utf8Path, path_config: StoragePathConfig) -> Utf8PathBuf {
-    if let Some(home) = std::env::var(path_config.home_env_var)
-        .ok()
+/// 用户级存储位置的唯一解析入口。显式 home 环境变量优先；否则由 `fallback` 决定，
+/// 不根据 workspace 所在位置推断存储归属。
+fn resolve_user_storage_roots(
+    repo_root: &Utf8Path,
+    path_config: StoragePathConfig,
+    home_env: Option<String>,
+    fallback: UserHomeFallback,
+) -> UserStorageRoots {
+    let explicit_home = home_env
         .filter(|value| !value.trim().is_empty())
-    {
-        return Utf8PathBuf::from(home).join(path_config.config_dir_name);
+        .map(Utf8PathBuf::from)
+        .or_else(|| {
+            (fallback == UserHomeFallback::PerRepo)
+                .then(|| repo_root.join(format!("{}-home", path_config.app_key)))
+        });
+    if let Some(home) = explicit_home {
+        let data_root = home.join(path_config.config_dir_name);
+        return UserStorageRoots {
+            state_file: data_root.join("state.json"),
+            data_root,
+        };
     }
 
-    if is_under_system_temp(repo_root) {
-        return repo_root
-            .join(format!("{}-home", path_config.app_key))
-            .join(path_config.config_dir_name);
+    let system_dir = |dir: Option<std::path::PathBuf>| {
+        dir.and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
+            .unwrap_or_else(|| Utf8PathBuf::from("."))
+    };
+    UserStorageRoots {
+        data_root: system_dir(dirs::home_dir()).join(path_config.config_dir_name),
+        state_file: system_dir(dirs::data_local_dir())
+            .join(path_config.app_key)
+            .join("state.json"),
     }
-
-    let home = dirs::home_dir()
-        .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
-        .unwrap_or_else(|| Utf8PathBuf::from("."));
-    home.join(path_config.config_dir_name)
-}
-
-fn is_under_system_temp(path: &Utf8Path) -> bool {
-    let path = normalize_workspace_path(path);
-    std::env::temp_dir()
-        .to_str()
-        .map(Utf8Path::new)
-        .map(normalize_workspace_path)
-        .is_some_and(|temp| path.starts_with(&temp))
 }
 
 pub fn normalize_workspace_path(repo_root: &Utf8Path) -> String {
@@ -1449,11 +1477,74 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_system_temp_paths() {
+    fn system_fallback_ignores_workspace_location() {
         let repo_root =
             Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-test-repo")).unwrap();
 
-        assert!(is_under_system_temp(&repo_root));
+        let roots = resolve_user_storage_roots(
+            &repo_root,
+            DEFAULT_STORAGE_PATH_CONFIG,
+            None,
+            UserHomeFallback::System,
+        );
+
+        let home = Utf8PathBuf::from_path_buf(dirs::home_dir().unwrap()).unwrap();
+        let local = Utf8PathBuf::from_path_buf(dirs::data_local_dir().unwrap()).unwrap();
+        assert_eq!(roots.data_root, home.join(".gold-band"));
+        assert_eq!(roots.state_file, local.join("gold-band").join("state.json"));
+    }
+
+    #[test]
+    fn explicit_home_places_data_root_and_state_file_together() {
+        for fallback in [UserHomeFallback::System, UserHomeFallback::PerRepo] {
+            let roots = resolve_user_storage_roots(
+                Utf8Path::new("D:/Projects/Example App"),
+                DEFAULT_STORAGE_PATH_CONFIG,
+                Some("D:/isolated-home".to_string()),
+                fallback,
+            );
+
+            assert_eq!(
+                roots.data_root,
+                Utf8PathBuf::from("D:/isolated-home/.gold-band")
+            );
+            assert_eq!(
+                roots.state_file,
+                Utf8PathBuf::from("D:/isolated-home/.gold-band/state.json")
+            );
+        }
+    }
+
+    #[test]
+    fn blank_home_env_uses_fallback() {
+        let roots = resolve_user_storage_roots(
+            Utf8Path::new("D:/Projects/Example App"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+            Some("  ".to_string()),
+            UserHomeFallback::PerRepo,
+        );
+
+        assert_eq!(
+            roots.data_root,
+            Utf8PathBuf::from("D:/Projects/Example App/gold-band-home/.gold-band")
+        );
+    }
+
+    #[test]
+    fn test_build_state_file_stays_inside_isolated_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths =
+            GoldBandPaths::new_with_path_config(repo_root.clone(), DEFAULT_STORAGE_PATH_CONFIG);
+
+        assert!(paths.user_gold_band_root.starts_with(&repo_root));
+        assert!(
+            paths
+                .user_state_file()
+                .starts_with(&paths.user_gold_band_root),
+            "state file escaped the isolated test home: {}",
+            paths.user_state_file()
+        );
     }
 
     #[test]
@@ -1468,25 +1559,6 @@ mod tests {
                 .to_string()
                 .replace('\\', "/")
                 .ends_with("/.gold-band/settings.json")
-        );
-    }
-
-    #[test]
-    fn state_file_in_data_local_dir_by_default() {
-        unsafe { std::env::remove_var("GOLD_BAND_HOME") };
-        let paths = GoldBandPaths::new_with_path_config(
-            Utf8PathBuf::from("D:/Projects/Example App"),
-            DEFAULT_STORAGE_PATH_CONFIG,
-        );
-        let state = paths.user_state_file();
-        let normalized = state.to_string().replace('\\', "/");
-        assert!(
-            normalized.ends_with("state.json"),
-            "expected state.json path, got: {normalized}"
-        );
-        assert!(
-            normalized.contains("gold-band"),
-            "expected gold-band in path, got: {normalized}"
         );
     }
 

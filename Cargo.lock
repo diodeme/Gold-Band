@@ -2166,6 +2166,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "gold-band",
  "hmac 0.12.1",
  "iana-time-zone",
  "image",

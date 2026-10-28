@@ -10,7 +10,7 @@ vi.mock('@/api', async () => {
 });
 
 import { getAcpActivityDetail, getAcpToolDetail, getAcpImage } from '@/api';
-import { ACPMessageList, buildAcpTimelineProjection, nextLiveStreamingMarkdownTarget, shouldSettleLiveActivityForSessionUpdate } from '@/components/acp/ACPChatDialog';
+import { ACPMessageList, buildAcpTimelineProjection, nextLiveStreamingMarkdownTarget, shouldSettleLiveActivityForSessionUpdate, stabilizeTimelineItems } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ConversationViewport, ConversationViewportFooter } from '@/components/conversation/ConversationViewport';
 import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
@@ -137,6 +137,26 @@ describe('ACP activity detail loading', () => {
       expect(container.textContent).toContain('后台分析完成');
       // Background control expired or its stop was accepted: the open group settles.
       expect(buildAcpTimelineProjection([finished], 'completed', null, false).timeline[0]).toMatchObject({ live: false });
+    } finally { await act(async () => root.unmount()); }
+  });
+  it('lets the stabilized open group follow the background control back to live', async () => {
+    const finished = activityToolEvent(101);
+    const resumed = { ...activityToolEvent(102), status: 'pending' };
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      // Background work goes quiet past the grace window, then the Agent resumes in the same group.
+      const active = stabilizeTimelineItems(buildAcpTimelineProjection([finished], 'completed', null, true).timeline, []);
+      const expired = stabilizeTimelineItems(buildAcpTimelineProjection([finished], 'completed', null, false).timeline, active);
+      expect(expired[0]).toMatchObject({ kind: 'activityBatch', live: false });
+      // The control alone, without newer activity, does not reopen the settled group.
+      const sameRange = stabilizeTimelineItems(buildAcpTimelineProjection([finished], 'completed', null, true).timeline, expired);
+      expect(sameRange[0]).toMatchObject({ kind: 'activityBatch', live: false });
+      const reopened = stabilizeTimelineItems(buildAcpTimelineProjection([finished, resumed], 'completed', null, true).timeline, sameRange);
+      expect(reopened[0]).toMatchObject({ kind: 'activityBatch', live: true, totalEventCount: 2 });
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={reopened} sessionStatus="completed" sending={false} /></TooltipProvider>));
+      expect(container.textContent).not.toContain('已记录');
+      expect(container.textContent).toContain('正在调用 Tool');
     } finally { await act(async () => root.unmount()); }
   });
   it.each(['generation', 'session', 'range'])('rejects an activity page outside its %s ownership', async (change) => {

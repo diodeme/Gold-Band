@@ -7,7 +7,7 @@ import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor,
 import { RunModeManagementPage } from '@/pages/RunModeManagementPage';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AgentRegistryVm, WorkflowDsl, WorkflowModelBindings } from '@/types';
-import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { readyProfileCatalog } from '@/lib/profile-catalog';
 
 const agentRegistry = {
   agents: [{
@@ -73,7 +73,7 @@ describe('workflow and AUTO model configuration', () => {
     const html = renderWithTooltip(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
-      profileCatalog: readyWorkflowProfileCatalog([{ id: 'interview', name: 'Interview' }]),
+      profileCatalog: readyProfileCatalog([{ id: 'interview', name: 'Interview' }]),
       onSave: () => undefined,
       showSaveAction: false,
     }));
@@ -123,7 +123,7 @@ describe('workflow and AUTO model configuration', () => {
       value: workflow,
       modelBindings,
       agentRegistry,
-      profileCatalog: readyWorkflowProfileCatalog([{ id: 'interview', name: 'Interview' }]),
+      profileCatalog: readyProfileCatalog([{ id: 'interview', name: 'Interview' }]),
       onSave: () => undefined,
       showSaveAction: false,
     }));
@@ -213,7 +213,7 @@ describe('workflow and AUTO model configuration', () => {
     const editorHtml = renderWithTooltip(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
-      profileCatalog: readyWorkflowProfileCatalog([]),
+      profileCatalog: readyProfileCatalog([]),
       onSave: () => undefined,
       showSaveAction: false,
       allowAiDynamic: true,

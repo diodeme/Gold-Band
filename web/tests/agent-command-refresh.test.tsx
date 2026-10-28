@@ -76,3 +76,28 @@ it('does not publish a late catalog after changing workspace', async () => {
   expect(host.textContent).toContain('new-command');
   expect(host.textContent).not.toContain('old-command');
 });
+
+it('revalidates the mounted scope once per burst and keeps the projection when content is unchanged', async () => {
+  const catalog = { projectId: 'project-1', commands: [{ name: 'skill', description: 'Skill' }],
+    skillCommands: [{ name: 'skill', description: 'Skill' }] } as unknown as AcpCommandCatalogVm;
+  vi.mocked(getAgentCommandCatalog).mockResolvedValue(catalog);
+  const seen: unknown[] = [];
+  let revalidate: () => void = () => {};
+  function Consumer() {
+    const commands = useAgentCommands('codex-acp', 'C:/repo');
+    revalidate = commands.revalidate;
+    seen.push(commands.commands);
+    return null;
+  }
+  const root = createRoot(document.createElement('div'));
+  dispose = () => act(() => root.unmount());
+  await act(async () => root.render(<Consumer />));
+  const loaded = seen.at(-1);
+  const renders = seen.length;
+
+  await act(async () => { revalidate(); revalidate(); revalidate(); });
+
+  expect(getAgentCommandCatalog).toHaveBeenCalledTimes(2);
+  expect(seen.length).toBe(renders);
+  expect(seen.at(-1)).toBe(loaded);
+});

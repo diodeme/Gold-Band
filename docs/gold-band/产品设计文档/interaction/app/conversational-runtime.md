@@ -611,9 +611,20 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 输入附件展示为独立层级，不与 agent 运行产物和输出附件混合
 - task 输入附件的生命周期数据由 `authoring/inputs/`、provider `PromptBundle.attachment_metas` 和首条用户消息 `raw.attachments` 共同投影；格式注册表是三者共享的分类事实源，不能出现“文件已持久化但消息/Agent 输入缺失”的半状态
 
+## 运行中子 Agent 摘要条
+
+- 位于 composer 叠层最上方、紧挨 AcpUsagePanel 角标；没有正在运行的子 Agent 时不渲染。叠层自上而下固定为：运行中子 Agent → 人工确认 → Todo → 待发送队列 → 输入框。
+- 每个运行中子 Agent 显示一张摘要卡片：状态点（运行中闪烁、等待权限用警示色）与任务说明，Tooltip 展示完整说明、状态与工具/文件计数。点击打开与消息流 Agent 卡片相同的右侧 `agent-transcript` 资源，两处共用同一个打开入口。
+- 成员只由状态决定，不区分新启动、追加消息还是 SendMessage 唤醒：以持久化 `timelineProjection.agents` 为全集，每个 Agent 的状态按 `providerStateSeq` 合并实时分支快照（与 Agent 卡片的 `resolveConversationBranchDisplayStatus` 一致），`queued / running / in_progress / waiting_permission` 显示，结束即移除。根会话额外纳入实时快照中尚未进入投影的分支，名称回落为“子 Agent”；Agent 分支视图不纳入，因为实时快照无法证明其父分支。
+- 订阅为每个 attempt 一次，只在分支状态、权限关注或投影变化时重新计算，结果在运行集合不变时保持同一引用；正文、思考等流式内容不触发该摘要条。
+- 根会话投影只在首次加载等少数时机刷新，后台运行期间实时分支快照是唯一知道 Agent 已结束的事实。因此分支快照不随回放缓存按分支淘汰（回放内容仍按 64 个分支上限淘汰），只在超过 16 个 attempt 时整体淘汰无人观察的 attempt；被观察的会话不会退回过期投影，重新打开的会话会拉取新投影。
+- 主会话回合结束后，只要后台停止通道存在（`backgroundControl` 非空）且有原生子 Agent（带 `providerStateSeq` 的适配器状态机状态）处于运行中或等待权限，输入框就保留"停止"，覆盖子 Agent 长时间无输出、10 秒后台活动窗口已过期的情况。由回合与启动证据推断出的运行中只在摘要条展示，不保留"停止"。判断统一由 `canStopAcpSession` 计算。
+- 摘要条与下方面板无缝衔接（不画分隔线），高度上限约两行卡片，超出后在摘要条内部滚动，不推高输入框。
+- 叠层圆角、分隔、信息角标归属与人工确认面板的独立间距统一由 `acpComposerStackLayout` 计算，各面板只消费自身位置，不再各自判断上下是否有相邻面板。
+
 ## Todo/Plan 任务面板
 
-- 位于 composer 上方、AcpUsagePanel 下方
+- 位于 composer 上方、AcpUsagePanel 下方；存在运行中子 Agent 时位于其摘要条下方
 - 默认收起，显示任务进度摘要（如 "2/4 · 当前任务名称"）
 - 展开后使用紧凑任务行展示完整条目列表；完成、进行中和待处理分别使用勾选、运行环和小号中性空心状态点，并辅以状态文案，禁止只依赖颜色或堆叠大号 Badge。面板摘要已经提供完成数，待处理行不得再显示序号圆环重复表达顺序。
 - 仅显示当前 branch 的 todo；Agent 内部 plan 只在对应右侧 Agent 会话中展示，不回落到父分支
@@ -778,7 +789,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 最终目录按 `ACP 原生命令 > 读取目录发现的 SKILL` 合并，并以命令名不区分大小写去重。ACP 条目保留 `description / inputHint`，SKILL 条目使用 frontmatter 的 `name / description`；扫描支持 Agent 根目录下的 `skills` 以及 `.codex/skills/.system` 这类一层容器目录和 Skill 符号链接。
 - 命令菜单只是一份名称级展示索引，不决定 Agent 最终读取哪个 SKILL 实例。同名 SKILL 的展示元数据暂按“主目录优先于兼容目录；同一目录优先实体目录、再软链接”的确定性顺序选取，即 `主目录实体 > 主目录软链接 > 兼容目录实体 > 兼容目录软链接`；选择后仍只把命令文本发送给 Agent，由 Agent 按自身规则解析实际实例。
 - 命令目录的数据模型为 `AcpCommandCatalog { agentType, projectId, acpCommands?, skillCommands?, commands, updatedAt }`，其中 `acpCommands` 保存未混入 SKILL 的原始 ACP 列表，查询响应中的 `skillCommands` 是不落盘的当前文件系统 Skill 投影，`commands` 保存最终列表，命令项为 `AcpCommandItem { name, description, inputHint? }`。目录必须以 `{agentType, projectId}` 为联合身份，因为同一 Agent 在不同 workspace 可发现不同的项目级 SKILL；持久目录只是 ACP 原生命令的可复用缓存，不是文件系统 Skill 的权威事实源。查询命中时从缓存中的原始 ACP 列表重新扫描，查询未命中时也必须以空 ACP 列表扫描该物理 workspace 可见的 Skill，并返回瞬时 skill-only 目录，不能因工作树尚未经过 Doctor 而返回空；文件系统扫描必须在共享目录缓存锁外执行。
-- 桌面端把目录持久化到 `~/.gold-band/desktop/agent-command-catalogs.json`。自动 Agent doctor、手动 doctor、活跃 ACP 会话的 `available_commands_update` 都会更新原始 ACP 列表并重建最终目录；SKILL 创建、删除或同步目标变更成功后异步刷新当前 workspace 的已配置 Agent，不阻塞 SKILL 保存链路。旧目录文件没有 `acpCommands` 时兼容读取，并在下一次 Doctor 后迁移为可精确重扫的新结构。
+- 桌面端把目录持久化到 `~/.gold-band/desktop/agent-command-catalogs.json`。自动 Agent doctor、手动 doctor、活跃 ACP 会话的 `available_commands_update` 都会更新原始 ACP 列表并重建最终目录。SKILL 不经过 Doctor 刷新：查询总是重新扫描文件系统，SKILL 管理写入后不探测 Agent；应用内外新增、删除或同步的 SKILL 都在下一次打开 `/` 菜单时可见。旧目录文件没有 `acpCommands` 时兼容读取，并在下一次 Doctor 后迁移为可精确重扫的新结构。
 - doctor 的 `session/new` 与命令通知存在并发窗口。连接层必须为尚未注册 route 的 session frame 提供有界、带 TTL 的早到缓冲，并在 route 注册时按序补投；不得依赖固定 sleep 掩盖消息丢失。doctor 在 session 建立后只追加一个有上限的命令发现等待窗口，随后立即清理诊断 session。
 - 快速对话仅在 Direct 或固定 Agent 的 AUTO 模式中展示该 Agent 的目录；动态 AUTO 和尚未解析 Agent 的 Workflow 不展示 Agent 专属命令。会话详情页使用当前 ACP session 的 provider 与 `providerCwd ?? cwd` 物理工作目录查询 Skill 投影，不把 Git 工作树归一回项目主目录；工作树中的项目级 Skill 可以与主工作区不同。当前 `AcpSessionVm.availableCommands` 是该 session 最新 ACP 原生命令的权威投影，前端把它放在查询得到的 Skill 目录之前按名称不区分大小写合并；原始时间线载荷中缺少合法 `name` 的条目必须在合并边界忽略。该展示契约与 `lifecycle.control.mode` 解耦，`non-runtime-controlled` 会话同样可以输入 `/` 唤起菜单。
 - 输入内容仅匹配独立的 `/query` 时打开菜单，命令字符支持 Unicode 字母/数字以及 `.`、`_`、`:`、`-`，因此中文 Skill 名不会被目录或输入过滤丢弃。标签解析必须先读取最长合法命令 token，再检查其后的首字符是否为分隔符；不得因 `-`、`.`、`:` 同属 Unicode 标点而回溯成较短命令。输入空格、`,`、`，` 等分隔符后匹配立即失效并关闭菜单；若分隔符前是当前目录中的完整命令，则输入区把该命令前缀投影为标签。标签展示名称不带前导 `/`，并可用 icon 区分角色与 Agent 命令；菜单行继续显示 `/${name}` 且不放 icon，高亮只跟父级 `activeIndex`。标签绝对定位在首行，通过共享 `ResizeObserver` hook 测量真实宽度并只设置 textarea 的首行 `text-indent`；textarea 自身始终保持完整宽度，因此显式换行和自动折行从输入区左边缘开始，不得形成贯穿所有行的标签列。标签与 textarea 首行共享基于 `rem` 的排版节奏和顶部基线，不依赖物理像素，随系统缩放、窗口 DPI 与根字号变化；颜色只使用 `secondary / secondary-foreground / border` 语义 token，摘要通过共享 shadcn Tooltip 展示。分隔符与后续正文继续由原生 textarea 编辑。删除分隔符、破坏命令名或切换到不含该命令的 Agent 后立即恢复普通文本，再次形成“完整命令 + 分隔符”时重新标签化。刚从菜单写入的标准 `/${name} ` 状态按一次 Backspace 时，输入状态机只移除标签成立所需的尾随分隔符，保留完整 `/${name}` 为普通可编辑文本，并把光标放到文本末尾；第二次 Backspace 再交给 textarea 删除普通字符。该转换不得依赖 blur、DOM 层标签节点或浏览器恰好保留的 selection。方向键移动时选中项必须跟随可见滚动区域；Esc 或点击菜单外关闭，但保留输入中的 `/`，用户删除并重新输入后可再次打开。选中后写入 `/${name} `，标签只属于前端显示投影，发送给 ACP 的值仍是完整普通文本。
@@ -786,6 +797,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 快速对话的命令列表使用同一 `Command` 内容，在首行输入下方以带圆角的绝对定位覆盖层展开，不参与 composer 高度计算，因此打开菜单时主输入框整体尺寸保持不变；列表左右边缘与快速对话主输入框外边缘对齐。菜单打开期间，输入菜单区域必须建立高于同一 composer 后续工具栏的局部层叠上下文，使完整菜单覆盖处理模式、Agent 和其他控件；关闭后撤销该层叠层级。会话详情继续使用 composer 上方的 Popover，并以 Radix anchor 实际宽度作为菜单宽度，使两侧与 composer 严格对齐。
 - 用户通过 Esc、点击外部等方式关闭当前 `/query` 后，关闭状态按稳定的 `{agentType, workspace}` 目录身份与当前输入值保留在前端运行期；切换页面再返回不会因为组件重新挂载而重开。输入值改变或删除后允许重新触发；切换 Agent 时清除新 Agent 上的关闭状态并展示其命令。
 - 方向键改变选中项后，菜单通过直接持有的 `CommandList` ref 调整唯一滚动容器的 `scrollTop`，选中项位置只相对该容器计算并执行最小滚动；不得叠加第二层滚动组件、动态查找 DOM 父节点或使用跨父节点的 `offsetTop`。
+- `/` 与 `@` 菜单的目录在用户开始输入触发符时重新校验：`useSlashCommandController` 在每次进入 `/` 或 `@` 查询时通知一次，`useComposerMenuCatalog` 据此让 `/` 重读当前 `{agentType, workspace}` 命令目录，让 `@` 重读应用级角色目录。重读期间菜单继续展示上一次列表，内容未变化时不发布新投影；同一作用域的重复触发合并为至多一次后续读取。角色目录由 `profile-catalog` 共享 store 统一持有，App、会话详情、Workflow/执行计划选择器与角色管理页读写同一份快照，管理页增删改与导入后的重读同步发布给所有消费者。
 - 鼠标或键盘选中命令后，命令 controller 必须在写入 `/${name} ` 并关闭菜单后通知 composer 恢复 textarea 焦点，使用户可以直接继续输入或再次按 Enter 发送。焦点恢复统一延迟到下一动画帧，等待受控值、标签投影和 Popover 关闭完成，并同步把 selection 放到 textarea 当前可见值末尾；快速对话原生 textarea 与会话详情 prompt-kit textarea 都通过显式 ref 接入，不允许使用 `querySelector` 猜测输入框。命令标签解除后复用同一焦点/selection 生命周期。若 textarea 在恢复执行前已进入 disabled 状态，则跳过聚焦。
 
 ## Prompt turn 文件变化

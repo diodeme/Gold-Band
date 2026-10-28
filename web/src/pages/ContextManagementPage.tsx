@@ -4,7 +4,7 @@ import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Li
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
-  createProfile, deleteProfile, getProfile, getProfiles, importProfilesFromFolder, updateProfile,
+  createProfile, deleteProfile, getProfile, importProfilesFromFolder, updateProfile,
   listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
@@ -14,7 +14,7 @@ import {
 import { displayAppError } from '../i18n';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 import type {
-  AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
+  AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileScope, ProfileVm,
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
 } from '../types';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
@@ -41,6 +41,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import { revalidateProfileCatalog, useProfileCatalog } from '@/lib/profile-catalog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
@@ -86,7 +87,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
   const readOnly = useReadOnlyExperience();
   const measuredProfileListRef = useWebviewMeasuredContainer<HTMLDivElement>('profile-list');
   const { t } = useTranslation();
-  const [vm, setVm] = useState<ProfileListVm | null>(null);
+  // The page edits the shared catalog, so every role menu and picker sees the change.
+  const profileCatalog = useProfileCatalog(false);
+  const vm = profileCatalog.status === 'ready' ? profileCatalog : null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ContextTab>(initialTab);
@@ -279,7 +282,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
     setLoading(true);
     setError(null);
     try {
-      setVm(await getProfiles());
+      await revalidateProfileCatalog();
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {

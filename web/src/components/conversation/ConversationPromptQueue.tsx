@@ -43,7 +43,11 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import {
+  ACP_SESSION_COMPOSER_LAYOUT,
+  acpComposerStackShapeClassName,
+  type AcpComposerStackSlot,
+} from '@/lib/conversation-composer-layout';
 import type { ConversationPromptQueueVm, ConversationQueuedPromptVm } from '@/types';
 
 const DEFAULT_VISIBLE_ITEMS = 3;
@@ -64,8 +68,7 @@ export interface ConversationPromptQueueProps {
   sessionActive: boolean;
   mutationPending: boolean;
   composerOccupied: boolean;
-  attachedAbove?: boolean;
-  integratedInfoTab?: boolean;
+  stackSlot?: AcpComposerStackSlot;
   onRestore: (itemId: string) => void | Promise<void>;
   onReorder: (orderedItemIds: string[], expectedRevision: number) => void | Promise<void>;
   onUse: (itemId: string) => void | Promise<void>;
@@ -77,8 +80,7 @@ export function ConversationPromptQueue({
   sessionActive,
   mutationPending,
   composerOccupied,
-  attachedAbove = false,
-  integratedInfoTab = false,
+  stackSlot,
   onRestore,
   onReorder,
   onUse,
@@ -127,8 +129,7 @@ export function ConversationPromptQueue({
       className={cn(
         'overflow-hidden bg-card',
         ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
-        attachedAbove ? 'rounded-none' : 'rounded-t-2xl',
-        integratedInfoTab && !attachedAbove && 'rounded-tl-none',
+        acpComposerStackShapeClassName(stackSlot),
       )}
       data-testid="conversation-prompt-queue"
     >

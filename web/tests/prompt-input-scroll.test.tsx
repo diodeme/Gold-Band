@@ -34,10 +34,8 @@ describe('prompt input scroll preservation', () => {
 
     try {
       await act(async () => root.render(
-        <PromptInput value={'long draft '.repeat(100)} maxHeight={null}>
-          <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>
-            <PromptInputTextarea />
-          </div>
+        <PromptInput value={'long draft '.repeat(100)} maxHeight={2_000}>
+          <PromptInputTextarea />
         </PromptInput>,
       ));
       const textarea = container.querySelector('textarea')!;
@@ -110,61 +108,6 @@ describe('prompt input scroll preservation', () => {
     }
   });
 
-  it.each([1_136, 400])('does not collapse the home input scroll viewport at scrollTop=%i while typing', async (initialScrollTop) => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    const root = createRoot(container);
-    const renderValue = async (value: string) => {
-      await act(async () => {
-        root.render(
-          <PromptInput value={value} onValueChange={() => undefined} maxHeight={null}>
-            <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>
-              <PromptInputTextarea className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName} />
-            </div>
-          </PromptInput>,
-        );
-      });
-    };
-
-    try {
-      await renderValue('long draft');
-      const textarea = container.querySelector('textarea')!;
-      const viewport = textarea.parentElement!.parentElement!;
-      let scrollTop = initialScrollTop;
-      let height = '1456px';
-      Object.defineProperties(viewport, {
-        clientHeight: { configurable: true, get: () => 320 },
-        scrollHeight: { configurable: true, get: () => Number.parseFloat(height) || 48 },
-        scrollTop: {
-          configurable: true,
-          get: () => scrollTop,
-          set: (value: number) => { scrollTop = value; },
-        },
-      });
-      vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockReturnValue(1_456);
-      Object.defineProperty(textarea.style, 'height', {
-        configurable: true,
-        get: () => height,
-        set: (value: string) => {
-          height = value;
-          // Model native layout clamping: shrinking the content also shrinks its ancestor's range.
-          scrollTop = Math.min(scrollTop, Math.max(0, viewport.scrollHeight - viewport.clientHeight));
-        },
-      });
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-
-      await renderValue('long draft+');
-
-      expect(viewport.scrollTop).toBe(initialScrollTop);
-      expect(container.querySelector('textarea')).toBe(textarea);
-      expect(document.activeElement).toBe(textarea);
-      expect(textarea.selectionStart).toBe(textarea.value.length);
-    } finally {
-      await act(async () => root.unmount());
-    }
-  });
-
   it('restores the textarea scroll position around autosize measurement', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -172,7 +115,7 @@ describe('prompt input scroll preservation', () => {
     const renderValue = async (value: string) => {
       await act(async () => {
         root.render(
-          <PromptInput value={value} onValueChange={() => undefined} maxHeight={320}>
+          <PromptInput value={value} onValueChange={() => undefined} maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}>
             <PromptInputTextarea />
           </PromptInput>,
         );

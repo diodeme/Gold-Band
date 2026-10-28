@@ -258,7 +258,7 @@ describe('IM settings boundary', () => {
       }
       for (const kind of ['weCom', 'feishu']) {
         expect(i18n.t(`settings.im.channels.${kind}.title`, { lng: language })).not.toContain('settings.im');
-        expect(i18n.t(`settings.im.channels.${kind}.identity`, { lng: language, id: 'x' })).not.toContain('settings.im');
+        expect(i18n.t(`settings.im.channels.${kind}.identityLabel`, { lng: language })).not.toContain('settings.im');
       }
       for (const code of ['IM_CONNECTION_CONFLICT', 'IM_STORAGE_UNAVAILABLE', 'IM_STALE_GENERATION', 'IM_SCAN_DENIED', 'IM_SCOPE_MISSING']) {
         expect(i18n.t(`settings.im.errors.${code}`, { lng: language })).not.toContain('IM_');

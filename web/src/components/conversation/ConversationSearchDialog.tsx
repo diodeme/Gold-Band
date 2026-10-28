@@ -40,10 +40,10 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    const handleFindShortcut = (event: KeyboardEvent) => {
+    const handleSearchShortcut = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey
-        || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f'
+        || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k'
       ) return;
 
       const target = event.target instanceof Element ? event.target : document.activeElement;
@@ -60,9 +60,9 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
       }
     };
 
-    // Focused editors handle their own find command before the application does.
-    window.addEventListener('keydown', handleFindShortcut);
-    return () => window.removeEventListener('keydown', handleFindShortcut);
+    // Focused controls that already handled the key keep it; Ctrl/Cmd+F stays with editors.
+    window.addEventListener('keydown', handleSearchShortcut);
+    return () => window.removeEventListener('keydown', handleSearchShortcut);
   }, [open, onOpenChange]);
 
   useEffect(() => {

@@ -87,10 +87,10 @@ function searchInput() {
   return document.querySelector<HTMLInputElement>('input[placeholder="conversation.search.placeholder"]');
 }
 
-async function pressFind(target: EventTarget, init: KeyboardEventInit = { ctrlKey: true }) {
+async function pressSearch(target: EventTarget, init: KeyboardEventInit = { ctrlKey: true }) {
   const event = new KeyboardEvent('keydown', {
-    key: 'f',
-    code: 'KeyF',
+    key: 'k',
+    code: 'KeyK',
     bubbles: true,
     cancelable: true,
     ...init,
@@ -101,14 +101,14 @@ async function pressFind(target: EventTarget, init: KeyboardEventInit = { ctrlKe
 
 describe('conversation search keyboard entry', () => {
   it.each([
-    ['Ctrl+F', { ctrlKey: true }],
-    ['Cmd+F', { metaKey: true }],
+    ['Ctrl+K', { ctrlKey: true }],
+    ['Cmd+K', { metaKey: true }],
   ] as const)('opens and focuses the existing search with %s from the composer', async (_label, modifier) => {
     const { container, onOpenChange } = await renderSearch();
     const composer = container.querySelector('textarea')!;
     composer.focus();
 
-    const event = await pressFind(composer, modifier);
+    const event = await pressSearch(composer, modifier);
 
     expect(searchInput()).not.toBeNull();
     expect(document.activeElement).toBe(searchInput());
@@ -127,7 +127,7 @@ describe('conversation search keyboard entry', () => {
     const closeButton = document.querySelector<HTMLButtonElement>('[data-slot="dialog-close"]')!;
     closeButton.focus();
 
-    const event = await pressFind(closeButton);
+    const event = await pressSearch(closeButton);
 
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe('existing query');
@@ -141,7 +141,7 @@ describe('conversation search keyboard entry', () => {
     const { container } = await renderSearch();
     const composer = container.querySelector('textarea')!;
     composer.focus();
-    await pressFind(composer);
+    await pressSearch(composer);
     expect(searchInput()).not.toBeNull();
 
     await act(async () => {
@@ -153,15 +153,15 @@ describe('conversation search keyboard entry', () => {
   });
 
   it.each([
-    ['plain F', { ctrlKey: false }],
-    ['another shortcut', { ctrlKey: true, key: 'g' }],
-    ['Ctrl+Shift+F', { ctrlKey: true, shiftKey: true }],
-    ['Ctrl+Alt+F', { ctrlKey: true, altKey: true }],
-    ['Cmd+Shift+F', { metaKey: true, shiftKey: true }],
+    ['plain K', { ctrlKey: false }],
+    ['Ctrl+F', { ctrlKey: true, key: 'f', code: 'KeyF' }],
+    ['Cmd+F', { metaKey: true, key: 'f', code: 'KeyF' }],
+    ['Ctrl+Shift+K', { ctrlKey: true, shiftKey: true, key: 'K' }],
+    ['Ctrl+Alt+K', { ctrlKey: true, altKey: true }],
     ['IME composition', { ctrlKey: true, isComposing: true }],
   ] as const)('does not capture %s', async (_label, modifiers) => {
     const { container, onOpenChange } = await renderSearch();
-    const event = await pressFind(container.querySelector('textarea')!, modifiers);
+    const event = await pressSearch(container.querySelector('textarea')!, modifiers);
 
     expect(searchInput()).toBeNull();
     expect(event.defaultPrevented).toBe(false);
@@ -173,15 +173,14 @@ describe('conversation search keyboard entry', () => {
     const composer = container.querySelector('textarea')!;
     composer.addEventListener('keydown', (event) => event.preventDefault(), { once: true });
 
-    const event = await pressFind(composer);
+    const event = await pressSearch(composer);
 
     expect(event.defaultPrevented).toBe(true);
     expect(searchInput()).toBeNull();
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  it('preserves CodeMirror file search before the application shortcut', async () => {
-    const { container, onOpenChange } = await renderSearch();
+  function mountEditor(container: HTMLElement) {
     const editor = new EditorView({
       parent: container,
       state: EditorState.create({
@@ -191,8 +190,14 @@ describe('conversation search keyboard entry', () => {
     });
     editors.push(editor);
     editor.focus();
+    return editor;
+  }
 
-    const event = await pressFind(editor.contentDOM);
+  it('leaves Ctrl+F to CodeMirror file search', async () => {
+    const { container, onOpenChange } = await renderSearch();
+    const editor = mountEditor(container);
+
+    const event = await pressSearch(editor.contentDOM, { ctrlKey: true, key: 'f', code: 'KeyF' });
 
     expect(event.defaultPrevented).toBe(true);
     expect(container.querySelector('.cm-search')).not.toBeNull();
@@ -200,12 +205,24 @@ describe('conversation search keyboard entry', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
+  it('opens conversation search with Ctrl+K from a focused CodeMirror editor', async () => {
+    const { container, onOpenChange } = await renderSearch();
+    const editor = mountEditor(container);
+
+    const event = await pressSearch(editor.contentDOM);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(container.querySelector('.cm-search')).toBeNull();
+    expect(document.activeElement).toBe(searchInput());
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   it('does not stack search over another modal dialog', async () => {
     const { onOpenChange } = await renderSearch({ otherDialog: true });
     const input = document.querySelector<HTMLInputElement>('input[aria-label="other dialog input"]')!;
     input.focus();
 
-    const event = await pressFind(input);
+    const event = await pressSearch(input);
 
     expect(searchInput()).toBeNull();
     expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
@@ -239,7 +256,7 @@ describe('conversation search keyboard entry', () => {
     await act(async () => item.focus());
     expect(document.activeElement).toBe(item);
 
-    const event = await pressFind(item);
+    const event = await pressSearch(item);
 
     expect(searchInput()).toBeNull();
     expect(document.activeElement).toBe(item);
@@ -253,7 +270,7 @@ describe('conversation search keyboard entry', () => {
     await act(async () => root.unmount());
     roots.splice(roots.indexOf(root), 1);
 
-    const event = await pressFind(window);
+    const event = await pressSearch(window);
 
     expect(event.defaultPrevented).toBe(false);
     expect(onOpenChange).not.toHaveBeenCalled();
@@ -265,7 +282,7 @@ describe('conversation search keyboard entry', () => {
     roots.splice(roots.indexOf(previous.root), 1);
     const current = await renderSearch();
 
-    await pressFind(current.container.querySelector('textarea')!);
+    await pressSearch(current.container.querySelector('textarea')!);
 
     expect(searchInput()).not.toBeNull();
     expect(document.activeElement).toBe(searchInput());

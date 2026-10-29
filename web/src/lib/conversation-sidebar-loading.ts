@@ -277,8 +277,13 @@ export function removeConversationSidebarTask(
   };
 }
 
+type SidebarFlight = {
+  promise: Promise<unknown>;
+  refresh?: () => Promise<unknown>;
+};
+
 export class ConversationSidebarSingleFlight {
-  private readonly flights = new Map<string, Promise<unknown>>();
+  private readonly flights = new Map<string, SidebarFlight>();
   private readonly generations = new Map<string, number>();
 
   generation(key: string) {
@@ -289,14 +294,35 @@ export class ConversationSidebarSingleFlight {
     return this.generation(key) === generation;
   }
 
-  run<T>(key: string, request: () => Promise<T>): Promise<T> {
-    const current = this.flights.get(key) as Promise<T> | undefined;
-    if (current) return current;
-    const flight = request().finally(() => {
+  run<T>(key: string, request: () => Promise<T>, refresh = false): Promise<T> {
+    const current = this.flights.get(key);
+    if (current) {
+      if (refresh) current.refresh = request;
+      return current.promise as Promise<T>;
+    }
+    const flight: SidebarFlight = { promise: Promise.resolve() };
+    this.flights.set(key, flight);
+    const drain = async () => {
+      let next = request;
+      for (;;) {
+        let result: T;
+        try {
+          result = await next();
+        } catch (error) {
+          if (this.flights.get(key) !== flight || !flight.refresh) throw error;
+          next = flight.refresh as () => Promise<T>;
+          flight.refresh = undefined;
+          continue;
+        }
+        if (this.flights.get(key) !== flight || !flight.refresh) return result;
+        next = flight.refresh as () => Promise<T>;
+        flight.refresh = undefined;
+      }
+    };
+    flight.promise = drain().finally(() => {
       if (this.flights.get(key) === flight) this.flights.delete(key);
     });
-    this.flights.set(key, flight);
-    return flight;
+    return flight.promise as Promise<T>;
   }
 
   invalidate(key: string) {

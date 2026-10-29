@@ -108,6 +108,62 @@ describe('conversation sidebar progressive loading', () => {
     expect(flights.generation('workspace:project-a')).toBe(generation + 1);
   });
 
+  it('rereads a workspace after background creation arrives during an older page request', async () => {
+    const flights = new ConversationSidebarSingleFlight();
+    let resolveOldPage!: (tasks: string[]) => void;
+    const oldPage = new Promise<string[]>((resolve) => { resolveOldPage = resolve; });
+    const published: string[][] = [];
+    const first = flights.run('workspace:project-a', async () => {
+      const tasks = await oldPage;
+      published.push(tasks);
+      return tasks;
+    });
+    const refresh = vi.fn(async () => {
+      const tasks = ['scheduled-task'];
+      published.push(tasks);
+      return tasks;
+    });
+    const refreshed = flights.run('workspace:project-a', refresh, true);
+    flights.run('workspace:project-a', refresh, true);
+    expect(refresh).not.toHaveBeenCalled();
+    resolveOldPage([]);
+    await first;
+    await refreshed;
+    expect(published.at(-1)).toEqual(['scheduled-task']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps only the latest pending refresh and waits for it after a failed load', async () => {
+    const flights = new ConversationSidebarSingleFlight();
+    let rejectOldPage!: (error: Error) => void;
+    const oldPage = new Promise<string>((_resolve, reject) => { rejectOldPage = reject; });
+    const first = flights.run('runs:project-a:uuid-1', () => oldPage);
+    const superseded = vi.fn(async () => 'run-001');
+    const latest = vi.fn(async () => 'run-002');
+    flights.run('runs:project-a:uuid-1', superseded, true);
+    const refreshed = flights.run('runs:project-a:uuid-1', latest, true);
+    rejectOldPage(new Error('old page failed'));
+    await expect(first).resolves.toBe('run-002');
+    await expect(refreshed).resolves.toBe('run-002');
+    expect(superseded).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards pending refreshes when their scope is invalidated', async () => {
+    const flights = new ConversationSidebarSingleFlight();
+    let resolveOldPage!: (value: string) => void;
+    const oldPage = new Promise<string>((resolve) => { resolveOldPage = resolve; });
+    const first = flights.run('workspace:project-a', () => oldPage);
+    const obsolete = vi.fn(async () => 'deleted-task');
+    flights.run('workspace:project-a', obsolete, true);
+    flights.invalidate('workspace:project-a');
+    const replacement = flights.run('workspace:project-a', async () => 'new-task');
+    resolveOldPage('old-task');
+    await first;
+    await expect(replacement).resolves.toBe('new-task');
+    expect(obsolete).not.toHaveBeenCalled();
+  });
+
   it('does not regress task activity metadata when run history is hydrated', () => {
     const sidebar = applyConversationTaskPage(
       applyConversationSidebarBootstrap(createEmptyConversationSidebar(), {

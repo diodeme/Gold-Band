@@ -19,7 +19,7 @@ import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
-import { useAgentCommands } from '@/hooks/useAgentCommands';
+import { useComposerMenuCatalog } from '@/hooks/useComposerMenuCatalog';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { useMentionMenuLabels } from '@/hooks/useMentionWorkspaceFiles';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
@@ -755,22 +755,18 @@ export function ConversationComposer({
     : isAuto && !isDynamicAuto
       ? selectedAgent
       : null;
-  const agentCommands = useAgentCommands(commandAgentType, workspacePath);
-  const slashCatalog = useMemo(
-    () => buildSlashCatalog(
-      t('acp.slashAgentGroup'),
-      // A role is a Direct conversation input; Workflow and AUTO nodes use their own profiles.
-      isDirect ? profiles : [],
-      agentCommands.commands,
-    ),
-    [agentCommands.commands, isDirect, profiles, t],
-  );
+  const menuCatalog = useComposerMenuCatalog({
+    agentType: commandAgentType,
+    workspacePath,
+    rolesEnabled: isDirect,
+  });
   const mentionLabels = useMentionMenuLabels();
   const mentionRoot = useMemo(() => (projectId ? workspaceRootRef(projectId, null) : null), [projectId]);
   const slashCommands = useSlashCommandController({
     input: content,
-    groups: slashCatalog,
-    contextKey: agentCommands.catalogKey,
+    groups: menuCatalog.groups,
+    contextKey: menuCatalog.contextKey,
+    onMenuTrigger: menuCatalog.onMenuTrigger,
     onInputChange: setContent,
     textareaRef: composerTextareaRef,
     mention: {

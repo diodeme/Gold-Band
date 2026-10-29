@@ -391,6 +391,11 @@ describe('ConversationSidebar run selection identity', () => {
       'project-a',
     )).toBeNull();
     expect(conversationSidebarRunStateRefreshTarget(
+      { ...sidebar, workspaceTaskPages: { 'project-b': { status: 'ready', nextCursor: null } } },
+      { ...event, projectId: 'project-b', taskId: 'task-002', taskUuid: 'uuid-002' },
+      'project-a',
+    )).toEqual({ kind: 'workspace-tasks', projectId: 'project-b' });
+    expect(conversationSidebarRunStateRefreshTarget(
       sidebar,
       { ...event, taskUuid: 'stale-uuid' },
       'project-a',

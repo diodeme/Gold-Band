@@ -60,4 +60,70 @@ export const ACP_SESSION_COMPOSER_LAYOUT = {
   configTriggerClassName: COMPOSER_CONFIG_TRIGGER_SIZE_CLASS_NAME,
   staticConfigClassName: 'h-8 px-2.5 py-0',
   actionButtonClassName: 'h-8 gap-1.5 rounded-full px-3',
+  runningAgentsMaxHeightClassName: 'max-h-[4.75rem]',
 } as const;
+
+/** Layers above the session composer, top to bottom. */
+export const ACP_COMPOSER_STACK_ORDER = ['agents', 'manual', 'todo', 'queue', 'composer'] as const;
+
+export type AcpComposerStackLayer = typeof ACP_COMPOSER_STACK_ORDER[number];
+
+/** A detached layer keeps a gap instead of joining its neighbours. */
+const ACP_COMPOSER_DETACHED_LAYERS: ReadonlySet<AcpComposerStackLayer> = new Set(['manual']);
+
+/** A seamless layer joins the layer below it without a divider line. */
+const ACP_COMPOSER_SEAMLESS_LAYERS: ReadonlySet<AcpComposerStackLayer> = new Set(['agents']);
+
+export type AcpComposerStackJoin = 'none' | 'divided' | 'seamless';
+
+export interface AcpComposerStackSlot {
+  above: AcpComposerStackJoin;
+  below: AcpComposerStackJoin;
+  /** The session info tab sits on this layer's top-left corner. */
+  infoTab: boolean;
+  /** A following layer exists but does not join this one. */
+  gapBelow: boolean;
+}
+
+export type AcpComposerStackLayout = Partial<Record<AcpComposerStackLayer, AcpComposerStackSlot>>;
+
+export function acpComposerStackLayout(
+  visible: Partial<Record<AcpComposerStackLayer, boolean>>,
+  infoTabVisible: boolean,
+): AcpComposerStackLayout {
+  const layers = ACP_COMPOSER_STACK_ORDER.filter((layer) => visible[layer]);
+  const join = (upper: AcpComposerStackLayer | undefined, lower: AcpComposerStackLayer | undefined): AcpComposerStackJoin => {
+    if (!upper || !lower) return 'none';
+    if (ACP_COMPOSER_DETACHED_LAYERS.has(upper) || ACP_COMPOSER_DETACHED_LAYERS.has(lower)) return 'none';
+    return ACP_COMPOSER_SEAMLESS_LAYERS.has(upper) ? 'seamless' : 'divided';
+  };
+  const layout: AcpComposerStackLayout = {};
+  layers.forEach((layer, index) => {
+    const below = join(layer, layers[index + 1]);
+    layout[layer] = {
+      above: join(layers[index - 1], layer),
+      below,
+      infoTab: infoTabVisible && index === 0,
+      gapBelow: below === 'none' && index < layers.length - 1,
+    };
+  });
+  return layout;
+}
+
+/** A standalone surface when the layer is rendered outside a stack. */
+const ACP_COMPOSER_STANDALONE_SLOT: AcpComposerStackSlot = {
+  above: 'none',
+  below: 'none',
+  infoTab: false,
+  gapBelow: false,
+};
+
+export function acpComposerStackShapeClassName(slot: AcpComposerStackSlot = ACP_COMPOSER_STANDALONE_SLOT) {
+  return [
+    slot.above !== 'none' ? 'rounded-t-none' : slot.infoTab ? 'rounded-tl-none rounded-tr-2xl' : 'rounded-t-2xl',
+    slot.below !== 'none' ? 'rounded-b-none' : 'rounded-b-2xl',
+    slot.above === 'seamless' && 'border-t-0',
+    slot.below === 'seamless' && 'border-b-0',
+    slot.gapBelow && 'mb-3',
+  ].filter(Boolean).join(' ');
+}

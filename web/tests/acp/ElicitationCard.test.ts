@@ -274,3 +274,55 @@ describe('ElicitationCard question text', () => {
     expect(buildElicitationContent([field], answers)).toEqual({ question_b: 'B1' });
   });
 });
+
+// Contract frozen for IM remote forms (Feishu remote-intervention design §7.1):
+// the Rust IM content builder must produce exactly this encoding.
+describe('elicitation content encoding contract', () => {
+  const customField: ElicitationField = {
+    ...singleField,
+    key: 'database',
+    customVariantKey: 'database_custom',
+    hasCustomVariant: true,
+  };
+
+  it('encodes a listed single choice under the field key only', () => {
+    const answers = replaceElicitationFieldAnswer({}, customField, 'B1');
+    expect(buildElicitationContent([customField], answers)).toEqual({ database: 'B1' });
+  });
+
+  it('encodes a custom answer under the custom variant key only', () => {
+    const answers = replaceElicitationFieldAnswer({}, customField, 'Oracle', 'database_custom');
+    expect(buildElicitationContent([customField], answers)).toEqual({
+      database_custom: 'Oracle',
+    });
+  });
+
+  it('keeps the custom answer text untrimmed but drops whitespace-only text', () => {
+    const padded = replaceElicitationFieldAnswer({}, customField, ' Oracle ', 'database_custom');
+    expect(buildElicitationContent([customField], padded)).toEqual({
+      database_custom: ' Oracle ',
+    });
+    const blank = replaceElicitationFieldAnswer({}, customField, '   ', 'database_custom');
+    expect(buildElicitationContent([customField], blank)).toEqual({});
+  });
+
+  it('encodes multi choices as an ordered array and omits an empty selection', () => {
+    const chosen = replaceElicitationFieldAnswer({}, multiField, ['A2', 'A1']);
+    expect(buildElicitationContent([multiField], chosen)).toEqual({ question_a: ['A2', 'A1'] });
+    const empty = replaceElicitationFieldAnswer({}, multiField, []);
+    expect(buildElicitationContent([multiField], empty)).toEqual({});
+  });
+
+  it('omits unanswered questions and blank free text', () => {
+    const textField: ElicitationField = {
+      key: 'note',
+      isSelect: false,
+      isMulti: false,
+      isCustom: false,
+      hasCustomVariant: false,
+      options: [],
+    };
+    const answers = replaceElicitationFieldAnswer({}, textField, '  ');
+    expect(buildElicitationContent([textField, singleField], answers)).toEqual({});
+  });
+});

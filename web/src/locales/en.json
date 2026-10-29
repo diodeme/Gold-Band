@@ -932,6 +932,7 @@
       "composer-history-query-failed": "Could not load input history. Please try again.",
       "turn-execution-failed": "This message could not be processed. Try again.",
       "session-request-failed": "The session could not be prepared. Try again.",
+      "session-restore-reference-missing": "This ACP session is missing its Provider session reference, so the original session cannot be resumed. Start a new session and send the message again.",
       "missing-provider": "The current node is missing provider configuration.",
       "subagent-protocol-upgrade-required": "Update Claude ACP to {{minimumVersion}} or later, then try again.",
       "session-config-value-unavailable": "The selected session configuration is no longer available. Choose another value from the latest list.",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "Could not read the referenced file metadata. Try again.",
       "workspace-file-count-exceeded": "Context can contain at most {{max}} references and attachments.",
       "session-restore-unsupported": "This Agent cannot restore an existing session.",
-      "session-restore-reference-missing": "This session is missing its Provider session reference.",
       "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
       "prompt-empty": "Enter a message to send.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
@@ -2366,7 +2366,7 @@
     "stopFailed": "Stop failed",
     "stopHint": "Stop the current ACP session",
     "noEvents": "No ACP events",
-    "launchingClaude": "Launching agent",
+    "preparingAgent": "Preparing agent",
     "processing": "Processing",
     "thinkingNow": "Thinking",
     "toolRunning": "Running tool",
@@ -2549,7 +2549,13 @@
     "im": {
       "title": "IM remote intervention and notifications",
       "enabled": "Enabled",
-      "privateBinding": "Private chat: {{name}}",
+      "channelEnabled": "Enable {{channel}} remote intervention",
+      "channelSubtitle": "Bot · Private chat",
+      "expandChannel": "Expand {{channel}} settings",
+      "collapseChannel": "Collapse {{channel}} settings",
+      "receiverAccount": "Recipient account",
+      "robotName": "Bot name",
+      "privateBindingUnnamed": "Private chat bound",
       "notificationKinds": "Notification types",
       "notificationGroups": {
         "needsAction": "Needs your action",
@@ -2565,24 +2571,45 @@
       "deleteDescription": "This disables the connection, removes its secret from the OS credential store, and stops pending deliveries.",
       "confirmDelete": "Delete",
       "scan": {
-        "title": "Connect WeCom by QR code",
-        "description": "Scan with the WeCom mobile app and confirm authorization.",
-        "notConfigured": "WeCom is not connected. Connect it to configure remote intervention and notifications.",
-        "botId": "Bot ID: {{id}}",
+        "title": "Connect {{channel}} by QR code",
+        "description": "Scan with the {{channel}} mobile app and confirm authorization.",
+        "notConfigured": "{{channel}} is not connected. Connect it to configure remote intervention and notifications.",
         "connect": "Scan to connect",
         "reauthorize": "Authorize again",
+        "changeApp": "Change Feishu app",
+        "changeAppWarning": "Completing authorization replaces the current Feishu app and clears the existing private-chat binding. Bind again with the new bot.",
         "generating": "Generating QR code…",
-        "waiting": "Scan with WeCom and confirm authorization",
+        "waiting": "Scan with {{channel}} and confirm authorization",
         "expiresIn": "QR code expires in {{countdown}}",
         "waitingBinding": "Authorized, waiting for a recipient",
-        "complete": "WeCom is ready",
-        "nextStep": "Send the bot a message in WeCom to finish binding the private chat.",
+        "complete": "{{channel}} is ready",
+        "nextStep": "Send the bot a message in {{channel}} to finish binding the private chat.",
         "retry": "Generate again",
-        "qrCodeLabel": "WeCom authorization QR code"
+        "qrCodeLabel": "{{channel}} authorization QR code"
       },
       "channels": {
-        "wecom": {
-          "title": "WeCom"
+        "weCom": {
+          "title": "WeCom",
+          "identityLabel": "Bot ID"
+        },
+        "feishu": {
+          "title": "Feishu / Lark",
+          "identityLabel": "App ID",
+          "singleDeviceHint": "Connect each bot to only one device so actions do not reach another device.",
+          "permissions": {
+            "title": "Connecting requires these permissions",
+            "send": "Send you messages",
+            "receive": "Read private messages you send to the bot",
+            "update": "Update cards sent by the bot",
+            "profile": "Read your name to show the receiving account",
+            "confirm": "Agree and generate QR code"
+          },
+          "resetBinding": {
+            "action": "Rebind recipient",
+            "title": "Rebind recipient?",
+            "description": "This clears the current private-chat binding. Send the bot a message from the account used to authorize it to bind again. To use another account, reauthorize the bot.",
+            "confirm": "Rebind"
+          }
         }
       },
       "status": {
@@ -2598,12 +2625,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "Connect WeCom",
+          "title": "Connect {{channel}}",
           "description": "Authorize by QR code, then bind a recipient through a private chat."
         },
         "waitingBinding": {
           "title": "Bind a recipient",
-          "description": "Send the bot a message in WeCom. Remote intervention is available after the binding is saved."
+          "description": "Send the bot a message in {{channel}}. Remote intervention is available after the binding is saved."
         },
         "connecting": {
           "title": "Establishing connection",
@@ -2618,7 +2645,7 @@
           "description": "Automatic recovery cannot continue. Reconnect to try again."
         },
         "ready": {
-          "title": "WeCom is ready",
+          "title": "{{channel}} is ready",
           "description": "Remote interventions and enabled notifications are sent to the bound private chat."
         },
         "paused": {
@@ -2627,7 +2654,7 @@
         },
         "reauthorize": {
           "title": "Reauthorization required",
-          "description": "The current credentials are unavailable. Authorize the bot again."
+          "description": "Scan again to confirm authorization."
         },
         "conflict": {
           "title": "The bot is connected elsewhere",
@@ -2677,10 +2704,12 @@
         "IM_SCAN_CANCELLED": "QR authorization was cancelled.",
         "IM_SCAN_EXPIRED": "The QR code expired. Generate a new one.",
         "IM_SCAN_TIMEOUT": "QR authorization timed out. Generate a new code.",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "The WeCom authorization service is temporarily unreachable.",
-        "IM_SCAN_PROTOCOL_INVALID": "The WeCom authorization response was invalid. Generate a new code.",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "The authorization service is temporarily unreachable.",
+        "IM_SCAN_PROTOCOL_INVALID": "The authorization response was invalid. Generate a new code.",
         "IM_SCAN_SESSION_INVALID": "The QR session is invalid. Reopen it.",
         "IM_SCAN_SESSION_CONFLICT": "QR authorization is already in progress.",
+        "IM_SCAN_DENIED": "Authorization was declined.",
+        "IM_SCOPE_MISSING": "The app is missing required permissions. Authorize it again.",
         "IM_STALE_GENERATION": "The connection state changed. Retry from the latest state.",
         "IM_RUNTIME_UNAVAILABLE": "The IM runtime is not ready.",
         "IM_CHANNEL_CLEANUP_PENDING": "The configuration was deleted. Local cleanup will retry in the background.",

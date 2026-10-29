@@ -97,6 +97,16 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
         scheduled-task-001/
 ```
 
+### 4.0 用户级存储位置解析
+
+用户数据根（上述 `~/.gold-band/`）与全局 `state.json` 由 `GoldBandPaths` 构造时的同一个解析入口一次性确定，二者不得各自兜底：
+
+1. 设置了 `GOLD_BAND_HOME`（渠道可配置为其他变量名）时，数据根为 `$GOLD_BAND_HOME/.gold-band/`，`state.json` 位于该数据根下。
+2. 正式构建未设置时，数据根为 `~/.gold-band/`，`state.json` 位于系统本地数据目录 `<data_local_dir>/gold-band/state.json`。
+3. 测试构建（`cfg(test)` 或 `test-isolated-home` feature，由 dev-dependency 自动启用）未设置时，按 repo 隔离到 `<repo>/gold-band-home/.gold-band/`，`state.json` 同样位于其下，测试不得触达真实用户目录。
+
+存储位置不得根据 workspace 所在路径（例如是否位于系统临时目录）推断；位于任意位置的 workspace 在正式构建中都写入同一个用户数据根。
+
 ### 4.1 用户级 context
 
 `context/profiles/` 存放跨项目复用的用户级 profile。profile 以 Markdown 文件存储，文件名为 `<name>-<id>.md`，正文顶部包含 `---` 信息块，声明 `id`、`name`、`summary`、`createdAt`、`updatedAt`；`id` 由系统生成分布式唯一值，时间字段使用本地时区 `YYYY-MM-DD HH:MM:SS`。

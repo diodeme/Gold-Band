@@ -4143,6 +4143,18 @@ pub fn acp_session_vm(
                 .and_then(|value| value.as_str())
         })
         .map(str::to_string);
+    let turn_error = session
+        .get("turnError")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    let has_queryable_attempt_state = turn_error.is_some()
+        || session
+            .get("latestTurnStatus")
+            .and_then(Value::as_str)
+            .is_some_and(|status| {
+                let status = status.trim();
+                !status.is_empty() && status != "none"
+            });
     let has_displayable_timeline_event = event_scan
         .events
         .iter()
@@ -4151,6 +4163,7 @@ pub fn acp_session_vm(
         && session_id.is_none()
         && !has_displayable_timeline_event
         && branch_record.is_none()
+        && !has_queryable_attempt_state
     {
         trace_acp_session_query(
             &mut query_trace,
@@ -4274,10 +4287,7 @@ pub fn acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
-        turn_error: session
-            .get("turnError")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok()),
+        turn_error,
         system_prompt_append,
         config,
         available_commands: event_scan.available_commands,
@@ -11130,6 +11140,88 @@ mod tests {
         .unwrap();
 
         assert!(session.is_none(), "unexpected ACP session VM: {session:#?}");
+    }
+
+    #[test]
+    fn acp_session_vm_projects_unmaterialized_failure_without_timeline() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.node_file(
+                "task-unmaterialized-error",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "1792987200Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-restore-reference-missing",
+            "provider session was not materialized before the turn stopped",
+            json!({"attemptId": "attempt-001"}),
+        );
+        write_json(
+            &app.paths.acp_snapshot_file(
+                "task-unmaterialized-error",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &json!({
+                "adapterId": "codex-acp",
+                "adapterDisplayName": "Codex",
+                "cwd": dir.path().to_str(),
+                "availability": "unavailable",
+                "latestTurnStatus": "failed",
+                "liveTurnActivity": "idle",
+                "turnError": error,
+                "restored": false,
+                "createdAt": "1792987200Z",
+                "updatedAt": "1792987201Z",
+                "capabilities": {},
+                "runtimeControlTimelineScanComplete": true
+            }),
+        )
+        .unwrap();
+
+        let session = acp_session_vm(
+            &app,
+            "task-unmaterialized-error",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("failed unmaterialized attempt should remain queryable");
+
+        assert!(session.session_id.is_none());
+        assert_eq!(session.status, "failed");
+        assert_eq!(session.turn_error.as_ref(), Some(&error));
+        assert!(session.events.is_empty());
+        assert_eq!(session.event_page.total, 0);
     }
 
     #[test]

@@ -27,7 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { createBlankWorkflowDraft, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
-import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { useProfileCatalog } from '@/lib/profile-catalog';
 
 type TaskListLoading = 'initial' | 'manual' | null;
 
@@ -294,7 +294,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
 
 function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileManagement }: { draft: CreateTaskDraftState; onDraftChange: Dispatch<SetStateAction<CreateTaskDraftState>>; onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>; onOpenProfileManagement: () => void }) {
   const { t } = useTranslation();
-  const profileCatalog = useWorkflowProfileCatalog(draft.open);
+  const profileCatalog = useProfileCatalog(draft.open);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);

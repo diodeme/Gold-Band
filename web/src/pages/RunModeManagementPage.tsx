@@ -31,7 +31,7 @@ import { cn } from '@/lib/utils';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { RunContextExecutionPlanController, type RunExecutionPlanDraft } from '@/components/conversation/RunContextExecutionPlanController';
-import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { useProfileCatalog } from '@/lib/profile-catalog';
 
 interface RunModeManagementPageProps {
   projectId: string;
@@ -295,7 +295,7 @@ export function RunModeManagementPage({
   const [allowedProfiles, setAllowedProfiles] = useState(runMode.autoConfig?.allowedProfiles ?? []);
   const [control, setControl] = useState<DynamicControlDsl>({ ...DEFAULT_DYNAMIC_CONTROL, ...(runMode.autoConfig?.control ?? {}) });
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? workflowTemplates?.templates[0]?.id ?? '');
-  const profileCatalog = useWorkflowProfileCatalog();
+  const profileCatalog = useProfileCatalog();
   const profiles = profileCatalog.profiles;
   const [templates, setTemplates] = useState<AutoTemplate[]>([]);
   const [templateName, setTemplateName] = useState(runMode.autoConfig?.activeTemplateName ?? '');

@@ -2163,7 +2163,7 @@ export interface ScheduledRuntimeSettingsInputVm {
   occurrenceRetentionDays: number;
 }
 
-export type ImChannelKind = 'weCom';
+export type ImChannelKind = 'weCom' | 'feishu';
 export type ImConnectionState = 'disabled' | 'connecting' | 'reconnecting' | 'connected' | 'authenticationRequired' | 'error';
 
 export interface ImNotificationPreferencesVm {
@@ -2179,7 +2179,8 @@ export interface ImBindingSummaryVm {
   destinationId: string;
   conversationId: string;
   authorizedActorId: string;
-  displayName: string;
+  /** Platform name of the bound account; null shows a neutral label. */
+  displayName: string | null;
 }
 
 export interface ImObservedBindingVm {
@@ -2187,13 +2188,31 @@ export interface ImObservedBindingVm {
   conversationId: string;
   actorId: string;
   isPrivate: boolean;
+  displayName: string | null;
+}
+
+export type ImMessageUpdateMode = 'none' | 'callbackOnly' | 'anytime';
+
+export type ImCustomAnswerSupportVm =
+  | { kind: 'unsupported' }
+  | { kind: 'supported'; maxChars: number };
+
+export interface ImInteractionCapabilitiesVm {
+  permissionMaxOptions: number;
+  maxQuestions: number;
+  singleChoiceMaxOptions: { singleQuestion: number; multiQuestion: number };
+  multiChoice: { maxOptions: number; withinMultiQuestion: boolean } | null;
+  freeText: { maxChars: number; multiline: boolean } | null;
+  customAnswer: ImCustomAnswerSupportVm;
+  decline: boolean;
 }
 
 export interface ImChannelCapabilitiesVm {
   proactiveDelivery: boolean;
   cardActions: boolean;
-  messageUpdate: boolean;
   privateChat: boolean;
+  messageUpdate: ImMessageUpdateMode;
+  interaction: ImInteractionCapabilitiesVm;
 }
 
 export interface ImConnectionIdentityVm {
@@ -2248,9 +2267,11 @@ export interface ImGenerationInputVm {
     expectedGeneration: number;
 }
 
-export interface WeComScanAuthorizationVm {
+export type FeishuScanMode = 'selectOrCreate' | 'reauthorizeCurrent';
+
+export interface ImScanAuthorizationVm {
   sessionId: string;
-  authUrl: string;
+  qrUrl: string;
   expiresAtMs: number;
 }
 

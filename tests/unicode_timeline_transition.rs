@@ -90,8 +90,6 @@ impl ProviderAdapter for UnicodeTimelineProvider {
 fn run_start_transitions_past_completed_worker_with_unicode_timeline() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let gold_band_home = repo_root.join("gold-band-home");
-    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
 
     let app = app_with_available_claude_provider(repo_root, Box::new(UnicodeTimelineProvider));
     let task_id = "task-001";

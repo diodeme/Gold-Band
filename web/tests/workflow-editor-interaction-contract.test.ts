@@ -15,7 +15,7 @@ import {
   validateWorkflowForSave,
 } from '@/components/WorkflowEditor';
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
-import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { readyProfileCatalog } from '@/lib/profile-catalog';
 import {
   NEW_ROUND_NODE,
   layoutWorkflowGraph,
@@ -204,11 +204,11 @@ describe('workflow editor interaction contracts', () => {
       nodes: value.nodes,
       edges: [...value.edges, { from: 'plan', to: 'review', on: 'failure' }],
     });
-    const manualValidation = validateWorkflowForSave(manualFailure, readyWorkflowProfileCatalog([]), [], t);
+    const manualValidation = validateWorkflowForSave(manualFailure, readyProfileCatalog([]), [], t);
     expect(manualValidation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(false);
 
     const invalid = workflow({ edges: [...value.edges, { from: 'build', to: 'plan', on: 'failure' }] });
-    const validation = validateWorkflowForSave(invalid, readyWorkflowProfileCatalog([]), [], t);
+    const validation = validateWorkflowForSave(invalid, readyProfileCatalog([]), [], t);
     expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(true);
   });
 
@@ -240,7 +240,7 @@ describe('workflow editor interaction contracts', () => {
     );
     const readyValidation = validateWorkflowForSave(
       value,
-      readyWorkflowProfileCatalog([]),
+      readyProfileCatalog([]),
       [],
       t,
       null,
@@ -275,7 +275,7 @@ describe('workflow editor interaction contracts', () => {
       edges: [{ from: 'dynamic', to: '$end', on: 'success' }],
     });
     const dynamicLoading = validateWorkflowForSave(dynamicValue, { status: 'loading', profiles: [] }, [], t);
-    const dynamicReady = validateWorkflowForSave(dynamicValue, readyWorkflowProfileCatalog([]), [], t);
+    const dynamicReady = validateWorkflowForSave(dynamicValue, readyProfileCatalog([]), [], t);
 
     expect(dynamicLoading.issues.map((issue) => issue.message)).not.toContain('workflowEditor.validationAllowedProfileMissing');
     expect(dynamicReady.issues.map((issue) => issue.message)).toContain('workflowEditor.validationAllowedProfileMissing');

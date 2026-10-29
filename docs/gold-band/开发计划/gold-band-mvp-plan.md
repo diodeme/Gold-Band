@@ -1,5 +1,46 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-26 Direct 未物化失败投影第一阶段
+
+- 提示修正：`acp.session-restore-reference-missing` 的本地化 key 原本错误放在 `errors.conversation.*`，导致失败横幅只显示英文 diagnostic。七语言文案已迁移到 `errors.acp.*`；简体中文明确解释 Provider 会话引用缺失、原会话无法恢复，并引导新建会话后重新发送。横幅标题与原因改为上下分层并使用 alert 语义。错误映射与 DOM 最小用例先红后绿，相关 5 个测试文件 265 项、Web 生产构建、diff 校验通过；内置 iab 在 787px 视口确认无横向溢出。browser fixture 没有精确错误码，精确文案由 DOM 用例验收。不新增错误码、状态或请求，性能影响为常数级。
+- 根因：Attempt 详情查询把 unavailable、无 `sessionId`、空 timeline 的快照统一过滤为不存在，前端同时以“出现 canonical 消息”作为查询成功条件；因此已持久化的 terminal lifecycle / `turnError` 无法进入 UI，最终等待约 32 秒后才显示通用失败。该问题属于既有 canonical lifecycle、分页与 shell 分层设计的查询投影实现不完整，不需要新建状态机。
+- 实现：后端只继续过滤纯 runtime-control placeholder；存在非 `none` 的 `latestTurnStatus` 或合法 `turnError` 时返回 Attempt VM。前端将查询 readiness 与 canonical 内容物化资格拆开：settled 且 `eventPage.total=0` 的空响应进入 `ready-empty`，active 空响应继续等待，`eventPage.total>0` 但当前页为空继续分页；Workflow/AUTO 初始化中断/失败仍由 canonical 内容 helper 判定，不被空失败 VM 覆盖。本阶段不修改 create fence、identity、`session/new`、Prompt、snapshot schemaVersion 或恢复按钮。
+- 红绿证据：Rust 最小测试在原实现上因 VM 为 `None` 失败，Web 空历史/失败 readiness 用例在原实现上返回 false；复核新增“active + 旧 `turnError` 仍等待”的最小用例，原实现返回 true。修复后 Rust `acp_session_vm_` 过滤用例 5 项、ACP 相关 5 个 Web 文件 300 项通过；DOM 固定未物化失败首个响应立即显示错误且不再 readiness 重试。`cargo fmt --all -- --check`、桌面端 tests 编译、Web 生产构建和 diff 校验通过；内置 iab 验证 Direct settled、active、Workflow 暂停及 720px 响应式，精确空失败场景未打包真实 EXE。
+- 过度设计与性能评审：复用既有 snapshot lifecycle、Attempt VM、分页 `eventPage.total`、readiness 重试和 shell 判定，只增加常数级字段判断与两个职责明确的前端 helper；不新增 DTO、持久字段、状态机、缓存、队列、依赖或全量扫描。失败场景会提前结束重复查询，正常分页 I/O、事件窗口上限和 React 订阅范围不变，无需新增 benchmark。
+
+## 2026-10-26 `/` Skill 与 `@` 角色目录在打开菜单时重新校验
+
+- 根因：两条独立的设计遗留。① SKILL：07-26 `67a71ba3` 时持久目录是 ACP 命令与 SKILL 的合并事实源，SKILL 写入后只能经 Doctor 重建目录；08-25 `c1ed59d1` 把查询改为实时扫描、目录只缓存 ACP 原生命令后，写入后的 Doctor 刷新没有随之删除；09-09 `a127ec9a` 又把事件收紧为“内容变化且落盘”并按 `projectId` 过滤。结果是 Agent 探测失败、全局 SKILL、worktree 会话和应用外安装都收不到通知，已挂载 composer 的 `/` 菜单停留在旧列表，正常路径也要等每个 Agent 进程启动探测。② 角色：09-16 `69c2e521` 把 `@` 角色接入菜单时，首页复用 App 为 Workflow 校验加载的一次性快照（该场景发送前会再读一次），会话详情另写挂载时读取一次，Workflow 选择器又各持一份；角色管理页增删改不通知任何一份，启动后新建的自定义角色要重启才可见。
+- 实现：新增 `profile-catalog` 共享 store（`useSyncExternalStore`），替换 App、`ACPChatDialog`、`workflow-profile-catalog` 三处副本；挂载时 join 进行中的读取，显式重读期间的触发合并为一次 trailing read，被取代的结果不发布，后台失败保留已加载列表。角色管理页的刷新改为重读该 store。`useSlashCommandController` 新增 `onMenuTrigger`，每次进入 `/` 或 `@` 查询通知一次；新增 `useComposerMenuCatalog` 统一两个 composer 的菜单目录，`/` 调用 `useAgentCommands().revalidate`，`@` 重读角色 store。`useAgentCommands` 在内容不变时不发布新快照。后端删除 `write_skill / delete_skill / update_skill_sync_targets` 后的 `schedule_agent_command_catalog_refresh`，Doctor 只服务 ACP 原生命令。
+- 验收：`composer-menu-catalog-freshness` 两项在修复前分别得到 `['old-skill']` 与 `[]`，修复后列出挂载后新增的 SKILL 与角色；`profile-catalog` 覆盖错误重试、多消费者共享与重读发布、in-flight 重读合并且不显示被取代列表、后台失败保留列表、禁用不读取；`agent-command-refresh` 覆盖 revalidate 合并与内容不变时投影引用不变。桌面 crate command_catalog 5 项通过。
+- 过度设计与性能评审：不新增事件通道、watcher、缓存层或持久字段，删除一条重型刷新路径并把三份角色状态合一。打开菜单只多一次轻量读取（角色 JSON、SKILL 元数据扫描，均为数十到数百条），复用既有 single-flight；内容不变不触发重渲染。无需专项 benchmark。
+
+## 2026-10-19 附件路径测试夹具跨平台修复
+
+- Linux 附件用例的源文件名原为 364 个 UTF-8 字节，在调用附件接口前就超过文件系统单段上限；改为 244 字节，并断言源文件名合法、深目录下原名确实超预算、最终存储名确实缩短，同时保留原名 metadata、扩展名和内容验收。附件生产实现不变。
+- 过度设计与性能评审：只修正测试夹具，复用现有路径预算常量，不增加依赖、运行时状态、请求或 I/O。
+
+## 2026-10-18 IM 远程干预迁移后续修复
+
+- 取消路径终态：根因是 Run 停止 teardown、ACP 会话关闭、Direct 后台停止与遗留请求只结算 ACP 信号文件与 timeline，不经过三个桌面命令，IM 卡片停留到过期，点击还被领域误报 `INTERVENTION_REQUEST_NOT_FOUND`（显示“回答无效”）。修复为统一 canonical settlement：ACP 层 `permission_request_settlement` / `elicitation_request_settlement` 按响应文件 → 待处理文件 → timeline 已结算项判定，领域 `InterventionCommandService::settlement` 补人工检查；已结算请求的 inspect 返回 `INTERVENTION_ALREADY_HANDLED`。IM settlement reconciler 由生命周期边界（去抖 1 秒）与 30 秒间隔触发，只为 `Cancelled` 投影 `resolved_by=Runtime` 的取消终态，Answered 仍由 Accepted 一端写入。`ElicitationCancelled` 更名为通用 `Cancelled`（wire `cancelled`）。点击已结算卡片：取消当场投影，答案在途回“已处理”并禁用原卡，快照过期按“操作已过期”。CallbackOnly 渠道被点击的源卡改写 TombstoneOnly 保存赢家并关闭源卡，避免后续扫描另发第二条。
+- 重发保护：源消息失败重试与租约回收在终态已存在时直接过期，worker 用例改为终态另发、原卡不再重发。
+- 删除 `scripts/diagnostics/feishu-im-poc/`，需要时从 Git 历史 b2b1099e 取回。
+- IM 卡片七语言：`connectors::localized` 的中英 match 改为 `src/im/locales/*.json` 七语言资源表（编译期嵌入、首次使用时解析一次）；`ImLocale` 收敛为 `DesktopLanguage` 别名，`reconfigure` 按桌面语言一一映射（未设置时取系统语言），飞书回调回包语言随点击所属会话，不再兜底中文。“已处理：”前缀、未知权限选项的“桌面处理”与列表分隔符进入资源表；英文分隔符由“、”改为“, ”，golden 仅 `en/mixed-terminal`、`en/mixed-already-handled` 两例因此变化。验收：`every_locale_catalog_matches_the_zh_cn_source` 校验 key、占位符与保留词，删掉 es 一个 key 时稳定失败。
+- 飞书回调超预算的拒绝：超过 `FEISHU_CALLBACK_BUDGET` 后用户只看到“处理中”，迟到的 Rejected 原本被丢弃。现在 `respond_to_action` 发现回包槽已失效且结果为 Rejected 时，按点击会话语言向该 delivery 的私聊另发只读卡片“id=xxxx 提交未成功 + 原因”（过期显示“操作已过期”），幂等键取 delivery 与回调 request id；Handled/AlreadyHandled 仍由 outbox 终态 PATCH 收敛。拒绝没有持久终态，故不新增 outbox 载荷，也不 PATCH 卡片（避免迟到的可编辑卡覆盖已结算终态）。验收：`slow_card_callback_rejection_is_sent_as_a_follow_up_message` 修复前只有会话建立的 3 个请求，修复后第 4 个为发往 `ou_owner` 的消息且含 id 与原因。
+- 飞书绑定显示名：`persist_binding` 原把 open_id 写成 `display_name`。扫码 addons 追加 `contact:contact.base:readonly`（官方文档：调用该接口的任一基础权限）与 `contact:user.base:readonly`（`name` 字段权限），自检必需权限不变；connector 每次 connect 调一次通讯录用户接口取姓名并随 `BindingObserved` 上报，`ImBindingSummary.display_name` 改为 `Option`，`apply_observed_binding` 只在首次绑定写入、之后只采纳新解析到的姓名；`Connected.owner`（`ImOwnerProfile`）携带连接时解析的姓名，runtime 经 `spawn_blocking` 用 `adopt_owner_display_name` 让同一 owner 的已有绑定在连接成功后立即采纳（旧版 `ou_…` 也被替换），仅变化时落盘，查询失败不清空。查询失败只记 warn，设置页显示七语言中性文案“已绑定一对一私聊”；权限确认页新增“读取你的姓名”一项。企微不变。验收：扫码 addons 用例在只请求三项权限时失败；飞书 owner 用例在不带姓名时失败（`display_name: None`）；`observed_binding_creates_once_and_only_adopts_a_resolved_display_name` 在旧实现下得到 `Some("ou_owner")`；前端 merge 用例在旧实现下把 actorId 当姓名。`connect_time_owner_name_replaces_a_legacy_display_name_once` 在旧实现下不替换旧 open_id；新增 `owner_lookup_failure_keeps_the_binding_without_a_name`（41050 仍绑定）与 `user_display_name_reads_the_contact_name_with_the_tenant_token`（路径、query、Bearer token、open_id 注入防护）。
+- 已接受答案投影去重：企微 `accepted_form_selections`/`form_terminal_summary` 与飞书 `restore_terminal_values`/`submitted_answer_lines`/`select_value_label` 两套实现合并为领域 `remote_question_answer`（从 `remote_elicitation_form_allows_content` 抽出的逐题解码）加 connector 层 `accepted_answers`/`AcceptedAnswer::display`；固定表单查找统一为 `InterventionAllowedAction::fixed_form`。企微终态标题此前丢弃“其他”自定义答案、多题只取首个选项、文本题显示“-”，现与飞书一致展示完整答案。验收：`elicitation_terminal_title_shows_an_accepted_custom_answer` 修复前标题为“id=0080 已处理”，修复后为“id=0080 已处理：SQLite”；企微 golden 仅 `multi`、`multipleRequiredOmitted` 两例的中文多项分隔符由“, ”变为“、”，飞书 golden 不变。
+- 异步命令阻塞：权限、追问、人工检查三个 async 命令的 IM 源标识读取（待处理文件）与桌面终态写入（SQLite）改到 blocking 线程池，IM 未运行时直接跳过；飞书重新授权读取设置，以及启停、通知偏好、重置绑定、重连四个 IM 命令的设置读写统一经 `run_blocking_command` 执行，不再在 async runtime 线程上做文件或数据库 I/O。
+- 验收：`a_permission_the_runtime_cancelled_is_handled_not_missing` 与 `a_cancelled_or_abandoned_elicitation_settles_as_cancelled` 修复前 inspect 返回 `InterventionRequestNotFound`，修复后为 `InterventionAlreadyHandled`；飞书 `late_click_on_a_settled_request_without_its_result_disables_the_card` 修复前回包无卡片，修复后禁用原卡；golden 仅 `*/unavailable` 两例按此变更。`runtime_cancellation_*` 覆盖只投影取消、幂等重放与 CallbackOnly 不另发。
+
+## 2026-10-18 PR #144 飞书 IM 能力迁移到 main
+
+- 范围：只迁移 b2b1099e、981ffb25、aefc7e8e、6abc5721 四个提交；不迁移 multica/remote、资源目录刷新与全仓 rustfmt 提交。`resources/` 与 multica 文件保持 main 原样，`Cargo.lock` 以 main 为基础由 cargo 补入 prost 依赖。
+- 同功能冲突以 main 为准：`src/acp/client.rs`、`client_direct.rs` 保留 e56d8641 的停止边界结算与 bb3f0759 的原生 subagent 跟踪，981ffb25 只取 Direct 后台 Stop 身份断言（按 session + generation 判等，墙钟投影按采样区间验收）；browser preview 保留 c2bf0b12 的会话内容拆分，把无 DOM 保护扩展到 main 新增的 `attachmentIdentity` 查询读取；纯格式化差异全部丢弃。
+- 业务冲突：main 新增 `ElicitationAction::Cancel`（停止、超时、孤儿清理），PR 的 IM 终态只有 Declined。新增 `ImResolutionOutcome::ElicitationCancelled`，飞书卡片标题与结果显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”。远程入站没有取消变体，已发布 allowed actions 不含取消，无法提交 Cancel。该变体为 payload v3 内的追加编码，旧数据不可能包含，不升级 payload/schema 版本。
+- 已知未覆盖：e56d8641 的停止结算直接写入取消结果，不经过 IM 终态投影；对应 IM 卡片保持到过期，之后点击按“已处理”收敛。取消路径的 IM 投影在后续修复中处理。
+- 验收：Cancel 渲染用例在去掉取消判定时稳定失败（卡片仍显示“已处理/桌面端”），恢复后通过；browser 无 DOM 用例在 main 实现上因 `window` 为 undefined 失败，修复后通过。核心 lib 1806 项通过（`doctor_initialize_and_cleanup_share_the_deadline` 仅在全量并行负载下超时，单独运行通过，未改动 doctor 代码），桌面端 880 项、CI Clippy 门禁、TypeScript 检查、相关前端 383 项与发布脚本 6 项通过。全量前端中 `acp-composer-render-isolation` 6 项在 main 原代码上同样失败，marketing/demo 用例因本机依赖缺 `@noble/hashes` 无法加载，均与本次迁移无关。
+- 过度设计与性能评审：只增加一个结果枚举变体和常数级渲染分支，不新增状态、持久字段、依赖或 I/O；暂停时间复用已提交的 `Run.updated_at`。
+
 ## 2026-10-16 续接会话的模型与权限以会话快照为准
 
 - 根因：09-24 让 `session/new` 把不支持的模型、权限回滚为不指定，但同一会话再次构建调用（AI-DYNAMIC proposal repair、提交提醒、workflow continue）时，模型和权限仍从冻结的节点配置取值，只有 `config_options` 以 snapshot 为准。task-334 的 bootstrap 用 `deepseek-flash` 新建 Codex 会话并已回滚，proposal 因 `dynamic.fanout.workspace-dirty` 进入 repair 后又以 `continue` 发出 `deepseek-flash`，在已建立会话分支得到 `acp.session-config-value-unavailable`。属于「复用会话以 snapshot 为权威」契约只覆盖了配置项的设计缺口。
@@ -31,6 +72,21 @@
 - 验证：Rust 跨轮同名最小测试先稳定失败于两次都返回 `user-inputs/image.png`；前端真实 ACP DOM 测试先复现提交新同名附件后点击旧消息误激活 `draft-attachment`，两项均在修复后转绿。Provider 75 项、桌面附件读取/路径穿越 3 项、联合前端 7 文件 72 项通过，双 crate `cargo check --locked`、TypeScript 与生产构建通过。Unix 专属文件 symlink/非法名称文件系统用例未在 Windows 执行；Windows junction 拒绝用例已实测。
 - 浏览器：生产构建 deep link 以三张同名、不同路径和内容的 PNG 验证真实缩略图→工作区链路，逐次打开得到 1/2/3 个 Tab，像素分别为红/绿/蓝；重复第一张回到红图且仍为 3 个 Tab。1800→720→1800 宽度往返仍显示选中的绿图，无横向溢出或浏览器错误。验证使用隔离 browser fixture，不冒充真实任务文件或 EXE 验收；测试浏览器及服务已清理。
 - 性能与过度设计评审：复用已有 BLAKE3/tempfile、DTO 和作用域，不新增持久字段、缓存、队列或运行时状态机。单次持久化按文件字节线性处理、固定缓冲，重复文件仅流式比较；不扫描历史。真实历史附件不自动修复，恢复必须另行确认并备份。
+## 2026-10-16 飞书协议封装与卡片类型化
+
+- 用户确认落实两项原设计偏差；协议隔离按 `ws` 模块职责验收，私有化底层帧，connector 只消费事件与回包能力。
+- 卡片根、实际使用的控件、回调意图和 toast 使用 serde typed struct/enum；终态投影按具体控件回填答案并禁用，不递归修改任意 JSON。
+- 先用原渲染逻辑冻结 36 份中英文 JSON 基线，类型化后的 19 项卡片检查通过；最终核心 IM 189 项、桌面 IM Runtime 21 项通过，新增连接取消清理回归。完整结果与静态检查见[实施记录](IM接入/飞书封装与类型化实施记录-2026-10-16.md)，此前全仓数字不充当新源码的证据。
+- 评审：复用现有传输库、连接 generation、队列及回包表；新增类型只对应实际协议组件和已有资源的生命周期，不增加 SDK、持久状态、缓存或网络请求。主要回归风险为字段序列化、回包时限与连接取消。
+
+## 2026-10-16 剩余自动化失败收口
+
+- 修复跨平台提示词字节不一致，`.gitattributes` 固定内置资源 LF，并以嵌入资源及原精确输出测试验收；browser preview 明确无 DOM 的数据调用边界。
+- 同步引用、停止接口、elicitation、catalog、worktree 释放和 renderer 注册的测试契约；会话重入验证运行中/已完成工具的不同摘要及同一最新回放事实，diff 模拟统一文档与视口坐标。
+- 全量额外暴露后台错误事件与 durable pause 跨秒不一致：暂停结果返回已提交时间，投影和迟到诊断复用 canonical 时间，并增加历史暂停的确定性用例；Direct 后台控制保持身份严格相等，时间投影按采样精度验收。
+- 最终自动化通过：Rust 46 个目标、2871 通过、0 失败、18 ignored；前端 376 文件、2861 通过；Node 157 通过；生产构建、现有 CI Clippy 门禁及格式检查通过。用户真实验收、安装包与平台边界分开记录，详见[自动化回归修复记录](IM接入/自动化回归修复记录-2026-10-16.md)。既有失败记录保持历史，不以测试更新掩盖产品缺陷。
+- 2026-10-17 分组提交复核：本组 19 个非文档文件与历史通过快照一致；当前前端 257 项、Node 6 项通过，已有 Rust 编译快照复测 84 项通过，格式和暂存检查通过。范围及未重新编译 Rust 的验证边界见[修复记录 §6](IM接入/自动化回归修复记录-2026-10-16.md#6-2026-10-17-分组提交复核)，不扩展为本次全仓或安装包验收。
+- 评审：不新增依赖、持久状态或时钟抽象；复用已有暂停结果和 `Run.updated_at`。异常路径至多增加一次当前 Run 元数据读取，不扫描历史；正常路径、请求和 UI 订阅规模不变。
 
 ## 2026-10-09 已获取的模型配置不再随 Doctor 失败丢失
 
@@ -2685,6 +2741,7 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 2026-09-07 IM 授权、outbox、请求超时与重连可靠性闭环：入站动作按当前 durable binding 完整校验；`claim_due` 在写事务前对最多 32 条候选逐条 typed decode；pending/command channel 上限 64；网络错误按 1 秒起步、60 秒封顶持续重连，永久错误才发布 `ConnectionFailed`。
 - [x] 2026-09-16 IM 对既有桌面功能的隔离：零配置且无 cleanup 时不创建 runtime、访问 keyring/IM schema 或启动周期任务，首次配置惰性激活；空 delivery poll 只读返回，不争用 `core.db` writer lock；lifecycle 空 target 快速返回；退出按 admission gate → scheduler → 可取消 IM worker 收敛；ManualCheck 不再把可选 Timeline 文本作为 canonical 提交前置条件。默认开发恢复 Cargo 并行度，低内存模式改为显式 `dev:low-memory`。核心 IM 90 项、ManualCheck 17 项、配置 57 项、桌面 IM 20 项、Web 定向 32 项和 Node 脚本 2 项均通过，两个 Rust crate check、Web 生产构建、格式与差异检查通过；只读 Demo 在 1252px/640px 均无隐藏功能泄漏、横向溢出或 console error。
 - [x] 2026-09-16 桌面 Elicitation 与 IM transport 能力解耦：桌面 Accept 按完整 ACP `requestedSchema` 校验，自由文本、自定义答案和超过三个问题不再受远程表单动作集合限制；IM 入站继续只接受 delivery 实际发布的动作，pending、expected state、幂等与 first-writer-wins 保持共用。接口回归覆盖三类合法桌面答案、三类非法 schema 答案和远程动作不可用断言。
+- [x] 2026-10-21 飞书扫码接入优化：机器人预填名称取渠道 `appName`（`wb` 为 `MALING`，`default` 为 `Gold Band`），全局配置只保留描述后缀；首次接入和“更换飞书应用”使用 `selectOrCreate`，由飞书原生 launcher 选择已有应用或新建，不再发送 `createOnly`；重新授权当前应用使用 `reauthorizeCurrent` 并发送 `clientID`。扫码后继续执行新凭据暂存、原子配置提交、旧凭据清理和重新绑定。
 - 性能与过度设计复评审：最多一个企业微信 WebSocket，lifecycle subscriber 只做 O(1) 有界投影且不等待网络；permission 摘要只读取当前 pending request；due/retention query plan 命中索引，队列、claim batch、租约和保留均有上限。未新增云网关、消息代理、第二套审批状态机、无界缓存或队列。
 
 ## 2026-09-16：wb Windows 厂商字段固定为 MALING
@@ -2780,6 +2837,8 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 
 ## 2026-09-25 default 多语言更新日志发布链路
 
+- [x] 2026-10-17 发布契约测试修复：旧测试在整份 Workflow 中查找单语言生成命令，未同步多语言生成入口、工具目录及上传目录，导致 PR `Test release checksums` 误报缺少 `latest.json`。复用现有 `yaml` 依赖，分别解析两条 Workflow 的 `updater-json` 步骤，固定构建依赖、生成器参数、生成与上传顺序以及三类上传产物；清单内容继续由生成器接口测试验证。仅调整测试与验收文档，不增加运行时状态、依赖或发布 I/O，处理规模固定为两个小型 Workflow。
+- 验收：修复前 `npm run test:release-checksums` 稳定复现 2 项通过、1 项旧命令断言失败；修复后 4 项通过，发布产物生成、Release 配置与 macOS 安装脚本接口回归另 26 项通过。临时配置验证覆盖两个入口的空白与续行变化（2 项通过），以及缺构建依赖、缺生成步骤、旧入口、错误工具路径、上传乱序、缺三类上传产物或生成步骤移入其他 job（20 项均被拒绝）；临时资源已清理。未执行真实安装包构建或远程发布。
 - [x] 复用现有 manifest 生成器和两条 Release workflow，从 `release-notes/<version>/` 生成七语言 default manifests、英文兼容 `latest.json` 与中英 Draft Release body；不新增 Release Notes PR Check，当前版本目录或生成失败仅在发布 job 内失败。
 - [x] default updater 以持久化桌面语言选择 locale manifest，locale 资产不存在时最多回退一次英文 `latest.json`；`wb` 与自定义 URL 始终只请求原单 manifest。
 - [x] 接口回归覆盖七语言内容投影、双语正文、版本目录缺失、default URL 映射与回退、`wb`/自定义 URL 隔离。实现不新增依赖、状态机、缓存、队列或客户端全量加载；成功路径仍为一次 manifest 请求，只有 locale 文件缺失时增加一次有界回退。

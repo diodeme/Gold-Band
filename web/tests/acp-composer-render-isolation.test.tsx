@@ -853,7 +853,7 @@ it.each([
         );
       });
 
-      const banner = Array.from(container.querySelectorAll('span.font-semibold.text-destructive'))
+      const banner = Array.from(container.querySelectorAll('[role="alert"] .font-semibold.text-destructive'))
         .map((element) => element.textContent);
       expect(banner).toContain(expected);
       expect(banner).not.toContain(absent);

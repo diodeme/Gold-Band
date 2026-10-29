@@ -11,14 +11,15 @@ use crate::{
     acp::{
         elicitation::{
             ElicitationAction, ElicitationResponseState, PendingElicitationState,
-            elicitation_response_file, pending_elicitation_file,
+            elicitation_request_settlement, elicitation_response_file, pending_elicitation_file,
             write_elicitation_response_if_pending,
         },
         events::current_timestamp,
-        interaction::AcpPromptInteractionKind,
+        interaction::{AcpInteractionSettlement, AcpPromptInteractionKind},
         permission::{
             PendingPermissionState, PermissionResponseState, pending_permission_file,
-            permission_response_file, write_permission_response_if_pending,
+            permission_request_settlement, permission_response_file,
+            write_permission_response_if_pending,
         },
     },
     app::{App, ManualCheckSubmissionLease},
@@ -34,10 +35,25 @@ const MAX_ELICITATION_OPTION_LABEL_CHARS: usize = 128;
 const MAX_ELICITATION_OPTION_DESCRIPTION_CHARS: usize = 256;
 const MAX_ELICITATION_OPTION_VALUE_BYTES: usize = 256;
 const MAX_REMOTE_ELICITATION_FIELD_NAME_BYTES: usize = 256;
-const MAX_REMOTE_ELICITATION_VOTE_OPTIONS: usize = 20;
-const MAX_REMOTE_ELICITATION_SELECTORS: usize = 3;
-const MAX_REMOTE_ELICITATION_SELECT_OPTIONS: usize = 10;
-const MAX_REMOTE_PERMISSION_OPTIONS: usize = 20;
+/// Length cap for remote free text and custom answers when the schema does not
+/// declare `maxLength`; channels may lower it further.
+pub const MAX_REMOTE_TEXT_CHARS: u32 = 2000;
+/// Free-text questions allowing more characters than this render multi-line.
+const MAX_REMOTE_SINGLE_LINE_TEXT_CHARS: u32 = 200;
+/// Sample text used only by the schema satisfiability probes.
+const REMOTE_TEXT_PROBE: &str = "x";
+/// Keywords a free-text property may use and still be answerable remotely.
+const REMOTE_TEXT_PROPERTY_KEYWORDS: [&str; 9] = [
+    "type",
+    "title",
+    "description",
+    "default",
+    "examples",
+    "maxLength",
+    "deprecated",
+    "readOnly",
+    "_meta",
+];
 const MAX_PERMISSION_PROMPT_CHARS: usize = 256;
 const MAX_PERMISSION_FIELD_CHARS: usize = 256;
 const MAX_PERMISSION_PATHS: usize = 3;
@@ -93,6 +109,10 @@ pub enum PermissionActionQualifier {
     KeepPlanning,
 }
 
+/// Transport sentinel for a custom ("other") choice. Domain option ids are
+/// decimal indexes, so this value never collides with a listed option.
+pub const REMOTE_CUSTOM_ANSWER_OPTION: &str = "other";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InterventionAllowedAction {
@@ -110,6 +130,16 @@ pub enum InterventionAllowedAction {
     ManualFailure,
 }
 
+impl InterventionAllowedAction {
+    /// The fixed form published among `actions`, if any.
+    pub fn fixed_form(actions: &[Self]) -> Option<&RemoteElicitationForm> {
+        actions.iter().find_map(|action| match action {
+            Self::ElicitationFixedForm { form } => Some(form),
+            _ => None,
+        })
+    }
+}
+
 pub fn intervention_action_for_allowed(action: &InterventionAllowedAction) -> InterventionAction {
     match action {
         InterventionAllowedAction::PermissionOption { option_id, .. } => {
@@ -117,8 +147,8 @@ pub fn intervention_action_for_allowed(action: &InterventionAllowedAction) -> In
                 option_id: option_id.clone(),
             }
         }
-        // Fixed forms are submitted through Form selections; LocalIndex is not
-        // a valid transport for them and is rejected by the inbound boundary.
+        // Fixed forms are submitted through form answers; a published action
+        // index is not a valid transport for them and is rejected inbound.
         InterventionAllowedAction::ElicitationFixedForm { .. } => InterventionAction::Elicitation {
             action: ElicitationAction::Accept,
             content: None,
@@ -157,47 +187,64 @@ pub struct ElicitationQuestionOption {
     pub description: Option<String>,
 }
 
+/// Channel-independent remote form for one elicitation. Channels publish a
+/// fitted copy (`fit_form`) and inbound submissions are validated against the
+/// copy persisted in their delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteElicitationOption {
-    pub value: Value,
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+pub struct RemoteElicitationForm {
+    pub questions: Vec<RemoteQuestion>,
+    pub decline_allowed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteScalarChoiceQuestion {
+pub struct RemoteQuestion {
+    /// IM callback field name (`q0`, `q1`…); never the schema field name.
     pub selector_key: String,
-    pub field_name: String,
-    pub title: String,
+    pub question: ElicitationQuestion,
+    pub constraints: RemoteQuestionConstraints,
+    /// Schema field that receives the custom ("other") answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub required: bool,
-    pub options: Vec<RemoteElicitationOption>,
+    pub custom_answer_key: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteQuestionConstraints {
+    pub required: bool,
+    /// Only meaningful for multi-select questions.
+    pub allows_empty: bool,
+    /// Length cap for free text and custom answers, in characters.
+    pub max_chars: u32,
+    /// Only meaningful for free-text questions.
+    pub multiline: bool,
+}
+
+/// One submitted answer, keyed by `RemoteQuestion::selector_key`. Option ids
+/// are decimal indexes into `ElicitationQuestion::options`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum RemoteElicitationForm {
-    SingleScalarChoice {
-        question: RemoteScalarChoiceQuestion,
+pub enum RemoteElicitationAnswer {
+    Choice {
+        option_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_text: Option<String>,
     },
-    MultiScalarChoice {
-        question: RemoteScalarChoiceQuestion,
-        allows_empty: bool,
-    },
-    ScalarChoiceQuestions {
-        questions: Vec<RemoteScalarChoiceQuestion>,
+    Text {
+        text: String,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteElicitationFormSelection {
-    pub selector_key: String,
-    pub option_ids: Vec<String>,
+/// Structured reason a remote form submission was refused; transports map it
+/// to their own error codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteFormViolation {
+    AnswerMissing,
+    OptionInvalid,
+    CustomAnswerMissing,
+    TextTooLong,
+    AnswerInvalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +327,27 @@ pub enum InterventionCommandStatus {
 pub struct InterventionCommandResult {
     pub status: InterventionCommandStatus,
     pub canonical_state: String,
+}
+
+/// Canonical lifecycle of one intervention request, independent of which
+/// surface (desktop, IM, runtime stop) ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterventionSettlement {
+    Pending,
+    /// Answered by a person or an auto-accept policy.
+    Answered,
+    /// Ended without an answer (stop, timeout, abandoned run).
+    Cancelled,
+}
+
+impl From<AcpInteractionSettlement> for InterventionSettlement {
+    fn from(settlement: AcpInteractionSettlement) -> Self {
+        match settlement {
+            AcpInteractionSettlement::Pending => Self::Pending,
+            AcpInteractionSettlement::Answered => Self::Answered,
+            AcpInteractionSettlement::Cancelled => Self::Cancelled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,6 +473,87 @@ impl<'a> InterventionCommandService<'a> {
         Ok(snapshot)
     }
 
+    /// Where the request is in its lifecycle. Unlike [`Self::inspect`] it does
+    /// not require the run to still be positioned on the request's attempt, so
+    /// it also answers for requests a stopped or retried run left behind.
+    pub fn settlement(
+        &self,
+        locator: &InterventionLocator,
+        request: &InterventionRequestIdentity,
+    ) -> Result<InterventionSettlement, InterventionError> {
+        self.validate_locator(locator)?;
+        let attempt_dir = self.attempt_dir(locator);
+        let storage_unavailable =
+            |_| InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable);
+        let settlement = match request {
+            InterventionRequestIdentity::Permission { request_id } => {
+                permission_request_settlement(&attempt_dir, request_id)
+                    .map_err(storage_unavailable)?
+                    .map(Into::into)
+            }
+            InterventionRequestIdentity::Elicitation { elicitation_id } => {
+                elicitation_request_settlement(&attempt_dir, elicitation_id)
+                    .map_err(storage_unavailable)?
+                    .map(Into::into)
+            }
+            InterventionRequestIdentity::ManualCheck => Some(self.manual_settlement(locator)?),
+        };
+        settlement.ok_or_else(|| {
+            InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
+        })
+    }
+
+    fn manual_settlement(
+        &self,
+        locator: &InterventionLocator,
+    ) -> Result<InterventionSettlement, InterventionError> {
+        if self
+            .app
+            .validate_manual_check_submission(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            )
+            .is_ok()
+        {
+            return Ok(InterventionSettlement::Pending);
+        }
+        let node: NodeState = read_json(&self.app.paths.node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ))
+        .map_err(|_| {
+            InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
+        })?;
+        Ok(if !node.manual_check_pending && node.outcome.is_some() {
+            InterventionSettlement::Answered
+        } else {
+            InterventionSettlement::Cancelled
+        })
+    }
+
+    /// A request without its pending file is either settled (reported as
+    /// handled) or was never published here.
+    fn missing_request_error(
+        &self,
+        locator: &InterventionLocator,
+        request: &InterventionRequestIdentity,
+        request_kind: &str,
+    ) -> InterventionError {
+        match self.settlement(locator, request) {
+            Ok(InterventionSettlement::Answered | InterventionSettlement::Cancelled) => {
+                InterventionError::new(InterventionErrorCode::InterventionAlreadyHandled)
+            }
+            _ => InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
+                .with_detail("requestKind", request_kind),
+        }
+    }
+
     pub fn execute(
         &self,
         command: InterventionCommand,
@@ -502,10 +651,8 @@ impl<'a> InterventionCommandService<'a> {
     ) -> Result<InterventionSnapshot, InterventionError> {
         let attempt_dir = self.attempt_dir(&locator);
         let pending: PendingPermissionState =
-            read_json(&pending_permission_file(&attempt_dir, request_id)).map_err(|_| {
-                InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
-                    .with_detail("requestKind", "permission")
-            })?;
+            read_json(&pending_permission_file(&attempt_dir, request_id))
+                .map_err(|_| self.missing_request_error(&locator, &request, "permission"))?;
         if pending.identity.interaction_id != request_id
             || pending.identity.kind != AcpPromptInteractionKind::Permission
             || permission_response_file(&attempt_dir, request_id).exists()
@@ -535,10 +682,8 @@ impl<'a> InterventionCommandService<'a> {
     ) -> Result<InterventionSnapshot, InterventionError> {
         let attempt_dir = self.attempt_dir(&locator);
         let pending: PendingElicitationState =
-            read_json(&pending_elicitation_file(&attempt_dir, elicitation_id)).map_err(|_| {
-                InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
-                    .with_detail("requestKind", "elicitation")
-            })?;
+            read_json(&pending_elicitation_file(&attempt_dir, elicitation_id))
+                .map_err(|_| self.missing_request_error(&locator, &request, "elicitation"))?;
         if pending.identity.interaction_id != elicitation_id
             || pending.identity.kind != AcpPromptInteractionKind::Elicitation
             || elicitation_response_file(&attempt_dir, elicitation_id).exists()
@@ -1095,8 +1240,7 @@ fn permission_prompt(
         context: None,
         fields,
         questions: Vec::new(),
-        requires_desktop: allowed_actions.len() > MAX_REMOTE_PERMISSION_OPTIONS
-            || permission_actions_require_desktop(allowed_actions),
+        requires_desktop: permission_actions_require_desktop(allowed_actions),
     }
 }
 
@@ -1187,14 +1331,7 @@ fn elicitation_prompt_and_actions(
         .get("requestedSchema")
         .and_then(|schema| schema.get("properties"))
         .and_then(Value::as_object);
-    let custom_answer_targets = properties
-        .into_iter()
-        .flat_map(|properties| {
-            properties
-                .iter()
-                .filter_map(|(name, schema)| custom_answer_target(name, schema, properties))
-        })
-        .collect::<std::collections::BTreeSet<_>>();
+    let custom_answer_fields = custom_answer_fields(properties);
     let questions = properties
         .into_iter()
         .flat_map(|properties| properties.iter())
@@ -1203,13 +1340,16 @@ fn elicitation_prompt_and_actions(
             elicitation_question(
                 field_name,
                 schema,
-                custom_answer_targets.contains(field_name.as_str()),
+                custom_answer_fields.contains_key(field_name.as_str()),
             )
         })
         .collect::<Vec<_>>();
 
-    let form =
-        properties.and_then(|_| remote_elicitation_form(&request, &questions).ok().flatten());
+    let form = properties.and_then(|_| {
+        remote_elicitation_form(&request, &questions, &custom_answer_fields)
+            .ok()
+            .flatten()
+    });
     let mut actions = Vec::new();
     if let Some(form) = form.as_ref() {
         actions.push(InterventionAllowedAction::ElicitationFixedForm { form: form.clone() });
@@ -1235,8 +1375,9 @@ fn elicitation_prompt_and_actions(
 fn remote_elicitation_form(
     request: &Value,
     questions: &[ElicitationQuestion],
+    custom_answer_fields: &BTreeMap<String, String>,
 ) -> Result<Option<RemoteElicitationForm>, InterventionError> {
-    if remote_schema_has_unsupported_constraints(request) {
+    if questions.is_empty() || remote_schema_has_unsupported_constraints(request) {
         return Ok(None);
     }
     if questions
@@ -1245,128 +1386,133 @@ fn remote_elicitation_form(
     {
         return Ok(None);
     }
+    let schema = request
+        .get("requestedSchema")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+    let properties = schema.get("properties").and_then(Value::as_object);
+    let property = |name: &str| properties.and_then(|properties| properties.get(name));
     let required = required_fields(request);
-    let schema_is_valid = |content: &Value| -> Result<bool, InterventionError> {
-        let schema = request
-            .get("requestedSchema")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
-        let compiled = jsonschema::JSONSchema::compile(&schema).map_err(|_| {
-            InterventionError::new(InterventionErrorCode::InterventionActionInvalid)
-                .with_detail("actionKind", "elicitationSchema")
-        })?;
-        Ok(compiled.is_valid(content))
-    };
-    let scalar_options = |question: &ElicitationQuestion, capacity: usize| {
-        remote_scalar_options(&question.options, capacity)
-    };
 
-    if let [question] = questions {
-        let selector = "q0".to_owned();
-        match question.question_kind {
-            ElicitationQuestionKind::SingleSelect => {
-                let Some(options) = scalar_options(question, MAX_REMOTE_ELICITATION_VOTE_OPTIONS)
-                else {
-                    return Ok(None);
-                };
-                let remote_question = remote_scalar_choice_question(
-                    selector,
-                    question,
-                    required.contains(&question.field_name),
-                    options,
-                );
-                let selected = remote_question
-                    .options
-                    .first()
-                    .map(|option| option.value.clone())
-                    .unwrap_or(Value::Null);
-                let candidate = elicitation_choice_content(&remote_question.field_name, &selected);
-                if !schema_is_valid(&candidate)? {
-                    return Ok(None);
-                }
-                return Ok(Some(RemoteElicitationForm::SingleScalarChoice {
-                    question: remote_question,
-                }));
-            }
-            ElicitationQuestionKind::MultiSelect => {
-                if question.allows_custom_answer {
-                    return Ok(None);
-                }
-                let Some(options) = scalar_options(question, MAX_REMOTE_ELICITATION_VOTE_OPTIONS)
-                else {
-                    return Ok(None);
-                };
-                let remote_question = remote_scalar_choice_question(
-                    selector,
-                    question,
-                    required.contains(&question.field_name),
-                    options,
-                );
-                let field_name = remote_question.field_name.clone();
-                let first = remote_question
-                    .options
-                    .first()
-                    .map(|option| option.value.clone())
-                    .unwrap_or(Value::Null);
-                if !schema_is_valid(&Value::Object(serde_json::Map::from_iter([(
-                    field_name.clone(),
-                    Value::Array(vec![first]),
-                )])))? {
-                    return Ok(None);
-                }
-                let allows_empty =
-                    schema_is_valid(&Value::Object(serde_json::Map::from_iter([(
-                        field_name,
-                        Value::Array(Vec::new()),
-                    )])))?;
-                return Ok(Some(RemoteElicitationForm::MultiScalarChoice {
-                    question: remote_question,
-                    allows_empty,
-                }));
-            }
-            ElicitationQuestionKind::FreeText => return Ok(None),
-        }
-    }
-
-    if questions.len() < 2 || questions.len() > MAX_REMOTE_ELICITATION_SELECTORS {
-        return Ok(None);
-    }
     let mut remote_questions = Vec::with_capacity(questions.len());
     for (index, question) in questions.iter().enumerate() {
-        if question.question_kind != ElicitationQuestionKind::SingleSelect {
-            return Ok(None);
-        }
-        let Some(options) = scalar_options(question, MAX_REMOTE_ELICITATION_SELECT_OPTIONS) else {
-            return Ok(None);
+        let (max_chars, multiline, custom_answer_key) = match question.question_kind {
+            ElicitationQuestionKind::FreeText => {
+                let schema = property(&question.field_name);
+                if !remote_text_property(schema) {
+                    return Ok(None);
+                }
+                let max_chars = remote_text_max_chars(schema);
+                if max_chars == 0 {
+                    return Ok(None);
+                }
+                (
+                    max_chars,
+                    max_chars > MAX_REMOTE_SINGLE_LINE_TEXT_CHARS,
+                    None,
+                )
+            }
+            ElicitationQuestionKind::SingleSelect | ElicitationQuestionKind::MultiSelect => {
+                if !remote_scalar_options_are_valid(&question.options) {
+                    return Ok(None);
+                }
+                let custom_answer_key = custom_answer_fields
+                    .get(&question.field_name)
+                    .filter(|key| {
+                        key.len() <= MAX_REMOTE_ELICITATION_FIELD_NAME_BYTES
+                            && remote_text_property(property(key))
+                            && remote_text_max_chars(property(key)) > 0
+                    })
+                    .cloned();
+                let max_chars = custom_answer_key
+                    .as_deref()
+                    .map(|key| remote_text_max_chars(property(key)))
+                    .unwrap_or(MAX_REMOTE_TEXT_CHARS);
+                (max_chars, false, custom_answer_key)
+            }
         };
-        remote_questions.push(remote_scalar_choice_question(
-            format!("q{index}"),
-            question,
-            required.contains(&question.field_name),
-            options,
-        ));
+        let is_required = required.contains(&question.field_name);
+        remote_questions.push(RemoteQuestion {
+            selector_key: format!("q{index}"),
+            question: question.clone(),
+            constraints: RemoteQuestionConstraints {
+                required: is_required,
+                allows_empty: !is_required,
+                max_chars,
+                multiline,
+            },
+            custom_answer_key,
+        });
     }
+
+    // Satisfiability probes: the schema must accept the minimal (required
+    // only) and the complete answer sets the remote form can produce.
     let mut required_content = serde_json::Map::new();
     let mut complete_content = serde_json::Map::new();
     for question in &remote_questions {
-        let value = question
-            .options
-            .first()
-            .map(|option| option.value.clone())
-            .unwrap_or(Value::Null);
-        complete_content.insert(question.field_name.clone(), value.clone());
-        if question.required {
-            required_content.insert(question.field_name.clone(), value);
+        let sample = remote_sample_answer(&question.question);
+        complete_content.insert(question.question.field_name.clone(), sample.clone());
+        if question.constraints.required {
+            required_content.insert(question.question.field_name.clone(), sample);
         }
     }
-    if !schema_is_valid(&Value::Object(required_content.clone()))?
-        || !schema_is_valid(&Value::Object(complete_content))?
+    if !elicitation_content_is_valid(&schema, &Value::Object(required_content.clone()))?
+        || !elicitation_content_is_valid(&schema, &Value::Object(complete_content))?
     {
         return Ok(None);
     }
-    Ok(Some(RemoteElicitationForm::ScalarChoiceQuestions {
+    // Custom answer probe: "other" is offered only when the schema accepts it
+    // in place of the listed options, required questions included. Otherwise
+    // the question keeps its listed options and "other" stays desktop-only.
+    for question in &mut remote_questions {
+        let Some(custom_key) = question.custom_answer_key.clone() else {
+            continue;
+        };
+        let mut content = required_content.clone();
+        content.remove(&question.question.field_name);
+        content.insert(custom_key, Value::String(REMOTE_TEXT_PROBE.to_owned()));
+        if !elicitation_content_is_valid(&schema, &Value::Object(content))? {
+            question.custom_answer_key = None;
+            question.constraints.max_chars = MAX_REMOTE_TEXT_CHARS;
+        }
+    }
+    Ok(Some(RemoteElicitationForm {
         questions: remote_questions,
+        decline_allowed: true,
     }))
+}
+
+fn remote_sample_answer(question: &ElicitationQuestion) -> Value {
+    let first = || {
+        question
+            .options
+            .first()
+            .map(|option| option.value.clone())
+            .unwrap_or(Value::Null)
+    };
+    match question.question_kind {
+        ElicitationQuestionKind::SingleSelect => first(),
+        ElicitationQuestionKind::MultiSelect => Value::Array(vec![first()]),
+        ElicitationQuestionKind::FreeText => Value::String(REMOTE_TEXT_PROBE.to_owned()),
+    }
+}
+
+fn remote_text_property(schema: Option<&Value>) -> bool {
+    schema.and_then(Value::as_object).is_some_and(|fields| {
+        fields.get("type").and_then(Value::as_str) == Some("string")
+            && fields
+                .keys()
+                .all(|key| REMOTE_TEXT_PROPERTY_KEYWORDS.contains(&key.as_str()))
+    })
+}
+
+fn remote_text_max_chars(schema: Option<&Value>) -> u32 {
+    let cap = MAX_INTERVENTION_CONTENT_BYTES as u64;
+    schema
+        .and_then(|schema| schema.get("maxLength"))
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::from(MAX_REMOTE_TEXT_CHARS))
+        .min(cap) as u32
 }
 
 fn remote_schema_has_unsupported_constraints(request: &Value) -> bool {
@@ -1403,50 +1549,19 @@ fn required_fields(request: &Value) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-fn remote_scalar_options(
-    options: &[ElicitationQuestionOption],
-    capacity: usize,
-) -> Option<Vec<RemoteElicitationOption>> {
-    if options.is_empty() || options.len() > capacity {
-        return None;
+fn remote_scalar_options_are_valid(options: &[ElicitationQuestionOption]) -> bool {
+    if options.is_empty() {
+        return false;
     }
     let mut values = std::collections::HashSet::new();
-    let mut remote = Vec::with_capacity(options.len());
-    for option in options {
-        if option.value.is_object()
-            || option.value.is_array()
-            || option.value.is_null()
-            || serde_json::to_vec(&option.value)
+    options.iter().all(|option| {
+        !(option.value.is_object() || option.value.is_array() || option.value.is_null())
+            && serde_json::to_vec(&option.value)
                 .map(|encoded| encoded.len())
                 .unwrap_or(MAX_ELICITATION_OPTION_VALUE_BYTES + 1)
-                > MAX_ELICITATION_OPTION_VALUE_BYTES
-            || !values.insert(option.value.clone())
-        {
-            return None;
-        }
-        remote.push(RemoteElicitationOption {
-            value: option.value.clone(),
-            label: option.label.clone(),
-            description: option.description.clone(),
-        });
-    }
-    Some(remote)
-}
-
-fn remote_scalar_choice_question(
-    selector_key: String,
-    question: &ElicitationQuestion,
-    required: bool,
-    options: Vec<RemoteElicitationOption>,
-) -> RemoteScalarChoiceQuestion {
-    RemoteScalarChoiceQuestion {
-        selector_key,
-        field_name: question.field_name.clone(),
-        title: question.title.clone(),
-        description: question.description.clone(),
-        required,
-        options,
-    }
+                <= MAX_ELICITATION_OPTION_VALUE_BYTES
+            && values.insert(option.value.clone())
+    })
 }
 
 fn custom_answer_target<'a>(
@@ -1593,152 +1708,262 @@ fn canonical_elicitation_response_is_valid(
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
             let instance = content.cloned().unwrap_or_else(|| serde_json::json!({}));
-            let compiled = jsonschema::JSONSchema::compile(&schema).map_err(|_| {
-                InterventionError::new(InterventionErrorCode::InterventionActionInvalid)
-                    .with_detail("actionKind", "elicitationSchema")
-            })?;
-            Ok(compiled.is_valid(&instance))
+            elicitation_content_is_valid(&schema, &instance)
         }
     }
+}
+
+/// Choice field -> the schema field that receives its custom ("other") answer.
+fn custom_answer_fields(
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> BTreeMap<String, String> {
+    let mut fields = BTreeMap::new();
+    for (name, schema) in properties.into_iter().flatten() {
+        if let Some(target) = custom_answer_target(name, schema, properties.unwrap()) {
+            fields
+                .entry(target.to_owned())
+                .or_insert_with(|| name.clone());
+        }
+    }
+    fields
+}
+
+/// Validates elicitation content against `requestedSchema`. A paired custom
+/// answer replaces its choice field ("instead of choosing an option above"),
+/// so a non-blank custom answer satisfies the choice field's `required` entry;
+/// every other keyword is validated unchanged. Desktop and remote share it.
+fn elicitation_content_is_valid(
+    schema: &Value,
+    content: &Value,
+) -> Result<bool, InterventionError> {
+    let answered_by_custom =
+        custom_answer_fields(schema.get("properties").and_then(Value::as_object))
+            .into_iter()
+            .filter(|(choice, custom)| {
+                content.get(choice).is_none()
+                    && content
+                        .get(custom)
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| !text.trim().is_empty())
+            })
+            .map(|(choice, _)| choice)
+            .collect::<std::collections::BTreeSet<_>>();
+    let mut effective = std::borrow::Cow::Borrowed(schema);
+    if !answered_by_custom.is_empty() {
+        if let Some(required) = effective
+            .to_mut()
+            .get_mut("required")
+            .and_then(Value::as_array_mut)
+        {
+            required.retain(|field| {
+                field
+                    .as_str()
+                    .is_none_or(|field| !answered_by_custom.contains(field))
+            });
+        }
+    }
+    let compiled = jsonschema::JSONSchema::compile(&effective).map_err(|_| {
+        InterventionError::new(InterventionErrorCode::InterventionActionInvalid)
+            .with_detail("actionKind", "elicitationSchema")
+    })?;
+    Ok(compiled.is_valid(content))
 }
 
 pub fn intervention_action_for_elicitation_form(
     form: &RemoteElicitationForm,
-    selections: &[RemoteElicitationFormSelection],
-) -> Result<InterventionAction, InterventionError> {
-    let invalid = || {
-        InterventionError::new(InterventionErrorCode::InterventionActionInvalid)
-            .with_detail("actionKind", "elicitationFormSelection")
-    };
-    let option_value = |question: &RemoteScalarChoiceQuestion,
-                        option_id: &str|
-     -> Result<Value, InterventionError> {
-        if option_id.len() > 3 {
-            return Err(invalid());
-        }
-        let index = option_id.parse::<usize>().map_err(|_| invalid())?;
-        question
-            .options
-            .get(index)
-            .map(|option| option.value.clone())
-            .ok_or_else(invalid)
-    };
-
-    let content = match form {
-        RemoteElicitationForm::SingleScalarChoice { question } => {
-            let [selection] = selections else {
-                return Err(invalid());
-            };
-            if selection.selector_key != question.selector_key || selection.option_ids.len() != 1 {
-                return Err(invalid());
-            }
-            elicitation_choice_content(
-                &question.field_name,
-                &option_value(question, &selection.option_ids[0])?,
-            )
-        }
-        RemoteElicitationForm::MultiScalarChoice {
-            question,
-            allows_empty,
-        } => {
-            let [selection] = selections else {
-                return Err(invalid());
-            };
-            if selection.selector_key != question.selector_key
-                || (selection.option_ids.is_empty() && !allows_empty)
-            {
-                return Err(invalid());
-            }
-            let mut seen = std::collections::HashSet::new();
-            let mut values = Vec::with_capacity(selection.option_ids.len());
-            for option_id in &selection.option_ids {
-                let value = option_value(question, option_id)?;
-                if !seen.insert(value.clone()) {
-                    return Err(invalid());
-                }
-                values.push(value);
-            }
-            elicitation_choice_content(&question.field_name, &Value::Array(values))
-        }
-        RemoteElicitationForm::ScalarChoiceQuestions { questions } => {
-            if selections.len() > questions.len() {
-                return Err(invalid());
-            }
-            let mut content = serde_json::Map::new();
-            let mut selectors = std::collections::BTreeSet::new();
-            for selection in selections {
-                if !selectors.insert(selection.selector_key.clone()) {
-                    return Err(invalid());
-                }
-                let Some(question) = questions
-                    .iter()
-                    .find(|question| question.selector_key == selection.selector_key)
-                else {
-                    return Err(invalid());
-                };
-                if selection.option_ids.len() != 1 {
-                    return Err(invalid());
-                }
-                content.insert(
-                    question.field_name.clone(),
-                    option_value(question, &selection.option_ids[0])?,
-                );
-            }
-            if questions
-                .iter()
-                .any(|question| question.required && !selectors.contains(&question.selector_key))
-            {
-                return Err(invalid());
-            }
-            Value::Object(content)
-        }
-    };
+    answers: &BTreeMap<String, RemoteElicitationAnswer>,
+) -> Result<InterventionAction, RemoteFormViolation> {
     Ok(InterventionAction::Elicitation {
         action: ElicitationAction::Accept,
-        content: Some(content),
+        content: Some(remote_form_content(form, answers)?),
     })
 }
 
-fn remote_elicitation_form_allows_content(form: &RemoteElicitationForm, content: &Value) -> bool {
-    let Some(fields) = content.as_object() else {
-        return false;
-    };
-    let questions = match form {
-        RemoteElicitationForm::SingleScalarChoice { question }
-        | RemoteElicitationForm::MultiScalarChoice { question, .. } => {
-            std::slice::from_ref(question)
-        }
-        RemoteElicitationForm::ScalarChoiceQuestions { questions } => questions,
-    };
-    let field_names = questions
-        .iter()
-        .map(|question| question.field_name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    if fields
-        .keys()
-        .any(|field| !field_names.contains(field.as_str()))
-    {
-        return false;
+/// Builds the elicitation content for remote answers. The encoding is the
+/// desktop `buildElicitationContent` contract: unanswered questions, blank
+/// text and empty selections are omitted; a custom answer is written only to
+/// its custom field, untrimmed; multi choices keep the submitted order.
+pub fn remote_form_content(
+    form: &RemoteElicitationForm,
+    answers: &BTreeMap<String, RemoteElicitationAnswer>,
+) -> Result<Value, RemoteFormViolation> {
+    if answers.keys().any(|selector| {
+        !form
+            .questions
+            .iter()
+            .any(|question| question.selector_key == *selector)
+    }) {
+        return Err(RemoteFormViolation::AnswerInvalid);
     }
-    questions
-        .iter()
-        .all(|question| match fields.get(&question.field_name) {
-            None => !question.required,
-            Some(Value::Array(values)) => {
-                matches!(form, RemoteElicitationForm::MultiScalarChoice { .. })
-                    && values.len() <= question.options.len()
-                    && values
-                        .iter()
-                        .all(|value| question.options.iter().any(|option| option.value == *value))
+    let mut content = serde_json::Map::new();
+    for question in &form.questions {
+        let answered = match answers.get(&question.selector_key) {
+            Some(answer) => encode_remote_answer(question, answer, &mut content)?,
+            None => false,
+        };
+        if !answered && question.constraints.required {
+            return Err(RemoteFormViolation::AnswerMissing);
+        }
+    }
+    Ok(Value::Object(content))
+}
+
+fn encode_remote_answer(
+    question: &RemoteQuestion,
+    answer: &RemoteElicitationAnswer,
+    content: &mut serde_json::Map<String, Value>,
+) -> Result<bool, RemoteFormViolation> {
+    let text_fits = |text: &str| {
+        if text.chars().count() > question.constraints.max_chars as usize {
+            Err(RemoteFormViolation::TextTooLong)
+        } else {
+            Ok(())
+        }
+    };
+    let field_name = &question.question.field_name;
+    match (&question.question.question_kind, answer) {
+        (ElicitationQuestionKind::FreeText, RemoteElicitationAnswer::Text { text }) => {
+            if text.trim().is_empty() {
+                return Ok(false);
             }
-            Some(value) => {
-                matches!(
-                    form,
-                    RemoteElicitationForm::SingleScalarChoice { .. }
-                        | RemoteElicitationForm::ScalarChoiceQuestions { .. }
-                ) && question.options.iter().any(|option| option.value == *value)
+            text_fits(text)?;
+            content.insert(field_name.clone(), Value::String(text.clone()));
+            Ok(true)
+        }
+        (
+            kind @ (ElicitationQuestionKind::SingleSelect | ElicitationQuestionKind::MultiSelect),
+            RemoteElicitationAnswer::Choice {
+                option_ids,
+                custom_text,
+            },
+        ) => {
+            if let Some(text) = custom_text {
+                let Some(custom_key) = question.custom_answer_key.as_ref() else {
+                    return Err(RemoteFormViolation::AnswerInvalid);
+                };
+                if !option_ids.is_empty() {
+                    return Err(RemoteFormViolation::AnswerInvalid);
+                }
+                if text.trim().is_empty() {
+                    return Err(RemoteFormViolation::CustomAnswerMissing);
+                }
+                text_fits(text)?;
+                content.insert(custom_key.clone(), Value::String(text.clone()));
+                return Ok(true);
             }
+            let mut seen = std::collections::BTreeSet::new();
+            let mut values = Vec::with_capacity(option_ids.len());
+            for option_id in option_ids {
+                let index = remote_option_index(option_id, question.question.options.len())
+                    .ok_or(RemoteFormViolation::OptionInvalid)?;
+                if !seen.insert(index) {
+                    return Err(RemoteFormViolation::OptionInvalid);
+                }
+                values.push(question.question.options[index].value.clone());
+            }
+            match (kind, values.len()) {
+                (_, 0) => Ok(false),
+                (ElicitationQuestionKind::SingleSelect, 1) => {
+                    content.insert(field_name.clone(), values.remove(0));
+                    Ok(true)
+                }
+                (ElicitationQuestionKind::SingleSelect, _) => {
+                    Err(RemoteFormViolation::AnswerInvalid)
+                }
+                _ => {
+                    content.insert(field_name.clone(), Value::Array(values));
+                    Ok(true)
+                }
+            }
+        }
+        _ => Err(RemoteFormViolation::AnswerInvalid),
+    }
+}
+
+/// Remote option ids are the canonical decimal option index.
+fn remote_option_index(option_id: &str, option_count: usize) -> Option<usize> {
+    let index = option_id.parse::<usize>().ok()?;
+    (index < option_count && index.to_string() == option_id).then_some(index)
+}
+
+/// Decodes one question's answer from canonical elicitation content: the
+/// inverse of `encode_remote_answer`. `None` means the question is unanswered.
+/// Multi choices keep the content order; option ids are canonical indexes.
+pub fn remote_question_answer(
+    question: &RemoteQuestion,
+    content: &Value,
+) -> Result<Option<RemoteElicitationAnswer>, RemoteFormViolation> {
+    let option_id = |value: &Value| {
+        question
+            .question
+            .options
+            .iter()
+            .position(|option| option.value == *value)
+            .map(|index| index.to_string())
+            .ok_or(RemoteFormViolation::OptionInvalid)
+    };
+    let value = content.get(&question.question.field_name);
+    let custom = question
+        .custom_answer_key
+        .as_ref()
+        .and_then(|key| content.get(key));
+    Ok(Some(
+        match (&question.question.question_kind, value, custom) {
+            (_, None, None) => return Ok(None),
+            (_, Some(_), Some(_)) => return Err(RemoteFormViolation::AnswerInvalid),
+            (_, None, Some(Value::String(text))) => RemoteElicitationAnswer::Choice {
+                option_ids: Vec::new(),
+                custom_text: Some(text.clone()),
+            },
+            (ElicitationQuestionKind::FreeText, Some(Value::String(text)), None) => {
+                RemoteElicitationAnswer::Text { text: text.clone() }
+            }
+            (ElicitationQuestionKind::SingleSelect, Some(value), None) if !value.is_array() => {
+                RemoteElicitationAnswer::Choice {
+                    option_ids: vec![option_id(value)?],
+                    custom_text: None,
+                }
+            }
+            (ElicitationQuestionKind::MultiSelect, Some(Value::Array(values)), None) => {
+                RemoteElicitationAnswer::Choice {
+                    option_ids: values.iter().map(option_id).collect::<Result<_, _>>()?,
+                    custom_text: None,
+                }
+            }
+            _ => return Err(RemoteFormViolation::AnswerInvalid),
+        },
+    ))
+}
+
+/// Validates canonical content against a remote form by decoding it back to
+/// answers and re-encoding through `remote_form_content`.
+pub fn remote_elicitation_form_allows_content(
+    form: &RemoteElicitationForm,
+    content: &Value,
+) -> Result<(), RemoteFormViolation> {
+    let Some(fields) = content.as_object() else {
+        return Err(RemoteFormViolation::AnswerInvalid);
+    };
+    let known = |field: &str| {
+        form.questions.iter().any(|question| {
+            question.question.field_name == field
+                || question.custom_answer_key.as_deref() == Some(field)
         })
+    };
+    if fields.keys().any(|field| !known(field)) {
+        return Err(RemoteFormViolation::AnswerInvalid);
+    }
+    let mut answers = BTreeMap::new();
+    for question in &form.questions {
+        if let Some(answer) = remote_question_answer(question, content)? {
+            answers.insert(question.selector_key.clone(), answer);
+        }
+    }
+    if remote_form_content(form, &answers)? == *content {
+        Ok(())
+    } else {
+        Err(RemoteFormViolation::AnswerInvalid)
+    }
 }
 
 pub fn intervention_action_is_allowed(
@@ -1760,7 +1985,7 @@ pub fn intervention_action_is_allowed(
                     action: ElicitationAction::Accept,
                     content: Some(content),
                 },
-            ) => remote_elicitation_form_allows_content(form, content),
+            ) => remote_elicitation_form_allows_content(form, content).is_ok(),
             (
                 InterventionAllowedAction::ElicitationAccept,
                 InterventionAction::Elicitation {
@@ -2501,6 +2726,25 @@ mod tests {
         )
         .unwrap();
         let service = InterventionCommandService::new(&app);
+        let manual = InterventionRequestIdentity::ManualCheck;
+        assert_eq!(
+            service.settlement(&locator, &manual),
+            Ok(InterventionSettlement::Pending)
+        );
+        let mut stopped = run.clone();
+        stopped.status = RunStatus::Completed;
+        stopped.outcome = Some(crate::domain::RunOutcome::Killed);
+        write_json(
+            &app.paths.run_file(&locator.task_id, &locator.run_id),
+            &stopped,
+        )
+        .unwrap();
+        assert_eq!(
+            service.settlement(&locator, &manual),
+            Ok(InterventionSettlement::Cancelled),
+            "a stopped run ends the unanswered manual check"
+        );
+        write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
         let snapshot = service
             .inspect(locator.clone(), InterventionRequestIdentity::ManualCheck)
             .unwrap();
@@ -2508,6 +2752,7 @@ mod tests {
             snapshot.prompt.is_none(),
             "Timeline output is optional presentation data"
         );
+        let answered_locator = locator.clone();
         let result = service
             .execute(InterventionCommand {
                 locator,
@@ -2538,6 +2783,10 @@ mod tests {
         assert_eq!(completed_node.status, RunStatus::Completed);
         assert_eq!(completed_node.outcome, Some(NodeOutcome::Success));
         assert!(!completed_node.manual_check_pending);
+        assert_eq!(
+            service.settlement(&answered_locator, &manual),
+            Ok(InterventionSettlement::Answered)
+        );
     }
 
     #[test]
@@ -2570,6 +2819,42 @@ mod tests {
                 .filter(|error| error.code == InterventionErrorCode::InterventionAlreadyHandled)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn desktop_wecom_and_feishu_concurrent_submissions_have_one_accepted_winner() {
+        let fixture = permission_fixture(false);
+        let snapshot = InterventionCommandService::new(&fixture.app)
+            .inspect(fixture.locator.clone(), permission_request())
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(4));
+        let handles = ["allow", "deny", "allow"].map(|option_id| {
+            let app = fixture.app.clone_for_background();
+            let command = permission_command(&snapshot, option_id);
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                InterventionCommandService::new(&app).execute(command)
+            })
+        });
+        barrier.wait();
+        let results = handles.map(|handle| handle.join().unwrap());
+        assert_eq!(
+            results.iter().filter(|r| matches!(r, Ok(result) if result.status == InterventionCommandStatus::Accepted)).count(),
+            1,
+        );
+        // An identical losing decision is an idempotent success; a different
+        // decision is rejected. Neither may be reported as newly Accepted.
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| match r {
+                    Ok(result) => result.status == InterventionCommandStatus::AlreadyApplied,
+                    Err(error) => error.code == InterventionErrorCode::InterventionAlreadyHandled,
+                })
+                .count(),
+            2,
         );
     }
 
@@ -2622,20 +2907,13 @@ mod tests {
         else {
             panic!("expected a fixed elicitation form");
         };
-        let RemoteElicitationForm::SingleScalarChoice { question } = form else {
-            panic!("expected a single scalar choice form");
-        };
+        assert_eq!(form.questions.len(), 1);
+        let question = &form.questions[0];
         assert_eq!(question.selector_key, "q0");
-        assert_eq!(question.field_name, "question_0");
-        assert_eq!(question.options.len(), 4);
+        assert_eq!(question.question.field_name, "question_0");
+        assert_eq!(question.question.options.len(), 4);
         assert!(matches!(
-            intervention_action_for_elicitation_form(
-                form,
-                &[RemoteElicitationFormSelection {
-                    selector_key: "q0".into(),
-                    option_ids: vec!["0".into()],
-                }],
-            ),
+            intervention_action_for_elicitation_form(form, &choice_answers(&[("q0", &["0"])])),
             Ok(InterventionAction::Elicitation {
                 action: ElicitationAction::Accept,
                 content: Some(content),
@@ -2867,18 +3145,35 @@ mod tests {
                 .iter()
                 .all(|question| question.allows_custom_answer)
         );
-        assert!(prompt.requires_desktop);
+        // Channel limits are applied per target; the domain form stays complete.
+        assert!(!prompt.requires_desktop);
+        let InterventionAllowedAction::ElicitationFixedForm { form } = &snapshot.allowed_actions[0]
+        else {
+            panic!("the complete AskUserQuestion form is remotable");
+        };
         assert_eq!(
-            snapshot.allowed_actions,
-            vec![InterventionAllowedAction::ElicitationDecline]
+            form.questions
+                .iter()
+                .map(|question| question.custom_answer_key.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("question_0_custom"),
+                Some("question_1_custom"),
+                Some("question_2_custom"),
+                Some("question_3_custom")
+            ]
+        );
+        assert_eq!(
+            snapshot.allowed_actions[1],
+            InterventionAllowedAction::ElicitationDecline
         );
     }
 
     #[test]
-    fn desktop_elicitation_accepts_schema_valid_answers_outside_the_remote_form_subset() {
+    fn desktop_elicitation_accepts_schema_valid_answers_outside_the_remote_form() {
         let cases = [
             (
-                "free text",
+                "constrained free text",
                 json!({
                     "mode": "form",
                     "sessionId": "session-001",
@@ -2886,54 +3181,30 @@ mod tests {
                     "requestedSchema": {
                         "type": "object",
                         "properties": {
-                            "notes": { "type": "string", "title": "Release notes" }
+                            "notes": { "type": "string", "title": "Release notes", "minLength": 8 }
                         },
                         "required": ["notes"]
                     }
                 }),
                 json!({ "notes": "Ship after the desktop checks pass." }),
-                json!({ "notes": 42 }),
+                json!({ "notes": "short" }),
             ),
             (
-                "custom answer",
+                "numeric field",
                 json!({
                     "mode": "form",
                     "sessionId": "session-001",
-                    "message": "Choose a database",
+                    "message": "Choose a retry count",
                     "requestedSchema": {
                         "type": "object",
                         "properties": {
-                            "database": {
-                                "type": "string",
-                                "enum": ["PostgreSQL"],
-                                "title": "Database"
-                            },
-                            "database_custom": custom_answer_schema("database")
-                        }
-                    }
-                }),
-                json!({ "database_custom": "SQLite" }),
-                json!({ "database_custom": false }),
-            ),
-            (
-                "more than three questions",
-                json!({
-                    "mode": "form",
-                    "sessionId": "session-001",
-                    "message": "Choose four values",
-                    "requestedSchema": {
-                        "type": "object",
-                        "properties": {
-                            "q0": { "type": "string", "enum": ["a"] },
-                            "q1": { "type": "string", "enum": ["b"] },
-                            "q2": { "type": "string", "enum": ["c"] },
-                            "q3": { "type": "string", "enum": ["d"] }
+                            "retries": { "type": "integer", "title": "Retries" }
                         },
-                        "required": ["q0", "q1", "q2", "q3"]
+                        "required": ["retries"]
                     }
                 }),
-                json!({ "q0": "a", "q1": "b", "q2": "c", "q3": "d" }),
-                json!({ "q0": "a", "q1": "b", "q2": "c" }),
+                json!({ "retries": 3 }),
+                json!({ "retries": "three" }),
             ),
         ];
 
@@ -3034,37 +3305,26 @@ mod tests {
         else {
             panic!("three scalar questions should use a fixed form");
         };
-        let RemoteElicitationForm::ScalarChoiceQuestions { questions } = form else {
-            panic!("expected multiple scalar questions");
-        };
         assert_eq!(
-            questions
+            form.questions
                 .iter()
                 .map(|question| (
                     question.selector_key.as_str(),
-                    question.required,
-                    question.options.len()
+                    question.constraints.required,
+                    question.question.options.len(),
+                    question.custom_answer_key.as_deref()
                 ))
                 .collect::<Vec<_>>(),
-            vec![("q0", true, 1), ("q1", true, 1), ("q2", true, 1)]
+            vec![
+                ("q0", true, 1, None),
+                ("q1", true, 1, None),
+                ("q2", true, 1, Some("q2_custom"))
+            ]
         );
         assert!(
             intervention_action_for_elicitation_form(
                 form,
-                &[
-                    RemoteElicitationFormSelection {
-                        selector_key: "q0".into(),
-                        option_ids: vec!["0".into()]
-                    },
-                    RemoteElicitationFormSelection {
-                        selector_key: "q1".into(),
-                        option_ids: vec!["0".into()]
-                    },
-                    RemoteElicitationFormSelection {
-                        selector_key: "q2".into(),
-                        option_ids: vec!["0".into()]
-                    }
-                ]
+                &choice_answers(&[("q0", &["0"]), ("q1", &["0"]), ("q2", &["0"])])
             )
             .is_ok()
         );
@@ -3093,26 +3353,25 @@ mod tests {
         else {
             panic!("multi scalar choice should use a fixed form");
         };
-        let RemoteElicitationForm::MultiScalarChoice { allows_empty, .. } = form else {
-            panic!("expected multi scalar choice");
-        };
-        assert!(allows_empty);
-        let invalid_duplicate = intervention_action_for_elicitation_form(
-            form,
-            &[RemoteElicitationFormSelection {
-                selector_key: "q0".into(),
-                option_ids: vec!["0".into(), "0".into()],
-            }],
+        assert_eq!(
+            form.questions[0].question.question_kind,
+            ElicitationQuestionKind::MultiSelect
+        );
+        // A required multi-select may not be submitted empty.
+        assert!(!form.questions[0].constraints.allows_empty);
+        assert_eq!(
+            intervention_action_for_elicitation_form(form, &choice_answers(&[("q0", &[])])),
+            Err(RemoteFormViolation::AnswerMissing)
         );
         assert_eq!(
-            invalid_duplicate.unwrap_err().code,
-            InterventionErrorCode::InterventionActionInvalid
+            intervention_action_for_elicitation_form(form, &choice_answers(&[("q0", &["0", "0"])])),
+            Err(RemoteFormViolation::OptionInvalid)
         );
 
         let request = serde_json::from_value(json!({
             "mode": "form",
             "sessionId": "session-001",
-            "message": "too many",
+            "message": "four questions",
             "requestedSchema": {
                 "type": "object",
                 "properties": {
@@ -3133,10 +3392,463 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(snapshot.prompt.unwrap().requires_desktop);
+        // Question count is a channel capability, not a domain limit.
+        assert!(!snapshot.prompt.unwrap().requires_desktop);
+        let InterventionAllowedAction::ElicitationFixedForm { form } = &snapshot.allowed_actions[0]
+        else {
+            panic!("four scalar questions are still a complete remote form");
+        };
+        assert_eq!(form.questions.len(), 4);
+        assert!(form.decline_allowed);
+    }
+
+    fn choice_answers(answers: &[(&str, &[&str])]) -> BTreeMap<String, RemoteElicitationAnswer> {
+        answers
+            .iter()
+            .map(|(selector, option_ids)| {
+                (
+                    (*selector).to_owned(),
+                    RemoteElicitationAnswer::Choice {
+                        option_ids: option_ids.iter().map(|id| (*id).to_owned()).collect(),
+                        custom_text: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn remote_form_for(properties: Value, required: Value) -> Option<RemoteElicitationForm> {
+        let request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-001",
+            "message": "answer",
+            "requestedSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required
+            }
+        }))
+        .unwrap();
+        let (_, actions) = super::elicitation_prompt_and_actions(&request).unwrap();
+        actions.into_iter().find_map(|action| match action {
+            InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
+            _ => None,
+        })
+    }
+
+    fn text_answer(selector: &str, text: &str) -> BTreeMap<String, RemoteElicitationAnswer> {
+        BTreeMap::from([(
+            selector.to_owned(),
+            RemoteElicitationAnswer::Text {
+                text: text.to_owned(),
+            },
+        )])
+    }
+
+    #[test]
+    fn remote_free_text_derives_length_and_multiline_from_schema() {
+        let form = remote_form_for(
+            json!({
+                "name": {"type": "string", "title": "Name", "maxLength": 5},
+                "notes": {"type": "string", "title": "Notes"}
+            }),
+            json!(["name"]),
+        )
+        .expect("whitelisted free text is remotable");
+        let constraints = |field: &str| {
+            form.questions
+                .iter()
+                .find(|question| question.question.field_name == field)
+                .unwrap()
+                .constraints
+        };
         assert_eq!(
-            snapshot.allowed_actions,
-            vec![InterventionAllowedAction::ElicitationDecline]
+            constraints("name"),
+            RemoteQuestionConstraints {
+                required: true,
+                allows_empty: false,
+                max_chars: 5,
+                multiline: false
+            }
+        );
+        assert_eq!(constraints("notes").max_chars, MAX_REMOTE_TEXT_CHARS);
+        assert!(constraints("notes").multiline);
+        let selector = |field: &str| {
+            form.questions
+                .iter()
+                .find(|question| question.question.field_name == field)
+                .unwrap()
+                .selector_key
+                .clone()
+        };
+
+        assert_eq!(
+            remote_form_content(&form, &text_answer(&selector("name"), "Alice")),
+            Ok(json!({"name": "Alice"}))
+        );
+        assert_eq!(
+            remote_form_content(&form, &text_answer(&selector("name"), "Alice!")),
+            Err(RemoteFormViolation::TextTooLong)
+        );
+        // Blank text is unanswered, so the required question is missing.
+        assert_eq!(
+            remote_form_content(&form, &text_answer(&selector("name"), "   ")),
+            Err(RemoteFormViolation::AnswerMissing)
+        );
+        assert_eq!(
+            remote_form_content(&form, &text_answer("q9", "x")),
+            Err(RemoteFormViolation::AnswerInvalid)
+        );
+    }
+
+    #[test]
+    fn remote_free_text_with_unlisted_constraint_requires_desktop() {
+        for constraint in [
+            json!({"type": "string", "minLength": 3}),
+            json!({"type": "string", "pattern": "^a"}),
+            json!({"type": "string", "format": "email"}),
+            json!({"type": "integer"}),
+        ] {
+            assert!(
+                remote_form_for(json!({"value": constraint}), json!([])).is_none(),
+                "{constraint} must not be remotable"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_custom_answer_writes_only_the_custom_field() {
+        let form = remote_form_for(
+            json!({
+                "database": {"type": "string", "title": "DB", "enum": ["MySQL", "PostgreSQL"]},
+                "database_custom": {"type": "string", "title": "Other", "maxLength": 4}
+            }),
+            json!(["database"]),
+        )
+        .unwrap();
+        let question = &form.questions[0];
+        assert_eq!(
+            question.custom_answer_key.as_deref(),
+            Some("database_custom")
+        );
+        assert_eq!(question.constraints.max_chars, 4);
+        let custom = |text: &str, option_ids: &[&str]| {
+            BTreeMap::from([(
+                "q0".to_owned(),
+                RemoteElicitationAnswer::Choice {
+                    option_ids: option_ids.iter().map(|id| (*id).to_owned()).collect(),
+                    custom_text: Some(text.to_owned()),
+                },
+            )])
+        };
+        let content = remote_form_content(&form, &custom(" H2 ", &[])).unwrap();
+        assert_eq!(content, json!({"database_custom": " H2 "}));
+        assert_eq!(
+            remote_elicitation_form_allows_content(&form, &content),
+            Ok(())
+        );
+        assert_eq!(
+            remote_form_content(&form, &custom("  ", &[])),
+            Err(RemoteFormViolation::CustomAnswerMissing)
+        );
+        assert_eq!(
+            remote_form_content(&form, &custom("SQLite", &[])),
+            Err(RemoteFormViolation::TextTooLong)
+        );
+        assert_eq!(
+            remote_form_content(&form, &custom("H2", &["0"])),
+            Err(RemoteFormViolation::AnswerInvalid)
+        );
+    }
+
+    #[test]
+    fn a_custom_answer_satisfies_its_required_choice_field() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "database": {"type": "string", "title": "DB", "enum": ["MySQL", "PostgreSQL"]},
+                "database_custom": {"type": "string", "title": "Other"},
+                "note": {"type": "string", "title": "Note"}
+            },
+            "required": ["database", "note"]
+        });
+        let valid = |content: Value| elicitation_content_is_valid(&schema, &content).unwrap();
+        assert!(valid(json!({"database_custom": "H2", "note": "n"})));
+        assert!(valid(json!({"database": "MySQL", "note": "n"})));
+        // Blank custom text does not answer the choice.
+        assert!(!valid(json!({"database_custom": "  ", "note": "n"})));
+        assert!(!valid(json!({"note": "n"})));
+        // Unpaired required fields and option constraints stay enforced.
+        assert!(!valid(json!({"database_custom": "H2"})));
+        assert!(!valid(json!({"database": "SQLite", "note": "n"})));
+
+        let form = remote_form_for(schema["properties"].clone(), schema["required"].clone())
+            .expect("required choice with a custom answer is remotable");
+        assert_eq!(
+            form.questions[0].custom_answer_key.as_deref(),
+            Some("database_custom")
+        );
+        let mut answers = text_answer("q1", "n");
+        answers.insert(
+            "q0".to_owned(),
+            RemoteElicitationAnswer::Choice {
+                option_ids: Vec::new(),
+                custom_text: Some("H2".to_owned()),
+            },
+        );
+        let content = remote_form_content(&form, &answers).unwrap();
+        assert_eq!(content, json!({"database_custom": "H2", "note": "n"}));
+        assert!(valid(content));
+    }
+
+    #[test]
+    fn remote_custom_answer_failing_whitelist_only_drops_the_custom_entry() {
+        let form = remote_form_for(
+            json!({
+                "database": {"type": "string", "title": "DB", "enum": ["MySQL", "PostgreSQL"]},
+                "database_custom": {"type": "string", "title": "Other", "pattern": "^[a-z]+$"}
+            }),
+            json!(["database"]),
+        )
+        .expect("the listed options stay remotable");
+        assert_eq!(form.questions[0].custom_answer_key, None);
+        assert_eq!(
+            form.questions[0].constraints.max_chars,
+            MAX_REMOTE_TEXT_CHARS
+        );
+        assert_eq!(
+            remote_form_content(&form, &choice_answers(&[("q0", &["1"])])),
+            Ok(json!({"database": "PostgreSQL"}))
+        );
+    }
+
+    #[test]
+    fn remote_form_content_round_trips_through_allows_content() {
+        let form = remote_form_for(
+            json!({
+                "database": {"type": "string", "enum": ["MySQL", "PostgreSQL"]},
+                "features": {"type": "array", "items": {"type": "string", "enum": ["search", "audit", "sso"]}},
+                "notes": {"type": "string"}
+            }),
+            json!(["database"]),
+        )
+        .unwrap();
+        let selector = |field: &str| {
+            form.questions
+                .iter()
+                .find(|question| question.question.field_name == field)
+                .unwrap()
+                .selector_key
+                .clone()
+        };
+        let mut answers = choice_answers(&[]);
+        answers.insert(
+            selector("database"),
+            RemoteElicitationAnswer::Choice {
+                option_ids: vec!["1".into()],
+                custom_text: None,
+            },
+        );
+        answers.insert(
+            selector("features"),
+            RemoteElicitationAnswer::Choice {
+                option_ids: vec!["2".into(), "0".into()],
+                custom_text: None,
+            },
+        );
+        answers.insert(
+            selector("notes"),
+            RemoteElicitationAnswer::Text {
+                text: "ship it".into(),
+            },
+        );
+        let content = remote_form_content(&form, &answers).unwrap();
+        assert_eq!(
+            content,
+            json!({"database": "PostgreSQL", "features": ["sso", "search"], "notes": "ship it"})
+        );
+        assert_eq!(
+            remote_elicitation_form_allows_content(&form, &content),
+            Ok(())
+        );
+        // Non-canonical option ids and unknown fields are refused.
+        assert_eq!(
+            remote_form_content(&form, &choice_answers(&[(&selector("database"), &["01"])])),
+            Err(RemoteFormViolation::OptionInvalid)
+        );
+        assert_eq!(
+            remote_elicitation_form_allows_content(
+                &form,
+                &json!({"database": "MySQL", "extra": "x"})
+            ),
+            Err(RemoteFormViolation::AnswerInvalid)
+        );
+        assert_eq!(
+            remote_elicitation_form_allows_content(&form, &json!({"database": "Oracle"})),
+            Err(RemoteFormViolation::OptionInvalid)
+        );
+        assert_eq!(
+            remote_elicitation_form_allows_content(&form, &json!({"features": ["audit"]})),
+            Err(RemoteFormViolation::AnswerMissing)
+        );
+    }
+
+    fn write_pending_permission_item(attempt_dir: &camino::Utf8Path) {
+        let mut pending = crate::acp::events::permission_request_event(
+            7,
+            "permission-001".into(),
+            json!({ "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }] }),
+        );
+        pending.id = "permission-permission-001".into();
+        pending.started_seq = Some(7);
+        pending.ended_seq = Some(7);
+        crate::acp::events::write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[pending],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_permission_the_runtime_cancelled_is_handled_not_missing() {
+        let fixture = permission_fixture(false);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        write_pending_permission_item(&attempt_dir);
+        let request = permission_request();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Pending)
+        );
+
+        crate::acp::permission::cancel_pending_permission_requests(&attempt_dir, "2Z".into())
+            .unwrap();
+
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled)
+        );
+        assert_eq!(
+            service
+                .inspect(fixture.locator.clone(), request.clone())
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionAlreadyHandled,
+            "a stopped request is handled, not an unknown one"
+        );
+        crate::acp::permission::remove_permission_signal_files(&attempt_dir, "permission-001")
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled),
+            "the settled timeline item outlives the signal files"
+        );
+    }
+
+    #[test]
+    fn an_answered_permission_settles_as_answered_after_runtime_cleanup() {
+        let fixture = permission_fixture(false);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        write_pending_permission_item(&attempt_dir);
+        let snapshot = service
+            .inspect(fixture.locator.clone(), permission_request())
+            .unwrap();
+        service
+            .execute(permission_command(&snapshot, "allow"))
+            .unwrap();
+        crate::acp::permission::remove_permission_signal_files(&attempt_dir, "permission-001")
+            .unwrap();
+
+        assert_eq!(
+            service.settlement(&fixture.locator, &permission_request()),
+            Ok(InterventionSettlement::Answered)
+        );
+        let abandoned = InterventionRequestIdentity::Permission {
+            request_id: "never-published".into(),
+        };
+        assert_eq!(
+            service
+                .settlement(&fixture.locator, &abandoned)
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionRequestNotFound
+        );
+    }
+
+    #[test]
+    fn a_cancelled_or_abandoned_elicitation_settles_as_cancelled() {
+        let fixture = permission_fixture(false);
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        let request = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-001".into(),
+        };
+        let pending: PendingElicitationState =
+            read_json(&pending_elicitation_file(&attempt_dir, "elicit-001")).unwrap();
+        let mut item = crate::acp::events::elicitation_request_event(
+            8,
+            "elicit-001".into(),
+            &pending.payload.request,
+        );
+        item.started_seq = Some(8);
+        item.ended_seq = Some(8);
+        crate::acp::events::write_timeline_items(&attempt_dir.join("acp.timeline.jsonl"), &[item])
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Pending)
+        );
+
+        // A runtime that disappears leaves the request item without an answer.
+        crate::acp::elicitation::remove_elicitation_signal_files(&attempt_dir, "elicit-001")
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled)
+        );
+
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        crate::acp::elicitation::cancel_pending_elicitation_requests(&attempt_dir, "2Z".into())
+            .unwrap();
+        crate::acp::elicitation::remove_elicitation_signal_files(&attempt_dir, "elicit-001")
+            .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Cancelled),
+            "the timeline cancel response is the settled fact"
+        );
+        assert_eq!(
+            service
+                .inspect(fixture.locator.clone(), request)
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionAlreadyHandled
+        );
+    }
+
+    #[test]
+    fn an_answered_elicitation_settles_as_answered() {
+        let fixture = permission_fixture(false);
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        let request = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-001".into(),
+        };
+        crate::acp::elicitation::write_elicitation_response_if_pending(
+            &attempt_dir,
+            "elicit-001",
+            ElicitationAction::Decline,
+            None,
+            "2Z".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            service.settlement(&fixture.locator, &request),
+            Ok(InterventionSettlement::Answered),
+            "a decline is an answer, not a cancellation"
         );
     }
 

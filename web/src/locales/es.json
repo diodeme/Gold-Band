@@ -932,6 +932,7 @@
       "composer-history-query-failed": "No se pudo cargar el historial de entrada. Vuelva a intentarlo.",
       "turn-execution-failed": "No se pudo procesar este mensaje. Vuelva a intentarlo.",
       "session-request-failed": "No se pudo preparar la sesión. Vuelva a intentarlo.",
+      "session-restore-reference-missing": "Esta sesión ACP no tiene una referencia de sesión del Provider, por lo que no se puede reanudar la sesión original. Inicia una sesión nueva y vuelve a enviar el mensaje.",
       "missing-provider": "Al nodo actual le falta la configuración del provider.",
       "subagent-protocol-upgrade-required": "Actualiza Claude ACP a {{minimumVersion}} o una versión posterior y vuelve a intentarlo.",
       "session-config-value-unavailable": "La configuración de sesión seleccionada ya no está disponible. Elija otro valor de la lista más reciente.",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "No se pudo leer la información del archivo referenciado. Inténtelo de nuevo.",
       "workspace-file-count-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos.",
       "session-restore-unsupported": "Este Agent no puede restaurar una sesión existente.",
-      "session-restore-reference-missing": "A esta sesión le falta la referencia de sesión del Provider.",
       "history-sync-unsupported": "Este Agent no puede sincronizar el historial completo de una sesión existente.",
       "prompt-empty": "Introduzca un mensaje para enviar.",
       "prompt-quote-invalid": "El texto citado no es válido. Elimínelo y vuelva a citar el mensaje.",
@@ -2366,7 +2366,7 @@
     "stopFailed": "Error al detener",
     "stopHint": "Detener la sesión ACP actual",
     "noEvents": "No hay eventos ACP",
-    "launchingClaude": "Iniciando Agent",
+    "preparingAgent": "Preparando Agent",
     "processing": "Procesando",
     "thinkingNow": "Razonando",
     "toolRunning": "Ejecutando herramienta",
@@ -2549,7 +2549,13 @@
     "im": {
       "title": "Intervención remota y notificaciones de IM",
       "enabled": "Activado",
-      "privateBinding": "Chat privado: {{name}}",
+      "channelEnabled": "Activar la intervención remota de {{channel}}",
+      "channelSubtitle": "Bot · Chat privado",
+      "expandChannel": "Expandir la configuración de {{channel}}",
+      "collapseChannel": "Contraer la configuración de {{channel}}",
+      "receiverAccount": "Cuenta receptora",
+      "robotName": "Nombre del bot",
+      "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificación",
       "notificationGroups": {
         "needsAction": "Requiere tu acción",
@@ -2565,24 +2571,45 @@
       "deleteDescription": "Esto desactiva la conexión, elimina su secreto del almacén de credenciales del SO y detiene las entregas pendientes.",
       "confirmDelete": "Eliminar",
       "scan": {
-        "title": "Conectar WeCom mediante código QR",
-        "description": "Escanee con la aplicación móvil de WeCom y confirme la autorización.",
-        "notConfigured": "WeCom no está conectado. Conéctelo para configurar la intervención remota y las notificaciones.",
-        "botId": "ID del bot: {{id}}",
+        "title": "Conectar {{channel}} mediante código QR",
+        "description": "Escanee con la aplicación móvil de {{channel}} y confirme la autorización.",
+        "notConfigured": "{{channel}} no está conectado. Conéctelo para configurar la intervención remota y las notificaciones.",
         "connect": "Escanear para conectar",
         "reauthorize": "Autorizar de nuevo",
+        "changeApp": "Cambiar aplicación de Feishu",
+        "changeAppWarning": "Al completar la autorización se reemplaza la aplicación de Feishu actual y se elimina la vinculación de chat privado existente. Vuelve a vincular con el nuevo bot.",
         "generating": "Generando código QR…",
-        "waiting": "Escanee con WeCom y confirme la autorización",
+        "waiting": "Escanee con {{channel}} y confirme la autorización",
         "expiresIn": "El código QR expira en {{countdown}}",
         "waitingBinding": "Autorizado, esperando un destinatario",
-        "complete": "WeCom está listo",
-        "nextStep": "Envíe un mensaje al bot en WeCom para completar el vínculo del chat privado.",
+        "complete": "{{channel}} está listo",
+        "nextStep": "Envíe un mensaje al bot en {{channel}} para completar el vínculo del chat privado.",
         "retry": "Generar de nuevo",
-        "qrCodeLabel": "Código QR de autorización de WeCom"
+        "qrCodeLabel": "Código QR de autorización de {{channel}}"
       },
       "channels": {
-        "wecom": {
-          "title": "WeCom"
+        "weCom": {
+          "title": "WeCom",
+          "identityLabel": "ID del bot"
+        },
+        "feishu": {
+          "title": "Feishu / Lark",
+          "identityLabel": "App ID",
+          "singleDeviceHint": "Conecta cada bot a un solo dispositivo para evitar que las acciones lleguen a otro dispositivo.",
+          "permissions": {
+            "title": "La conexión requiere estos permisos",
+            "send": "Enviarte mensajes",
+            "receive": "Leer los mensajes privados que envías al bot",
+            "update": "Actualizar las tarjetas enviadas por el bot",
+            "profile": "Leer su nombre para mostrar la cuenta receptora",
+            "confirm": "Aceptar y generar código QR"
+          },
+          "resetBinding": {
+            "action": "Volver a vincular destinatario",
+            "title": "¿Volver a vincular el destinatario?",
+            "description": "Se eliminará el vínculo actual del chat privado. Envía un mensaje al bot desde la cuenta usada en la autorización para volver a vincularla. Para usar otra cuenta, vuelve a autorizar el bot.",
+            "confirm": "Volver a vincular"
+          }
         }
       },
       "status": {
@@ -2598,12 +2625,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "Conectar WeCom",
+          "title": "Conectar {{channel}}",
           "description": "Autorice mediante código QR y, a continuación, vincule un destinatario mediante un chat privado."
         },
         "waitingBinding": {
           "title": "Vincular un destinatario",
-          "description": "Envía un mensaje al bot en WeCom. Podrás recibir la intervención remota cuando el vínculo permanente quede guardado."
+          "description": "Envía un mensaje al bot en {{channel}}. Podrás recibir la intervención remota cuando el vínculo permanente quede guardado."
         },
         "connecting": {
           "title": "Estableciendo conexión",
@@ -2618,7 +2645,7 @@
           "description": "La recuperación automática no puede continuar. Reconecte para intentarlo de nuevo."
         },
         "ready": {
-          "title": "WeCom está listo",
+          "title": "{{channel}} está listo",
           "description": "Las intervenciones remotas y las notificaciones activadas se envían al chat privado vinculado."
         },
         "paused": {
@@ -2627,7 +2654,7 @@
         },
         "reauthorize": {
           "title": "Autorización requerida",
-          "description": "Las credenciales actuales no están disponibles. Autorice el bot de nuevo."
+          "description": "Escanea de nuevo para confirmar la autorización."
         },
         "conflict": {
           "title": "El bot está conectado en otro lugar",
@@ -2677,10 +2704,12 @@
         "IM_SCAN_CANCELLED": "La autorización QR fue cancelada.",
         "IM_SCAN_EXPIRED": "El código QR expiró. Genere uno nuevo.",
         "IM_SCAN_TIMEOUT": "La autorización QR agotó el tiempo de espera. Genere un código nuevo.",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "El servicio de autorización de WeCom no es accesible temporalmente.",
-        "IM_SCAN_PROTOCOL_INVALID": "La respuesta de autorización de WeCom no fue válida. Genere un código nuevo.",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "El servicio de autorización no es accesible temporalmente.",
+        "IM_SCAN_PROTOCOL_INVALID": "La respuesta de autorización no fue válida. Genere un código nuevo.",
         "IM_SCAN_SESSION_INVALID": "La sesión QR no es válida. Ábrala de nuevo.",
         "IM_SCAN_SESSION_CONFLICT": "La autorización QR ya está en curso.",
+        "IM_SCAN_DENIED": "Se rechazó la autorización.",
+        "IM_SCOPE_MISSING": "A la aplicación le faltan permisos necesarios. Vuelva a autorizarla.",
         "IM_STALE_GENERATION": "El estado de la conexión cambió. Reintente desde el estado más reciente.",
         "IM_RUNTIME_UNAVAILABLE": "El runtime de IM no está listo.",
         "IM_CHANNEL_CLEANUP_PENDING": "La configuración fue eliminada. La limpieza local se reintentará en segundo plano.",

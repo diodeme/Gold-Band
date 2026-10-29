@@ -20,12 +20,15 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
+  canStopAcpSession,
   deriveAcpRuntimeComposerState,
   routesAcpStopToBackgroundControl,
   type AcpRuntimeComposerStateInput,
 } from '@/lib/acp-runtime-composer-state';
 import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
+import { resetConversationEventRouterSnapshots } from '@/lib/conversation-event-router';
 import type {
+  AcpAgentExecutionVm,
   AcpSessionVm,
   ConversationAttemptLifecycleVm,
   DirectBackgroundControl,
@@ -137,7 +140,55 @@ function sessionWithPendingBackgroundQuestion(id: string): AcpSessionVm {
   };
 }
 
+function backgroundAgent(providerStateSeq: number | null): AcpAgentExecutionVm {
+  return {
+    agentExecutionId: 'agent-background',
+    executionStatus: 'running',
+    providerStateSeq,
+    eventCount: 3,
+    toolCallCount: 0,
+    readFileCount: 0,
+    writtenFileCount: 0,
+    hasAttention: false,
+    description: 'Background review',
+    todoEntries: [],
+  };
+}
+
+function idleSessionWithAgent(id: string, agent: AcpAgentExecutionVm): AcpSessionVm {
+  return {
+    ...sessionWithPendingBackgroundQuestion(id),
+    status: 'idle',
+    pendingInteractions: [],
+    events: [{
+      id: 'reply-1',
+      seq: 1,
+      endedSeq: 1,
+      timestamp: '1Z',
+      kind: 'textDelta',
+      sessionId: id,
+      content: 'Started a background review.',
+      title: null,
+      toolCallId: null,
+      status: 'completed',
+      raw: {},
+    }],
+    eventPage: {
+      loadedCount: 1,
+      total: 1,
+      oldestSeq: 1,
+      newestSeq: 1,
+      hasOlder: false,
+      hasNewer: false,
+      oldestCursor: null,
+      newestCursor: null,
+    },
+    timelineProjection: { agents: [agent], todoEntries: [] },
+  };
+}
+
 beforeEach(() => {
+  resetConversationEventRouterSnapshots();
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
   apiMocks.stopActiveSession.mockReset().mockResolvedValue({
     status: 'accepted',
@@ -199,6 +250,90 @@ describe('routesAcpStopToBackgroundControl', () => {
   ] as const)('keeps a locally submitted turn (%s) on the foreground path', (_label, local) => {
     const composer = composerFor({ localTurnId: 'turn-new', ...local });
     expect(routesAcpStopToBackgroundControl(composer, backgroundControl)).toBe(false);
+  });
+});
+
+describe('canStopAcpSession', () => {
+  const composer = { canStop: false };
+  const control = { sessionId: 's', connectionGeneration: 1, activeTools: 0, expiresAtMs: 0 };
+
+  it('keeps Stop for a provider-reported running Agent after the activity window expired', () => {
+    expect(canStopAcpSession({ composer, backgroundActive: false, backgroundControl: control, nativeAgentRunning: true })).toBe(true);
+  });
+
+  it('offers no Stop without a background stop path or without a native running Agent', () => {
+    expect(canStopAcpSession({ composer, backgroundActive: false, backgroundControl: null, nativeAgentRunning: true })).toBe(false);
+    expect(canStopAcpSession({ composer, backgroundActive: false, backgroundControl: control, nativeAgentRunning: false })).toBe(false);
+  });
+
+  it('keeps the foreground and activity-window conditions', () => {
+    expect(canStopAcpSession({ composer: { canStop: true }, backgroundActive: false, backgroundControl: null, nativeAgentRunning: false })).toBe(true);
+    expect(canStopAcpSession({ composer, backgroundActive: true, backgroundControl: control, nativeAgentRunning: false })).toBe(true);
+  });
+});
+
+describe('ACP stop for silent background Agents', () => {
+  async function renderIdleSession(agent: AcpAgentExecutionVm) {
+    const backgroundControl: DirectBackgroundControl = {
+      sessionId: 'session-agent',
+      connectionGeneration: 7,
+      activeTools: 0,
+      expiresAtMs: Date.now() - 1_000,
+    };
+    const session = idleSessionWithAgent('session-agent', agent);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <TestProviders>
+          <ACPChatDialog
+            session={session}
+            projectId="project-1"
+            taskId="task-1"
+            runId="run-1"
+            roundId={session.roundId}
+            nodeId={session.nodeId}
+            attemptId={session.attemptId}
+            runtimeComposerContext={{
+              isOrchestrated: false,
+              lifecycle: idleDirectLifecycleWithBackground(backgroundControl),
+              promptQueueEnabled: true,
+              workflowValid: true,
+            }}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TestProviders>,
+      );
+    });
+    return { container, root, backgroundControl };
+  }
+
+  it('offers background Stop while a provider-reported Agent runs silently past the activity window', async () => {
+    const { container, root, backgroundControl } = await renderIdleSession(backgroundAgent(5));
+    try {
+      const stop = container.querySelector('svg.lucide-circle-stop')?.closest('button');
+      expect(stop).toBeTruthy();
+      await act(async () => {
+        stop!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(apiMocks.stopActiveSession).toHaveBeenCalledTimes(1);
+      expect(apiMocks.stopActiveSession.mock.calls[0]![9]).toEqual(backgroundControl);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not offer Stop for an Agent whose running status is only inferred', async () => {
+    const { container, root } = await renderIdleSession(backgroundAgent(null));
+    try {
+      expect(container.querySelector('svg.lucide-circle-stop')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });
 

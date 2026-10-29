@@ -27,8 +27,8 @@ const defaults: Omit<AcpConversationComposerProps, 'prompt' | 'onPromptChange'> 
   onTextareaKeyDown: noop, onDragEnter: noop, onDragOver: noop, onDrop: noop, onPaste: noop,
   fileInputRef: null, onFilesChange: noop, onPickFiles: noop, canStop: false, stopInProgress: false, onStop: noop,
   canSubmit: true, sendButtonBusy: false, showRuntimeContinue: false, runtimeContinueKind: null,
-  runtimeContinueSubmitting: false, onRuntimeContinue: noop, configBar: null, attachedPanelVisible: false,
-  integratedInfoTab: false, queueSubmit: false,
+  runtimeContinueSubmitting: false, onRuntimeContinue: noop, configBar: null,
+  queueSubmit: false,
   historyLocator: { projectId: 'p', taskId: 't', runId: 'r', roundId: 'round', nodeId: 'n', attemptId: 'a' },
 };
 function Harness({ initial = '' }: { initial?: string }) {

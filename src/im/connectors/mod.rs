@@ -1,15 +1,19 @@
+pub mod feishu;
 pub mod wecom;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::app::intervention::{
     InterventionAction, InterventionAllowedAction, PermissionActionKind, PermissionActionQualifier,
-    intervention_action_for_allowed, permission_action_qualifier,
+    RemoteElicitationAnswer, RemoteElicitationForm, RemoteQuestion,
+    intervention_action_for_allowed, permission_action_qualifier, remote_question_answer,
 };
 
 use super::{
+    INTERVENTION_NODE_FIELD, INTERVENTION_TASK_FIELD, INTERVENTION_WORKSPACE_FIELD,
     ImActionTokenClaims, ImActionTokenCodec, ImDelivery, ImDeliveryPayload, ImInboundError,
-    ImLocale, InterventionPresentation, InterventionQuestionKind,
+    ImLocale, InterventionPresentation, InterventionQuestionKind, is_intervention_context_field,
 };
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +78,21 @@ pub(crate) fn intervention_actions(
 }
 
 pub(crate) fn notification_markdown(delivery: &ImDelivery, locale: ImLocale) -> String {
+    notification_markdown_impl(delivery, locale, true)
+}
+
+pub(crate) fn notification_markdown_without_context(
+    delivery: &ImDelivery,
+    locale: ImLocale,
+) -> String {
+    notification_markdown_impl(delivery, locale, false)
+}
+
+fn notification_markdown_impl(
+    delivery: &ImDelivery,
+    locale: ImLocale,
+    include_context_fields: bool,
+) -> String {
     match &delivery.payload {
         ImDeliveryPayload::Intervention { presentation, .. } => {
             let mut text = format!(
@@ -86,6 +105,9 @@ pub(crate) fn notification_markdown(delivery: &ImDelivery, locale: ImLocale) -> 
                 text.push_str(&format!("\n\n{details}"));
             }
             for (key, value) in &presentation.fields {
+                if !include_context_fields && is_intervention_context_field(key) {
+                    continue;
+                }
                 if !value.trim().is_empty() {
                     text.push_str(&format!("\n\n- {}: {value}", localized(locale, key)));
                 }
@@ -107,9 +129,44 @@ pub(crate) fn notification_markdown(delivery: &ImDelivery, locale: ImLocale) -> 
                 .or(delivery.display_ref)
                 .map(|value| format!("{value:04}"))
                 .unwrap_or_else(|| "----".to_string());
-            localized(locale, "im.intervention.handledOnDesktop").replace("{ref}", &display_ref)
+            if resolution.outcome.is_cancelled() {
+                return localized(locale, "im.intervention.cancelledRef")
+                    .replace("{ref}", &display_ref);
+            }
+            localized(locale, "im.intervention.handledOn")
+                .replace("{ref}", &display_ref)
+                .replace("{source}", resolved_by_copy(resolution.resolved_by, locale))
         }
     }
+}
+
+pub(crate) fn resolved_by_copy(resolved_by: super::ImResolvedBy, locale: ImLocale) -> &'static str {
+    use super::{ImChannelKind, ImResolvedBy};
+    let key = match resolved_by {
+        ImResolvedBy::Desktop => "im.intervention.resolvedBy.desktop",
+        ImResolvedBy::Channel(ImChannelKind::WeCom) => "im.intervention.resolvedBy.wecom",
+        ImResolvedBy::Channel(ImChannelKind::Feishu) => "im.intervention.resolvedBy.feishu",
+        ImResolvedBy::Runtime => "im.intervention.resolvedBy.runtime",
+    };
+    localized(locale, key)
+}
+
+pub(crate) fn notification_context_markdown(delivery: &ImDelivery, locale: ImLocale) -> String {
+    let ImDeliveryPayload::Intervention { presentation, .. } = &delivery.payload else {
+        return String::new();
+    };
+    [
+        INTERVENTION_NODE_FIELD,
+        INTERVENTION_TASK_FIELD,
+        INTERVENTION_WORKSPACE_FIELD,
+    ]
+    .iter()
+    .filter_map(|key| {
+        let value = presentation.fields.get(*key)?;
+        (!value.trim().is_empty()).then(|| format!("- {}: {}", localized(locale, key), value))
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 pub(crate) fn presentation_detail_text(
@@ -181,96 +238,52 @@ fn normalized_prose(value: &str) -> String {
 }
 
 pub(crate) fn message_state_label(locale: ImLocale, state: super::ImMessageState) -> &'static str {
-    match (locale, state) {
-        (ImLocale::ZhCn, super::ImMessageState::Handled) => "已处理",
-        (ImLocale::ZhCn, super::ImMessageState::Expired) => "操作已过期",
-        (ImLocale::ZhCn, super::ImMessageState::Failed) => "处理失败，请在桌面端查看",
-        (ImLocale::En, super::ImMessageState::Handled) => "Handled",
-        (ImLocale::En, super::ImMessageState::Expired) => "This action has expired",
-        (ImLocale::En, super::ImMessageState::Failed) => "Failed. Open the desktop app for details",
-    }
+    localized(
+        locale,
+        match state {
+            super::ImMessageState::Handled => "im.state.handled",
+            super::ImMessageState::Expired => "im.state.expired",
+            super::ImMessageState::Failed => "im.state.failed",
+        },
+    )
 }
 
-fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String {
-    match action {
+pub(crate) fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String {
+    let key = match action {
         InterventionAllowedAction::PermissionOption {
             option_id,
             permission_kind,
             ..
-        } => {
-            let qualifier = permission_action_qualifier(option_id, action_name(action));
-            match (locale, qualifier) {
-                (_, PermissionActionQualifier::BypassPermissions) => {
-                    localized(locale, "im.permission.action.bypass").into()
-                }
-                (_, PermissionActionQualifier::AutoEdit) => {
-                    localized(locale, "im.permission.action.autoEdit").into()
-                }
-                (_, PermissionActionQualifier::AutoMode) => {
-                    localized(locale, "im.permission.action.autoMode").into()
-                }
-                (_, PermissionActionQualifier::ManualApproval) => {
-                    localized(locale, "im.permission.action.manualApproval").into()
-                }
-                (_, PermissionActionQualifier::KeepPlanning) => {
-                    localized(locale, "im.permission.action.keepPlanning").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowOnce =>
-                {
-                    localized(locale, "im.permission.action.allowOnce").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowAlways =>
-                {
-                    localized(locale, "im.permission.action.allowForSession").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectOnce =>
-                {
-                    localized(locale, "im.permission.action.deny").into()
-                }
-                (ImLocale::ZhCn, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectAlways =>
-                {
-                    localized(locale, "im.permission.action.denyAlways").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowOnce =>
-                {
-                    localized(locale, "im.permission.action.allowOnce").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::AllowAlways =>
-                {
-                    localized(locale, "im.permission.action.allowForSession").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectOnce =>
-                {
-                    localized(locale, "im.permission.action.deny").into()
-                }
-                (ImLocale::En, PermissionActionQualifier::Standard)
-                    if *permission_kind == PermissionActionKind::RejectAlways =>
-                {
-                    localized(locale, "im.permission.action.denyAlways").into()
-                }
-                (ImLocale::ZhCn, _) => "桌面处理".into(),
-                (ImLocale::En, _) => "Desktop".into(),
+        } => match (
+            permission_action_qualifier(option_id, action_name(action)),
+            permission_kind,
+        ) {
+            (PermissionActionQualifier::BypassPermissions, _) => "im.permission.action.bypass",
+            (PermissionActionQualifier::AutoEdit, _) => "im.permission.action.autoEdit",
+            (PermissionActionQualifier::AutoMode, _) => "im.permission.action.autoMode",
+            (PermissionActionQualifier::ManualApproval, _) => "im.permission.action.manualApproval",
+            (PermissionActionQualifier::KeepPlanning, _) => "im.permission.action.keepPlanning",
+            (PermissionActionQualifier::Standard, PermissionActionKind::AllowOnce) => {
+                "im.permission.action.allowOnce"
             }
-        }
-        InterventionAllowedAction::ElicitationFixedForm { .. } => {
-            localized(locale, "im.elicitation.form.label").into()
-        }
-        InterventionAllowedAction::ElicitationAccept => {
-            localized(locale, "im.action.accept").into()
-        }
-        InterventionAllowedAction::ElicitationDecline => {
-            localized(locale, "im.action.decline").into()
-        }
-        InterventionAllowedAction::ManualSuccess => localized(locale, "im.action.success").into(),
-        InterventionAllowedAction::ManualFailure => localized(locale, "im.action.failure").into(),
-    }
+            (PermissionActionQualifier::Standard, PermissionActionKind::AllowAlways) => {
+                "im.permission.action.allowForSession"
+            }
+            (PermissionActionQualifier::Standard, PermissionActionKind::RejectOnce) => {
+                "im.permission.action.deny"
+            }
+            (PermissionActionQualifier::Standard, PermissionActionKind::RejectAlways) => {
+                "im.permission.action.denyAlways"
+            }
+            _ => "im.permission.action.desktop",
+        },
+        InterventionAllowedAction::ElicitationFixedForm { .. } => "im.elicitation.form.label",
+        InterventionAllowedAction::ElicitationAccept => "im.action.accept",
+        InterventionAllowedAction::ElicitationDecline => "im.action.decline",
+        InterventionAllowedAction::ManualSuccess => "im.action.success",
+        InterventionAllowedAction::ManualFailure => "im.action.failure",
+    };
+    localized(locale, key).to_owned()
 }
 
 pub(crate) fn action_name(action: &InterventionAllowedAction) -> &str {
@@ -280,148 +293,112 @@ pub(crate) fn action_name(action: &InterventionAllowedAction) -> &str {
     }
 }
 
-pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
-    match (locale, key) {
-        (ImLocale::ZhCn, "im.notification.permission.title") => "权限请求",
-        (ImLocale::ZhCn, "im.notification.permission.summary") => "任务正在等待你的权限决定。",
-        (ImLocale::ZhCn, "im.notification.elicitation.title") => "需要补充信息",
-        (ImLocale::ZhCn, "im.notification.elicitation.summary") => "任务正在等待你的回答。",
-        (ImLocale::ZhCn, "im.notification.manualCheck.title") => "需要人工检查",
-        (ImLocale::ZhCn, "im.notification.manualCheck.summary") => "任务正在等待人工检查结果。",
-        (ImLocale::ZhCn, "im.notification.run_success.summary") => "Run 已成功完成",
-        (ImLocale::ZhCn, "im.notification.run_failure.summary") => "Run 执行失败",
-        (ImLocale::ZhCn, "im.notification.acp_turn_finished.summary") => "ACP 回合已结束",
-        (ImLocale::ZhCn, "workspaceLabel") => "工作空间",
-        (ImLocale::ZhCn, "nodeLabel") => "节点",
-        (ImLocale::ZhCn, "taskTitle") => "任务",
-        (ImLocale::ZhCn, "permissionTool") => "工具",
-        (ImLocale::ZhCn, "permissionPath") => "路径",
-        (ImLocale::ZhCn, "permissionParameter") => "参数",
-        (ImLocale::ZhCn, "permissionCommand") => "命令",
-        (ImLocale::ZhCn, "im.action.accept") => "接受",
-        (ImLocale::ZhCn, "im.action.decline") => "拒绝",
-        (ImLocale::ZhCn, "im.action.success") => "成功",
-        (ImLocale::ZhCn, "im.action.failure") => "失败",
-        (ImLocale::ZhCn, "im.question.singleSelect") => "单选",
-        (ImLocale::ZhCn, "im.question.multiSelect") => "多选",
-        (ImLocale::ZhCn, "im.question.freeText") => "文本回答，请在桌面端填写",
-        (ImLocale::ZhCn, "im.question.customAnswer") => "- 其他答案请在桌面端填写",
-        (ImLocale::ZhCn, "im.permission.vote.subtitle") => "请选择授权范围后提交",
-        (ImLocale::ZhCn, "im.permission.vote.linkedSubtitle") => {
-            "请求详情见上一条消息，请选择授权范围后提交"
+/// Joins answer labels with the locale's list separator.
+pub(crate) fn join_list(locale: ImLocale, items: &[String]) -> String {
+    items.join(localized(locale, "im.list.separator"))
+}
+
+/// One published question with the answer accepted for it.
+pub(crate) struct AcceptedAnswer<'a> {
+    pub question: &'a RemoteQuestion,
+    pub answer: Option<RemoteElicitationAnswer>,
+}
+
+impl AcceptedAnswer<'_> {
+    /// Selected published option ids; empty for text and custom answers.
+    pub fn option_ids(&self) -> &[String] {
+        match &self.answer {
+            Some(RemoteElicitationAnswer::Choice { option_ids, .. }) => option_ids,
+            _ => &[],
         }
-        (ImLocale::ZhCn, "im.permission.card.title") => "权限审批",
-        (ImLocale::ZhCn, "im.permission.card.titleWithRef") => "权限审批（id={ref}）",
-        (ImLocale::ZhCn, "im.permission.card.summary") => "Agent 请求执行命令",
-        (ImLocale::ZhCn, "im.permission.detail.description") => "说明",
-        (ImLocale::ZhCn, "im.permission.detail.link") => {
-            "请求详情见本消息，请在下一条权限审批卡片中选择。"
-        }
-        (ImLocale::ZhCn, "im.manualCheck.card.titleWithRef") => "人工检查（id={ref}）",
-        (ImLocale::ZhCn, "im.manualCheck.vote.linkedSubtitle") => {
-            "模型输出见上一条消息，请选择检查结果后提交"
-        }
-        (ImLocale::ZhCn, "im.manualCheck.detail.output") => "最后一轮模型输出",
-        (ImLocale::ZhCn, "im.manualCheck.detail.link") => {
-            "模型输出见本消息，请在下一条人工检查卡片中选择。"
-        }
-        (ImLocale::ZhCn, "im.permission.desktopGuidance") => "请在桌面端处理此权限请求",
-        (ImLocale::ZhCn, "im.permission.submit") => "提交",
-        (ImLocale::ZhCn, "im.permission.submitted") => "已提交",
-        (ImLocale::ZhCn, "im.permission.action.bypass") => "跳过权限",
-        (ImLocale::ZhCn, "im.permission.action.autoEdit") => "自动编辑",
-        (ImLocale::ZhCn, "im.permission.action.autoMode") => "自动模式",
-        (ImLocale::ZhCn, "im.permission.action.manualApproval") => "手动确认",
-        (ImLocale::ZhCn, "im.permission.action.keepPlanning") => "保持计划",
-        (ImLocale::ZhCn, "im.permission.action.allowOnce") => "仅允许一次",
-        (ImLocale::ZhCn, "im.permission.action.allowForSession") => "本次会话允许",
-        (ImLocale::ZhCn, "im.permission.action.deny") => "拒绝",
-        (ImLocale::ZhCn, "im.permission.action.denyAlways") => "始终拒绝",
-        (ImLocale::ZhCn, "im.elicitation.form.label") => "远程表单",
-        (ImLocale::ZhCn, "im.elicitation.card.titleWithRef") => "补充信息（id={ref}）",
-        (ImLocale::ZhCn, "im.elicitation.vote.linkedSubtitle") => {
-            "问题详情见上一条消息，请完成选择后提交"
-        }
-        (ImLocale::ZhCn, "im.elicitation.detail.link") => {
-            "问题详情见本消息，请在下一条补充信息卡片中选择。"
-        }
-        (ImLocale::ZhCn, "im.elicitation.detail.context") => "前序模型输出",
-        (ImLocale::ZhCn, "im.intervention.handledOnDesktop") => "**id={ref} 已在桌面端处理**",
-        (ImLocale::En, "im.notification.permission.title") => "Permission request",
-        (ImLocale::En, "im.notification.permission.summary") => {
-            "A task is waiting for your permission decision."
-        }
-        (ImLocale::En, "im.notification.elicitation.title") => "More information required",
-        (ImLocale::En, "im.notification.elicitation.summary") => {
-            "A task is waiting for your answer."
-        }
-        (ImLocale::En, "im.notification.manualCheck.title") => "Manual check required",
-        (ImLocale::En, "im.notification.manualCheck.summary") => {
-            "A task is waiting for a manual check result."
-        }
-        (ImLocale::En, "im.notification.run_success.summary") => "Run succeeded",
-        (ImLocale::En, "im.notification.run_failure.summary") => "Run failed",
-        (ImLocale::En, "im.notification.acp_turn_finished.summary") => "ACP turn finished",
-        (ImLocale::En, "workspaceLabel") => "Workspace",
-        (ImLocale::En, "nodeLabel") => "Node",
-        (ImLocale::En, "taskTitle") => "Task",
-        (ImLocale::En, "permissionTool") => "Tool",
-        (ImLocale::En, "permissionPath") => "Path",
-        (ImLocale::En, "permissionParameter") => "Parameter",
-        (ImLocale::En, "permissionCommand") => "Command",
-        (ImLocale::En, "im.action.accept") => "Accept",
-        (ImLocale::En, "im.action.decline") => "Decline",
-        (ImLocale::En, "im.action.success") => "Success",
-        (ImLocale::En, "im.action.failure") => "Failure",
-        (ImLocale::En, "im.question.singleSelect") => "Single choice",
-        (ImLocale::En, "im.question.multiSelect") => "Multiple choice",
-        (ImLocale::En, "im.question.freeText") => "Text answer; enter it in the desktop app",
-        (ImLocale::En, "im.question.customAnswer") => "- Enter another answer in the desktop app",
-        (ImLocale::En, "im.permission.vote.subtitle") => "Choose a scope and submit",
-        (ImLocale::En, "im.permission.vote.linkedSubtitle") => {
-            "See the preceding message for details, then choose a scope and submit"
-        }
-        (ImLocale::En, "im.permission.card.title") => "Permission approval",
-        (ImLocale::En, "im.permission.card.titleWithRef") => "Permission (id={ref})",
-        (ImLocale::En, "im.permission.card.summary") => "Agent requests command execution",
-        (ImLocale::En, "im.permission.detail.description") => "Description",
-        (ImLocale::En, "im.permission.detail.link") => {
-            "This message contains the request details. Use the next permission card to decide."
-        }
-        (ImLocale::En, "im.manualCheck.card.titleWithRef") => "Manual check (id={ref})",
-        (ImLocale::En, "im.manualCheck.vote.linkedSubtitle") => {
-            "See the preceding message for the model output, choose a result, then submit"
-        }
-        (ImLocale::En, "im.manualCheck.detail.output") => "Latest model output",
-        (ImLocale::En, "im.manualCheck.detail.link") => {
-            "This message contains the model output. Use the next manual-check card to decide."
-        }
-        (ImLocale::En, "im.permission.desktopGuidance") => {
-            "Handle this permission request in the desktop app"
-        }
-        (ImLocale::En, "im.permission.submit") => "Submit",
-        (ImLocale::En, "im.permission.submitted") => "Submitted",
-        (ImLocale::En, "im.permission.action.bypass") => "Bypass",
-        (ImLocale::En, "im.permission.action.autoEdit") => "Auto edits",
-        (ImLocale::En, "im.permission.action.autoMode") => "Auto mode",
-        (ImLocale::En, "im.permission.action.manualApproval") => "Manual",
-        (ImLocale::En, "im.permission.action.keepPlanning") => "Keep plan",
-        (ImLocale::En, "im.permission.action.allowOnce") => "Allow once",
-        (ImLocale::En, "im.permission.action.allowForSession") => "Allow for session",
-        (ImLocale::En, "im.permission.action.deny") => "Deny",
-        (ImLocale::En, "im.permission.action.denyAlways") => "Always deny",
-        (ImLocale::En, "im.elicitation.form.label") => "Remote form",
-        (ImLocale::En, "im.elicitation.card.titleWithRef") => "More information (id={ref})",
-        (ImLocale::En, "im.elicitation.vote.linkedSubtitle") => {
-            "See the preceding message for details, choose an answer, then submit"
-        }
-        (ImLocale::En, "im.elicitation.detail.link") => {
-            "This message contains the questions. Use the next information card to answer."
-        }
-        (ImLocale::En, "im.elicitation.detail.context") => "Previous model output",
-        (ImLocale::En, "im.intervention.handledOnDesktop") => "**id={ref} Handled on desktop**",
-        _ => key,
     }
+
+    pub fn custom_text(&self) -> Option<&str> {
+        match &self.answer {
+            Some(RemoteElicitationAnswer::Choice {
+                custom_text: Some(text),
+                ..
+            }) => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn text(&self) -> Option<&str> {
+        match &self.answer {
+            Some(RemoteElicitationAnswer::Text { text }) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The answer as the user sees it: option labels, custom or free text.
+    pub fn display(&self, locale: ImLocale) -> Option<String> {
+        if let Some(text) = self.custom_text().or(self.text()) {
+            return Some(text.to_owned());
+        }
+        let labels = self
+            .option_ids()
+            .iter()
+            .filter_map(|option_id| option_id.parse::<usize>().ok())
+            .filter_map(|index| self.question.question.options.get(index))
+            .map(|option| option.label.clone())
+            .collect::<Vec<_>>();
+        (!labels.is_empty()).then(|| join_list(locale, &labels))
+    }
+}
+
+/// Projects accepted elicitation content onto a delivery's published form.
+/// A question whose content does not decode against that copy (for example a
+/// desktop answer outside the fitted form) is shown unanswered.
+pub(crate) fn accepted_answers<'a>(
+    form: &'a RemoteElicitationForm,
+    content: &Value,
+) -> Vec<AcceptedAnswer<'a>> {
+    form.questions
+        .iter()
+        .map(|question| AcceptedAnswer {
+            question,
+            answer: remote_question_answer(question, content).ok().flatten(),
+        })
+        .collect()
+}
+
+type CopyCatalog = std::collections::HashMap<String, String>;
+
+/// One keyed copy table per desktop language, embedded at compile time.
+fn catalog_source(locale: ImLocale) -> &'static str {
+    match locale {
+        ImLocale::ZhCn => include_str!("../locales/zh-CN.json"),
+        ImLocale::ZhTw => include_str!("../locales/zh-TW.json"),
+        ImLocale::En => include_str!("../locales/en.json"),
+        ImLocale::JaJp => include_str!("../locales/ja-JP.json"),
+        ImLocale::KoKr => include_str!("../locales/ko-KR.json"),
+        ImLocale::PtBr => include_str!("../locales/pt-BR.json"),
+        ImLocale::Es => include_str!("../locales/es.json"),
+    }
+}
+
+static COPY_CATALOGS: std::sync::LazyLock<Vec<(ImLocale, CopyCatalog)>> =
+    std::sync::LazyLock::new(|| {
+        ImLocale::ALL
+            .iter()
+            .map(|locale| {
+                let catalog = serde_json::from_str(catalog_source(*locale))
+                    .expect("embedded IM copy catalog is valid JSON");
+                (*locale, catalog)
+            })
+            .collect()
+    });
+
+fn catalog(locale: ImLocale) -> &'static CopyCatalog {
+    COPY_CATALOGS
+        .iter()
+        .find_map(|(candidate, catalog)| (*candidate == locale).then_some(catalog))
+        .expect("every desktop language has an IM copy catalog")
+}
+
+/// Keys without copy (for example raw presentation field names) render as-is.
+pub(crate) fn localized<'a>(locale: ImLocale, key: &'a str) -> &'a str {
+    catalog(locale).get(key).map_or(key, String::as_str)
 }
 
 #[cfg(test)]
@@ -529,5 +506,133 @@ mod tests {
             ),
             "桌面处理"
         );
+        assert_eq!(
+            action_label(
+                ImLocale::JaJp,
+                &action("allow_once", "Allow", PermissionActionKind::AllowOnce)
+            ),
+            "今回のみ許可"
+        );
+        assert_eq!(join_list(ImLocale::ZhTw, &["A".into(), "B".into()]), "A、B");
+        assert_eq!(join_list(ImLocale::Es, &["A".into(), "B".into()]), "A, B");
+    }
+
+    #[test]
+    fn accepted_answers_project_options_custom_text_and_missing_answers() {
+        use crate::app::intervention::{
+            ElicitationQuestion, ElicitationQuestionKind, ElicitationQuestionOption,
+            RemoteQuestionConstraints,
+        };
+        let question =
+            |selector: &str, kind: ElicitationQuestionKind, custom: bool| RemoteQuestion {
+                selector_key: selector.into(),
+                question: ElicitationQuestion {
+                    field_name: format!("{selector}_field"),
+                    title: selector.into(),
+                    description: None,
+                    question_kind: kind,
+                    options: ["a", "b", "c"]
+                        .into_iter()
+                        .map(|value| ElicitationQuestionOption {
+                            value: serde_json::json!(value),
+                            label: value.to_uppercase(),
+                            description: None,
+                        })
+                        .collect(),
+                    allows_custom_answer: custom,
+                },
+                constraints: RemoteQuestionConstraints {
+                    required: false,
+                    allows_empty: true,
+                    max_chars: 100,
+                    multiline: false,
+                },
+                custom_answer_key: custom.then(|| format!("{selector}_custom")),
+            };
+        let form = RemoteElicitationForm {
+            questions: vec![
+                question("multi", ElicitationQuestionKind::MultiSelect, false),
+                question("single", ElicitationQuestionKind::SingleSelect, true),
+                question("text", ElicitationQuestionKind::FreeText, false),
+                question("missing", ElicitationQuestionKind::SingleSelect, false),
+            ],
+            decline_allowed: false,
+        };
+        let content = serde_json::json!({
+            "multi_field": ["c", "a"],
+            "single_custom": "Other answer",
+            "text_field": "Free text",
+        });
+        let answers = accepted_answers(&form, &content);
+        let display = |locale| {
+            answers
+                .iter()
+                .map(|answer| answer.display(locale))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            display(ImLocale::ZhCn),
+            [
+                Some("C、A".to_owned()),
+                Some("Other answer".to_owned()),
+                Some("Free text".to_owned()),
+                None,
+            ]
+        );
+        assert_eq!(display(ImLocale::En)[0].as_deref(), Some("C, A"));
+        assert_eq!(answers[0].option_ids(), ["2", "0"]);
+        assert!(answers[1].option_ids().is_empty());
+        assert_eq!(answers[1].custom_text(), Some("Other answer"));
+        assert_eq!(answers[2].text(), Some("Free text"));
+    }
+
+    fn placeholders(text: &str) -> std::collections::BTreeSet<&str> {
+        text.match_indices('{')
+            .filter_map(|(start, _)| {
+                let end = text[start..].find('}')?;
+                Some(&text[start..=start + end])
+            })
+            .collect()
+    }
+
+    /// zh-CN is the semantic source: every locale carries the same keys,
+    /// the same placeholders and the English product words zh-CN keeps.
+    #[test]
+    fn every_locale_catalog_matches_the_zh_cn_source() {
+        const RETAINED_WORDS: [&str; 4] = ["Agent", "ACP", "Run", "id="];
+        let source = catalog(ImLocale::ZhCn);
+        assert!(!source.is_empty());
+        for locale in ImLocale::ALL {
+            let catalog = catalog(locale);
+            let mut missing: Vec<_> = source
+                .keys()
+                .filter(|key| !catalog.contains_key(*key))
+                .collect();
+            let mut extra: Vec<_> = catalog
+                .keys()
+                .filter(|key| !source.contains_key(*key))
+                .collect();
+            missing.sort();
+            extra.sort();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "{locale:?}: missing {missing:?}, extra {extra:?}"
+            );
+            for (key, text) in source {
+                let translated = &catalog[key];
+                assert!(!translated.trim().is_empty(), "{locale:?}: {key} is empty");
+                assert_eq!(
+                    placeholders(text),
+                    placeholders(translated),
+                    "{locale:?}: {key} placeholders differ"
+                );
+                for word in RETAINED_WORDS {
+                    assert!(
+                        !text.contains(word) || translated.contains(word),
+                        "{locale:?}: {key} must keep {word}"
+                    );
+                }
+            }
+        }
     }
 }

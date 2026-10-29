@@ -932,6 +932,7 @@
       "composer-history-query-failed": "輸入歷史載入失敗，請重試。",
       "turn-execution-failed": "本次訊息處理失敗，請重試。",
       "session-request-failed": "工作階段準備失敗，請重試。",
+      "session-restore-reference-missing": "目前 ACP 工作階段缺少 Provider 工作階段引用，無法還原原工作階段。請建立新工作階段後重新傳送訊息。",
       "missing-provider": "目前節點缺少 provider 設定。",
       "subagent-protocol-upgrade-required": "請將 Claude ACP 升級至 {{minimumVersion}} 或更新版本後重試。",
       "session-config-value-unavailable": "所選工作階段設定已不可用，請從最新清單中重新選擇。",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "無法讀取引用的檔案資訊，請重試。",
       "workspace-file-count-exceeded": "上下文最多可包含 {{max}} 個引用和附件。",
       "session-restore-unsupported": "目前 Agent 不支援還原已有工作階段。",
-      "session-restore-reference-missing": "目前工作階段缺少可還原的 Provider 工作階段引用。",
       "history-sync-unsupported": "目前 Agent 不支援同步已有工作階段的完整歷史。",
       "prompt-empty": "請輸入要傳送的內容。",
       "prompt-quote-invalid": "引用資料無效，請刪除後重新引用。",
@@ -2366,7 +2366,7 @@
     "stopFailed": "停止失敗",
     "stopHint": "停止目前 ACP 工作階段",
     "noEvents": "沒有 ACP 事件",
-    "launchingClaude": "Agent 調起中",
+    "preparingAgent": "正在準備 Agent",
     "processing": "處理中",
     "thinkingNow": "思考中",
     "toolRunning": "工具呼叫中",
@@ -2549,7 +2549,13 @@
     "im": {
       "title": "IM 遠端干預與通知",
       "enabled": "啟用",
-      "privateBinding": "一對一私聊：{{name}}",
+      "channelEnabled": "啟用{{channel}}遠端干預",
+      "channelSubtitle": "機器人 · 一對一私聊",
+      "expandChannel": "展開{{channel}}設定",
+      "collapseChannel": "收合{{channel}}設定",
+      "receiverAccount": "接收帳號",
+      "robotName": "機器人名稱",
+      "privateBindingUnnamed": "已綁定一對一私聊",
       "notificationKinds": "通知類型",
       "notificationGroups": {
         "needsAction": "需要你處理",
@@ -2565,24 +2571,45 @@
       "deleteDescription": "將停用連線並從系統認證儲存中刪除 secret。待投遞訊息也會停止傳送。",
       "confirmDelete": "刪除",
       "scan": {
-        "title": "掃碼接入企業微信",
-        "description": "使用手機企業微信掃碼並確認授權。",
-        "notConfigured": "尚未接入企業微信。接入後可設定遠端干預與通知。",
-        "botId": "機器人 ID：{{id}}",
+        "title": "掃碼接入{{channel}}",
+        "description": "使用手機{{channel}}掃碼並確認授權。",
+        "notConfigured": "尚未接入{{channel}}。接入後可設定遠端干預與通知。",
         "connect": "掃碼接入",
         "reauthorize": "重新授權",
+        "changeApp": "更換飛書應用",
+        "changeAppWarning": "完成授權後將取代目前的飛書應用，並清除現有私聊綁定。請使用新機器人重新完成綁定。",
         "generating": "正在生成二維條碼…",
-        "waiting": "請使用企業微信掃碼並確認授權",
+        "waiting": "請使用{{channel}}掃碼並確認授權",
         "expiresIn": "二維條碼將在 {{countdown}} 後過期",
         "waitingBinding": "授權完成，等待綁定接收帳號",
-        "complete": "企業微信已可用",
-        "nextStep": "請在企業微信中給機器人傳送一則訊息，以完成一對一私聊綁定。",
+        "complete": "{{channel}}已可用",
+        "nextStep": "請在{{channel}}中給機器人傳送一則訊息，以完成一對一私聊綁定。",
         "retry": "重新生成",
-        "qrCodeLabel": "企業微信授權二維條碼"
+        "qrCodeLabel": "{{channel}}授權二維條碼"
       },
       "channels": {
-        "wecom": {
-          "title": "企業微信"
+        "weCom": {
+          "title": "企業微信",
+          "identityLabel": "機器人 ID"
+        },
+        "feishu": {
+          "title": "飛書",
+          "identityLabel": "App ID",
+          "singleDeviceHint": "一個機器人只連線一台裝置，避免操作被其他裝置接收。",
+          "permissions": {
+            "title": "連線需要以下權限",
+            "send": "傳送訊息給你",
+            "receive": "讀取你傳給機器人的私訊",
+            "update": "更新機器人傳送的卡片",
+            "profile": "讀取你的姓名，用於顯示接收帳號",
+            "confirm": "同意並產生 QR Code"
+          },
+          "resetBinding": {
+            "action": "重新綁定接收帳號",
+            "title": "重新綁定接收帳號？",
+            "description": "將清除目前的私訊綁定。請使用掃碼授權的帳號傳訊息給機器人以重新綁定；如需更換授權帳號，請重新授權。",
+            "confirm": "重新綁定"
+          }
         }
       },
       "status": {
@@ -2598,12 +2625,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "接入企業微信",
+          "title": "接入{{channel}}",
           "description": "掃碼授權後，透過一對一私聊綁定接收帳號。"
         },
         "waitingBinding": {
           "title": "綁定接收帳號",
-          "description": "請在企業微信中給機器人傳送一則訊息。持久綁定完成後即可接收干預。"
+          "description": "請在{{channel}}中給機器人傳送一則訊息。持久綁定完成後即可接收干預。"
         },
         "connecting": {
           "title": "正在建立連線",
@@ -2618,7 +2645,7 @@
           "description": "自動還原無法繼續，請重新連線。"
         },
         "ready": {
-          "title": "企業微信可用",
+          "title": "{{channel}}可用",
           "description": "遠端干預和已啟用的通知會傳送到已綁定私聊。"
         },
         "paused": {
@@ -2627,7 +2654,7 @@
         },
         "reauthorize": {
           "title": "需要重新授權",
-          "description": "目前認證不可用，請重新掃碼授權。"
+          "description": "請重新掃碼確認授權。"
         },
         "conflict": {
           "title": "機器人已在其他用戶端連線",
@@ -2677,10 +2704,12 @@
         "IM_SCAN_CANCELLED": "掃碼授權已取消。",
         "IM_SCAN_EXPIRED": "二維條碼已過期，請重新生成。",
         "IM_SCAN_TIMEOUT": "掃碼授權已逾時，請重新生成。",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "暫時無法連線企業微信授權服務。",
-        "IM_SCAN_PROTOCOL_INVALID": "企業微信授權回應無效，請重新生成。",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "暫時無法連線授權服務。",
+        "IM_SCAN_PROTOCOL_INVALID": "授權回應無效，請重新生成。",
         "IM_SCAN_SESSION_INVALID": "掃碼工作階段無效，請重新開啟。",
         "IM_SCAN_SESSION_CONFLICT": "掃碼授權正在處理中。",
+        "IM_SCAN_DENIED": "掃碼授權遭到拒絕。",
+        "IM_SCOPE_MISSING": "應用程式缺少必要權限，請重新授權。",
         "IM_STALE_GENERATION": "連線狀態已更新，請根據最新狀態重試。",
         "IM_RUNTIME_UNAVAILABLE": "IM 執行時尚未就緒。",
         "IM_CHANNEL_CLEANUP_PENDING": "設定已刪除，本機清理將在背景自動重試。",

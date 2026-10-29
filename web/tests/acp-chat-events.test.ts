@@ -23,6 +23,7 @@ import {
   promptRetryFooterKind,
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
+  hasAcpSessionCanonicalContentForInitialShell,
   isAcpSessionReadyForInitialDisplay,
   isAcpConversationAtBottom,
   shouldShowReturnToLatest,
@@ -1343,6 +1344,45 @@ describe('ACP chat event handling', () => {
     }))).toBe(false);
   });
 
+  it('keeps an active empty response behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'running',
+      systemPromptAppend: null,
+      config: null,
+      events: [],
+      eventPage: {
+        loadedCount: 0,
+        total: 0,
+        hasOlder: false,
+        hasNewer: false,
+      },
+    }))).toBe(false);
+  });
+
+  it('keeps an active empty response with a stale turn error behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay({
+      ...session({
+        status: 'running',
+        systemPromptAppend: null,
+        config: null,
+        events: [],
+        eventPage: {
+          loadedCount: 0,
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+        },
+      }),
+      turnError: {
+        code: { domain: 'provider', code: 'acp.turn-execution-failed' },
+        domain: 'provider',
+        recovery: 'retry',
+        params: {},
+        diagnostic: 'stale failure from an earlier turn',
+      },
+    })).toBe(false);
+  });
+
   it('treats idle canonical history as ready without system prompt metadata', () => {
     expect(isAcpSessionReadyForInitialDisplay(session({
       status: 'idle',
@@ -1359,13 +1399,34 @@ describe('ACP chat event handling', () => {
     }))).toBe(true);
   });
 
-  it('keeps idle sessions without canonical events behind the readiness loading gate', () => {
+  it('treats a successful idle response with no canonical history as ready-empty', () => {
     expect(isAcpSessionReadyForInitialDisplay(session({
       status: 'idle',
       systemPromptAppend: null,
       config: null,
       events: [],
-    }))).toBe(false);
+    }))).toBe(true);
+  });
+
+  it('treats an unmaterialized terminal failure with empty history as ready', () => {
+    const unmaterializedFailure: AcpSessionVm = {
+      ...session({
+        status: 'failed',
+        systemPromptAppend: null,
+        config: null,
+        events: [],
+        turnError: {
+          code: { domain: 'provider', code: 'acp.session-restore-reference-missing' },
+          domain: 'provider',
+          recovery: 'manual',
+          params: {},
+          diagnostic: 'provider session was not materialized',
+        },
+      }),
+      sessionId: null,
+    };
+    expect(isAcpSessionReadyForInitialDisplay(unmaterializedFailure)).toBe(true);
+    expect(hasAcpSessionCanonicalContentForInitialShell(unmaterializedFailure)).toBe(false);
   });
 
   it('keeps a terminal summary with unloaded events behind the readiness loading gate', () => {

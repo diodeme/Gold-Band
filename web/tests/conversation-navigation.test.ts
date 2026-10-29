@@ -496,8 +496,8 @@ describe('conversation sidebar navigation wiring', () => {
 
     expect(source).not.toContain('subscribeScheduledTaskUpdates');
     expect(globalSubscription).toContain('conversationSidebarRunStateRefreshTarget(');
-    expect(globalSubscription).toContain('loadConversationWorkspaceTasks(refreshTarget.projectId)');
-    expect(globalSubscription).toContain('loadConversationRunHistory(refreshTarget.task)');
+    expect(globalSubscription).toContain('loadConversationWorkspaceTasks(refreshTarget.projectId, null, true)');
+    expect(globalSubscription).toContain('loadConversationRunHistory(refreshTarget.task, null, true)');
     expect(globalSubscription).not.toContain('loadConversationPinnedTasks');
   });
 

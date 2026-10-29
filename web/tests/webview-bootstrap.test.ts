@@ -98,4 +98,19 @@ describe('WebView bootstrap', () => {
     expect(document.querySelector('[data-webview-startup-error]')?.textContent).toContain('Gold Band cannot start in this WebView');
     expect(document.documentElement.lang).toBe('en');
   });
+
+  it.each([
+    ['zh-Hans-HK', 'zh-CN', 'Gold Band 无法在当前 WebView 中启动'],
+    ['zh-Hans-TW', 'zh-CN', 'Gold Band 无法在当前 WebView 中启动'],
+    ['zh-Hans-MO', 'zh-CN', 'Gold Band 无法在当前 WebView 中启动'],
+    ['zh-Hant-CN', 'zh-TW', 'Gold Band 無法在目前 WebView 中啟動'],
+    ['zh-HK', 'zh-TW', 'Gold Band 無法在目前 WebView 中啟動'],
+  ])('renders the Chinese script selected by %s', (language, locale, title) => {
+    const snapshot = createWebviewEnvironmentSnapshot(unsupportedWebviewCapabilityProfile);
+
+    renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, language);
+
+    expect(document.querySelector('[data-webview-startup-error] h1')?.textContent).toBe(title);
+    expect(document.documentElement.lang).toBe(locale);
+  });
 });

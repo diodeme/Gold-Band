@@ -18,6 +18,8 @@ vi.mock('@/components/ui/scroll-area', () => ({
 }));
 
 import { ConversationSidebar } from '@/components/conversation/ConversationSidebar';
+import { conversationSidebarRunStateRefreshTarget } from '@/lib/conversation-sidebar-activity';
+import { applyConversationTaskPage, ConversationSidebarSingleFlight } from '@/lib/conversation-sidebar-loading';
 import type { ConversationSidebarVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -64,6 +66,49 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('shows a scheduled conversation in an expanded inactive workspace after an in-flight page settles', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let vm = sidebarVm();
+    const onSelect = vi.fn();
+    const render = () => root.render(<ConversationSidebar {...callbacks} onSelect={onSelect} vm={vm} active={{ kind: 'conversation-home' }} defaultExpandedWorkspaceId="workspace-a" />);
+    const flights = new ConversationSidebarSingleFlight();
+    let resolveOldPage!: () => void;
+    const oldPage = new Promise<void>((resolve) => { resolveOldPage = resolve; });
+    const task = {
+      projectId: 'workspace-b', taskId: 'task-001', taskUuid: 'scheduled-uuid',
+      title: 'Scheduled background conversation', autoTitle: true, runMode: 'direct',
+      scheduledTaskId: 'scheduled-001', pinned: false, runs: [],
+      latestRun: { runId: 'run-001', status: 'running', outcome: null, startedAt: '', updatedAt: '' },
+    };
+    try {
+      await act(async () => render());
+      await act(async () => workspaceButton(container, 'workspace-b').click());
+      const load = flights.run('workspace:workspace-b', async () => {
+        await oldPage;
+        vm = applyConversationTaskPage(vm, { projectId: 'workspace-b', tasks: [], nextCursor: null, errors: [] }, false);
+        render();
+      });
+      const target = conversationSidebarRunStateRefreshTarget(vm, {
+        eventKind: 'node-started', projectId: 'workspace-b', taskId: task.taskId, taskUuid: task.taskUuid,
+        runId: 'run-001', roundId: 'round-001', nodeId: 'direct-agent', attemptId: 'attempt-001', status: 'running', outcome: null,
+      }, 'workspace-a');
+      expect(target).toEqual({ kind: 'workspace-tasks', projectId: 'workspace-b' });
+      flights.run('workspace:workspace-b', async () => {
+        vm = applyConversationTaskPage(vm, { projectId: 'workspace-b', tasks: [task], nextCursor: null, errors: [] }, false);
+        render();
+      }, true);
+      await act(async () => { resolveOldPage(); await load; });
+      expect(container.textContent).toContain(task.title);
+      expect(container.querySelector('.lucide-alarm-clock')).not.toBeNull();
+      expect(workspaceButton(container, 'workspace-b').getAttribute('aria-expanded')).toBe('true');
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders lifecycle priority for workflow task and expanded run dots', async () => {
     const container = document.createElement('div');
     document.body.append(container);

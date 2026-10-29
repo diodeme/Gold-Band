@@ -161,10 +161,25 @@ export type PromptInputTextareaProps = {
   containerClassName?: string
 } & React.ComponentProps<typeof Textarea>
 
+const PROMPT_INPUT_SCROLL_BOTTOM_TOLERANCE_PX = 2
+
+const PROMPT_INPUT_MEASUREMENT_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  left: 0,
+  height: 0,
+  minHeight: 0,
+  maxHeight: "none",
+  overflow: "hidden",
+  visibility: "hidden",
+  pointerEvents: "none",
+}
+
 function PromptInputTextarea({
   className,
   ref: externalRef,
   onKeyDown,
+  onScroll,
   disableAutosize = false,
   textareaDisabled,
   valuePrefix = "",
@@ -180,14 +195,39 @@ function PromptInputTextarea({
   const textareaValue = effectiveValuePrefix ? value.slice(effectiveValuePrefix.length) : value
   const hasLeadingAdornment = Boolean(leadingAdornment && effectiveValuePrefix)
   const leadingAdornmentLayout = useLeadingAdornmentTextIndent(hasLeadingAdornment)
+  const measurementRef = useRef<HTMLTextAreaElement>(null)
+  const scrollStateRef = useRef({ scrollTop: 0, atBottom: true })
+
+  const rememberScrollState = useCallback((el: HTMLTextAreaElement) => {
+    scrollStateRef.current = {
+      scrollTop: el.scrollTop,
+      atBottom: el.scrollHeight - el.scrollTop - el.clientHeight
+        <= PROMPT_INPUT_SCROLL_BOTTOM_TOLERANCE_PX,
+    }
+  }, [])
 
   const adjustHeight = useCallback((el: HTMLTextAreaElement | null) => {
-    if (!el || disableAutosize) return
+    const measurement = measurementRef.current
+    if (!el || !measurement || disableAutosize) return
 
-    el.style.height = "auto"
-    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
+    const previousScroll = scrollStateRef.current
+    // Never shrink the live textarea for measurement: in uncapped mode that also
+    // collapses the ancestor scroll range and clamps its scrollTop to zero.
+    measurement.style.width = `${el.getBoundingClientRect().width}px`
+    const contentHeight = measurement.scrollHeight
+    const size = promptInputTextareaSize(contentHeight, maxHeight)
     el.style.height = size.height
     el.style.overflowY = size.overflowY
+    const maxScrollTop = Math.max(0, contentHeight - el.clientHeight)
+    if (size.overflowY === "auto") {
+      el.scrollTop = previousScroll.atBottom
+        ? maxScrollTop
+        : Math.min(previousScroll.scrollTop, maxScrollTop)
+    }
+    scrollStateRef.current = {
+      scrollTop: el.scrollTop,
+      atBottom: maxScrollTop - el.scrollTop <= PROMPT_INPUT_SCROLL_BOTTOM_TOLERANCE_PX,
+    }
   }, [disableAutosize, maxHeight])
 
   const handleRef = useCallback((el: HTMLTextAreaElement | null) => {
@@ -197,12 +237,31 @@ function PromptInputTextarea({
     } else if (externalRef) {
       externalRef.current = el
     }
-    adjustHeight(el)
-  }, [adjustHeight, externalRef, textareaRef])
+    if (el) rememberScrollState(el)
+  }, [externalRef, rememberScrollState, textareaRef])
+
+  const handleScroll = useCallback((event: React.UIEvent<HTMLTextAreaElement>) => {
+    rememberScrollState(event.currentTarget)
+    onScroll?.(event)
+  }, [onScroll, rememberScrollState])
 
   useLayoutEffect(() => {
     adjustHeight(textareaRef.current)
   }, [adjustHeight, textareaRef, textareaValue])
+
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el || disableAutosize || typeof ResizeObserver === "undefined") return
+
+    const observer = new ResizeObserver(() => {
+      // Height changes also trigger this observer; only a new width needs remeasurement.
+      if (measurementRef.current?.style.width !== `${el.getBoundingClientRect().width}px`) {
+        adjustHeight(el)
+      }
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [adjustHeight, disableAutosize, textareaRef])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setValue(`${effectiveValuePrefix}${e.target.value}`)
@@ -216,6 +275,12 @@ function PromptInputTextarea({
       onSubmit?.()
     }
   }
+
+  const textareaClassName = cn(
+    "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
+    className,
+    hasLeadingAdornment && "px-0"
+  )
 
   // The wrapper is always rendered so the textarea keeps its DOM identity (focus and caret) when a
   // leading adornment appears or disappears; only the adornment slot and horizontal inset change.
@@ -242,15 +307,31 @@ function PromptInputTextarea({
         }}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        className={cn(
-          "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-          className,
-          hasLeadingAdornment && "px-0"
-        )}
+        onScroll={handleScroll}
+        className={textareaClassName}
         rows={1}
         disabled={effectiveDisabled}
         {...props}
       />
+      {!disableAutosize ? (
+        <Textarea
+          ref={measurementRef}
+          data-slot="prompt-input-measurement"
+          aria-hidden="true"
+          tabIndex={-1}
+          readOnly
+          rows={1}
+          value={textareaValue || props.placeholder || " "}
+          wrap={props.wrap}
+          dir={props.dir}
+          className={textareaClassName}
+          style={{
+            ...style,
+            ...leadingAdornmentLayout.textareaStyle,
+            ...PROMPT_INPUT_MEASUREMENT_STYLE,
+          }}
+        />
+      ) : null}
     </div>
   )
 }

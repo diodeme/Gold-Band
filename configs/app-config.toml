@@ -27,6 +27,10 @@ requireLocalClaudeExecutable = false
 [im.wecomScanAuth]
 source = "maling"
 
+[im.feishuScanAuth]
+source = "maling"
+appDescriptionSuffix = "remote intervention"
+
 [projectIdentity]
 maxLength = 80
 hashHexLength = 8

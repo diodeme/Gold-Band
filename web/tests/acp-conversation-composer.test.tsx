@@ -61,8 +61,7 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     runtimeContinueSubmitting: false,
     onRuntimeContinue: vi.fn(),
     configBar: null,
-    attachedPanelVisible: true,
-    integratedInfoTab: false,
+    stackSlot: { above: 'divided', below: 'none', infoTab: false, gapBelow: false },
     queueSubmit: true,
     ...overrides,
   };
@@ -220,7 +219,7 @@ describe('AcpConversationComposer', () => {
   });
 
   it('does not render an empty attachment spacer between an attached queue and the prompt input', async () => {
-    await renderComposer({ attachments: [], attachedPanelVisible: true });
+    await renderComposer({ attachments: [], stackSlot: { above: 'divided', below: 'none', infoTab: false, gapBelow: false } });
 
     const composerRoot = host.querySelector('[data-conversation-composer="acp"]');
     expect(composerRoot?.querySelector('[data-acp-composer-attachment-row="true"]')).toBeNull();

@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { applyAgentDiagnosticUpdate, applyAgentModelConfigUpdate, AGENT_MODEL_CONFIG_UPDATED_EVENT, type AgentModelConfigUpdate } from '@/lib/agent-diagnostic-update';
 import { setChannelAppName } from '@/lib/channel-app-name';
+import { revalidateProfileCatalog, useProfileCatalog } from '@/lib/profile-catalog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
@@ -20,7 +21,6 @@ import {
   getConversationSidebarBootstrap,
   getConversationTaskPage,
   acknowledgeConversationTerminalResult,
-  getProfiles,
   getWorkflowTemplates,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
@@ -261,7 +261,6 @@ import type {
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
   CreateTaskInput,
-  ProfileVm,
   DesktopLanguage,
   AppearancePreference,
   PersonalizationPreference,
@@ -608,7 +607,7 @@ export function App() {
     });
   }, []);
 
-  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null) => {
+  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null, refresh = false) => {
     const append = Boolean(cursor);
     const flightKey = `workspace:${projectId}`;
     return conversationSidebarFlights.run(flightKey, async () => {
@@ -636,7 +635,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationPinnedTasks = useCallback((cursor?: string | null) => {
@@ -673,6 +672,7 @@ export function App() {
   const loadConversationRunHistory = useCallback((
     task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
     cursor?: string | null,
+    refresh = false,
   ) => {
     const append = Boolean(cursor);
     const flightKey = `runs:${task.projectId}:${task.taskUuid ?? task.taskId}`;
@@ -706,7 +706,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationSidebarBootstrap = useCallback(() => conversationSidebarFlights.run('bootstrap', async () => {
@@ -851,7 +851,6 @@ export function App() {
   );
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
-  const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
   const composerDraftRef = useRef<ConversationComposerDraftBoundaryHandle | null>(null);
@@ -967,11 +966,7 @@ export function App() {
     });
   }, []);
 
-  const loadProfiles = useCallback(async () => {
-    const result = await getProfiles();
-    setProfiles(result.profiles);
-    return result.profiles;
-  }, []);
+  const loadProfiles = revalidateProfileCatalog;
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
@@ -1151,6 +1146,7 @@ export function App() {
 
   const appSessionReady = bootstrap != null;
   const conversationShellReady = appSessionReady && uiMode === 'conversation';
+  const { profiles } = useProfileCatalog(conversationShellReady);
 
   // Publish workspace identity first, then load only the visible task page and pinned summaries.
   // Preference / updater patches replace the bootstrap object; they must not retrigger this load.
@@ -1177,9 +1173,9 @@ export function App() {
         activeProjectId,
       );
       if (refreshTarget?.kind === 'workspace-tasks') {
-        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+        void loadConversationWorkspaceTasks(refreshTarget.projectId, null, true).catch(() => {});
       } else if (refreshTarget?.kind === 'task-runs') {
-        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+        void loadConversationRunHistory(refreshTarget.task, null, true).catch(() => {});
       }
       if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
@@ -1299,9 +1295,8 @@ export function App() {
 
   useEffect(() => {
     if (!conversationShellReady) return;
-    loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
-  }, [conversationShellReady, loadProfiles]);
+  }, [conversationShellReady]);
 
   useEffect(() => {
     if (!conversationShellReady || !defaultProjectId) return;

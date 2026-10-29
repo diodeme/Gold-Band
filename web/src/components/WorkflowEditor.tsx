@@ -86,7 +86,7 @@ import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agen
 import { GraphControls } from '@/components/GraphControls';
 import { normalizeWorkflowModelBindings, reconcileWorkflowModelBindings } from '@/lib/workflow-model-bindings';
 import { normalizeAuthoringConfigOverrides, projectAuthoringConfigOverrides } from '@/lib/acp-composite-config';
-import type { WorkflowProfileCatalogState } from '@/lib/workflow-profile-catalog';
+import type { ProfileCatalogState } from '@/lib/profile-catalog';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
   return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
@@ -429,7 +429,7 @@ interface WorkflowEditorProps {
   value: WorkflowDsl;
   modelBindings?: WorkflowModelBindings;
   agentRegistry: AgentRegistryVm | null;
-  profileCatalog: WorkflowProfileCatalogState;
+  profileCatalog: ProfileCatalogState;
   onOpenProfileManagement?: () => void;
   onSave?: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
   onChange?: (workflow: WorkflowDsl) => void;
@@ -3372,7 +3372,7 @@ type PathSegment = { type: 'key'; key: string } | { type: 'index'; index: number
 
 export function validateWorkflowForSave(
   workflow: WorkflowDsl,
-  profileCatalog: WorkflowProfileCatalogState,
+  profileCatalog: ProfileCatalogState,
   agents: ManagedAgentVm[],
   t: (key: string, options?: Record<string, unknown>) => string,
   workflowTemplates: WorkflowTemplateStore | null = null,

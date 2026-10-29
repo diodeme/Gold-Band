@@ -22,7 +22,9 @@ export function conversationSidebarRunStateRefreshTarget(
   if (!event.taskUuid) return null;
   const task = findConversationTask(sidebar, event.projectId, event.taskId);
   if (!task) {
-    return event.projectId === activeProjectId
+    const pageStatus = sidebar.workspaceTaskPages?.[event.projectId]?.status;
+    const workspaceLoaded = pageStatus != null && pageStatus !== 'not-loaded';
+    return event.projectId === activeProjectId || workspaceLoaded
       ? { kind: 'workspace-tasks', projectId: event.projectId }
       : null;
   }

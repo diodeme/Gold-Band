@@ -11,7 +11,7 @@ import type {
 } from '@/types';
 import { authoringConfigOptionsForModel, hasObservedAuthoringModel, remapAcpThoughtLevelOverride, retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
-import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { readyProfileCatalog } from '@/lib/profile-catalog';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 
 export type SelectableAgentOption = {
@@ -172,7 +172,7 @@ export function validateWorkflowTemplateForConversationStart(
   const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
   const validation = validateWorkflowForSave(
     template.workflow,
-    readyWorkflowProfileCatalog(profiles),
+    readyProfileCatalog(profiles),
     agents,
     t,
     workflowTemplates,
@@ -197,7 +197,7 @@ export function workflowRepairTargetForTemplate(
   const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
   const validation = validateWorkflowForSave(
     template.workflow,
-    readyWorkflowProfileCatalog(profiles),
+    readyProfileCatalog(profiles),
     agents,
     t,
     workflowTemplates,

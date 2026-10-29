@@ -5906,12 +5906,7 @@ mod tests {
             runner
                 .run(
                     &root,
-                    &[
-                        "remote",
-                        "set-url",
-                        "origin",
-                        "https://example.com/moved.git"
-                    ]
+                    &["remote", "set-url", "origin", "https://example.com/moved.git"]
                 )
                 .unwrap()
                 .success

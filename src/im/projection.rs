@@ -4,7 +4,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::app::intervention::{
-    ElicitationQuestionKind, InterventionCommandService, InterventionError, InterventionLocator,
+    ElicitationQuestionKind, InterventionAllowedAction, InterventionCommandService,
+    InterventionError, InterventionLocator, RemoteElicitationForm,
     permission_action_is_safe_remote_reject, permission_actions_require_desktop,
 };
 use crate::app::{AcpTurnOutcome, App, RuntimeInterventionKind, RuntimeLifecycleEvent};
@@ -13,14 +14,13 @@ use crate::domain::RunOutcome;
 use super::{
     IM_LIFECYCLE_QUEUE_CAPACITY, IM_PAYLOAD_VERSION, INTERVENTION_NODE_FIELD,
     INTERVENTION_TASK_FIELD, INTERVENTION_WORKSPACE_FIELD, ImChannelCapabilities, ImChannelKind,
-    ImDelivery, ImDeliveryInsertResult, ImDeliveryPayload, ImDestination, ImIntegrationSettings,
-    ImNavigationLocator, ImNotificationKind, ImNotificationPreferences, ImRepository,
-    ImRepositoryError, InformationalNotification, InterventionPresentation, InterventionQuestion,
-    InterventionQuestionKind, InterventionQuestionOption, InterventionRef,
-    is_intervention_context_field,
+    ImCustomAnswerSupport, ImDelivery, ImDeliveryInsertResult, ImDeliveryPayload, ImDestination,
+    ImIntegrationSettings, ImInteractionCapabilities, ImNavigationLocator, ImNotificationKind,
+    ImNotificationPreferences, ImRepository, ImRepositoryError, InformationalNotification,
+    InterventionPresentation, InterventionQuestion, InterventionQuestionKind,
+    InterventionQuestionOption, InterventionRef, is_intervention_context_field,
 };
 
-const WECOM_MAX_PERMISSION_OPTIONS: usize = 20;
 const MAX_IM_PRESENTATION_FIELD_CHARS: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -389,10 +389,13 @@ impl ImLifecycleProjector {
                         ) && permission_action_is_safe_remote_reject(action)
                     });
                 } else if notification_kind == ImNotificationKind::Elicitation {
+                    // Decline stays in the draft; each channel decides whether
+                    // it can publish it (`project_for_channel`).
                     remote_allowed_actions.retain(|action| {
                         matches!(
                             action,
-                            crate::app::intervention::InterventionAllowedAction::ElicitationFixedForm { .. }
+                            InterventionAllowedAction::ElicitationFixedForm { .. }
+                                | InterventionAllowedAction::ElicitationDecline
                         )
                     });
                 }
@@ -497,21 +500,18 @@ impl ImLifecycleProjector {
                 result.skipped += 1;
                 continue;
             }
-            if draft.notification_kind == ImNotificationKind::Elicitation
-                && target.channel != ImChannelKind::WeCom
-            {
+            let Some(payload) = project_payload_for_channel(
+                draft.notification_kind,
+                &draft.payload,
+                &target.capabilities.interaction,
+            ) else {
                 result.skipped += 1;
                 continue;
-            }
+            };
             let destination = target
                 .destination
                 .clone()
                 .expect("eligible target has destination");
-            let payload = if draft.notification_kind == ImNotificationKind::Permission {
-                project_permission_payload(&draft.payload)
-            } else {
-                draft.payload.clone()
-            };
             let delivery = ImDelivery {
                 delivery_id: ImDelivery::deterministic_id(
                     target.channel,
@@ -536,22 +536,118 @@ impl ImLifecycleProjector {
     }
 }
 
-fn project_permission_payload(payload: &ImDeliveryPayload) -> ImDeliveryPayload {
+/// Writes the actions one channel actually publishes into its own payload;
+/// `None` means this channel receives no delivery (§7.2).
+fn project_payload_for_channel(
+    kind: ImNotificationKind,
+    payload: &ImDeliveryPayload,
+    capabilities: &ImInteractionCapabilities,
+) -> Option<ImDeliveryPayload> {
     let ImDeliveryPayload::Intervention {
         version,
         reference,
         presentation,
     } = payload
     else {
-        return payload.clone();
+        return Some(payload.clone());
     };
     let mut reference = reference.clone();
-    reference.allowed_actions = remote_permission_actions(&reference.allowed_actions);
-    ImDeliveryPayload::Intervention {
+    reference.allowed_actions =
+        project_for_channel(kind, &reference.allowed_actions, capabilities)?;
+    Some(ImDeliveryPayload::Intervention {
         version: *version,
         reference,
         presentation: presentation.clone(),
+    })
+}
+
+/// Pure per-channel projection of the channel-independent allowed actions.
+pub(crate) fn project_for_channel(
+    kind: ImNotificationKind,
+    actions: &[InterventionAllowedAction],
+    capabilities: &ImInteractionCapabilities,
+) -> Option<Vec<InterventionAllowedAction>> {
+    match kind {
+        ImNotificationKind::Permission => Some(remote_permission_actions(
+            actions,
+            usize::from(capabilities.permission_max_options),
+        )),
+        ImNotificationKind::Elicitation => {
+            let form = InterventionAllowedAction::fixed_form(actions)?;
+            let mut form = fit_form(form, capabilities)?;
+            form.decline_allowed &= actions
+                .iter()
+                .any(|action| matches!(action, InterventionAllowedAction::ElicitationDecline));
+            let decline_allowed = form.decline_allowed;
+            let mut fitted = vec![InterventionAllowedAction::ElicitationFixedForm { form }];
+            if decline_allowed {
+                fitted.push(InterventionAllowedAction::ElicitationDecline);
+            }
+            Some(fitted)
+        }
+        _ => Some(actions.to_vec()),
     }
+}
+
+/// Fits a remote form to one channel's interaction capabilities. Returns
+/// `None` when the channel cannot carry the form faithfully; the desktop
+/// still handles it.
+pub(crate) fn fit_form(
+    form: &RemoteElicitationForm,
+    capabilities: &ImInteractionCapabilities,
+) -> Option<RemoteElicitationForm> {
+    if form.questions.is_empty() || form.questions.len() > usize::from(capabilities.max_questions) {
+        return None;
+    }
+    let multi_question = form.questions.len() > 1;
+    let single_choice_limit = if multi_question {
+        capabilities.single_choice_max_options.multi_question
+    } else {
+        capabilities.single_choice_max_options.single_question
+    };
+    let mut fitted = form.clone();
+    for question in &mut fitted.questions {
+        let option_count = question.question.options.len();
+        match question.question.question_kind {
+            ElicitationQuestionKind::SingleSelect => {
+                if option_count > usize::from(single_choice_limit) {
+                    return None;
+                }
+            }
+            ElicitationQuestionKind::MultiSelect => {
+                let multi_choice = capabilities.multi_choice?;
+                if option_count > usize::from(multi_choice.max_options)
+                    || (multi_question && !multi_choice.within_multi_question)
+                {
+                    return None;
+                }
+            }
+            ElicitationQuestionKind::FreeText => {
+                let free_text = capabilities.free_text?;
+                question.constraints.max_chars =
+                    question.constraints.max_chars.min(free_text.max_chars);
+                question.constraints.multiline &= free_text.multiline;
+                continue;
+            }
+        }
+        if question.custom_answer_key.is_none() {
+            continue;
+        }
+        match capabilities.custom_answer {
+            ImCustomAnswerSupport::Supported { max_chars } => {
+                question.constraints.max_chars = question.constraints.max_chars.min(max_chars);
+            }
+            ImCustomAnswerSupport::Unsupported => {
+                if question.question.question_kind == ElicitationQuestionKind::MultiSelect {
+                    return None;
+                }
+                // Single select keeps its listed options only.
+                question.custom_answer_key = None;
+            }
+        }
+    }
+    fitted.decline_allowed &= capabilities.decline;
+    Some(fitted)
 }
 
 fn bounded_presentation_field(value: &str) -> String {
@@ -574,9 +670,9 @@ fn bounded_presentation_field(value: &str) -> String {
 }
 
 fn remote_permission_actions(
-    actions: &[crate::app::intervention::InterventionAllowedAction],
-) -> Vec<crate::app::intervention::InterventionAllowedAction> {
-    let capacity = WECOM_MAX_PERMISSION_OPTIONS;
+    actions: &[InterventionAllowedAction],
+    capacity: usize,
+) -> Vec<InterventionAllowedAction> {
     if actions.len() <= capacity && !permission_actions_require_desktop(actions) {
         return actions.to_vec();
     }
@@ -722,11 +818,9 @@ mod tests {
             channel,
             enabled: true,
             credential_available: true,
-            capabilities: ImChannelCapabilities {
-                proactive_delivery: true,
-                card_actions: true,
-                message_update: true,
-                private_chat: true,
+            capabilities: match channel {
+                ImChannelKind::WeCom => crate::im::connectors::wecom::WECOM_CHANNEL_CAPABILITIES,
+                ImChannelKind::Feishu => crate::im::connectors::feishu::FEISHU_CHANNEL_CAPABILITIES,
             },
             destination: Some(ImDestination {
                 destination_id: format!("{channel:?}-user"),
@@ -1089,6 +1183,18 @@ mod tests {
     }
 
     fn write_elicitation_projection_fixture(app: &App, properties: serde_json::Value) {
+        write_elicitation_projection_fixture_with_required(
+            app,
+            properties,
+            serde_json::json!(["features"]),
+        );
+    }
+
+    fn write_elicitation_projection_fixture_with_required(
+        app: &App,
+        properties: serde_json::Value,
+        required: serde_json::Value,
+    ) {
         let locator = InterventionLocator {
             project_id: app.paths.project_id.clone(),
             task_id: "task-1".into(),
@@ -1156,7 +1262,7 @@ mod tests {
                 "requestedSchema": {
                     "type": "object",
                     "properties": properties,
-                    "required": ["features"]
+                    "required": required
                 }
             }))
             .unwrap();
@@ -1533,6 +1639,385 @@ mod tests {
             &reference.allowed_actions[0],
             crate::app::intervention::InterventionAllowedAction::ElicitationFixedForm { .. }
         ));
+    }
+
+    fn single_select(title: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "string",
+            "title": title,
+            "oneOf": [
+                {"const": "a", "title": "A"},
+                {"const": "b", "title": "B"}
+            ]
+        })
+    }
+
+    fn multi_select(title: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "array",
+            "title": title,
+            "items": {"anyOf": [
+                {"const": "a", "title": "A"},
+                {"const": "b", "title": "B"}
+            ]}
+        })
+    }
+
+    /// Projects one elicitation schema to a WeCom target and returns the
+    /// persisted actionable delivery, or `None` when WeCom received none.
+    fn project_wecom_elicitation(
+        properties: serde_json::Value,
+        required: serde_json::Value,
+    ) -> Option<ImDelivery> {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_elicitation_projection_fixture_with_required(&app, properties, required);
+        let repository = Arc::new(ImRepository::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        ));
+        let projector = ImLifecycleProjector::new(Arc::clone(&repository));
+        projector
+            .project_event(
+                &app,
+                &elicitation_event(&app.paths.project_id, "elicitation-boundary"),
+                &[target(ImChannelKind::WeCom)],
+                100,
+            )
+            .unwrap();
+        repository
+            .claim_due(
+                ImChannelKind::WeCom,
+                100,
+                std::time::Duration::from_secs(60),
+                1,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|claimed| claimed.delivery)
+            .find(|delivery| matches!(delivery.payload, ImDeliveryPayload::Intervention { .. }))
+    }
+
+    fn has_fixed_form(delivery: &ImDelivery) -> bool {
+        let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
+            return false;
+        };
+        reference.allowed_actions.iter().any(|action| {
+            matches!(
+                action,
+                crate::app::intervention::InterventionAllowedAction::ElicitationFixedForm { .. }
+            )
+        })
+    }
+
+    fn remote_question(
+        kind: ElicitationQuestionKind,
+        options: usize,
+        custom_answer: bool,
+    ) -> crate::app::intervention::RemoteQuestion {
+        crate::app::intervention::RemoteQuestion {
+            selector_key: "q0".into(),
+            question: crate::app::intervention::ElicitationQuestion {
+                field_name: "field".into(),
+                title: "Question".into(),
+                description: None,
+                question_kind: kind,
+                options: (0..options)
+                    .map(
+                        |index| crate::app::intervention::ElicitationQuestionOption {
+                            value: serde_json::json!(index),
+                            label: format!("Option {index}"),
+                            description: None,
+                        },
+                    )
+                    .collect(),
+                allows_custom_answer: custom_answer,
+            },
+            constraints: crate::app::intervention::RemoteQuestionConstraints {
+                required: true,
+                allows_empty: false,
+                max_chars: 4000,
+                multiline: true,
+            },
+            custom_answer_key: custom_answer.then(|| "field_custom".into()),
+        }
+    }
+
+    fn remote_form(
+        questions: Vec<crate::app::intervention::RemoteQuestion>,
+    ) -> RemoteElicitationForm {
+        RemoteElicitationForm {
+            questions,
+            decline_allowed: true,
+        }
+    }
+
+    #[test]
+    fn fit_form_follows_channel_capabilities() {
+        use ElicitationQuestionKind::{FreeText, MultiSelect, SingleSelect};
+        let wecom = crate::im::connectors::wecom::WECOM_CHANNEL_CAPABILITIES.interaction;
+        let rich = crate::im::connector::test_support::capabilities(
+            crate::im::ImMessageUpdateMode::Anytime,
+        )
+        .interaction;
+        let cases = [
+            (
+                "four questions",
+                vec![remote_question(SingleSelect, 2, false); 4],
+                false,
+                true,
+            ),
+            (
+                "five questions",
+                vec![remote_question(SingleSelect, 2, false); 5],
+                false,
+                true,
+            ),
+            (
+                "six questions",
+                vec![remote_question(SingleSelect, 2, false); 6],
+                false,
+                false,
+            ),
+            (
+                "single select 20",
+                vec![remote_question(SingleSelect, 20, false)],
+                true,
+                true,
+            ),
+            (
+                "single select 21",
+                vec![remote_question(SingleSelect, 21, false)],
+                false,
+                false,
+            ),
+            (
+                "multi-question options 11",
+                vec![
+                    remote_question(SingleSelect, 11, false),
+                    remote_question(SingleSelect, 2, false),
+                ],
+                false,
+                true,
+            ),
+            (
+                "multi select in multi-question form",
+                vec![
+                    remote_question(SingleSelect, 2, false),
+                    remote_question(MultiSelect, 2, false),
+                ],
+                false,
+                true,
+            ),
+            (
+                "multi select custom",
+                vec![remote_question(MultiSelect, 2, true)],
+                false,
+                true,
+            ),
+            (
+                "single select custom",
+                vec![remote_question(SingleSelect, 2, true)],
+                true,
+                true,
+            ),
+            (
+                "free text",
+                vec![remote_question(FreeText, 0, false)],
+                false,
+                true,
+            ),
+        ];
+        for (name, questions, wecom_fits, rich_fits) in cases {
+            let form = remote_form(questions);
+            assert_eq!(
+                fit_form(&form, &wecom).is_some(),
+                wecom_fits,
+                "WeCom: {name}"
+            );
+            assert_eq!(fit_form(&form, &rich).is_some(), rich_fits, "rich: {name}");
+        }
+    }
+
+    #[test]
+    fn fit_form_keeps_feishu_select_capacity_in_multi_question_forms() {
+        use ElicitationQuestionKind::{MultiSelect, SingleSelect};
+        let feishu = crate::im::connectors::feishu::FEISHU_CHANNEL_CAPABILITIES.interaction;
+        let form = remote_form(vec![
+            remote_question(SingleSelect, 4, false),
+            remote_question(SingleSelect, 4, false),
+            remote_question(MultiSelect, 4, true),
+            remote_question(SingleSelect, 3, true),
+        ]);
+
+        let fitted = fit_form(&form, &feishu).expect("actual Feishu follow-up shape");
+        assert_eq!(fitted.questions.len(), 4);
+        assert!(fitted.questions[2].custom_answer_key.is_some());
+        assert!(fitted.questions[3].custom_answer_key.is_some());
+    }
+
+    #[test]
+    fn fit_form_trims_unsupported_details_without_touching_supported_ones() {
+        let wecom = crate::im::connectors::wecom::WECOM_CHANNEL_CAPABILITIES.interaction;
+        let rich = crate::im::connector::test_support::capabilities(
+            crate::im::ImMessageUpdateMode::Anytime,
+        )
+        .interaction;
+        let single_custom = remote_form(vec![remote_question(
+            ElicitationQuestionKind::SingleSelect,
+            2,
+            true,
+        )]);
+        let on_wecom = fit_form(&single_custom, &wecom).unwrap();
+        assert_eq!(on_wecom.questions[0].custom_answer_key, None);
+        assert!(!on_wecom.decline_allowed);
+        let on_rich = fit_form(&single_custom, &rich).unwrap();
+        assert_eq!(
+            on_rich.questions[0].custom_answer_key.as_deref(),
+            Some("field_custom")
+        );
+        assert_eq!(on_rich.questions[0].constraints.max_chars, 500);
+        assert!(on_rich.decline_allowed);
+
+        let free_text = remote_form(vec![remote_question(
+            ElicitationQuestionKind::FreeText,
+            0,
+            false,
+        )]);
+        assert_eq!(
+            fit_form(&free_text, &rich).unwrap().questions[0]
+                .constraints
+                .max_chars,
+            2000
+        );
+    }
+
+    #[test]
+    fn decline_is_published_only_where_the_channel_supports_it() {
+        let form = remote_form(vec![remote_question(
+            ElicitationQuestionKind::SingleSelect,
+            2,
+            false,
+        )]);
+        let actions = [
+            InterventionAllowedAction::ElicitationFixedForm { form },
+            InterventionAllowedAction::ElicitationDecline,
+        ];
+        let wecom = crate::im::connectors::wecom::WECOM_CHANNEL_CAPABILITIES.interaction;
+        let rich = crate::im::connector::test_support::capabilities(
+            crate::im::ImMessageUpdateMode::Anytime,
+        )
+        .interaction;
+        let on_wecom =
+            project_for_channel(ImNotificationKind::Elicitation, &actions, &wecom).unwrap();
+        assert_eq!(on_wecom.len(), 1);
+        let on_rich =
+            project_for_channel(ImNotificationKind::Elicitation, &actions, &rich).unwrap();
+        assert_eq!(on_rich.len(), 2);
+        assert!(matches!(
+            on_rich[1],
+            InterventionAllowedAction::ElicitationDecline
+        ));
+    }
+
+    // WeCom golden boundary (§11.1): these cases freeze which elicitation
+    // shapes reach WeCom as an actionable card across the capability refactor.
+    #[test]
+    fn wecom_four_question_form_is_not_projected_before_sending_details() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "q1": single_select("Q1"),
+                "q2": single_select("Q2"),
+                "q3": single_select("Q3"),
+                "q4": single_select("Q4")
+            }),
+            serde_json::json!(["q1"]),
+        );
+        assert!(
+            delivery.is_none(),
+            "WeCom rejects four selectors with 42047; skip the whole delivery"
+        );
+    }
+
+    #[test]
+    fn wecom_golden_six_questions_are_not_projected() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "q1": single_select("Q1"),
+                "q2": single_select("Q2"),
+                "q3": single_select("Q3"),
+                "q4": single_select("Q4"),
+                "q5": single_select("Q5"),
+                "q6": single_select("Q6")
+            }),
+            serde_json::json!(["q1"]),
+        );
+        assert!(delivery.is_none());
+    }
+
+    #[test]
+    fn wecom_five_single_select_questions_exceed_the_verified_platform_limit() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "q1": single_select("Q1"),
+                "q2": single_select("Q2"),
+                "q3": single_select("Q3"),
+                "q4": single_select("Q4"),
+                "q5": single_select("Q5")
+            }),
+            serde_json::json!(["q1"]),
+        );
+        assert!(delivery.is_none());
+    }
+
+    #[test]
+    fn wecom_golden_three_single_select_questions_are_projected() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "q1": single_select("Q1"),
+                "q2": single_select("Q2"),
+                "q3": single_select("Q3")
+            }),
+            serde_json::json!(["q1"]),
+        )
+        .expect("three single-select questions stay actionable on WeCom");
+        assert!(has_fixed_form(&delivery));
+    }
+
+    #[test]
+    fn wecom_golden_multi_question_form_with_multi_select_is_not_projected() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "q1": single_select("Q1"),
+                "q2": multi_select("Q2")
+            }),
+            serde_json::json!(["q1"]),
+        );
+        assert!(delivery.is_none());
+    }
+
+    #[test]
+    fn wecom_golden_multi_select_with_custom_answer_is_not_projected() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "features": multi_select("Features"),
+                "features_custom": {"type": "string", "title": "Other"}
+            }),
+            serde_json::json!(["features"]),
+        );
+        assert!(delivery.is_none());
+    }
+
+    #[test]
+    fn wecom_golden_single_select_with_custom_answer_keeps_listed_options_only() {
+        let delivery = project_wecom_elicitation(
+            serde_json::json!({
+                "database": single_select("Database"),
+                "database_custom": {"type": "string", "title": "Other"}
+            }),
+            serde_json::json!(["database"]),
+        )
+        .expect("single select with a custom answer stays actionable on WeCom");
+        assert!(has_fixed_form(&delivery));
     }
 
     #[test]

@@ -161,16 +161,18 @@
   - **2026-10-13 断网事故**：14:53 续跑后遇到 429/502 风暴，两臂 70 分钟没有一次成功的模型调用（账号 5 小时用量保持 0% 证实），CC 会话直接启动失败，段以 0 token 正常关闭续跑，无进度与记账损失。
   - **2026-10-14 WSL 虚拟机重启**：12:42 WSL 弹跳（两臂当时已正常暂停，状态已冻结，零损失；Docker 开机自启无恙），但看门狗与内存回收定时器当时是 systemd-run 临时 unit，没能存活，13:50 额度恢复后无人续跑，16:38 才人工拉起。此后两者改为持久 unit，WSL 重启后自动恢复。
   - **停机**：暂停两臂，等人工执行 `watchdog.py release`。`watchdog.py hold` 可以人工停机。
+  - **单臂运行**：`watchdog.py select-arms auto` 将可运行臂持久化为仅 AUTO，未选中的 CC 保持暂停；全局 `release`、额度恢复和看门狗重启均不清除此选择。重新启用两臂需明确执行 `watchdog.py select-arms auto cc`。选择先原子保存，再暂停未选中臂，未完成的暂停由下一次检查重试。复用现有状态和锁，不新增服务或扫描路径；每次仅检查两条账本。
+    - 2026-10-18：按用户要求，仅恢复 AUTO，CC 暂不恢复；不改动 AUTO 任务、提示词或运行时二进制。
   - **事件**：写入 `watchdog/events.jsonl`（台北时间）。
   - **范围**：只改动这 3 个托管账号，不碰其他凭据，也不会用到第 3 次重置机会。
   - **2026-10-13 账号范围修正**：一个额外的 Pro 订阅（cloudiam999，前缀 `pro`）10-11 20:10 起意外加入轮询，至 10-13 22:43 承载过 259 个请求（两臂 token 记账不受影响；其模型指纹未被探测，无法追溯）。当晚在其 `excluded-models` 中排除 `gpt-5.6-sol`：两臂全速运行时其请求计数归零（轮询已不含它），显式 `pro/gpt-5.6-sol` 前缀仍通（留给操作者自用）。此后 benchmark 流量只走 3 个托管账号。
 - **等 token 结算**：两臂按相同 token 预算比较。
-  - AUTO 完成后，以它账本的累计 token 作为预算。CC 若尚未完成，就继续跑。
+  - AUTO 完成后，以它账本的累计 token 作为预算。CC 若尚未完成且被选为可运行臂，就继续跑；人工排除 CC 时不会为追平预算自动启用它。
   - CC 的实时 token（账本累计加上运行段的 sample buffer 中已完成模型事件的 `total_tokens`）达到预算后，看门狗暂停 CC，不再续跑，并对该冻结状态做一次官方评分。
   - **快照评分**：`score-snapshot.sh` 只取冻结状态中的 `workdir/src`，交给 `gb_mirrorcode_snapshot` task（同一 setup、scorer、版本，模型为 mockllm）还原并评分。评分 job 与运行 job 分开，结果写入 `snapshot-scored` 事件。
   - **校验**：用该方法给 CC s2 冻结状态（757,767,253 token）评分，得到 visible 0.6544（与当时 CC 自己的最好可见分 498/761 一致），hidden 0.3115。
   - `watchdog.py lift-budget` 解除预算，CC 可以从冻结状态继续跑。
-- **离线测试**：`test_segments.py`、`test_watchdog.py`、`test_cpa.py` 与 `test_sample_buffer.py`，共 89 个。重构后，两份已存的闸门种子由 `gated_resume_seed.py` 重新生成，结果完全一致。
+- **离线测试**：`test_segments.py`、`test_watchdog.py`、`test_cpa.py` 与 `test_sample_buffer.py`，共 93 个（含单臂选择持久化、额度暂停/恢复后仍只运行 AUTO、暂停失败重试及无效选择不写入）。重构后，两份已存的闸门种子由 `gated_resume_seed.py` 重新生成，结果完全一致。
 - **离线预演（2026-10-11）**：在同镜像的一次性容器中还原 AUTO s2 冻结状态，断网运行。
   - 第一遍 `continue --recover-interrupted`：3 个叶子都恢复了原 ACP 会话（`restored=true`），断网下 run 正常暂停为 runtime-abnormal。
   - 第二遍运行 20 秒后发 SIGTERM：1 秒内以退出码 2 退出，run 为 `process-interrupted`。

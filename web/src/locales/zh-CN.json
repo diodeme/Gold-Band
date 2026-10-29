@@ -932,6 +932,7 @@
       "composer-history-query-failed": "输入历史加载失败，请重试。",
       "turn-execution-failed": "本次消息处理失败，请重试。",
       "session-request-failed": "会话准备失败，请重试。",
+      "session-restore-reference-missing": "当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。",
       "missing-provider": "当前节点缺少 provider 配置。",
       "subagent-protocol-upgrade-required": "请将 Claude ACP 升级至 {{minimumVersion}} 或更高版本后重试。",
       "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "读取引用文件信息失败，请重试。",
       "workspace-file-count-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
       "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
-      "session-restore-reference-missing": "当前会话缺少可恢复的 Provider 会话引用。",
       "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
       "prompt-empty": "请输入要发送的内容。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
@@ -2366,7 +2366,7 @@
     "stopFailed": "停止失败",
     "stopHint": "停止当前 ACP 会话",
     "noEvents": "暂无 ACP 事件",
-    "launchingClaude": "Agent 调起中",
+    "preparingAgent": "正在准备 Agent",
     "processing": "处理中",
     "thinkingNow": "思考中",
     "toolRunning": "工具调用中",
@@ -2549,7 +2549,13 @@
     "im": {
       "title": "IM 远程干预与通知",
       "enabled": "启用",
-      "privateBinding": "一对一私聊：{{name}}",
+      "channelEnabled": "启用{{channel}}远程干预",
+      "channelSubtitle": "机器人 · 一对一私聊",
+      "expandChannel": "展开{{channel}}设置",
+      "collapseChannel": "收起{{channel}}设置",
+      "receiverAccount": "接收账号",
+      "robotName": "机器人名称",
+      "privateBindingUnnamed": "已绑定一对一私聊",
       "notificationKinds": "通知类型",
       "notificationGroups": {
         "needsAction": "需要你处理",
@@ -2565,24 +2571,45 @@
       "deleteDescription": "将停用连接并从系统凭据存储中删除 secret。待投递消息也会停止发送。",
       "confirmDelete": "删除",
       "scan": {
-        "title": "扫码接入企业微信",
-        "description": "使用手机企业微信扫码并确认授权。",
-        "notConfigured": "尚未接入企业微信。接入后可设置远程干预与通知。",
-        "botId": "机器人 ID：{{id}}",
+        "title": "扫码接入{{channel}}",
+        "description": "使用手机{{channel}}扫码并确认授权。",
+        "notConfigured": "尚未接入{{channel}}。接入后可设置远程干预与通知。",
         "connect": "扫码接入",
         "reauthorize": "重新授权",
+        "changeApp": "更换飞书应用",
+        "changeAppWarning": "完成授权后将替换当前飞书应用，并清除现有私聊绑定。请使用新机器人重新完成绑定。",
         "generating": "正在生成二维码…",
-        "waiting": "请使用企业微信扫码并确认授权",
+        "waiting": "请使用{{channel}}扫码并确认授权",
         "expiresIn": "二维码将在 {{countdown}} 后过期",
         "waitingBinding": "授权完成，等待绑定接收账号",
-        "complete": "企业微信已可用",
-        "nextStep": "请在企业微信中给机器人发送一条消息，以完成一对一私聊绑定。",
+        "complete": "{{channel}}已可用",
+        "nextStep": "请在{{channel}}中给机器人发送一条消息，以完成一对一私聊绑定。",
         "retry": "重新生成",
-        "qrCodeLabel": "企业微信授权二维码"
+        "qrCodeLabel": "{{channel}}授权二维码"
       },
       "channels": {
-        "wecom": {
-          "title": "企业微信"
+        "weCom": {
+          "title": "企业微信",
+          "identityLabel": "机器人 ID"
+        },
+        "feishu": {
+          "title": "飞书",
+          "identityLabel": "App ID",
+          "singleDeviceHint": "一个机器人只连接一台设备，避免操作被其他设备接收。",
+          "permissions": {
+            "title": "接入需要以下权限",
+            "send": "向你发送消息",
+            "receive": "读取你发给机器人的私聊消息",
+            "update": "更新机器人发送的卡片",
+            "profile": "读取你的姓名，用于显示接收账号",
+            "confirm": "同意并生成二维码"
+          },
+          "resetBinding": {
+            "action": "重新绑定接收账号",
+            "title": "重新绑定接收账号？",
+            "description": "将清除当前私聊绑定。请使用扫码授权的账号给机器人发送消息以重新绑定；如需更换授权账号，请重新授权。",
+            "confirm": "重新绑定"
+          }
         }
       },
       "status": {
@@ -2598,12 +2625,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "接入企业微信",
+          "title": "接入{{channel}}",
           "description": "扫码授权后，通过一对一私聊绑定接收账号。"
         },
         "waitingBinding": {
           "title": "绑定接收账号",
-          "description": "请在企业微信中给机器人发送一条消息。持久绑定完成后即可接收干预。"
+          "description": "请在{{channel}}中给机器人发送一条消息。持久绑定完成后即可接收干预。"
         },
         "connecting": {
           "title": "正在建立连接",
@@ -2618,7 +2645,7 @@
           "description": "自动恢复无法继续，请重新连接。"
         },
         "ready": {
-          "title": "企业微信可用",
+          "title": "{{channel}}可用",
           "description": "远程干预和已启用的通知会发送到已绑定私聊。"
         },
         "paused": {
@@ -2627,7 +2654,7 @@
         },
         "reauthorize": {
           "title": "需要重新授权",
-          "description": "当前凭据不可用，请重新扫码授权。"
+          "description": "请重新扫码确认授权。"
         },
         "conflict": {
           "title": "机器人正在其他客户端连接",
@@ -2677,10 +2704,12 @@
         "IM_SCAN_CANCELLED": "扫码授权已取消。",
         "IM_SCAN_EXPIRED": "二维码已过期，请重新生成。",
         "IM_SCAN_TIMEOUT": "扫码授权已超时，请重新生成。",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "暂时无法连接企业微信授权服务。",
-        "IM_SCAN_PROTOCOL_INVALID": "企业微信授权响应无效，请重新生成。",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "暂时无法连接授权服务。",
+        "IM_SCAN_PROTOCOL_INVALID": "授权响应无效，请重新生成。",
         "IM_SCAN_SESSION_INVALID": "扫码会话无效，请重新打开。",
         "IM_SCAN_SESSION_CONFLICT": "扫码授权正在处理中。",
+        "IM_SCAN_DENIED": "扫码授权被拒绝。",
+        "IM_SCOPE_MISSING": "应用缺少必需的权限，请重新授权。",
         "IM_STALE_GENERATION": "连接状态已更新，请根据最新状态重试。",
         "IM_RUNTIME_UNAVAILABLE": "IM 运行时尚未就绪。",
         "IM_CHANNEL_CLEANUP_PENDING": "配置已删除，本地清理将在后台自动重试。",

@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod branches;
 pub mod client;
 pub mod commands;
+pub mod composer_drafts;
 pub mod connection;
 pub mod control;
 pub mod elicitation;

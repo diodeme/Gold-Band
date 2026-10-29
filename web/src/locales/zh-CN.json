@@ -1058,6 +1058,10 @@
       "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
       "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
       "prompt-queue-storage-failed": "待发送队列保存失败，请重试。",
+      "composer-draft-empty": "没有可保存的内容。",
+      "composer-draft-full": "草稿箱已满，最多可保留 {{max}} 条。",
+      "composer-draft-not-found": "这条草稿已不存在。",
+      "composer-draft-storage-failed": "草稿箱保存失败，请重试。",
       "execution-plan": {
         "not-found": "这次 Run 还没有执行计划。",
         "revision-conflict": "执行计划已变化。请重新加载后再试。",
@@ -2319,23 +2323,34 @@
       "sendNow": "立即发送",
       "delete": "删除",
       "enqueue": "加入队列",
-      "modeToggle": "切换发送模式",
-      "mode": {
-        "auto": "自动发送",
-        "manual": "手动发送"
-      },
-      "modeTooltip": "自动发送：每轮回复结束后自动依次发送待发送内容。手动发送：内容只保留在队列中，由你逐条“立即发送”。",
+      "autoSend": "自动发送",
+      "modeTooltip": "开启后，每轮回复结束时自动依次发送待发送内容；关闭后内容只保留在队列中，由你逐条“立即发送”。",
       "paused": {
         "stopped": "已暂停：会话已停止",
         "failed": "已暂停：上一轮发送失败"
       },
-      "resume": "恢复自动发送",
+      "resume": "恢复",
+      "resumeLabel": "恢复自动发送",
       "moreActions": "更多操作",
       "clear": "清空待发送",
       "clearConfirmTitle": "清空待发送队列？",
       "clearConfirmDescription": "将移除 {{count}} 条待发送消息，此操作无法撤销。",
       "clearConfirmAction": "清空待发送",
-      "saveToBox": "存入草稿箱"
+      "interruptConfirmTitle": "立即发送这条内容？",
+      "interruptConfirmDescription": "当前回复会被停止，然后发送这条内容。",
+      "interruptConfirmSkip": "后续不再提示",
+      "interruptConfirmAction": "停止并发送"
+    },
+    "composerDrafts": {
+      "title": "草稿箱",
+      "titleWithCount": "草稿箱（{{count}}）",
+      "count": "{{count}}/{{max}}",
+      "save": "存入草稿箱",
+      "empty": "还没有草稿",
+      "take": "取出到输入框",
+      "takeOccupied": "请先处理输入框中的当前内容",
+      "delete": "删除草稿",
+      "takeConflict": "输入框已有内容，草稿已放回草稿箱。"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",
@@ -2859,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "显示全部 {{count}} 个",
       "showLess": "收起"
+    },
+    "promptQueue": {
+      "title": "待发送",
+      "description": "回复进行中时“立即发送”会先停止当前回复。",
+      "confirmInterrupt": "立即发送前确认打断当前回复"
     }
   },
   "multica": {

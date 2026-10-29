@@ -1058,6 +1058,10 @@
       "prompt-submission-conflict": "這則訊息的傳送識別碼已被其他內容使用，請重新傳送。",
       "prompt-submission-missing": "已接納的訊息內容無法讀取，請重新傳送。",
       "prompt-queue-storage-failed": "待傳送佇列儲存失敗，請重試。",
+      "composer-draft-empty": "沒有可儲存的內容。",
+      "composer-draft-full": "草稿箱已滿，最多可保留 {{max}} 則。",
+      "composer-draft-not-found": "這則草稿已不存在。",
+      "composer-draft-storage-failed": "草稿箱儲存失敗，請重試。",
       "execution-plan": {
         "not-found": "這次 Run 還沒有執行計畫。",
         "revision-conflict": "執行計畫已變化。請重新載入後再試。",
@@ -2319,23 +2323,34 @@
       "sendNow": "立即傳送",
       "delete": "刪除",
       "enqueue": "加入佇列",
-      "modeToggle": "切換傳送模式",
-      "mode": {
-        "auto": "自動傳送",
-        "manual": "手動傳送"
-      },
-      "modeTooltip": "自動傳送：每輪回覆結束後自動依次傳送待傳送內容。手動傳送：內容只保留在佇列中，由你逐條「立即傳送」。",
+      "autoSend": "自動傳送",
+      "modeTooltip": "開啟後，每輪回覆結束時會自動依序傳送待傳送內容；關閉後內容只會保留在佇列中，由你逐則「立即傳送」。",
       "paused": {
         "stopped": "已暫停：工作階段已停止",
         "failed": "已暫停：上一輪傳送失敗"
       },
-      "resume": "恢復自動傳送",
+      "resume": "恢復",
+      "resumeLabel": "恢復自動傳送",
       "moreActions": "更多操作",
       "clear": "清空待傳送",
       "clearConfirmTitle": "清空待傳送佇列？",
       "clearConfirmDescription": "將移除 {{count}} 條待傳送訊息，此操作無法復原。",
       "clearConfirmAction": "清空待傳送",
-      "saveToBox": "存入草稿箱"
+      "interruptConfirmTitle": "要立即傳送這則內容嗎？",
+      "interruptConfirmDescription": "目前的回覆會先停止，接著傳送這則內容。",
+      "interruptConfirmSkip": "之後不再提示",
+      "interruptConfirmAction": "停止並傳送"
+    },
+    "composerDrafts": {
+      "title": "草稿箱",
+      "titleWithCount": "草稿箱（{{count}}）",
+      "count": "{{count}}/{{max}}",
+      "save": "存入草稿箱",
+      "empty": "還沒有草稿",
+      "take": "取出到輸入框",
+      "takeOccupied": "請先處理輸入框中的目前內容",
+      "delete": "刪除草稿",
+      "takeConflict": "輸入框已有內容，草稿已放回草稿箱。"
     },
     "sending": "傳送中",
     "sendFailed": "傳送失敗",
@@ -2859,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "顯示全部 {{count}} 個",
       "showLess": "收合"
+    },
+    "promptQueue": {
+      "title": "待傳送",
+      "description": "回覆進行中時，「立即傳送」會先停止目前的回覆。",
+      "confirmInterrupt": "立即傳送前確認中斷目前回覆"
     }
   },
   "multica": {

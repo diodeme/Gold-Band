@@ -64,6 +64,7 @@ vi.mock('@/api', async () => {
     getAcpSession: vi.fn(),
     submitConversationPrompt: vi.fn(),
     submitManualCheck: vi.fn(),
+    listConversationComposerDrafts: vi.fn().mockResolvedValue({ revision: 0, maxItems: 20, items: [] }),
   };
 });
 

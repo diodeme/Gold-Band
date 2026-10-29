@@ -1058,6 +1058,10 @@
       "prompt-submission-conflict": "Este identificador de mensagem já está associado a conteúdo diferente. Envie novamente.",
       "prompt-submission-missing": "O conteúdo da mensagem aceita não pôde ser lido. Envie novamente.",
       "prompt-queue-storage-failed": "A fila pendente não pôde ser salva. Tente novamente.",
+      "composer-draft-empty": "Não há nada para salvar.",
+      "composer-draft-full": "Os rascunhos estão cheios. Você pode manter até {{max}}.",
+      "composer-draft-not-found": "Este rascunho não existe mais.",
+      "composer-draft-storage-failed": "Falha ao salvar os rascunhos. Tente novamente.",
       "execution-plan": {
         "not-found": "Este Run ainda não tem um plano de execução.",
         "revision-conflict": "O plano de execução mudou. Recarregue e tente novamente.",
@@ -2319,23 +2323,34 @@
       "sendNow": "Enviar agora",
       "delete": "Excluir",
       "enqueue": "Adicionar à fila",
-      "modeToggle": "Alternar modo de envio",
-      "mode": {
-        "auto": "Envio automático",
-        "manual": "Envio manual"
-      },
-      "modeTooltip": "Envio automático: as mensagens pendentes são enviadas uma a uma após cada resposta terminar. Envio manual: as mensagens ficam na fila até você usar Enviar agora em cada uma.",
+      "autoSend": "Envio automático",
+      "modeTooltip": "Quando ativado, as mensagens pendentes são enviadas uma a uma ao fim de cada resposta. Quando desativado, elas ficam na fila até você escolher \"Enviar agora\".",
       "paused": {
         "stopped": "Pausado: sessão interrompida",
         "failed": "Pausado: o último envio falhou"
       },
-      "resume": "Retomar envio automático",
+      "resume": "Retomar",
+      "resumeLabel": "Retomar envio automático",
       "moreActions": "Mais ações",
       "clear": "Limpar pendentes",
       "clearConfirmTitle": "Limpar a fila de pendentes?",
       "clearConfirmDescription": "{{count}} mensagens pendentes serão removidas. Isso não pode ser desfeito.",
       "clearConfirmAction": "Limpar pendentes",
-      "saveToBox": "Salvar na caixa de rascunhos"
+      "interruptConfirmTitle": "Enviar esta mensagem agora?",
+      "interruptConfirmDescription": "A resposta atual será interrompida antes do envio desta mensagem.",
+      "interruptConfirmSkip": "Não perguntar novamente",
+      "interruptConfirmAction": "Interromper e enviar"
+    },
+    "composerDrafts": {
+      "title": "Rascunhos",
+      "titleWithCount": "Rascunhos ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Salvar nos rascunhos",
+      "empty": "Nenhum rascunho ainda",
+      "take": "Mover para a entrada",
+      "takeOccupied": "Resolva primeiro o conteúdo atual da entrada",
+      "delete": "Excluir rascunho",
+      "takeConflict": "A entrada não está vazia, então o rascunho voltou para os rascunhos."
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",
@@ -2859,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Mostrar todos ({{count}})",
       "showLess": "Mostrar menos"
+    },
+    "promptQueue": {
+      "title": "Mensagens pendentes",
+      "description": "Enquanto uma resposta está em andamento, \"Enviar agora\" interrompe a resposta atual primeiro.",
+      "confirmInterrupt": "Confirmar antes de \"Enviar agora\" interromper uma resposta"
     }
   },
   "multica": {

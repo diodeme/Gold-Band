@@ -4,10 +4,18 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const apiMocks = vi.hoisted(() => ({
+  getPromptQueueSettings: vi.fn(),
+  savePromptQueueSettings: vi.fn(),
+}));
+
+vi.mock('@/api', () => apiMocks);
+
 import {
   ConversationPromptQueue,
   moveQueueItemIds,
 } from '@/components/conversation/ConversationPromptQueue';
+import { resetPromptQueueSettingsForTests } from '@/lib/prompt-queue-settings-store';
 import type { ConversationPromptQueueVm } from '@/types';
 import '@/i18n';
 
@@ -50,6 +58,9 @@ describe('ConversationPromptQueue', () => {
   let root: Root;
 
   beforeEach(() => {
+    resetPromptQueueSettingsForTests();
+    apiMocks.getPromptQueueSettings.mockReset().mockResolvedValue({ confirmInterrupt: true });
+    apiMocks.savePromptQueueSettings.mockReset().mockImplementation(async (next) => next);
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -63,6 +74,7 @@ describe('ConversationPromptQueue', () => {
   async function renderQueue(overrides: Partial<React.ComponentProps<typeof ConversationPromptQueue>> = {}) {
     const props: React.ComponentProps<typeof ConversationPromptQueue> = {
       queue,
+      interruptsActiveTurn: false,
       stopInProgress: false,
       mutationPending: false,
       composerOccupied: false,
@@ -166,15 +178,22 @@ describe('ConversationPromptQueue', () => {
     expect(otherRow?.getAttribute('data-queue-sending')).toBe('false');
   });
 
-  it('toggles the dispatch mode from the header', async () => {
+  it('toggles the dispatch mode through the auto-send switch', async () => {
     const onToggleMode = vi.fn().mockResolvedValue(undefined);
     await renderQueue({ onToggleMode });
-    const toggle = host.querySelector<HTMLButtonElement>('[data-queue-mode="auto"]');
-    expect(toggle).toBeTruthy();
-    expect(toggle?.textContent).toContain('自动发送');
+    const control = host.querySelector('[data-queue-mode="auto"]');
+    expect(control?.textContent).toContain('自动发送');
+    const toggle = control?.querySelector<HTMLButtonElement>('[role="switch"]');
+    expect(toggle?.getAttribute('aria-checked')).toBe('true');
 
     await act(async () => toggle?.click());
     expect(onToggleMode).toHaveBeenCalledWith('manual');
+
+    await renderQueue({ onToggleMode, queue: queueWith({ dispatchMode: 'manual' }) });
+    const manualToggle = host.querySelector<HTMLButtonElement>('[data-queue-mode="manual"] [role="switch"]');
+    expect(manualToggle?.getAttribute('aria-checked')).toBe('false');
+    await act(async () => manualToggle?.click());
+    expect(onToggleMode).toHaveBeenLastCalledWith('auto');
   });
 
   it('keeps the trigger, mode toggle and more actions on one header row', async () => {
@@ -199,10 +218,91 @@ describe('ConversationPromptQueue', () => {
     expect(host.querySelector('[data-queue-suspended-reason="failed"]')?.textContent)
       .toContain('已暂停：上一轮发送失败');
 
-    const resumeButton = host.querySelector<HTMLButtonElement>('button[aria-label="恢复自动发送"]');
-    expect(resumeButton).toBeTruthy();
+    const resumeButton = host.querySelector<HTMLButtonElement>('[data-queue-resume="true"]');
+    expect(resumeButton?.getAttribute('aria-label')).toBe('恢复自动发送');
+    expect(resumeButton?.textContent).toBe('恢复');
     await act(async () => resumeButton?.click());
     expect(onResumeDispatch).toHaveBeenCalled();
+  });
+
+  it('shows no pause or resume action in manual mode', async () => {
+    await renderQueue({
+      queue: queueWith({ dispatchMode: 'manual', autoDispatchSuspended: true, suspensionReason: 'stopped' }),
+    });
+    expect(host.querySelector('[data-queue-suspended-reason]')).toBeNull();
+    expect(host.querySelector('[data-queue-resume]')).toBeNull();
+  });
+
+  async function clickSendNow(itemId = 'item-1') {
+    const row = host.querySelector(`[data-queue-item-id="${itemId}"]`) as HTMLElement;
+    const button = row.querySelector<HTMLButtonElement>('button[aria-label="立即发送"]');
+    await act(async () => button?.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  }
+
+  function interruptDialog() {
+    return document.body.querySelector<HTMLElement>('[data-queue-interrupt-confirm="true"]');
+  }
+
+  it('sends immediately without asking while no reply is running', async () => {
+    const onSendNow = vi.fn().mockResolvedValue(undefined);
+    await renderQueue({ onSendNow, interruptsActiveTurn: false });
+    await clickSendNow();
+    expect(interruptDialog()).toBeNull();
+    expect(onSendNow).toHaveBeenCalledWith('item-1');
+  });
+
+  it('asks before send-now interrupts a running reply and sends only after confirming', async () => {
+    const onSendNow = vi.fn().mockResolvedValue(undefined);
+    await renderQueue({ onSendNow, interruptsActiveTurn: true });
+    await clickSendNow('item-2');
+    const dialog = interruptDialog();
+    expect(dialog?.textContent).toContain('立即发送这条内容？');
+    expect(onSendNow).not.toHaveBeenCalled();
+
+    const confirm = Array.from(dialog!.querySelectorAll('button')).find((button) => button.textContent === '停止并发送');
+    await act(async () => confirm?.click());
+    expect(onSendNow).toHaveBeenCalledWith('item-2');
+    expect(apiMocks.savePromptQueueSettings).not.toHaveBeenCalled();
+  });
+
+  it('cancelling the interrupt confirmation sends nothing', async () => {
+    const onSendNow = vi.fn();
+    await renderQueue({ onSendNow, interruptsActiveTurn: true });
+    await clickSendNow();
+    const cancel = Array.from(interruptDialog()!.querySelectorAll('button')).find((button) => button.textContent === '取消');
+    await act(async () => cancel?.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(interruptDialog()).toBeNull();
+    expect(onSendNow).not.toHaveBeenCalled();
+  });
+
+  it('stops asking after "do not ask again" is confirmed', async () => {
+    const onSendNow = vi.fn().mockResolvedValue(undefined);
+    await renderQueue({ onSendNow, interruptsActiveTurn: true });
+    await clickSendNow();
+    const dialog = interruptDialog()!;
+    const skip = dialog.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    await act(async () => skip?.click());
+    const confirm = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === '停止并发送');
+    await act(async () => confirm?.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(apiMocks.savePromptQueueSettings).toHaveBeenCalledWith({ confirmInterrupt: false });
+    expect(onSendNow).toHaveBeenCalledTimes(1);
+
+    await clickSendNow('item-3');
+    expect(interruptDialog()).toBeNull();
+    expect(onSendNow).toHaveBeenLastCalledWith('item-3');
+  });
+
+  it('honours a saved preference that disables the interrupt confirmation', async () => {
+    apiMocks.getPromptQueueSettings.mockResolvedValue({ confirmInterrupt: false });
+    const onSendNow = vi.fn().mockResolvedValue(undefined);
+    await renderQueue({ onSendNow, interruptsActiveTurn: true });
+    await act(async () => { await Promise.resolve(); });
+    await clickSendNow();
+    expect(interruptDialog()).toBeNull();
+    expect(onSendNow).toHaveBeenCalledWith('item-1');
   });
 
   it('clears queued prompts only after the confirmation dialog', async () => {
@@ -258,18 +358,27 @@ describe('ConversationPromptQueue', () => {
         suspensionReason: 'failed',
       }),
     });
-    expect(host.querySelector('[data-queue-mode="manual"]')?.textContent).toContain('手动发送');
+    expect(host.querySelector('[data-queue-mode="manual"] [role="switch"]')?.getAttribute('aria-checked'))
+      .toBe('false');
+
+    await renderQueue({
+      queue: queueWith({
+        items: [itemWith({ id: 'queued-again', content: '再次排队' })],
+        autoDispatchSuspended: true,
+        suspensionReason: 'failed',
+      }),
+    });
     expect(host.querySelector('[data-queue-suspended-reason="failed"]')).toBeTruthy();
   });
 
-  it('points the chevron down while expanded and up while collapsed', async () => {
+  it('points the chevron up while expanded and down while collapsed', async () => {
     await renderQueue();
     const trigger = host.querySelector<HTMLButtonElement>('[data-queue-trigger="true"]');
     const chevron = trigger?.querySelector('.transition-transform');
-    expect(chevron?.classList.contains('rotate-180')).toBe(false);
+    expect(chevron?.classList.contains('rotate-180')).toBe(true);
 
     await act(async () => trigger?.click());
-    expect(chevron?.classList.contains('rotate-180')).toBe(true);
+    expect(chevron?.classList.contains('rotate-180')).toBe(false);
   });
 
   it('hides the whole surface for an empty auto-mode queue without a suspension', async () => {

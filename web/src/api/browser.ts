@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
@@ -950,12 +950,40 @@ const browserQueuedPromptDrafts = [
 let browserQueuedPromptQueueMode: 'auto' | 'manual' = 'auto';
 let browserQueuedPromptSuspended = false;
 const browserRemovedQueuedPromptIds: string[] = [];
-const browserQueuedExplicitDrafts: {
-  id: string;
-  content: string;
-  createdAt: string;
-}[] = [];
 let browserQueuedPromptRevision = 5;
+
+/// Browser-demo composer drafts per conversation task, mirroring the desktop
+/// box: newest first, capped, never dispatched.
+const BROWSER_COMPOSER_DRAFT_LIMIT = 20;
+const browserComposerDrafts = new Map<string, { revision: number; items: (ConversationQueuedPromptDraftVm & { id: string; createdAt: string })[] }>();
+let browserComposerDraftSequence = 0;
+let browserPromptQueueSettings: PromptQueueSettingsVm = { confirmInterrupt: true };
+
+function browserComposerDraftBox(taskId: string) {
+  let box = browserComposerDrafts.get(taskId);
+  if (!box) {
+    box = { revision: 0, items: [] };
+    browserComposerDrafts.set(taskId, box);
+  }
+  return box;
+}
+
+function browserComposerDraftBoxVm(taskId: string): ConversationComposerDraftBoxVm {
+  const box = browserComposerDraftBox(taskId);
+  return {
+    revision: box.revision,
+    maxItems: BROWSER_COMPOSER_DRAFT_LIMIT,
+    items: box.items.map((draft) => ({
+      id: draft.id,
+      content: draft.content,
+      attachmentCount: draft.attachmentPaths.length,
+      quoteCount: draft.quotes.length,
+      workspaceFileCount: draft.workspaceFiles?.length ?? 0,
+      ...(draft.role ? { roleName: draft.role.name } : {}),
+      createdAt: draft.createdAt,
+    })),
+  };
+}
 
 /// Queue mutations must return a fresh lifecycle projection, exactly like the
 /// desktop backend does, or the UI cannot converge on the new queue state.
@@ -1015,16 +1043,6 @@ function browserQueuedConversationRun(): ConversationRunVm {
               quoteCount: item.quotes.length,
               workspaceFileCount: item.workspaceFiles?.length ?? 0,
               ...('role' in item && item.role ? { roleName: item.role.name } : {}),
-              createdAt: item.createdAt,
-            })),
-          ...browserQueuedExplicitDrafts
-            .filter((item) => browserRemovedQueuedPromptIds.indexOf(item.id) < 0)
-            .map((item) => ({
-              id: item.id,
-              content: item.content,
-              attachmentCount: 0,
-              quoteCount: 0,
-              workspaceFileCount: 0,
               createdAt: item.createdAt,
             })),
         ],
@@ -2245,14 +2263,20 @@ export const browserApi: RuntimeApi = {
   pauseRun(taskId: string, runId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
   },
-  stopActiveSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
+  stopActiveSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
+    // Like the desktop backend, a stop pauses automatic dispatch only in auto mode.
+    const queueRun = runId === 'run-053';
+    if (queueRun && browserQueuedPromptQueueMode === 'auto') {
+      browserQueuedPromptSuspended = true;
+      browserQueuedPromptRevision += 1;
+    }
     return Promise.resolve({
       operationId: 'browser-preview-stop',
       status: 'accepted',
       kind: 'stop-accepted',
       run: null,
       session: fallback ?? null,
-      lifecycle: null,
+      lifecycle: queueRun ? browserQueuedPromptQueueLifecycle() : null,
     });
   },
   submitManualCheck(_projectId, taskId, runId, _roundId, _nodeId, _attemptId, _outcome) {
@@ -2391,27 +2415,9 @@ export const browserApi: RuntimeApi = {
   subscribeAppExitRequested() {
     return Promise.resolve(() => {});
   },
-  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths, forceQueue) {
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     if (isBrowserPausedWorkflowSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId)) {
       return Promise.resolve(submitBrowserPausedWorkflowPrompt(input, _promptId));
-    }
-    // Explicit draft-box submissions park in the mock queue like the backend.
-    if (forceQueue) {
-      browserQueuedExplicitDrafts.push({
-        id: `browser-queued-explicit-${browserQueuedExplicitDrafts.length + 1}`,
-        content: input.displayText,
-        createdAt: `2026-08-07T08:00:0${5 + browserQueuedExplicitDrafts.length}Z`,
-      });
-      browserQueuedPromptRevision += 1;
-      return Promise.resolve({
-        kind: 'queued',
-        turnId: null,
-        revision: null,
-        operationId: null,
-        session: null,
-        run: null,
-        lifecycle: browserQueuedPromptQueueLifecycle(),
-      });
     }
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
@@ -2450,14 +2456,59 @@ export const browserApi: RuntimeApi = {
         browserRemovedQueuedPromptIds.push(draft.id);
       }
     }
-    for (const draft of browserQueuedExplicitDrafts) {
-      if (browserRemovedQueuedPromptIds.indexOf(draft.id) < 0) {
-        browserRemovedQueuedPromptIds.push(draft.id);
-      }
-    }
     browserQueuedPromptSuspended = false;
     browserQueuedPromptRevision += 1;
     return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
+  },
+  resumeConversationPromptQueue() {
+    browserQueuedPromptSuspended = false;
+    browserQueuedPromptRevision += 1;
+    return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
+  },
+  listConversationComposerDrafts(_projectId, taskId) {
+    return Promise.resolve(browserComposerDraftBoxVm(taskId));
+  },
+  saveConversationComposerDraft(_projectId, taskId, input, attachmentPaths) {
+    const box = browserComposerDraftBox(taskId);
+    if (box.items.length >= BROWSER_COMPOSER_DRAFT_LIMIT) {
+      return Promise.reject({ code: 'conversation.composer-draft-full', params: { max: BROWSER_COMPOSER_DRAFT_LIMIT } });
+    }
+    browserComposerDraftSequence += 1;
+    box.items.unshift({
+      id: `browser-draft-${browserComposerDraftSequence}`,
+      content: input.displayText,
+      quotes: input.quotes.map((quote) => ({ ...quote })),
+      attachmentPaths: [...(attachmentPaths ?? [])],
+      ...(input.workspaceFiles?.length ? { workspaceFiles: [...input.workspaceFiles] } : {}),
+      ...(input.role ? { role: { ...input.role } } : {}),
+      createdAt: new Date().toISOString(),
+    });
+    box.revision += 1;
+    return Promise.resolve(browserComposerDraftBoxVm(taskId));
+  },
+  takeConversationComposerDraft(_projectId, taskId, draftId) {
+    const box = browserComposerDraftBox(taskId);
+    const index = box.items.findIndex((draft) => draft.id === draftId);
+    if (index < 0) return Promise.reject({ code: 'conversation.composer-draft-not-found', params: {} });
+    const [{ id: _id, createdAt: _createdAt, ...draft }] = box.items.splice(index, 1);
+    box.revision += 1;
+    return Promise.resolve({ draft, drafts: browserComposerDraftBoxVm(taskId) });
+  },
+  deleteConversationComposerDraft(_projectId, taskId, draftId) {
+    const box = browserComposerDraftBox(taskId);
+    const index = box.items.findIndex((draft) => draft.id === draftId);
+    if (index >= 0) {
+      box.items.splice(index, 1);
+      box.revision += 1;
+    }
+    return Promise.resolve(browserComposerDraftBoxVm(taskId));
+  },
+  getPromptQueueSettings() {
+    return Promise.resolve({ ...browserPromptQueueSettings });
+  },
+  savePromptQueueSettings(input) {
+    browserPromptQueueSettings = { ...input };
+    return Promise.resolve({ ...browserPromptQueueSettings });
   },
   useConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _interruptActive, _outerNodeId, _outerAttemptId) {
     const index = browserRemovedQueuedPromptIds.indexOf(itemId);

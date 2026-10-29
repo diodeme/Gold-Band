@@ -509,8 +509,8 @@ export function subscribeAppExitRequested(listener: Parameters<NonNullable<Runti
   return getRuntimeApi().subscribeAppExitRequested?.(listener) ?? Promise.resolve(() => {});
 }
 
-export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, input: import('./types').ConversationPromptInput, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[], forceQueue?: boolean) {
-  return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths, forceQueue);
+export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, input: import('./types').ConversationPromptInput, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
 export function reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -531,6 +531,34 @@ export function useConversationQueuedPrompt(projectId: string | null | undefined
 
 export function setConversationPromptQueueMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, mode: 'auto' | 'manual', outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setConversationPromptQueueMode(projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId);
+}
+
+export function resumeConversationPromptQueue(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().resumeConversationPromptQueue(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+}
+
+export function listConversationComposerDrafts(projectId: string | null | undefined, taskId: string) {
+  return getRuntimeApi().listConversationComposerDrafts(projectId, taskId);
+}
+
+export function saveConversationComposerDraft(projectId: string | null | undefined, taskId: string, input: import('./types').ConversationPromptInput, attachmentPaths?: string[]) {
+  return getRuntimeApi().saveConversationComposerDraft(projectId, taskId, input, attachmentPaths);
+}
+
+export function takeConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().takeConversationComposerDraft(projectId, taskId, draftId);
+}
+
+export function deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().deleteConversationComposerDraft(projectId, taskId, draftId);
+}
+
+export function getPromptQueueSettings() {
+  return getRuntimeApi().getPromptQueueSettings();
+}
+
+export function savePromptQueueSettings(input: import('./types').PromptQueueSettingsVm) {
+  return getRuntimeApi().savePromptQueueSettings(input);
 }
 
 export function clearConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {

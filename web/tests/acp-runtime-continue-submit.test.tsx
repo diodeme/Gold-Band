@@ -10,6 +10,8 @@ const apiMocks = vi.hoisted(() => ({
   submitConversationPrompt: vi.fn(),
   stopActiveSession: vi.fn(),
   showConversationMessageAttachment: vi.fn(),
+  listConversationComposerDrafts: vi.fn(),
+  saveConversationComposerDraft: vi.fn(),
 }));
 
 vi.mock('@/api', async () => {
@@ -434,6 +436,8 @@ beforeEach(() => {
     content: 'data:image/png;base64,AQIDBA==', metadata: { mimeType: 'image/png' },
   });
   apiMocks.stopActiveSession.mockReset();
+  apiMocks.listConversationComposerDrafts.mockReset().mockResolvedValue({ revision: 0, maxItems: 20, items: [] });
+  apiMocks.saveConversationComposerDraft.mockReset();
   apiMocks.continueConversationRuntime.mockReset();
   apiMocks.getAcpSession.mockReset().mockResolvedValue(null);
   apiMocks.submitConversationPrompt.mockReset().mockResolvedValue({
@@ -1661,6 +1665,75 @@ describe('ACP Direct queue submission', () => {
       );
       expect(textarea?.value).toBe('');
       expect(container.textContent).not.toContain('unexpected prompt queue response');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('restores the complete composer draft when the queue rejects the submission', async () => {
+    const { container, root } = await renderActiveDirectDialog();
+    apiMocks.submitConversationPrompt.mockRejectedValue({
+      code: 'conversation.prompt-queue-full',
+      params: {},
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '入队失败的这条内容必须完整保留');
+
+      const sendButton = container.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+      expect(sendButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        sendButton?.click();
+      });
+
+      // 成功即全清、失败即还原：正文留在输入框，错误就地可见，可再次提交。
+      expect(container.textContent).toContain('待发送队列已满');
+      expect(textarea?.value).toBe('入队失败的这条内容必须完整保留');
+      expect(sendButton?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('saves the current draft to the draft box without queueing it', async () => {
+    const { container, id, root } = await renderActiveDirectDialog();
+    apiMocks.saveConversationComposerDraft.mockResolvedValue({
+      revision: 1,
+      maxItems: 20,
+      items: [{
+        id: 'draft-1',
+        content: '先存进草稿箱的这句话',
+        attachmentCount: 0,
+        quoteCount: 0,
+        workspaceFileCount: 0,
+        createdAt: '2026-10-29T00:00:00Z',
+      }],
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '先存进草稿箱的这句话');
+
+      const trigger = container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger="true"]');
+      expect(trigger?.disabled).toBe(false);
+      await flushInteraction(() => {
+        trigger?.click();
+      });
+      const saveButton = document.body.querySelector<HTMLButtonElement>('[data-composer-draft-save="true"]');
+      expect(saveButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        saveButton?.click();
+      });
+
+      expect(apiMocks.saveConversationComposerDraft).toHaveBeenCalledWith(
+        `project-${id}`,
+        `task-${id}`,
+        { displayText: '先存进草稿箱的这句话', quotes: [], workspaceFiles: [] },
+        undefined,
+      );
+      // A draft is a separate entity: it never enters the dispatch queue.
+      expect(apiMocks.submitConversationPrompt).not.toHaveBeenCalled();
+      expect(textarea?.value).toBe('');
+      expect(container.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('1');
     } finally {
       await unmount(root);
     }

@@ -890,6 +890,9 @@ pub struct SettingsConfig {
     pub scheduled_keep_awake_enabled: Option<bool>,
     pub scheduled_completion_notifications_enabled: Option<bool>,
     pub scheduled_occurrence_retention_days: Option<u16>,
+    /// Whether "send now" on a queued prompt asks before interrupting the
+    /// running reply. Absent means the default (ask).
+    pub confirm_queued_prompt_interrupt: Option<bool>,
     #[serde(default)]
     pub im_integrations: crate::im::ImIntegrationSettings,
     #[serde(default)]
@@ -1884,6 +1887,7 @@ pub struct RuntimeConfig {
     pub scheduled_keep_awake_enabled: bool,
     pub scheduled_completion_notifications_enabled: bool,
     pub scheduled_occurrence_retention_days: u16,
+    pub confirm_queued_prompt_interrupt: bool,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
@@ -1954,6 +1958,7 @@ impl Default for RuntimeConfig {
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             scheduled_keep_awake_enabled: false,
             scheduled_completion_notifications_enabled: true,
+            confirm_queued_prompt_interrupt: true,
             scheduled_occurrence_retention_days: DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS,
             permission_mode_mapping: BTreeMap::new(),
             workspace_layout: WorkspaceLayoutConfig::default(),
@@ -2033,6 +2038,9 @@ impl RuntimeConfig {
         {
             self.scheduled_completion_notifications_enabled =
                 scheduled_completion_notifications_enabled;
+        }
+        if let Some(confirm) = settings.confirm_queued_prompt_interrupt {
+            self.confirm_queued_prompt_interrupt = confirm;
         }
         if let Some(scheduled_occurrence_retention_days) =
             settings.scheduled_occurrence_retention_days

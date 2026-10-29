@@ -17,11 +17,15 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import {
   ChevronDown,
-  CornerDownLeft,
   GripVertical,
   ListPlus,
+  Loader2,
   MessageSquareQuote,
   FileText,
+  MoreHorizontal,
+  PauseCircle,
+  Play,
+  SendHorizontal,
   UserRound,
   Paperclip,
   Pencil,
@@ -30,12 +34,31 @@ import {
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Switch } from '@/components/ui/switch';
 import {
   Tooltip,
   TooltipContent,
@@ -48,6 +71,7 @@ import {
   acpComposerStackShapeClassName,
   type AcpComposerStackSlot,
 } from '@/lib/conversation-composer-layout';
+import { savePromptQueueSettings, usePromptQueueSettings } from '@/lib/prompt-queue-settings-store';
 import type { ConversationPromptQueueVm, ConversationQueuedPromptVm } from '@/types';
 
 const DEFAULT_VISIBLE_ITEMS = 3;
@@ -65,30 +89,44 @@ export function moveQueueItemIds(
 
 export interface ConversationPromptQueueProps {
   queue: ConversationPromptQueueVm;
-  sessionActive: boolean;
+  /** A reply is running, so "send now" stops it before sending. */
+  interruptsActiveTurn: boolean;
+  stopInProgress: boolean;
   mutationPending: boolean;
   composerOccupied: boolean;
   stackSlot?: AcpComposerStackSlot;
+  sendingItemId: string | null;
   onRestore: (itemId: string) => void | Promise<void>;
   onReorder: (orderedItemIds: string[], expectedRevision: number) => void | Promise<void>;
-  onUse: (itemId: string) => void | Promise<void>;
+  onSendNow: (itemId: string) => void | Promise<void>;
   onDelete: (itemId: string) => void | Promise<void>;
+  onToggleMode: (mode: 'auto' | 'manual') => void | Promise<void>;
+  onResumeDispatch: () => void | Promise<void>;
+  onClear: () => void | Promise<void>;
 }
 
 export function ConversationPromptQueue({
   queue,
-  sessionActive,
+  interruptsActiveTurn,
+  stopInProgress,
   mutationPending,
   composerOccupied,
   stackSlot,
+  sendingItemId,
   onRestore,
   onReorder,
-  onUse,
+  onSendNow,
   onDelete,
+  onToggleMode,
+  onResumeDispatch,
+  onClear,
 }: ConversationPromptQueueProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const [showAll, setShowAll] = useState(false);
+  const { confirmInterrupt } = usePromptQueueSettings();
+  const [interruptConfirmItemId, setInterruptConfirmItemId] = useState<string | null>(null);
+  const [skipFutureInterruptConfirm, setSkipFutureInterruptConfirm] = useState(false);
   const [optimisticOrder, setOptimisticOrder] = useState<{
     baseRevision: number;
     itemIds: string[];
@@ -108,8 +146,31 @@ export function ConversationPromptQueue({
   }, [optimisticOrder, queue.items, queue.revision]);
   const hasMore = orderedItems.length > DEFAULT_VISIBLE_ITEMS;
   const visibleItems = showAll ? orderedItems : orderedItems.slice(0, DEFAULT_VISIBLE_ITEMS);
-
+  const autoMode = queue.dispatchMode === 'auto';
+  // A pause only qualifies automatic dispatch; manual mode has nothing to resume.
+  const suspended = autoMode && queue.autoDispatchSuspended && queue.suspensionReason != null;
+  // The whole surface hides when there is nothing pending; the durable mode
+  // and suspension resurface with the panel once items exist again.
   if (queue.items.length === 0) return null;
+
+  const requestSendNow = (itemId: string) => {
+    if (interruptsActiveTurn && confirmInterrupt) {
+      setSkipFutureInterruptConfirm(false);
+      setInterruptConfirmItemId(itemId);
+      return;
+    }
+    void onSendNow(itemId);
+  };
+
+  const confirmSendNow = () => {
+    const itemId = interruptConfirmItemId;
+    setInterruptConfirmItemId(null);
+    if (!itemId) return;
+    if (skipFutureInterruptConfirm) {
+      void savePromptQueueSettings({ confirmInterrupt: false }).catch(() => {});
+    }
+    void onSendNow(itemId);
+  };
 
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || mutationPending) return;
@@ -133,27 +194,167 @@ export function ConversationPromptQueue({
       )}
       data-testid="conversation-prompt-queue"
     >
-      <CollapsibleTrigger asChild>
-        <Button
-          variant="ghost"
-          className="h-auto w-full justify-between rounded-none border-0 px-3 py-2 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
-          data-queue-trigger="true"
-        >
-          <span className="flex min-w-0 items-center gap-2 text-xs">
-            <ListPlus className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="text-muted-foreground">{t('acp.promptQueue.title')}</span>
-            <span className="truncate font-medium text-foreground">
-              {t('acp.promptQueue.summary', { count: queue.items.length, max: queue.maxItems })}
+      <div className="flex flex-wrap items-center gap-1 px-3 py-1.5" data-queue-header="true">
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className="h-auto min-w-max flex-1 justify-between rounded-none border-0 px-1 py-1 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
+            data-queue-trigger="true"
+          >
+            <span className="flex min-w-0 items-center gap-2 text-xs">
+              <ListPlus className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">{t('acp.promptQueue.title')}</span>
+              <span className="truncate font-medium text-foreground">
+                {t('acp.promptQueue.summary', { count: queue.items.length, max: queue.maxItems })}
+              </span>
             </span>
-          </span>
-          <ChevronDown
-            className={cn(
-              'size-3.5 shrink-0 text-muted-foreground transition-transform',
-              open && 'rotate-180',
-            )}
-          />
-        </Button>
-      </CollapsibleTrigger>
+            <ChevronDown
+              className={cn(
+                'size-3.5 shrink-0 text-muted-foreground transition-transform',
+                open && 'rotate-180',
+              )}
+            />
+          </Button>
+        </CollapsibleTrigger>
+        {/* The controls wrap as one group so none is stranded on its own line. */}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+        {suspended ? (
+          <>
+            <span
+              className="inline-flex min-w-0 items-center gap-1 text-ui-caption text-muted-foreground"
+              data-queue-suspended-reason={queue.suspensionReason ?? undefined}
+            >
+              <PauseCircle className="size-3.5 shrink-0" />
+              {queue.suspensionReason === 'failed'
+                ? t('acp.promptQueue.paused.failed')
+                : t('acp.promptQueue.paused.stopped')}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 rounded-full px-2 text-ui-caption"
+              disabled={mutationPending}
+              aria-label={t('acp.promptQueue.resumeLabel')}
+              data-queue-resume="true"
+              onClick={() => {
+                void onResumeDispatch();
+              }}
+            >
+              <Play className="size-3" />
+              {t('acp.promptQueue.resume')}
+            </Button>
+          </>
+        ) : null}
+        <TooltipProvider delayDuration={250}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <label
+                className={cn(
+                  'inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-ui-caption text-muted-foreground',
+                  mutationPending ? 'cursor-not-allowed' : 'cursor-pointer',
+                )}
+                data-queue-mode={queue.dispatchMode}
+              >
+                <Switch
+                  checked={autoMode}
+                  disabled={mutationPending}
+                  aria-label={t('acp.promptQueue.autoSend')}
+                  onCheckedChange={(checked) => {
+                    void onToggleMode(checked ? 'auto' : 'manual');
+                  }}
+                />
+                {t('acp.promptQueue.autoSend')}
+              </label>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-64">{t('acp.promptQueue.modeTooltip')}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <AlertDialog>
+          <DropdownMenu>
+            <TooltipProvider delayDuration={250}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-6 rounded-full text-muted-foreground"
+                      disabled={mutationPending}
+                      aria-label={t('acp.promptQueue.moreActions')}
+                    >
+                      <MoreHorizontal className="size-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>{t('acp.promptQueue.moreActions')}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <DropdownMenuContent align="end">
+              <AlertDialogTrigger asChild>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={(event) => {
+                    event.preventDefault();
+                  }}
+                >
+                  <Trash2 />
+                  {t('acp.promptQueue.clear')}
+                </DropdownMenuItem>
+              </AlertDialogTrigger>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('acp.promptQueue.clearConfirmTitle')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t('acp.promptQueue.clearConfirmDescription', {
+                  count: queue.items.length,
+                })}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => {
+                  void onClear();
+                }}
+              >
+                {t('acp.promptQueue.clearConfirmAction')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        </div>
+      </div>
+      <AlertDialog
+        open={interruptConfirmItemId !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setInterruptConfirmItemId(null);
+        }}
+      >
+        <AlertDialogContent data-queue-interrupt-confirm="true">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('acp.promptQueue.interruptConfirmTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('acp.promptQueue.interruptConfirmDescription')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+            <Checkbox
+              checked={skipFutureInterruptConfirm}
+              onCheckedChange={(checked) => setSkipFutureInterruptConfirm(checked === true)}
+            />
+            {t('acp.promptQueue.interruptConfirmSkip')}
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmSendNow}>
+              {t('acp.promptQueue.interruptConfirmAction')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext
@@ -166,11 +367,12 @@ export function ConversationPromptQueue({
                   key={item.id}
                   index={orderedItems.findIndex((candidate) => candidate.id === item.id)}
                   item={item}
-                  sessionActive={sessionActive}
+                  stopInProgress={stopInProgress}
                   mutationPending={mutationPending}
                   composerOccupied={composerOccupied}
+                  sending={sendingItemId === item.id}
                   onRestore={() => { void onRestore(item.id); }}
-                  onUse={() => { void onUse(item.id); }}
+                  onSendNow={() => requestSendNow(item.id)}
                   onDelete={() => { void onDelete(item.id); }}
                 />
               ))}
@@ -203,22 +405,24 @@ export function ConversationPromptQueue({
 interface QueueItemProps {
   index: number;
   item: ConversationQueuedPromptVm;
-  sessionActive: boolean;
+  stopInProgress: boolean;
   mutationPending: boolean;
   composerOccupied: boolean;
+  sending: boolean;
   onRestore: () => void;
-  onUse: () => void;
+  onSendNow: () => void;
   onDelete: () => void;
 }
 
 function QueueItem({
   index,
   item,
-  sessionActive,
+  stopInProgress,
   mutationPending,
   composerOccupied,
+  sending,
   onRestore,
-  onUse,
+  onSendNow,
   onDelete,
 }: QueueItemProps) {
   const { t } = useTranslation();
@@ -246,6 +450,7 @@ function QueueItem({
       )}
       data-queue-item-id={item.id}
       data-queue-dragging={isDragging ? 'true' : 'false'}
+      data-queue-sending={sending ? 'true' : 'false'}
     >
       <TooltipProvider delayDuration={250}>
         <Tooltip>
@@ -317,15 +522,22 @@ function QueueItem({
       <TooltipProvider delayDuration={250}>
         <div className="flex shrink-0 items-center gap-0.5">
           <QueueIconButton
+            label={t('acp.promptQueue.sendNow')}
+            disabled={mutationPending || stopInProgress}
+            accent
+            onClick={onSendNow}
+          >
+            {sending
+              ? <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} />
+              : <SendHorizontal className="size-3.5" />}
+          </QueueIconButton>
+          <QueueIconButton
             label={t('acp.promptQueue.edit')}
             tooltipLabel={composerOccupied ? t('acp.promptQueue.editDraftOccupied') : undefined}
             disabled={mutationPending || composerOccupied}
             onClick={onRestore}
           >
             <Pencil className="size-3.5" />
-          </QueueIconButton>
-          <QueueIconButton label={t('acp.promptQueue.use')} disabled={sessionActive || mutationPending} onClick={onUse}>
-            <CornerDownLeft className="size-3.5" />
           </QueueIconButton>
           <QueueIconButton label={t('acp.promptQueue.delete')} disabled={mutationPending} onClick={onDelete} destructive>
             <Trash2 className="size-3.5" />
@@ -342,6 +554,7 @@ function QueueIconButton({
   disabled,
   onClick,
   destructive = false,
+  accent = false,
   children,
 }: {
   label: string;
@@ -349,6 +562,7 @@ function QueueIconButton({
   disabled: boolean;
   onClick: () => void;
   destructive?: boolean;
+  accent?: boolean;
   children: ReactNode;
 }) {
   const button = (
@@ -356,7 +570,11 @@ function QueueIconButton({
       type="button"
       variant="ghost"
       size="icon"
-      className={cn('size-7 rounded-full', destructive && 'text-destructive hover:text-destructive')}
+      className={cn(
+        'size-7 rounded-full',
+        destructive && 'text-destructive hover:text-destructive',
+        accent && !disabled && 'text-primary hover:text-primary',
+      )}
       aria-label={label}
       disabled={disabled}
       onClick={onClick}

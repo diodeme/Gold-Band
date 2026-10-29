@@ -129,6 +129,46 @@ pub fn save_scheduled_runtime_settings(
     Ok(scheduled_runtime_settings_vm(&context.config, power))
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptQueueSettingsVm {
+    pub confirm_interrupt: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptQueueSettingsInputVm {
+    pub confirm_interrupt: bool,
+}
+
+#[tauri::command]
+pub fn get_prompt_queue_settings(
+    state: State<'_, DesktopState>,
+) -> CommandResult<PromptQueueSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    Ok(PromptQueueSettingsVm {
+        confirm_interrupt: context.config.confirm_queued_prompt_interrupt,
+    })
+}
+
+#[tauri::command]
+pub fn save_prompt_queue_settings(
+    state: State<'_, DesktopState>,
+    input: PromptQueueSettingsInputVm,
+) -> CommandResult<PromptQueueSettingsVm> {
+    let app = state.app().map_err(command_error)?;
+    let mut settings = app.load_settings().map_err(command_error)?;
+    settings.confirm_queued_prompt_interrupt = Some(input.confirm_interrupt);
+    app.save_settings(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    Ok(PromptQueueSettingsVm {
+        confirm_interrupt: context.config.confirm_queued_prompt_interrupt,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunModeSettingsVm {

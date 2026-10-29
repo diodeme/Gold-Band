@@ -1413,3 +1413,94 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - `cargo check -p gold-band --tests -j 1`、格式和差异检查通过。
 
 性能与过度设计：Direct 不再承担投影读取和 token 成本，仅保留原本按会话配置存在的 MCP 子进程/工具列表；没有新增 Direct 专用 prompt、状态、缓存、队列或 memory 分支。
+
+## 29. 2026-10-21 Direct 待发送队列控制权完善
+
+状态：已实现并通过 Rust、前端接口与契约回归。对标 AionUi「发送草稿箱」交互设计后补齐队列操作面与用户控制权，全部复用既有 canonical 状态，不新增 aggregate 或第二套生命周期。
+
+数据模型（`src/acp/prompt_queue.rs`）：
+
+- `PromptQueue` 新增 `#[serde(default)]` 字段：`dispatch_mode`（Auto/Manual，用户持久选择，用户提交与手动 claim 不清除）与 `suspension_reason`（Stopped/Failed，transient 暂停原因）；旧数据 suspended 无 reason 时加载推断为 Stopped。
+- 模式门控落在 `claim_next_for_auto_dispatch` 内部（新增 `ManualMode` 结果），杜绝 600ms 用户优先窗口内切换模式的漏网；命令层 drain 早退保留。
+- `mark_user_priority` 与 `claim_queued_prompt` 清 transient suspension 时同步清 reason；`suspend_auto_dispatch` 增加 reason 参数。
+- 新原语：`set_dispatch_mode`（toggle 兼作恢复入口，双向清 transient）、`clear_queued_prompts`（保留 Dispatching、清 transient）、`resume_auto_dispatch`（durable 清除且不创建队列存储，保持普通 prompt 不建队列文件契约）、`suspend_after_failed_turn`（带双栅栏：无更新 turn 在途 + revision 未变，防晚到 Failed 事件把并发 claim 已清掉的 suspension 写回）。
+
+命令层（`src-tauri/src/commands.rs`）：
+
+- `use_conversation_queued_prompt` 增加 `interrupt_active`：busy 时走内侧 stop 路径（`persist_active_session_stop` + suspension(Stopped) + cleanup + index，复用 `stop_active_session_inner` 同款语义，不走 background_control 快速路径）→ 有界等待上一 turn 终态（`prompt_activity` None + run 非 Running，200ms 轮询、上限 15s ≥ cancel drain 10s）→ 既有 claim→submit→回滚链；等待超时回滚并返回 `conversation.prompt-queue-interrupt-timeout`；submit 误返 queued 视为硬错误回滚（`conversation.prompt-queue-dispatch-settling`），防 claimed 项不可见滞留 Dispatching。
+- 新命令 `set_conversation_prompt_queue_mode(mode)`、`clear_conversation_queued_prompts`。
+- `schedule_direct_prompt_queue_drain` 签名改为携带 `AcpTurnOutcome`：仅 Failed 且队列有 Queued 项时经 `suspend_after_failed_turn` 持久化 reason=failed（带栅栏）；Cancelled 不写（stop 时已持久化，立即发送的 claim 会清掉，再写会竞态写回）。
+- 修复既有缺陷：空闲提交的空队列分支只清进程内 gate，改为 `resume_auto_dispatch` durable 清除，杜绝 stop→删空队列→后续入队永不自动发送。
+- 投影：`ConversationPromptQueueVm` 增加 `dispatch_mode`、`auto_dispatch_suspended`、`suspension_reason`（装配点 `direct_prompt_queue_vm`）。
+
+前端（web）：
+
+- `ConversationPromptQueue`：标题行新增模式切换（Tooltip 兼帮助）、暂停原因徽标 + 「恢复」按钮、「⋯」菜单清空（destructive + AlertDialog 二次确认）；每条「立即发送」（Send 图标，行级 pending spinner）替换「使用」，禁用条件 `mutationPending || stopInProgress`（不再按 sessionActive 禁用）；空队列仅在 auto 且无暂停时隐藏，手动模式/暂停态保留标题行以便切回。
+- `ACPChatDialog`：`sendNowQueuedPrompt`（`interruptActive: true`）、`setQueuedPromptDispatchMode`、`resumeQueuedPromptDispatch`、`clearQueuedPrompts` handlers；`promptQueueVisible` 放宽同上；`queueSendingItemId` 行级 pending 随 attempt 切换复位。
+- API client/desktop/browser 三层适配；browser mock 维护可变 mode/suspension/removed 集合供浏览器验证。
+- i18n：新增 `acp.promptQueue.sendNow/mode.*/modeTooltip/paused.*/resume/moreActions/clear*/`，删除 `use`；错误码新增 `prompt-queue-invalid-mode`、`prompt-queue-interrupt-timeout`、`prompt-queue-dispatch-settling`；7 语言同步。
+
+验收证据：
+
+- Rust：`acp::prompt_queue` 36 项（含模式保持、清空保留 Dispatching、失败栅栏、晚到 Failed 不回写、legacy reason 推断、resume 不建存储）；命令层新增 manual 模式跨完成 turn 保持、Failed 暂停持久化与恢复、三条 FIFO 排空与 lifecycle bridge 既有回归；VM 投影新字段测试。
+- 前端：`conversation-prompt-queue` 15 项（sendNow 行为与禁用、模式切换、暂停徽标恢复、清空二次确认、空队列手动模式标题行可见）；`acp-runtime-continue-submit` 41 项含新增「入队失败草稿完整还原」契约；i18n catalog 与相邻 9 文件 129 项回归通过；tsc 与生产构建通过。
+- 既有失败（acp-composer-render-isolation、acp-session-reentry-reconciliation、api.test、app-scheduled-task-detail）经 stash 基线比对确认与本次改动无关。
+
+性能与过度设计：新增持久字段仅 dispatch_mode 与 suspension_reason，均有现有布尔位无法表达的不变量；立即发送轮询为低频用户操作（≤15s 单命令内）；drain 失败栅栏复用 prompt_activity 轻量检查与 revision 比对；前端新字段随既有 revision LWW 合并流转，无新增投影路径。
+
+## 30. 2026-10-21 队列标题行重排与显式草稿箱入口
+
+状态：已实现并通过前端契约回归与浏览器验证。按用户反馈对齐 AionUi 交互：队列控制全部上移标题行、composer 增加「存入草稿箱」显式入口。
+
+> 2026-10-29 更新：本节的「存入草稿箱 = forceQueue 强制入队」设计已被第 31 节的独立草稿箱取代，`forceQueue` 参数已删除；标题行重排保留。
+
+标题行重排（`ConversationPromptQueue.tsx`）：
+
+- 原先模式切换/「⋯」在标题行下方的第二行，左侧无暂停徽标时留白。现改为单一标题行（`data-queue-header`）：左侧折叠触发区（`flex-1`，含标题与计数）+ 暂停徽标/恢复（仅暂停态）+ 模式切换 + 「⋯」，与 AionUi 草稿箱标题行同构，消除左侧留白；窄宽度下 flex-wrap 换行。
+
+显式草稿箱入口：
+
+- `AcpConversationComposer` 在输入区左侧工具栏（附件按钮旁）新增「存入草稿箱」**纯图标按钮**（Inbox 图标 + tooltip，与附件按钮同款 `size-7 rounded-full ghost` 形态，`data-acp-queue-draft`，仅 Direct 队列 facet 存在时渲染；可见性与忙碌态解耦，不随异步 lifecycle 闪变）。禁用条件：输入禁用、草稿无有效 payload、队列满、提交中或 stop 在途。
+- 行为：`submit_conversation_prompt` 新增 `forceQueue` 参数——Direct 模式下即使空闲也走 enqueue 分支（`commands.rs` `force_queue` 条件）；空闲且 run 已 Completed 时复用既有 terminal-run kick，自动模式下 600ms 优先窗口后自动发出（等同“Agent 空闲即发送”），手动模式/暂停态下保留等待用户操作。busy 时与隐式排队等价。
+- 草稿清空契约不变：成功即全清、失败即完整还原（复用 enqueue 路径既有 `clearIfUnchanged`/`restoreIfEmpty`）。
+- browser mock 的 submit 支持 forceQueue 并把显式草稿并入队列投影，lifecycle 回流与桌面后端一致。
+
+验收证据：
+
+- 前端：`conversation-prompt-queue` 17 项（新增标题行单行结构断言）；`acp-runtime-continue-submit` 43 项（新增「草稿箱按钮以 forceQueue=true 提交且成功清空输入框」契约，既有边界用例补 forceQueue=false 断言）；i18n catalog 7 语言含 `saveToBox/saveToBoxHint`（保留词 Agent 校验通过）；tsc 通过。
+- Rust：`cargo check --tests` 通过。force 路由的命令级测试因 AppHandle 依赖与既有 submit 命令同层级缺失，由前端透传契约 + 浏览器验证覆盖（与既有 enqueue-when-busy 行为的测试层级一致）。
+- 浏览器（run-053 demo）：标题行单行布局、存入草稿箱空闲入队、队列满/空态按钮禁用验证。
+
+## 31. 2026-10-29 PR150 体验问题修复：暂停事实统一、独立草稿箱与立即发送确认
+
+状态：已实现并通过 Rust、前端接口与契约回归及浏览器验证。
+
+根因（P1，设计缺陷）：暂停有两份存储——进程内 `AUTO_DISPATCH_SUSPENSIONS` 门禁与 durable `autoDispatchSuspended`/`suspensionReason`——但没有统一写入者。`set_dispatch_mode`、`clear_queued_prompts`、`claim_queued_prompt` 只清 durable 字段、不清门禁，导致"停止 → 切回自动 / 清空 → 新入队"后 UI 显示未暂停而后端永不自动出队；`suspend_after_failed_turn` 在栅栏判定前就设门禁，被栅栏拒绝的晚到失败仍会静默关闭自动出队。修复：`prompt_queue.rs` 新增私有原语 `apply_suspension_unlocked` / `lift_suspension_unlocked`，所有设置与解除都在文件锁内经它们同时改两份存储；失败暂停只在栅栏通过后设置门禁。四个回归测试（切回自动后可自动 claim、清空后新入队可自动 claim、被拒的失败暂停不关门禁、手动模式停止不记暂停）在修复前失败、修复后通过。
+
+数据不变量（P2）：
+
+- 暂停只限定自动出队：手动模式下 `suspend_auto_dispatch` 不持久化暂停并清门禁；UI 仅在自动模式展示暂停原因与恢复。
+- 恢复与模式解耦：新增 `resume_conversation_prompt_queue` 命令（`resume_auto_dispatch` + idle kick + lifecycle），不再借道 `set_dispatch_mode('auto')`，恢复不改变用户的模式选择。
+- idle kick 仅在 `run_status == Completed` 时触发（`idle_prompt_queue_kick_is_due`）；run 为 Paused（如 workflow 暂停）或 Running 时不自动出队。
+- 模式控制改为「自动发送」Switch；恢复改为带文字的「恢复」按钮。标题行右侧控制项包成一个 `ml-auto shrink-0` 组，折叠触发区 `min-w-max`：窄宽度下整组换行，计数不再被截断成「5.」，也不会单独留下「⋯」。
+
+独立草稿箱（取代第 30 节 forceQueue）：
+
+- 原设计把"存入草稿箱"实现为强制入队，空闲时会被自动出队立即发出，草稿与发送队列语义混淆。现草稿为独立实体：`src/acp/composer_drafts.rs` 维护 task 目录下的 `composer-drafts.json`（`ComposerDraftBox { version, revision, items }`，新的在前，上限 `MAX_COMPOSER_DRAFTS = 20`），读取不建文件，写入经 `storage::with_file_lock` + 原子 `write_json`；错误为结构化 `ComposerDraftError`。
+- 命令 `list/save/take/delete_conversation_composer_draft(project_id, task_id, …)`：task id 必须是单一路径段且 task 文件存在，否则返回 `conversation.task-not-found`；save 复用 `validate_conversation_prompt_input`；take 原子删除并返回完整载荷与最新 box；delete 幂等，revision 仅在内容变化时递增。错误码 `conversation.composer-draft-empty / -full(max) / -not-found / -storage-failed`。
+- 前端 `ComposerDraftBox`（工具栏 Popover，按 projectId + taskId 作用域）自持列表状态，只接受当前作用域内 revision 不小于当前值的响应；存入采用 capture → commit/rollback，失败完整还原输入，成功后关闭 Popover、焦点回到已清空的输入框；取出仅在输入框为空时允许，取回期间输入框被填写则自动放回草稿箱。`AcpConversationComposer` 以 `draftBox` 插槽替代原 `queueDraft` 按钮。
+- 删除 `submit_conversation_prompt` 的 `forceQueue`/`force_queue` 全链路（命令、前端三层 API、browser mock 的 `browserQueuedExplicitDrafts`）。
+
+立即发送确认（P2）：回复进行中点击立即发送先弹 AlertDialog，含"后续不再提示"；偏好 `SettingsConfig.confirm_queued_prompt_interrupt`（`RuntimeConfig` 默认 true）经 `get/save_prompt_queue_settings` 读写，前端 `prompt-queue-settings-store` 单一 store 懒加载、最后写入胜出；设置页「高级 → 待发送」提供开关。
+
+P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；移除冗余 `items.length > 0`；清空确认取消按钮改用 `common.cancel`；回退与本功能无关的格式化改动（`usage.rs`、`source_control.rs`）和 registry snapshot / catalog 刷新。
+
+验收证据：
+
+- Rust：`acp::prompt_queue` 41 项（含上述 4 项根因回归与"恢复不改模式"）、`acp::composer_drafts` 5 项；`gold-band-desktop` 单元测试 891 项全部通过（含 idle kick 的 Completed/Paused/Running/None/suspended 与草稿作用域校验），全部集成测试通过。`gold-band` lib 另有 6 项（`prompts` LF 校验、`provider::quotes`、`acp::client` 路径文本、`git::source_control`）失败，模块与 main 完全一致，原因是 worktree 以 CRLF 检出而断言要求 LF，与本次改动无关。
+- 前端：`conversation-prompt-queue` 24 项（Switch、恢复文字按钮、手动模式无暂停、确认框确认/取消/不再提示/偏好关闭、箭头方向）；`composer-draft-box` 9 项（加载计数、取出、占用禁用、取出冲突放回、存入 commit/rollback、删除、慢加载不回滚新写入、切换会话不串作用域——后两项经去掉 revision/作用域守卫的变异验证会失败）；`prompt-queue-settings-store` 3 项；`acp-runtime-continue-submit` 42 项（草稿存入不调用 submit）。
+- 浏览器（run-053 demo，浅色/深色，1440 与 760 宽）：确认框、草稿存入/取出/输入占用禁用、停止后暂停与「恢复」保持自动模式、切到手动后不显示暂停、窄宽度标题行整组换行、设置「高级 → 待发送」开关。browser mock 的停止补齐与后端一致的"仅自动模式记录 stopped 暂停"。
+- `acp-session-reentry-reconciliation` 与 `acp-composer-render-isolation` 的 `@/api` mock 补充 `listConversationComposerDrafts`（ACPChatDialog 挂载时新增的读取）。
+- 全量 vitest 与 main 基线逐项比对：仅剩既有失败（`acp-composer-render-isolation` 6 项、marketing/demo 依赖缺失），`chat-container-scroll-input` 单测偶发、单独复跑 3/3 通过。
+
+性能与过度设计：草稿箱是新增 durable 实体，因"终将发送"与"仅暂存"的生命周期不同，现有队列无法表达；单文件 ≤20 条、仅在 composer 挂载与用户操作时读写，无扫描与轮询。设置 store 为单值、一次加载；暂停原语是对既有写入点的收敛，不新增状态。

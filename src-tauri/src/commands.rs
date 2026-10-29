@@ -6,13 +6,15 @@ use gold_band::acp::events::{
     load_session_metadata,
 };
 use gold_band::acp::prompt_queue::{
-    AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
-    TerminalDispatchRecovery, auto_dispatch_is_suspended, claim_next_for_auto_dispatch,
-    claim_queued_prompt, clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension,
-    complete_accepted_prompt, delete_queued_prompt, enqueue_prompt, load_prompt_queue,
-    mark_user_priority, record_auto_dispatch_reply_completion, recover_terminal_dispatch,
-    release_queued_prompt, reorder_queued_prompts, request_auto_dispatch_suspension,
-    settle_dispatching_prompt, suspend_auto_dispatch, take_queued_prompt,
+    AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, DispatchMode, PromptQueueError,
+    SuspensionReason, TerminalDispatchRecovery, auto_dispatch_is_suspended,
+    claim_next_for_auto_dispatch, claim_queued_prompt, clear_auto_dispatch_reply_batch,
+    clear_queued_prompts, complete_accepted_prompt, delete_queued_prompt, enqueue_prompt,
+    load_prompt_queue, mark_user_priority, record_auto_dispatch_reply_completion,
+    recover_terminal_dispatch, release_queued_prompt, reorder_queued_prompts,
+    request_auto_dispatch_suspension, resume_auto_dispatch, set_dispatch_mode,
+    settle_dispatching_prompt, suspend_after_failed_turn, suspend_auto_dispatch,
+    take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     ATTACHMENT_ACCESS_DENIED, ATTACHMENT_NOT_FOUND, CHANGE_SET_NOT_FOUND, TurnFileChangeSet,
@@ -49,7 +51,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::config::{
     AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
     BrowserPreferences, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage,
@@ -1739,13 +1741,13 @@ fn prompt_turn_lifecycle_callback(
             &app,
             locator.clone(),
             event,
-            |locator, successful, completion| {
+            |locator, outcome, completion| {
                 schedule_direct_prompt_queue_drain(
                     app_handle.clone(),
                     project_id.clone(),
                     direct_prompt_queue_drain_app(&app),
                     locator,
-                    successful,
+                    outcome,
                     completion,
                 );
             },
@@ -1847,7 +1849,7 @@ fn process_prompt_turn_lifecycle(
     app: &App,
     locator: AttemptLocator,
     event: AcpPromptLifecycleEvent,
-    mut schedule_finished: impl FnMut(AttemptLocator, bool, Option<DeferredTurnCompletion>),
+    mut schedule_finished: impl FnMut(AttemptLocator, AcpTurnOutcome, Option<DeferredTurnCompletion>),
 ) -> anyhow::Result<()> {
     match event {
         AcpPromptLifecycleEvent::Accepted { prompt_id } => {
@@ -1912,7 +1914,7 @@ fn process_prompt_turn_lifecycle(
                     agent_label: acp_turn_agent_label(app, &locator),
                 }
             });
-            schedule_finished(locator, outcome == AcpTurnOutcome::Completed, completion);
+            schedule_finished(locator, outcome, completion);
         }
     }
     Ok(())
@@ -1931,9 +1933,10 @@ fn schedule_direct_prompt_queue_drain(
     project_id: Option<String>,
     app: App,
     locator: AttemptLocator,
-    successful: bool,
+    outcome: AcpTurnOutcome,
     completed_turn: Option<DeferredTurnCompletion>,
 ) {
+    let successful = outcome == AcpTurnOutcome::Completed;
     if conversation_run_mode(&app, &locator.task_id)
         != Some(gold_band::config::ConversationRunMode::Direct)
     {
@@ -1974,6 +1977,27 @@ fn schedule_direct_prompt_queue_drain(
     };
     if !successful {
         let _ = clear_auto_dispatch_reply_batch(&attempt_dir);
+        // A failed turn leaves the remaining queue idle with no event to
+        // resume it; persist that pause so the UI can show why and offer a
+        // resume. Cancelled turns skip this — the stop path already persisted
+        // its own suspension, and a send-now claim may have cleared it since.
+        if outcome == AcpTurnOutcome::Failed {
+            let newer_turn_live = client::prompt_activity(&attempt_dir).is_some();
+            if let Err(error) =
+                suspend_after_failed_turn(&attempt_dir, queue.revision, newer_turn_live)
+            {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    %error,
+                    "failed to persist the failed-turn prompt queue suspension"
+                );
+            }
+        }
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -1992,6 +2016,7 @@ fn schedule_direct_prompt_queue_drain(
     if gold_band::acp::events::session_execution_error(&attempt_dir).is_some()
         || queue.auto_dispatch_suspended
         || auto_dispatch_is_suspended(&attempt_dir)
+        || queue.dispatch_mode == DispatchMode::Manual
     {
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
         return;
@@ -2015,7 +2040,10 @@ fn schedule_direct_prompt_queue_drain(
         let claimed = match claim_next_for_auto_dispatch(&attempt_dir, expected_revision) {
             Ok(AutoClaimResult::Claimed(item)) => item,
             Ok(
-                AutoClaimResult::Empty | AutoClaimResult::Preempted | AutoClaimResult::Suspended,
+                AutoClaimResult::Empty
+                | AutoClaimResult::Preempted
+                | AutoClaimResult::Suspended
+                | AutoClaimResult::ManualMode,
             ) => {
                 emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
                 return;
@@ -5099,7 +5127,8 @@ async fn stop_active_session_inner(
                 request_auto_dispatch_suspension(&attempt_dir).map_err(command_error)?;
                 let queue = load_prompt_queue(&attempt_dir).map_err(command_error)?;
                 if !queue.items.is_empty() {
-                    suspend_auto_dispatch(&attempt_dir).map_err(command_error)?;
+                    suspend_auto_dispatch(&attempt_dir, SuspensionReason::Stopped)
+                        .map_err(command_error)?;
                 }
             }
             let current_run = control_app
@@ -7362,6 +7391,423 @@ pub fn delete_conversation_queued_prompt(
 }
 
 #[tauri::command]
+pub fn set_conversation_prompt_queue_mode(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    mode: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let mode = match mode.as_str() {
+        "auto" => DispatchMode::Auto,
+        "manual" => DispatchMode::Manual,
+        _ => {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-queue-invalid-mode",
+                serde_json::json!({ "mode": mode }),
+            ));
+        }
+    };
+    set_dispatch_mode(&locator.attempt_dir(&app), mode).map_err(command_error)?;
+    if mode == DispatchMode::Auto {
+        // Switching back to auto on an idle session must drive one dispatch
+        // round itself: the drain's only event source is a turn finishing,
+        // and an idle session has no next turn.
+        kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id.clone(), &locator);
+    }
+    Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+/// Lifts a stopped/failed pause without touching the user's dispatch mode,
+/// then drives one round if the session is already idle.
+#[tauri::command]
+pub fn resume_conversation_prompt_queue(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    resume_auto_dispatch(&locator.attempt_dir(&app)).map_err(command_error)?;
+    kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id.clone(), &locator);
+    Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+/// Whether an idle-session dispatch kick applies to this queue. Pure so the
+/// gating contract stays testable without a live runtime.
+///
+/// Only a settled, `Completed` run qualifies: a `Paused` run is blocked on an
+/// error or an intervention and must not receive queued prompts behind the
+/// user's back, and a `Running` run reschedules the drain on its own.
+fn idle_prompt_queue_kick_is_due(
+    queue: &gold_band::acp::prompt_queue::PromptQueue,
+    prompt_live: bool,
+    run_status: Option<RunStatus>,
+) -> bool {
+    !prompt_live
+        && run_status == Some(RunStatus::Completed)
+        && queue.dispatch_mode == DispatchMode::Auto
+        && !queue.auto_dispatch_suspended
+        && queue
+            .items
+            .iter()
+            .any(|item| item.state == gold_band::acp::prompt_queue::QueuedPromptState::Queued)
+}
+
+/// Drives one automatic dispatch round when the queue is pending, the mode is
+/// auto, and the run has settled as completed. No-ops otherwise (manual mode,
+/// empty queue, paused run, live turn — a live turn's own `Finished` event
+/// will reschedule the drain).
+///
+/// This schedules the drain directly: command apps resolved from the global
+/// state do not carry the runtime's prompt-lifecycle callbacks, and a
+/// synthetic `Finished` notification would also surface a completion notice
+/// for a turn that never ran.
+fn kick_idle_prompt_queue_drain_if_pending(
+    app_handle: &AppHandle,
+    app: &App,
+    project_id: Option<String>,
+    locator: &AttemptLocator,
+) {
+    let attempt_dir = locator.attempt_dir(app);
+    let queue = match load_prompt_queue(&attempt_dir) {
+        Ok(queue) => queue,
+        Err(error) => {
+            warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                attempt_id = %locator.attempt_id,
+                %error,
+                "failed to load the prompt queue for the idle dispatch kick"
+            );
+            return;
+        }
+    };
+    if !idle_prompt_queue_kick_is_due(
+        &queue,
+        client::prompt_activity(&attempt_dir).is_some(),
+        app.run_status(&locator.task_id, &locator.run_id)
+            .ok()
+            .map(|run| run.status),
+    ) {
+        return;
+    }
+    schedule_direct_prompt_queue_drain(
+        app_handle.clone(),
+        project_id,
+        direct_prompt_queue_drain_app(app),
+        locator.clone(),
+        AcpTurnOutcome::Completed,
+        None,
+    );
+}
+
+#[tauri::command]
+pub fn clear_conversation_queued_prompts(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    clear_queued_prompts(&locator.attempt_dir(&app)).map_err(prompt_queue_command_error)?;
+    Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerDraftVm {
+    pub id: String,
+    pub content: String,
+    pub attachment_count: usize,
+    pub quote_count: usize,
+    pub workspace_file_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerDraftBoxVm {
+    pub revision: u64,
+    pub max_items: usize,
+    pub items: Vec<ConversationComposerDraftVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerDraftTakeVm {
+    pub draft: ConversationQueuedPromptDraftVm,
+    pub drafts: ConversationComposerDraftBoxVm,
+}
+
+fn composer_draft_box_vm(
+    drafts: gold_band::acp::composer_drafts::ComposerDraftBox,
+) -> ConversationComposerDraftBoxVm {
+    ConversationComposerDraftBoxVm {
+        revision: drafts.revision,
+        max_items: gold_band::acp::composer_drafts::MAX_COMPOSER_DRAFTS,
+        items: drafts
+            .items
+            .into_iter()
+            .map(|draft| ConversationComposerDraftVm {
+                attachment_count: draft.attachment_paths.len(),
+                quote_count: draft.quotes.len(),
+                workspace_file_count: draft.workspace_files.len(),
+                role_name: draft.role.map(|role| role.name),
+                id: draft.id,
+                content: draft.content,
+                created_at: draft.created_at,
+            })
+            .collect(),
+    }
+}
+
+fn composer_draft_command_error(
+    error: gold_band::acp::composer_drafts::ComposerDraftError,
+) -> CommandErrorVm {
+    use gold_band::acp::composer_drafts::ComposerDraftError;
+    let (code, params) = match error {
+        ComposerDraftError::Empty => ("conversation.composer-draft-empty", serde_json::json!({})),
+        ComposerDraftError::Full => (
+            "conversation.composer-draft-full",
+            serde_json::json!({ "max": gold_band::acp::composer_drafts::MAX_COMPOSER_DRAFTS }),
+        ),
+        ComposerDraftError::NotFound => (
+            "conversation.composer-draft-not-found",
+            serde_json::json!({}),
+        ),
+        ComposerDraftError::Storage => (
+            "conversation.composer-draft-storage-failed",
+            serde_json::json!({}),
+        ),
+    };
+    CommandErrorVm::new(code, params)
+}
+
+/// Drafts live in the conversation task directory, so the task id from the
+/// UI must be a single path segment naming an existing task before any file
+/// under it is read or created.
+fn composer_draft_task_dir(app: &App, task_id: &str) -> CommandResult<Utf8PathBuf> {
+    let mut components = Path::new(task_id).components();
+    let single_segment =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !single_segment || !app.paths.task_file(task_id).exists() {
+        return Err(CommandErrorVm::new(
+            "conversation.task-not-found",
+            serde_json::json!({}),
+        ));
+    }
+    Ok(app.paths.task_dir(task_id))
+}
+
+#[tauri::command]
+pub fn list_conversation_composer_drafts(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    gold_band::acp::composer_drafts::load_composer_drafts(&task_dir)
+        .map(composer_draft_box_vm)
+        .map_err(composer_draft_command_error)
+}
+
+#[tauri::command]
+pub fn save_conversation_composer_draft(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    input: ConversationPromptInput,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
+    gold_band::acp::composer_drafts::save_composer_draft(
+        &task_dir,
+        input,
+        attachment_paths.unwrap_or_default(),
+    )
+    .map(|(_, drafts)| composer_draft_box_vm(drafts))
+    .map_err(composer_draft_command_error)
+}
+
+#[tauri::command]
+pub fn take_conversation_composer_draft(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    draft_id: String,
+) -> CommandResult<ConversationComposerDraftTakeVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    let (draft, drafts) =
+        gold_band::acp::composer_drafts::take_composer_draft(&task_dir, &draft_id)
+            .map_err(composer_draft_command_error)?;
+    Ok(ConversationComposerDraftTakeVm {
+        draft: ConversationQueuedPromptDraftVm {
+            content: draft.content,
+            quotes: draft.quotes,
+            attachment_paths: draft.attachment_paths,
+            role: draft.role,
+            workspace_files: draft.workspace_files,
+        },
+        drafts: composer_draft_box_vm(drafts),
+    })
+}
+
+#[tauri::command]
+pub fn delete_conversation_composer_draft(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    draft_id: String,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    gold_band::acp::composer_drafts::delete_composer_draft(&task_dir, &draft_id)
+        .map(composer_draft_box_vm)
+        .map_err(composer_draft_command_error)
+}
+
+/// Poll cadence and ceiling for waiting out an interrupted turn before an
+/// immediate queued dispatch. The ceiling must exceed the ACP cancel drain
+/// timeout so a hanging provider still settles (or the wait fails loudly)
+/// instead of leaving the claimed item stranded as `Dispatching`.
+const IMMEDIATE_DISPATCH_SETTLE_POLL_MS: u64 = 200;
+const IMMEDIATE_DISPATCH_SETTLE_TIMEOUT_MS: u64 = 15_000;
+
+fn session_idle_for_dispatch(app: &App, locator: &AttemptLocator, attempt_dir: &Utf8Path) -> bool {
+    client::prompt_activity(attempt_dir).is_none()
+        && !app
+            .run_status(&locator.task_id, &locator.run_id)
+            .is_ok_and(|run| run.status == RunStatus::Running)
+}
+
+/// Stops the active turn the same way the stop command does, minus the stop
+/// VM assembly. Immediate dispatch must use this inner path — never the
+/// background-control fast route — because it needs the durable cancel
+/// intent and the queue suspension semantics of a real stop.
+async fn stop_active_turn_for_immediate_dispatch(
+    app_handle: &AppHandle,
+    state: &State<'_, DesktopState>,
+    app: &App,
+    project_id: Option<String>,
+    locator: &AttemptLocator,
+) -> CommandResult<()> {
+    let operation_id = Uuid::new_v4().to_string();
+    let control_app = app.clone_for_background();
+    let control_locator = locator.clone();
+    let (attempt_dir, stop_turn_id) = spawn_blocking_command(move || {
+        let (attempt_dir, stop_turn_id, accepted) =
+            persist_active_session_stop(&control_app, &control_locator, &operation_id)?;
+        if accepted {
+            request_auto_dispatch_suspension(&attempt_dir).map_err(command_error)?;
+            let queue = load_prompt_queue(&attempt_dir).map_err(command_error)?;
+            if !queue.items.is_empty() {
+                suspend_auto_dispatch(&attempt_dir, SuspensionReason::Stopped)
+                    .map_err(command_error)?;
+            }
+        }
+        Ok((attempt_dir, stop_turn_id))
+    })
+    .await?;
+    spawn_active_session_stop_cleanup(
+        app_handle.clone(),
+        app.clone_for_background(),
+        project_id,
+        locator.clone(),
+        attempt_dir,
+        stop_turn_id,
+    );
+    spawn_index_attempt(
+        state.inner(),
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
+    );
+    Ok(())
+}
+
+async fn await_turn_settled_for_immediate_dispatch(
+    app: &App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8Path,
+) -> CommandResult<()> {
+    let deadline =
+        std::time::Instant::now() + Duration::from_millis(IMMEDIATE_DISPATCH_SETTLE_TIMEOUT_MS);
+    while !session_idle_for_dispatch(app, locator, attempt_dir) {
+        if std::time::Instant::now() >= deadline {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-queue-interrupt-timeout",
+                serde_json::json!({}),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(IMMEDIATE_DISPATCH_SETTLE_POLL_MS)).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn use_conversation_queued_prompt(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -7372,6 +7818,7 @@ pub async fn use_conversation_queued_prompt(
     node_id: String,
     attempt_id: String,
     item_id: String,
+    interrupt_active: Option<bool>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
@@ -7386,15 +7833,38 @@ pub async fn use_conversation_queued_prompt(
         outer_attempt_id,
     );
     let attempt_dir = locator.attempt_dir(&app);
-    if client::prompt_activity(&attempt_dir).is_some()
-        || app
-            .run_status(&locator.task_id, &locator.run_id)
-            .is_ok_and(|run| run.status == RunStatus::Running)
-    {
+    let busy = !session_idle_for_dispatch(&app, &locator, &attempt_dir);
+    if busy && !interrupt_active.unwrap_or(false) {
         return Err(CommandErrorVm::new(
             "conversation.prompt-queue-session-busy",
             serde_json::json!({}),
         ));
+    }
+    if busy {
+        stop_active_turn_for_immediate_dispatch(
+            &app_handle,
+            &state,
+            &app,
+            project_id.clone(),
+            &locator,
+        )
+        .await?;
+        if let Err(error) =
+            await_turn_settled_for_immediate_dispatch(&app, &locator, &attempt_dir).await
+        {
+            // The interruption is still settling; the queue keeps its items
+            // and the stop suspension, and the resume entry stays available.
+            warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                attempt_id = %locator.attempt_id,
+                item_id = %item_id,
+                error_code = %error.code,
+                "interrupted turn did not settle in time for immediate queued dispatch"
+            );
+            emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator);
+            return Err(error);
+        }
     }
     let claimed =
         claim_queued_prompt(&attempt_dir, &item_id).map_err(prompt_queue_command_error)?;
@@ -7415,6 +7885,19 @@ pub async fn use_conversation_queued_prompt(
         (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
     )
     .await;
+    // The interrupt flow waited for the prior turn's terminal settlement, so
+    // admission must start a turn — an enqueue response means the session was
+    // busy again (e.g. a concurrent submission won the race) and the claimed
+    // item would sit invisible in `Dispatching` with nothing left to settle it.
+    if result
+        .as_ref()
+        .is_ok_and(|response| response.kind == "queued")
+    {
+        result = Err(CommandErrorVm::new(
+            "conversation.prompt-queue-dispatch-settling",
+            serde_json::json!({}),
+        ));
+    }
     if result
         .as_ref()
         .is_ok_and(|response| response.admission_was_terminal)
@@ -7621,7 +8104,7 @@ async fn submit_conversation_prompt_inner(
         emit_acp_session_update(
             &app_handle,
             &app,
-            project_id,
+            project_id.clone(),
             &locator.task_id,
             &locator.run_id,
             &locator.round_id,
@@ -7632,37 +8115,9 @@ async fn submit_conversation_prompt_inner(
             None,
         );
         let lifecycle = lifecycle_for_locator(&app, &locator);
-        if client::prompt_activity(&attempt_dir).is_none()
-            && app
-                .run_status(&locator.task_id, &locator.run_id)
-                .is_ok_and(|run| run.status == RunStatus::Completed)
-        {
-            if let Err(error) = app.notify_prompt_turn_finished(
-                acp_live_event_context(
-                    &locator.task_id,
-                    run.task_uuid.clone(),
-                    &locator.run_id,
-                    &locator.round_id,
-                    &locator.node_id,
-                    &locator.attempt_id,
-                    locator.outer_node_id.clone(),
-                    locator.outer_attempt_id.clone(),
-                ),
-                None,
-                AcpTurnOutcome::Completed,
-            ) {
-                warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    %error,
-                    "failed to dispatch queued conversation prompt after terminal run"
-                );
-            }
-        }
+        // Unified idle kick: a submission queued just as the run settled has
+        // no upcoming turn-finished event to schedule the drain.
+        kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id, &locator);
         return Ok(ConversationPromptSubmitVm {
             kind: "queued".to_string(),
             turn_id: None,
@@ -7677,7 +8132,10 @@ async fn submit_conversation_prompt_inner(
     if direct_mode {
         let queue = load_prompt_queue(&attempt_dir).map_err(command_error)?;
         if queue.items.is_empty() {
-            clear_auto_dispatch_suspension(&attempt_dir).map_err(command_error)?;
+            // Durable clear, not just the in-process gate: a stop that
+            // persisted its suspension while items existed must not keep
+            // blocking future enqueues after every item was removed.
+            resume_auto_dispatch(&attempt_dir).map_err(command_error)?;
         } else {
             mark_user_priority(&attempt_dir).map_err(command_error)?;
         }
@@ -14352,8 +14810,8 @@ mod tests {
                 prompt_id: Some("turn-001".to_string()),
                 outcome: AcpTurnOutcome::Failed,
             },
-            |_, successful, completion| {
-                assert!(!successful);
+            |_, outcome, completion| {
+                assert_ne!(outcome, AcpTurnOutcome::Completed);
                 assert_eq!(completion.unwrap().turn_id, "turn-001");
             },
         )
@@ -14590,8 +15048,8 @@ mod tests {
                     prompt_id: Some(item.prompt_id),
                     outcome: AcpTurnOutcome::Completed,
                 },
-                |_, successful, completion| {
-                    assert!(successful);
+                |_, outcome, completion| {
+                    assert_eq!(outcome, AcpTurnOutcome::Completed);
                     assert!(completion.is_some());
                     let queue = load_prompt_queue(&attempt_dir).unwrap();
                     current =
@@ -14607,6 +15065,233 @@ mod tests {
 
         assert_eq!(dispatched_contents, expected_contents);
         assert!(load_prompt_queue(&attempt_dir).unwrap().items.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn idle_prompt_queue_kick_gates_on_mode_items_and_session_idleness() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-queue-auto-kick-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        enqueue_prompt(&attempt_dir, "first".to_string(), Vec::new()).unwrap();
+
+        // Manual mode holds the queue even on an idle session.
+        gold_band::acp::prompt_queue::set_dispatch_mode(
+            &attempt_dir,
+            gold_band::acp::prompt_queue::DispatchMode::Manual,
+        )
+        .unwrap();
+        let manual_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!idle_prompt_queue_kick_is_due(
+            &manual_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
+
+        // Switching back to auto with a pending item and an idle session is
+        // exactly the scenario the kick exists for: no turn-finished event
+        // will ever arrive to schedule the drain on its own.
+        gold_band::acp::prompt_queue::set_dispatch_mode(
+            &attempt_dir,
+            gold_band::acp::prompt_queue::DispatchMode::Auto,
+        )
+        .unwrap();
+        let auto_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
+
+        // A live turn schedules the drain through its own finished event.
+        assert!(!idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            true,
+            Some(RunStatus::Completed)
+        ));
+        assert!(!idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            false,
+            Some(RunStatus::Running)
+        ));
+        // A paused run is blocked on an error or intervention; queued prompts
+        // must wait for the user instead of being dispatched into it.
+        assert!(!idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            false,
+            Some(RunStatus::Paused)
+        ));
+        assert!(!idle_prompt_queue_kick_is_due(&auto_queue, false, None));
+
+        // A stopped/failed pause holds the queue until the user resumes it.
+        gold_band::acp::prompt_queue::suspend_auto_dispatch(
+            &attempt_dir,
+            gold_band::acp::prompt_queue::SuspensionReason::Stopped,
+        )
+        .unwrap();
+        let paused_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!idle_prompt_queue_kick_is_due(
+            &paused_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
+        gold_band::acp::prompt_queue::resume_auto_dispatch(&attempt_dir).unwrap();
+
+        // Nothing pending, nothing to kick.
+        gold_band::acp::prompt_queue::clear_queued_prompts(&attempt_dir).unwrap();
+        let empty_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!idle_prompt_queue_kick_is_due(
+            &empty_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composer_drafts_only_resolve_inside_an_existing_task() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-composer-draft-scope-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let task_file = app.paths.task_file("task-001");
+        std::fs::create_dir_all(task_file.parent().unwrap()).unwrap();
+        std::fs::write(&task_file, "{}").unwrap();
+
+        assert_eq!(
+            composer_draft_task_dir(&app, "task-001").unwrap(),
+            app.paths.task_dir("task-001")
+        );
+        for task_id in [
+            "task-002",
+            "../task-001",
+            "task-001/../task-001",
+            "",
+            "C:\\task-001",
+        ] {
+            assert_eq!(
+                composer_draft_task_dir(&app, task_id).unwrap_err().code,
+                "conversation.task-not-found",
+                "{task_id:?} must not resolve to a draft directory"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manual_dispatch_mode_holds_queued_prompts_across_completed_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-lifecycle-manual-mode-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        let item = enqueue_prompt(&attempt_dir, "held".to_string(), Vec::new()).unwrap();
+        gold_band::acp::prompt_queue::set_dispatch_mode(
+            &attempt_dir,
+            gold_band::acp::prompt_queue::DispatchMode::Manual,
+        )
+        .unwrap();
+
+        process_prompt_turn_lifecycle(
+            &app,
+            locator.clone(),
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id: Some("turn-000".to_string()),
+                outcome: AcpTurnOutcome::Completed,
+            },
+            |_, outcome, completion| {
+                assert_eq!(outcome, AcpTurnOutcome::Completed);
+                assert!(completion.is_some());
+                let queue = load_prompt_queue(&attempt_dir).unwrap();
+                assert_eq!(
+                    claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap(),
+                    AutoClaimResult::ManualMode,
+                    "manual mode must hold queued prompts even after a completed turn"
+                );
+            },
+        )
+        .unwrap();
+
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].id, item.id);
+        // A user submission must not flip the mode back to auto.
+        gold_band::acp::prompt_queue::mark_user_priority(&attempt_dir).unwrap();
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert_eq!(
+            queue.dispatch_mode,
+            gold_band::acp::prompt_queue::DispatchMode::Manual
+        );
+        assert_eq!(
+            claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap(),
+            AutoClaimResult::ManualMode
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_turn_persists_the_queue_suspension_for_the_ui() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-lifecycle-failed-suspension-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        enqueue_prompt(&attempt_dir, "waiting".to_string(), Vec::new()).unwrap();
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(suspend_after_failed_turn(&attempt_dir, queue.revision, false).unwrap());
+
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(queue.auto_dispatch_suspended);
+        assert_eq!(
+            queue.suspension_reason,
+            Some(gold_band::acp::prompt_queue::SuspensionReason::Failed)
+        );
+
+        // The resume entry (mode command or user submission) clears it.
+        gold_band::acp::prompt_queue::set_dispatch_mode(
+            &attempt_dir,
+            gold_band::acp::prompt_queue::DispatchMode::Auto,
+        )
+        .unwrap();
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
         let _ = std::fs::remove_dir_all(root);
     }
 

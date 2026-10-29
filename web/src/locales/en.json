@@ -1050,11 +1050,18 @@
       "prompt-queue-empty": "The pending queue is empty.",
       "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
       "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
+      "prompt-queue-invalid-mode": "The send mode is invalid.",
       "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+      "prompt-queue-interrupt-timeout": "The current reply is still stopping. The message stays queued; try again shortly.",
+      "prompt-queue-dispatch-settling": "The previous reply has not fully finished. The message was returned to the queue; try again shortly.",
       "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
       "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
       "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
       "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
+      "composer-draft-empty": "There is nothing to save.",
+      "composer-draft-full": "Drafts are full. You can keep up to {{max}}.",
+      "composer-draft-not-found": "This draft no longer exists.",
+      "composer-draft-storage-failed": "Failed to save drafts. Try again.",
       "execution-plan": {
         "not-found": "This run has no execution plan.",
         "revision-conflict": "The execution plan changed. Reload and try again.",
@@ -2313,9 +2320,37 @@
       "editDraftOccupied": "Finish the current composer draft first",
       "restoreDraftConflict": "The composer changed before this queued message could be restored.",
       "reorder": "Reorder queue",
-      "use": "Use",
+      "sendNow": "Send now",
       "delete": "Delete",
-      "enqueue": "Add to queue"
+      "enqueue": "Add to queue",
+      "autoSend": "Auto send",
+      "modeTooltip": "When on, pending messages are sent one by one after each reply finishes. When off, they stay in the queue until you choose \"Send now\".",
+      "paused": {
+        "stopped": "Paused: session stopped",
+        "failed": "Paused: last send failed"
+      },
+      "resume": "Resume",
+      "resumeLabel": "Resume auto send",
+      "moreActions": "More actions",
+      "clear": "Clear pending",
+      "clearConfirmTitle": "Clear the pending queue?",
+      "clearConfirmDescription": "{{count}} pending messages will be removed. This cannot be undone.",
+      "clearConfirmAction": "Clear pending",
+      "interruptConfirmTitle": "Send this message now?",
+      "interruptConfirmDescription": "The current reply will be stopped before this message is sent.",
+      "interruptConfirmSkip": "Don't ask again",
+      "interruptConfirmAction": "Stop and send"
+    },
+    "composerDrafts": {
+      "title": "Drafts",
+      "titleWithCount": "Drafts ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Save to drafts",
+      "empty": "No drafts yet",
+      "take": "Move to input",
+      "takeOccupied": "Handle the current input first",
+      "delete": "Delete draft",
+      "takeConflict": "The input is not empty, so the draft was put back."
     },
     "sending": "Sending",
     "sendFailed": "Send failed",
@@ -2839,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Show all {{count}}",
       "showLess": "Show less"
+    },
+    "promptQueue": {
+      "title": "Pending messages",
+      "description": "While a reply is in progress, \"Send now\" stops the current reply first.",
+      "confirmInterrupt": "Confirm before \"Send now\" interrupts a reply"
     }
   },
   "multica": {

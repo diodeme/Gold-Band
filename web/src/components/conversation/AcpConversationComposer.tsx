@@ -97,6 +97,8 @@ export interface AcpConversationComposerProps {
   configBar: ReactNode;
   stackSlot?: AcpComposerStackSlot;
   queueSubmit: boolean;
+  /** Composer draft box entry, rendered beside the attachment button. */
+  draftBox?: ReactNode;
   supersededSession?: {
     label: string;
     href: string;
@@ -186,6 +188,7 @@ function AcpConversationComposerContent({
   configBar,
   stackSlot,
   queueSubmit,
+  draftBox,
   supersededSession,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
@@ -348,6 +351,7 @@ function AcpConversationComposerContent({
                   <Paperclip className="size-3.5" />
                 </Button>
               </PromptInputAction>
+              {draftBox}
               <div className="min-w-0 flex-1">{configBar}</div>
             </div>
             <PromptInputActions className={ACP_SESSION_COMPOSER_LAYOUT.trailingActionsClassName}>

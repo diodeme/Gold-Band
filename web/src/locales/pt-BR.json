@@ -1050,11 +1050,18 @@
       "prompt-queue-empty": "A fila pendente está vazia.",
       "prompt-queue-revision-conflict": "A ordem pendente mudou. Tente novamente após a lista atualizar.",
       "prompt-queue-invalid-order": "A ordem pendente é inválida. Tente novamente.",
+      "prompt-queue-invalid-mode": "O modo de envio é inválido.",
       "prompt-queue-session-busy": "Pare a sessão ativa antes de usar manualmente um item da fila.",
+      "prompt-queue-interrupt-timeout": "A resposta atual ainda está sendo interrompida. A mensagem permanece na fila; tente novamente em instantes.",
+      "prompt-queue-dispatch-settling": "A resposta anterior ainda não terminou completamente. A mensagem foi devolvida à fila; tente novamente em instantes.",
       "prompt-session-busy": "A mensagem anterior ainda está sendo processada. Aguarde ou pare a resposta atual primeiro.",
       "prompt-submission-conflict": "Este identificador de mensagem já está associado a conteúdo diferente. Envie novamente.",
       "prompt-submission-missing": "O conteúdo da mensagem aceita não pôde ser lido. Envie novamente.",
       "prompt-queue-storage-failed": "A fila pendente não pôde ser salva. Tente novamente.",
+      "composer-draft-empty": "Não há nada para salvar.",
+      "composer-draft-full": "Os rascunhos estão cheios. Você pode manter até {{max}}.",
+      "composer-draft-not-found": "Este rascunho não existe mais.",
+      "composer-draft-storage-failed": "Falha ao salvar os rascunhos. Tente novamente.",
       "execution-plan": {
         "not-found": "Este Run ainda não tem um plano de execução.",
         "revision-conflict": "O plano de execução mudou. Recarregue e tente novamente.",
@@ -2313,9 +2320,37 @@
       "editDraftOccupied": "Termine primeiro o rascunho atual do campo de entrada",
       "restoreDraftConflict": "O campo de entrada mudou e esta mensagem pendente não pode ser restaurada.",
       "reorder": "Reordenar mensagem na fila",
-      "use": "Usar",
+      "sendNow": "Enviar agora",
       "delete": "Excluir",
-      "enqueue": "Adicionar à fila"
+      "enqueue": "Adicionar à fila",
+      "autoSend": "Envio automático",
+      "modeTooltip": "Quando ativado, as mensagens pendentes são enviadas uma a uma ao fim de cada resposta. Quando desativado, elas ficam na fila até você escolher \"Enviar agora\".",
+      "paused": {
+        "stopped": "Pausado: sessão interrompida",
+        "failed": "Pausado: o último envio falhou"
+      },
+      "resume": "Retomar",
+      "resumeLabel": "Retomar envio automático",
+      "moreActions": "Mais ações",
+      "clear": "Limpar pendentes",
+      "clearConfirmTitle": "Limpar a fila de pendentes?",
+      "clearConfirmDescription": "{{count}} mensagens pendentes serão removidas. Isso não pode ser desfeito.",
+      "clearConfirmAction": "Limpar pendentes",
+      "interruptConfirmTitle": "Enviar esta mensagem agora?",
+      "interruptConfirmDescription": "A resposta atual será interrompida antes do envio desta mensagem.",
+      "interruptConfirmSkip": "Não perguntar novamente",
+      "interruptConfirmAction": "Interromper e enviar"
+    },
+    "composerDrafts": {
+      "title": "Rascunhos",
+      "titleWithCount": "Rascunhos ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Salvar nos rascunhos",
+      "empty": "Nenhum rascunho ainda",
+      "take": "Mover para a entrada",
+      "takeOccupied": "Resolva primeiro o conteúdo atual da entrada",
+      "delete": "Excluir rascunho",
+      "takeConflict": "A entrada não está vazia, então o rascunho voltou para os rascunhos."
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",
@@ -2839,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Mostrar todos ({{count}})",
       "showLess": "Mostrar menos"
+    },
+    "promptQueue": {
+      "title": "Mensagens pendentes",
+      "description": "Enquanto uma resposta está em andamento, \"Enviar agora\" interrompe a resposta atual primeiro.",
+      "confirmInterrupt": "Confirmar antes de \"Enviar agora\" interromper uma resposta"
     }
   },
   "multica": {

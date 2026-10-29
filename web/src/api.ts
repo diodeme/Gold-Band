@@ -525,8 +525,44 @@ export function deleteConversationQueuedPrompt(projectId: string | null | undefi
   return getRuntimeApi().deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
-export function useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
+export function useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, interruptActive?: boolean, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, interruptActive, outerNodeId, outerAttemptId);
+}
+
+export function setConversationPromptQueueMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, mode: 'auto' | 'manual', outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setConversationPromptQueueMode(projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId);
+}
+
+export function resumeConversationPromptQueue(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().resumeConversationPromptQueue(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+}
+
+export function listConversationComposerDrafts(projectId: string | null | undefined, taskId: string) {
+  return getRuntimeApi().listConversationComposerDrafts(projectId, taskId);
+}
+
+export function saveConversationComposerDraft(projectId: string | null | undefined, taskId: string, input: import('./types').ConversationPromptInput, attachmentPaths?: string[]) {
+  return getRuntimeApi().saveConversationComposerDraft(projectId, taskId, input, attachmentPaths);
+}
+
+export function takeConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().takeConversationComposerDraft(projectId, taskId, draftId);
+}
+
+export function deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().deleteConversationComposerDraft(projectId, taskId, draftId);
+}
+
+export function getPromptQueueSettings() {
+  return getRuntimeApi().getPromptQueueSettings();
+}
+
+export function savePromptQueueSettings(input: import('./types').PromptQueueSettingsVm) {
+  return getRuntimeApi().savePromptQueueSettings(input);
+}
+
+export function clearConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().clearConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {

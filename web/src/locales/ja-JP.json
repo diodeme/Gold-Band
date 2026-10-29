@@ -1050,11 +1050,18 @@
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
       "prompt-queue-invalid-order": "送信待ちの順序が無効です。もう一度試してください。",
+      "prompt-queue-invalid-mode": "送信モードが無効です。",
       "prompt-queue-session-busy": "キューに入れられたプロンプトを手動で使用する前に、アクティブなセッションを停止してください。",
+      "prompt-queue-interrupt-timeout": "現在の返信はまだ停止中です。このメッセージはキューに残ります。少し待ってから再試行してください。",
+      "prompt-queue-dispatch-settling": "前の返信が完全に終わっていません。このメッセージはキューに戻されました。少し待ってから再試行してください。",
       "prompt-session-busy": "前のメッセージはまだ処理中です。まず現在の応答を待つか停止してください。",
       "prompt-submission-conflict": "このメッセージ識別子は、すでに別のコンテンツに関連付けられています。もう一度送信してください。",
       "prompt-submission-missing": "受け付けられたメッセージの内容を読み取れませんでした。もう一度送信してください。",
       "prompt-queue-storage-failed": "保留キューを保存できませんでした。もう一度やり直してください。",
+      "composer-draft-empty": "保存できる内容がありません。",
+      "composer-draft-full": "下書きボックスがいっぱいです。最大 {{max}} 件まで保存できます。",
+      "composer-draft-not-found": "この下書きはすでに存在しません。",
+      "composer-draft-storage-failed": "下書きボックスを保存できませんでした。もう一度お試しください。",
       "execution-plan": {
         "not-found": "この Run には実行計画がありません。",
         "revision-conflict": "実行計画が更新されています。再読み込みしてからやり直してください。",
@@ -2313,9 +2320,37 @@
       "editDraftOccupied": "先に入力欄の現在の下書きを処理してください",
       "restoreDraftConflict": "入力欄の状態が変わったため、この送信待ちの内容を復元できません。",
       "reorder": "キューに入れられたメッセージを並べ替える",
-      "use": "使用",
+      "sendNow": "今すぐ送信",
       "delete": "削除",
-      "enqueue": "キューに追加"
+      "enqueue": "キューに追加",
+      "autoSend": "自動送信",
+      "modeTooltip": "オンにすると、返信が終わるたびに送信待ちの内容を順に自動送信します。オフにすると内容はキューに残り、「今すぐ送信」で 1 件ずつ送信します。",
+      "paused": {
+        "stopped": "一時停止中：セッションを停止しました",
+        "failed": "一時停止中：前回の送信に失敗しました"
+      },
+      "resume": "再開",
+      "resumeLabel": "自動送信を再開",
+      "moreActions": "その他の操作",
+      "clear": "送信待ちをクリア",
+      "clearConfirmTitle": "送信待ちキューをクリアしますか？",
+      "clearConfirmDescription": "送信待ちメッセージ {{count}} 件が削除されます。この操作は元に戻せません。",
+      "clearConfirmAction": "送信待ちをクリア",
+      "interruptConfirmTitle": "この内容を今すぐ送信しますか？",
+      "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
+      "interruptConfirmSkip": "今後表示しない",
+      "interruptConfirmAction": "停止して送信"
+    },
+    "composerDrafts": {
+      "title": "下書きボックス",
+      "titleWithCount": "下書きボックス（{{count}}）",
+      "count": "{{count}}/{{max}}",
+      "save": "下書きボックスに保存",
+      "empty": "下書きはまだありません",
+      "take": "入力欄に戻す",
+      "takeOccupied": "先に入力欄の内容を処理してください",
+      "delete": "下書きを削除",
+      "takeConflict": "入力欄に内容があるため、下書きを下書きボックスに戻しました。"
     },
     "sending": "送信中",
     "sendFailed": "送信に失敗しました",
@@ -2839,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "すべて表示（{{count}} 件）",
       "showLess": "折りたたむ"
+    },
+    "promptQueue": {
+      "title": "送信待ち",
+      "description": "返信中に「今すぐ送信」を使うと、現在の返信を先に停止します。",
+      "confirmInterrupt": "「今すぐ送信」で返信を中断する前に確認する"
     }
   },
   "multica": {

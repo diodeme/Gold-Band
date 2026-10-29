@@ -46,6 +46,7 @@ vi.mock('@/api', async () => {
     ...actual,
     getAcpSession: vi.fn().mockResolvedValue(null),
     getAgentCommandCatalog,
+    listConversationComposerDrafts: vi.fn().mockResolvedValue({ revision: 0, maxItems: 20, items: [] }),
   };
 });
 

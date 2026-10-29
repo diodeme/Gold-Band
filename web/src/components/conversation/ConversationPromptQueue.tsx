@@ -17,7 +17,6 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import {
   ChevronDown,
-  CornerDownLeft,
   GripVertical,
   ListPlus,
   Loader2,
@@ -47,6 +46,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Collapsible,
   CollapsibleContent,
@@ -58,6 +58,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Switch } from '@/components/ui/switch';
 import {
   Tooltip,
   TooltipContent,
@@ -70,6 +71,7 @@ import {
   acpComposerStackShapeClassName,
   type AcpComposerStackSlot,
 } from '@/lib/conversation-composer-layout';
+import { savePromptQueueSettings, usePromptQueueSettings } from '@/lib/prompt-queue-settings-store';
 import type { ConversationPromptQueueVm, ConversationQueuedPromptVm } from '@/types';
 
 const DEFAULT_VISIBLE_ITEMS = 3;
@@ -87,6 +89,8 @@ export function moveQueueItemIds(
 
 export interface ConversationPromptQueueProps {
   queue: ConversationPromptQueueVm;
+  /** A reply is running, so "send now" stops it before sending. */
+  interruptsActiveTurn: boolean;
   stopInProgress: boolean;
   mutationPending: boolean;
   composerOccupied: boolean;
@@ -103,6 +107,7 @@ export interface ConversationPromptQueueProps {
 
 export function ConversationPromptQueue({
   queue,
+  interruptsActiveTurn,
   stopInProgress,
   mutationPending,
   composerOccupied,
@@ -119,6 +124,9 @@ export function ConversationPromptQueue({
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const [showAll, setShowAll] = useState(false);
+  const { confirmInterrupt } = usePromptQueueSettings();
+  const [interruptConfirmItemId, setInterruptConfirmItemId] = useState<string | null>(null);
+  const [skipFutureInterruptConfirm, setSkipFutureInterruptConfirm] = useState(false);
   const [optimisticOrder, setOptimisticOrder] = useState<{
     baseRevision: number;
     itemIds: string[];
@@ -138,10 +146,31 @@ export function ConversationPromptQueue({
   }, [optimisticOrder, queue.items, queue.revision]);
   const hasMore = orderedItems.length > DEFAULT_VISIBLE_ITEMS;
   const visibleItems = showAll ? orderedItems : orderedItems.slice(0, DEFAULT_VISIBLE_ITEMS);
-  const suspended = queue.autoDispatchSuspended && queue.suspensionReason != null;
+  const autoMode = queue.dispatchMode === 'auto';
+  // A pause only qualifies automatic dispatch; manual mode has nothing to resume.
+  const suspended = autoMode && queue.autoDispatchSuspended && queue.suspensionReason != null;
   // The whole surface hides when there is nothing pending; the durable mode
   // and suspension resurface with the panel once items exist again.
   if (queue.items.length === 0) return null;
+
+  const requestSendNow = (itemId: string) => {
+    if (interruptsActiveTurn && confirmInterrupt) {
+      setSkipFutureInterruptConfirm(false);
+      setInterruptConfirmItemId(itemId);
+      return;
+    }
+    void onSendNow(itemId);
+  };
+
+  const confirmSendNow = () => {
+    const itemId = interruptConfirmItemId;
+    setInterruptConfirmItemId(null);
+    if (!itemId) return;
+    if (skipFutureInterruptConfirm) {
+      void savePromptQueueSettings({ confirmInterrupt: false }).catch(() => {});
+    }
+    void onSendNow(itemId);
+  };
 
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || mutationPending) return;
@@ -169,7 +198,7 @@ export function ConversationPromptQueue({
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
-            className="h-auto min-w-0 flex-1 justify-between rounded-none border-0 px-1 py-1 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
+            className="h-auto min-w-max flex-1 justify-between rounded-none border-0 px-1 py-1 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
             data-queue-trigger="true"
           >
             <span className="flex min-w-0 items-center gap-2 text-xs">
@@ -182,11 +211,13 @@ export function ConversationPromptQueue({
             <ChevronDown
               className={cn(
                 'size-3.5 shrink-0 text-muted-foreground transition-transform',
-                !open && 'rotate-180',
+                open && 'rotate-180',
               )}
             />
           </Button>
         </CollapsibleTrigger>
+        {/* The controls wrap as one group so none is stranded on its own line. */}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
         {suspended ? (
           <>
             <span
@@ -198,43 +229,47 @@ export function ConversationPromptQueue({
                 ? t('acp.promptQueue.paused.failed')
                 : t('acp.promptQueue.paused.stopped')}
             </span>
-            <TooltipProvider delayDuration={250}>
-              <QueueIconButton
-                label={t('acp.promptQueue.resume')}
-                disabled={mutationPending}
-                onClick={() => {
-                  void onResumeDispatch();
-                }}
-              >
-                <Play className="size-3.5" />
-              </QueueIconButton>
-            </TooltipProvider>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 rounded-full px-2 text-ui-caption"
+              disabled={mutationPending}
+              aria-label={t('acp.promptQueue.resumeLabel')}
+              data-queue-resume="true"
+              onClick={() => {
+                void onResumeDispatch();
+              }}
+            >
+              <Play className="size-3" />
+              {t('acp.promptQueue.resume')}
+            </Button>
           </>
         ) : null}
         <TooltipProvider delayDuration={250}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 gap-1 rounded-full px-2 text-ui-caption text-muted-foreground"
-                disabled={mutationPending}
-                aria-label={t('acp.promptQueue.modeToggle')}
+              <label
+                className={cn(
+                  'inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-ui-caption text-muted-foreground',
+                  mutationPending ? 'cursor-not-allowed' : 'cursor-pointer',
+                )}
                 data-queue-mode={queue.dispatchMode}
-                onClick={() => {
-                  void onToggleMode(queue.dispatchMode === 'auto' ? 'manual' : 'auto');
-                }}
               >
-                {queue.dispatchMode === 'auto'
-                  ? t('acp.promptQueue.mode.auto')
-                  : t('acp.promptQueue.mode.manual')}
-              </Button>
+                <Switch
+                  checked={autoMode}
+                  disabled={mutationPending}
+                  aria-label={t('acp.promptQueue.autoSend')}
+                  onCheckedChange={(checked) => {
+                    void onToggleMode(checked ? 'auto' : 'manual');
+                  }}
+                />
+                {t('acp.promptQueue.autoSend')}
+              </label>
             </TooltipTrigger>
-            <TooltipContent>{t('acp.promptQueue.modeTooltip')}</TooltipContent>
+            <TooltipContent className="max-w-64">{t('acp.promptQueue.modeTooltip')}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
-        {queue.items.length > 0 ? (
         <AlertDialog>
           <DropdownMenu>
             <TooltipProvider delayDuration={250}>
@@ -280,7 +315,7 @@ export function ConversationPromptQueue({
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+              <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 onClick={() => {
@@ -292,8 +327,34 @@ export function ConversationPromptQueue({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-        ) : null}
+        </div>
       </div>
+      <AlertDialog
+        open={interruptConfirmItemId !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setInterruptConfirmItemId(null);
+        }}
+      >
+        <AlertDialogContent data-queue-interrupt-confirm="true">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('acp.promptQueue.interruptConfirmTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('acp.promptQueue.interruptConfirmDescription')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+            <Checkbox
+              checked={skipFutureInterruptConfirm}
+              onCheckedChange={(checked) => setSkipFutureInterruptConfirm(checked === true)}
+            />
+            {t('acp.promptQueue.interruptConfirmSkip')}
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmSendNow}>
+              {t('acp.promptQueue.interruptConfirmAction')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext
@@ -311,7 +372,7 @@ export function ConversationPromptQueue({
                   composerOccupied={composerOccupied}
                   sending={sendingItemId === item.id}
                   onRestore={() => { void onRestore(item.id); }}
-                  onSendNow={() => { void onSendNow(item.id); }}
+                  onSendNow={() => requestSendNow(item.id)}
                   onDelete={() => { void onDelete(item.id); }}
                 />
               ))}

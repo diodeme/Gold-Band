@@ -444,8 +444,8 @@ export const desktopApi: RuntimeApi = {
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths, forceQueue) {
-    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, outerNodeId, outerAttemptId, attachmentPaths, forceQueue: forceQueue ?? false });
+  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
   reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId) {
     return invokeCommand('reorder_conversation_queued_prompts', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId });
@@ -464,6 +464,27 @@ export const desktopApi: RuntimeApi = {
   },
   clearConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('clear_conversation_queued_prompts', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  resumeConversationPromptQueue(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('resume_conversation_prompt_queue', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  listConversationComposerDrafts(projectId, taskId) {
+    return invokeCommand('list_conversation_composer_drafts', { projectId, taskId });
+  },
+  saveConversationComposerDraft(projectId, taskId, input, attachmentPaths) {
+    return invokeCommand('save_conversation_composer_draft', { projectId, taskId, input, attachmentPaths });
+  },
+  takeConversationComposerDraft(projectId, taskId, draftId) {
+    return invokeCommand('take_conversation_composer_draft', { projectId, taskId, draftId });
+  },
+  deleteConversationComposerDraft(projectId, taskId, draftId) {
+    return invokeCommand('delete_conversation_composer_draft', { projectId, taskId, draftId });
+  },
+  getPromptQueueSettings() {
+    return invokeCommand('get_prompt_queue_settings');
+  },
+  savePromptQueueSettings(input) {
+    return invokeCommand('save_prompt_queue_settings', { input });
   },
   setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });

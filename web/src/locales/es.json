@@ -1058,6 +1058,10 @@
       "prompt-submission-conflict": "Este identificador de mensaje ya está asociado con contenido diferente. Envíelo de nuevo.",
       "prompt-submission-missing": "No se pudo leer el contenido del mensaje aceptado. Envíelo de nuevo.",
       "prompt-queue-storage-failed": "No se pudo guardar la cola pendiente. Vuelva a intentarlo.",
+      "composer-draft-empty": "No hay nada que guardar.",
+      "composer-draft-full": "Los borradores están llenos. Puedes guardar hasta {{max}}.",
+      "composer-draft-not-found": "Este borrador ya no existe.",
+      "composer-draft-storage-failed": "No se pudieron guardar los borradores. Inténtalo de nuevo.",
       "execution-plan": {
         "not-found": "Este Run todavía no tiene un plan de ejecución.",
         "revision-conflict": "El plan de ejecución cambió. Vuelva a cargarlo e inténtelo de nuevo.",
@@ -2319,23 +2323,34 @@
       "sendNow": "Enviar ahora",
       "delete": "Eliminar",
       "enqueue": "Agregar a la cola",
-      "modeToggle": "Cambiar modo de envío",
-      "mode": {
-        "auto": "Envío automático",
-        "manual": "Envío manual"
-      },
-      "modeTooltip": "Envío automático: los mensajes en cola se envían uno a uno cuando termina cada respuesta. Envío manual: los mensajes permanecen en la cola hasta que uses Enviar ahora en cada uno.",
+      "autoSend": "Envío automático",
+      "modeTooltip": "Si está activado, los mensajes pendientes se envían uno a uno al terminar cada respuesta. Si está desactivado, permanecen en la cola hasta que elijas \"Enviar ahora\".",
       "paused": {
         "stopped": "En pausa: sesión detenida",
         "failed": "En pausa: el último envío falló"
       },
-      "resume": "Reanudar envío automático",
+      "resume": "Reanudar",
+      "resumeLabel": "Reanudar envío automático",
       "moreActions": "Más acciones",
       "clear": "Vaciar pendientes",
       "clearConfirmTitle": "¿Vaciar la cola de pendientes?",
       "clearConfirmDescription": "Se eliminarán {{count}} mensajes pendientes. Esta acción no se puede deshacer.",
       "clearConfirmAction": "Vaciar pendientes",
-      "saveToBox": "Guardar en borradores"
+      "interruptConfirmTitle": "¿Enviar este mensaje ahora?",
+      "interruptConfirmDescription": "La respuesta actual se detendrá antes de enviar este mensaje.",
+      "interruptConfirmSkip": "No volver a preguntar",
+      "interruptConfirmAction": "Detener y enviar"
+    },
+    "composerDrafts": {
+      "title": "Borradores",
+      "titleWithCount": "Borradores ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Guardar en borradores",
+      "empty": "Aún no hay borradores",
+      "take": "Mover a la entrada",
+      "takeOccupied": "Primero resuelve el contenido actual de la entrada",
+      "delete": "Eliminar borrador",
+      "takeConflict": "La entrada no está vacía, así que el borrador volvió a borradores."
     },
     "sending": "Enviando",
     "sendFailed": "Error al enviar",
@@ -2859,6 +2874,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Mostrar todos ({{count}})",
       "showLess": "Mostrar menos"
+    },
+    "promptQueue": {
+      "title": "Mensajes pendientes",
+      "description": "Mientras una respuesta está en curso, \"Enviar ahora\" detiene primero la respuesta actual.",
+      "confirmInterrupt": "Confirmar antes de que \"Enviar ahora\" interrumpa una respuesta"
     }
   },
   "multica": {

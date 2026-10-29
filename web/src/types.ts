@@ -3124,6 +3124,33 @@ export interface ConversationQueuedPromptDraftVm {
   workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
+/** One saved composer draft; drafts belong to the conversation task and are never auto-sent. */
+export interface ConversationComposerDraftVm {
+  id: string;
+  content: string;
+  attachmentCount: number;
+  quoteCount: number;
+  workspaceFileCount: number;
+  roleName?: string | null;
+  createdAt: string;
+}
+
+/** Newest first; `revision` advances on every mutation for last-writer-wins convergence. */
+export interface ConversationComposerDraftBoxVm {
+  revision: number;
+  maxItems: number;
+  items: ConversationComposerDraftVm[];
+}
+
+export interface ConversationComposerDraftTakeVm {
+  draft: ConversationQueuedPromptDraftVm;
+  drafts: ConversationComposerDraftBoxVm;
+}
+
+export interface PromptQueueSettingsVm {
+  confirmInterrupt: boolean;
+}
+
 export interface ConversationRunWorktreeVm {
   path: string;
   branch: string;

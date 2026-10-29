@@ -47,6 +47,7 @@ import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
 import { BrowserSettings } from '@/components/settings/BrowserSettings';
 import { RemoteImageTrustSettings } from '@/components/settings/RemoteImageTrustSettings';
+import { PromptQueueSettings } from '@/components/settings/PromptQueueSettings';
 import { UpdateDownloadProgress } from '@/components/update/UpdateDownloadProgress';
 import { describeUpdateError, updateActionState } from '@/components/update/update-state';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
@@ -524,6 +525,17 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                 </button>
               </div>
+            </SettingsSection>
+            <SettingsSection
+              divided
+              title={(
+                <span className="inline-flex items-center gap-2">
+                  {t('settings.promptQueue.title')}
+                  <SettingInfoTooltip content={t('settings.promptQueue.description')} />
+                </span>
+              )}
+            >
+              <PromptQueueSettings />
             </SettingsSection>
             <SettingsSection
               divided

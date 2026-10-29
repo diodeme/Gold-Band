@@ -320,3 +320,8 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 「高级」页的“受信任的图片域名”分组以自动换行的胶囊标签列出已信任的 host，标签内提供移除按钮，不设内部滚动和最大高度；超过 20 个时只显示前 20 个，末尾以同款胶囊显示被折叠数量「+N」（悬停提示「显示全部 N 个」），点击原地展开，展开后末尾「收起」；移除失败时标签标记为错误并提示重试；列表为空时显示空状态。不提供手动添加入口：信任应在看到图片时决定，避免凭空填写宽泛域名。
 - 数据：`state.json` 的 `remoteImageTrust { schemaVersion: 1, trustedHosts }`，经 `with_state` 事务读改写，多处同时信任不会丢更新。host 按 WHATWG URL 规则规范化（小写、IDN 转 punycode、默认端口省略、非默认端口保留），只做精确匹配，不支持子域名通配，也不区分 http/https。
 - 接口：启动 bootstrap 携带 `remoteImageTrust`；`trust_remote_image_hosts(hosts)` 批量信任，任一 host 非法时整体拒绝并返回 `remote-image.host-invalid`；`revoke_remote_image_host(host)` 移除。两者幂等，成功时返回最新的完整列表，前端 `remote-image-trust-store` 以最后一次写入的响应收敛，每张图片只订阅自己 host 是否受信任。
+
+## 15. 待发送
+
+- 「高级」页的“待发送”分组提供「立即发送前确认打断当前回复」开关，默认开启。开启时，会话回复进行中点击待发送队列的“立即发送”会先弹确认框；关闭后直接打断并发送。确认框中的“后续不再提示”与该开关写入同一偏好。
+- 偏好保存在用户级设置的 `confirmQueuedPromptInterrupt`，后端是唯一事实源；前端以单一 store 懒加载一次，写入以最后一次请求为准，加载完成前按默认值（确认）处理，避免慢加载跳过确认。

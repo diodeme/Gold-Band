@@ -7426,9 +7426,9 @@ pub fn set_conversation_prompt_queue_mode(
     };
     set_dispatch_mode(&locator.attempt_dir(&app), mode).map_err(command_error)?;
     if mode == DispatchMode::Auto {
-        // Switching back to auto (or resuming a pause) on an idle session
-        // must drive one dispatch round itself: the drain's only event
-        // source is a turn finishing, and an idle session has no next turn.
+        // Switching back to auto on an idle session must drive one dispatch
+        // round itself: the drain's only event source is a turn finishing,
+        // and an idle session has no next turn.
         kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id.clone(), &locator);
     }
     Ok(ConversationPromptQueueMutationVm {
@@ -7436,14 +7436,53 @@ pub fn set_conversation_prompt_queue_mode(
     })
 }
 
+/// Lifts a stopped/failed pause without touching the user's dispatch mode,
+/// then drives one round if the session is already idle.
+#[tauri::command]
+pub fn resume_conversation_prompt_queue(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    resume_auto_dispatch(&locator.attempt_dir(&app)).map_err(command_error)?;
+    kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id.clone(), &locator);
+    Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
 /// Whether an idle-session dispatch kick applies to this queue. Pure so the
 /// gating contract stays testable without a live runtime.
+///
+/// Only a settled, `Completed` run qualifies: a `Paused` run is blocked on an
+/// error or an intervention and must not receive queued prompts behind the
+/// user's back, and a `Running` run reschedules the drain on its own.
 fn idle_prompt_queue_kick_is_due(
     queue: &gold_band::acp::prompt_queue::PromptQueue,
-    session_idle: bool,
+    prompt_live: bool,
+    run_status: Option<RunStatus>,
 ) -> bool {
-    session_idle
+    !prompt_live
+        && run_status == Some(RunStatus::Completed)
         && queue.dispatch_mode == DispatchMode::Auto
+        && !queue.auto_dispatch_suspended
         && queue
             .items
             .iter()
@@ -7451,8 +7490,9 @@ fn idle_prompt_queue_kick_is_due(
 }
 
 /// Drives one automatic dispatch round when the queue is pending, the mode is
-/// auto, and the session is idle. No-ops otherwise (manual mode, empty queue,
-/// live turn — a live turn's own `Finished` event will reschedule the drain).
+/// auto, and the run has settled as completed. No-ops otherwise (manual mode,
+/// empty queue, paused run, live turn — a live turn's own `Finished` event
+/// will reschedule the drain).
 ///
 /// This schedules the drain directly: command apps resolved from the global
 /// state do not carry the runtime's prompt-lifecycle callbacks, and a
@@ -7480,7 +7520,10 @@ fn kick_idle_prompt_queue_drain_if_pending(
     };
     if !idle_prompt_queue_kick_is_due(
         &queue,
-        session_idle_for_dispatch(app, locator, &attempt_dir),
+        client::prompt_activity(&attempt_dir).is_some(),
+        app.run_status(&locator.task_id, &locator.run_id)
+            .ok()
+            .map(|run| run.status),
     ) {
         return;
     }
@@ -7521,6 +7564,165 @@ pub fn clear_conversation_queued_prompts(
     Ok(ConversationPromptQueueMutationVm {
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerDraftVm {
+    pub id: String,
+    pub content: String,
+    pub attachment_count: usize,
+    pub quote_count: usize,
+    pub workspace_file_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerDraftBoxVm {
+    pub revision: u64,
+    pub max_items: usize,
+    pub items: Vec<ConversationComposerDraftVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerDraftTakeVm {
+    pub draft: ConversationQueuedPromptDraftVm,
+    pub drafts: ConversationComposerDraftBoxVm,
+}
+
+fn composer_draft_box_vm(
+    drafts: gold_band::acp::composer_drafts::ComposerDraftBox,
+) -> ConversationComposerDraftBoxVm {
+    ConversationComposerDraftBoxVm {
+        revision: drafts.revision,
+        max_items: gold_band::acp::composer_drafts::MAX_COMPOSER_DRAFTS,
+        items: drafts
+            .items
+            .into_iter()
+            .map(|draft| ConversationComposerDraftVm {
+                attachment_count: draft.attachment_paths.len(),
+                quote_count: draft.quotes.len(),
+                workspace_file_count: draft.workspace_files.len(),
+                role_name: draft.role.map(|role| role.name),
+                id: draft.id,
+                content: draft.content,
+                created_at: draft.created_at,
+            })
+            .collect(),
+    }
+}
+
+fn composer_draft_command_error(
+    error: gold_band::acp::composer_drafts::ComposerDraftError,
+) -> CommandErrorVm {
+    use gold_band::acp::composer_drafts::ComposerDraftError;
+    let (code, params) = match error {
+        ComposerDraftError::Empty => ("conversation.composer-draft-empty", serde_json::json!({})),
+        ComposerDraftError::Full => (
+            "conversation.composer-draft-full",
+            serde_json::json!({ "max": gold_band::acp::composer_drafts::MAX_COMPOSER_DRAFTS }),
+        ),
+        ComposerDraftError::NotFound => (
+            "conversation.composer-draft-not-found",
+            serde_json::json!({}),
+        ),
+        ComposerDraftError::Storage => (
+            "conversation.composer-draft-storage-failed",
+            serde_json::json!({}),
+        ),
+    };
+    CommandErrorVm::new(code, params)
+}
+
+/// Drafts live in the conversation task directory, so the task id from the
+/// UI must be a single path segment naming an existing task before any file
+/// under it is read or created.
+fn composer_draft_task_dir(app: &App, task_id: &str) -> CommandResult<Utf8PathBuf> {
+    let mut components = Path::new(task_id).components();
+    let single_segment =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !single_segment || !app.paths.task_file(task_id).exists() {
+        return Err(CommandErrorVm::new(
+            "conversation.task-not-found",
+            serde_json::json!({}),
+        ));
+    }
+    Ok(app.paths.task_dir(task_id))
+}
+
+#[tauri::command]
+pub fn list_conversation_composer_drafts(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    gold_band::acp::composer_drafts::load_composer_drafts(&task_dir)
+        .map(composer_draft_box_vm)
+        .map_err(composer_draft_command_error)
+}
+
+#[tauri::command]
+pub fn save_conversation_composer_draft(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    input: ConversationPromptInput,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
+    gold_band::acp::composer_drafts::save_composer_draft(
+        &task_dir,
+        input,
+        attachment_paths.unwrap_or_default(),
+    )
+    .map(|(_, drafts)| composer_draft_box_vm(drafts))
+    .map_err(composer_draft_command_error)
+}
+
+#[tauri::command]
+pub fn take_conversation_composer_draft(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    draft_id: String,
+) -> CommandResult<ConversationComposerDraftTakeVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    let (draft, drafts) =
+        gold_band::acp::composer_drafts::take_composer_draft(&task_dir, &draft_id)
+            .map_err(composer_draft_command_error)?;
+    Ok(ConversationComposerDraftTakeVm {
+        draft: ConversationQueuedPromptDraftVm {
+            content: draft.content,
+            quotes: draft.quotes,
+            attachment_paths: draft.attachment_paths,
+            role: draft.role,
+            workspace_files: draft.workspace_files,
+        },
+        drafts: composer_draft_box_vm(drafts),
+    })
+}
+
+#[tauri::command]
+pub fn delete_conversation_composer_draft(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    draft_id: String,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let task_dir = composer_draft_task_dir(&app, &task_id)?;
+    gold_band::acp::composer_drafts::delete_composer_draft(&task_dir, &draft_id)
+        .map(composer_draft_box_vm)
+        .map_err(composer_draft_command_error)
 }
 
 /// Poll cadence and ceiling for waiting out an interrupted turn before an
@@ -7681,7 +7883,6 @@ pub async fn use_conversation_queued_prompt(
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
         (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
-        None,
     )
     .await;
     // The interrupt flow waited for the prior turn's terminal settlement, so
@@ -7720,7 +7921,6 @@ pub async fn use_conversation_queued_prompt(
                     locator.outer_node_id.clone(),
                     locator.outer_attempt_id.clone(),
                     (!reclaimed.attachment_paths.is_empty()).then_some(reclaimed.attachment_paths),
-                    None,
                 )
                 .await;
             }
@@ -7757,7 +7957,6 @@ pub async fn submit_conversation_prompt(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
-    force_queue: Option<bool>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let log_project_id = project_id.clone();
     let log_task_id = task_id.clone();
@@ -7781,7 +7980,6 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
         attachment_paths,
-        force_queue,
     )
     .await;
     match &result {
@@ -7831,7 +8029,6 @@ async fn submit_conversation_prompt_inner(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
-    force_queue: Option<bool>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let _ = state.record_heartbeat_activity();
     let app = resolve_runtime_command_app_with_emitters(
@@ -7895,11 +8092,7 @@ async fn submit_conversation_prompt_inner(
                 | client::PromptActivity::Running
         )
     );
-    // Explicit draft-box submissions park the message in the queue even while
-    // idle; the existing terminal-run kick then keeps auto mode draining, and
-    // manual mode holds the item until the user sends it.
-    let force_queue = direct_mode && force_queue.unwrap_or(false);
-    if direct_mode && (live_prompt_active || run.status == RunStatus::Running || force_queue) {
+    if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
         let queued = enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
         touch_task_activity_at_best_effort(
@@ -7922,8 +8115,8 @@ async fn submit_conversation_prompt_inner(
             None,
         );
         let lifecycle = lifecycle_for_locator(&app, &locator);
-        // Unified idle kick: a queue-targeted submission landing on an idle
-        // session has no upcoming turn-finished event to schedule the drain.
+        // Unified idle kick: a submission queued just as the run settled has
+        // no upcoming turn-finished event to schedule the drain.
         kick_idle_prompt_queue_drain_if_pending(&app_handle, &app, project_id, &locator);
         return Ok(ConversationPromptSubmitVm {
             kind: "queued".to_string(),
@@ -14902,7 +15095,11 @@ mod tests {
         )
         .unwrap();
         let manual_queue = load_prompt_queue(&attempt_dir).unwrap();
-        assert!(!idle_prompt_queue_kick_is_due(&manual_queue, true));
+        assert!(!idle_prompt_queue_kick_is_due(
+            &manual_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
 
         // Switching back to auto with a pending item and an idle session is
         // exactly the scenario the kick exists for: no turn-finished event
@@ -14913,15 +15110,85 @@ mod tests {
         )
         .unwrap();
         let auto_queue = load_prompt_queue(&attempt_dir).unwrap();
-        assert!(idle_prompt_queue_kick_is_due(&auto_queue, true));
+        assert!(idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
 
         // A live turn schedules the drain through its own finished event.
-        assert!(!idle_prompt_queue_kick_is_due(&auto_queue, false));
+        assert!(!idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            true,
+            Some(RunStatus::Completed)
+        ));
+        assert!(!idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            false,
+            Some(RunStatus::Running)
+        ));
+        // A paused run is blocked on an error or intervention; queued prompts
+        // must wait for the user instead of being dispatched into it.
+        assert!(!idle_prompt_queue_kick_is_due(
+            &auto_queue,
+            false,
+            Some(RunStatus::Paused)
+        ));
+        assert!(!idle_prompt_queue_kick_is_due(&auto_queue, false, None));
+
+        // A stopped/failed pause holds the queue until the user resumes it.
+        gold_band::acp::prompt_queue::suspend_auto_dispatch(
+            &attempt_dir,
+            gold_band::acp::prompt_queue::SuspensionReason::Stopped,
+        )
+        .unwrap();
+        let paused_queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert!(!idle_prompt_queue_kick_is_due(
+            &paused_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
+        gold_band::acp::prompt_queue::resume_auto_dispatch(&attempt_dir).unwrap();
 
         // Nothing pending, nothing to kick.
         gold_band::acp::prompt_queue::clear_queued_prompts(&attempt_dir).unwrap();
         let empty_queue = load_prompt_queue(&attempt_dir).unwrap();
-        assert!(!idle_prompt_queue_kick_is_due(&empty_queue, true));
+        assert!(!idle_prompt_queue_kick_is_due(
+            &empty_queue,
+            false,
+            Some(RunStatus::Completed)
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composer_drafts_only_resolve_inside_an_existing_task() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-composer-draft-scope-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let task_file = app.paths.task_file("task-001");
+        std::fs::create_dir_all(task_file.parent().unwrap()).unwrap();
+        std::fs::write(&task_file, "{}").unwrap();
+
+        assert_eq!(
+            composer_draft_task_dir(&app, "task-001").unwrap(),
+            app.paths.task_dir("task-001")
+        );
+        for task_id in [
+            "task-002",
+            "../task-001",
+            "task-001/../task-001",
+            "",
+            "C:\\task-001",
+        ] {
+            assert_eq!(
+                composer_draft_task_dir(&app, task_id).unwrap_err().code,
+                "conversation.task-not-found",
+                "{task_id:?} must not resolve to a draft directory"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

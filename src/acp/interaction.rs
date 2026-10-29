@@ -31,6 +31,19 @@ impl AcpPromptInteractionKind {
     }
 }
 
+/// Canonical lifecycle state of one prompt interaction, derived from its
+/// signal files while the runtime owns it and from the timeline afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpInteractionSettlement {
+    /// The runtime is still waiting for an answer.
+    Pending,
+    /// Someone answered it (desktop, IM channel or auto-accept).
+    Answered,
+    /// It ended without an answer: stopped, timed out or abandoned by a
+    /// runtime that is gone.
+    Cancelled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPromptInteractionIdentity {

@@ -149,6 +149,18 @@ async function zhCnT() {
 }
 
 describe('acpRuntimeErrorBannerCopy with catalog copy', () => {
+  it('explains how to recover when the provider session reference is missing', async () => {
+    const copy = acpRuntimeErrorBannerCopy(await zhCnT(), runtimeError({
+      code: { domain: 'provider', code: 'acp.session-restore-reference-missing' },
+      domain: 'provider',
+      diagnostic: 'ACP continue requires an existing provider session reference',
+    }));
+
+    expect(copy).toBe(
+      '当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。\nACP continue requires an existing provider session reference',
+    );
+  });
+
   it('localizes dynamic completion repair exhaustion by error code', async () => {
     const t = await zhCnT();
 

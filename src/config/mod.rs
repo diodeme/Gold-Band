@@ -33,6 +33,13 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .validate()
             .expect("embedded WeCom scan auth config is valid");
         config
+            .im
+            .as_ref()
+            .expect("embedded app-config.toml defines im")
+            .feishu_scan_auth
+            .validate()
+            .expect("embedded Feishu scan auth config is valid");
+        config
     })
 }
 
@@ -867,7 +874,6 @@ pub struct SettingsConfig {
     pub settings_schema_version: SettingsSchemaVersion,
     pub log_level: Option<RuntimeLogLevel>,
     pub log_prompts: Option<bool>,
-    pub log_provider_command: Option<bool>,
     pub log_retention_days: Option<u64>,
     pub appearance: Option<AppearancePreference>,
     pub personalization: Option<PersonalizationPreference>,
@@ -907,6 +913,14 @@ pub fn wecom_scan_auth_config() -> &'static WeComScanAuthConfig {
         .as_ref()
         .expect("embedded app-config.toml defines im")
         .wecom_scan_auth
+}
+
+pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
+    &embedded_project_app_config()
+        .im
+        .as_ref()
+        .expect("embedded app-config.toml defines im")
+        .feishu_scan_auth
 }
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
@@ -1432,6 +1446,33 @@ pub struct ProjectAppConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ImAppConfig {
     pub wecom_scan_auth: WeComScanAuthConfig,
+    pub feishu_scan_auth: FeishuScanAuthConfig,
+}
+
+/// Feishu device-code registration presets: `source` tags the QR URL, and the
+/// app name/description prefill the self-built app created by the scan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeishuScanAuthConfig {
+    pub source: String,
+    pub app_description_suffix: String,
+}
+
+impl FeishuScanAuthConfig {
+    fn validate(&self) -> Result<()> {
+        let source = self.source.trim();
+        if source.is_empty() || source.len() > 64 || !source.is_ascii() {
+            return Err(anyhow!(
+                "Feishu scan auth source must be non-empty ASCII with at most 64 bytes"
+            ));
+        }
+        if self.app_description_suffix.trim().is_empty() {
+            return Err(anyhow!(
+                "Feishu scan auth app description suffix must be non-empty"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1801,7 +1842,6 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub interaction_mode: InteractionMode,
     pub log_prompts: bool,
-    pub log_provider_command: bool,
     pub log_retention_days: u64,
     pub appearance: AppearancePreference,
     pub personalization: PersonalizationPreference,
@@ -1875,7 +1915,6 @@ impl Default for RuntimeConfig {
             log_level: RuntimeLogLevel::Info,
             interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
-            log_provider_command: true,
             log_retention_days: 30,
             appearance: AppearancePreference::default(),
             personalization: PersonalizationPreference::default(),
@@ -1942,9 +1981,6 @@ impl RuntimeConfig {
         }
         if let Some(log_prompts) = settings.log_prompts {
             self.log_prompts = log_prompts;
-        }
-        if let Some(log_provider_command) = settings.log_provider_command {
-            self.log_provider_command = log_provider_command;
         }
         if let Some(log_retention_days) = settings.log_retention_days {
             self.log_retention_days = log_retention_days;
@@ -3104,9 +3140,14 @@ mod tests {
     }
 
     #[test]
-    fn embedded_app_config_defines_wecom_scan_source() {
+    fn embedded_app_config_defines_scan_sources_and_feishu_description_suffix() {
         assert_eq!(super::wecom_scan_auth_config().source, "maling");
         assert!(super::wecom_scan_auth_config().validate().is_ok());
+        assert_eq!(
+            super::feishu_scan_auth_config().app_description_suffix,
+            "remote intervention"
+        );
+        assert!(super::feishu_scan_auth_config().validate().is_ok());
     }
 
     #[test]

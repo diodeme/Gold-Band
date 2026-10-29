@@ -32,9 +32,11 @@ describe('ACP todo panel', () => {
   it('uses the queue surface in the composer stack without opening by default', () => {
     const html = renderToStaticMarkup(createElement(AcpTodoPanel, {
       entries: [{ content: 'Inspect repository', status: 'in_progress' }],
+      stackSlot: { above: 'none', below: 'divided', infoTab: false, gapBelow: false },
     }));
 
     expect(html).toContain('rounded-t-2xl');
+    expect(html).toContain('rounded-b-none');
     expect(html).toContain('border-0');
     expect(html).toContain('bg-card');
     expect(html).not.toContain('divide-y divide-border/25 border-t border-border/35');
@@ -45,10 +47,10 @@ describe('ACP todo panel', () => {
   it('closes its surface when a read-only branch has no composer below it', () => {
     const html = renderToStaticMarkup(createElement(AcpTodoPanel, {
       entries: [{ content: 'Inspect repository', status: 'completed' }],
-      attachedBelow: false,
     }));
 
-    expect(html).toContain('rounded-2xl');
+    expect(html).toContain('rounded-t-2xl');
+    expect(html).toContain('rounded-b-2xl');
     expect(html).toContain('border-0');
   });
 });

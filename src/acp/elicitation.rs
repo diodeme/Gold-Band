@@ -10,7 +10,7 @@ use crate::{
     acp::{
         events::current_timestamp,
         interaction::{
-            AcpPromptInteractionIdentity, AcpPromptInteractionKind,
+            AcpInteractionSettlement, AcpPromptInteractionIdentity, AcpPromptInteractionKind,
             PendingAcpPromptInteractionState, bind_pending_prompt_interaction_timeline_identity,
             write_pending_prompt_interaction,
         },
@@ -303,6 +303,51 @@ pub fn upsert_elicitation_response_event(
         current_timestamp(),
     )?;
     Ok(())
+}
+
+/// Canonical settlement of one elicitation, with the same precedence as
+/// [`crate::acp::permission::permission_request_settlement`]: response file,
+/// then pending file, then the timeline response item. A request item without
+/// a response item or signal files was abandoned by its runtime.
+pub fn elicitation_request_settlement(
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+) -> Result<Option<AcpInteractionSettlement>> {
+    let settled = |cancelled: bool| {
+        Some(if cancelled {
+            AcpInteractionSettlement::Cancelled
+        } else {
+            AcpInteractionSettlement::Answered
+        })
+    };
+    if let Ok(response) = read_json::<ElicitationResponseState>(&elicitation_response_file(
+        attempt_dir,
+        elicitation_id,
+    )) {
+        return Ok(settled(response.action == ElicitationAction::Cancel));
+    }
+    if pending_elicitation_file(attempt_dir, elicitation_id).exists() {
+        return Ok(Some(AcpInteractionSettlement::Pending));
+    }
+    let response_id = format!("{elicitation_id}-response");
+    for (_, path) in crate::acp::branches::existing_branch_timeline_paths(attempt_dir)? {
+        if !path.exists() {
+            continue;
+        }
+        if let Some(response) = read_indexed_timeline_item(&path, &response_id)? {
+            let action = response
+                .event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("action"))
+                .and_then(Value::as_str);
+            return Ok(settled(action == Some("cancel")));
+        }
+        if read_indexed_timeline_item(&path, elicitation_id)?.is_some() {
+            return Ok(settled(true));
+        }
+    }
+    Ok(None)
 }
 
 fn resolve_elicitation_identity(

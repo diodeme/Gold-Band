@@ -19,6 +19,7 @@ mod feedback;
 mod git_state_monitor;
 mod i18n;
 mod im_runtime;
+mod im_scan_session;
 mod image_actions;
 mod memory;
 mod metrics;
@@ -427,6 +428,9 @@ fn run() -> anyhow::Result<()> {
             im_runtime::start_wecom_scan_authorization,
             im_runtime::complete_wecom_scan_authorization,
             im_runtime::cancel_wecom_scan_authorization,
+            im_runtime::start_feishu_scan_authorization,
+            im_runtime::complete_feishu_scan_authorization,
+            im_runtime::cancel_feishu_scan_authorization,
             im_runtime::set_im_channel_enabled,
             im_runtime::save_im_notification_preferences,
             im_runtime::reset_im_channel_binding,

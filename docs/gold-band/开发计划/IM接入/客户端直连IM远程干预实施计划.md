@@ -2,13 +2,30 @@
 
 ## 1. 目标与交付边界
 
-本计划实现 Gold Band 桌面客户端进程内直连企业微信，通过安装级全局一对一私聊处理已有 Runtime 的权限审批、用户追问和人工成功/失败判定，并投递用户逐类启用的 Run 与 ACP turn 信息通知。微信等待稳定主动推送真实 PoC，不部署 Gold Band 云端网关。
+本计划实现 Gold Band 桌面客户端进程内直连企业微信和飞书，通过安装级全局一对一私聊处理已有 Runtime 的权限审批、用户追问和人工成功/失败判定，并投递用户逐类启用的 Run 与 ACP turn 信息通知。微信等待稳定主动推送真实 PoC，不部署 Gold Band 云端网关。
 
 产品契约见：[客户端直连 IM 的远程干预设计](../../产品设计文档/integration/im-remote-intervention.md)。
 
-完成定义：
+2026-10-16 首次文档核对时，P2 已获用户验收；P3/P4 功能实现与此前本地验证见 §14、§16。随后用户确认落实协议封装和卡片类型化，两项代码及设计依据已同步更新，见 §23 和[飞书技术方案 §17.3](飞书远程干预技术方案.md#173-设计与实现偏差收口)。发布及真实平台边界继续维护在[§17.1](飞书远程干预技术方案.md#171-当前验收状态)。
 
-- 企业微信可在设置页扫码授权、启停和查看状态；连接 generation 与结构化错误直接反映真实连接结果，微信不出现设置入口。
+2026-10-16 17:20 自动化修复版本：包含 §22 后续 IM 修复的当时主工作区通过全仓验证：Rust 46 个目标、2871 通过、0 失败、18 ignored；前端 376 个文件、2861 通过；Node 脚本 157 通过；生产构建、现有 CI Clippy 门禁及格式检查通过。详见[自动化回归修复记录](自动化回归修复记录-2026-10-16.md)。[首次快照失败记录](自动化回归记录-2026-10-16.md)保留为历史；后续协议封装和类型化验证见 §23，不沿用旧全仓数字。安装包验收与平台边界仍独立跟踪。
+
+本计划负责模块、接口、迁移与实施安排，产品行为以关联产品设计文档为准，选型、PoC 和验收证据由飞书技术方案维护。以下 §1.1、§14 的原 Phase 0–4 与 §20 是带日期的实施历史；其中旧接口与当时待测状态应结合当前契约及验收状态表阅读。
+
+### 1.1 P2 修正历史（2026-10-15）
+
+- 企微 `multiple_interaction.select_list` 官方最多 3 项；真实四题请求返回 42047。能力声明、投影和 browser mock 统一改为 3，四题及以上在出站前整单跳过。仅修正此前错误的四/五题能力边界测试，企微 wire 黄金断言不变。
+- `ImResolutionOutcome::ElicitationSubmitted { content }` 承载 Accepted 的 schema-shaped 答案，删除单独瞬态 submission；runtime 的即时回包与 durable resolution 共用结果。`AlreadyApplied` 读取已存赢家结果；无结果时按 canonical settlement 决定：取消当场投影取消终态，答案在途回“已处理”并禁用原卡，请求仍待处理按“操作已过期”禁用原卡；禁止后到答案覆盖。
+- 飞书终态使用官方 Card JSON 2.0 的 `initial_index`（单选，1-based）、`selected_values`（多选）、`default_value`（输入框）与 `disabled`；回调、PATCH 和降级另发复用源 delivery 与同一渲染函数。`ImConnector::send` 同 `update_message` 接收可选源 delivery，上层仍按能力处理。
+- payload v3 / schema v5 在一个 IMMEDIATE 事务内转换旧 JSON、写版本号。旧已提交但无答案的结果转为 `ResultUnavailable`；源 delivery、绑定、display_ref、tombstone 和入站幂等审计保留。迁移失败回滚，新代码不保留旧格式读取分支。
+- 回归覆盖 3/4 题投影边界、四类答案禁用回显、序列化后回调/PATCH 一致、降级另发保留源上下文、迁移保留 tombstone/绑定及回滚、赢家结果不被后到提交覆盖。该轮 P2 修正已由用户验收；未测极限和 P1 历史项仍见飞书技术方案 §3.6、§17。
+- 评审：复用既有传输库、平台控件、outbox 和稳定 identity，不新增表、缓存、队列或业务状态机。处理限于单次干预（最多 5 题、答案最多 8 KiB）；终态按 ID 读取，不扫描历史，不引入前端重渲染范围变化。
+- 本地回归（2026-10-15）：核心 IM 174/174（含未改期望的企微 wire 黄金测试）、领域干预 25/25、桌面 IM runtime 19/19、前端 IM 22/22；核心/桌面 `cargo check --tests` 与 TypeScript 检查通过。本次文件格式与 diff 检查通过，全仓格式仍有范围外既有差异。修复前测试曾被 LLVM OOM 阻断，未取得红测断言证据；现场日志、官方协议与修复后结果详见飞书技术方案 §15，不宣称全仓或真实账号验收通过。
+- 桌面开发构建（同日）：低内存参数下 `cargo build -p gold-band-desktop --bin gold-band-desktop --features native-notification` 通过，耗时 2 分 56 秒；生成 `target/debug/gold-band-desktop.exe`，未启动，真实收发仍待用户复测。没有修改系统内存配置或结束用户应用；本次不属于 release 安装包验收。
+
+### 1.2 完成定义
+
+- 企业微信与飞书可在设置页扫码授权、启停和查看状态；连接 generation 与结构化错误直接反映真实连接结果，微信不出现设置入口。
 - 远程动作和桌面动作共用领域服务，满足完整 locator、revision、幂等和 first-writer-wins。
 - 凭据不落入设置文件、SQLite、日志或前端状态。
 - 网络断开、限流、重连、重启和重复回调有确定行为。
@@ -16,7 +33,9 @@
 
 ## 2. 现状基线与改造原则
 
-现有可复用能力：
+本节列出 IM 首次接入前的基线及沿用的改造原则。基线中的版本号不代表当前版本；现行接口与迁移见 §5–§13。
+
+接入前可复用能力：
 
 - `src/app/mod.rs` 已定义 `RuntimeLifecycleEvent::InterventionRequested`，包含稳定 event ID、时间和完整项目/任务/运行/轮次/节点/attempt 定位信息。
 - `src/app/observability.rs` 的 `RuntimeLifecycleBus` 已支持具名异步订阅者。
@@ -24,7 +43,7 @@
 - `src-tauri/src/commands.rs` 已有 `respond_acp_permission`、`respond_elicitation`、`submit_manual_check`。
 - `src-tauri/src/state.rs` 的 `DesktopState` 管理长生命周期桌面服务。
 - `GoldBandPaths::core_db_path()` 已提供用户级 `~/.gold-band/core.db`，数据库已使用 WAL、`synchronous=FULL` 和 component schema marker。
-- `SettingsConfig` 当前 schema version 为 10，设置写入已有统一校验、迁移和原子落盘入口。
+- IM 接入前的 `SettingsConfig` schema version 为 10，设置写入已有统一校验、迁移和原子落盘入口；当前为 v12，迁移见 §8.1。
 
 改造原则：
 
@@ -50,6 +69,7 @@
 | 平台 | 候选 | 2026-08-30 审计结论 | 合入/发布门槛 |
 |---|---|---|---|
 | 企业微信 | `@wecom/aibot-node-sdk 1.0.6` 协议基准 / `wecom-aibot-rust-sdk 1.0.2` / `tokio-tungstenite 0.30.0` | 官方 SDK 为 MIT、由 `WecomTeam` 维护，Halo 也通过其 `WSClient.sendMessage` 使用主动推送；Gold Band 不引入 Node helper。拒绝 Rust SDK：无 MSRV、采用量低且重复引入 reqwest 0.11、tokio full、tungstenite 0.21/native-tls；采用 `tokio-tungstenite` 薄封装官方 JSON 协议，MIT、MSRV 1.85、维护活跃 | fixture 固定官方 `chatid + payload` 主动推送帧、顶层 `errcode` ACK、鉴权、心跳、卡片回调/update、限流和重连；真实机器人验收仍是发布阻塞项 |
+| 飞书 | 官方 Node SDK 1.74.0 协议基准 / openlark-client 0.21.0 / prost 0.14.4 | 2026-10-12 PoC 定案：openlark 准入未通过（TLS 冲突、串行回调、凭据日志等）；采用 prost Frame/Header 薄封装 + 项目已有 tokio-tungstenite 0.30；HTTP 复用 reqwest 0.12，不引入 SDK 或 protoc | 原始 wire fixture、分片上限、心跳、generation、2.5 秒预算、脱敏、扫码/绑定及真实账号回归 |
 | 微信 | 官方 `@tencent-weixin/openclaw-weixin 2.4.6` / `weixin-agent 0.3.0` | 延期，不进入生产依赖；官方包 MIT，但主动推送与 context token 稳定边界未经真实 PoC 证明 | 真实账号证明无需用户先发消息即可稳定主动推送、休眠恢复与长期重连后重新评审；禁止 pull-only 降级 |
 
 不得为了“统一 SDK”编写自有网络框架。若官方/成熟 SDK 能满足协议与生命周期要求，connector 应薄封装；只有候选未通过审计的单个平台才退回成熟传输库加官方协议实现。
@@ -60,7 +80,7 @@
 
 ## 4. 模块布局
 
-建议新增和调整以下文件：
+当前实现涉及以下模块（以实际文件为准）：
 
 ```text
 src/app/
@@ -74,12 +94,22 @@ src/im/
   inbound.rs                      # action token、入站幂等和 Runtime 调用
   repository.rs                   # core.db component repository
   credential.rs                   # OS credential store adapter
+  wecom_scan_auth.rs               # 企业微信 device flow
+  feishu_scan_auth.rs              # 飞书 RFC 8628 扫码/重新授权
   worker.rs                       # bounded delivery worker
   connectors/
     wecom.rs
+    feishu.rs                     # generation-owned session 与待回包
+    feishu/api.rs                 # token、自检、create/PATCH
+    feishu/ws.rs                  # 私有 prost pbbp2、分片、回包接口
+    feishu/ws/connection.rs       # socket、心跳、ACK 队列、连接所属任务
+    feishu/ws/connector_tests.rs  # 模块内协议集成测试
+    feishu/card.rs                # Card JSON 2.0 领域投影与回调解码
+    feishu/card/wire.rs           # 实际出站组件、callback、toast 的 typed 序列化
 
 src-tauri/src/
   im_runtime.rs                   # DesktopState 装配、commands 和 typed event bridge
+  im_scan_session.rs              # 两渠道共享的扫码会话所有权
   state.rs                        # 增加 ImConnectionManagerHandle
   commands.rs                     # lifecycle 注册、领域 command 委托、退出编排
 
@@ -89,14 +119,15 @@ web/src/
   pages/SettingsPage.tsx          # 集成设置 section
   components/settings/
     ImIntegrationSettings.tsx
-  i18n.ts                         # zh-CN/en 错误和 UI 文案
+  locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json # 设置七语言
 
 web/tests/
-  im-integrations-settings.test.tsx
-  im-api-contract.test.ts
+  im-settings-ui.test.tsx
+  im-settings.test.ts
+  i18n-loading.test.ts
 ```
 
-现有 `commands.rs` 只保留 command 注册/委托，新增 IM commands 优先放独立 `im_commands.rs`。不得为了此功能单独做无关的大规模 commands 重构。
+IM 设置与扫码 commands 位于 `im_runtime.rs`，`main.rs` 注册；现有 `commands.rs` 的三类桌面干预 wrapper 调用共享应用执行边界。不得为了 IM 单独大规模重构其他 commands。
 
 依赖方向固定为：
 
@@ -115,46 +146,30 @@ desktop UI existing intervention commands -+
 
 ### 5.1 统一命令服务
 
-从现有三个 Tauri command 中提取共享内部服务：
+三类 Tauri command 与 IM inbound 共用 InterventionCommandService 及桌面应用收尾边界，不另建命令模型：
 
 ```rust
-pub struct InterventionCommandService {
-    app: Arc<App>,
-    // 仅持有现有领域入口所需依赖，不复制状态。
+pub struct InterventionCommand {
+    pub locator: InterventionLocator,
+    pub request: InterventionRequestIdentity,
+    pub expected_state: String,
+    pub action: InterventionAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
 }
 
-pub enum InterventionCommand {
-    RespondPermission {
-        locator: InterventionLocator,
-        request_id: String,
-        option_id: String,
-        expected_revision: u64,
-    },
-    RespondElicitation {
-        locator: InterventionLocator,
-        elicitation_id: String,
-        action: ElicitationAction,
-        content: Option<String>,
-        expected_revision: u64,
-    },
-    SubmitManualCheck {
-        locator: InterventionLocator,
-        outcome: ManualCheckOutcome,
-        expected_revision: u64,
-    },
+pub enum InterventionCommandStatus {
+    Accepted,
+    AlreadyApplied,
 }
 
-pub struct InterventionCommandContext {
-    pub source: InterventionSource,
-    pub actor: InterventionActor,
-    pub action_id: ActionId,
-}
-
-pub enum InterventionCommandResult {
-    Accepted { revision: u64, resolved_at: DateTime<Utc> },
-    AlreadyApplied { revision: u64, resolved_at: DateTime<Utc> },
+pub struct InterventionCommandResult {
+    pub status: InterventionCommandStatus,
+    pub canonical_state: String,
 }
 ```
+
+expected_state 是权威待处理内容指纹，不是额外持久 revision 字段。所有来源仅在 Accepted 时广播 IM 终态；AlreadyApplied 仍刷新桌面 session，但不改写 resolved_by/outcome。
 
 调用流程固定为：
 
@@ -189,11 +204,12 @@ Tauri 原有三个 command 改为构造 `InterventionCommand` 并委托服务，
 pub trait ImConnector: Send + Sync {
     fn kind(&self) -> ImChannelKind;
     fn capabilities(&self) -> ImChannelCapabilities;
+    fn advance_generation(&self, generation: u64);
 
     async fn connect(
         &self,
         config: ResolvedImChannelConfig,
-        generation: ConnectionGeneration,
+        generation: u64,
         events: mpsc::Sender<ImConnectorEvent>,
         cancellation: CancellationToken,
     ) -> Result<(), ImIntegrationError>;
@@ -201,17 +217,28 @@ pub trait ImConnector: Send + Sync {
     async fn send(
         &self,
         delivery: ImDelivery,
+        source: Option<&ImDelivery>,
     ) -> Result<ImDeliveryReceipt, ImIntegrationError>;
 
-    async fn update(
+    async fn respond_to_action(
         &self,
-        binding: ImDeliveryBinding,
-        state: ImMessageState,
+        context: ImActionResponseContext,
+        response: ImActionResponse,
+    ) -> Result<(), ImIntegrationError>;
+
+    /// Updates an already delivered message. Only called for `Anytime` channels.
+    async fn update_message(
+        &self,
+        binding: &ImDeliveryBinding,
+        payload: &ImDeliveryPayload,
+        source: Option<&ImDelivery>,
     ) -> Result<(), ImIntegrationError>;
 }
 ```
 
-`connect` 是由 manager 管理的长生命周期任务。平台 SDK 的 client、event、message、card 类型不允许出现在 trait 或 `src/app/im/mod.rs` 中。
+ImChannelCapabilities.message_update 使用 None / CallbackOnly / Anytime 枚举；interaction 描述题数、选项、文本、“其他”与拒绝回答能力。project_for_channel/fit_form 生成目标自己的 allowed_actions；通用层不出现平台专用类型。
+
+ImActionResponse 包含 state、resolved_by、outcome 和源 delivery；ImActionResponseContext 是由所属 connector 解释的回包句柄。consume_connector_events 只分发，每个 InboundAction 独立 spawn；runtime 长期持有同一 ImInboundActionService/ActionLocks。网络回包和终态 worker 不占用 SQLite 或 settings 临界区。
 
 ### 6.2 连接状态
 
@@ -222,40 +249,50 @@ pub struct ImChannelSnapshot {
     pub generation: u64,
     pub state: ImConnectionState,
     pub capabilities: ImChannelCapabilities,
-    pub binding: Option<ImBindingSummary>,
-    pub last_connected_at: Option<DateTime<Utc>>,
+    pub identity: Option<ImConnectionIdentity>,
+    pub binding: Option<ImObservedBinding>,
+    pub last_connected_at_ms: Option<i64>,
     pub last_error_code: Option<ImErrorCode>,
 }
 ```
 
-manager 每个平台仅保留一个 active generation 和一个 cancellation token。状态归并函数必须先比较 generation；旧 generation 事件直接丢弃。状态快照通过 Tauri typed event 增量发送，只供设置 section 订阅。
+状态为 Disabled、Connecting、Reconnecting、Connected、AuthenticationRequired、Error。manager 每渠道只有一个 active generation/cancellation；snapshot、sender、待回包表与绑定提交均校验 generation。旧会话的退出不能清除新 sender。设置页只订阅 typed snapshot，不订阅心跳。
 
 ### 6.3 投递模型
 
 ```rust
 pub struct ImDelivery {
-    pub delivery_id: DeliveryId,
+    pub delivery_id: String,
     pub channel: ImChannelKind,
     pub destination: ImDestination,
     pub notification_kind: ImNotificationKind,
     pub canonical_event_id: String,
     pub payload: ImDeliveryPayload,
+    pub expires_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_ref: Option<u16>,
 }
 
 pub enum ImDeliveryPayload {
-    Intervention(InterventionRef, InterventionPresentation),
-    Information(InformationalNotification),
-}
-
-pub enum ImConnectorEvent {
-    Connected { generation: u64, identity: ImConnectionIdentity },
-    Disconnected { generation: u64, error: ImIntegrationError },
-    InboundAction { generation: u64, envelope: ImInboundEnvelope },
-    BindingObserved { generation: u64, binding: ImBinding },
+    Intervention {
+        version: u16,
+        reference: InterventionRef,
+        presentation: InterventionPresentation,
+    },
+    Information {
+        version: u16,
+        notification: InformationalNotification,
+    },
+    InterventionResolution {
+        version: u16,
+        resolution: InterventionResolutionNotification,
+    },
 }
 ```
 
-`InterventionPresentation` 是领域中立的标题、摘要、字段和允许动作，不包含最终平台 JSON。connector 负责渲染卡片或纯文本。
+InterventionPresentation 保存通用展示数据，connector 渲染平台 JSON。`RemoteElicitationForm { questions, decline_allowed }` 的每个 `RemoteQuestion` 直接复用 `ElicitationQuestion`；当前契约不保留旧表单变体。`ImAnswer` 是领域 `RemoteElicitationAnswer` 的再导出，包含 `Choice { option_ids, custom_text }` 和 `Text { text }`。入站按该 delivery 发布的表单归一化答案，再由 `remote_form_content` 构建 content；空多选省略字段，必答约束与 canonical schema 校验保持有效。产品语义见[产品设计 §7.2](../../产品设计文档/integration/im-remote-intervention.md#72-核心模型)。
+
+InterventionResolutionNotification 包含 source_event_id、locator、resolved_by、outcome 与 display_ref。resolved_by 只有 Desktop 或 Channel，outcome 包含 Accepted 答案；ImResolutionDispatch 显式区分 Send 和 TombstoneOnly。源 delivery 存在则 pending，由 worker 发送；不存在则 expired tombstone，无网络副作用、唤醒或 active 占用。CallbackOnly 来源不重复写自身终态，Anytime 来源仍写终态补齐回调超时。
 
 ## 7. SQLite 设计
 
@@ -293,7 +330,7 @@ CREATE INDEX idx_im_outbox_canonical_event
 ON im_outbox(canonical_event_id, notification_kind, channel_kind);
 
 CREATE TABLE im_delivery_bindings (
-    delivery_id          TEXT PRIMARY KEY NOT NULL,
+    delivery_id          TEXT PRIMARY KEY NOT NULL REFERENCES im_outbox(delivery_id) ON DELETE CASCADE,
     channel_kind         TEXT NOT NULL,
     platform_message_id  TEXT NOT NULL,
     platform_chat_id     TEXT NOT NULL,
@@ -333,12 +370,16 @@ CREATE TABLE im_channel_cleanup_operations (
 约束：
 
 - `payload_json` 使用版本化的 typed DTO 序列化，读取后必须再次做领域校验；`Intervention` 和 `Information` 不得使用 nullable action 字段互相兼容。
-- `payload_json` 不保存 Secret、token、用户回答正文或完整用户对话。
+- `payload_json` 不保存 Secret、token 或完整用户对话。经 2026-10-15 确认，终态投递可保存 Accepted 的 schema-shaped 回答快照（最大 8 KiB、7 天保留），用于卡片只读回显；不得保存失败、后到提交或未提交的草稿，Debug/日志不输出回答。
 - `update_token_ref` 只能是可安全持久化的平台消息引用；若平台 update token 属于敏感材料，则改存 keyring reference。
 - `sending` 是租约态，需有 repository 方法在启动时把超时租约恢复为 `pending`；不可永久卡住。
 - `attempt_count` 同时是 claim revision；`mark_sent/mark_failed` 只允许结算 `state=sending AND attempt_count=expected` 的当前 claim。业务已过期的租约恢复为 `expired`，其余恢复为 `pending`，迟到 settlement 返回 `StaleClaim`。
 - `im_channel_cleanup_operations` 是跨 settings、projection queue、outbox 与 keyring 删除的恢复日志，不保存 Secret；phase 固定为 `prepared -> settings_removed -> projection_drained -> outbox_removed`，完成凭据删除后移除 journal。
 - 查询 due outbox 使用索引并固定 batch size，默认每批 32 条。
+
+### 7.2.1 IM schema 版本
+
+当前 IM_PAYLOAD_VERSION=3、IM_SCHEMA_VERSION=5（与 settings schema 无关）。ensure_schema 在同一个 IMMEDIATE 事务执行迁移及版本写入，连接启用 PRAGMA foreign_keys=ON。v3→v4 删除旧 v1 Intervention 与旧 desktop-resolved 记录，并由 FK 级联删除绑定，保留入站幂等表；v4→v5 原位转换旧 v2 JSON，无法恢复答案的 elicitationSubmitted 改为 ResultUnavailable，保留 source/terminal/tombstone identity、rowid/display_ref、绑定与审计。测试固定第二条迁移语句失败时整体回滚。新版本不兼容旧 JSON 解码，旧客户端打开新 schema 返回 IM_SCHEMA_TOO_NEW。
 
 ### 7.3 原子顺序
 
@@ -353,7 +394,7 @@ CREATE TABLE im_channel_cleanup_operations (
 
 1. 仅 `Intervention` 可由 `(channel, platform_event_id)` 生成稳定 `action_id`；`Information` 不创建 inbound action。
 2. 先查已有终态结果；存在则直接返回该结果。
-3. 创建 processing reservation 或在 repository 提供的单 action mutex 下提交领域动作。
+3. runtime 长期持有的 ImInboundActionService 以共享 ActionLocks 串行化同一 action_id，不在每次 process_inbound 新建服务或锁。
 4. 领域动作成功后写结果；并发处理者只允许一个执行领域调用。
 5. 崩溃发生在领域成功、审计未写之间时，重试必须由 Runtime revision/请求终态识别为已处理，而不是重复改变状态。
 
@@ -393,11 +434,7 @@ pub struct ImChannelSettings {
 
 v10 -> v11 migration 只补默认 `im_integrations.channels = []`。v12 删除 scheduled completion、failure、attention、missed 四个 IM 偏好字段；v11 -> v12 migration 在严格反序列化前从每个 channel 的 notifications 中删除这些废弃键并原子写回，当前 v12 输入仍拒绝废弃键，不保留兼容消费路径。配置更新必须拒绝重复 platform、未知 platform、启用但没有 credential reference、无效 ID 和超长 display field。
 
-前端 view model 不含 credential reference 的真实 key，只返回：
-
-```ts
-type ImCredentialStatus = 'missing' | 'stored' | 'invalid';
-```
+前端 ImChannelSettingsVm 仅返回 credentialConfigured 布尔值、publicIdentity、binding、notifications、connection 等非敏感投影，不返回 credential reference 或 Secret。
 
 ### 8.2 keyring 命名
 
@@ -413,11 +450,10 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 凭据写入流程：
 
-1. 后端接收一次性 Secret，前端提交结束立即清空输入 state。
-2. connector 对配置做本地结构校验；“测试连接”可执行最小远程验证。
-3. 写入新 credential UUID。
-4. 原子更新 settings reference。
-5. 删除旧 credential；删除失败记录清理任务，但新配置保持可用。
+1. 后端扫码 poll 取得凭据并完成平台自检；前端不提交 Secret、不提供测试连接。
+2. 通用 install_scanned_credentials 写入新 credential UUID；飞书字段为 app_secret、open_id、brand，公开 app_id 进入 public_identity；机器人名称只从运行期 bot_info 展示。
+3. 在 blocking pool 内暂存凭据后，取得 settings 写锁并在 ScanSessionSlot 的同一临界区内校验当前 session ID、提交 settings reference、结束会话；提交前取消/替换则拒绝写入并清理新 credential。提交成功后再删除旧 credential；删除失败保留诊断，新配置仍有效。
+4. 两渠道共用 ScanSessionSlot 的 open/attach/claim/commit/cancel 所有权；poll/self-check 成功后不清空会话，关闭或重新生成使包括凭据库写入期间的旧结果失效。网络和 keyring I/O 均不持有会话/设置锁，清理旧请求不得清空新会话。
 
 设置更新失败时删除本次新建 credential，避免孤儿记录。读取凭据失败返回 `ImCredentialUnavailable`，不得把内容带入错误 details。
 
@@ -427,14 +463,7 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 ### 9.1 启动顺序
 
-1. `DesktopState` 打开并迁移 settings 与 `core.db` IM component schema。
-2. 构造 `InterventionCommandService`、repository、credential store 和 connector registry。
-3. 构造 `ImConnectionManagerHandle`，初始状态全部为 disabled/disconnected。
-4. 在 `register_lifecycle_subscribers` 注册 `im-remote-intervention` subscriber。
-5. 恢复 outbox 中超时 `sending` 租约，清理有界过期记录。
-6. 桌面 shell 完成启动后，后台解析已启用配置并逐平台启动连接，不阻塞首窗显示。
-
-`core.db` component 无法打开时仅禁用 IM 集成并发出结构化设置状态，不阻塞 Runtime 和桌面主路径。
+首屏之外判断 durable IM 配置或 cleanup 是否存在，只有需要时才惰性创建唯一 runtime；零配置且无 cleanup 不访问 keyring、不创建 IM 数据库/周期任务。构建 repository、长期 inbound service、connector registry 与 projection targets，随后注册 lifecycle subscriber；先恢复发送租约及有界 retention，再后台启动启用渠道。IM 失败只影响 IM，不阻塞 Runtime/桌面主路径。
 
 ### 9.2 配置更新
 
@@ -455,7 +484,7 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 1. manager 进入 shutting down，拒绝新 inbound action 和新 outbox claim。
 2. 注销/失效 lifecycle subscriber 的 sender。
-3. 取消企业微信 connector 及 outbox worker。
+3. 取消两渠道 connector 及 outbox worker，清除对应 generation 的待回包。
 4. 等待有界超时，未完成的 `sending` 租约留给下次启动恢复。
 5. 继续现有 scheduler、active runtime 和 provider 清理流程。
 
@@ -467,7 +496,7 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 - 满载时不在 publisher 上等待，也不得回退到 publisher 同步执行 Runtime 查询、文件读取或 SQLite 写入；只写结构化告警并按 30 秒冷却触发局部桌面诊断。由于事件本身可从当前 Runtime 状态重建投递，service 后续可提供按单个 locator 补投入口，不扫描所有历史。
 - 删除配置通过同一 FIFO queue 的 barrier 等待此前 job 完成，再删除 active outbox；lifecycle subscriber 在持有 target read guard 时完成有界 `try_send`，删除先取得 write guard 移除 target 后再入 barrier，从而保证旧 target job 位于 barrier 之前。
 - connector inbound channel 有界，建议容量 128；平台回调先做最小协议确认，再排队领域处理。
-- 每 channel 出站并发默认 1，后续只有在真实吞吐数据证明不足时调整。
+- 每 channel worker 出站并发为 DEFAULT_IM_SEND_CONCURRENCY=4，每批最多 32 条；不另建发送队列。每个 action 独立任务，不阻塞连接事件，同事件仍由共享 ActionLocks 串行化。
 
 ## 10. 平台实现
 
@@ -481,11 +510,23 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 - 默认 30 秒 heartbeat、读写超时、带 jitter 的有界指数退避。
 - 会话首次交互建立 `ImBinding`；无 binding 时状态为 `binding_required`，不猜测收件人。
 - template card 创建、button/vote callback、卡片终态 update。
-- callback 在 5 秒内完成协议确认；Runtime 提交在有界队列异步执行。
+- callback 在 5 秒内完成协议确认；每个 InboundAction 按 §6.1 独立调度，Runtime 提交进入 blocking pool，完成后回包；不新增业务提交队列。
 - 解析平台事件 ID、操作者和会话 ID，校验绑定后生成 `ImInboundEnvelope`。
 - 单 Bot 连接冲突转换为明确错误码，设置页提示用户确保仅一个客户端连接。
 
 接口测试使用录制后脱敏的 JSON fixture 覆盖鉴权、心跳、卡片 button/vote、重复 callback、限流、断线和旧 generation。
+
+### 10.2 飞书 Connector
+
+- feishu_scan_auth：RFC 8628 begin/poll、渠道产品名驱动的二维码参数、`selectOrCreate` 原生应用选择、`reauthorizeCurrent` 的 clientID、授权拒绝/过期/cancel；成功后 token、bot_info、scopes 自检再安装凭据。
+- api：reqwest + 单份 tenant token single-flight；create/PATCH；230020 限流可重试；230027 缺权限；仅 PATCH 的 230011/230031/230110 映射 MessageUpdateUnavailable。其他鉴权/卡片错误不得降级另发。
+- `ws` 模块私有化 prost Frame/Header/FrameKind，管理 protobuf、分片容量/超时、ACK、连接循环、心跳与半开检测；对 connector 只暴露入站 payload、一次性回包句柄、时限及连接接口。连接所属的处理任务随 socket 结束清理。日志不含 URL query、access_key、ticket 或 payload。
+- card：原始 schema/header/event wire 解码；deliveryId/actionToken/selector 编码；Card JSON 2.0 update_multi；表单能力为 5 题、单选 20 项、多选 4 项、文本 500 字符、“其他”100 字符。超限整单跳过，绝不截断提交身份。
+- 回调：读任务只解码/分发，等待预算 FEISHU_CALLBACK_BUDGET=2.5s，超时 toast-only；待回包归 generation 所有且有上限。Accepted 由 durable worker PATCH 补齐，不依赖瞬态 submission。
+- 回显：同一源组件树 + 初始选值 + disabled；单选 initial_index 从 1 开始，多选 selected_values，输入 default_value。回调/PATCH/不可更新后的另发共用赢家 outcome 和源 delivery。
+- 绑定：只接受扫码 open_id 的私聊；只读消息使用同一 outbox。原卡已不可更新时发送完整只读终态，不丢题目、答案和处理来源。
+
+2026-10-16 用户确认落实两项偏差：协议隔离按 `ws` 模块职责验收，允许内部拆文件；卡片使用 serde typed struct/enum，终态回填和禁用只操作具体组件。原始 JSON 只保留在入站与动态领域答案边界，不再用它拼装出站卡片。实施与当前验证状态见[飞书技术方案 §17.3](飞书远程干预技术方案.md#173-设计与实现偏差收口)及[封装与类型化记录](飞书封装与类型化实施记录-2026-10-16.md)。
 
 ## 11. Lifecycle 投影与消息内容
 
@@ -499,9 +540,9 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 Run 与 ACP turn 信息通知复用同一 outbox transport，但使用 `Information` payload。Run/ACP projection 遇到 `scheduled_occurrence_id` 必须跳过；定时任务 completion、failure、attention 和 missed 不产生 IM delivery。Windows notification DTO、dismiss 状态和 `NotificationDedup` 不得作为 IM 输入。
 
-消息只包含用户决策所需内容。Markdown 详情固定包含工作空间、任务、节点、请求类型、最小请求摘要和类型专属内容；交互卡片只包含最小请求摘要、类型专属字段、允许动作和到期时间，不重复三个上下文字段。禁止包含隐藏 prompt、完整会话上下文、Secret、原始 provider payload 或调试协议字段；权限执行路径只在已确认的结构化字段中展示。
+消息只包含用户决策所需内容。Markdown 详情固定包含工作空间、任务、节点、请求类型、最小请求摘要和类型专属内容；企微交互卡不重复三个上下文字段；飞书卡片初态/终态均按 id、节点、任务、工作空间、正文/题目展示。禁止包含隐藏 prompt、完整会话上下文、Secret、原始 provider payload 或调试协议字段；权限执行路径只在已确认的结构化字段中展示。
 
-领域请求解决后，service 通过现有 lifecycle 终态或 command result 更新已绑定卡片/发送文本确认。若无法更新原消息，只发送一次幂等终态通知。
+终态只由领域 Accepted 的 runtime 入口投影，不依赖新增 lifecycle 终态事件。桌面来源：企微另发文本、飞书 PATCH；企微来源：本端回调、飞书 PATCH；飞书来源：本端回调 + 幂等 PATCH、企微另发文本。桌面都沿用共享 session 刷新。无源目标只写 tombstone。可重试 PATCH 错误按 outbox 退避；只有 MessageUpdateUnavailable 降级另发；AlreadyApplied 不广播、迟到答案不得覆盖赢家。
 
 ## 12. Tauri 与前端 API
 
@@ -509,9 +550,12 @@ Run 与 ACP turn 信息通知复用同一 outbox transport，但使用 `Informat
 
 ```text
 get_im_settings() -> ImSettingsVm
-start_wecom_scan_authorization(session_id) -> WeComScanAuthorizationVm
+start_wecom_scan_authorization(session_id) -> ImScanAuthorizationVm
 complete_wecom_scan_authorization(session_id) -> ImSettingsVm
 cancel_wecom_scan_authorization(session_id) -> ()
+start_feishu_scan_authorization(session_id, mode) -> ImScanAuthorizationVm  # selectOrCreate | reauthorizeCurrent
+complete_feishu_scan_authorization(session_id) -> ImSettingsVm
+cancel_feishu_scan_authorization(session_id) -> ()
 set_im_channel_enabled(kind, enabled) -> ImSettingsVm
 save_im_notification_preferences(kind, notifications) -> ImSettingsVm
 reset_im_channel_binding(kind, expected_generation) -> ImSettingsVm
@@ -526,23 +570,23 @@ im-channel-state-updated
 im-projection-diagnostic
 ```
 
-所有 command 使用统一 `CommandErrorVm { code, details }` 边界。
+所有 command 使用统一 `CommandErrorVm { code, params }` 边界。
 
 删除返回中的 `settings` 一旦显示 channel 已删除就不回滚；`cleanupStatus=pending` 表示本机残余资源由 durable cleanup operation 后台重试，前端展示非阻断提示。
 
 ### 12.2 设置页 UI
 
 - 在设置页新增“集成”区域，不新增主导航入口。
-- 企业微信行显示图标、名称、状态、绑定摘要和菜单操作，不使用嵌套卡片。
+- 企业微信与飞书各自展示名称、状态、绑定摘要和菜单操作，不使用嵌套卡片。
 - 配置表单复用 shadcn/ui `Dialog`/`Sheet`、`Input`、`Switch`、`Button`、`Alert`，选择器复用项目现有 shadcn Select。
 - 企业微信只显示扫码接入/重新授权，二维码 URL 与倒计时只存在于 Dialog 局部状态；关闭 Dialog、重新生成或应用退出都会取消后端活动会话。
 - 企业微信 Bot ID/Secret 手工入口删除；授权成功后后端直接把 Secret 写入 OS credential store，Tauri response 和前端状态永不包含 Secret。
-- 企业微信展示配置说明链接；不展示微信占位入口。
+- 飞书扫码前先展示四项权限（含读取姓名，用于显示接收账号），用户确认后才 begin；提示一个机器人只连接一台设备。飞书“重新绑定”要求原扫码账号发消息，更换授权账号走重新授权；不展示微信占位入口。
 - 状态包括：未接入、等待绑定、连接中、正在重连、可用、已暂停、需要重新授权、连接被占用。
 - 不提供测试连接和独立断开入口；总开关即时启停，冲突恢复使用带 expected generation 的一次真实重连。
-- 中英文 UI 与错误码映射同步加入 `web/src/i18n.ts`。
+- 七语言 UI 与错误码映射同步加入 web/src/locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json。
 
-前端 state 以 channel kind 归一化，只订阅企业微信 snapshot。不得把连接 tick、heartbeat 或原始平台事件放进 React state。
+前端 state 以 channel kind 归一化，只订阅对应渠道 snapshot。不得把连接 tick、heartbeat 或原始平台事件放进 React state。
 
 #### 12.2.1 清晰度优化实施（2026-09-04）
 
@@ -564,28 +608,42 @@ im-projection-diagnostic
 
 ## 13. 结构化错误码
 
-Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable 与脱敏 details。至少包含：
+ImErrorCode 是枚举，序列化为 IM_ 前缀，不做字符串包含匹配。ImIntegrationError 保存 code、retryable、retry_after、platform_code；Tauri 边界只给稳定 code/params。
 
-| Code | 场景 | 自动重试 |
-|---|---|---|
-| `IM_CONFIG_INVALID` | 配置字段非法 | 否 |
-| `IM_CREDENTIAL_UNAVAILABLE` | keyring 读取/写入失败 | 否 |
-| `IM_AUTHENTICATION_REQUIRED` | token 失效或需重新扫码 | 否 |
-| `IM_CONNECTION_UNAVAILABLE` | 短暂网络错误 | 是 |
-| `IM_PLATFORM_RATE_LIMITED` | 平台限流 | 按 retry time |
-| `IM_BINDING_REQUIRED` | 没有可投递会话 | 否 |
-| `IM_ACTOR_FORBIDDEN` | actor/chat 不在绑定范围 | 否 |
-| `IM_ACTION_INVALID` | 命令或按钮 payload 非法 | 否 |
-| `IM_ACTION_EXPIRED` | 请求或 token 到期 | 否 |
-| `IM_ACTION_ALREADY_HANDLED` | 请求已有终态 | 否 |
-| `IM_REVISION_CONFLICT` | Runtime revision 已变化 | 否 |
-| `IM_RUNTIME_STATE_MISMATCH` | 请求类型/owner/状态不符 | 否 |
-| `IM_QUEUE_CAPACITY_EXCEEDED` | 有界队列满 | 条件恢复 |
-| `IM_PLATFORM_PROTOCOL_ERROR` | 不支持或错误的协议响应 | 视 details |
+| Code | 场景与恢复 |
+|---|---|
+| IM_CONFIG_INVALID / IM_CREDENTIAL_UNAVAILABLE | 配置/keyring 不可用 |
+| IM_AUTHENTICATION_REQUIRED / IM_SCOPE_MISSING | 重新扫码授权 |
+| IM_NETWORK_UNAVAILABLE / IM_RATE_LIMITED | 网络/限流，按 retry_after 退避 |
+| IM_CONNECTION_CONFLICT | 停止争抢，关闭另一设备后手动重连 |
+| IM_PRIVATE_BINDING_REQUIRED / IM_BINDING_REVOKED | 未绑定或当前 durable 授权已撤销 |
+| IM_ACTOR_MISMATCH / IM_CONVERSATION_MISMATCH | 非授权用户/私聊 |
+| IM_ACTION_INVALID / IM_ACTION_EXPIRED | 非发布动作或过期 |
+| IM_FORM_ANSWER_MISSING / IM_FORM_OPTION_INVALID | 必答缺失/非法选项 |
+| IM_FORM_CUSTOM_ANSWER_MISSING / IM_FORM_TEXT_TOO_LONG | “其他”未填/超长 |
+| IM_MESSAGE_UPDATE_UNAVAILABLE | 原消息已不可更新，才允许另发 |
+| IM_PROTOCOL_INVALID | 协议/卡片错误，不自动另发掩盖 |
+| IM_STORAGE_UNAVAILABLE / IM_QUEUE_CAPACITY_EXCEEDED | 存储/容量边界 |
+| IM_SCAN_DENIED / IM_SCAN_EXPIRED / IM_SCAN_CANCELLED | 授权拒绝、过期、取消 |
 
-后端不得包含中文或英文对客句子；前端与出站消息 renderer 分别从 i18n catalog 映射。
+其余值以 connector.rs 与扫码错误类型为真源。后端不生成对客错误句子，设置页七语言与平台消息 renderer 分别映射文案；平台原始消息不透传。
 
 ## 14. 分阶段实施
+
+### 2026-10 飞书扩展阶段（当前）
+
+下表记录实现范围；验收结论与待关闭项以[飞书技术方案 §17.1](飞书远程干预技术方案.md#171-当前验收状态)为统一入口，不由本表的功能完成描述推断。
+
+| 阶段 | 完成情况 |
+|---|---|
+| P0 | 能力重构、企微黄金、共享入站锁、tombstone 与迁移完成，用户验收 |
+| P1 | 扫码、凭据自检、私聊绑定、长连接与只读通知已实现；真实平台已验收范围、待测项及 Lark 豁免见统一验收状态表 |
+| P2 | 完整表单、2.5 秒预算、Accepted 答案回显、企微 max3 修正；2026-10-15 用户确认验收通过 |
+| P3 | 三种来源通知矩阵、Accepted 桌面门禁、赢家结果、PATCH 分类/退避/降级、超时补齐；本地测试通过后才进入 P4 |
+| P4 | 复用 shadcn/ui 设置、授权前权限确认、单设备提醒、缺权限恢复和七语言；2026-10-16 修正文档残留契约并单列实现偏差，验证证据见 §16 与飞书技术方案 §15 |
+
+以下 Phase 0–4 为企业微信原始实施历史，历史接口/范围已被当前 §5–§13 的契约替代。旧表单类型和历史勾选保留作为当时记录；未勾选的真实平台项不自动关闭，是否已有后续证据统一查阅[飞书技术方案 §17.1](飞书远程干预技术方案.md#171-当前验收状态)。
+
 
 ### Phase 0：依赖与官方协议 PoC
 
@@ -690,24 +748,34 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 
 数据库测试必须使用隔离物理 SQLite 文件和生产 repository 入口，不用 HashMap mock 替代事务与唯一约束。并发测试使用 barrier 固定竞争顺序，不能依赖 sleep 猜测。
 
+### 15.1.1 飞书与三端回归
+
+- prost wire、分片上限/超时、generation、ACK、慢回调不阻塞读任务、日志脱敏。
+- Permission/ManualCheck 与单选、多选、文本、“其他”、拒绝回答；校验失败保留可编辑卡。
+- 3 种来源 × 3 端；领域三方竞争只有一个 Accepted（相同答案的后到重放为 AlreadyApplied）；桌面 AlreadyApplied 不投影，迟到答案只读赢家。
+- 真实本地 WebSocket callback 等待超时返回 toast 后，通过物理 SQLite/生产 worker/本地 HTTP PATCH 完成终态，内容与即时回调一致。
+- PATCH 230011/230031/230110 才另发，限流按时间重试原卡；鉴权/协议失败不另发；tombstone 不发送且拦截迟到源投影。
+- v3→4/v4→5 事务、FK 级联、失败回滚、schema-too-new，企微 wire 黄金不可改。
+
 ### 15.2 前端测试
 
 - API request/response DTO 与 Rust serde contract 对齐。
-- 企业微信状态行、credential stored/missing、binding required 和 error code i18n。
-- 六类通知安静默认值、逐类持久化与中英文文案；接口拒绝已移除的 scheduled 通知偏好字段。
+- 两渠道状态行、credential configured/missing、binding 与七语言 error code；ScopeMissing 指向重新授权。
+- 六类通知安静默认值、逐类持久化与七语言文案；接口拒绝已移除的 scheduled 通知偏好字段。
 - 企业微信扫码 Dialog 打开/关闭、重新生成、到期、取消、成功与错误状态；Secret 不进入 response/store，保存时禁用、错误聚焦。
 - ACP permission 使用接收 JSON-RPC 时固化的 typed `raw.requestId` 做 Runtime pending/response 查找；timeline/lifecycle 使用 Gold Band 从 `requestId + toolCallId` 生成的 `_goldBandPermissionItemId`，provider 缺失 toolCallId 时使用 durable sequence。前端 reducer 以 attempt/session scope、event kind 与 `AcpUiEvent.id` 作为 occurrence key，同 occurrence 的 pending/terminal snapshot 合并。elicitation 使用 Gold Band 生成并同时写入 pending state/`AcpUiEvent.id` 的 identity。测试必须证明同一 requestId 的不同 event ID 不被前端或 outbox 聚合、同一 occurrence/replay 仍幂等、不同 attempt 不串项，且两者不靠前缀裁剪或 event ID 反查；在线但未收到私聊 binding 时显示“等待绑定”，收到同一 actor 私聊后局部收敛为已连接。
 - `askUserQuestion` 卡片包含真实 message、全部问题标题/描述、单选/多选类型和固定选项；fixture 覆盖 scalar `oneOf/enum`、array `items.anyOf/oneOf/enum`、自由文本与 custom-answer companion。企微仅对单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选题生成远程表单；unsupported 场景无 outbox 行且不得静默丢字段或生成无内容接受动作。
 - typed event 只更新目标 channel，旧 generation 不覆盖新 snapshot。
+- 飞书权限确认前不得 begin；首次接入和“更换飞书应用”携带 mode=selectOrCreate，重新授权当前应用携带 mode=reauthorizeCurrent；扫码完成后等待 canonical binding 才可用，关闭 cancels 同一 session。企微仍自动 begin，飞书修改不得调用企微 API。
 - 窄宽度下标签、状态和操作不溢出；键盘导航与 screen reader label 完整。
 
 ### 15.3 集成与手工验证
 
-- 真实企业微信机器人完成 permission/elicitation/manual check 与逐类信息通知。
+- 真实企业微信与飞书机器人完成 permission/elicitation/manual check 与逐类信息通知；验收状态、剩余项与豁免统一记录在[飞书技术方案 §17.1](飞书远程干预技术方案.md#171-当前验收状态)，不以本地 fixture 代替真实账号结论。
 - 桌面与 IM 同时操作同一请求，验证 first-writer-wins。
 - 平台重复投递、断网重连、客户端重启、系统休眠恢复、凭据撤销、限流。
 - 删除配置后旧卡片无效；重新配置新 generation 正常。
-- 核对 settings、SQLite、日志、fixture、前端 state 不含 Secret/token/update token 或用户回答正文。
+- 核对 settings、SQLite、日志、fixture、前端 state 不含真实 Secret/token/update token。真实回答不进入日志、settings 或测试 fixture；SQLite 仅允许本计划 §7.2 明确的 Accepted 结果快照，不保存草稿或被拒绝/后到的答案。
 - 关闭客户端后明确不能实时响应，重开只补发仍有效干预。
 
 ## 16. 验证命令与验收记录
@@ -728,6 +796,15 @@ npm run web:build
 
 每阶段验收记录需写明：执行命令、通过数量、真实平台账号类型、未执行项及原因、性能影响、过度设计复核。不得只写“测试通过”。
 
+2026-10-15 P3/P4 实际记录：IM 178/178、领域 26/26、桌面 runtime 20/20、Accepted 门禁 1/1、命令边界 3/3；前端 IM/七语言 36/36，web:build（含类型）通过。P3 通过后才进入 P4。黄金 JSON SHA256 未变；未执行全仓 cargo test，不宣称全仓通过。
+
+2026-10-15 低内存桌面构建记录（native-notification）：通过，3 分 34 秒，生成 `target/debug/gold-band-desktop.exe`，16 条既有 warning；未启动真实连接。对应日志 `target/im-p34-desktop-build.log`。当次 7 个 Rust 文件格式检查与 git diff --check 通过；没有批量重排范围外代码。
+
+2026-10-15 浏览器记录：使用生产 preview deep link `/settings`，验证中英文、明暗主题、700px 窄屏/恢复、授权前权限确认、二维码/等待绑定、网络错误重试/关闭、六项通知保存和启停的渠道隔离。环境未暴露 iab 且无已连接 Chrome，按规则降级独立 agent-browser；仅 browser mock，未操作真实账号。测试页面、浏览器与1439 preview进程已清理。完整历史证据见[飞书技术方案 §15](飞书远程干预技术方案.md#15-测试矩阵)，当前验收状态见[§17.1](飞书远程干预技术方案.md#171-当前验收状态)。
+
+2026-10-16 本次仅修订文档，按代码与现有接口测试核对契约、检查相对链接及差异；没有重新执行 Rust/前端构建或真实账号验收。此前测试数量只保留为对应日期的证据，不记为本次通过。
+
+
 ## 17. 性能预算
 
 | 项目 | 预算/约束 |
@@ -744,12 +821,16 @@ npm run web:build
 | presentation payload | <= 32 KiB |
 | 企微 Permission 双发 | 每个当前 delivery 最多 2 个出站帧，仍只有 1 个 outbox/delivery/task identity |
 | permission occurrence identity | 当前事件一次 BLAKE3 哈希，输出固定 64 hex；不扫描 timeline/run，不新增缓存 |
-| 重连 | exponential backoff + jitter，默认 60 秒封顶 |
+| 重连 | 企微指数退避 60 秒封顶；飞书使用服务端 ReconnectInterval + Nonce |
+| 飞书回调 | 2.5 秒预算；超时 toast-only，generation-owned 待回包表 |
+| 表单 | 企微最多 3 题；飞书最多 5 题；均按能力在入站前校验 |
 | UI 更新 | 单 channel snapshot，禁止 heartbeat 驱动 React render |
 
 实现评审要检查 SQL query plan 命中 due/retention index、锁不跨 await、网络不在 SQLite transaction 中、无 timeline/会话/run 全量扫描。风险未超过预算时不增加缓存、通用任务调度器或 benchmark；超出时先记录数据规模、基线和验收目标再优化。
 
 ## 18. 过度设计与风险复核
+
+P3/P4 复核：复用 outcome、outbox、索引、长生命周期 ActionLocks 与 shadcn/ui；没有新表、缓存、队列、业务状态机或 SDK。Accepted 门禁和错误码分流为 O(1)，卡片最多 5 题/8 KiB 答案，设置最多两渠道/各六项，局部订阅与按需二维码不改变页面壳刷新范围。
 
 ### 18.1 明确不建设
 
@@ -775,7 +856,9 @@ npm run web:build
 
 ## 19. 文档同步清单
 
-每个实现 PR 必须同步维护：
+2026-10-16 首次核对产品设计、实施计划与飞书技术方案三份文档；修正正文的旧表单与空多选语义、代码示例及历史边界，当时集中链接验收状态和未评审偏差。该轮纯文档修订不改变 MVP 范围、UI 文案、导航或运行时行为；过度设计与性能复核均无新增机制或运行时开销。逐项清单见[飞书技术方案 §18](飞书远程干预技术方案.md#18-文档同步清单2026-10-16-复核)，后续代码落实见本计划 §23。
+
+以下勾选保留既有实现阶段的同步记录，不代表本次重验了清单外文件。每个实现 PR 仍须按实际改动维护：
 
 - [x] 本实施计划的 Phase checklist 和实际依赖版本。
 - [x] 产品设计文档中的能力矩阵、限制或用户流程变化。
@@ -857,8 +940,87 @@ npm run web:build
 
 ## 21. 官方参考
 
+- 本次飞书 P2 回显与企微上限修正的官方组件/错误码链接见[飞书技术方案 §1](飞书远程干预技术方案.md#1-文档状态)，复测需同时检查禁用态与已选值，不能只检查追加的结果文字。
 - 企业微信智能机器人 WebSocket：https://developer.work.weixin.qq.com/document/path/101463
 - 企业微信智能机器人官方 Node SDK：https://github.com/WecomTeam/aibot-node-sdk
 - 微信官方包（延期 PoC 参考，不进入首期依赖）：https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin
 
 正式编码前必须重新核对官方文档；外部协议变化以 connector fixture 和 capability 返回值收敛，不侵入领域接口。
+
+### 飞书协议补充（2026-10-15）
+
+- 官方 Node SDK 长连接基准：https://github.com/larksuite/node-sdk
+- 消息卡片更新：https://open.feishu.cn/document/server-docs/im-v1/message-card/patch.md
+- Card JSON 2.0 单选/多选/输入框协议与 PoC 证据：见飞书技术方案 §1、§3、§6；PoC 不直接复用为产品代码。
+
+
+## 22. 2026-10-16 跨渠道修复
+
+当前契约与验收证据见[飞书技术方案 §19](飞书远程干预技术方案.md#19-2026-10-16-六项修复与验收)。本节更新 §20 中历史 task_id=delivery_id 的方案，不改写其当时验收记录。
+
+- [x] 修正飞书追问拒绝 wire 意图；初始与终态卡片保留前序模型输出。
+- [x] 修正飞书响应体网络错误分类，使用 delivery 派生的 UUID 保护平台一小时窗口内的创建重试。
+- [x] 企微跨端终态消费真实 `resolved_by`。
+- [x] 实测确认企微重复 task_id 返回 42014；分离每次创建的 wire 标识与 durable delivery，回调和原卡更新保持一致，重复点击仍归到原干预。
+- [x] 两端扫码安装凭据强制重新绑定；当前 generation 绑定完成后自动关闭引导，旧事件和迟到授权不能完成新流程。
+- [x] 更新产品设计、技术方案和接口回归；前端启动、窄屏验证和生产构建完成。
+- [ ] 真实飞书重新授权、企微新格式人工检查卡的点击与任务恢复验收（不以投递探测代替）。
+
+## 23. 2026-10-16 协议封装与卡片类型化
+
+- [x] 按用户确认保留协议隔离目的，将边界明确为 `feishu::ws` 模块；帧私有，connector 只使用项目事件与一次性回包句柄。
+- [x] socket、心跳、ACK 与处理任务归连接管理；连接结束清理回包等待任务，已提交 Runtime 的领域动作继续遵循原有持久化语义。
+- [x] 使用 serde typed struct/enum 构建实际卡片组件、回调意图与 toast；终态仅按具体控件回填及禁用，动态答案仍以 Runtime/durable outcome 为权威事实。
+- [x] 冻结原实现 36 份中英文 JSON 基线，重构后 19 项卡片检查通过；最终核心 IM 189 项、桌面 IM Runtime 21 项通过，原测试全部保留，新增连接取消清理回归。
+- [x] 最终源码通过全目标 CI Clippy 门禁、全仓格式、差异和文档链接检查；两项设计偏差关闭。
+
+验证命令、静态检查、源码边界与性能/过度设计复核见[实施记录](飞书封装与类型化实施记录-2026-10-16.md)。未新增依赖、持久字段、缓存、队列或网络调用；本次定向回归不扩大为重跑全仓或发布安装包验收。
+
+设计和性能复核：无新增库、持久字段、缓存、队列或业务状态机；复用已有请求 UUID、canonical delivery 与 generation。渲染仅增加已有有界上下文，不增加历史读取、网络帧或锁范围。保留平台 ACK 不确定性与飞书一小时去重窗口的限制，不宣称消息恰好投递一次。
+
+
+## 24. 2026-10-16 评审竞态修复
+
+根因均为已有生命周期实现不完整：终态消费将“源发送尚未结算”当成“无原卡”，扫码则在配置提交前提前结束会话。复用现有 outbox、attempt CAS、session ID 与取消令牌修复，不增加审批模型或持久字段。
+
+- 终态发送前按源 delivery ID 点查状态；pending/sending 返回明确延期结果，沿用有界 worker 调度，等待失败重试或租约恢复后的源消息绑定，再更新原卡。不可恢复的源状态保留只读终态发送行为，普通通知及 CallbackOnly 渠道沿用原协议。
+- 扫码凭据暂存与配置提交分离；session 校验和提交与 open/cancel 互斥。拒绝迟到提交时清理新凭据、保留原配置和替换会话；提交失败也清理暂存凭据。
+- 回归固定源发送中、失败重试、租约恢复、源永久不可用，以及两渠道在凭据写入期间取消/替换、正常提交和提交失败等场景。
+
+过度设计与性能复核：无新增依赖、持久字段、缓存或队列；源状态只增加一次按主键的点查，批量上限仍为 32、发送并发仍为 4、active outbox 上限仍为 1000。延期沿用现有 5 秒重试周期和过期回收，不做历史扫描。扫码阻塞存储操作进入 blocking pool，锁只覆盖本地配置提交，不跨网络或 keyring I/O。
+
+
+本次回归证据：
+
+- 修复前 `resolution_waits_for_inflight_source_and_its_retry_before_updating` 稳定失败：源发送尚未结算时新消息发送数为 1，期望为 0；修复后同一测试通过。
+- 修复前 `scan_install_rejects_cancellation_or_replacement_during_credential_save` 稳定失败：保存凭据期间取消后，配置 reference 仍由 existing-credential 变成新 UUID；修复后同一测试覆盖两渠道取消/替换并全部通过。
+- `cargo test -j 1 -p gold-band --lib im:: -- --test-threads=4`：192 项通过。
+- `cargo test -j 1 -p gold-band-desktop im_ -- --test-threads=4`：35 项通过（筛选包含 23 项 IM runtime、4 项 scan slot 及 8 项名称匹配的相邻测试）；新增正常提交、提交失败清理及 commit/replace 互斥验证。
+- `npm run web:test -- web/tests/im-settings-ui.test.tsx web/tests/im-settings.test.ts`：32 项通过；`npm run web:build`（含类型检查）通过，保留现有大 chunk/混合导入告警。
+- 启动前端，通过独立 agent-browser 会话验证两渠道弹窗关闭后迟到授权响应不改变未接入状态；480px 窄窗口与恢复 1366px 均无横向溢出。浏览器使用模拟 API，凭据保存期间的取消竞态由 Rust 接口回归验证，未将其记为真实账号或 OS keyring 联调。
+- `cargo fmt --all -- --check` 与 `git diff --check` 通过；未修改或新增共享经验规则，现有状态生命周期与 Bug 修复验证规则已覆盖本次根因。
+- 全目标 CI Clippy 门禁 `cargo clippy --workspace --all-targets --locked -j 1 -- -A clippy::all -D clippy::disallowed_methods` 通过。沿用已有 `target/regression-fix-20261016/run-low-memory.ps1` 的单任务、无 debug/incremental 配置；完整参数、退出码和日志保存在同目录 `im-race-review-clippy.json` / `.log`，本次修改文件没有新增告警。
+
+## 25. 2026-10-17 PR #2 发送取消与企微终态修复
+
+基于 `feature_feishu_approve` 的 `ed0a5969` 复核。两项均属于既有生命周期与结果投影契约的实现缺口，不改变 Runtime 审批模型。
+
+- 修复前重新编译执行两个最小回归：在 token 响应返回前推进 generation 后，旧飞书句柄仍发起消息 POST；已接受拒绝但企微点击允许时，终态实际勾选索引 0，期望索引 1。两项均在业务断言处失败，不是 fixture 或编译环境失败。
+- 飞书 `ActiveApi` 持有当前连接 cancellation 的子令牌；slot 清理和替换统一取消旧句柄。发送和 PATCH 共用取消优先的请求边界，等待 token、刷新重试与请求响应期间均可取消，沿用既有可重试网络错误和 outbox 调度。
+- 企微 `Handled / AlreadyHandled` 投票和表单仅消费 `ImActionResponse.outcome`。权限按 option ID、人工检查按 outcome、追问按 schema 字段及原始 JSON 值恢复原卡控件；未知/缺失结果及未回答字段保持未选，不从后到草稿或默认第一项推断。消息类别说明由原 delivery 的动作类型派生，不因结果未知把人工检查误写为权限请求。
+- 回归覆盖发送/PATCH、generation 失效、断连、父令牌取消、同 generation 句柄替换、旧清理与新连接隔离，以及权限、人工检查、单选、多选、多题、原始布尔值、空答案和结果不可用的终态投影。平台卡片通过出站 JSON 的选中值、禁用态和 task/submit key 验收。
+- 既有成功回包测试补齐实际接受结果；golden 的输入从同一入站领域操作派生 outcome，不为通过测试恢复旧的草稿回显逻辑。逐字段比较快照仅删除 7 处缺失答案的 `selected_id: "0"`，涉及 optional/required omitted 的已处理、过期和失败卡片，其余内容与身份保持一致。
+
+过度设计复核：复用已有 Tokio CancellationToken、generation、outbox 和结构化结果；只补充运行期句柄的资源所有权及两个私有投影函数，没有新依赖、业务状态机、持久字段、缓存或队列。
+
+性能复核：取消仅注册在途请求的等待，网络操作不进入 slot 锁；恢复权限最多扫描 20 个选项，企微表单最多 3 题、每题最多 10 个选项（单题最多 20），多选匹配受同一上限约束。没有历史扫描、额外数据库/网络请求、轮询或前端订阅变化，无需新增 benchmark。已发送到平台的请求不能被本地取消撤回；真实平台与完整安装包不由本地 fixture 回归替代。
+
+最终验证（2026-10-17）：
+
+- 当前源码 `cargo test -p gold-band --lib im:: --no-fail-fast`：200/200 通过；同次编译的 `app::intervention::tests::`：26/26 通过。原先两个红测转绿，新增生命周期、结果缺失和类型化投影回归均通过。
+- 前端 IM 设置、设置 DOM、browser API 与 ElicitationCard 四个文件：67/67 通过；`npm run web:build`（含 TypeScript）通过，保留既有大 chunk/混合导入提示。
+- `cargo clippy -p gold-band --lib --tests --locked -j 1 -- -A clippy::all -D clippy::disallowed_methods`、`cargo fmt --all -- --check` 与 `git diff --check` 通过。
+- 启动本轮生产构建的独立预览服务，以 agent-browser 验证设置页、飞书权限确认到私聊绑定引导、企微二维码打开与关闭；480px 和恢复 1366px 的页面宽度均无横向溢出。浏览器使用预览 API，未连接真实飞书/企微账号；平台控件的值及禁用态由上述 Rust wire 测试固定。本次没有改动前端源码，不扩大为全仓、Tauri EXE 或真实平台端到端验收。
+- 日志保留在本地 `target/pr2-im-green.log`、`pr2-domain-tests.log`、`pr2-web-tests.log`、`pr2-web-build.log`、`pr2-clippy.log`，窄窗口截图为 `target/pr2-feishu-narrow.png`。测试浏览器和 1438 端口预览服务已关闭。
+
+验收时再次确认性能与过度设计结论保持上述边界，无新增 I/O、依赖、持久业务状态或无界容器。现有 `state-lifecycle-and-data-integrity.md` 与 `bug-fix-verification.md` 已覆盖资源生命周期、权威结果投影及红绿测试约束，本轮不重复新增经验规则。

@@ -179,7 +179,7 @@ import {
 } from "@/lib/composer-context";
 import { composerQuoteFailureMessage } from "@/lib/composer-quote-i18n";
 import { composerWorkspaceFileRefFromEntry, openWorkspaceFileReference } from "@/lib/workspace-file-reference";
-import type { ConversationPromptInput, ProfileVm } from "@/types";
+import type { ConversationPromptInput } from "@/types";
 import { readAgentMessageQuote } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { useDirectBackgroundActive } from "@/lib/acp-background-control";
@@ -188,8 +188,8 @@ import { ConversationPromptQueue } from "@/components/conversation/ConversationP
 import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
 import { UserMessageWorkspaceFiles } from "@/components/conversation/UserMessageWorkspaceFiles";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
-import { buildSlashCatalog, committedRoleSnapshot, parseCommittedSlashItem, slashSendableText } from "@/lib/slash-command";
-import { useAgentCommands } from "@/hooks/useAgentCommands";
+import { committedRoleSnapshot, parseCommittedSlashItem, slashSendableText } from "@/lib/slash-command";
+import { useComposerMenuCatalog } from "@/hooks/useComposerMenuCatalog";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { useMentionMenuLabels } from "@/hooks/useMentionWorkspaceFiles";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -237,6 +237,7 @@ import {
   isTerminalAcpLifecycle,
   isTerminalLifecycleForTurn,
   shouldHidePendingAcpInteractions,
+  canStopAcpSession,
   routesAcpStopToBackgroundControl,
   mergeConversationAttemptLifecycle,
   mergeConversationAttemptLiveControlFacets,
@@ -268,7 +269,6 @@ import {
   getAcpToolDetail,
   getAcpRawFrames,
   getAcpSession,
-  getProfiles,
   deleteConversationQueuedPrompt,
   respondAcpPermission,
   respondElicitation,
@@ -294,7 +294,11 @@ import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import {
   ACP_SESSION_COMPOSER_BORDER_STYLE,
   ACP_SESSION_COMPOSER_LAYOUT,
+  acpComposerStackLayout,
+  acpComposerStackShapeClassName,
+  type AcpComposerStackSlot,
 } from '@/lib/conversation-composer-layout';
+import { AcpRunningAgentsStrip, type AcpRunningAgentCard } from '@/components/acp/AcpRunningAgentsStrip';
 import { getRuntimeApi, type AcpSessionUpdatedEventVm } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import type { ConversationPromptSubmitVm } from "@/api/client";
@@ -308,6 +312,7 @@ import {
   resolveConversationBranchDisplayStatus,
   subscribeConversationAttemptEvents,
   useConversationBranchLiveSnapshot,
+  useConversationRunningAgents,
 } from "@/lib/conversation-event-router";
 import {
   acpStreamingLocatorMismatches,
@@ -1462,23 +1467,6 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
-  const [roleProfiles, setRoleProfiles] = useState<ProfileVm[]>([]);
-  useEffect(() => {
-    if (!roleSelectionEnabled) {
-      setRoleProfiles([]);
-      return;
-    }
-    let cancelled = false;
-    void Promise.resolve()
-      .then(() => getProfiles())
-      .then((list) => {
-        if (!cancelled) setRoleProfiles(list.profiles);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [roleSelectionEnabled]);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
   const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
@@ -2625,19 +2613,12 @@ export function ACPChatDialog(
     () => mergeOptimisticSession(visibleSession, optimisticEvents),
     [visibleSession, optimisticEvents],
   );
-  const agentCommands = useAgentCommands(
-    effective?.provider,
-    effective?.providerCwd ?? effective?.cwd,
-    effective?.availableCommands,
-  );
-  const slashCatalog = useMemo(
-    () => buildSlashCatalog(
-      t('acp.slashAgentGroup'),
-      roleProfiles,
-      agentCommands.commands,
-    ),
-    [agentCommands.commands, roleProfiles, t],
-  );
+  const menuCatalog = useComposerMenuCatalog({
+    agentType: effective?.provider,
+    workspacePath: effective?.providerCwd ?? effective?.cwd,
+    sessionCommands: effective?.availableCommands,
+    rolesEnabled: roleSelectionEnabled,
+  });
   const mentionLabels = useMentionMenuLabels();
   // Prompt file references resolve against the session's work location.
   const mentionWorkLocation = effective?.workLocation;
@@ -2654,8 +2635,9 @@ export function ACPChatDialog(
   );
   const slashCommands = useSlashCommandController({
     input: prompt,
-    groups: slashCatalog,
-    contextKey: agentCommands.catalogKey,
+    groups: menuCatalog.groups,
+    contextKey: menuCatalog.contextKey,
+    onMenuTrigger: menuCatalog.onMenuTrigger,
     onInputChange: setPrompt,
     textareaRef: composerTextareaRef,
     mention: {
@@ -2918,7 +2900,7 @@ export function ACPChatDialog(
     runtimeActive: runtimeActiveFromContext,
     sessionId: baseSession?.sessionId,
     sessionEstablished,
-    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    baseSessionReady: hasAcpSessionCanonicalContentForInitialShell(baseSession),
     loadedEventCount: loadedEvents.length,
   });
   const sessionInitializationFailed = isAcpSessionInitializationFailed({
@@ -2929,7 +2911,7 @@ export function ACPChatDialog(
     runtimeErrorMessage: runtimeComposerContext?.runtimeError,
     sessionId: baseSession?.sessionId,
     sessionEstablished,
-    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    baseSessionReady: hasAcpSessionCanonicalContentForInitialShell(baseSession),
     loadedEventCount: loadedEvents.length,
   });
   const composerLatestEvent = timeline.at(-1) ?? null;
@@ -3014,18 +2996,44 @@ export function ACPChatDialog(
     || Boolean(worktreePath)
     || showBranchInfo
     || hasAcpUsagePanelContent(effective?.usage);
-  const composerInfoTabTarget = !showComposerInfoPanel
-    ? null
-    : !readOnly && showManualCheckActions
-      ? "manual"
-      : todoEntries.length > 0
-        ? "todo"
-        : !readOnly && promptQueueVisible && promptQueue
-          ? "queue"
-          : !readOnly || showDisabledComposer
-            ? "composer"
-            : null;
-  const canStopSession = composerState.canStop || backgroundActive;
+  const runningAgents = useConversationRunningAgents(
+    attemptWorkspaceLocator,
+    effective?.timelineProjection?.agents ?? NO_PROJECTED_AGENTS,
+    branchId === 'root',
+  );
+  const runningAgentCards = useMemo<AcpRunningAgentCard[]>(() => runningAgents.map((agent) => ({
+    agentExecutionId: agent.agentExecutionId,
+    label: agent.execution?.description || agent.execution?.title || t("acp.subAgent"),
+    statusLabel: childAgentStatusLabel(agent.status, t),
+    metricsSummary: agent.execution ? agentExecutionMetricsSummary(agent.execution, t) : "",
+    attention: agent.attention,
+    canOpen: Boolean(rightWorkspace?.scopeKey) && !agent.agentExecutionId.startsWith('unresolved-'),
+  })), [rightWorkspace?.scopeKey, runningAgents, t]);
+  const openRunningAgent = useCallback((agentExecutionId: string) => {
+    const agent = runningAgents.find((candidate) => candidate.agentExecutionId === agentExecutionId);
+    if (!agent || !rightWorkspace) return;
+    openAgentTranscript(rightWorkspace, attemptWorkspaceLocator, {
+      agentExecutionId,
+      attemptId: agent.execution?.attemptId,
+      title: agent.execution?.description || agent.execution?.title || t("acp.subAgent"),
+      description: agent.execution?.description,
+      status: agent.status,
+      attention: agent.attention,
+    });
+  }, [attemptWorkspaceLocator, rightWorkspace, runningAgents, t]);
+  const composerStack = acpComposerStackLayout({
+    agents: runningAgentCards.length > 0,
+    manual: !readOnly && showManualCheckActions,
+    todo: todoEntries.length > 0,
+    queue: !readOnly && promptQueueVisible && Boolean(promptQueue),
+    composer: !readOnly || showDisabledComposer,
+  }, showComposerInfoPanel);
+  const canStopSession = canStopAcpSession({
+    composer: composerState,
+    backgroundActive,
+    backgroundControl,
+    nativeAgentRunning: runningAgents.some((agent) => agent.native),
+  });
   const sendButtonBusy = sending || waitingForOptimisticPrompt;
   const lastEvent = effectiveEvents.at(-1);
 
@@ -7089,10 +7097,16 @@ export function ACPChatDialog(
                   )}
                 />
               </div>
+            <AcpRunningAgentsStrip
+              agents={runningAgentCards}
+              ariaLabel={t("acp.subAgent")}
+              stackSlot={composerStack.agents}
+              onOpen={openRunningAgent}
+            />
             {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
                 submitting={manualCheckSubmitting}
-                integratedInfoTab={composerInfoTabTarget === "manual"}
+                stackSlot={composerStack.manual}
                 onSuccess={() => void submitManualDecision("success")}
                 onFailure={() => void submitManualDecision("failure")}
               />
@@ -7100,8 +7114,7 @@ export function ACPChatDialog(
             {todoEntries.length > 0 ? (
               <AcpTodoPanel
                 entries={todoEntries}
-                attachedBelow={!readOnly}
-                integratedInfoTab={composerInfoTabTarget === "todo"}
+                stackSlot={composerStack.todo}
               />
             ) : null}
             {!readOnly && promptQueueVisible && promptQueue ? (
@@ -7110,9 +7123,8 @@ export function ACPChatDialog(
                 stopInProgress={stopInProgress}
                 mutationPending={queueMutationPending || queueSubmitPending}
                 composerOccupied={composerDraftOccupied}
+                stackSlot={composerStack.queue}
                 sendingItemId={queueSendingItemId}
-                attachedAbove={todoEntries.length > 0}
-                integratedInfoTab={composerInfoTabTarget === "queue"}
                 onRestore={restoreQueuedPrompt}
                 onReorder={reorderQueuedPrompts}
                 onSendNow={sendNowQueuedPrompt}
@@ -7126,7 +7138,7 @@ export function ACPChatDialog(
               <AcpExternalComposerState
                 kind={composerState.externalKind}
                 message={composerState.externalMessage ?? ""}
-                integratedInfoTab={composerInfoTabTarget === "composer"}
+                stackSlot={composerStack.composer}
                 onAction={
                   composerState.externalKind === "invalid-workflow"
                     ? runtimeComposerContext?.onRepair
@@ -7199,8 +7211,7 @@ export function ACPChatDialog(
                     onAutoAcceptChange={handleAcpSessionAutoAcceptChange}
                   />
                 )}
-                attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
-                integratedInfoTab={composerInfoTabTarget === "composer"}
+                stackSlot={composerStack.composer}
                 queueSubmit={composerState.submitTarget === "queue-prompt"}
                 queueDraft={queueDraftFacetActive ? {
                   canSubmit: canSubmitPrompt && !queueDraftAtCapacity,
@@ -7338,21 +7349,21 @@ function AcpExternalComposerState({
   kind,
   message,
   onAction,
-  integratedInfoTab = false,
+  stackSlot,
 }: {
   kind: "invalid-workflow" | "runtime-error";
   message: string;
   onAction?: () => void;
-  integratedInfoTab?: boolean;
+  stackSlot?: AcpComposerStackSlot;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-2xl px-5 py-4 shadow-none",
+        "flex min-w-0 items-center gap-3 px-5 py-4 shadow-none",
         ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
-        integratedInfoTab && "rounded-tl-none",
+        acpComposerStackShapeClassName(stackSlot),
         isError
           ? "bg-destructive/5"
           : "bg-amber-500/5",
@@ -7394,19 +7405,19 @@ function AcpManualCheckPanel({
   submitting,
   onSuccess,
   onFailure,
-  integratedInfoTab = false,
+  stackSlot,
 }: {
   submitting: boolean;
   onSuccess: () => void;
   onFailure: () => void;
-  integratedInfoTab?: boolean;
+  stackSlot?: AcpComposerStackSlot;
 }) {
   const { t } = useTranslation();
   return (
     <div className={cn(
-      "mb-3 flex min-w-0 items-center gap-3 rounded-2xl bg-card px-4 py-2.5 shadow-none",
+      "flex min-w-0 items-center gap-3 bg-card px-4 py-2.5 shadow-none",
       ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
-      integratedInfoTab && "rounded-tl-none",
+      acpComposerStackShapeClassName(stackSlot),
     )}>
       <div className="min-w-0 flex-1">
         <span className="text-sm font-semibold text-foreground">
@@ -7445,13 +7456,11 @@ function AcpManualCheckPanel({
 export function AcpTodoPanel({
   entries,
   variant = "composer",
-  attachedBelow = true,
-  integratedInfoTab = false,
+  stackSlot,
 }: {
   entries: AcpTodoEntry[];
   variant?: "composer" | "nested";
-  attachedBelow?: boolean;
-  integratedInfoTab?: boolean;
+  stackSlot?: AcpComposerStackSlot;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(variant === "nested");
@@ -7479,8 +7488,7 @@ export function AcpTodoPanel({
           ? cn(
               "overflow-hidden bg-card",
               ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
-              attachedBelow ? "rounded-t-2xl" : "rounded-2xl",
-              integratedInfoTab && "rounded-tl-none",
+              acpComposerStackShapeClassName(stackSlot),
             )
           : "overflow-hidden rounded-lg border border-border/35 bg-transparent",
       )}
@@ -7604,12 +7612,15 @@ function AcpErrorBanner({ reason, title, onDismiss }: {
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex shrink-0 items-start gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm">
+    <div
+      role="alert"
+      className="flex shrink-0 items-start gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm"
+    >
       <div className="min-w-0 flex-1">
-        <span className="font-semibold text-destructive">
+        <div className="font-semibold text-destructive">
           {title ?? t("acp.sessionFailed")}
-        </span>
-        <span className="ml-2 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</span>
+        </div>
+        <div className="mt-1 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</div>
       </div>
       {onDismiss ? (
         <Tooltip>
@@ -8462,6 +8473,39 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
   );
 });
 
+const NO_PROJECTED_AGENTS: AcpAgentExecutionVm[] = [];
+
+/** Opens an Agent transcript in the right workspace, for every entry point that shows an Agent. */
+function openAgentTranscript(
+  workspace: NonNullable<ReturnType<typeof useOptionalRightWorkspaceCommands>>,
+  attemptLocator: AgentTranscriptLocator,
+  target: {
+    agentExecutionId: string;
+    attemptId?: string | null;
+    title: string;
+    description?: string | null;
+    status: string;
+    attention: boolean;
+  },
+) {
+  if (!workspace.scopeKey) return;
+  const locator: AgentTranscriptLocator = {
+    ...attemptLocator,
+    attemptId: target.attemptId ?? attemptLocator.attemptId,
+    branchId: target.agentExecutionId,
+  };
+  workspace.openResource({
+    kind: 'agent-transcript',
+    key: agentTranscriptResourceKey(locator),
+    scopeKey: workspace.scopeKey,
+    title: target.title,
+    description: target.description ?? undefined,
+    status: target.status,
+    attention: target.attention,
+    locator,
+  });
+}
+
 const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
@@ -8482,21 +8526,14 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   const statusLabel = childAgentStatusLabel(displayedStatus, t);
   const canOpen = Boolean(branchLocator && workspace?.scopeKey && !event.agentExecutionId.startsWith('unresolved-'));
   const openAgent = () => {
-    if (!branchLocator || !workspace?.scopeKey || !canOpen) return;
-    const locator: AgentTranscriptLocator = {
-      ...branchLocator,
-      attemptId: event.attemptId ?? branchLocator.attemptId,
-      branchId: event.agentExecutionId,
-    };
-    workspace.openResource({
-      kind: 'agent-transcript',
-      key: agentTranscriptResourceKey(locator),
-      scopeKey: workspace.scopeKey,
+    if (!branchLocator || !workspace || !canOpen) return;
+    openAgentTranscript(workspace, branchLocator, {
+      agentExecutionId: event.agentExecutionId,
+      attemptId: event.attemptId,
       title: label || t('acp.subAgent'),
       description,
       status: displayedStatus ?? 'unknown',
       attention,
-      locator,
     });
   };
   return (
@@ -10831,7 +10868,7 @@ function processingLabel(
   if (kind === "processing-workspace")
     return t("conversation.runtime.processingWorkspace");
   if (kind === "launching-next-node") return t("conversation.runtime.launchingNextNode");
-  if (kind === "launching") return t("acp.launchingClaude");
+  if (kind === "launching") return t("acp.preparingAgent");
   if (kind === "thinking") return t("acp.thinkingNow");
   if (kind === "tool") return t("acp.toolRunning");
   if (kind === "compacting") return t("acp.compactionRunning");
@@ -11234,7 +11271,9 @@ function stabilizeTimelineItem(
   if (isActivityBatch(next) || isActivityBatch(previous)) {
     if (!isActivityBatch(next) || !isActivityBatch(previous)) return next;
     const events = stabilizeTimelineItems(next.events, previous.events) as AcpTimelineEvent[];
-    const live = previous.live && next.live;
+    // A settled group reopens only on activity newer than its settled range: a
+    // stale active snapshot cannot revive it, resumed background work can.
+    const live = next.live && (previous.live || next.activityEndSeq > previous.activityEndSeq);
     if (
       events === previous.events &&
       next.seq === previous.seq &&
@@ -12477,7 +12516,19 @@ function isAcpSessionCanonicalHistoryReady(session: AcpSessionVm) {
   return isSessionIdleStatus(session.status) && session.events.length > 0;
 }
 
-function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
+function isAcpSessionCanonicalEmptyReady(session: AcpSessionVm) {
+  if (session.events.length > 0 || session.eventPage.total > 0) return false;
+  if (isSessionActiveStatus(session.status)) return false;
+  return (
+    isSessionIdleStatus(session.status) ||
+    isSessionTerminalStatus(session.status) ||
+    Boolean(session.turnError)
+  );
+}
+
+function hasAcpSessionCanonicalContentForInitialShell(
+  session: AcpSessionVm | null | undefined,
+) {
   return Boolean(
     session &&
     (
@@ -12486,6 +12537,16 @@ function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undef
       isAcpSessionDisplayableDuringInitialLoad(session) ||
       isAcpSessionCanonicalHistoryReady(session) ||
       (isSessionTerminalStatus(session.status) && session.events.length > 0)
+    ),
+  );
+}
+
+function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
+  return Boolean(
+    session &&
+    (
+      hasAcpSessionCanonicalContentForInitialShell(session) ||
+      isAcpSessionCanonicalEmptyReady(session)
     ),
   );
 }
@@ -12682,6 +12743,7 @@ export {
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
+  hasAcpSessionCanonicalContentForInitialShell,
   isAcpSessionReadyForInitialDisplay,
 };
 

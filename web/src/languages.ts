@@ -27,6 +27,7 @@ export function themeDisplayLocale(language: DesktopLanguage | string): 'zh-CN' 
 
 /**
  * Map an OS or browser locale onto the supported catalog.
+ * Explicit Chinese scripts take precedence over the region fallback.
  * The same rules live in `DesktopLanguage::from_locale_tag`.
  */
 export function supportedLocaleTag(language: string): SupportedLocaleTag {
@@ -34,7 +35,10 @@ export function supportedLocaleTag(language: string): SupportedLocaleTag {
   const primary = parts[0] ?? '';
   const rest = parts.slice(1);
   if (primary === 'zh') {
-    return rest.some((part) => part === 'hant' || part === 'tw' || part === 'hk' || part === 'mo') ? 'zh-TW' : 'zh-CN';
+    const script = rest.find((part) => part === 'hans' || part === 'hant');
+    if (script === 'hans') return 'zh-CN';
+    if (script === 'hant') return 'zh-TW';
+    return rest.some((part) => part === 'tw' || part === 'hk' || part === 'mo') ? 'zh-TW' : 'zh-CN';
   }
   if (primary === 'ja') return 'ja-JP';
   if (primary === 'ko') return 'ko-KR';

@@ -25,8 +25,8 @@ use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
 };
 use gold_band::config::{
-    DiagnosticError, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
-    SettingsConfig, StateConfig,
+    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
+    StateConfig,
 };
 use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;
@@ -1701,6 +1701,7 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gold_band::config::DiagnosticError;
     use gold_band::domain::{NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, VERSION};
     use gold_band::runtime::{
         NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase,

@@ -261,3 +261,38 @@ Windows debug 测试进程树（包含测试宿主与模拟适配器，排除采
 - RED：`background_stop_settles_a_pending_session_interaction` 追加断言（accepted 停止后 active_tool_count=1）、`direct_turn_end_settles_foreground_tools_without_terminal_updates`（end_turn 后 active_tool_count=1），均按根因失败。GREEN：两者转绿；新增状态级测试 `owning_boundaries_settle_only_their_own_running_tools`（归属隔离 + 迟终态不重开窗口）。
 - 验证：acp 模块 630+ 通过、全量 lib 1624 通过，失败集合与既有基线一致（path_files/embedded_catalog/quotes/managed_operation 为既有失败）；clippy 触达文件无警告；gold-band-desktop cargo check 通过。未验证：真实 Claude 定时唤醒场景手工重跑。
 - 自评审：仅内存 map 值类型加一个归属枚举与两个结算调用，无新增状态机/持久字段/轮询；结算是 O(工具数) 一次 retain，无锁持有跨 IO。环境备注：E 盘满导致编译失败，清理 target/debug/incremental（12G 再生缓存）恢复。
+
+## 2026-10-19：运行中子 Agent 摘要条
+
+- 问题：子 Agent 经 SendMessage 被唤醒后继续写入原分支，但消息流只在首次 Agent 启动调用处渲染 Agent 卡片，用户看不到哪些子 Agent 正在后台运行。
+- 根因：运行态只投影到“启动位置”的卡片上，缺少与位置无关、只按状态成员资格展示的入口；不是唤醒事件缺失。
+- 设计：composer 叠层最上方新增 `AcpRunningAgentsStrip`，紧挨信息角标、与下方面板无缝衔接，高度上限约两行，超出在条内滚动。成员 = 持久化 `timelineProjection.agents` 按 `providerStateSeq` 合并实时分支快照后处于 queued/running/in_progress/waiting_permission 的 Agent；根会话额外纳入尚未投影的实时分支。点击与消息流 Agent 卡片共用 `openAgentTranscript` 打开右侧 `agent-transcript`。叠层圆角/分隔/角标/间距统一由 `acpComposerStackLayout` 计算，删除各面板的 `attached*` / `integratedInfoTab` 旁路判断。
+- 测试：`conversation-running-agents.test.tsx`（唤醒、seq 合并、结束移除、权限关注、未投影分支、去重、引用稳定）、`conversation-composer-stack-layout.test.ts`、`acp-running-agents-strip.test.tsx`；既有 composer/todo/queue/视觉层级测试同步改为 slot 断言。全量 web 测试失败集合与 HEAD 基线一致。
+- 验证：浏览器 mock 7 个运行中 + 1 个已完成 Agent：已完成不显示；宽屏两行、窄屏 76px 内滚动；长说明截断；点击打开右侧 Agent 标签；浅色/深色主题下无分隔线、无厚重色块。
+- 自评审：无新增持久字段或状态机，复用投影与实时分支快照；订阅为每 attempt 一次、仅在分支状态版本变化时 O(Agent 数) 重算，结果引用稳定，流式正文不触发；实时快照仍受 64 条 LRU 上限约束，同时运行的子 Agent 远低于该值。
+
+## 2026-10-19：后台过程组窗口过期后无法恢复进行中
+
+- 问题：后台工作中最后一个过程组一直显示“已记录 N 项活动”且计数递增，同时停止按钮可见。
+- 根因（实现不完整）：时间线稳定化以 `previous.live && next.live` 合并 live，本意是阻止停止后迟到的 active snapshot 复活已归档过程组，但同时锁死了后台窗口过期后 Agent 恢复工作的同一过程组。
+- 修复：live 按序号水位单调收敛——已结算过程组只有在 `activityEndSeq` 超过其结算范围（出现更新的活动事实）时才能随回合/后台事实回到进行中；仅有控制投影而无新活动不复活。
+- 未改：10 秒宽限窗口。现场 gpt-6-astra 思考摘要间隔常为 12–15 秒，窗口仍会在间隙过期；适配器的 autonomous cycle running/idle 仅经 ACP v2 `state_update` 暴露（v1 下无可靠起止标记），是否接入 v2 另行评估。
+- RED/GREEN：`acp-activity-detail-loading.test.tsx` 新增“窗口过期→无新活动不复活→新活动回到进行中”在修复前失败、修复后通过；`keeps an archived activity terminal when a stale active snapshot arrives after stop` 保持通过。ACP 相关 49 个测试文件中失败集合与修复前基线一致（7 项均为并行进行中的 composer/会话改动）。
+- 自评审：无新增状态或字段，复用既有 `activityEndSeq`；每次稳定化多一次常数比较。
+
+## 2026-10-20：已结束的子 Agent 仍留在摘要条
+
+- 现象：后台运行的会话里子 Agent 结束后仍显示在摘要条，点击打开后才消失。
+- 根因：根会话 `timelineProjection` 只在首次加载等时机刷新，后台期间 Agent 已结束只记录在前端分支实时快照里；而分支快照与回放缓存共用 64 条按分支 LRU 淘汰。会话有 153 个 Agent，每次根会话 reconcile 重写被淘汰的分支，把较新的 completed 快照挤出，显示回落到过期投影的 running。点击加载分支会话重新写回 completed，所以才消失。消息流 Agent 卡片读同一快照，同样受影响。
+- 修复：拆开两类淘汰。回放缓存仍按 64 个分支淘汰；分支快照只在超过 16 个 attempt 时整体淘汰无人观察（无 attempt/branch 订阅）的 attempt，不做 attempt 内的部分淘汰。
+- 测试：`conversation-running-agents.test.tsx` 新增 153 个 Agent + 二次 reconcile 的复现用例（修复前在 reconcile 后断言失败、返回 running 的 agent-a，修复后通过）；`conversation-event-router.test.ts` 改为断言回放按分支淘汰但快照保留，并新增按 attempt 整体淘汰、被观察 attempt 不淘汰的用例。web 类型检查通过，全量测试失败集合与基线一致。
+- 自评审：无新增持久字段或状态机，只调整现有缓存的淘汰边界；快照上限约 153 Agent × 16 attempt 的小对象（数百 KB），淘汰仅在超限时按前缀扫描一次；reconcile 不再因整表重写导致 LRU 抖动。
+
+## 2026-10-23：子 Agent 静默运行时保留"停止"
+
+- 现象：主会话回合结束、子 Agent 在后台运行但主会话没有消息时，输入框不显示"停止"。
+- 根因：回合结束后"停止"只依据后端 `backgroundControl` 的运行中工具数和 10 秒活动窗口；子 Agent 等模型时超过 10 秒无帧，窗口过期。原始日志中子 Agent 运行期间出现 50 次超过 10 秒的静默，最长 99 秒。适配器的子 Agent 状态从未进入该判断。
+- 修复：前端复用摘要条的运行中子 Agent 集合。`ConversationRunningAgent` 新增 `native`（投影或实时快照带 `providerStateSeq`），新增 `canStopAcpSession`：前台可停 / 活动窗口内 / 后台停止通道存在且有原生运行中子 Agent，三者之一即显示。推断出的 running 可能卡住，不参与；`backgroundControl` 为空（连接已关闭、刚停止、前台回合进行中）时不显示，保证点击有目标。后端不变。
+- 测试：`acp-stop-routing.test.tsx` 新增 `canStopAcpSession` 用例与两个 ACPChatDialog DOM 用例（窗口过期 + 原生运行中子 Agent 时显示"停止"并走后台停止通道；仅推断运行中时不显示），去掉新条件时 DOM 用例失败；`conversation-running-agents.test.tsx` 新增 `native` 判定用例。web 类型检查通过；全量测试失败集合与基线一致（`readonly-unified-diff` 全量负载下偶发失败，单独运行两次通过）。
+- 已知限制：侧栏运行中标记仍只看后端信号；点"停止"后适配器是否连带停止子 Agent 待实测。
+- 自评审：无新增状态、接口或后端改动，复用摘要条已有订阅，仅一次 O(Agent 数) 遍历。

@@ -366,6 +366,23 @@ export function routesAcpStopToBackgroundControl(
 }
 
 /**
+ * Whether the session Stop button is offered. Beyond the foreground turn and the
+ * background activity window, a provider-reported running Agent keeps the
+ * background busy through silent stretches the window cannot see; it only
+ * counts while the background stop path exists, so Stop always has a target.
+ */
+export function canStopAcpSession(input: {
+  composer: Pick<AcpRuntimeComposerState, 'canStop'>;
+  backgroundActive: boolean;
+  backgroundControl: unknown;
+  nativeAgentRunning: boolean;
+}) {
+  return input.composer.canStop
+    || input.backgroundActive
+    || (Boolean(input.backgroundControl) && input.nativeAgentRunning);
+}
+
+/**
  * Selects the session status used by timeline activity presentation.
  * A lifecycle-only terminal patch is authoritative over a stale body snapshot,
  * except while a new local prompt is still being admitted.

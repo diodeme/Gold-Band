@@ -932,6 +932,7 @@
       "composer-history-query-failed": "入力履歴を読み込めませんでした。もう一度試してください。",
       "turn-execution-failed": "このメッセージは処理できませんでした。もう一度やり直してください。",
       "session-request-failed": "セッションを準備できませんでした。もう一度やり直してください。",
+      "session-restore-reference-missing": "この ACP セッションには Provider セッション参照がないため、元のセッションを再開できません。新しいセッションを作成して、メッセージをもう一度送信してください。",
       "missing-provider": "現在のノードには provider の構成がありません。",
       "subagent-protocol-upgrade-required": "Claude ACP を {{minimumVersion}} 以降に更新してから、もう一度お試しください。",
       "session-config-value-unavailable": "選択したセッション設定は使えなくなりました。最新の一覧から選び直してください。",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "参照ファイルの情報を読み取れませんでした。もう一度お試しください。",
       "workspace-file-count-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
       "session-restore-unsupported": "このAgentは既存のセッションを復元できません。",
-      "session-restore-reference-missing": "このセッションには、再開できる Provider セッション参照がありません。",
       "history-sync-unsupported": "このAgentは、既存のセッションの完全な履歴を同期できません。",
       "prompt-empty": "送信する内容を入力してください。",
       "prompt-quote-invalid": "引用したテキストが無効です。削除して、もう一度引用してください。",
@@ -2366,7 +2366,7 @@
     "stopFailed": "停止に失敗しました",
     "stopHint": "現在の ACP セッションを停止します",
     "noEvents": "ACP イベントはありません",
-    "launchingClaude": "Agent を起動中",
+    "preparingAgent": "Agent を準備中",
     "processing": "処理中",
     "thinkingNow": "思考中",
     "toolRunning": "ツールを実行中",
@@ -2549,7 +2549,13 @@
     "im": {
       "title": "IM リモート介入と通知",
       "enabled": "有効",
-      "privateBinding": "プライベートチャット: {{name}}",
+      "channelEnabled": "{{channel}} のリモート介入を有効にする",
+      "channelSubtitle": "ボット · プライベートチャット",
+      "expandChannel": "{{channel}} の設定を展開",
+      "collapseChannel": "{{channel}} の設定を折りたたむ",
+      "receiverAccount": "受信アカウント",
+      "robotName": "ボット名",
+      "privateBindingUnnamed": "1 対 1 のチャットにバインド済み",
       "notificationKinds": "通知の種類",
       "notificationGroups": {
         "needsAction": "対応が必要",
@@ -2565,24 +2571,45 @@
       "deleteDescription": "接続を無効にし、OS の資格情報ストアから secret を削除します。未送信のメッセージも止まります。",
       "confirmDelete": "削除",
       "scan": {
-        "title": "QRコードでWeComに接続",
-        "description": "WeCom モバイル アプリでスキャンし、認証を確認します。",
-        "notConfigured": "WeCom が接続されていません。接続してリモート介入と通知を設定します。",
-        "botId": "ボット ID: {{id}}",
+        "title": "QRコードで{{channel}}に接続",
+        "description": "{{channel}} モバイル アプリでスキャンし、認証を確認します。",
+        "notConfigured": "{{channel}} が接続されていません。接続してリモート介入と通知を設定します。",
         "connect": "スキャンして接続する",
         "reauthorize": "再度認可する",
+        "changeApp": "Feishu アプリを変更",
+        "changeAppWarning": "認可が完了すると現在の Feishu アプリが置き換えられ、既存のプライベートチャット連携が解除されます。新しいボットで連携し直してください。",
         "generating": "QRコードを生成中…",
-        "waiting": "WeCom でスキャンし、認可を確認してください",
+        "waiting": "{{channel}} でスキャンし、認可を確認してください",
         "expiresIn": "QR コードは {{countdown}} 後に期限切れになります。",
         "waitingBinding": "承認済み、受信者を待っています",
-        "complete": "WeCom を利用できます",
-        "nextStep": "WeCom でボットにメッセージを送り、1 対 1 のチャットの紐付けを完了してください。",
+        "complete": "{{channel}} を利用できます",
+        "nextStep": "{{channel}} でボットにメッセージを送り、1 対 1 のチャットの紐付けを完了してください。",
         "retry": "再度生成する",
-        "qrCodeLabel": "WeCom認証QRコード"
+        "qrCodeLabel": "{{channel}}認証QRコード"
       },
       "channels": {
-        "wecom": {
-          "title": "WeCom"
+        "weCom": {
+          "title": "WeCom",
+          "identityLabel": "ボット ID"
+        },
+        "feishu": {
+          "title": "Feishu / Lark",
+          "identityLabel": "App ID",
+          "singleDeviceHint": "操作が別の端末に届かないよう、1 つのボットは 1 台の端末のみに接続してください。",
+          "permissions": {
+            "title": "接続には次の権限が必要です",
+            "send": "あなたにメッセージを送信する",
+            "receive": "あなたがボットに送る個別メッセージを読む",
+            "update": "ボットが送信したカードを更新する",
+            "profile": "受信アカウントの表示のために名前を読み取る",
+            "confirm": "同意して QR コードを生成"
+          },
+          "resetBinding": {
+            "action": "受信アカウントを再連携",
+            "title": "受信アカウントを再連携しますか？",
+            "description": "現在の個別チャット連携を解除します。承認に使用したアカウントからボットにメッセージを送信して再連携してください。別のアカウントを使うには再承認してください。",
+            "confirm": "再連携"
+          }
         }
       },
       "status": {
@@ -2598,12 +2625,12 @@
       },
       "guidance": {
         "notConfigured": {
-          "title": "WeCom に接続する",
+          "title": "{{channel}} に接続する",
           "description": "QR コードで認証し、プライベート チャットを通じて受信者をバインドします。"
         },
         "waitingBinding": {
           "title": "受信者をバインドする",
-          "description": "WeCom でボットにメッセージを送ってください。紐付けが保存されると、リモート操作を受けられます。"
+          "description": "{{channel}} でボットにメッセージを送ってください。紐付けが保存されると、リモート操作を受けられます。"
         },
         "connecting": {
           "title": "接続を確立しています",
@@ -2618,7 +2645,7 @@
           "description": "自動回復を続行できません。再接続してもう一度試してください。"
         },
         "ready": {
-          "title": "WeCom を利用できます",
+          "title": "{{channel}} を利用できます",
           "description": "リモート介入と有効な通知は、バインドされたプライベート チャットに送信されます。"
         },
         "paused": {
@@ -2627,7 +2654,7 @@
         },
         "reauthorize": {
           "title": "許可が必要です",
-          "description": "現在の資格情報は使えません。もう一度 QR コードで認可してください。"
+          "description": "もう一度スキャンして承認を確認してください。"
         },
         "conflict": {
           "title": "ボットは別のクライアントで接続中です",
@@ -2677,10 +2704,12 @@
         "IM_SCAN_CANCELLED": "QR コードでの認可はキャンセルされました。",
         "IM_SCAN_EXPIRED": "QR コードの期限が切れました。作り直してください。",
         "IM_SCAN_TIMEOUT": "QR コードでの認可がタイムアウトしました。作り直してください。",
-        "IM_SCAN_NETWORK_UNAVAILABLE": "WeCom 認証サービスに一時的に接続できません。",
-        "IM_SCAN_PROTOCOL_INVALID": "WeCom の認可応答が無効です。作り直してください。",
+        "IM_SCAN_NETWORK_UNAVAILABLE": "認証サービスに一時的に接続できません。",
+        "IM_SCAN_PROTOCOL_INVALID": "認可応答が無効です。作り直してください。",
         "IM_SCAN_SESSION_INVALID": "QR のセッションが無効です。開き直してください。",
         "IM_SCAN_SESSION_CONFLICT": "QR認証はすでに進行中です。",
+        "IM_SCAN_DENIED": "認可が拒否されました。",
+        "IM_SCOPE_MISSING": "アプリに必要な権限がありません。もう一度認可してください。",
         "IM_STALE_GENERATION": "接続状態が変化しました。最新の状態からリトライしてください。",
         "IM_RUNTIME_UNAVAILABLE": "IM ランタイムの準備ができていません。",
         "IM_CHANNEL_CLEANUP_PENDING": "構成が削除されました。ローカル クリーンアップはバックグラウンドで再試行されます。",

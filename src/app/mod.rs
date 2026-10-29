@@ -1409,9 +1409,9 @@ pub struct App {
     runtime_recovery: Option<Arc<RuntimeRecoveryCoordinator>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AttemptRuntimePauseResult {
-    Converged,
+    Converged { paused_at: String },
     Superseded,
 }
 
@@ -5461,7 +5461,7 @@ impl App {
                 node.status = RunStatus::Paused;
                 node.outcome = None;
                 node.runtime_execution_id = None;
-                node.finished_at = Some(now);
+                node.finished_at = Some(now.clone());
                 validate_node_state(&node)?;
                 write_node_state(&node_path, &node)?;
             }
@@ -5485,7 +5485,9 @@ impl App {
                 recovery_candidate_token.as_deref(),
             );
         }
-        Ok(AttemptRuntimePauseResult::Converged)
+        Ok(AttemptRuntimePauseResult::Converged {
+            paused_at: run.map_or(now, |run| run.updated_at),
+        })
     }
 
     fn publish_committed_attempt_pause(&self, run: &RunState) {
@@ -6765,8 +6767,8 @@ mod tests {
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
 
-        assert_eq!(
-            app.pause_attempt_runtime_state_if_active_execution(
+        let result = app
+            .pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
                 "round-001",
@@ -6775,10 +6777,14 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap(),
-            AttemptRuntimePauseResult::Converged
-        );
+            .unwrap();
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(
+            result,
+            AttemptRuntimePauseResult::Converged {
+                paused_at: run.updated_at.clone(),
+            }
+        );
         assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
 
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));

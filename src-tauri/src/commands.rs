@@ -87,6 +87,7 @@ use crate::conversation_workspace::{
     validate_runtime_workspace_access,
 };
 use crate::i18n::Translator;
+use crate::im_runtime::InterventionResolution;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::multica::state::{MulticaConnectCancel, SharedMulticaState};
 use crate::multica::{
@@ -2330,8 +2331,20 @@ fn intervention_timeline_path(app: &App, locator: &InterventionLocator) -> Utf8P
     }
 }
 
+#[cfg(test)]
 fn desktop_intervention_source_event_id(
     app: &App,
+    command: &InterventionCommand,
+) -> Option<String> {
+    let attempt_dir = intervention_timeline_path(app, &command.locator)
+        .parent()?
+        .to_owned();
+    desktop_intervention_source_event_id_at(&attempt_dir, command)
+}
+
+/// Reads the request's pending file, so it must run off the async runtime.
+fn desktop_intervention_source_event_id_at(
+    attempt_dir: &camino::Utf8Path,
     command: &InterventionCommand,
 ) -> Option<String> {
     let locator = &command.locator;
@@ -2348,26 +2361,18 @@ fn desktop_intervention_source_event_id(
             ));
         }
         InterventionRequestIdentity::Permission { request_id } => {
-            let attempt_dir = intervention_timeline_path(app, locator)
-                .parent()?
-                .to_owned();
             let pending: gold_band::acp::permission::PendingPermissionState = read_json(
-                &gold_band::acp::permission::pending_permission_file(&attempt_dir, request_id),
+                &gold_band::acp::permission::pending_permission_file(attempt_dir, request_id),
             )
             .ok()?;
             let item_id = pending.timeline_identity?.item_id;
             format!("{PERMISSION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
         }
         InterventionRequestIdentity::Elicitation { elicitation_id } => {
-            let attempt_dir = intervention_timeline_path(app, locator)
-                .parent()?
-                .to_owned();
-            let pending: gold_band::acp::elicitation::PendingElicitationState =
-                read_json(&gold_band::acp::elicitation::pending_elicitation_file(
-                    &attempt_dir,
-                    elicitation_id,
-                ))
-                .ok()?;
+            let pending: gold_band::acp::elicitation::PendingElicitationState = read_json(
+                &gold_band::acp::elicitation::pending_elicitation_file(attempt_dir, elicitation_id),
+            )
+            .ok()?;
             let item_id = pending.timeline_identity?.item_id;
             format!("{ELICITATION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
         }
@@ -2383,25 +2388,53 @@ fn desktop_intervention_source_event_id(
     ))
 }
 
-fn project_desktop_intervention_resolution(
+struct DesktopInterventionProjection {
+    source_event_id: String,
+    notification_kind: gold_band::im::ImNotificationKind,
+    locator: InterventionLocator,
+    outcome: gold_band::im::ImResolutionOutcome,
+}
+
+impl DesktopInterventionProjection {
+    fn for_result(self, result: &InterventionCommandResult) -> Option<Self> {
+        (result.status == gold_band::app::intervention::InterventionCommandStatus::Accepted)
+            .then_some(self)
+    }
+}
+
+/// Writes the desktop winner to the IM outbox on the blocking pool (SQLite).
+async fn project_desktop_intervention_resolution(
     state: &DesktopState,
-    projection: Option<(
-        String,
-        gold_band::im::ImNotificationKind,
-        InterventionLocator,
-    )>,
+    projection: Option<DesktopInterventionProjection>,
 ) {
-    let Some((source_event_id, notification_kind, locator)) = projection else {
+    let Some(projection) = projection else {
         return;
     };
     let Some(runtime) = state.im_runtime() else {
         return;
     };
-    match runtime.project_desktop_intervention_resolution(
-        &source_event_id,
-        notification_kind,
-        &locator,
-    ) {
+    let source_event_id = projection.source_event_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        runtime.project_intervention_resolution(&InterventionResolution {
+            source_event_id: &projection.source_event_id,
+            notification_kind: projection.notification_kind,
+            locator: &projection.locator,
+            resolved_by: gold_band::im::ImResolvedBy::Desktop,
+            source_delivery_id: None,
+            outcome: projection.outcome,
+        })
+    })
+    .await;
+    let Ok(result) = result else {
+        warn!(
+            canonical_event_id = source_event_id,
+            error_code = "IM_RUNTIME_UNAVAILABLE",
+            "desktop intervention resolution projection task failed"
+        );
+        return;
+    };
+    let source_event_id = source_event_id.as_str();
+    match result {
         Ok(result) => info!(
             canonical_event_id = source_event_id,
             inserted = result.inserted,
@@ -2417,14 +2450,31 @@ fn project_desktop_intervention_resolution(
     }
 }
 
-fn desktop_intervention_projection(
+/// Captures the IM source identity before the command consumes the pending
+/// request. Skipped entirely when IM is not running; the pending-file read
+/// runs on the blocking pool.
+async fn desktop_intervention_projection(
+    state: &DesktopState,
     app: &App,
     command: &InterventionCommand,
-) -> Option<(
-    String,
-    gold_band::im::ImNotificationKind,
-    InterventionLocator,
-)> {
+) -> Option<DesktopInterventionProjection> {
+    state.im_runtime()?;
+    let attempt_dir = intervention_timeline_path(app, &command.locator)
+        .parent()?
+        .to_owned();
+    let command = command.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_intervention_projection_at(&attempt_dir, &command)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn desktop_intervention_projection_at(
+    attempt_dir: &camino::Utf8Path,
+    command: &InterventionCommand,
+) -> Option<DesktopInterventionProjection> {
     let notification_kind = match &command.request {
         InterventionRequestIdentity::Permission { .. } => {
             gold_band::im::ImNotificationKind::Permission
@@ -2434,11 +2484,12 @@ fn desktop_intervention_projection(
         }
         InterventionRequestIdentity::ManualCheck => gold_band::im::ImNotificationKind::ManualCheck,
     };
-    Some((
-        desktop_intervention_source_event_id(app, command)?,
+    Some(DesktopInterventionProjection {
+        source_event_id: desktop_intervention_source_event_id_at(attempt_dir, command)?,
         notification_kind,
-        command.locator.clone(),
-    ))
+        locator: command.locator.clone(),
+        outcome: gold_band::im::ImResolutionOutcome::from(&command.action),
+    })
 }
 
 fn recovered_permission_result(
@@ -5167,9 +5218,13 @@ pub async fn submit_manual_check(
         action: InterventionAction::ManualCheck { outcome },
         expires_at_ms: snapshot.expires_at_ms,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
-    let (_, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
-    project_desktop_intervention_resolution(state.inner(), im_projection);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
+    let (result, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
+    project_desktop_intervention_resolution(
+        state.inner(),
+        im_projection.and_then(|p| p.for_result(&result)),
+    )
+    .await;
     Ok(run_summary_vm(run))
 }
 
@@ -8748,11 +8803,15 @@ pub async fn respond_acp_permission(
         action: InterventionAction::PermissionOption { option_id },
         expires_at_ms: snapshot.expires_at_ms,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
-    let (_, session) =
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
+    let (result, session) =
         execute_permission_intervention(app_handle, state.inner(), &app, project_id, command)
             .await?;
-    project_desktop_intervention_resolution(state.inner(), im_projection);
+    project_desktop_intervention_resolution(
+        state.inner(),
+        im_projection.and_then(|p| p.for_result(&result)),
+    )
+    .await;
     Ok(session)
 }
 
@@ -11464,8 +11523,8 @@ pub async fn respond_elicitation(
         action: InterventionAction::Elicitation { action, content },
         expires_at_ms: None,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
-    execute_elicitation_intervention(
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
+    let result = execute_elicitation_intervention(
         app_handle.clone(),
         state.inner(),
         &app,
@@ -11474,7 +11533,11 @@ pub async fn respond_elicitation(
     )
     .await
     .map_err(intervention_command_error)?;
-    project_desktop_intervention_resolution(state.inner(), im_projection);
+    project_desktop_intervention_resolution(
+        state.inner(),
+        im_projection.and_then(|p| p.for_result(&result)),
+    )
+    .await;
 
     Ok(())
 }
@@ -11789,7 +11852,6 @@ pub fn read_skill(
 
 #[tauri::command]
 pub fn write_skill(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -11801,10 +11863,6 @@ pub fn write_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let refresh_workspace = workspace_path
-        .as_deref()
-        .map(Utf8PathBuf::from)
-        .unwrap_or_else(|| app.paths.repo_root.clone());
 
     app.skill_manager()
         .write_instance(
@@ -11818,14 +11876,11 @@ pub fn write_skill(
         )
         .map_err(command_error)?;
 
-    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
-
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
 #[tauri::command]
 pub fn delete_skill(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -11834,10 +11889,6 @@ pub fn delete_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let refresh_workspace = workspace_path
-        .as_deref()
-        .map(Utf8PathBuf::from)
-        .unwrap_or_else(|| app.paths.repo_root.clone());
 
     if let Some(ref dir_path) = directory_path {
         app.cleanup_skill_instance_links(
@@ -11851,7 +11902,6 @@ pub fn delete_skill(
         app.skill_manager()
             .delete_at_path(&dir)
             .map_err(command_error)?;
-        schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
         return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
     }
 
@@ -11871,7 +11921,6 @@ pub fn delete_skill(
             );
             std::fs::remove_dir_all(skill_dir.as_std_path())
                 .map_err(|e| command_error(anyhow::anyhow!(e)))?;
-            schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
             return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
         }
     }
@@ -11897,13 +11946,11 @@ pub fn delete_skill(
     );
     app.delete_skill(&name, skill_source)
         .map_err(command_error)?;
-    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
 #[tauri::command]
 pub fn update_skill_sync_targets(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -11913,10 +11960,6 @@ pub fn update_skill_sync_targets(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let refresh_workspace = workspace_path
-        .as_deref()
-        .map(Utf8PathBuf::from)
-        .unwrap_or_else(|| app.paths.repo_root.clone());
     app.reconcile_skill_instance_links(
         &name,
         &directory_path,
@@ -11925,15 +11968,7 @@ pub fn update_skill_sync_targets(
         Some(sync_targets.as_slice()),
     )
     .map_err(command_error)?;
-    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
-}
-
-fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8PathBuf) {
-    std::thread::spawn(move || {
-        let state = app_handle.state::<DesktopState>();
-        let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
-    });
 }
 
 /// 查询指定 SKILL 在各 agent 目录中的同步状态（软链即状态）
@@ -16044,6 +16079,37 @@ mod tests {
             result.status,
             gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied
         );
+    }
+
+    #[test]
+    fn desktop_resolution_is_only_published_for_the_accepted_winner() {
+        use gold_band::app::intervention::InterventionCommandStatus;
+        for status in [
+            InterventionCommandStatus::Accepted,
+            InterventionCommandStatus::AlreadyApplied,
+        ] {
+            let projection = DesktopInterventionProjection {
+                source_event_id: "event-1".into(),
+                notification_kind: gold_band::im::ImNotificationKind::Elicitation,
+                locator: InterventionLocator {
+                    project_id: "p".into(),
+                    task_id: "t".into(),
+                    run_id: "r".into(),
+                    round_id: "round".into(),
+                    node_id: "n".into(),
+                    attempt_id: "a".into(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                },
+                outcome: gold_band::im::ImResolutionOutcome::ElicitationDeclined,
+            };
+            let accepted = status == InterventionCommandStatus::Accepted;
+            let result = InterventionCommandResult {
+                status,
+                canonical_state: "resolved".into(),
+            };
+            assert_eq!(projection.for_result(&result).is_some(), accepted);
+        }
     }
 
     #[test]

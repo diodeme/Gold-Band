@@ -427,8 +427,10 @@ pub struct WorkerInvocation {
     pub stream_mode: StreamMode,
     #[serde(default)]
     pub log_prompts: bool,
-    #[serde(default)]
-    pub log_provider_command: bool,
+    /// Set only for the invocation that automatically retries a failed prompt
+    /// attempt. Admission reopens that turn only for this exact durable owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_retry_of: Option<crate::acp::events::AcpFailedPromptAttempt>,
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
@@ -1737,6 +1739,7 @@ impl AcpProvider {
         let lifecycle_owner = match crate::acp::events::admit_session_turn_for_execution(
             &lifecycle_path,
             &submission,
+            req.automatic_retry_of.as_ref(),
         )? {
             crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
             crate::acp::events::AcpTurnExecutionClaim::AlreadySettled(header)
@@ -1769,6 +1772,7 @@ impl AcpProvider {
             req.cold_attachments.len(),
             req.log_prompts,
         );
+        let attempt = crate::acp::events::AcpFailedPromptAttempt::of_owner(&lifecycle_owner);
         let run = client::run_prompt(
             &self.provider_id,
             &self.adapter_config,
@@ -1811,7 +1815,11 @@ impl AcpProvider {
                 lifecycle_file: Some(lifecycle_path),
                 turn_id: Some(lifecycle_owner.turn_id),
             }),
-        )?;
+        )
+        // The scheduler cannot see the provider-generated operation id. It
+        // hands this identity back on an automatic retry so admission can CAS
+        // against the durable owner of the failed attempt.
+        .map_err(|error| error.context(attempt))?;
         let mut terminal = classify_acp_prompt_run(&run);
         let artifact_result =
             evaluate_runtime_control_output_for_run(&req, terminal.status, &run.output);
@@ -2139,7 +2147,21 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
+/// Classifies a prompt run that returned. A returned run means the agent
+/// received the prompt (unaccepted interruptions carry no runtime error), so
+/// replaying it could duplicate partial side effects: every failure here is
+/// settled for explicit user recovery, matching the lifecycle settlement of
+/// dispatched failures in `acp::events`.
 fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
+    let mut outcome = classify_acp_prompt_stop(run);
+    if let Some(runtime_error) = outcome.runtime_error.as_mut() {
+        runtime_error.recovery = RecoveryMode::Manual;
+        runtime_error.retry_policy = None;
+    }
+    outcome
+}
+
+fn classify_acp_prompt_stop(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
         let raw = Some(serde_json::json!({
             "adapterId": run.adapter_id,
@@ -2147,16 +2169,11 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             "stopReason": run.stop_reason,
             "terminalFailure": failure,
         }));
-        let mut runtime_error = normalize_provider_runtime_failure(
+        let runtime_error = normalize_provider_runtime_failure(
             run.stop_reason.as_deref(),
             failure.diagnostic(),
             raw,
         );
-        // A structured terminal failure proves that the current prompt has
-        // ended abnormally. Replaying a business prompt could duplicate
-        // partial side effects, so recovery is always an explicit user action.
-        runtime_error.recovery = RecoveryMode::Manual;
-        runtime_error.retry_policy = None;
         return ProviderTerminalOutcome {
             status: ProviderRunStatus::Failure,
             runtime_error: Some(runtime_error),
@@ -3502,7 +3519,7 @@ mod tests {
             resume_prompt_visibility: PromptVisibility::Visible,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
-            log_provider_command: false,
+            automatic_retry_of: None,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
@@ -3516,6 +3533,85 @@ mod tests {
             scheduled_context: None,
             workspace_file_roots: Vec::new(),
         }
+    }
+
+    /// Marks the persisted failure auto-recoverable. The fixture adapter
+    /// fails with a JSON-RPC error, which is manual by classification.
+    fn classify_persisted_failure_as_auto(snapshot: &Utf8Path) {
+        let mut value = read_json::<serde_json::Value>(snapshot).unwrap();
+        let mut error: RuntimeErrorInfo =
+            serde_json::from_value(value["turnError"].clone()).unwrap();
+        error.recovery = RecoveryMode::Auto;
+        value["turnError"] = serde_json::to_value(error).unwrap();
+        write_json(snapshot, &value).unwrap();
+    }
+
+    #[test]
+    fn provider_passes_the_named_failed_attempt_to_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt_dir = cwd.join("attempt");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt_dir).unwrap();
+        let snapshot = attempt_dir.join("acp.snapshot.json");
+        let adapter = AcpAdapterConfig {
+            command: std::env::current_exe()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            args: [
+                "--ignored",
+                "--exact",
+                "acp::client::tests::doctor_adapter_fixture",
+                "--nocapture",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            display_name: "Startup failure fixture".into(),
+            env: [(
+                "GOLD_BAND_DOCTOR_FIXTURE".into(),
+                "session-new-timeout-failure".into(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let provider = AcpProvider::new(
+            "provider-retry-fixture",
+            adapter,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+        );
+        let mut req = test_worker_invocation(attempt_dir.clone());
+        req.adapter_workspace_dir = cwd.clone();
+        req.workspace_dir = cwd.clone();
+        req.resume_prompt_id = Some("turn-provider-retry".to_string());
+
+        let first = provider.run_worker(req.clone()).unwrap_err();
+        let failed = crate::acp::events::AcpFailedPromptAttempt::from_error(&first)
+            .unwrap_or_else(|| panic!("provider error must name its failed attempt: {first:#}"));
+        assert_eq!(failed.turn_id, "turn-provider-retry");
+        classify_persisted_failure_as_auto(&snapshot);
+
+        let unnamed = provider.run_worker(req.clone()).unwrap_err();
+        assert_eq!(unnamed.to_string(), "acp.prompt-execution-already-settled");
+
+        req.automatic_retry_of = Some(failed.clone());
+        let retried = provider.run_worker(req.clone()).unwrap_err();
+        let replacement = crate::acp::events::AcpFailedPromptAttempt::from_error(&retried)
+            .unwrap_or_else(|| panic!("the named retry must execute again: {retried:#}"));
+        assert_eq!(replacement.turn_id, failed.turn_id);
+        assert_ne!(replacement.operation_id, failed.operation_id);
+
+        classify_persisted_failure_as_auto(&snapshot);
+        let stale = provider.run_worker(req).unwrap_err();
+        assert_eq!(stale.to_string(), "acp.prompt-execution-already-settled");
+
+        crate::acp::connection::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, std::time::Duration::from_secs(2))
+            .unwrap();
     }
 
     fn scheduled_context(
@@ -4364,14 +4460,17 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         // Matches a real direct-agent attempt under the default data directory.
         let attempt_dir = attachment_test_attempt_dir_with_length(&root, 160);
-        let long_name = format!("{}.png", "需求截圖".repeat(30));
-        for (index, name) in [
-            "24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg",
-            long_name.as_str(),
+        // Keep the source filename valid on byte-limited filesystems (e.g. Linux).
+        // The deep destination must still force the Chinese filename to shorten.
+        let long_name = format!("{}.png", "需求截圖".repeat(20));
+        for (index, (name, expects_shortening)) in [
+            ("24a98f77-7a4d-48d3-91f9-b865cdc6f9d0.jpg", false),
+            (long_name.as_str(), true),
         ]
         .into_iter()
         .enumerate()
         {
+            assert!(name.len() <= USER_INPUT_ATTACHMENT_NAME_MAX_UNITS);
             let source = root.join(index.to_string()).join(name);
             std::fs::create_dir_all(source.parent().unwrap()).unwrap();
             let bytes = test_png(2 + index as u32, 2);
@@ -4384,6 +4483,13 @@ mod tests {
             .unwrap()
             .remove(0);
             let destination = attempt_dir.join(&resolved.meta.path);
+            let unshortened_destination = destination.parent().unwrap().join(name);
+            assert_eq!(
+                unshortened_destination.as_str().encode_utf16().count()
+                    > USER_INPUT_ATTACHMENT_PATH_MAX_UNITS,
+                expects_shortening
+            );
+            assert_eq!(destination.file_name() != Some(name), expects_shortening);
             assert!(
                 destination.as_str().encode_utf16().count() <= USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
             );
@@ -4794,6 +4900,19 @@ mod tests {
     }
 
     #[test]
+    fn dispatched_prompt_error_stop_reason_is_never_auto_retried() {
+        let mut run = acp_prompt_run(Some("error"), None);
+        run.output.visible_text = "503 upstream overloaded".to_string();
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        let error = outcome.runtime_error.expect("error stop reason must fail");
+        assert_eq!(error.code_str(), "provider.server-unavailable");
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
+    }
+
+    #[test]
     fn end_turn_without_fatal_signal_is_success() {
         let outcome = classify_acp_prompt_run(&acp_prompt_run(Some("end_turn"), None));
 
@@ -5135,12 +5254,13 @@ mod tests {
             attachment_paths: Vec::new(),
             admitted_at: "1Z".to_string(),
         };
-        let owner = match crate::acp::events::admit_session_turn_for_execution(&path, &submission)
-            .unwrap()
-        {
-            crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
-            other => panic!("expected lifecycle claim, got {other:?}"),
-        };
+        let owner =
+            match crate::acp::events::admit_session_turn_for_execution(&path, &submission, None)
+                .unwrap()
+            {
+                crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
+                other => panic!("expected lifecycle claim, got {other:?}"),
+            };
 
         drop(crate::acp::events::AcpLifecycleTerminalGuard::new(
             path.clone(),
@@ -5616,7 +5736,7 @@ mod tests {
             resume_prompt_visibility: PromptVisibility::Visible,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
-            log_provider_command: false,
+            automatic_retry_of: None,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),

@@ -2,16 +2,20 @@
 
 ## 1. 文档状态
 
-- 状态：已批准，实施中
-- 首期仅支持企业微信；微信延期，等待稳定主动推送真实 PoC
-- 2026-09-03 范围收缩：删除第二平台 connector、SDK、通道枚举、设置接口和 UI，不保留隐藏入口或兼容消费路径
+- 状态：已实施（功能开发完成；真实平台剩余验证项独立跟踪，不等同于发布验收全部关闭）
+- 当前正式接入企业微信与飞书；2026-10-15 用户确认 P2 验收通过，P3 三端终态互通与 P4 设置页/七语言已实现。微信延期，等待稳定主动推送真实 PoC。历史验证证据见[飞书技术方案 §15](../../开发计划/IM接入/飞书远程干预技术方案.md#15-测试矩阵)，当前验收状态统一见[§17.1](../../开发计划/IM接入/飞书远程干预技术方案.md#171-当前验收状态)。
+- 2026-10-15 验收修正（用户确认）：企业微信多题单选最多 3 题，四题及以上在投影前整体跳过，不能只发详情文本；飞书保留原卡片组件、已选答案和输入内容，并禁用控件。其后用户已确认 P2 验收；技术方案继续记录 P1 未测项与平台边界，不据自动化测试宣称整体验收完成。
+- 历史（已由当前双渠道范围替代）：2026-09-03 范围收缩：删除第二平台 connector、SDK、通道枚举、设置接口和 UI，不保留隐藏入口或兼容消费路径
 - 2026-09-04 可靠性闭环：补齐发送租约恢复、保留清理调度、generation-owned connector sender、删除清理 journal、局部重配置失败隔离、前端 occurrence identity 与投影队列背压契约
 - 运行形态：Gold Band 桌面客户端进程内直连，不部署 Gold Band 云端 IM 网关
 - 关联开发计划：[客户端直连 IM 远程干预实施计划](../../开发计划/IM接入/客户端直连IM远程干预实施计划.md)
+- 文档职责：本文维护当前产品行为、能力边界与业务不变量；实施计划维护模块、接口与迁移；飞书技术方案保留选型、PoC、实施历史与验收证据。各文档标明日期的历史记录不作为当前契约。
+- 2026-10-16 首次文档核对修正旧表单类型、selector 与空多选语义；随后用户确认落实协议封装与卡片类型化，两项已按原设计目的修正代码，当前契约见 §16、验收见[飞书技术方案 §17.3](../../开发计划/IM接入/飞书远程干预技术方案.md#173-设计与实现偏差收口)。真实平台待验收项仍独立跟踪。
+- 2026-10-16 17:20 自动化修复版本：包含后续 IM 修复的当时主工作区完成验证，Rust 46 个目标、2871 通过、0 失败、18 ignored；前端 376 个文件、2861 通过，Node 脚本 157 通过，生产构建、现有 CI Clippy 门禁与格式检查通过。见[自动化回归修复记录](../../开发计划/IM接入/自动化回归修复记录-2026-10-16.md)；[首次快照失败记录](../../开发计划/IM接入/自动化回归记录-2026-10-16.md)保留为历史。后续重构的验证见[封装与类型化实施记录](../../开发计划/IM接入/飞书封装与类型化实施记录-2026-10-16.md)，此前全仓结果不覆盖新重构。用户确认的真实场景与安装包、平台边界分别按飞书技术方案 §17.1 跟踪，自动化通过不关闭发布验收。
 
 ## 2. 一句话定义
 
-Gold Band 在桌面客户端内连接用户自己的企业微信机器人，把已有工作流干预和用户启用的 Run、ACP turn 信息通知投递到安装级全局一对一私聊；可操作请求经身份、状态与幂等校验后提交回现有 Runtime，信息通知始终只读。
+Gold Band 在桌面客户端内连接用户自己的企业微信或飞书机器人，把已有工作流干预和用户启用的 Run、ACP turn 信息通知投递到安装级全局一对一私聊；可操作请求经身份、状态与幂等校验后提交回现有 Runtime，信息通知始终只读。
 
 ## 3. 问题与设计结论
 
@@ -23,7 +27,7 @@ Gold Band 在桌面客户端内连接用户自己的企业微信机器人，把�
 2. IM 只是输入输出通道，不保存或推导第二套审批状态。
 3. Tauri UI 与 IM 共用同一个 `InterventionCommandService`，不得互相调用外层 command。
 4. 连接器只处理平台协议，平台 SDK DTO 不进入领域层。
-5. 首期只使用平台交互卡片的明确控件提交动作（button 或 vote），不做自然语言 ChatOps。
+5. 首期只使用平台交互卡片的明确控件提交动作（按钮、选择器或表单），不做自然语言 ChatOps。
 
 ACP 权限请求的 canonical request identity 是接收 JSON-RPC 请求时固化到 pending state 和 typed `raw.requestId` 的原始 ID；该 ID 只用于 provider response 关联与 pending/response 文件查找。权限发生的 timeline/lifecycle identity 由 Gold Band 从 `requestId + provider toolCallId` 生成有界 `permission-<hash>`，provider 缺失 toolCallId 时使用已持久化的 Gold Band sequence，并写入 timeline raw 的 `_goldBandPermissionItemId`；同一 replay 保持相同，provider 重启后复用 requestId 的不同工具调用保持不同。前端 timeline reducer 必须以 `attempt/session scope + event kind + AcpUiEvent.id` 作为 occurrence key；同一 occurrence 的 pending/terminal snapshot 合并，复用同一 `raw.requestId` 的不同 occurrence 不得合并。用户追问继续使用 Gold Band 创建并同时写入 pending state 与 `AcpUiEvent.id` 的 `elicitationId`。lifecycle bridge 只读取这些结构化 identity，不做前缀裁剪、消息解析或 event ID 反查。
 
@@ -52,7 +56,7 @@ ImConnectionManager ------ platform connector ------ IM platform
 
 ### 4.1 首期范围
 
-- 在设置页配置、授权、启停和查看企业微信连接状态。
+- 在设置页配置、授权、启停和查看企业微信、飞书连接状态。
 - 工作流进入权限审批、用户追问、人工检查等待态时发送通知。
 - 在 IM 中同意或拒绝权限请求。
 - 在 IM 中回答用户追问。
@@ -60,7 +64,8 @@ ImConnectionManager ------ platform connector ------ IM platform
 - 展示客户端在线、授权待处理、退避重连、断开等连接状态。
 - 支持离线期间的有界可靠投递、去重、过期与审计。
 - 按逐类开关投递 Run 和 ACP turn 信息通知。
-- 企业微信使用交互卡片；绑定目标只允许授权用户与机器人的一对一私聊。
+- 企业微信与飞书均使用交互卡片；每个渠道只绑定一个机器人、一个授权用户和一个一对一私聊 destination。一个机器人只连接一台设备。
+- 任一端处理成功后，另外两端按 §6.4 收敛终态；只有 Accepted 的赢家写处理来源与结果。
 
 ### 4.2 非目标
 
@@ -74,19 +79,23 @@ ImConnectionManager ------ platform connector ------ IM platform
 
 ## 5. 平台能力与产品降级
 
-| 能力 | 企业微信 | 微信 |
+| 能力 | 企业微信 | 飞书 |
 |---|---|---|
-| 官方客户端直连方式 | 智能机器人 WebSocket | iLink HTTP 长轮询 |
-| 主动发送 | 支持，但会话需先与机器人交互 | 稳定边界未经真实 PoC 证明 |
-| 交互卡片 button / vote | 支持 | 不支持 |
-| 更新原消息/卡片 | 支持 | 未验收 |
-| 文本回答 | 支持 | 协议存在但不进入首期 |
-| 单连接约束 | 单机器人只允许一个有效连接 | 未进入首期 |
-| 首期定位 | 正式平台 | 延期 |
+| 官方直连 | 智能机器人 WebSocket | pbbp2 WebSocket 长连接 |
+| 接入 | 扫码取得机器人凭据 | 扫码创建应用或重新授权已有应用 |
+| 绑定 | 首次授权私聊交互 | 仅扫码人发来的首次私聊消息 |
+| Permission | 最多 20 项 | 最多 20 项，按钮或单选下拉 |
+| ManualCheck | 成功/失败投票 | 成功/失败按钮 |
+| 单选 | 单题 20 项；2–3 题每题 10 项 | 最多 5 题，每题 20 项 |
+| 多选 | 单题，最多 20 项，不支持带“其他” | 最多 4 项，可与其他题型混排 |
+| 文本 / “其他” | 不支持文本；单选只发固定选项 | 单行/多行 500 字符；“其他”100 字符 |
+| 拒绝回答 | 不发布该动作 | 支持 |
+| 终态更新能力 | CallbackOnly：仅点击后 5 秒回调内更新；跨端另发文本 | Anytime：2.5 秒内回调，另由 outbox PATCH 原卡 |
+| 群聊 | 不支持 | 不支持 |
 
-平台能力必须由连接器在运行时返回 `ImChannelCapabilities`。上层按能力投影交互，不允许按平台名称散落条件判断。
+飞书数值是当前已验证的保守能力，不代表平台理论极限。超出能力的表单整单不投递到该渠道，其他渠道和桌面端照常处理，不拆分请求或静默丢题。微信不提供 connector 或设置入口。
 
-企业微信必须具备交互卡片能力。能力不足时该目标不生成可操作 delivery，不通过短码、自然语言或 pull-only 模式降级。
+上层只按 `ImChannelCapabilities.interaction` 和 `message_update: None | CallbackOnly | Anytime` 投影，不按平台名分支。领域 `RemoteElicitationForm` 复用 `ElicitationQuestion`，只限制渠道无关的 schema 安全约束；`fit_form` 决定每个目标实际发布的题目与动作。入站仅接受该 delivery 发布的动作。无歧义 Permission 超出上限时只保留安全拒绝类动作；无法安全处理的请求交回桌面端。
 
 ## 6. 用户流程
 
@@ -98,18 +107,22 @@ ImConnectionManager ------ platform connector ------ IM platform
 4. 用户先在目标会话中与机器人交互，Gold Band 记录允许主动投递的会话绑定；完成前设置页持续显示“等待绑定”并提示用户发送一条私聊消息，不把 WebSocket 在线误报为可投递。企业微信单聊事件没有 `chatid` 时，以 `from.userid` 作为 conversation/destination identity；不得因此退回群聊绑定。
 5. Runtime 发布待干预事件，企微 Permission、ManualCheck 与支持的 Elicitation 先发送一条 markdown 详情消息，再发送交互卡。详情固定展示工作空间、任务、节点和请求内容；卡片只承载请求摘要、类型专属字段、到期时间和允许动作，不重复展示这三个上下文字段。两条标题携带同一 4 位 `display_ref`，详情 ACK 前不得发送卡片，卡片 subtitle 明确指向上一条详情。
 6. 用户提交卡片动作后，连接器从官方回调结构中取得 `body.msgid`、`headers.req_id`、typed `event.template_card_event.event_key/task_id`；Permission vote 卡还必须取得唯一 `selected_items.selected_item[].option_ids.option_id[]`。Runtime 提交在 blocking pool 内完成，并须在平台 5 秒窗口内返回卡片更新。
-7. 领域提交成功后使用同一回调的 `req_id` 与原卡 delivery identity 更新卡片为最终结果；显式返回的 `event.template_card_event.task_id` 必须等于该 delivery identity。button 回调省略可选 task 时可从 `event_key` 恢复原卡 identity；vote 回调的 task 为必填契约。若请求已被桌面端或另一消息处理，则显示“已处理”。发送 ACK 是否返回平台消息 ID 不影响这条回调更新路径。
+7. 领域提交成功后使用同一回调的 `req_id` 与原卡 `task_id` 更新卡片为最终结果；显式返回的 `event.template_card_event.task_id` 必须等于 `event_key` 携带的完整卡片标识。button 回调省略可选 task 时可从 `event_key` 恢复原卡标识；vote 回调的 task 为必填契约。若请求已被桌面端或另一消息处理，则显示“已处理”。发送 ACK 是否返回平台消息 ID 不影响这条回调更新路径。
 8. IM outbox 固化的 `expected_state` 只包含决策语义：完整 locator、canonical request、原始 params/request schema、创建时间与完整允许动作。`timelineIdentity` 属于 Runtime 展示投影元数据，可在 outbox snapshot 之后绑定，不参与 CAS 指纹；ManualCheck 详情中的模型输出同样是投影快照，不参与 CAS 指纹。企微三类干预终态都必须保持原 `card_type`、原 `task_id`、原 `submit_button.key`，显式禁用协议支持禁用的 `checkbox` / `select_list` 并标记最终选择；官方 `submit_button` 类型没有 `disable` 字段，不得发送无效字段，也不得把可交互卡降级为只有标题的 `text_notice`。平台仍允许再次提交时，由入站 canonical event 幂等保证不重复执行 Runtime。
 
 企业微信扫码协议复用官方 CLI 的 `/ai/qc/generate` 与 `/ai/qc/query_result`，3 秒轮询、5 分钟到期；安装级 `source` 位于 `configs/app-config.toml`，当前明确为 `maling`。跨企业授权能力仍须使用真实企业账号完成验收，不得仅根据可生成二维码宣称验收通过。企业微信心跳默认 30 秒；卡片回调的协议响应目标小于 5 秒，领域处理不得阻塞回调确认。同一机器人被其他客户端的新长连接替换时进入稳定连接冲突错误，不持续抢占重连。
 
 主动推送严格对齐官方 `@wecom/aibot-node-sdk` 的 `aibot_send_msg` 帧：body 只包含 `chatid + typed message payload`，不得附加未定义的 `chat_type`。WebSocket 帧分发以是否携带 `cmd` 为第一契约：带 `cmd` 的帧是事件或业务请求，即使 `headers.req_id` 与 pending request 相同也不得消费回执；只有无 `cmd` 的帧才允许按 `req_id` 匹配 ACK。投递成功以存在且为数字的回执顶层 `errcode == 0` 为准，缺失或错误层级不得默认成功；官方回执未承诺 `msgid`，因此 ACK 可将 delivery 标记为 sent，但只有平台真实返回消息 ID 时才写 `im_delivery_bindings`，禁止构造伪平台消息 ID。未知平台错误只在脱敏诊断中保留数字码，对客和 SQLite outbox 仍只保存稳定错误码。
 
-企业微信模板卡片不得把 Markdown 文档塞入 `main_title.title`。标题、描述、横向字段和控件文案分别按官方 26/30、5/26、10/11 字建议上限有界渲染；官方协议最多支持 6 个横向字段。Permission 与 ManualCheck 使用 `vote_interaction mode=0`；Permission 不超过 20 个选项，ManualCheck 固定为安全失败优先的两个结果。支持的 Elicitation 单题单选使用 `vote_interaction mode=0`，单题多选使用 `vote_interaction mode=1`，2-3 个单选题使用 `multiple_interaction`。`task_id` 使用 delivery 已有的 deterministic identity，满足同机器人唯一、允许字符和 128 字节上限，不新增卡片业务 identity；button `key` 只允许 `delivery_id:action_index`，vote/multiple 的 `option.id` 只允许本地短 index，submit key 只允许 `<delivery_id>:submit`，均不得携带 action JSON、签名 token 或其它安全状态。`sub_title_text` 的 112 字是官方建议而非协议硬上限；追问详情必须完整展示 typed 问题和固定选项，markdown 与卡片 payload 超 32 KiB 时只允许在构造层截断展示字符串，禁止截断序列化 JSON 或任何 identity 字段。
+企业微信模板卡片不得把 Markdown 文档塞入 `main_title.title`。标题、描述、横向字段和控件文案分别按官方 26/30、5/26、10/11 字建议上限有界渲染；官方协议最多支持 6 个横向字段。Permission 与 ManualCheck 使用 `vote_interaction mode=0`；Permission 不超过 20 个选项，ManualCheck 固定为安全失败优先的两个结果。支持的 Elicitation 单题单选使用 `vote_interaction mode=0`，单题多选使用 `vote_interaction mode=1`，2-3 个单选题使用 `multiple_interaction`。`task_id` 使用 `<delivery_id>@<request_nonce>`：复用每次发送的请求 ID 派生 32 hex nonce，生产 ID 共 97 字节，满足同机器人每次创建唯一、允许字符和 128 字节上限；不新增卡片业务 identity 或持久字段。button `key` 只允许 `<task_id>:action_index`，vote/multiple 的 `option.id` 只允许本地短 index，submit key 只允许 `<task_id>:submit`，均不得携带 action JSON、签名 token 或其它安全状态。`sub_title_text` 的 112 字是官方建议而非协议硬上限；追问详情必须完整展示 typed 问题和固定选项，markdown 与卡片 payload 超 32 KiB 时只允许在构造层截断展示字符串，禁止截断序列化 JSON 或任何 identity 字段。
 
-为消除 Permission 卡按钮横排截断，生产 presentation adapter 仅把 Permission 从 `button_interaction` 改为官方 `vote_interaction`：选项来自当前 pending permission 投影后的 allowed actions，`checkbox.mode=0`，`option.id` 只使用本地 action index 短引用，提交按钮使用 `<delivery_id>:submit`，`task_id` 继续复用 deterministic delivery identity。中文卡壳固定为 `权限审批（id=xxxx）/ Agent 请求执行命令`；`xxxx` 是从 durable outbox rowid 派生并补零到 4 位的 `display_ref`，取值为 `rowid % 10000`。它只用于用户把 markdown 详情与 vote 卡配对，不新增卡片业务 identity，不写入 expected state，也不得被回调解析或反查。同一 delivery 的发送顺序固定为“markdown 详情帧 -> 等待 ACK -> vote 卡帧 -> 等待卡片 ACK”；重试与重启后同一 rowid 保持同一编号，最近 10,000 次 outbox 插入内不会重复；只有卡片 ACK 成功才把 delivery 标记为 sent，详情帧没有独立 outbox 行或业务 identity。硬性协议闸门已经用真实企微账号完成：手机端选择 `option.id="0"`、PC 端选择 `option.id="1"`，真实回调均在嵌套 `template_card_event` 中返回 `selected_items.selected_item[].option_ids.option_id[]`，并能唯一还原出站选项；更新卡省略 `submit_button` 会触发平台码 42049，因此终态必须保留原 submit key。回调若只返回 submit key、缺少选择、多选、question key 不匹配或 task 不一致，均不得用默认选项、点击顺序或展示文案猜测授权语义。
+为消除 Permission 卡按钮横排截断，生产 presentation adapter 仅把 Permission 从 `button_interaction` 改为官方 `vote_interaction`：选项来自当前 pending permission 投影后的 allowed actions，`checkbox.mode=0`，`option.id` 只使用本地 action index 短引用，提交按钮使用 `<task_id>:submit`，`task_id` 按上述请求 nonce 规则生成。中文卡壳固定为 `权限审批（id=xxxx）/ Agent 请求执行命令`；`xxxx` 是从 durable outbox rowid 派生并补零到 4 位的 `display_ref`，取值为 `rowid % 10000`。它只用于用户把 markdown 详情与 vote 卡配对，不新增卡片业务 identity，不写入 expected state，也不得被回调解析或反查。同一 delivery 的发送顺序固定为“markdown 详情帧 -> 等待 ACK -> vote 卡帧 -> 等待卡片 ACK”；重试与重启后同一 rowid 保持同一编号，最近 10,000 次 outbox 插入内不会重复；只有卡片 ACK 成功才把 delivery 标记为 sent，详情帧没有独立 outbox 行或业务 identity。旧 wire 标识下的选择回传协议闸门曾用真实企微账号完成：手机端选择 `option.id="0"`、PC 端选择 `option.id="1"`，真实回调均在嵌套 `template_card_event` 中返回 `selected_items.selected_item[].option_ids.option_id[]`，并能唯一还原出站选项；更新卡省略 `submit_button` 会触发平台码 42049，因此终态必须保留原 submit key。2026-10-16 新 wire 标识的真实点击验收状态见 §15。回调若只返回 submit key、缺少选择、多选、question key 不匹配或 task 不一致，均不得用默认选项、点击顺序或展示文案猜测授权语义。
 
-Elicitation 使用 channel-agnostic 的 `RemoteElicitationForm` 契约，而不是把平台 DTO 提升为领域状态：`SingleScalarChoice` 表达一个 scalar 字段和固定选项；`MultiScalarChoice` 表达一个 array-of-scalar 字段、固定选项和是否允许显式空选择；`ScalarChoiceQuestions` 表达 2-3 个单选字段、selector key、field name、required 状态和固定选项。该契约挂在 typed allowed action 并参与 expected state；`timelineIdentity` 不参与指纹。企微只负责把该契约渲染为 vote/multiple 控件，并把回调转换成泛型 Form selection；selector key 固定 `q0/q1/q2`，option id 只使用本地短 index。回调必须校验 msgid、私聊 actor/conversation、delivery/task、submit key、question key、option id、required selector、重复选项和非法 index，再由 outbox 中的完整 typed scalar value 还原 content 并用原始 `requestedSchema` 编译校验。多选空数组只有在原始 schema 允许且回调显式返回空选择时可提交。`vote mode=1` 与 `multiple_interaction` 的真实回调形状尚未完成手机端/PC 端采样，接口 fixture 不是真实平台验收。
+Elicitation 使用 §7.2 的 `RemoteElicitationForm { questions, decline_allowed }`，每道 `RemoteQuestion` 复用领域 `ElicitationQuestion`，并携带约束与 `custom_answer_key`。领域模型不限制题数；每个渠道经 `fit_form` 得到实际发布的表单，并随 `ElicitationFixedForm { form }` 保存到该 delivery。企微把这份表单渲染为 vote/multiple 控件，回调转换成 `ImSubmittedAction::ElicitationForm { answers }`。selector key 按题目顺序生成 `q0`、`q1`……，可投递数量由渠道能力决定；option id 是选项序号的规范十进制写法。
+
+connector 与通用入站层共同校验 msgid、私聊 actor/conversation、delivery/task、submit key、question key、option id、required selector、重复选项和非法 index；领域函数 `remote_form_content` 按 outbox 表单中的 typed scalar value 构建 content，再由 canonical 提交校验原始 `requestedSchema`。空多选按未作答处理，content 省略该字段，不写入空数组；必答题因此被拒绝，非必答题仍须通过原始 schema 校验。缺失选择字段能否解码还受各渠道 wire 契约约束，不能把飞书的缺失字段规则推断成企微协议。`timelineIdentity` 仍不参与 expected state 指纹。
+
+企微表单的验收证据与仍未关闭的项目统一见[飞书技术方案 §17.1](../../开发计划/IM接入/飞书远程干预技术方案.md#171-当前验收状态)：2026-10-15 P2 确认覆盖三题正常投递、四题整单跳过等记录中的场景，不据此自动关闭更早的其他真实平台待测项。
 
 Elicitation markdown 详情除工作空间、任务、节点、当前 message 和题目选项外，还携带当前 root 分支最新可见 `textDelta` 的“前序模型输出”快照，用于解释“是否确认上述方案/分支”这类依赖前文的问题。读取必须复用 timeline index 并按 4096 字符有界，不读取完整历史、hidden thought、嵌套 Agent 分支或用户私密输入；缺失时不猜测。若前序输出、message 或 question description 规范化后相同，只渲染一次。
 
@@ -125,25 +138,61 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 权限选项以 ACP `PermissionOption.kind` 为 canonical 语义，提交仍返回原始 `optionId`：`allow_once/allow` 显示“仅允许一次”，`allow_always` 与 `allow_for_session` 显示“本次会话允许”，`reject_once/reject/cancel` 显示“拒绝”，`reject_always` 显示“始终拒绝”。Claude 退出计划模式的 `auto/acceptEdits/bypassPermissions/default/plan` 继续使用 qualifier 映射为“自动模式 / 自动编辑 / 跳过权限 / 手动确认 / 保持计划”。企微标准 Permission vote 按“本次会话允许、仅允许一次、拒绝”展示并默认选中第一项；展示顺序只作用于 presentation，option id 继续携带原 allowed action index。安全拒绝/保持计划仍作为超 20 项时的有界降级候选，不能因展示顺序调整而改变 canonical action 或授权结果。允许类重复且无法区分、未知 kind 或超过控件能力时，完整展示请求但只保留可确认的安全动作或引导桌面端处理。官方 option 无说明字段，不得把说明塞入 `text` 或用展示文案反查语义。
 
-三类干预的详情上下文必须统一投影为保留字段 `workspaceLabel`、`taskTitle`、`nodeLabel`，并只渲染在 Markdown 详情中，不进入交互卡片。工作空间优先使用当前 workspace 的 canonical display name，缺失时回退规范化目录名；任务优先使用事件标题或当前 Task 标题，缺失时回退 `task_id`；节点在工作流中必须是当前角色名称，在 Direct 中是 Agent 展示名，在 AUTO 中必须是当前动态角色 title。工作流节点不得用 Provider 展示名替代角色名称。
+三类干预的详情上下文必须统一投影为保留字段 `workspaceLabel`、`taskTitle`、`nodeLabel`，在企微中只渲染于独立 Markdown 详情，不进入企微交互卡片；飞书卡片内按 id、节点、任务、工作空间顺序展示。工作空间优先使用当前 workspace 的 canonical display name，缺失时回退规范化目录名；任务优先使用事件标题或当前 Task 标题，缺失时回退 `task_id`；节点在工作流中必须是当前角色名称，在 Direct 中是 Agent 展示名，在 AUTO 中必须是当前动态角色 title。工作流节点不得用 Provider 展示名替代角色名称。
 
-`askUserQuestion`/elicitation 的 message、问题标题、描述、单选/多选类型和 typed 选项只能从当前 `PendingElicitationState.request.requestedSchema` 结构化投影。详情消息先展示工作空间、任务、节点，再展示前序模型输出和问题内容；交互卡只展示问题控件，不重复上下文。远程范围仅企业微信：单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选字段可发送 IM；自由文本、复合值、混合多选、四题以上、超过控件容量、选项值超界或移除 custom companion 后无法通过原始 schema 校验的请求一律在入队前跳过，不产生 outbox 行、markdown、提示卡、死信或重试，桌面端原生处理不受影响。带 `_askUserQuestionCustomAnswer.isCustomAnswer` 的 companion field 不作为独立问题展示，也不进入 IM 表单；单题单选带 custom answer 时 IM 仍只提交固定 scalar，自定义答案在桌面端填写；2-3 个单选题无论是否存在 custom companion，分类与提交均只基于主问题。IM 卡不提供通用 Decline 按钮，Decline 仍只在桌面端处理。
+`askUserQuestion`/elicitation 的 message、问题标题、描述、单选/多选类型和 typed 选项只能从当前 `PendingElicitationState.request.requestedSchema` 结构化投影。详情消息先展示工作空间、任务、节点，再展示前序模型输出和问题内容；交互卡只展示问题控件，不重复上下文。企业微信的远程范围：单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选字段可发送 IM；自由文本、复合值、混合多选、四题及以上、超过控件容量、选项值超界或移除 custom companion 后无法通过原始 schema 校验的请求一律在入队前跳过，不产生 outbox 行、markdown、提示卡、死信或重试，桌面端原生处理不受影响。带 `_askUserQuestionCustomAnswer.isCustomAnswer` 的 companion field 不作为独立问题展示，也不进入 IM 表单；单题单选带 custom answer 时 IM 仍只提交固定 scalar，自定义答案在桌面端填写；2-3 个单选题无论是否存在 custom companion，分类与提交均只基于主问题。企微卡不提供通用 Decline 按钮；飞书与桌面端可拒绝回答。
 
-模板卡片事件只接受官方 `cmd=aibot_event_callback` 且 `body.event.eventtype=template_card_event` 的一对一私聊结构。真实运行时把业务 payload 放在 `body.event.template_card_event` 中，`event_key`、`task_id` 与 vote/multiple 选择必须从该嵌套对象读取；官方 SDK 1.0.7 类型中的平铺字段形状不代表平台实际回调。官方回调中的 `chattype` 可选：显式 `single/private` 为私聊；缺失 `chattype` 且缺失群聊 `chatid` 时按私聊候选处理，以 `from.userid` 作为 conversation/destination identity；显式群聊或存在群聊 `chatid` 时拒绝。`body.msgid` 是平台单次回调幂等 identity；同一 canonical intervention event 后续点击可能携带新的 msgid，Gold Band 必须用入站审计表的 `channel + canonical_event_id` 索引将其收敛为 `ALREADY_APPLIED`。opaque `headers.req_id` 只在内存中随 `ImActionResponseContext` 传递。button 先解析短 `event_key` 取得 delivery identity 与 action index，显式 task 不一致即拒绝，缺失时用该 delivery identity 更新原卡；vote/multiple 先验证 submit key 与必填 task 一致，再解析 question key 与 option id。Permission 的 question key 为 `permission_choice` 且只能返回唯一 option；Elicitation 转换为泛型 Form selection 后由 outbox 的 `RemoteElicitationForm` 还原原始 scalar value。不得用 `req_id` 替代 callback identity，不得生成新 `req_id`，也不得因发送 ACK 没有 `msgid` 而跳过点击响应。解析失败只记录稳定 `parse_reason` 与字段存在性；若私聊回调仍可定位原卡，先尝试把原卡更新为失败态。嵌套 `eventtype=disconnected_event` 进入稳定 `IM_CONNECTION_CONFLICT`，不持续重连争抢。
+模板卡片事件只接受官方 `cmd=aibot_event_callback` 且 `body.event.eventtype=template_card_event` 的一对一私聊结构。真实运行时把业务 payload 放在 `body.event.template_card_event` 中，`event_key`、`task_id` 与 vote/multiple 选择必须从该嵌套对象读取；官方 SDK 1.0.7 类型中的平铺字段形状不代表平台实际回调。官方回调中的 `chattype` 可选：显式 `single/private` 为私聊；缺失 `chattype` 且缺失群聊 `chatid` 时按私聊候选处理，以 `from.userid` 作为 conversation/destination identity；显式群聊或存在群聊 `chatid` 时拒绝。`body.msgid` 是平台单次回调幂等 identity；同一 canonical intervention event 后续点击可能携带新的 msgid，Gold Band 必须用入站审计表的 `channel + canonical_event_id` 索引将其收敛为 `ALREADY_APPLIED`。opaque `headers.req_id` 只在内存中随 `ImActionResponseContext` 传递。button 先解析短 `event_key` 取得完整 wire task、delivery 前缀与 action index，显式 task 不一致即拒绝，缺失时用该完整 wire task 更新原卡；vote/multiple 先验证 submit key 与必填 task 一致，再解析 question key 与 option id。Permission 的 question key 为 `permission_choice` 且只能返回唯一 option；Elicitation 转换为泛型 Form selection 后由 outbox 的 `RemoteElicitationForm` 还原原始 scalar value。不得用 `req_id` 替代 callback identity，不得生成新 `req_id`，也不得因发送 ACK 没有 `msgid` 而跳过点击响应。解析失败只记录稳定 `parse_reason` 与字段存在性；若私聊回调仍可定位原卡，先尝试把原卡更新为失败态。嵌套 `eventtype=disconnected_event` 进入稳定 `IM_CONNECTION_CONFLICT`，不持续重连争抢。
 
 历史 delivery 中的 destination 只表示发送时接收人，不是后续动作的持续授权事实。每次可操作回调在进入 `InterventionCommandService` 前，必须在 IM settings 写边界内重新读取当前 durable binding，并严格比较 channel、destination、conversation 与 authorized actor；当前 binding 缺失或任一字段变化时返回 `IM_BINDING_REVOKED`，不得 inspect、resume 或修改 Runtime canonical pending state。解绑持久化是授权撤销的线性化点：此前已通过 admission 的动作允许完成，此后进入 admission 的旧卡动作必须拒绝；settings 锁只覆盖读取与比较，不跨 Runtime 执行或网络响应持有。平台已展示的历史内容无法召回，撤销契约只保证旧卡不再执行。
 
 `InterventionCommandService` 的 expected state 校验保持 first-writer-wins，但指纹输入必须与数据所有权一致：pending permission/elicitation 文件中的 `timelineIdentity` 只是展示索引回写，不改变用户待决策的问题、选项、expiry 或 canonical request。指纹序列化显式排除该字段；修改 params/request schema 或允许动作仍必须产生 `INTERVENTION_REVISION_CONFLICT`。
 
-企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；AlreadyHandled/RevisionConflict 收敛为已处理，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
+企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；已结算请求的 AlreadyHandled/RevisionConflict 收敛为已处理，请求仍待处理的 RevisionConflict（卡片快照已过期）收敛为已过期，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
 
-桌面 Runtime 在 blocking 边界必须把 `process_inbound` 返回的 enriched response context 传回对应 connector；业务失败也要保留该 context 并回写 Handled/Expired/Failed 终态。仅当 blocking task 本身 join 失败时，才使用进入任务前克隆的原 channel context 作为 fallback，禁止用无关占位 context 覆盖或在发送更新前丢弃 `req_id/task_id/selected option`。
+桌面 Runtime 在 blocking 边界返回通用 `ProcessedInboundAction { delivery, handling, settled_resolution }`。不在通用层保留企微专用类型；平台回包上下文由 connector 持有和解释。每个 InboundAction 独立任务处理，runtime 长期持有同一个 `ImInboundActionService` 和 ActionLocks，重复同一事件只执行一次。
 
-桌面端完成 Permission、Elicitation 或 ManualCheck 后，也必须从同一 canonical settlement 触发 IM 终态投影。企业微信官方 `updateTemplateCard` 只能使用对应 `template_card_event` 的 callback `req_id`，且更新窗口为收到回调后的 5 秒；桌面操作不存在该上下文，禁止伪造 `req_id` 主动替换原卡。实现从提交前的 pending timeline identity 精确恢复原 intervention event id，使用 `idx_im_outbox_canonical_event` 定位既有 channel/destination/display_ref，并在单个 SQLite 事务中把仍为 pending 的原 delivery 标记 expired、插入 `<source_event_id>:desktop-resolved` 的 typed 非交互终态 delivery。若桌面操作先于异步原请求投影，先按当前 eligible target 写入同一 deterministic 终态 identity；原请求迟到入队时在同一 immediate transaction 内发现该终态并收敛为 Duplicate，不得重新发出可操作卡。原卡已 sending/sent 时不篡改历史，另发 `id=xxxx 已在桌面端处理` / `id=xxxx Handled on desktop` 确认；旧卡后续点击继续由 canonical inbound 幂等收敛。终态确认复用原 destination 和 4 位 `display_ref`；原请求尚未产生编号时使用终态 outbox 自身的稳定 4 位编号。确认不包含 action token、task/submit 控件，也不受已存在原 delivery 后的通知偏好变更影响；重复投影由 deterministic delivery identity 去重。
+桌面三类 command 在提交前捕获稳定源事件，提交后保留领域返回状态，只有 Accepted 才进入统一终态投影；AlreadyApplied 仍沿用 session 刷新，但不广播或改写处理来源。IM Accepted 同样通过该终态入口投影。通知矩阵与 tombstone 语义见 §6.4。
 
 ### 6.2 微信延期门槛
 
 微信不进入首期实现。只有使用真实账号和官方协议完成“客户端未先收到用户消息时仍能稳定主动推送”、休眠恢复、context token 生命周期和长期重连验收后，才可重新评审范围；不得交付需要用户先发送“待处理”的 pull-only 版本。
+
+### 6.3 飞书接入与卡片终态
+
+两渠道扫码会话均持续到配置提交完成，不能在平台授权成功时提前结束。凭据库写入期间仍可取消或替换会话；提交配置时以当前 session ID 为准，与取消/替换互斥。取消/替换先完成则拒绝旧提交并删除本次暂存凭据，保留已有配置、凭据和新会话；配置提交先完成则保留已提交结果，后续关闭不撤销配置。网络与凭据库操作不持有会话/设置锁。
+
+1. 在设置页点击扫码接入，先确认“发送消息、读取发给机器人的私聊消息、更新机器人卡片、读取你的姓名”四项权限，再发起扫码。取消或关闭会话使迟到结果失效。首次接入和已配置后的“更换飞书应用”都使用飞书原生选择页，可选择已有应用或新建应用。扫码 addons 在三项必需 IM 权限之外追加 `contact:contact.base:readonly`（通讯录 API 基础权限）与 `contact:user.base:readonly`（返回 `name` 的字段权限）；这两项不进入自检的必需权限，缺失不触发重新授权。
+2. 后端轮询授权，把 app_secret、扫码人 open_id、brand 写入 keyring；前端只收到 sessionId、qrUrl、expiresAtMs 和非敏感设置。新建应用的预填名称取自渠道产品名（`wb` 为 `MALING`，`default` 为 `Gold Band`）；选择或新建模式不发送 `createOnly`，重新授权当前应用才发送已有 app_id 作为 `clientID`。
+3. 授权后，扫码账号向机器人发送一条私聊消息完成绑定；持久 binding 与当前 generation snapshot 一致后才显示“可用”。其他账号不能抢占绑定。
+4. 接收账号姓名：connector 每次 `connect` 在 bot 自检后用 tenant token 调用一次 `GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id` 读取扫码账号 `name`，随该连接上报的 `BindingObserved.display_name` 持久到 `ImBindingSummary.display_name`（`Option`）。不按消息查询；查询失败（缺权限、不在通讯录范围 41050、网络）只记 warn，绑定照常完成，设置页显示中性文案“已绑定一对一私聊”，不再展示 open_id。连接成功（`Connected.owner` 携带已解析的 owner open_id 与姓名）后，runtime 在阻塞线程池内对同一 owner 的已有绑定立即采纳该姓名（例如替换旧版写入的 open_id），仅在姓名变化时写设置并刷新快照，无需等待下一条消息；查询失败时 `owner` 为空，不会抹掉已知姓名。企微保持原样（userid 即展示名）。
+5. 支持启停、六类通知偏好、重新授权当前应用、更换飞书应用、真实重连和删除。更换飞书应用完成后替换当前应用并清除旧私聊绑定；重新授权只针对当前应用。重新绑定只清除私聊绑定，仍由扫码账号发消息绑定。缺权限引导重新授权，不无效重连。
+6. 页面显示 App ID、运行期机器人名称和单设备提醒。Secret、扫码 ticket、access_key 不进入前端或日志。
+
+- 飞书卡片初态与终态均按 `id → 节点 → 任务 → 工作空间 → 题目` 展示。提交成功后保留原表单结构，单选、多选、自定义回答和文本回填 Accepted 的答案，控件禁用，展示处理来源。
+- 终态投递先读取源 outbox 生命周期：源消息仍在 pending / sending（包括失败重试、租约恢复）时，终态留在现有 outbox 延期，不能把尚未取得消息 ID 当成永久不可更新。源发送结算并持久化绑定后更新原卡；源已过期、永久失败或结算后无绑定时，才允许另发只读终态。
+- 源消息发送失败重试与租约回收只在同一 SQL 语句内确认该目标尚无 `:resolved` 终态时才回到 pending；终态已存在时源 delivery 直接转为 expired，已结算的源卡片不得被重发。
+- 即时回调、后台 PATCH、超时后的补写和不可更新后的另发消息使用同一份结构化终态结果。不得让后续 PATCH 清空回调已显示的答案；迟到或失败的提交不得显示成赢家答案。
+- Runtime 仍是唯一业务事实源。终态 outbox 的 `ElicitationSubmitted { content }` 只保存已接受答案的投递快照（最大 8 KiB，随 outbox 7 天保留策略清理）；回包不再有独立瞬态 submission。答案不写日志，Debug 脱敏。旧终态没有保存答案时明确显示结果详情不可用。
+- payload v3 / IM schema v5 的一次性迁移保留源卡片、消息绑定、rowid/display_ref、终态及 tombstone；旧无答案终态转成 `ResultUnavailable`，不伪造空回答。新读取路径不兼容旧格式。处理来源仍仅由获得 Accepted 的一端写入。
+- 企微原投票卡/多题卡回调更新和跨端另发文本规则保持；本次授权的能力修正仅将多题选择器上限从 5 改为官方的 3。超过上限不拆卡、不分批提交，飞书和桌面端处理路径照常。
+- 企微 `Handled / AlreadyHandled` 原卡更新只从已接受的 `outcome` 恢复权限、人工检查及追问答案；回调携带的本次选择不能代替赢家结果。选项以稳定 option ID 或 schema 中的原始值匹配原 delivery；结果不可用、不匹配、拒绝回答或字段未回答时不勾选、不默认选择第一项。失败/过期回调保留原错误显示，不把它当作已接受结果。
+
+### 6.4 三端终态通知矩阵
+
+| Accepted 来源 | 桌面端 | 企业微信 | 飞书 |
+|---|---|---|---|
+| 桌面端 | 本地生效并刷新会话 | 另发同编号“已在桌面端处理”文本 | PATCH 原卡，结果和桌面来源 |
+| 企业微信 | 共享应用边界刷新 session | 5 秒回调更新原卡，保留选择 | PATCH 原卡，结果和企微来源 |
+| 飞书 | 共享应用边界刷新 session | 另发同编号“已在飞书处理”文本 | 回调终态 + 相同结果的幂等 PATCH |
+
+- 终态投影只处理当前 eligible target（启用、有凭据/私聊绑定、具备投递/卡片能力且启用对应通知）。已有源 delivery 的目标写 Send/pending；没有源 delivery 的目标只写 TombstoneOnly/expired，拦截迟到源投影，不发送、不唤醒 worker、不计 active 配额。
+- 企微是来源时仅回调更新，不重复广播到自身：被点击的企微目标写 TombstoneOnly/expired 保存赢家结果并关闭源卡，不另发第二条；飞书来源仍写终态，确保超时和 generation 切换后可由 worker 补齐。
+- Runtime 停止路径（Run 停止/节点 teardown、ACP 会话关闭、Direct 后台停止、Runtime 已消失的遗留请求）不经过桌面命令，统一由 canonical settlement 收敛：领域 `InterventionCommandService::settlement` 依据响应文件 → 待处理文件 → timeline 已结算项判定 `Pending | Answered | Cancelled`（无信号文件但 timeline 仍待处理视为被遗弃的取消）。IM 侧 settlement reconciler 在 RunCompleted / NodeCompleted / AcpTurnFinished / DirectTurnLifecycle 后（1 秒去抖）及每 30 秒扫描未结算的开放源卡（pending/sending/sent、未过期、无 `:resolved`），只为 `Cancelled` 写 `resolved_by=Runtime` 的取消终态；`Answered` 留给 Accepted 的一端写入，保持单赢家规则，重复扫描靠终态唯一键幂等。
+- 点击已结算请求的卡片时：已有终态直接回填；canonical 为取消则当场投影取消终态并回填；答案仍在写入途中则回“已处理”并禁用原卡，等待后续 PATCH 补齐结果；请求仍待处理（卡片快照过期，永远无法成功）则按“操作已过期”禁用原卡。领域对已结算请求返回 `INTERVENTION_ALREADY_HANDLED`，不再误报 `INTERVENTION_REQUEST_NOT_FOUND`。
+- 回调最多等待 2.5 秒，超时只返回“处理中”toast，原输入不被清除。Accepted 后的持久终态继续 PATCH；被拒绝时卡片保持可编辑，原因另发一条只读消息“id=xxxx 提交未成功”到同一私聊（拒绝没有持久终态，不进 outbox，也不改卡片，避免迟到的可编辑卡覆盖已结算终态）。
+- 只有消息撤回、删除或超过更新期限的 `MessageUpdateUnavailable` 才另发源上下文完整的只读终态卡；限流/网络错误退避重试，鉴权/缺权限/卡片协议失败不另发掩盖错误。
+- 两端竞争只允许一个 Accepted。迟到提交从已有终态读取赢家答案；没有可读取的赢家结果时回“已处理”并禁用原卡，不使用后到答案填卡。领域 Accepted 与 IM 写入间崩溃的恢复限制保留，不新增跨库事务。
 
 ## 7. 领域与数据所有权
 
@@ -157,89 +206,40 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 | 人工检查等待与结果 | Runtime | 当前 attempt 的 `manual_check_pending` 状态 |
 | 平台连接与能力 | IM integration | `ImConnectionManager` 内存状态 |
 | 待发送消息、重试和平台消息绑定 | IM transport | 用户级 `core.db` |
-| Secret、token、刷新凭据 | Credential store | 操作系统凭据库 |
+| App Secret、扫码人、brand | Credential store | 操作系统凭据库 |
+| 飞书 tenant_access_token | Connector | 单实例内存缓存，不落盘 |
 | 系统原生通知展示与点击去重 | Desktop notification | 现有 `InterventionNotification` / `NotificationDedup` |
 
 IM 数据库不得保存 `approved/failed/completed` 作为工作流事实。它只保存动作请求、提交结果和投递审计；展示最终状态时重新读取领域结果或使用领域提交返回值。
 
 ### 7.2 核心模型
 
-```rust
-enum ImChannelKind { WeCom }
+当前代码真源为 `src/app/intervention.rs`、`src/im/model.rs`、`src/im/connector.rs`，不保留旧布尔能力和旧表单变体：
 
-struct ImChannelCapabilities {
-    transport: ImTransportKind,
-    proactive_message: bool,
-    interactive_card: bool,
-    update_card: bool,
-    short_text_input: bool,
-    single_active_connection: bool,
-}
+- `ImChannelKind { WeCom, Feishu }`。
+- `ImChannelCapabilities { proactive_delivery, card_actions, private_chat, message_update, interaction }`；`message_update` 为 `None | CallbackOnly | Anytime`。
+- `ImInteractionCapabilities` 包含 permission_max_options、max_questions、单题/多题单选容量、multi_choice、free_text、custom_answer、decline。
+- `RemoteElicitationForm { questions: Vec<RemoteQuestion>, decline_allowed }`；RemoteQuestion 包含 selector_key、领域 ElicitationQuestion、constraints 与 custom_answer_key。文本、多选、“其他”以同一领域 content 构建函数提交 schema-shaped JSON；反向由 `remote_question_answer` 把已接受的 content 逐题解码为 `RemoteElicitationAnswer`（选项 id、“其他”文本或文本），飞书禁用控件回填、“提交内容”行与企微终态标题都只消费这一投影（`connectors::accepted_answers`），按发布副本解码失败的题按未回答展示。发布副本里的固定表单统一经 `InterventionAllowedAction::fixed_form` 查找。
+- `InterventionRef { locator, request, expected_state, allowed_actions, expires_at_ms }`；request 区分 Permission request_id、Elicitation elicitation_id、ManualCheck。locator 包含 project/task/run/round/node/attempt 与可选 outer locator。
+- `ImSubmittedAction` 为 PublishedAction、PermissionOption、ManualCheck、ElicitationForm、ElicitationDecline；平台类型不越过 connector。
+- `ImDeliveryPayload` 为带 version 的 Intervention、Information、InterventionResolution。只有 Intervention 可产生可执行入站；终态仅用于投递，不可再次提交。
+- `InterventionResolutionNotification` 保存 source_event_id、canonical_event_id、notification_kind、locator、display_ref、resolved_by、outcome。
+- `ImResolvedBy { Desktop, Channel(ImChannelKind), Runtime }`，`Runtime` 只标记由 canonical settlement 观察到的取消；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答（ElicitationDeclined）、请求未获回答即结束的取消（Cancelled，适用权限、追问与人工检查）、人工检查结果或显式 ResultUnavailable。
+- 只有用户真实拒绝才是 Declined；领域 `ElicitationAction::Cancel` 与 settlement 的 `Cancelled` 映射为 Cancelled，只能由桌面/Runtime 的停止、超时与孤儿清理路径产生。`ImSubmittedAction` 没有取消变体，已发布的 allowed actions 也不包含取消，远程入站无法提交 Cancel。取消终态不归属任何处理端：飞书卡片标题和结果均显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”，不得显示为“拒绝”或“已在某端处理”。
+- Cancelled（wire `cancelled`）与 `ImResolvedBy::Runtime` 是 payload v3 内的追加 serde 变体，不升级 payload/schema 版本：旧数据不可能包含它们，已有变体的编码不变，无需迁移；按开发阶段策略不支持新库回退旧客户端。
+- `ImResolutionDispatch { Send, TombstoneOnly }` 分离持久化事实与发送副作用。终态事件 identity 为 `<source_event_id>:resolved`，delivery identity 为 channel + destination + notification_kind + canonical_event_id 的稳定哈希。
+- `ImConnectionState` 为 Disabled、Connecting、Reconnecting、Connected、AuthenticationRequired、Error；快照携带 generation、capabilities、identity、binding、last_error_code。
 
-enum ImConnectionState {
-    Disabled,
-    Connecting,
-    Online,
-    Backoff { retry_at: DateTime<Utc>, attempt: u32 },
-    AuthRequired,
-    Error { code: ImErrorCode },
-}
+每个 eligible channel/destination 分别保存一份实际发布的表单；入站据此校验而非用另一个渠道的能力猜测。action_id 来自 channel + platform_event_id，display_ref 只用于人类配对，不参与授权或请求身份。
 
-struct InterventionLocator {
-    project_id: ProjectId,
-    task_id: TaskId,
-    run_id: RunId,
-    round_id: RoundId,
-    node_id: NodeId,
-    attempt_id: AttemptId,
-    outer_node_id: Option<NodeId>,
-    outer_attempt_id: Option<AttemptId>,
-}
+payload v3 / IM schema v5：v3→v4 在 IMMEDIATE 事务内删除旧 v1 干预及旧 desktop-resolved 终态，FK ON 级联删除消息绑定、保留入站审计；v4→v5 原位转换 v2 JSON 并保留 rowid/绑定/tombstone，旧无答案终态改为 ResultUnavailable。失败整体回滚；不保留旧格式运行期兼容层。SQLite 的 payload_kind 仍将终态归为 information，typed JSON 区分三种 payload。
 
-struct InterventionRef {
-    intervention_id: InterventionId,
-    kind: InterventionKind,
-    locator: InterventionLocator,
-    request_id: String,
-    expected_revision: u64,
-    allowed_actions: Vec<InterventionActionKind>,
-    expires_at: DateTime<Utc>,
-}
-
-struct RemoteInterventionAction {
-    action_id: ActionId,
-    intervention_id: InterventionId,
-    expected_revision: u64,
-    actor: ImActor,
-    decision: InterventionDecision,
-    content: Option<String>,
-}
-
-enum ImDeliveryPayload {
-    Intervention(InterventionRef, InterventionPresentation),
-    Information(InformationalNotification),
-}
-
-enum ImNotificationKind {
-    Permission,
-    Elicitation,
-    ManualCheck,
-    RunSuccess,
-    RunFailure,
-    AcpTurnFinished,
-}
-```
-
-`intervention_id` 从稳定 lifecycle event ID 派生或直接复用；`action_id` 使用平台事件 ID 与 channel ID 形成稳定幂等键。不得用任务名、节点名、IM 文案或短码反查 Runtime 实体。
-
-`Intervention` 是唯一允许创建 action token、卡片按钮和 `InboundAction` 的 payload；`Information` 只携带 canonical event identity、typed notification kind、导航 locator、outcome 与最小摘要，任何回复都不得推进 Runtime。每个符合条件的 `channel + destination` 分别持久化一条 delivery，唯一语义键固定为 `channel + destination + notification_kind + canonical_event_id`。同一 canonical event 重放命中原记录，不同 event ID 即使文案相同也不得聚合。
-
-带 `scheduled_occurrence_id` 的 Run/ACP 信息事件不投递到 IM，scheduled completion、failure、attention 和 missed 只保留既有桌面原生通知。定时任务触发的 Permission、Elicitation 和 ManualCheck 仍按干预事件进入 IM，并继续复用同一 canonical lifecycle、outbox 与入站执行边界。IM 不消费 Windows notification DTO、dismiss 状态或 `NotificationDedup`。
+带 scheduled_occurrence_id 的 Run/ACP 信息事件不投递 IM；定时任务的 Permission、Elicitation、ManualCheck 仍是干预事件。IM 不消费 Windows 通知 DTO、dismiss 或 NotificationDedup。
 
 ### 7.3 状态转换不变量
 
 1. 每个动作提交前必须按完整 locator 读取当前 Runtime 状态。
-2. `expected_revision` 不匹配时拒绝写入，并返回“状态已变化”。
+2. `expected_state` 不匹配时拒绝写入，并返回“状态已变化”。
 3. 同一 `action_id` 重放返回首次结果，不重复调用领域命令。
 4. 同一 intervention 的首个合法终局决策生效，后续竞争动作返回“已处理”。
 5. 权限请求只能调用权限响应接口；追问只能调用 elicitation 接口；人工成功/失败只能调用人工检查接口。
@@ -252,7 +252,13 @@ enum ImNotificationKind {
 
 ## 8. 设置与连接管理
 
-设置页“通用”页新增“IM 远程干预与通知”区域，按接入生命周期渐进展示企业微信状态。未配置凭据时只提供“扫码接入”；凭据存在后，总开关、状态引导和六项通知始终可见。连接在线但尚无 canonical 私聊 binding 时派生显示“等待绑定”；只有 durable binding 已落盘、delivery target 已重建且当前 generation snapshot 携带同一 binding 时才显示“可用”。该展示模型不落盘。企业微信只提供扫码接入/重新授权，不保留 Bot ID/Secret 手工输入，Secret 不进入前端状态。
+设置页“通用”页新增“IM 远程干预与通知”区域，按接入生命周期逐渠道展示企业微信和飞书状态。未配置凭据时只提供“扫码接入”；凭据存在后，总开关、状态引导和六项通知始终可见。连接在线但尚无 canonical 私聊 binding 时派生显示“等待绑定”；只有 durable binding 已落盘、delivery target 已重建且当前 generation snapshot 携带同一 binding 时才显示“可用”。该展示模型不落盘。两渠道都只提供扫码接入/重新授权；飞书额外提供“更换飞书应用”，复用飞书原生已有应用列表。不保留 Bot ID/Secret 手工输入，Secret 不进入前端状态。
+
+设置页按“企业微信、飞书”的固定顺序使用单列可折叠渠道卡片。每次进入设置页面时两张卡片默认折叠，展开状态只存在于当前页面组件生命周期，不写入 settings、缓存或本地偏好；用户展开后，SWR 刷新和 connection generation 更新不得自动收起或展开。折叠摘要始终保留渠道名称、连接状态、已配置渠道的启用开关和独立展开按钮，Switch 与折叠 Trigger 必须分离。展开内容依次展示状态/恢复引导、授权与接收账号及配置管理、通知类型；配置管理位于通知类型上方。两个渠道可独立展开，不使用互斥手风琴。
+
+“授权与接收账号及配置管理”区块使用带文字的“配置管理”按钮作为入口；重新绑定、更换飞书应用、重新授权和删除保留在按钮菜单内，不用无文字的 `...` 溢出图标承载区块核心动作。
+
+渠道卡片采用有界内容宽度和紧凑信息层级：`可用` 使用主题 success 语义并展示投递说明；通知偏好按“需要你处理 / 执行结果提醒”上下分组，每组内部选项横向排列；Bot ID / App ID 单行截断、悬停查看完整值并支持复制；飞书机器人名称与单设备提醒作为明确次级信息展示。颜色和品牌标识使用主题 token 适配明暗主题，不硬编码具体色值。
 
 设置页 IM 区块使用与定时任务运行设置相同的前端 stale-while-revalidate 投影：App 启动预取、模块级缓存命中后立即渲染，已有数据时刷新不得退回「加载中…」。该缓存不是第二事实源；保存、启停、扫码、删除仍以后端返回的最新 VM 为准，connection snapshot 按 generation 单调合入。
 
@@ -275,11 +281,11 @@ Settings schema v12 在严格反序列化前一次性删除 v11 channel notifica
 
 `BindingObserved` 不得直接进入公开 snapshot。connection manager 先校验 generation、私聊属性与既有 actor/conversation；设置写入与命令写入共享最小 IM settings 临界区。binding 可靠落盘并更新 DesktopState 后重建 delivery target，最后才提交同 generation snapshot。存储失败保持 connected-without-binding，并以 `IM_STORAGE_UNAVAILABLE` 启动每个 channel+generation 至多一个、最多三次、1/2/4 秒的可取消重试；generation 前进立即取消，旧结果不得提交。
 
-恢复策略：网络与限流沿用 connector 的有界退避并显示正在重连；鉴权或凭据错误进入重新授权；连接冲突停止自动抢占，用户关闭其他客户端后发起一次真实重连；binding 存储失败保持等待绑定。所有用户文案由前端中英文 i18n 映射稳定错误码。
+恢复策略：网络与限流沿用 connector 的有界退避并显示正在重连；鉴权或凭据错误进入重新授权；连接冲突停止自动抢占，用户关闭其他客户端后发起一次真实重连；binding 存储失败保持等待绑定。所有用户文案由前端七语言 i18n 映射稳定错误码。
 
-过度设计复核：不新增 aggregate、持久状态机、全局 store、轮询、队列或连接测试接口；接入步骤和顶部结论均由现有 canonical 字段派生。设置页展示缓存只复用定时任务已有的运行时 SWR 投影模式，容量固定为单份 `ImSettingsVm`，有新鲜期与 single-flight，不复制 canonical 数据。性能影响限于单 channel、6 个静态通知项、一次启动预取和常数级 DOM 投影；binding retry 有 generation、单任务、次数和延迟上限，不进入高频路径。
+过度设计复核：不新增 aggregate、持久状态机、全局 store、轮询、队列或连接测试接口；接入步骤和顶部结论均由现有 canonical 字段派生。设置页展示缓存只复用定时任务已有的运行时 SWR 投影模式，容量固定为单份 `ImSettingsVm`，有新鲜期与 single-flight，不复制 canonical 数据。性能影响限于最多 2 个 channel、每渠道 6 个静态通知项、一次启动预取和常数级 DOM 投影；binding retry 有 generation、单任务、次数和延迟上限，不进入高频路径。
 
-企业微信配置包含：
+每个渠道的配置包含：
 
 - 是否启用。
 - 非敏感标识，如 Bot ID、绑定显示名。
@@ -298,7 +304,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - `core.db` 不保存凭据，不保存完整 IM 对话，只保存投递所需的最小 payload 与审计字段。
 - 日志对 credential、context token、用户回答正文和平台原始事件做默认脱敏；排障日志只能记录长度、哈希或结构化 ID。
 - 入站动作必须校验 channel、conversation、actor 是否属于已绑定范围。
-- 卡片按钮 payload 只携带 `delivery_id:action_index` 短引用，不暴露本地文件路径、完整 locator、action JSON 或凭据。
+- 企微卡片按钮携带 `delivery_id:action_index` 短引用；飞书携带 deliveryId、actionIndex/表单选择与签名 actionToken。均不暴露本地文件路径、完整 locator 或应用凭据。
 - action 短引用只允许还原本地 outbox 当前 `allowed_actions` 中的同索引动作，并继续校验 actor、conversation、delivery 生命周期和平台回调幂等。
 - 用户回答正文设置明确上限，首期 8 KiB；超限在进入 Runtime 前拒绝。
 - 删除平台配置时同步删除 OS 凭据、失效连接 generation，并清理该 channel 的未发送 outbox；审计记录按保留策略清理。
@@ -312,7 +318,9 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - lifecycle subscriber 必须先读取内存中的轻量 target snapshot；没有任何 enabled + credential + binding + notification 的可行动目标时立即返回，不读取 workspace state、不创建异步任务、不访问 SQLite。存在目标时仍按原 canonical event 顺序进入有界投影队列，实际 Timeline/Runtime/SQLite 投影继续在 blocking pool 执行。
 - active outbox 默认上限 1,000 条；达到上限时先小批量清理已过期/终态记录，仍满则拒绝新的远程投递并记录结构化错误与桌面提醒，不得淘汰尚未处理的 active 干预，也不能无界增长。
 - 未发送干预在领域请求过期后直接标记 `expired`，不得迟到投递为可操作消息。
-- 网络错误使用带 jitter 的指数退避，1 秒起步、60 秒封顶并持续重试，直到连接成功、generation 被取消或出现鉴权失败、连接冲突、配置错误等永久错误；成功建立连接后重置退避。`ReconnectScheduled` 表示重试循环仍存活，`ConnectionFailed` 只表示终态，UI 不得根据错误码猜测二者。
+- 企微网络错误使用带 jitter 的指数退避，1 秒起步、60 秒封顶并持续重试，直到连接成功、generation 被取消或出现鉴权失败、连接冲突、配置错误等永久错误；成功建立连接后重置退避。`ReconnectScheduled` 表示重试循环仍存活，`ConnectionFailed` 只表示终态，UI 不得根据错误码猜测二者。
+- 飞书按 endpoint 下发的 ReconnectInterval + Nonce 重连；待回包表由 generation 所有，回包、超时、断连即清理，读任务不执行业务。
+- 飞书 OpenAPI 发送与更新同属活动连接生命周期：使用连接 cancellation 的子令牌，断连清理、替换句柄和 generation 失效时取消旧句柄及其在途请求，包括等待/刷新 tenant token 的操作。取消返回现有可重试 `IM_NETWORK_UNAVAILABLE`，重试与删除后的清理由现有 outbox 承担；旧 generation 的迟到清理不得取消新连接。取消不能撤回平台已经接收的消息，不承诺远端事务回滚。
 - 平台限流遵守 `Retry-After` 或 SDK 返回的重试时间；单 channel 串行化同一消息更新，其他消息可受控并发。
 - `claim_due` 先用 due 索引只读确认当前 channel 是否存在到期或已过期 pending 行；确认完全为空时直接返回，不申请 SQLite writer lock。存在候选后才读取最多 32 条并在写事务前完成 typed 解析；有效行以 rowid、state、attempt count 做 CAS claim，单条损坏行原子转为 `dead_letter + IM_PAYLOAD_INVALID`，不得把同批健康行改为 sending 后再让整批解析失败。SQLite/锁/事务错误仍是批次级错误。
 - 企业微信单 session 最多保留 64 条 pending request。调用端创建的 15 秒总 deadline 随 command 进入 session，由同一 session 使用 `DelayQueue` 在 ACK、发送失败、断连、取消或超时时删除；linked-detail 两帧共享同一 deadline，迟到 ACK 不得重新匹配，达到上限返回 retryable `IM_QUEUE_CAPACITY_EXCEEDED`。
@@ -324,35 +332,14 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 
 ## 11. 错误契约
 
-后端只返回结构化错误码和可诊断元数据，不返回对客文案：
+后端仅返回结构化 `ImIntegrationError { code: ImErrorCode, retryable, retry_after, platform_code }`；code 序列化为稳定 IM_ 前缀值，不按字符串片段猜测平台错误，不回传原始错误文案。
 
-```rust
-struct ImIntegrationError {
-    code: ImErrorCode,
-    retryable: bool,
-    details: BTreeMap<String, String>,
-}
+- 连接：IM_CONFIG_INVALID、IM_CREDENTIAL_UNAVAILABLE、IM_AUTHENTICATION_REQUIRED、IM_NETWORK_UNAVAILABLE、IM_RATE_LIMITED、IM_CONNECTION_CONFLICT、IM_SCOPE_MISSING。
+- 入站：IM_ACTOR_MISMATCH、IM_CONVERSATION_MISMATCH、IM_BINDING_REVOKED、IM_ACTION_INVALID、IM_ACTION_EXPIRED、IM_FORM_ANSWER_MISSING、IM_FORM_OPTION_INVALID、IM_FORM_CUSTOM_ANSWER_MISSING、IM_FORM_TEXT_TOO_LONG。
+- 投递：IM_PROTOCOL_INVALID、IM_STORAGE_UNAVAILABLE、IM_QUEUE_CAPACITY_EXCEEDED、IM_MESSAGE_UPDATE_UNAVAILABLE。
+- 扫码：IM_SCAN_CANCELLED、IM_SCAN_EXPIRED、IM_SCAN_DENIED、IM_SCAN_NETWORK_UNAVAILABLE、IM_SCAN_SESSION_INVALID 等；完整值以 ImErrorCode 与扫码错误类型为准。
 
-enum ImErrorCode {
-    ImConfigInvalid,
-    ImCredentialUnavailable,
-    ImAuthenticationRequired,
-    ImConnectionUnavailable,
-    ImPlatformRateLimited,
-    ImBindingRequired,
-    ImBindingRevoked,
-    ImActorForbidden,
-    ImActionInvalid,
-    ImActionExpired,
-    ImActionAlreadyHandled,
-    ImRevisionConflict,
-    ImRuntimeStateMismatch,
-    ImQueueCapacityExceeded,
-    ImPlatformProtocolError,
-}
-```
-
-前端根据稳定错误码、企业微信出站 renderer 根据稳定 presentation key 使用 i18n 资源映射中文与英文文案。平台原始错误只能作为脱敏诊断字段，不能穿透到用户界面。
+设置页七语言 catalog 映射用户文案。平台出站 renderer 与回调回包的卡片文案来自 `src/im/locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json` 七语言 keyed 资源表，编译期嵌入；`ImLocale` 就是桌面语言 `DesktopLanguage`，未设置时与桌面启动一致取系统语言，飞书回调回包使用接收点击的会话语言，不再各自兜底为中文或英文。列表分隔符、“已处理”前缀、未知权限选项的“桌面处理”等也属于资源表；zh-CN 是语义来源，单测校验七语言 key、`{ref}`/`{source}` 占位符和 Agent、ACP、Run 等保留词一致。缺权限/凭据失效引导重新授权，网络故障引导重连；更新不可用是原消息生命周期问题，不与鉴权或协议错误混为一类。
 
 ## 12. 验收标准
 
@@ -365,7 +352,9 @@ enum ImErrorCode {
 
 ### 12.2 平台行为
 
-- 企业微信可连接、绑定全局一对一目标、接收三类干预与已启用信息通知、操作卡片并更新终态。
+- 企业微信、飞书可扫码接入、绑定授权私聊、接收三类干预和启用的信息通知；飞书支持 §5 的完整表单、只读答案回显与 §6.4 三端终态矩阵。
+- 自动化固定仅一个 Accepted、迟到提交不覆盖赢家、回调超时由 PATCH 补齐、重试/降级分类和 tombstone。真实账号测试与本地 mock 结果分别记录。
+- 飞书扫码必须在四项权限确认后才发起 begin；缺权限可重新授权；七语言文案、窄屏、主题和扫码取消通过前端验证。
 - 微信 connector 和设置入口保持缺席，直到稳定主动推送真实 PoC 通过。
 - 客户端重启后恢复启用配置和未过期 outbox，但不复活旧连接状态或已处理动作。
 
@@ -381,11 +370,14 @@ enum ImErrorCode {
 - 零 IM 配置且无 cleanup 的桌面进程不访问 keyring、不打开或建表 `core.db` 的 IM schema，也不创建 5 秒 delivery、30 秒 lease recovery 或 60 秒 cleanup recovery 周期任务。
 - 空 delivery poll 只执行一次命中索引的 `EXISTS` 只读查询，不进入 `BEGIN IMMEDIATE`，因此不与 scheduler、runtime recovery 或 workspace identity 争用 SQLite writer lock。
 - lifecycle projection 的 blocking task、repository/validation 结果必须形成可观测 completion；只有持久化完成后才可唤醒 worker，单条失败不得终止后续投影。
-- 正常运行最多维护一个企业微信 WebSocket。
+- 正常运行每渠道最多一个 WebSocket，总计最多两个；跨渠道慢处理不得互相阻塞。
 - 不扫描完整 timeline、全部会话或历史 run 来构造通知。
 - 设置状态更新仅重渲染对应集成区域。
 
 ## 13. 方案审视
+
+2026-10-15 当前方案复核：P3 补齐正确设计下的 Accepted 门禁与 PATCH 错误分类，P4 复用现有扫码、连接快照和 shadcn/ui；不新增表、缓存、队列或审批状态。终态查询按稳定 ID/既有索引，最多两个目标，每表单最多 5 题/8 KiB 答案；UI 只更新对应渠道，二维码按需加载，不触发会话历史刷新。P2 冷/热入站实测分别为 121ms/242ms，未据此增加缓存或预热。以下按日期保留历史根因记录，当时的范围与接口以本文当前 §4–§12 为准。
+
 
 ### 13.1 根因与完整性
 
@@ -465,7 +457,7 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 ### 13.3 性能影响评审
 
-最多一个企业微信 WebSocket；队列、重试、并发、记录保留均有界。单次 lifecycle 投影为 `O(C)` 且 `C <= 1`；permission 摘要只读取当前 pending request 一次，复杂度为 `O(P + F + A)`（params 条目、投影字段与动作数），路径最多展开 3 条、标题/正文/字段各 256 字符；企微 Permission 双发是当前 delivery 的两个出站帧，详情渲染 `O(F)`、vote 排序仍是 `A <= 20`；elicitation schema 投影为 `O(Q + O)`（问题数加选项数），二者均不扫描 timeline 或历史 Run。回调只解析短 option id/action index，按 delivery ID 做一次 indexed 读取，并从当前 outbox 权限动作列表还原原始 optionId；终态更新前的 transient 动作克隆不超过 20 项。Runtime/SQLite 工作在 blocking pool 内完成后才发网络响应，网络不位于 SQLite transaction 或领域锁内；热路径不增加全量加载、N+1、无界缓存、长锁或事件线程阻塞。completion 仅携带 canonical event ID、稳定错误码与三个计数，worker 唤醒由落库前移到落库后并减少空 claim。实施阶段需通过接口测试固定队列容量、批量清理和连接 generation，不要求在未出现吞吐瓶颈前引入 benchmark 或并行发送优化。
+企业微信与飞书各最多一个 WebSocket；队列、重试、记录保留均有界。单次 lifecycle 投影为 `O(C)` 且 `C <= 2`；permission 摘要只读取当前 pending request 一次，复杂度为 `O(P + F + A)`（params 条目、投影字段与动作数），路径最多展开 3 条、标题/正文/字段各 256 字符；企微 Permission 双发是当前 delivery 的两个出站帧，详情渲染 `O(F)`、vote 排序仍是 `A <= 20`；elicitation schema 投影为 `O(Q + O)`（问题数加选项数），二者均不扫描 timeline 或历史 Run。回调按 delivery ID 做 indexed 读取，并用该 delivery 的发布动作校验选择和答案；飞书表单最多 5 题，结果内容最多 8 KiB。Runtime/SQLite 工作在 blocking pool 内完成后才发网络响应，网络不位于 SQLite transaction 或领域锁内；热路径不增加全量加载、N+1、无界缓存、长锁或事件线程阻塞。completion 仅携带 canonical event ID、稳定错误码与三个计数，worker 在发送型记录落库后唤醒，tombstone 不唤醒。入站每 action 独立任务，同事件由共享 ActionLocks 去重，飞书回包等待受 2.5 秒预算约束；对应接口回归已覆盖慢处理隔离、容量、批量清理与 generation。
 
 Permission occurrence identity 的生成只对当前事件的两个短字符串做一次长度前缀 BLAKE3 哈希，输出固定 64 hex，避免 provider ID 长度进入 lifecycle key；pending 查找仍是按原始 requestId 的一次文件读取，未增加扫描、缓存或额外 I/O。
 
@@ -487,9 +479,47 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 
 ## 14. 外部协议依据
 
+- 飞书官方 [Node SDK](https://github.com/larksuite/node-sdk)：长连接协议基准；传输使用 tokio-tungstenite，protobuf 使用 prost，openlark 准入未通过。
+- 飞书 [消息卡片 PATCH](https://open.feishu.cn/document/server-docs/im-v1/message-card/patch.md)：更新期限、错误码与降级分类。
+
+
+- 飞书终态控件与企微选择器上限的核对依据见[飞书技术方案 §1](../../开发计划/IM接入/飞书远程干预技术方案.md#1-文档状态)；以组件协议而不是 SDK 展示标签或 PoC 简化形状决定回显字段。
 - 企业微信智能机器人 WebSocket：[官方文档](https://developer.work.weixin.qq.com/document/path/101463)
 - 企业微信智能机器人官方 Node SDK：[`WecomTeam/aibot-node-sdk`](https://github.com/WecomTeam/aibot-node-sdk)
 - 企业微信官方 CLI 扫码授权实现：[`WecomTeam/wecom-cli` `auth/qrcode.rs`](https://github.com/WecomTeam/wecom-cli/blob/main/crates/wecom-cli/src/auth/qrcode.rs)
 - 微信官方接入包：[npm `@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin)
 
 实施时必须再次核对官方权限、限流、回调时限和版本变更，并把依赖精确锁定到审计通过的版本。
+
+
+## 15. 2026-10-16 跨渠道修复契约
+
+- 飞书追问拒绝使用独立 `decline` wire 意图，进入已有 `ElicitationDecline` 领域动作；拒绝、表单与动作索引不得同时出现，仍由发布动作校验拒绝权限。
+- 飞书追问卡片展示投影快照中的“前序模型输出”；空内容省略，提交回显与终态 PATCH 保留该上下文。复用原有最多 4096 字符快照，不另查历史。
+- 企微跨端终态提示使用 `resolved_by` 的实际处理来源，支持桌面端、飞书与企微，不固定写为桌面端。
+- 飞书 HTTP 响应体中断/超时归为可重试网络失败；收到完整但无效 JSON 才归为协议失败。创建消息携带从 durable delivery ID 派生的 UUID，重试与 token 刷新保持同一 UUID；平台去重窗口为一小时，不能宣称跨窗口恰好投递一次。
+- 企微平台卡片标识与本地 delivery 去重身份分开，按 §6 的协议规则创建卡片；回调还原原 delivery，原卡更新保持完整 task/submit key。ACK 不确定时可能出现重复卡片，但 canonical 干预仍只执行一次。42014 保持真实失败，不伪装成功；不重投已完成干预。
+- 两个渠道扫码安装新凭据后都清空旧 binding，保留通知偏好。重新授权同一应用也必须重新私聊绑定；设置页只在当前授权 generation 已连接且持久绑定一致时自动关闭，关闭后忽略迟到扫码结果。
+
+影响与风险：改动涉及 connector 协议适配、共享终态文案与授权流程，没有新依赖、表、业务状态机、缓存或队列。企微 wire key 有意升级，升级前仍未处理的旧格式卡片需在桌面端处理，不增加旧协议兼容分支。真实平台证据、本地回归和未验收边界统一见[飞书技术方案 §19](../../开发计划/IM接入/飞书远程干预技术方案.md#19-2026-10-16-六项修复与验收)。
+
+性能复核：上下文渲染最多增加 4096 字符；每次出站只对短 ID 做 UUID 派生，复杂度与当前 delivery 大小相关。企微详情与卡片仍为两个帧，回调仍是一次 indexed delivery 查询；不增加网络轮询、历史扫描、持锁范围或设置页订阅范围。无需为本轮增加缓存或 benchmark。
+
+## 16. 2026-10-16 飞书协议与卡片投影边界
+
+- pbbp2 协议隔离以 `feishu::ws` 模块为边界，允许内部拆文件。connector 消费项目事件和一次性回包接口，低层帧、心跳、分片、socket 与 ACK 由模块内部管理。
+- 回包等待任务随所属连接取消；已经提交 Runtime 的领域动作继续遵循既有幂等与持久化语义，终态由原 durable delivery/outcome 补齐，不建立另一套审批状态。
+- 出站卡片、回调意图和 toast 用当前实际使用的 typed 组件构建。终态通过已发布选项投影 Runtime 答案，分别设置单选 `initial_index`、多选 `selected_values`、输入框 `default_value` 并禁用；卡片树与回填值仅在本次渲染存在，不持久化。
+- 重构前后中英文 36 份完整 JSON 严格相等，保留原卡片字段、控件行为与能力上限；核心 IM 189 项和桌面 IM Runtime 21 项回归通过。两项偏差的实施、静态检查与证据边界见[实施记录](../../开发计划/IM接入/飞书封装与类型化实施记录-2026-10-16.md)。
+
+方案复核：沿用现有 serde、Tokio、prost 和连接生命周期，只类型化实际组件，不增加依赖、持久状态、缓存、队列或网络请求；处理规模仍受当前卡片能力约束，没有新增历史读取或 UI 刷新范围。
+
+## 17. 2026-10-21 飞书扫码应用选择与渠道名称
+
+- 飞书新建应用的机器人名称等于渠道产品名：`wb` 为 `MALING`，`default` 为 `Gold Band`。全局扫码配置只保留描述后缀，不重复保存渠道身份。
+- 首次接入和已配置后的“更换飞书应用”使用 `selectOrCreate` 模式，不发送 `clientID` 和 `createOnly`，由飞书原生 launcher 展示已有应用列表与新建入口。
+- “重新授权”使用 `reauthorizeCurrent` 模式，只把当前 `public_identity` 作为 `clientID`；该入口用于补权限或恢复凭据，不承担切换应用职责。
+- 更换应用完成后沿用既有扫码提交事务：替换凭据、清除旧私聊 binding、保留通知偏好，并等待新账号完成私聊绑定。取消扫码不修改当前配置。
+- 不新增应用清单接口、缓存、数据库字段或持久状态；应用选择完全由飞书平台承担，前端只保留单次扫码模式。
+
+方案复核：新增复杂度仅为命令层类型化模式和一条配置描述后缀，没有新增网络请求、全量扫描、状态订阅或无界并发。

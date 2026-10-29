@@ -1,10 +1,20 @@
 use super::DesktopLanguage;
 
 impl DesktopLanguage {
+    pub const ALL: [Self; 7] = [
+        Self::ZhCn,
+        Self::ZhTw,
+        Self::En,
+        Self::JaJp,
+        Self::KoKr,
+        Self::PtBr,
+        Self::Es,
+    ];
+
     /// Map a BCP 47 tag onto the supported catalog. Unmatched tags become English.
-    /// Bare `zh` and `zh-Hans` are Simplified Chinese. Traditional script and
-    /// Taiwan, Hong Kong, and Macau tags are Traditional Chinese. Portuguese
-    /// matches only `pt-BR`.
+    /// Explicit `Hans`/`Hant` scripts take precedence over Chinese regions.
+    /// Without a script, Taiwan, Hong Kong, and Macau use Traditional Chinese;
+    /// other Chinese tags use Simplified Chinese. Portuguese matches only `pt-BR`.
     pub fn from_locale_tag(tag: &str) -> Self {
         let parts = tag.trim().replace('_', "-").to_ascii_lowercase();
         let mut parts = parts.split('-').filter(|part| !part.is_empty());
@@ -12,13 +22,15 @@ impl DesktopLanguage {
         let rest = parts.collect::<Vec<_>>();
         match primary {
             "zh" => {
-                if rest
+                let script = rest
                     .iter()
-                    .any(|part| matches!(*part, "hant" | "tw" | "hk" | "mo"))
-                {
-                    Self::ZhTw
-                } else {
-                    Self::ZhCn
+                    .copied()
+                    .find(|part| matches!(*part, "hans" | "hant"));
+                match script {
+                    Some("hans") => Self::ZhCn,
+                    Some("hant") => Self::ZhTw,
+                    _ if rest.iter().any(|part| matches!(*part, "tw" | "hk" | "mo")) => Self::ZhTw,
+                    _ => Self::ZhCn,
                 }
             }
             "ja" => Self::JaJp,
@@ -98,6 +110,39 @@ unsafe extern "system" {
 #[cfg(test)]
 mod tests {
     use super::DesktopLanguage;
+
+    #[test]
+    fn explicit_chinese_script_takes_precedence_over_region() {
+        for (tag, expected) in [
+            ("zh-Hans", DesktopLanguage::ZhCn),
+            ("zh-Hans-CN", DesktopLanguage::ZhCn),
+            ("zh-Hans-SG", DesktopLanguage::ZhCn),
+            ("zh-Hans-HK", DesktopLanguage::ZhCn),
+            ("zh-Hans-TW", DesktopLanguage::ZhCn),
+            ("zh-Hans-MO", DesktopLanguage::ZhCn),
+            ("zh-Hant", DesktopLanguage::ZhTw),
+            ("zh-Hant-CN", DesktopLanguage::ZhTw),
+            ("zh-Hant-SG", DesktopLanguage::ZhTw),
+            ("zh-Hant-HK", DesktopLanguage::ZhTw),
+            (" ZH_hAnS_hK ", DesktopLanguage::ZhCn),
+        ] {
+            assert_eq!(DesktopLanguage::from_locale_tag(tag), expected, "{tag}");
+        }
+    }
+
+    #[test]
+    fn chinese_region_is_used_when_script_is_absent() {
+        for (tag, expected) in [
+            ("zh", DesktopLanguage::ZhCn),
+            ("zh-CN", DesktopLanguage::ZhCn),
+            ("zh-SG", DesktopLanguage::ZhCn),
+            ("zh-TW", DesktopLanguage::ZhTw),
+            ("zh-HK", DesktopLanguage::ZhTw),
+            ("zh-MO", DesktopLanguage::ZhTw),
+        ] {
+            assert_eq!(DesktopLanguage::from_locale_tag(tag), expected, "{tag}");
+        }
+    }
 
     #[test]
     fn locale_tags_map_onto_the_supported_catalog() {

@@ -1,7 +1,7 @@
 import { getRuntimeApi } from './api/client';
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, ResolvedColorScheme, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -462,6 +462,18 @@ export function completeWeComScanAuthorization(sessionId: string) {
 
 export function cancelWeComScanAuthorization(sessionId: string) {
   return getRuntimeApi().cancelWeComScanAuthorization(sessionId);
+}
+
+export function startFeishuScanAuthorization(sessionId: string, mode: FeishuScanMode) {
+  return getRuntimeApi().startFeishuScanAuthorization(sessionId, mode);
+}
+
+export function completeFeishuScanAuthorization(sessionId: string) {
+  return getRuntimeApi().completeFeishuScanAuthorization(sessionId);
+}
+
+export function cancelFeishuScanAuthorization(sessionId: string) {
+  return getRuntimeApi().cancelFeishuScanAuthorization(sessionId);
 }
 
 export function setImChannelEnabled(input: Parameters<RuntimeApi['setImChannelEnabled']>[0]) {

@@ -136,7 +136,7 @@
 - 静态图标需要弱底色时，底色与前景必须来自同一主题语义，例如 `bg-foreground/10 + text-foreground`；不得使用浅色模式看似正常、深色模式接近背景的硬编码颜色或强调色组合。
 - 同一业务语义跨页面出现时必须共享颜色规则。例如定时任务标识在管理列表、会话侧栏、会话标题、配置面板和详情页中应保持一致，不能逐页自行决定颜色。
 - 不得机械全局替换颜色类。修改前应审计每个命中的语义，保留链接、按钮、选中态、加载态和结果状态的必要强调色。
-- 图标的视觉说明统一使用项目 Tooltip 组件；`aria-label` 负责无障碍名称，不替代视觉提示；不得使用浏览器原生 `title` 作为产品 Tooltip。Tooltip 说明层不得抢走触发器的指针命中，这由共享组件固定（契约见 `web/tests/ui-tooltip-pointer-events-contract.test.ts`），调用处只在内容需要滚动或交互时显式覆盖。截断全文类 Tooltip 的 trigger 必须是整颗控件，不得锚在内部截断文字上。带链接的帮助说明使用 Popover / Dialog，不放进默认 Tooltip。
+- 图标的视觉说明统一使用项目 Tooltip 组件；`aria-label` 负责无障碍名称，不替代视觉提示；不得使用浏览器原生 `title` 作为产品 Tooltip。Tooltip 说明层不得抢走触发器的指针命中，这由共享组件固定（契约见 `web/tests/ui-tooltip-pointer-events-contract.test.ts`），调用处只在内容需要滚动或交互时显式覆盖。Tooltip 只响应悬停与键盘焦点（`:focus-visible`）：Popover、菜单、对话框开合时的程序化焦点转移在指针操作后不得弹出 Tooltip，这同样由共享 `TooltipTrigger` 固定（契约见 `web/tests/ui-tooltip-focus-visible.test.tsx`），调用处不得各自用 `onOpenAutoFocus` / `onCloseAutoFocus` 规避。弹层因操作把焦点交给其他控件而关闭时（如取出草稿到输入框），应阻止焦点回到触发器。截断全文类 Tooltip 的 trigger 必须是整颗控件，不得锚在内部截断文字上。带链接的帮助说明使用 Popover / Dialog，不放进默认 Tooltip。
 
 ## 10. 异步操作中间态
 

@@ -1503,4 +1503,6 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 - `acp-session-reentry-reconciliation` 与 `acp-composer-render-isolation` 的 `@/api` mock 补充 `listConversationComposerDrafts`（ACPChatDialog 挂载时新增的读取）。
 - 全量 vitest 与 main 基线逐项比对：仅剩既有失败（`acp-composer-render-isolation` 6 项、marketing/demo 依赖缺失），`chat-container-scroll-input` 单测偶发、单独复跑 3/3 通过。
 
+后续修复（2026-10-29）：草稿箱点击打开即弹出「取出到输入框」Tooltip、关闭后草稿箱图标 Tooltip 又弹出。根因是共享 `TooltipTrigger` 对任意焦点都打开，而 Radix 弹层开合会程序化转移焦点；改为仅 `:focus-visible`（键盘）焦点打开，悬停不变，全项目同类问题一并消除（`ui-tooltip-focus-visible.test.tsx` 修复前失败）。另外取出后 Popover 关闭把焦点还给触发器、导致光标不在输入框，改为存入/取出关闭时阻止 close auto-focus（`composer-draft-box` 新增焦点用例修复前失败）。真实 Chromium 中以鼠标与键盘分别验证。
+
 性能与过度设计：草稿箱是新增 durable 实体，因"终将发送"与"仅暂存"的生命周期不同，现有队列无法表达；单文件 ≤20 条、仅在 composer 挂载与用户操作时读写，无扫描与轮询。设置 store 为单值、一次加载；暂停原语是对既有写入点的收敛，不新增状态。

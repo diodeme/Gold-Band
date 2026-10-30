@@ -112,6 +112,45 @@ describe('ComposerDraftBox', () => {
     expect(host.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('1');
   });
 
+  it('leaves focus in the composer after taking a draft instead of returning it to the trigger', async () => {
+    apiMocks.takeConversationComposerDraft.mockResolvedValue({ draft: takenDraft, drafts: draftBox(3, ['beta']) });
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    await render({
+      restoreDraft: vi.fn(() => {
+        composer.focus();
+        return true;
+      }),
+    });
+    const box = await openBox();
+    await act(async () => box.querySelector<HTMLButtonElement>('button[aria-label="取出到输入框"]')?.click());
+    await settle();
+    expect(document.body.querySelector('[data-composer-draft-box="true"]')).toBeNull();
+    expect(document.activeElement).toBe(composer);
+    composer.remove();
+  });
+
+  it('leaves focus in the composer after saving a draft', async () => {
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    apiMocks.saveConversationComposerDraft.mockResolvedValue(draftBox(3, ['gamma', 'alpha', 'beta']));
+    await render({
+      canSave: true,
+      captureDraft: vi.fn().mockResolvedValue({
+        input: { displayText: 'gamma', quotes: [] },
+        attachmentPaths: [],
+        commit: () => composer.focus(),
+        rollback: vi.fn(),
+      }),
+    });
+    const box = await openBox();
+    await act(async () => box.querySelector<HTMLButtonElement>('[data-composer-draft-save="true"]')?.click());
+    await settle();
+    expect(document.body.querySelector('[data-composer-draft-box="true"]')).toBeNull();
+    expect(document.activeElement).toBe(composer);
+    composer.remove();
+  });
+
   it('blocks taking a draft while the composer holds other input', async () => {
     await render({ composerOccupied: true });
     const box = await openBox();

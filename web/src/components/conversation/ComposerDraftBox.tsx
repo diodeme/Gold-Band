@@ -8,7 +8,7 @@ import {
   Trash2,
   UserRound,
 } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -74,6 +74,9 @@ export function ComposerDraftBox({
   const scopeKey = `${projectId ?? ''}\u0000${taskId}`;
   const [scope, setScope] = useState<DraftBoxScope>({ key: scopeKey, box: null });
   const [open, setOpen] = useState(false);
+  // Set when the box closes because the composer took focus (save / take);
+  // Radix would otherwise move focus back to the trigger.
+  const composerOwnsFocusOnCloseRef = useRef(false);
   const [pending, setPending] = useState<'save' | string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const box = scope.key === scopeKey ? scope.box : null;
@@ -106,6 +109,11 @@ export function ComposerDraftBox({
   const full = box != null && count >= maxItems;
   const busy = pending !== null;
 
+  const closeToComposer = () => {
+    composerOwnsFocusOnCloseRef.current = true;
+    setOpen(false);
+  };
+
   const save = async () => {
     if (busy || !canSave || full) return;
     setPending('save');
@@ -125,7 +133,7 @@ export function ComposerDraftBox({
       captured.commit();
       converge(scopeKey, next);
       // Saving hands focus back to the emptied composer, so the box steps aside.
-      setOpen(false);
+      closeToComposer();
     } catch (saveError) {
       captured.rollback();
       setError(displayAppError(t, saveError));
@@ -153,7 +161,7 @@ export function ComposerDraftBox({
         setError(t('acp.composerDrafts.takeConflict'));
         return;
       }
-      setOpen(false);
+      closeToComposer();
     } catch (takeError) {
       setError(displayAppError(t, takeError));
     } finally {
@@ -208,6 +216,11 @@ export function ComposerDraftBox({
         align="start"
         side="top"
         className="w-80 p-0"
+        onCloseAutoFocus={(event) => {
+          if (!composerOwnsFocusOnCloseRef.current) return;
+          composerOwnsFocusOnCloseRef.current = false;
+          event.preventDefault();
+        }}
         data-composer-draft-box="true"
       >
         <div className="flex items-center gap-2 px-3 py-2">

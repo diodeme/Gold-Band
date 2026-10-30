@@ -27,10 +27,32 @@ function Tooltip({
 const TooltipTrigger = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Trigger>
->(({ ...props }, ref) => (
-  <TooltipPrimitive.Trigger ref={ref} data-slot="tooltip-trigger" {...props} />
+>(({ onFocus, ...props }, ref) => (
+  <TooltipPrimitive.Trigger
+    ref={ref}
+    data-slot="tooltip-trigger"
+    onFocus={(event) => {
+      onFocus?.(event)
+      // Popovers, menus and dialogs move focus programmatically when they open
+      // or close; after a pointer action that focus is not keyboard focus, so
+      // it must not pop the tooltip. Radix skips its open handler once the
+      // event is default-prevented.
+      if (!event.defaultPrevented && !isKeyboardFocus(event.currentTarget)) {
+        event.preventDefault()
+      }
+    }}
+    {...props}
+  />
 ))
 TooltipTrigger.displayName = "TooltipTrigger"
+
+function isKeyboardFocus(element: Element) {
+  try {
+    return element.matches(":focus-visible")
+  } catch {
+    return true
+  }
+}
 
 function TooltipContent({
   className,

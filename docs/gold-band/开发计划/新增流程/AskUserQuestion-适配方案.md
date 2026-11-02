@@ -607,6 +607,20 @@ elicitation 答案是结构化工具交互结果，不是新的用户 prompt。�
 
 检测 `requestedSchema.properties[].optional` 或 MCP `required` 数组，非必答问题提供"跳过"按钮。
 
+### P0 — 进程消失后的提问仍可“提交成功” ✅ 已完成（2026-10-30）
+
+**现象**：客户端崩溃时 Agent 正在等待 AskUserQuestion；重启后打开会话，卡片仍可作答，提交返回成功，但回答没有任何接收方，ACP 帧中没有对应 response。
+
+**根因**：设计要求孤儿请求统一回 cancel，但实现不完整。孤儿 turn 对账只结算 turn header，没有结算该 turn 名下的交互；提交路径只检查信号文件，不对账归属 turn；桌面迟到恢复 `recovered_*_result` 只要存在任意响应记录（包括 cancel 或他人不同的答案）就回 `AlreadyApplied`，造成假成功。已完成 run 上的 Direct 后续轮次不在启动恢复范围内，残留请求只能靠惰性对账收敛。
+
+**修复**：
+- `reconcile_orphaned_session_turn` 先按 `turnId` 取消名下 permission/elicitation，再结算 header。
+- `InterventionCommandService` 的 inspect 先对请求归属的 root/branch 快照对账，再判定是否已结算；领域契约保持“已结算 → `INTERVENTION_ALREADY_HANDLED`”。
+- 桌面端迟到恢复只认与本次提交一致的答案；已结算请求按 canonical settlement 投影为 `INTERVENTION_EXPIRED`（Cancelled）或 `INTERVENTION_ALREADY_HANDLED`，错误路径也刷新会话；七语言补齐两条错误文案。
+- 回归测试：`orphaned_turn_settlement_cancels_only_its_own_pending_interactions`、`answering_a_request_whose_turn_lost_its_process_settles_it_cancelled`、`elicitation_desktop_boundary_reports_an_orphaned_turn_as_expired`、`elicitation_late_click_recovers_only_its_own_recorded_answer`、`permission_late_click_recovers_decision_from_durable_timeline`。
+
+**后续**：启动期主动对账（打开会话即不显示残留卡片）需让 Direct 后续轮次登记 runtime recovery candidate，单独评估。
+
 ### P0 — 多步骤答案恢复与跳过撤回答案 ✅ 已完成（2026-07-24）
 
 **根因**：向导同时维护提交用 `answers` 与当前页控件状态，但步骤切换只清空控件状态，没有从 `answers` 恢复；跳过动作也只推进步骤，没有撤销该题已经确认的答案。两类问题均来源于同一状态模型缺陷。

@@ -813,6 +813,8 @@
     "SCHEDULED_COORDINATOR_UNAVAILABLE": "定期タスク サービスは利用できません。もう一度やり直してください。",
     "SCHEDULED_NOT_FOUND": "再開待ちの定期タスク実行はもう存在しません。更新してからもう一度試してください。",
     "SCHEDULED_STORAGE_FAILED": "定期タスクの実行状態を更新できません。もう一度試してください。",
+    "INTERVENTION_EXPIRED": "この質問は無効になったため、回答できません。続けるには、メッセージを送信し直してください。",
+    "INTERVENTION_ALREADY_HANDLED": "この質問は別の場所で処理済みです。再度回答する必要はありません。",
     "git": {
       "version-unsupported": "Git {{installedVersion}} は古すぎます。 Git {{minimumVersion}} 以降が必要です。",
       "version-unavailable": "インストールされている Git のバージョンを特定できませんでした。 Git を修復または再インストールして、もう一度試してください。",

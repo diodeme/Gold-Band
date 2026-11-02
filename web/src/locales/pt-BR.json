@@ -813,6 +813,8 @@
     "SCHEDULED_COORDINATOR_UNAVAILABLE": "O serviço de tarefas agendadas está indisponível. Tente novamente.",
     "SCHEDULED_NOT_FOUND": "A execução agendada a retomar não existe mais. Atualize e tente novamente.",
     "SCHEDULED_STORAGE_FAILED": "O estado da execução agendada não pôde ser atualizado. Tente novamente.",
+    "INTERVENTION_EXPIRED": "Esta pergunta expirou e não pode mais ser respondida. Envie uma nova mensagem para continuar.",
+    "INTERVENTION_ALREADY_HANDLED": "Esta pergunta já foi tratada em outro lugar. Não é preciso responder de novo.",
     "git": {
       "version-unsupported": "Git {{installedVersion}} é muito antigo. É necessário Git {{minimumVersion}} ou superior.",
       "version-unavailable": "A versão instalada do Git não pôde ser identificada. Repare ou reinstale o Git e tente novamente.",

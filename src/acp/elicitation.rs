@@ -12,7 +12,7 @@ use crate::{
         interaction::{
             AcpInteractionSettlement, AcpPromptInteractionIdentity, AcpPromptInteractionKind,
             PendingAcpPromptInteractionState, bind_pending_prompt_interaction_timeline_identity,
-            write_pending_prompt_interaction,
+            read_turn_pending_prompt_interactions, write_pending_prompt_interaction,
         },
         timeline::{
             TimelineIndexedItem, TimelineItemIdentity, append_elicitation_response_item,
@@ -263,6 +263,29 @@ pub fn cancel_pending_elicitation_requests(
         write_elicitation_response(
             attempt_dir,
             elicitation_id,
+            ElicitationAction::Cancel,
+            None,
+            decided_at.clone(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Cancels the pending elicitations owned by a turn whose runtime is gone.
+/// Uses the first-writer-wins hand-off, so a concurrent answer keeps winning.
+pub fn cancel_turn_pending_elicitation_requests(
+    attempt_dir: &Utf8Path,
+    turn_id: &str,
+    decided_at: String,
+) -> Result<()> {
+    for pending in read_turn_pending_prompt_interactions::<PendingElicitationPayload>(
+        attempt_dir,
+        "acp.elicitation-request.",
+        turn_id,
+    )? {
+        write_elicitation_response_if_pending(
+            attempt_dir,
+            &pending.identity.interaction_id,
             ElicitationAction::Cancel,
             None,
             decided_at.clone(),

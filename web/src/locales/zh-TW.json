@@ -813,6 +813,8 @@
     "SCHEDULED_COORDINATOR_UNAVAILABLE": "排程任務執行服務暫不可用，請重試。",
     "SCHEDULED_NOT_FOUND": "待還原的排程任務執行已不存在，請重新整理後重試。",
     "SCHEDULED_STORAGE_FAILED": "無法更新排程任務執行狀態，請重試。",
+    "INTERVENTION_EXPIRED": "此提問已失效，無法再回答。如需繼續，請重新傳送訊息。",
+    "INTERVENTION_ALREADY_HANDLED": "此提問已在其他地方處理，無需重複回答。",
     "git": {
       "version-unsupported": "目前 Git 版本 {{installedVersion}} 過低，需要 Git {{minimumVersion}} 或更高版本。",
       "version-unavailable": "無法識別目前 Git 版本，請修復或重新安裝 Git 後重試。",

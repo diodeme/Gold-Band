@@ -655,8 +655,13 @@ impl<'a> InterventionCommandService<'a> {
                 .map_err(|_| self.missing_request_error(&locator, &request, "permission"))?;
         if pending.identity.interaction_id != request_id
             || pending.identity.kind != AcpPromptInteractionKind::Permission
-            || permission_response_file(&attempt_dir, request_id).exists()
         {
+            return Err(InterventionError::new(
+                InterventionErrorCode::InterventionAlreadyHandled,
+            ));
+        }
+        reconcile_interaction_owner(&attempt_dir, pending.timeline_identity.as_ref())?;
+        if permission_response_file(&attempt_dir, request_id).exists() {
             return Err(InterventionError::new(
                 InterventionErrorCode::InterventionAlreadyHandled,
             ));
@@ -686,8 +691,13 @@ impl<'a> InterventionCommandService<'a> {
                 .map_err(|_| self.missing_request_error(&locator, &request, "elicitation"))?;
         if pending.identity.interaction_id != elicitation_id
             || pending.identity.kind != AcpPromptInteractionKind::Elicitation
-            || elicitation_response_file(&attempt_dir, elicitation_id).exists()
         {
+            return Err(InterventionError::new(
+                InterventionErrorCode::InterventionAlreadyHandled,
+            ));
+        }
+        reconcile_interaction_owner(&attempt_dir, pending.timeline_identity.as_ref())?;
+        if elicitation_response_file(&attempt_dir, elicitation_id).exists() {
             return Err(InterventionError::new(
                 InterventionErrorCode::InterventionAlreadyHandled,
             ));
@@ -1312,6 +1322,28 @@ fn scalar_text(value: Option<&Value>) -> Option<String> {
         }
         Value::Object(_) | Value::Null => None,
     }
+}
+
+/// Settles the request's owning turn when its process is gone, which also
+/// cancels the request: an answer must never be accepted for a runtime that
+/// can no longer deliver it.
+fn reconcile_interaction_owner(
+    attempt_dir: &camino::Utf8Path,
+    timeline_identity: Option<&crate::acp::timeline::TimelineItemIdentity>,
+) -> Result<(), InterventionError> {
+    let root =
+        crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir.to_path_buf()).snapshot;
+    let branch = timeline_identity
+        .filter(|identity| identity.branch_id != crate::acp::branches::ROOT_BRANCH_ID)
+        .map(|identity| {
+            crate::acp::branches::branch_snapshot_path(attempt_dir, &identity.branch_id)
+        });
+    for snapshot in std::iter::once(root).chain(branch) {
+        crate::acp::events::reconcile_orphaned_session_turn(&snapshot).map_err(|_| {
+            InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
+        })?;
+    }
+    Ok(())
 }
 
 fn elicitation_prompt_and_actions(
@@ -3774,6 +3806,91 @@ mod tests {
                 .code,
             InterventionErrorCode::InterventionRequestNotFound
         );
+    }
+
+    /// The durable admission a crashed process left behind: in flight on disk,
+    /// but no runtime in this process owns it.
+    fn write_orphaned_turn_snapshot(attempt_dir: &camino::Utf8Path, turn_id: &str) {
+        let submission = crate::acp::events::AcpPromptSubmission {
+            turn_id: turn_id.into(),
+            operation_id: format!("operation-{turn_id}"),
+            adapter_id: "claude-acp".into(),
+            adapter_display_name: "Claude".into(),
+            cwd: attempt_dir.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "continue".into(),
+                quotes: Vec::new(),
+                role: None,
+                workspace_files: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-30T00:00:00Z".into(),
+        };
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &json!({
+                "acpRevision": 3, "turnId": turn_id,
+                "lifecycleOperationId": submission.operation_id,
+                "availability": "established", "sessionId": "session-001",
+                "liveTurnActivity": "running", "latestTurnStatus": "none",
+                "promptSubmission": submission,
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn answering_a_request_whose_turn_lost_its_process_settles_it_cancelled() {
+        let fixture = permission_fixture(false);
+        write_choice_elicitation(&fixture, &["PostgreSQL", "MySQL"]);
+        let service = InterventionCommandService::new(&fixture.app);
+        let attempt_dir = service.attempt_dir(&fixture.locator);
+        let elicitation = InterventionRequestIdentity::Elicitation {
+            elicitation_id: "elicit-001".into(),
+        };
+        // The card was rendered while its runtime was alive; the process then
+        // died with the turn in flight.
+        let rendered = service
+            .inspect(fixture.locator.clone(), elicitation.clone())
+            .unwrap();
+        write_orphaned_turn_snapshot(&attempt_dir, "turn-1");
+        let answer = InterventionCommand {
+            locator: fixture.locator.clone(),
+            request: elicitation.clone(),
+            expected_state: rendered.expected_state,
+            action: InterventionAction::Elicitation {
+                action: ElicitationAction::Accept,
+                content: Some(json!({ "question_0": "PostgreSQL" })),
+            },
+            expires_at_ms: None,
+        };
+
+        // Nothing can deliver the answer, so it must not be accepted; the
+        // request is settled, and its settlement says it ended unanswered.
+        for _ in 0..2 {
+            assert_eq!(
+                service.execute(answer.clone()).unwrap_err().code,
+                InterventionErrorCode::InterventionAlreadyHandled
+            );
+        }
+        let response: ElicitationResponseState =
+            read_json(&elicitation_response_file(&attempt_dir, "elicit-001")).unwrap();
+        assert_eq!(response.action, ElicitationAction::Cancel);
+        assert_eq!(
+            service.settlement(&fixture.locator, &elicitation),
+            Ok(InterventionSettlement::Cancelled)
+        );
+        // The turn's other pending request settles with it.
+        assert_eq!(
+            service.settlement(&fixture.locator, &permission_request()),
+            Ok(InterventionSettlement::Cancelled)
+        );
+        let header = crate::acp::events::read_lifecycle_header_snapshot(
+            &attempt_dir.join("acp.snapshot.json"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(header.stop_reason.as_deref(), Some("process-interrupted"));
     }
 
     #[test]

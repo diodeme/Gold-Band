@@ -1437,6 +1437,70 @@ pub(crate) async fn execute_permission_intervention(
     let attempt_id = command.locator.attempt_id.clone();
     let outer_node_id = command.locator.outer_node_id.clone();
     let outer_attempt_id = command.locator.outer_attempt_id.clone();
+    let locator = command.locator.clone();
+    let request = command.request.clone();
+    let publish_session = || -> CommandResult<Option<AcpSessionVm>> {
+        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+        {
+            dynamic_acp_session_vm(
+                app,
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .map_err(command_error)?
+        } else {
+            acp_session_vm(
+                app,
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .map_err(command_error)?
+        };
+        emit_acp_session_update(
+            &app_handle,
+            app,
+            project_id.clone(),
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outer_node_id.clone(),
+            outer_attempt_id.clone(),
+            session.clone(),
+        );
+        spawn_index_attempt(
+            state,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outer_node_id.as_deref(),
+            outer_attempt_id.as_deref(),
+        );
+        Ok(session)
+    };
+    // A rejected click still publishes the session: settling the request
+    // (e.g. its orphaned turn) changes what the conversation must show.
+    let reject = |error: InterventionError| {
+        let error = desktop_settled_request_error(app, &locator, &request, error);
+        let _ = publish_session();
+        intervention_command_error(error)
+    };
     let service = InterventionCommandService::new(app);
     let mut late_result = None;
     let command = match service.inspect_for_command(&command) {
@@ -1454,7 +1518,7 @@ pub(crate) async fn execute_permission_intervention(
             if late_result.is_some() {
                 None
             } else {
-                return Err(intervention_command_error(error));
+                return Err(reject(error));
             }
         }
     };
@@ -1474,65 +1538,8 @@ pub(crate) async fn execute_permission_intervention(
         (None, Some(result)) => Ok(result),
         (None, None) => unreachable!("permission late result absence was handled above"),
     };
-    if let Err(error) = result {
-        return Err(intervention_command_error(error));
-    }
-    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-    {
-        dynamic_acp_session_vm(
-            app,
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    } else {
-        acp_session_vm(
-            app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    };
-    emit_acp_session_update(
-        &app_handle,
-        app,
-        project_id,
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.clone(),
-        outer_attempt_id.clone(),
-        session.clone(),
-    );
-    spawn_index_attempt(
-        state,
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    );
-    Ok((
-        result.expect("permission execution error was handled"),
-        session,
-    ))
+    let result = result.map_err(reject)?;
+    Ok((result, publish_session()?))
 }
 
 pub(crate) async fn execute_elicitation_intervention(
@@ -1642,7 +1649,12 @@ async fn execute_elicitation_intervention_boundary(
             if let Some(result) = already_applied {
                 return Ok(result);
             }
-            return Err(error);
+            return Err(desktop_settled_request_error(
+                app,
+                &command.locator,
+                &command.request,
+                error,
+            ));
         }
         Err(error) => {
             finish(app);
@@ -1662,11 +1674,15 @@ async fn execute_elicitation_intervention_boundary(
     }
     let resume_cause = gold_band::app::observability::ResumeCause::ElicitationResolved;
     app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
+    let locator = command.locator.clone();
+    let request = command.request.clone();
     let result = InterventionCommandService::new(app).execute(command);
     if let Err(error) = result {
         app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
         finish(app);
-        return Err(error);
+        return Err(desktop_settled_request_error(
+            app, &locator, &request, error,
+        ));
     }
     finish(app);
     result
@@ -2492,11 +2508,37 @@ fn desktop_intervention_projection_at(
     })
 }
 
+/// Desktop projection of a request the domain reports as already settled,
+/// mirroring the IM settled-card rule: one that ended unanswered (stopped, or
+/// its runtime is gone) can no longer take any answer, so the user sees it as
+/// expired rather than handled by someone else.
+fn desktop_settled_request_error(
+    app: &App,
+    locator: &gold_band::app::intervention::InterventionLocator,
+    request: &InterventionRequestIdentity,
+    error: InterventionError,
+) -> InterventionError {
+    if error.code != gold_band::app::intervention::InterventionErrorCode::InterventionAlreadyHandled
+    {
+        return error;
+    }
+    match InterventionCommandService::new(app).settlement(locator, request) {
+        Ok(gold_band::app::intervention::InterventionSettlement::Cancelled) => InterventionError {
+            code: gold_band::app::intervention::InterventionErrorCode::InterventionExpired,
+            ..error
+        },
+        _ => error,
+    }
+}
+
 fn recovered_permission_result(
     app: &App,
     command: &InterventionCommand,
 ) -> Option<InterventionCommandResult> {
     let InterventionRequestIdentity::Permission { request_id } = &command.request else {
+        return None;
+    };
+    let InterventionAction::PermissionOption { option_id } = &command.action else {
         return None;
     };
     let item = gold_band::acp::timeline::read_indexed_permission_request_by_request_id(
@@ -2510,6 +2552,11 @@ fn recovered_permission_result(
         .as_ref()
         .and_then(|raw| raw.get("optionId"))
         .and_then(serde_json::Value::as_str)?;
+    // Only this click's own decision is "already applied"; any other
+    // recorded outcome means the click never took effect.
+    if resolved_option != option_id {
+        return None;
+    }
     Some(InterventionCommandResult {
         status: gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied,
         canonical_state: format!("permission:{resolved_option}"),
@@ -2523,19 +2570,31 @@ fn recovered_elicitation_result(
     let InterventionRequestIdentity::Elicitation { elicitation_id } = &command.request else {
         return None;
     };
+    let InterventionAction::Elicitation { action, content } = &command.action else {
+        return None;
+    };
     let item = gold_band::acp::timeline::read_indexed_timeline_item(
         &intervention_timeline_path(app, &command.locator),
         &format!("{elicitation_id}-response"),
     )
     .ok()??;
+    let raw = item.event.raw.as_ref();
+    let recorded_content = item
+        .event
+        .content
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .ok()?;
+    // Only this click's own answer is "already applied"; a different answer
+    // or a cancel means the click never took effect.
     if item.event.kind != "elicitationResponse"
-        || item
-            .event
-            .raw
-            .as_ref()
+        || raw
             .and_then(|raw| raw.get("elicitationId"))
             .and_then(serde_json::Value::as_str)
             != Some(elicitation_id.as_str())
+        || raw.and_then(|raw| raw.get("action")) != serde_json::to_value(action).ok().as_ref()
+        || recorded_content.as_ref() != content.as_ref()
     {
         return None;
     }
@@ -16346,6 +16405,74 @@ mod tests {
             result.status,
             gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied
         );
+
+        let other_option = InterventionCommand {
+            action: InterventionAction::PermissionOption {
+                option_id: "reject-once".into(),
+            },
+            ..command
+        };
+        assert!(
+            recovered_permission_result(&app, &other_option).is_none(),
+            "a different recorded decision is not this click taking effect"
+        );
+    }
+
+    #[test]
+    fn elicitation_late_click_recovers_only_its_own_recorded_answer() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("repo")).unwrap());
+        let locator = intervention_locator(
+            &app,
+            "task-001".into(),
+            "run-001".into(),
+            "round-001".into(),
+            "worker".into(),
+            "attempt-001".into(),
+            None,
+            None,
+        );
+        let timeline_path = intervention_timeline_path(&app, &locator);
+        let answer =
+            |action: ElicitationAction, content: Option<serde_json::Value>| InterventionCommand {
+                locator: locator.clone(),
+                request: InterventionRequestIdentity::Elicitation {
+                    elicitation_id: "elicit-001".into(),
+                },
+                expected_state: String::new(),
+                action: InterventionAction::Elicitation { action, content },
+                expires_at_ms: None,
+            };
+        let mysql = Some(serde_json::json!({"database": "mysql"}));
+        let postgres = Some(serde_json::json!({"database": "postgres"}));
+        let record = |action: &str, content: Option<serde_json::Value>| {
+            let mut response = gold_band::acp::events::elicitation_response_event(
+                1,
+                "elicit-001".into(),
+                action.into(),
+                content,
+            );
+            response.started_seq = Some(1);
+            response.ended_seq = Some(1);
+            gold_band::acp::events::write_timeline_items(&timeline_path, &[response]).unwrap();
+        };
+
+        record("accept", mysql.clone());
+        assert!(
+            recovered_elicitation_result(&app, &answer(ElicitationAction::Accept, mysql.clone()))
+                .is_some()
+        );
+        assert!(
+            recovered_elicitation_result(&app, &answer(ElicitationAction::Accept, postgres))
+                .is_none(),
+            "another answer is not this click taking effect"
+        );
+
+        record("cancel", None);
+        assert!(
+            recovered_elicitation_result(&app, &answer(ElicitationAction::Accept, mysql)).is_none(),
+            "a request that ended unanswered never took this answer"
+        );
     }
 
     #[test]
@@ -16520,8 +16647,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn elicitation_desktop_boundary_replays_as_already_applied() {
+    /// A desktop-rendered elicitation card of a paused worker attempt and the
+    /// answer command built from it.
+    fn elicitation_boundary_fixture() -> (
+        tempfile::TempDir,
+        App,
+        Utf8PathBuf,
+        InterventionCommand,
+        DesktopState,
+    ) {
         let root = tempfile::tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(root.path().join("repo")).unwrap();
         let app = App::new(repo_root.clone());
@@ -16663,6 +16797,12 @@ mod tests {
             recent_workspaces: Vec::new(),
             needs_workspace: false,
         });
+        (root, app, attempt_dir, command, state)
+    }
+
+    #[tokio::test]
+    async fn elicitation_desktop_boundary_replays_as_already_applied() {
+        let (_root, app, attempt_dir, command, state) = elicitation_boundary_fixture();
         let first =
             execute_elicitation_intervention_boundary(&state, &app, command.clone(), |_| {})
                 .await
@@ -16688,6 +16828,48 @@ mod tests {
             !gold_band::acp::elicitation::elicitation_response_file(&attempt_dir, "elicit-001")
                 .exists()
         );
+    }
+
+    #[tokio::test]
+    async fn elicitation_desktop_boundary_reports_an_orphaned_turn_as_expired() {
+        let (_root, app, attempt_dir, command, state) = elicitation_boundary_fixture();
+        // The process that owned the in-flight turn is gone.
+        let submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-1".into(),
+            operation_id: "operation-1".into(),
+            adapter_id: "claude-acp".into(),
+            adapter_display_name: "Claude".into(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "continue".into(),
+                quotes: Vec::new(),
+                role: None,
+                workspace_files: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-09-03T00:00:00Z".into(),
+        };
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "acpRevision": 3, "turnId": "turn-1", "lifecycleOperationId": "operation-1",
+                "availability": "established", "sessionId": "session-001",
+                "liveTurnActivity": "running", "latestTurnStatus": "none",
+                "promptSubmission": submission,
+            }),
+        )
+        .unwrap();
+
+        for _ in 0..2 {
+            let error =
+                execute_elicitation_intervention_boundary(&state, &app, command.clone(), |_| {})
+                    .await
+                    .unwrap_err();
+            assert_eq!(
+                error.code,
+                gold_band::app::intervention::InterventionErrorCode::InterventionExpired
+            );
+        }
     }
 
     #[test]

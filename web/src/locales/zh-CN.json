@@ -813,6 +813,8 @@
     "SCHEDULED_COORDINATOR_UNAVAILABLE": "定时任务运行服务暂不可用，请重试。",
     "SCHEDULED_NOT_FOUND": "待恢复的定时任务执行已不存在，请刷新后重试。",
     "SCHEDULED_STORAGE_FAILED": "无法更新定时任务执行状态，请重试。",
+    "INTERVENTION_EXPIRED": "该提问已失效，无法再回答。如需继续，请重新发送消息。",
+    "INTERVENTION_ALREADY_HANDLED": "该提问已在其他地方处理，无需重复回答。",
     "git": {
       "version-unsupported": "当前 Git 版本 {{installedVersion}} 过低，需要 Git {{minimumVersion}} 或更高版本。",
       "version-unavailable": "无法识别当前 Git 版本，请修复或重新安装 Git 后重试。",

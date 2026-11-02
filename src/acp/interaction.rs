@@ -124,6 +124,37 @@ pub fn write_pending_prompt_interaction<T: Serialize>(
     write_json(path, state)
 }
 
+/// Pending interaction records of one kind owned by `turn_id`. Unreadable
+/// records are skipped so one damaged file cannot block settling the rest.
+pub fn read_turn_pending_prompt_interactions<T: DeserializeOwned>(
+    attempt_dir: &Utf8Path,
+    file_prefix: &str,
+    turn_id: &str,
+) -> Result<Vec<PendingAcpPromptInteractionState<T>>> {
+    let Ok(entries) = std::fs::read_dir(attempt_dir.as_std_path()) else {
+        return Ok(Vec::new());
+    };
+    let mut pending = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(file_prefix) || !file_name.ends_with(".json") {
+            continue;
+        }
+        let Ok(path) = camino::Utf8PathBuf::from_path_buf(path) else {
+            continue;
+        };
+        if let Ok(state) = read_json::<PendingAcpPromptInteractionState<T>>(&path)
+            && state.identity.turn_id.as_deref() == Some(turn_id)
+        {
+            pending.push(state);
+        }
+    }
+    Ok(pending)
+}
+
 pub fn bind_pending_prompt_interaction_timeline_identity<T>(
     path: &Utf8Path,
     identity: TimelineItemIdentity,

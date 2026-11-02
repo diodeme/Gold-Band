@@ -813,6 +813,8 @@
     "SCHEDULED_COORDINATOR_UNAVAILABLE": "The scheduled task service is unavailable. Try again.",
     "SCHEDULED_NOT_FOUND": "The scheduled run to resume no longer exists. Refresh and try again.",
     "SCHEDULED_STORAGE_FAILED": "The scheduled run state could not be updated. Try again.",
+    "INTERVENTION_EXPIRED": "This question has expired and can no longer be answered. Send a new message to continue.",
+    "INTERVENTION_ALREADY_HANDLED": "This question was already handled elsewhere. No need to answer again.",
     "git": {
       "version-unsupported": "Git {{installedVersion}} is too old. Git {{minimumVersion}} or later is required.",
       "version-unavailable": "The installed Git version could not be identified. Repair or reinstall Git and try again.",

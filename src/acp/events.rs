@@ -2914,7 +2914,63 @@ pub fn admit_session_turn_for_execution(
     }
 }
 
+/// Settles a non-idle turn whose owning process is gone, together with the
+/// prompt interactions it owns: nothing can answer them any more.
 pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {
+    let Some(orphan) = orphaned_session_turn(path)? else {
+        return Ok(None);
+    };
+    // Interactions settle before the header. A terminal header no longer
+    // reads as orphaned, so a crash in between must leave both to the next
+    // reconcile instead of stranding the interactions.
+    if let Some(turn_id) = orphan.turn_id.as_deref() {
+        let attempt_dir = session_attempt_dir(path);
+        let decided_at = current_timestamp();
+        crate::acp::permission::cancel_turn_pending_permission_requests(
+            &attempt_dir,
+            turn_id,
+            decided_at.clone(),
+        )?;
+        crate::acp::elicitation::cancel_turn_pending_elicitation_requests(
+            &attempt_dir,
+            turn_id,
+            decided_at,
+        )?;
+    }
+    settle_orphaned_session_turn(path)
+}
+
+fn orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let value = read_json::<Value>(path)?;
+    if value.get("promptSubmission").is_none() {
+        return Ok(None);
+    }
+    let current = lifecycle_header_from_value(&value);
+    if current.live_turn_activity == AcpLiveTurnActivity::Idle
+        || session_turn_is_active(path, current.turn_id.as_deref())
+    {
+        return Ok(None);
+    }
+    Ok(Some(current))
+}
+
+/// Root sessions keep `acp.snapshot.json` in the attempt directory; Agent
+/// branches keep `agents/<branch>/snapshot.json` below it.
+fn session_attempt_dir(snapshot_path: &Utf8Path) -> Utf8PathBuf {
+    let parent = snapshot_path.parent().unwrap_or(snapshot_path);
+    parent
+        .parent()
+        .filter(|agents| agents.file_name() == Some("agents"))
+        .and_then(Utf8Path::parent)
+        .unwrap_or(parent)
+        .to_path_buf()
+}
+
+fn settle_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {
     let _guard = session_metadata_lock(path).lock().unwrap();
     if !path.exists() {
         return Ok(None);
@@ -5110,6 +5166,111 @@ mod tests {
             super::read_session_prompt_submission(&path, "turn-orphan").unwrap(),
             Some(submission),
         );
+    }
+
+    fn write_turn_owned_interactions(attempt_dir: &Utf8Path, turn_id: &str, suffix: &str) {
+        crate::acp::permission::write_pending_permission(
+            attempt_dir,
+            &format!("permission-{suffix}"),
+            turn_id,
+            "prompt-event",
+            serde_json::json!({"options": []}),
+            "1Z".to_string(),
+        )
+        .unwrap();
+        let request = serde_json::from_value(serde_json::json!({
+            "mode": "form",
+            "sessionId": "session-a",
+            "toolCallId": format!("tool-{suffix}"),
+            "message": "question",
+            "requestedSchema": {"type": "object", "properties": {}}
+        }))
+        .unwrap();
+        crate::acp::elicitation::write_pending_elicitation(
+            attempt_dir,
+            &crate::acp::elicitation::pending_elicitation_state(
+                format!("elicit-{suffix}"),
+                turn_id,
+                "prompt-event",
+                serde_json::json!(1),
+                request,
+                "1Z".to_string(),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn interaction_cancelled(attempt_dir: &Utf8Path, suffix: &str) -> (bool, bool) {
+        let permission =
+            crate::storage::read_json::<crate::acp::permission::PermissionResponseState>(
+                &crate::acp::permission::permission_response_file(
+                    attempt_dir,
+                    &format!("permission-{suffix}"),
+                ),
+            )
+            .is_ok_and(|response| response.cancelled);
+        let elicitation = crate::storage::read_json::<
+            crate::acp::elicitation::ElicitationResponseState,
+        >(&crate::acp::elicitation::elicitation_response_file(
+            attempt_dir,
+            &format!("elicit-{suffix}"),
+        ))
+        .is_ok_and(|response| {
+            response.action == crate::acp::elicitation::ElicitationAction::Cancel
+        });
+        (permission, elicitation)
+    }
+
+    #[test]
+    fn orphaned_turn_settlement_cancels_only_its_own_pending_interactions() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        crate::storage::write_json(
+            &attempt_dir.join("node.json"),
+            &serde_json::json!({
+                "version": crate::domain::VERSION,
+                "acp_storage_schema_version": crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                "node_id": "worker", "node_type": "worker", "run_id": "run-001",
+                "round_id": "round-001", "attempt_id": "attempt-001", "status": "running",
+                "outcome": null, "started_at": "1Z", "finished_at": null,
+                "manual_check_pending": false, "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        let path = attempt_dir.join("acp.snapshot.json");
+        assert!(matches!(
+            begin_session_turn(&path, &prompt_submission("turn-orphan", "operation-orphan"))
+                .unwrap(),
+            AcpTurnAdmission::Started(_)
+        ));
+        write_turn_owned_interactions(&attempt_dir, "turn-orphan", "owned");
+        write_turn_owned_interactions(&attempt_dir, "turn-other", "foreign");
+
+        // A live owner is never orphaned: its interactions keep waiting.
+        assert!(
+            super::reconcile_orphaned_session_turn(&path)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(interaction_cancelled(&attempt_dir, "owned"), (false, false));
+
+        super::clear_session_turn_active(&path, Some("turn-orphan"));
+        let terminal = super::reconcile_orphaned_session_turn(&path)
+            .unwrap()
+            .expect("an ownerless in-flight turn must settle");
+        assert_eq!(terminal.stop_reason.as_deref(), Some("process-interrupted"));
+        assert_eq!(interaction_cancelled(&attempt_dir, "owned"), (true, true));
+        assert_eq!(
+            interaction_cancelled(&attempt_dir, "foreign"),
+            (false, false)
+        );
+
+        assert!(
+            super::reconcile_orphaned_session_turn(&path)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(interaction_cancelled(&attempt_dir, "owned"), (true, true));
     }
 
     #[test]

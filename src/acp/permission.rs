@@ -11,7 +11,7 @@ use crate::{
         interaction::{
             AcpInteractionSettlement, AcpPromptInteractionIdentity, AcpPromptInteractionKind,
             PendingAcpPromptInteractionState, bind_pending_prompt_interaction_timeline_identity,
-            write_pending_prompt_interaction,
+            read_turn_pending_prompt_interactions, write_pending_prompt_interaction,
         },
         timeline::{
             TimelineIndexedItem, TimelineItemIdentity, TimelineSettleOutcome,
@@ -223,6 +223,29 @@ pub fn write_permission_response_if_pending(
         }
     }
     Ok(true)
+}
+
+/// Cancels the pending permissions owned by a turn whose runtime is gone.
+/// Uses the first-writer-wins hand-off, so a concurrent answer keeps winning.
+pub fn cancel_turn_pending_permission_requests(
+    attempt_dir: &Utf8Path,
+    turn_id: &str,
+    decided_at: String,
+) -> Result<()> {
+    for pending in read_turn_pending_prompt_interactions::<Value>(
+        attempt_dir,
+        "acp.permission-request.",
+        turn_id,
+    )? {
+        write_permission_response_if_pending(
+            attempt_dir,
+            &pending.identity.interaction_id,
+            None,
+            true,
+            decided_at.clone(),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn remove_permission_signal_files(attempt_dir: &Utf8Path, request_id: &str) -> Result<()> {

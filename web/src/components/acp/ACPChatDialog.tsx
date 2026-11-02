@@ -162,14 +162,16 @@ import {
   type AttachmentItem,
 } from "@/lib/attachment-service";
 import {
+  acpComposerDraftRolePrefix,
+  acpComposerDraftToPromptSubmission,
   queuedPromptToAcpComposerDraft,
   useAcpComposerDraft,
   type AcpComposerDraft,
 } from "@/lib/acp-composer-draft";
+import { fileReferenceIdentity } from "@/lib/file-reference-source";
 import {
   addComposerQuote,
   addComposerWorkspaceFile,
-  createComposerPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
   hasUserPromptPayload,
@@ -1785,6 +1787,12 @@ export function ACPChatDialog(
   const [queueMutationPending, setQueueMutationPending] = useState(false);
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const [queueSendingItemId, setQueueSendingItemId] = useState<string | null>(null);
+  const composerDraftStoragePendingRef = useRef(false);
+  const [composerDraftStoragePending, setComposerDraftStoragePending] = useState(false);
+  const changeComposerDraftStoragePending = useCallback((pending: boolean) => {
+    composerDraftStoragePendingRef.current = pending;
+    setComposerDraftStoragePending(pending);
+  }, []);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const canonicalTimelineCoverageRef = useRef<{
     eventWindowKey: string;
@@ -2670,7 +2678,7 @@ export function ACPChatDialog(
       },
     },
   });
-  const committedSlashCommand = useMemo(
+  const parsedCommittedSlashCommand = useMemo(
     () => parseCommittedSlashItem(
       prompt,
       slashCommands.catalogItems,
@@ -2678,6 +2686,21 @@ export function ACPChatDialog(
     ),
     [prompt, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
+  const committedSlashCommand = useMemo(() => {
+    const role = composerDraft.draft.role;
+    if (!role) return parsedCommittedSlashCommand;
+    return {
+      item: {
+        kind: 'role' as const,
+        id: role.profileId,
+        name: role.name,
+        description: role.name,
+        content: role.content,
+      },
+      prefix: acpComposerDraftRolePrefix(role),
+      suffix: prompt.slice(acpComposerDraftRolePrefix(role).length),
+    };
+  }, [composerDraft.draft.role, parsedCommittedSlashCommand, prompt]);
   const providerCatalog = useMemo(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
     [agentRegistry, effective?.provider],
@@ -2987,6 +3010,7 @@ export function ACPChatDialog(
   const canSubmitPrompt = composerState.canSubmit
     && !queueSubmitPending
     && !queueRestorePending
+    && !composerDraftStoragePending
     && hasUserPromptPayload(
       slashSendableText(prompt, committedSlashCommand),
       pendingAttachments.length,
@@ -2995,7 +3019,8 @@ export function ACPChatDialog(
     );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
-    && !queueRestorePending;
+    && !queueRestorePending
+    && !composerDraftStoragePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
@@ -6173,10 +6198,26 @@ export function ACPChatDialog(
       // Enrich attachments and structured file references together so neither overwrites the other.
       void Promise.all([
         draft.attachmentPaths.length > 0
-          ? statAttachmentFiles(draft.attachmentPaths).catch(() => []) : Promise.resolve([]),
+          ? statAttachmentFiles(draft.attachmentPaths).then(
+              fileRefs => ({ failed: false, fileRefs }),
+              () => ({ failed: true, fileRefs: [] as never[] }),
+            ) : Promise.resolve({ failed: false, fileRefs: [] as never[] }),
         Promise.all(sources.map(source => resolveRightWorkspaceFileTarget(source).catch(() => null))),
-      ]).then(([fileRefs, targets]) => {
-        const enrichedDraft = queuedPromptToAcpComposerDraft(draft, fileRefs, targets.filter(target => target !== null));
+      ]).then(([attachmentStat, targetResults]) => {
+        const targets = targetResults.filter(target => target !== null);
+        const unresolvedAttachmentPaths = attachmentStat.failed
+          ? draft.attachmentPaths
+          : draft.attachmentPaths.filter(path => !attachmentStat.fileRefs.some(file => file.path === path));
+        const unresolvedSourceIds = targetResults.flatMap((target, index) => (
+          target ? [] : [fileReferenceIdentity(sources[index])]
+        ));
+        const enrichedDraft = queuedPromptToAcpComposerDraft(
+          draft,
+          attachmentStat.fileRefs,
+          targets,
+          unresolvedAttachmentPaths,
+          unresolvedSourceIds,
+        );
         if (!composerDraft.replaceIfUnchanged(restoredDraft, enrichedDraft)) {
           revokeAttachmentPreviewUrls(enrichedDraft.attachments);
         }
@@ -6191,12 +6232,7 @@ export function ACPChatDialog(
   const captureComposerDraft = async (): Promise<CapturedComposerDraft | null> => {
     const draftSnapshot = composerDraft.draft;
     if (!draftSnapshot) return null;
-    const input = createComposerPromptSubmission(
-      draftSnapshot.content,
-      draftSnapshot.quotes,
-      committedSlashCommand,
-      draftSnapshot.workspaceFiles,
-    );
+    const input = acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand);
     const attachmentPaths = await resolveAttachmentPaths(draftSnapshot.attachments);
     setComposerContextError(null);
     return {
@@ -6204,6 +6240,7 @@ export function ACPChatDialog(
       attachmentPaths,
       commit: () => {
         if (!composerDraft.clearIfUnchanged(draftSnapshot)) return;
+        draftSnapshot.attachments.forEach(closeComposerAttachmentPreview);
         releaseSubmittedAttachments(draftSnapshot.attachments);
         requestAnimationFrame(() => composerTextareaRef.current?.focus());
       },
@@ -6340,15 +6377,11 @@ export function ACPChatDialog(
   };
 
   const send = async (historyText?: string) => {
+    if (composerDraftStoragePendingRef.current) return;
     if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
     const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
     if (!draftSnapshot) return;
-    const submission = createComposerPromptSubmission(
-      draftSnapshot.content,
-      draftSnapshot.quotes,
-      committedSlashCommand,
-      draftSnapshot.workspaceFiles,
-    );
+    const submission = acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -6489,12 +6522,7 @@ export function ACPChatDialog(
         const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
         if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createComposerPromptSubmission(
-            draftSnapshot.content,
-            draftSnapshot.quotes,
-            committedSlashCommand,
-            draftSnapshot.workspaceFiles,
-          ),
+          acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand),
           draftSnapshot,
           "runtime-continue",
         );
@@ -7238,6 +7266,7 @@ export function ACPChatDialog(
                     composerOccupied={composerDraftOccupied}
                     captureDraft={captureComposerDraft}
                     restoreDraft={restoreDraftIntoComposer}
+                    onPendingChange={changeComposerDraftStoragePending}
                   />
                 )}
                 supersededSession={supersededSession}

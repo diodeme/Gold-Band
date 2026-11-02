@@ -1017,7 +1017,8 @@
       "continue-launch-channel-closed": "A retomada do fluxo de trabalho não iniciou. Tente novamente."
     },
     "composer": {
-      "context-limit-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos."
+      "context-limit-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
+      "referenceUnavailable": "Referência indisponível"
     },
     "conversation": {
       "task-not-found": "Esta conversa não foi encontrada.",
@@ -1037,6 +1038,7 @@
       "session-restore-unsupported": "Este Agent não pode restaurar uma sessão existente.",
       "history-sync-unsupported": "Este Agent não pode sincronizar o histórico completo de uma sessão existente.",
       "prompt-empty": "Digite uma mensagem para enviar.",
+      "prompt-too-long": "A mensagem não pode exceder {{maxChars}} caracteres.",
       "prompt-quote-invalid": "O texto citado é inválido. Remova-o e cite a mensagem novamente.",
       "prompt-quote-limit-exceeded": "O texto citado não pode exceder {{maxChars}} caracteres no total.",
       "prompt-quote-diff-limit-exceeded": "As citações de diff completo não podem exceder {{maxBytes}} bytes no total.",
@@ -1063,6 +1065,7 @@
       "composer-draft-empty": "Não há nada para salvar.",
       "composer-draft-full": "Os rascunhos estão cheios. Você pode manter até {{max}}.",
       "composer-draft-not-found": "Este rascunho não existe mais.",
+      "composer-draft-invalid": "Os dados da caixa de rascunhos são inválidos. Verifique os dados locais e tente novamente.",
       "composer-draft-storage-failed": "Não foi possível acessar os rascunhos. Tente novamente.",
       "execution-plan": {
         "not-found": "Este Run ainda não tem um plano de execução.",
@@ -2383,6 +2386,8 @@
       "take": "Mover para a entrada",
       "takeOccupied": "Resolva primeiro o conteúdo atual da entrada",
       "delete": "Excluir rascunho",
+      "deleteConfirmTitle": "Excluir este rascunho?",
+      "deleteConfirmDescription": "O texto, as citações, o papel e as referências de anexos serão removidos. Não será possível desfazer.",
       "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos."
     },
     "sending": "Enviando",

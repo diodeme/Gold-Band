@@ -23,6 +23,7 @@ export interface ComposerWorkspaceFileRef {
   byteLength: number | null;
   mimeType: string;
   canonicalPath?: string;
+  unavailable?: boolean;
 }
 
 export interface WorkspaceFileTimelineRef {

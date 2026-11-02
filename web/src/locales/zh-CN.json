@@ -1017,7 +1017,8 @@
       "continue-launch-channel-closed": "工作流恢复未能启动，请重试。"
     },
     "composer": {
-      "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。"
+      "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
+      "referenceUnavailable": "引用已失效"
     },
     "conversation": {
       "task-not-found": "找不到该会话。",
@@ -1037,6 +1038,7 @@
       "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
       "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
       "prompt-empty": "请输入要发送的内容。",
+      "prompt-too-long": "消息内容不能超过 {{maxChars}} 个字符。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
       "prompt-quote-limit-exceeded": "引用内容总长度不能超过 {{maxChars}} 个字符。",
       "prompt-quote-diff-limit-exceeded": "完整 diff 引用总大小不能超过 {{maxBytes}} 字节。",
@@ -1063,6 +1065,7 @@
       "composer-draft-empty": "没有可保存的内容。",
       "composer-draft-full": "草稿箱已满，最多可保留 {{max}} 条。",
       "composer-draft-not-found": "这条草稿已不存在。",
+      "composer-draft-invalid": "草稿箱数据无效，请检查本地数据后重试。",
       "composer-draft-storage-failed": "无法访问草稿箱，请重试。",
       "execution-plan": {
         "not-found": "这次 Run 还没有执行计划。",
@@ -2383,6 +2386,8 @@
       "take": "取出到输入框",
       "takeOccupied": "请先处理输入框中的当前内容",
       "delete": "删除草稿",
+      "deleteConfirmTitle": "删除这条草稿？",
+      "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用会一起删除，此操作无法撤销。",
       "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。"
     },
     "sending": "发送中",

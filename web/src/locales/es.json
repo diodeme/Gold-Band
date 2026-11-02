@@ -1017,7 +1017,8 @@
       "continue-launch-channel-closed": "La reanudación del flujo de trabajo no se inició. Vuelva a intentarlo."
     },
     "composer": {
-      "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos."
+      "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos.",
+      "referenceUnavailable": "Referencia no disponible"
     },
     "conversation": {
       "task-not-found": "No se pudo encontrar esta conversación.",
@@ -1037,6 +1038,7 @@
       "session-restore-unsupported": "Este Agent no puede restaurar una sesión existente.",
       "history-sync-unsupported": "Este Agent no puede sincronizar el historial completo de una sesión existente.",
       "prompt-empty": "Introduzca un mensaje para enviar.",
+      "prompt-too-long": "El mensaje no puede superar {{maxChars}} caracteres.",
       "prompt-quote-invalid": "El texto citado no es válido. Elimínelo y vuelva a citar el mensaje.",
       "prompt-quote-limit-exceeded": "El texto citado no puede superar {{maxChars}} caracteres en total.",
       "prompt-quote-diff-limit-exceeded": "Las citas de diff completo no pueden superar {{maxBytes}} bytes en total.",
@@ -1063,6 +1065,7 @@
       "composer-draft-empty": "No hay nada que guardar.",
       "composer-draft-full": "Los borradores están llenos. Puedes guardar hasta {{max}}.",
       "composer-draft-not-found": "Este borrador ya no existe.",
+      "composer-draft-invalid": "Los datos de la caja de borradores no son válidos. Revisa los datos locales e inténtalo de nuevo.",
       "composer-draft-storage-failed": "No se puede acceder a los borradores. Inténtalo de nuevo.",
       "execution-plan": {
         "not-found": "Este Run todavía no tiene un plan de ejecución.",
@@ -2383,6 +2386,8 @@
       "take": "Mover a la entrada",
       "takeOccupied": "Primero resuelve el contenido actual de la entrada",
       "delete": "Eliminar borrador",
+      "deleteConfirmTitle": "¿Eliminar este borrador?",
+      "deleteConfirmDescription": "Se eliminarán el texto, las citas, el rol y las referencias de adjuntos. Esta acción no se puede deshacer.",
       "takeConflict": "El campo de entrada tiene contenido. El borrador permanece en la caja de borradores."
     },
     "sending": "Enviando",

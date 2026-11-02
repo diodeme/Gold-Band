@@ -65,6 +65,8 @@ pub enum ComposerDraftError {
     Full,
     #[error("composer draft was not found")]
     NotFound,
+    #[error("composer draft box is invalid")]
+    Invalid,
     #[error("composer draft storage is unavailable")]
     Storage,
 }
@@ -77,7 +79,7 @@ pub fn drafts_path(task_dir: &Utf8Path) -> Utf8PathBuf {
 /// draft keeps no draft file.
 pub fn load_composer_drafts(task_dir: &Utf8Path) -> Result<ComposerDraftBox, ComposerDraftError> {
     let path = drafts_path(task_dir);
-    with_file_lock(&path, || load_unlocked(&path)).map_err(|_| ComposerDraftError::Storage)
+    with_composer_draft_lock(&path, || load_unlocked(&path))
 }
 
 pub fn save_composer_draft(
@@ -134,16 +136,30 @@ pub fn delete_composer_draft(
     draft_id: &str,
 ) -> Result<ComposerDraftBox, ComposerDraftError> {
     let path = drafts_path(task_dir);
-    with_file_lock(&path, || {
+    with_composer_draft_lock(&path, || {
         let mut drafts = load_unlocked(&path)?;
         let before = drafts.items.len();
         drafts.items.retain(|draft| draft.id != draft_id);
         if drafts.items.len() != before {
             persist_unlocked(&path, &mut drafts)?;
         }
-        Ok(Ok(drafts))
+        Ok(drafts)
     })
-    .map_err(|_| ComposerDraftError::Storage)?
+}
+
+fn with_composer_draft_lock<T>(
+    path: &Utf8Path,
+    operation: impl FnOnce() -> Result<T, ComposerDraftError>,
+) -> Result<T, ComposerDraftError> {
+    with_file_lock(path, || match operation() {
+        Ok(value) => Ok(value),
+        Err(error) => Err(anyhow::Error::new(error)),
+    })
+    .map_err(|error| {
+        error
+            .downcast::<ComposerDraftError>()
+            .unwrap_or(ComposerDraftError::Storage)
+    })
 }
 
 fn mutate<T>(
@@ -151,30 +167,50 @@ fn mutate<T>(
     operation: impl FnOnce(&mut ComposerDraftBox) -> Result<Option<T>, ComposerDraftError>,
 ) -> Result<(Option<T>, ComposerDraftBox), ComposerDraftError> {
     let path = drafts_path(task_dir);
-    with_file_lock(&path, || {
+    with_composer_draft_lock(&path, || {
         let mut drafts = load_unlocked(&path)?;
         let value = match operation(&mut drafts) {
             Ok(value) => value,
-            Err(error) => return Ok(Err(error)),
+            Err(error) => return Err(error),
         };
         persist_unlocked(&path, &mut drafts)?;
-        Ok(Ok((value, drafts)))
+        Ok((value, drafts))
     })
-    .map_err(|_| ComposerDraftError::Storage)?
 }
 
-fn load_unlocked(path: &Utf8Path) -> anyhow::Result<ComposerDraftBox> {
+fn load_unlocked(path: &Utf8Path) -> Result<ComposerDraftBox, ComposerDraftError> {
     if path.exists() {
-        read_json(path)
+        let drafts: ComposerDraftBox = read_json(path).map_err(|_| ComposerDraftError::Storage)?;
+        validate_invariants(&drafts)?;
+        Ok(drafts)
     } else {
         Ok(ComposerDraftBox::default())
     }
 }
 
-fn persist_unlocked(path: &Utf8Path, drafts: &mut ComposerDraftBox) -> anyhow::Result<()> {
+fn validate_invariants(drafts: &ComposerDraftBox) -> Result<(), ComposerDraftError> {
+    if drafts.version != COMPOSER_DRAFTS_VERSION
+        || drafts.items.len() > MAX_COMPOSER_DRAFTS
+        || drafts
+            .items
+            .iter()
+            .map(|draft| draft.id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != drafts.items.len()
+    {
+        return Err(ComposerDraftError::Invalid);
+    }
+    Ok(())
+}
+
+fn persist_unlocked(
+    path: &Utf8Path,
+    drafts: &mut ComposerDraftBox,
+) -> Result<(), ComposerDraftError> {
     drafts.version = COMPOSER_DRAFTS_VERSION;
     drafts.revision = drafts.revision.saturating_add(1);
-    write_json(path, drafts)
+    write_json(path, drafts).map_err(|_| ComposerDraftError::Storage)
 }
 
 #[cfg(test)]
@@ -315,6 +351,37 @@ mod tests {
             Err(ComposerDraftError::Storage)
         );
         assert_eq!(std::fs::read(drafts_path(&dir)).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn invalid_storage_invariants_are_rejected_without_rewrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = task_dir(&temp);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            drafts_path(&dir),
+            serde_json::to_string(&ComposerDraftBox {
+                version: COMPOSER_DRAFTS_VERSION + 1,
+                revision: 1,
+                items: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(load_composer_drafts(&dir), Err(ComposerDraftError::Invalid));
+        assert_eq!(
+            save_composer_draft(&dir, input("new"), Vec::new()),
+            Err(ComposerDraftError::Invalid)
+        );
+        assert!(
+            serde_json::from_str::<ComposerDraftBox>(
+                &std::fs::read_to_string(drafts_path(&dir)).unwrap()
+            )
+            .unwrap()
+            .version
+                == COMPOSER_DRAFTS_VERSION + 1
+        );
     }
 
     #[test]

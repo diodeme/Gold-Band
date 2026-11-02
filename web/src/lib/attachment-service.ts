@@ -20,6 +20,8 @@ export interface AttachmentItem {
   contentUrl?: string;
   /** Raw File object for browser-mode content reading. */
   file?: File;
+  /** The durable source no longer resolves; retain the chip for user action without implying it can send. */
+  unavailable?: boolean;
   source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file' | 'generated';
 }
 

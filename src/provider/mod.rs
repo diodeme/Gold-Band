@@ -126,6 +126,7 @@ impl TaskPromptInput {
 pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
+pub const MAX_USER_PROMPT_TEXT_CHARS: usize = 64_000;
 
 pub fn conversation_agent_prompt_text(
     input: &ConversationPromptInput,

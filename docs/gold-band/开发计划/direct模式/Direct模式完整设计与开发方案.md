@@ -1529,3 +1529,16 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 过度设计评审：复用 draft snapshot、既有 revision、项目/task identity、Radix Popover 和 blocking pool；草稿与发送队列的生命周期不同，保持上游的独立实体有必要，不引入额外事务模型、旁路缓存、队列或依赖。
 
 性能影响评审：队列最多 10 条、草稿最多 20 条；列表预览最多 20 × 280 字符，不加载完整详情、不执行 N+1、无轮询；单个 JSON 文件仍在显式操作时解析；草稿存取、新增队列控制与设置写入的文件锁/I/O 复用后台池。立即发送仍复用既有提交流程，未在本次全面改造旧流程的同步 I/O。设置为单值，现有订阅边界保持不变。该规模无需增加索引或性能缓存。
+
+## 33. 2026-10-30：立即发送预订与草稿快照加固
+
+状态：已实现并完成定向回归。
+
+- 立即发送修复目标项 TOCTOU：`use_conversation_queued_prompt` 先按稳定 item id claim/reserve，再检测到 busy 时停止并等待上一 turn settle。目标 NotFound/Dispatching 直接返回，不触发 stop；stop 或 settle 失败释放 reservation 回 queued，并在失败路径推送队列 lifecycle。
+- 草稿角色快照不再按显示名反查。`AcpComposerDraft` 保留 durable role snapshot，取回时渲染稳定前缀，保存/发送均用原 `profileId + content`；角色更新、删除、同名或名称含空格不改变已保存快照。
+- 会话输入新增共享 `MAX_USER_PROMPT_TEXT_CHARS = 64,000`，所有普通 prompt 与草稿保存复用同一 `conversation.prompt-too-long(maxChars)` 结构化错误；草稿因此保持 20 × 有界正文，不再形成无上限 JSON 文件。
+- 草稿保存 pending 提升到 composer 操作互斥层，存储在途时按钮与 Enter 发送均不可用；成功清空未修改快照时同步关闭 draft-attachment 右侧 Tab，再释放 Object URL。
+- 草稿保存命令统一入口先返回草稿域 empty 错误，再复用普通 prompt 校验与 role 的 Direct-only 校验；Workflow/AUTO 不再能保存“可存不可发”的角色草稿。
+- `composer-drafts.json` 加载时校验 version、条数上限和 ID 唯一性；违反 invariant 返回 `conversation.composer-draft-invalid`，坏 JSON 保持 `conversation.composer-draft-storage-failed`，两者都不会重写原文件。
+- 取出草稿时附件与结构化文件引用解析失败不再吞错：保留稳定来源，chip 标记不可用并禁用预览/打开；用户可移除后处理，发送前仍由后端最终校验。删除草稿增加 AlertDialog 二次确认，七语言同步。
+- 回归：reservation 两项 Rust 命令层测试、草稿命令/摘要 3 项、草稿存储 9 项、输入上限 1 项全部通过；前端草稿、角色快照、附件 Tab、禁发、删除确认、不可用引用与 i18n 相关 5 文件 87 项通过，生产 TypeScript 通过。浏览器深链 `/chat/projects/default/tasks/mock-task/runs/run-053` 验证保存、计数、删除确认与取消保留。

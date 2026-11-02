@@ -1017,7 +1017,8 @@
       "continue-launch-channel-closed": "The workflow resume did not start. Try again."
     },
     "composer": {
-      "context-limit-exceeded": "Context can contain at most {{max}} references and attachments."
+      "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
+      "referenceUnavailable": "Reference unavailable"
     },
     "conversation": {
       "task-not-found": "This conversation could not be found.",
@@ -1037,6 +1038,7 @@
       "session-restore-unsupported": "This Agent cannot restore an existing session.",
       "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
       "prompt-empty": "Enter a message to send.",
+      "prompt-too-long": "A message cannot exceed {{maxChars}} characters.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
       "prompt-quote-limit-exceeded": "Quoted text cannot exceed {{maxChars}} characters in total.",
       "prompt-quote-diff-limit-exceeded": "Full diff quotes cannot exceed {{maxBytes}} bytes in total.",
@@ -1063,6 +1065,7 @@
       "composer-draft-empty": "There is nothing to save.",
       "composer-draft-full": "Drafts are full. You can keep up to {{max}}.",
       "composer-draft-not-found": "This draft no longer exists.",
+      "composer-draft-invalid": "The draft box data is invalid. Check the local data and try again.",
       "composer-draft-storage-failed": "Cannot access drafts. Try again.",
       "execution-plan": {
         "not-found": "This run has no execution plan.",
@@ -2383,6 +2386,8 @@
       "take": "Move to input",
       "takeOccupied": "Handle the current input first",
       "delete": "Delete draft",
+      "deleteConfirmTitle": "Delete this draft?",
+      "deleteConfirmDescription": "Its text, quotes, role, and attachment references will be removed. This cannot be undone.",
       "takeConflict": "The input is not empty. The draft remains in the draft box."
     },
     "sending": "Sending",

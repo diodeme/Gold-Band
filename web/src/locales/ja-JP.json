@@ -1017,7 +1017,8 @@
       "continue-launch-channel-closed": "ワークフローの再開は開始されませんでした。もう一度やり直してください。"
     },
     "composer": {
-      "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。"
+      "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
+      "referenceUnavailable": "参照は利用できません"
     },
     "conversation": {
       "task-not-found": "この会話は見つかりませんでした。",
@@ -1037,6 +1038,7 @@
       "session-restore-unsupported": "このAgentは既存のセッションを復元できません。",
       "history-sync-unsupported": "このAgentは、既存のセッションの完全な履歴を同期できません。",
       "prompt-empty": "送信する内容を入力してください。",
+      "prompt-too-long": "メッセージは {{maxChars}} 文字を超えることはできません。",
       "prompt-quote-invalid": "引用したテキストが無効です。削除して、もう一度引用してください。",
       "prompt-quote-limit-exceeded": "引用は合計 {{maxChars}} 文字までです。",
       "prompt-quote-diff-limit-exceeded": "完全な diff の引用は合計 {{maxBytes}} バイト以内にしてください。",
@@ -1063,6 +1065,7 @@
       "composer-draft-empty": "保存できる内容がありません。",
       "composer-draft-full": "下書きボックスがいっぱいです。最大 {{max}} 件まで保存できます。",
       "composer-draft-not-found": "この下書きはすでに存在しません。",
+      "composer-draft-invalid": "下書きボックスのデータが無効です。ローカルデータを確認して、再度お試しください。",
       "composer-draft-storage-failed": "草稿ボックスにアクセスできません。再試行してください。",
       "execution-plan": {
         "not-found": "この Run には実行計画がありません。",
@@ -2383,6 +2386,8 @@
       "take": "入力欄に戻す",
       "takeOccupied": "先に入力欄の内容を処理してください",
       "delete": "下書きを削除",
+      "deleteConfirmTitle": "この下書きを削除しますか？",
+      "deleteConfirmDescription": "本文、引用、ロール、添付参照が一緒に削除されます。この操作は取り消せません。",
       "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。"
     },
     "sending": "送信中",

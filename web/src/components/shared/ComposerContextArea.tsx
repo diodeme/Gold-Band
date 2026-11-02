@@ -118,9 +118,15 @@ export function ComposerContextArea({
               >
                 <button
                   type="button"
-                  className="flex min-w-0 items-center gap-1.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                  className={cn(
+                    'flex min-w-0 items-center gap-1.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
+                    file.unavailable && 'cursor-not-allowed text-destructive',
+                  )}
+                  disabled={file.unavailable}
                   onClick={() => onOpenWorkspaceFile?.(file)}
                   aria-label={t('workspace.filesPanel.openWorkspaceFile', { name: file.name })}
+                  aria-disabled={file.unavailable || undefined}
+                  data-composer-workspace-file-unavailable={file.unavailable ? 'true' : undefined}
                 >
                   <FileText className="size-3.5 shrink-0 text-muted-foreground" />
                   <span className="truncate">{file.name}</span>
@@ -139,6 +145,7 @@ export function ComposerContextArea({
               </span>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={8} className="max-w-[min(36rem,calc(100vw-2rem))]">
+              {file.unavailable ? <span className="mb-1 block text-destructive">{t('acp.composer.referenceUnavailable')}</span> : null}
               <span className="block break-all">{file.relativePath}</span>
               <span className="block text-muted-foreground">
                 {file.byteLength == null
@@ -165,7 +172,9 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
 }) {
   const { t } = useTranslation();
   const image = isImageMime(item.mime);
-  const details = `${item.name} · ${formatSize(item.size)}`;
+  const details = item.unavailable
+    ? `${item.name} · ${t('acp.composer.referenceUnavailable')}`
+    : `${item.name} · ${formatSize(item.size)}`;
   const imageActions = useImageActions(image ? item : null);
 
   const previewButton = (
@@ -176,8 +185,11 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
         image ? 'w-full justify-center' : 'gap-1.5 py-1 pl-2',
         imageActions.state === 'failed' && 'ring-1 ring-destructive/70',
       )}
+      disabled={item.unavailable}
       onClick={onPreview}
       aria-label={details}
+      aria-disabled={item.unavailable || undefined}
+      data-composer-attachment-unavailable={item.unavailable ? 'true' : undefined}
       aria-busy={imageActions.pending || undefined}
     >
       {image && item.previewUrl ? (
@@ -203,6 +215,7 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
       <div
         className={cn(
           'group relative flex h-8 items-center rounded-lg bg-muted/55 text-xs text-foreground/85 transition-colors hover:bg-muted/75 focus-within:bg-muted/75',
+          item.unavailable && 'bg-destructive/10 text-destructive',
           image ? 'w-8 justify-center p-0.5' : 'max-w-52 gap-1',
         )}
         data-composer-attachment-chip="true"

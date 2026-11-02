@@ -4,15 +4,17 @@ import {
   revokeAttachmentPreviewUrls,
   type AttachmentItem,
 } from './attachment-service';
-import { composerTextFromPromptRole } from './slash-command';
+import { committedRoleSnapshot, composerTextFromPromptRole, type CommittedSlashItem } from './slash-command';
 import type { ComposerQuote, ComposerWorkspaceFileRef } from './composer-context';
 import type { AttachmentFileRef } from '@/api/client';
-import type { ConversationQueuedPromptDraftVm, RightWorkspaceFileTargetVm } from '@/types';
+import type { ConversationQueuedPromptDraftVm, RightWorkspaceFileTargetVm, UserPromptRole } from '@/types';
 import i18n from '@/i18n';
 import { fileReferenceIdentity, fileReferenceLabel, fileReferenceProjectId } from './file-reference-source';
+import { createUserPromptSubmission } from './composer-context';
 
 export interface AcpComposerDraft {
   content: string;
+  role?: UserPromptRole | null;
   attachments: AttachmentItem[];
   quotes: ComposerQuote[];
   workspaceFiles: ComposerWorkspaceFileRef[];
@@ -22,15 +24,25 @@ export function queuedPromptToAcpComposerDraft(
   item: ConversationQueuedPromptDraftVm,
   fileRefs: readonly AttachmentFileRef[] = [],
   targets: readonly RightWorkspaceFileTargetVm[] = [],
+  unresolvedAttachmentPaths: readonly string[] = [],
+  unresolvedSourceIds: readonly string[] = [],
 ): AcpComposerDraft {
   const metadata = new Map(targets.map(target => [fileReferenceIdentity(target.source), target]));
+  const unresolvedAttachments = new Set(unresolvedAttachmentPaths);
+  const unresolvedSources = new Set(unresolvedSourceIds);
   return {
     content: composerTextFromPromptRole(item.role, item.content),
-    attachments: attachmentItemsFromPaths(item.attachmentPaths, fileRefs),
+    role: item.role ?? null,
+    attachments: attachmentItemsFromPaths(item.attachmentPaths, fileRefs).map((attachment, index) => (
+      unresolvedAttachments.has(item.attachmentPaths[index])
+        ? { ...attachment, unavailable: true }
+        : attachment
+    )),
     quotes: item.quotes.map(({ id, text, source }) => ({ id, text, source })),
     workspaceFiles: (item.workspaceFiles ?? []).map((source) => {
       const id = fileReferenceIdentity(source);
       const target = metadata.get(id);
+      const unavailable = unresolvedSources.has(id) || target?.availability.kind === 'unavailable';
       const label = fileReferenceLabel(source);
       return {
         id, source, projectId: fileReferenceProjectId(source),
@@ -39,6 +51,7 @@ export function queuedPromptToAcpComposerDraft(
         byteLength: target?.byteLength ?? null,
         mimeType: target?.mimeType ?? 'application/octet-stream',
         ...(target?.absolutePath ? { canonicalPath: target.absolutePath } : {}),
+        ...(unavailable ? { unavailable: true } : {}),
       };
     }),
   };
@@ -47,12 +60,35 @@ export function queuedPromptToAcpComposerDraft(
 export const MAX_ACP_COMPOSER_DRAFTS = 64;
 export const MAX_ACP_COMPOSER_DRAFT_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
+export function acpComposerDraftRolePrefix(role: UserPromptRole) {
+  return composerTextFromPromptRole(role, '');
+}
+
+export function acpComposerDraftToPromptSubmission(
+  draft: AcpComposerDraft,
+  committed: CommittedSlashItem | null,
+) {
+  let content = draft.content;
+  const role = draft.role ?? null;
+  if (role) {
+    const prefix = acpComposerDraftRolePrefix(role);
+    if (content.startsWith(prefix)) content = content.slice(prefix.length);
+  }
+  return createUserPromptSubmission(
+    content,
+    draft.quotes,
+    role ?? committedRoleSnapshot(committed),
+    draft.workspaceFiles,
+  );
+}
+
 function emptyDraft(): AcpComposerDraft {
   return { content: '', attachments: [], quotes: [], workspaceFiles: [] };
 }
 
 function hasDraftContent(draft: AcpComposerDraft) {
   return draft.content.length > 0
+    || draft.role != null
     || draft.attachments.length > 0
     || draft.quotes.length > 0
     || draft.workspaceFiles.length > 0;

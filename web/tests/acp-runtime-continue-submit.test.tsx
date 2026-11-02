@@ -505,6 +505,76 @@ describe('ACP runtime continue submission', () => {
     }
   });
 
+  it('saves a restored role snapshot without resolving it by display name', async () => {
+    const role = {
+      profileId: 'pf-data',
+      name: 'Data Scientist',
+      content: 'saved role snapshot',
+    };
+    apiMocks.saveConversationComposerDraft.mockResolvedValue({
+      revision: 1,
+      maxItems: 20,
+      items: [],
+    });
+    const { container, root } = await renderPausedDialog({
+      initialDraft: { content: '@Data-Scientist saved text', role, attachments: [], quotes: [], workspaceFiles: [] },
+    });
+    try {
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger]')!.click());
+      await flushInteraction(() => document.querySelector<HTMLButtonElement>('[data-composer-draft-save]')!.click());
+
+      expect(apiMocks.saveConversationComposerDraft).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ displayText: 'saved text', role }),
+        undefined,
+      );
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('closes open draft attachment tabs when the draft is saved', async () => {
+    let resolveSave!: (box: { revision: number; maxItems: number; items: [] }) => void;
+    apiMocks.saveConversationComposerDraft.mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    const { container, root } = await renderPausedDialog({
+      initialDraft: contextDraft(),
+      showAttachmentWorkspace: true,
+    });
+    try {
+      await flushInteraction(() => container.querySelector<HTMLImageElement>('[data-composer-attachment-chip] img')!.closest('button')!.click());
+      expect(container.querySelector('[data-attachment-workspace-kind]')).not.toBeNull();
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger]')!.click());
+      await flushInteraction(() => document.querySelector<HTMLButtonElement>('[data-composer-draft-save]')!.click());
+      await act(async () => resolveSave({ revision: 1, maxItems: 20, items: [] }));
+
+      expect(container.querySelector('[data-attachment-workspace-kind]')).toBeNull();
+      expect(container.querySelector('[data-right-workspace-resource-key^="draft-attachment:"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('blocks submission while draft storage is pending', async () => {
+    let resolveSave!: (box: { revision: number; maxItems: number; items: [] }) => void;
+    apiMocks.saveConversationComposerDraft.mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    const { container, root } = await renderActiveDirectDialog();
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await setTextareaValue(textarea, 'do not send while saving');
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger]')!.click());
+      await flushInteraction(() => document.querySelector<HTMLButtonElement>('[data-composer-draft-save]')!.click());
+      expect(container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')?.disabled).toBe(true);
+
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      expect(apiMocks.submitConversationPrompt).not.toHaveBeenCalled();
+      await act(async () => resolveSave({ revision: 1, maxItems: 20, items: [] }));
+      expect(container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')?.disabled).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   const contextDraft = (): AcpComposerDraft => ({
     content: 'cancelled draft',
     attachments: [

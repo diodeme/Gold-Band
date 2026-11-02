@@ -1017,7 +1017,8 @@
       "continue-launch-channel-closed": "워크플로 재개가 시작되지 않았습니다. 다시 시도하세요."
     },
     "composer": {
-      "context-limit-exceeded": "컨텍스트에는 참조와 첨부 파일을 최대 {{max}}개까지 포함할 수 있습니다."
+      "context-limit-exceeded": "컨텍스트에는 참조와 첨부 파일을 최대 {{max}}개까지 포함할 수 있습니다.",
+      "referenceUnavailable": "참조를 사용할 수 없습니다"
     },
     "conversation": {
       "task-not-found": "이 대화를 찾을 수 없습니다.",
@@ -1037,6 +1038,7 @@
       "session-restore-unsupported": "이 Agent는 기존 세션을 복원할 수 없습니다.",
       "history-sync-unsupported": "이 Agent는 기존 세션의 전체 기록을 동기화할 수 없습니다.",
       "prompt-empty": "보낼 메시지를 입력해 주세요.",
+      "prompt-too-long": "메시지는 {{maxChars}}자를 초과할 수 없습니다.",
       "prompt-quote-invalid": "인용 텍스트가 유효하지 않습니다. 제거한 뒤 메시지를 다시 인용해 주세요.",
       "prompt-quote-limit-exceeded": "인용 텍스트는 총 {{maxChars}}자를 초과할 수 없습니다.",
       "prompt-quote-diff-limit-exceeded": "전체 diff 인용은 합계 {{maxBytes}}바이트를 넘을 수 없습니다.",
@@ -1063,6 +1065,7 @@
       "composer-draft-empty": "저장할 내용이 없습니다.",
       "composer-draft-full": "임시 보관함이 가득 찼습니다. 최대 {{max}}개까지 보관할 수 있습니다.",
       "composer-draft-not-found": "이 임시 저장 내용은 더 이상 없습니다.",
+      "composer-draft-invalid": "임시 보관함 데이터가 유효하지 않습니다. 로컬 데이터를 확인한 뒤 다시 시도하세요.",
       "composer-draft-storage-failed": "초안 보관함에 접근할 수 없습니다. 다시 시도하세요.",
       "execution-plan": {
         "not-found": "이 Run에는 실행 계획이 없습니다.",
@@ -2383,6 +2386,8 @@
       "take": "입력창으로 가져오기",
       "takeOccupied": "먼저 입력창의 현재 내용을 처리하세요",
       "delete": "임시 저장 삭제",
+      "deleteConfirmTitle": "이 임시 저장 내용을 삭제할까요?",
+      "deleteConfirmDescription": "본문, 인용, 역할, 첨부 참조가 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
       "takeConflict": "입력란에 내용이 있어 초안이 보관함에 그대로 남아 있습니다."
     },
     "sending": "전송 중",

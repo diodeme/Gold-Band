@@ -3,6 +3,7 @@ import {
   AcpComposerDraftStore,
   queuedPromptToAcpComposerDraft,
 } from '@/lib/acp-composer-draft';
+import { fileReferenceIdentity } from '@/lib/file-reference-source';
 import type { AttachmentItem } from '@/lib/attachment-service';
 import type { ConversationQueuedPromptDraftVm, RightWorkspaceFileTargetVm } from '@/types';
 
@@ -45,18 +46,25 @@ describe('ACP follow-up composer draft store', () => {
   });
 
   it('reconstructs the composer role tag from the queued role snapshot', () => {
-    expect(queuedPromptToAcpComposerDraft({
+    const role = { profileId: 'pf-dev', name: '开发', content: '完整角色定义' };
+    const restored = queuedPromptToAcpComposerDraft({
       content: '',
       quotes: [], workspaceFiles: [],
       attachmentPaths: [],
-      role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
-    }).content).toBe('@开发 ');
-    expect(queuedPromptToAcpComposerDraft({
+      role,
+    });
+    expect(restored.content).toBe('@开发 ');
+    expect(restored.role).toEqual(role);
+
+    const spacedRole = { profileId: 'pf-data', name: 'Data Scientist', content: 'saved snapshot' };
+    const spaced = queuedPromptToAcpComposerDraft({
       content: '爱仕达',
       quotes: [], workspaceFiles: [],
       attachmentPaths: [],
-      role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
-    }).content).toBe('@开发 爱仕达');
+      role: spacedRole,
+    });
+    expect(spaced.role).toEqual(spacedRole);
+    expect(spaced.content).toBe('@Data-Scientist 爱仕达');
   });
 
   it('restores source identity immediately and enriches a turn file without exposing its internal ID', () => {
@@ -76,6 +84,32 @@ describe('ACP follow-up composer draft store', () => {
     store.write('session', { ...restored, content: 'edited while loading' });
     expect(store.replaceIfUnchanged('session', restored, enriched)).toBe(false);
     expect(store.read('session').content).toBe('edited while loading');
+  });
+
+  it('marks unresolved restored attachment and file references unavailable instead of silently downgrading them', () => {
+    const source = {
+      kind: 'turn-file' as const,
+      locator: { projectId: 'p', taskId: 't', runId: 'r', roundId: 'round', nodeId: 'n', attemptId: 'a', branchId: 'root' },
+      changeSetId: 'set',
+      changeId: 'change',
+    };
+    const item: ConversationQueuedPromptDraftVm = {
+      content: 'queued',
+      quotes: [],
+      attachmentPaths: ['C:/missing.png'],
+      workspaceFiles: [source],
+    };
+
+    const restored = queuedPromptToAcpComposerDraft(
+      item,
+      [],
+      [],
+      item.attachmentPaths,
+      [fileReferenceIdentity(source)],
+    );
+
+    expect(restored.attachments[0]).toMatchObject({ unavailable: true });
+    expect(restored.workspaceFiles[0]).toMatchObject({ unavailable: true });
   });
 
   it('restores text and attachments by full session locator while isolating another session', () => {

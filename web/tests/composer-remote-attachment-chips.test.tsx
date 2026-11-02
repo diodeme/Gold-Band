@@ -86,4 +86,42 @@ describe('composer remote attachment chips', () => {
     const remote = container.querySelector('[data-composer-remote-attachment-chip]');
     expect(remote?.textContent).toBe('需求附件.zip');
   });
+
+  it('disables preview and open actions for unavailable restored references', async () => {
+    const onPreviewAttachment = vi.fn();
+    const onOpenWorkspaceFile = vi.fn();
+    await renderArea({
+      attachments: [{
+        id: 'missing',
+        name: 'missing.png',
+        size: 0,
+        mime: 'image/png',
+        source: 'dialog',
+        unavailable: true,
+      }],
+      workspaceFiles: [{
+        id: 'missing-file',
+        source: { kind: 'workspace', projectId: 'p', relativePath: 'src/missing.ts' },
+        projectId: 'p',
+        relativePath: 'src/missing.ts',
+        name: 'missing.ts',
+        byteLength: null,
+        mimeType: 'text/plain',
+        unavailable: true,
+      }],
+      onOpenWorkspaceFile,
+      onRemoveAttachment: vi.fn(),
+      onRemoveWorkspaceFile: vi.fn(),
+      onPreviewAttachment,
+    });
+
+    const attachment = container.querySelector<HTMLButtonElement>('[data-composer-attachment-unavailable="true"]');
+    const workspaceFile = container.querySelector<HTMLButtonElement>('[data-composer-workspace-file-unavailable="true"]');
+    expect(attachment?.disabled).toBe(true);
+    expect(workspaceFile?.disabled).toBe(true);
+    attachment?.click();
+    workspaceFile?.click();
+    expect(onPreviewAttachment).not.toHaveBeenCalled();
+    expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+  });
 });

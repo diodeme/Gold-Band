@@ -189,15 +189,29 @@ describe('ComposerDraftBox', () => {
     expect(box.textContent).toContain('草稿箱已满，最多可保留 20 条。');
   });
 
-  it('deletes a draft', async () => {
+  it('asks for confirmation before deleting a draft', async () => {
     apiMocks.deleteConversationComposerDraft.mockResolvedValue(draftBox(3, ['beta']));
     await render();
     const box = await openBox();
     const remove = box.querySelector<HTMLButtonElement>('[data-composer-draft-id="draft-alpha"] button[aria-label="删除草稿"]');
     await act(async () => remove?.click());
+    expect(apiMocks.deleteConversationComposerDraft).not.toHaveBeenCalled();
+    const dialog = document.body.querySelector<HTMLElement>('[data-composer-draft-delete-confirm="true"]')!;
+    expect(dialog).not.toBeNull();
+    await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-label="取消"]')?.click());
+    await settle();
+    expect(box.querySelectorAll('[data-composer-draft-id]')).toHaveLength(2);
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger="true"]')?.click());
+    await settle();
+    const reopenedBox = document.body.querySelector<HTMLElement>('[data-composer-draft-box="true"]')!;
+    const removeAgain = reopenedBox.querySelector<HTMLButtonElement>('[data-composer-draft-id="draft-alpha"] button[aria-label="删除草稿"]');
+    await act(async () => removeAgain?.click());
+    const confirm = document.body.querySelector<HTMLElement>('[data-composer-draft-delete-confirm="true"]')!;
+    await act(async () => confirm.querySelector<HTMLButtonElement>('button[aria-label="删除草稿"]')?.click());
     await settle();
     expect(apiMocks.deleteConversationComposerDraft).toHaveBeenCalledWith('project-1', 'task-1', 'draft-alpha');
-    expect(box.querySelectorAll('[data-composer-draft-id]')).toHaveLength(1);
+    expect(host.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('1');
   });
 
   function capturing(input: string) {

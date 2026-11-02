@@ -46,6 +46,7 @@ use std::path::{Component, Path, PathBuf};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
+    future::Future,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -64,10 +65,10 @@ use gold_band::config::{
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_ROLE_CONTENT_CHARS,
-    MAX_USER_PROMPT_ROLE_ID_BYTES, MAX_USER_PROMPT_ROLE_NAME_BYTES, UserPromptQuote,
-    UserPromptRole, conversation_agent_prompt_text, conversation_prompt_has_payload,
-    select_config_options_from_capabilities, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    MAX_USER_PROMPT_ROLE_ID_BYTES, MAX_USER_PROMPT_ROLE_NAME_BYTES, MAX_USER_PROMPT_TEXT_CHARS,
+    UserPromptQuote, UserPromptRole, conversation_agent_prompt_text,
+    conversation_prompt_has_payload, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -7613,12 +7614,35 @@ fn composer_draft_command_error(
             "conversation.composer-draft-not-found",
             serde_json::json!({}),
         ),
+        ComposerDraftError::Invalid => {
+            ("conversation.composer-draft-invalid", serde_json::json!({}))
+        }
         ComposerDraftError::Storage => (
             "conversation.composer-draft-storage-failed",
             serde_json::json!({}),
         ),
     };
     CommandErrorVm::new(code, params)
+}
+
+fn validate_composer_draft_input(
+    app: &App,
+    task_id: &str,
+    input: &ConversationPromptInput,
+    attachment_paths: Option<&[String]>,
+) -> CommandResult<()> {
+    if !conversation_prompt_has_payload(
+        &input.display_text,
+        attachment_paths.map_or(0, <[_]>::len),
+        input.role.as_ref(),
+        input.workspace_files.len(),
+    ) {
+        return Err(composer_draft_command_error(
+            gold_band::acp::composer_drafts::ComposerDraftError::Empty,
+        ));
+    }
+    validate_conversation_prompt_input(input, attachment_paths)?;
+    validate_prompt_role_run_mode(app, task_id, input)
 }
 
 /// Drafts live in the conversation task directory, so the task id from the
@@ -7664,7 +7688,7 @@ pub async fn save_conversation_composer_draft(
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     spawn_blocking_command(move || {
         let task_dir = composer_draft_task_dir(&app, &task_id)?;
-        validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
+        validate_composer_draft_input(&app, &task_id, &input, attachment_paths.as_deref())?;
         gold_band::acp::composer_drafts::save_composer_draft(
             &task_dir,
             input,
@@ -7726,6 +7750,32 @@ pub async fn delete_conversation_composer_draft(
 /// instead of leaving the claimed item stranded as `Dispatching`.
 const IMMEDIATE_DISPATCH_SETTLE_POLL_MS: u64 = 200;
 const IMMEDIATE_DISPATCH_SETTLE_TIMEOUT_MS: u64 = 15_000;
+
+/// Reserves the explicit target before performing the destructive interrupt.
+/// A stale UI id then fails without stopping a turn, while a claimed item is
+/// released back to Queued if interruption cannot settle.
+async fn reserve_immediate_dispatch<Claim, Stop, StopFuture, Release>(
+    busy: bool,
+    claim: Claim,
+    stop: Stop,
+    release: Release,
+) -> CommandResult<gold_band::acp::prompt_queue::QueuedPrompt>
+where
+    Claim: FnOnce() -> Result<gold_band::acp::prompt_queue::QueuedPrompt, PromptQueueError>,
+    Stop: FnOnce() -> StopFuture,
+    StopFuture: Future<Output = CommandResult<()>>,
+    Release: FnOnce(&gold_band::acp::prompt_queue::QueuedPrompt),
+{
+    let claimed = claim().map_err(prompt_queue_command_error)?;
+    if !busy {
+        return Ok(claimed);
+    }
+    if let Err(error) = stop().await {
+        release(&claimed);
+        return Err(error);
+    }
+    Ok(claimed)
+}
 
 async fn session_idle_for_dispatch(app: &App, locator: &AttemptLocator) -> CommandResult<bool> {
     let app = app.clone_for_background();
@@ -7841,32 +7891,49 @@ pub async fn use_conversation_queued_prompt(
             serde_json::json!({}),
         ));
     }
-    if busy {
-        stop_active_turn_for_immediate_dispatch(
-            &app_handle,
-            &state,
-            &app,
-            project_id.clone(),
-            &locator,
-        )
-        .await?;
-        if let Err(error) = await_turn_settled_for_immediate_dispatch(&app, &locator).await {
-            // The interruption is still settling; the queue keeps its items
-            // and the stop suspension, and the resume entry stays available.
+    let claim_attempt_dir = attempt_dir.clone();
+    let release_attempt_dir = attempt_dir.clone();
+    let stop_app_handle = app_handle.clone();
+    let stop_state = state.clone();
+    let stop_project_id = project_id.clone();
+    let stop_app = app.clone_for_background();
+    let stop_locator = locator.clone();
+    let claimed = match reserve_immediate_dispatch(
+        busy,
+        || claim_queued_prompt(&claim_attempt_dir, &item_id),
+        || async {
+            stop_active_turn_for_immediate_dispatch(
+                &stop_app_handle,
+                &stop_state,
+                &stop_app,
+                stop_project_id,
+                &stop_locator,
+            )
+            .await?;
+            await_turn_settled_for_immediate_dispatch(&app, &locator).await
+        },
+        |claimed| {
+            if let Err(error) = release_queued_prompt(&release_attempt_dir, &claimed.id) {
+                warn!(%error, item_id = %claimed.id, "failed to release immediate queued prompt reservation");
+            }
+        },
+    )
+    .await
+    {
+        Ok(claimed) => claimed,
+        Err(error) => {
             warn!(
                 project_id = %app.paths.project_id,
                 task_id = %locator.task_id,
                 attempt_id = %locator.attempt_id,
                 item_id = %item_id,
                 error_code = %error.code,
-                "interrupted turn did not settle in time for immediate queued dispatch"
+                "immediate queued prompt could not be reserved or interrupted"
             );
             emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator);
             return Err(error);
         }
-    }
-    let claimed =
-        claim_queued_prompt(&attempt_dir, &item_id).map_err(prompt_queue_command_error)?;
+    };
     emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
     let mut result = submit_conversation_prompt_inner(
         app_handle.clone(),
@@ -10180,6 +10247,12 @@ pub(crate) fn validate_conversation_prompt_input(
         return Err(CommandErrorVm::new(
             "conversation.prompt-empty",
             serde_json::json!({}),
+        ));
+    }
+    if input.display_text.chars().count() > MAX_USER_PROMPT_TEXT_CHARS {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-too-long",
+            serde_json::json!({ "maxChars": MAX_USER_PROMPT_TEXT_CHARS }),
         ));
     }
     if let Some(code) = crate::view_models_conversation::validate_attachment_paths(attachment_paths)
@@ -13012,6 +13085,81 @@ mod tests {
     }
 
     #[test]
+    fn prompt_text_validation_returns_a_structured_limit() {
+        let max_chars = gold_band::provider::MAX_USER_PROMPT_TEXT_CHARS;
+        let input = ConversationPromptInput::from("长".repeat(max_chars + 1));
+
+        let error = validate_conversation_prompt_input(&input, None).unwrap_err();
+
+        assert_eq!(error.code, "conversation.prompt-too-long");
+        assert_eq!(error.params["maxChars"], serde_json::json!(max_chars));
+    }
+
+    #[test]
+    fn composer_draft_validation_uses_domain_empty_and_direct_role_boundary() {
+        fn app_with_run_mode(mode: &str) -> App {
+            let root = std::env::temp_dir().join(format!(
+                "gold-band-composer-draft-validation-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let app = App::new(Utf8PathBuf::from_path_buf(root).unwrap());
+            let metadata = app
+                .paths
+                .task_dir("task-1")
+                .join("authoring")
+                .join("conversation.json");
+            std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+            write_json(
+                &metadata,
+                &serde_json::json!({
+                    "version": gold_band::domain::VERSION,
+                    "source": "conversation",
+                    "runMode": mode,
+                    "workflowTemplateId": null,
+                    "includeOptionalEntry": false,
+                    "directConfig": null,
+                    "agentIdentity": null,
+                    "titleAutoGenerated": false,
+                    "initialAttachmentNames": null,
+                    "createdAt": "2026-10-30T00:00:00Z",
+                    "lastActivityAt": "2026-10-30T00:00:00Z"
+                }),
+            )
+            .unwrap();
+            app
+        }
+        let role = UserPromptRole {
+            profile_id: "pf-direct".to_string(),
+            name: "Direct".to_string(),
+            content: "role snapshot".to_string(),
+        };
+        let mut input = ConversationPromptInput::from("saved".to_string());
+        input.role = Some(role);
+
+        assert!(
+            validate_composer_draft_input(&app_with_run_mode("direct"), "task-1", &input, None)
+                .is_ok()
+        );
+        assert_eq!(
+            validate_composer_draft_input(&app_with_run_mode("workflow"), "task-1", &input, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-role-direct-only"
+        );
+        assert_eq!(
+            validate_composer_draft_input(
+                &app_with_run_mode("direct"),
+                "task-1",
+                &ConversationPromptInput::from("   ".to_string()),
+                None
+            )
+            .unwrap_err()
+            .code,
+            "conversation.composer-draft-empty"
+        );
+    }
+
+    #[test]
     fn prompt_payload_validation_accepts_attachment_only_and_rejects_fully_empty_input() {
         let temp = tempfile::tempdir().unwrap();
         let attachment = temp.path().join("context.txt");
@@ -15286,6 +15434,68 @@ mod tests {
                 .0
                 .content,
             content
+        );
+    }
+
+    #[tokio::test]
+    async fn immediate_dispatch_reserves_the_target_before_stopping_a_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt")).unwrap();
+        let item = enqueue_prompt(&attempt_dir, "send me".to_string(), Vec::new()).unwrap();
+        claim_queued_prompt(&attempt_dir, &item.id).unwrap();
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&'static str>::new()));
+
+        let claim_calls = calls.clone();
+        let stop_calls = calls.clone();
+        let error = reserve_immediate_dispatch(
+            true,
+            move || {
+                claim_calls.borrow_mut().push("claim");
+                claim_queued_prompt(&attempt_dir, &item.id)
+            },
+            move || {
+                stop_calls.borrow_mut().push("stop");
+                async { Ok(()) }
+            },
+            |_| panic!("a failed claim must not release a reservation"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, "conversation.prompt-queue-item-dispatching");
+        assert_eq!(*calls.borrow(), vec!["claim"]);
+    }
+
+    #[tokio::test]
+    async fn immediate_dispatch_releases_a_reservation_when_stop_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt")).unwrap();
+        let item = enqueue_prompt(&attempt_dir, "keep me".to_string(), Vec::new()).unwrap();
+        let release_dir = attempt_dir.clone();
+
+        let error = reserve_immediate_dispatch(
+            true,
+            || claim_queued_prompt(&attempt_dir, &item.id),
+            || async {
+                Err(CommandErrorVm::new(
+                    "conversation.prompt-queue-interrupt-timeout",
+                    serde_json::json!({}),
+                ))
+            },
+            move |claimed| {
+                release_queued_prompt(&release_dir, &claimed.id).unwrap();
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, "conversation.prompt-queue-interrupt-timeout");
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].id, item.id);
+        assert_eq!(
+            queue.items[0].state,
+            gold_band::acp::prompt_queue::QueuedPromptState::Queued
         );
     }
 

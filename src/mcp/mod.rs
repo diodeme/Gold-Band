@@ -36,6 +36,11 @@ const MCP_VERSION_HEADER: &str = "MCP-Protocol-Version";
 const MCP_SESSION_HEADER: &str = "mcp-session-id";
 /// streamable HTTP Accept 头：服务端可返回 application/json 或 text/event-stream。
 const ACCEPT_STREAMABLE: &str = "application/json, text/event-stream";
+/// stdio initialize 等待上限：包含 `npx -y` / `uvx` 等启动器首次下载依赖的时间，
+/// 冷缓存下载可达分钟级，不能按普通请求耗时判定服务不可用。
+const STDIO_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(180);
+/// stdio initialize 之后的普通请求（如 tools/list）等待上限：进程已就绪，只等单次响应。
+const STDIO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 对标 Zed ContextServerStore — MCP 服务器的中枢管理器
 pub struct McpManager {
@@ -951,7 +956,7 @@ fn fetch_stdio_tools(
         let init_line = serde_json::to_string(&build_initialize_request())? + "\n";
         stdin.write_all(init_line.as_bytes())?;
         stdin.flush()?;
-        let init_response = recv_jsonrpc_response(&rx, 1, Duration::from_secs(10), "initialize")?;
+        let init_response = recv_jsonrpc_response(&rx, 1, STDIO_INITIALIZE_TIMEOUT, "initialize")?;
         parse_initialize_response(&init_response).context("initialize failed")?;
 
         // MCP 规范：initialize 后发 notifications/initialized（无 id、无响应）
@@ -967,7 +972,7 @@ fn fetch_stdio_tools(
         stdin.flush()?;
         drop(stdin);
 
-        let tools_response = recv_jsonrpc_response(&rx, 2, Duration::from_secs(10), "tools/list")?;
+        let tools_response = recv_jsonrpc_response(&rx, 2, STDIO_REQUEST_TIMEOUT, "tools/list")?;
         parse_tools_list_response(&tools_response)
     })();
 
@@ -1714,7 +1719,7 @@ mod tests {
     #[test]
     fn stdio_tools_list_waits_for_response_after_initialize() {
         let temp = tempfile::tempdir().unwrap();
-        let (command, args) = stdio_fixture_command(&temp);
+        let (command, args) = stdio_fixture_command(&temp, 0);
 
         let tools = fetch_stdio_tools(&command, &args, &BTreeMap::new()).unwrap();
 
@@ -1727,12 +1732,28 @@ mod tests {
         );
     }
 
+    /// `npx -y` / `uvx` 冷缓存时 initialize 前要先下载依赖，慢启动不能被判定为服务不可用。
+    #[test]
+    fn stdio_health_tolerates_slow_initialize_from_package_launchers() {
+        let temp = tempfile::tempdir().unwrap();
+        let (command, args) = stdio_fixture_command(&temp, 11);
+
+        let tools = fetch_stdio_tools(&command, &args, &BTreeMap::new()).unwrap();
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "lookup");
+    }
+
     #[cfg(windows)]
-    fn stdio_fixture_command(temp: &tempfile::TempDir) -> (String, Vec<String>) {
+    fn stdio_fixture_command(
+        temp: &tempfile::TempDir,
+        initialize_delay_secs: u64,
+    ) -> (String, Vec<String>) {
         let script = temp.path().join("mcp-fixture.ps1");
         fs::write(
             &script,
-            r#"
+            format!("Start-Sleep -Seconds {initialize_delay_secs}\n")
+                + r#"
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   if ($line -like '*initialize*') {
     [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}')
@@ -1759,11 +1780,15 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     }
 
     #[cfg(not(windows))]
-    fn stdio_fixture_command(temp: &tempfile::TempDir) -> (String, Vec<String>) {
+    fn stdio_fixture_command(
+        temp: &tempfile::TempDir,
+        initialize_delay_secs: u64,
+    ) -> (String, Vec<String>) {
         let script = temp.path().join("mcp-fixture.sh");
         fs::write(
             &script,
-            r#"
+            format!("sleep {initialize_delay_secs}\n")
+                + r#"
 while IFS= read -r line; do
   case "$line" in
     *initialize*)

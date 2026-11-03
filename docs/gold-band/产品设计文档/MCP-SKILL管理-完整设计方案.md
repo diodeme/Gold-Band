@@ -181,6 +181,8 @@ fn parse_initialize_response(&str) -> Result<McpServerHealthResult>  // 解析�
 spawn command → initialize → 读取匹配 id=1 的响应 → notifications/initialized → tools/list → 读取匹配 id=2 的响应 → terminate process tree
 ```
 
+超时按等待内容分开设置：initialize 等待 180s，因为它包含 `npx -y` / `uvx` 等启动器在冷缓存下首次下载依赖的时间（实测可达分钟级），慢启动不能判定为不可用；initialize 之后的 tools/list 等待 30s。检测在 `spawn_blocking` 中执行，等待期间不阻塞界面。
+
 **HTTP 流程：**
 ```
 POST initialize

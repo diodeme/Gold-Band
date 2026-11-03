@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.20.0](https://github.com/diodeme/Gold-Band/compare/v0.19.1...v0.20.0) (2026-11-03)
+
+
+### Features
+
+* **acp-ui:** mark the background usage gap note with a warning icon ([cb1155e](https://github.com/diodeme/Gold-Band/commit/cb1155e94ce13e7b60a25a40319e165f17f40fe7))
+* **acp:** add direct prompt queue controls and explicit draft-box entry ([e07f515](https://github.com/diodeme/Gold-Band/commit/e07f515c2c58780b399e59fab527fcafe621c78b))
+* **acp:** track native Claude subagents and background Agent work ([b509d9d](https://github.com/diodeme/Gold-Band/commit/b509d9d09c2977da20fe918134689046638ac3a2))
+* **im:** add Feishu remote approvals and harden intervention lifecycle ([4b908c1](https://github.com/diodeme/Gold-Band/commit/4b908c1783227dc434e0f8a9942042d0570ce042))
+* **im:** add Feishu remote approvals and harden shared lifecycle ([a3890e5](https://github.com/diodeme/Gold-Band/commit/a3890e5a33632f037f3ccfb99ec3f6ea4133a71d))
+* improve Feishu onboarding and chat scrolling ([c061773](https://github.com/diodeme/Gold-Band/commit/c061773dece00657eb847d90ad04c16b268d9118))
+* **im:** render IM cards in all seven desktop languages ([4e7900f](https://github.com/diodeme/Gold-Band/commit/4e7900f6c99553e153ed7b1432fa89639d858a54))
+* **im:** show the bound Feishu account by name instead of its open_id ([6ec3e74](https://github.com/diodeme/Gold-Band/commit/6ec3e74c0db86d591fd5f69f0ad5a201d05b0518))
+* **markdown:** let live preview fill the available panel width ([fe2a5a4](https://github.com/diodeme/Gold-Band/commit/fe2a5a4b5217f91d4fed5cc05ebfc808756cfd4e))
+* **marketing:** add website, embedded demo and recorded scenes ([f74206d](https://github.com/diodeme/Gold-Band/commit/f74206d805dc75e62fb776046b16c75b2f66171b))
+* **search:** open conversation search with Ctrl+F ([70eba20](https://github.com/diodeme/Gold-Band/commit/70eba206a455ce2b2f5c1f86b309e3425755301a))
+* **search:** open conversation search with Ctrl+K ([4174cd7](https://github.com/diodeme/Gold-Band/commit/4174cd7fa3c75ca8f9f1bc78d68077ee28e6c5ee))
+* **settings:** organize IM integrations into collapsible cards ([ee45410](https://github.com/diodeme/Gold-Band/commit/ee454102e03bde23e671078f43164906e9bbfc26))
+* **source-control:** confirm push targets before pushing ([c5d9c35](https://github.com/diodeme/Gold-Band/commit/c5d9c3550d7ffffac11dbd6174d5deb674023ac7))
+* **theme:** raise default editor font size to 13px ([8ff8a8d](https://github.com/diodeme/Gold-Band/commit/8ff8a8db05584e6e57e4f1cdc49b500aa34ff8af))
+* **web:** revalidate composer menu catalogs and show running agents ([ad118f3](https://github.com/diodeme/Gold-Band/commit/ad118f39db5426327438f68b4ad05f37356a1462))
+* **workspace:** isolate right workspace tab failures with an error boundary ([aca647b](https://github.com/diodeme/Gold-Band/commit/aca647b2de293d839ff9e836c2ef81586f27bea3))
+
+
+### Bug Fixes
+
+* **acp:** allow automatic retries to reopen recoverable turns ([0cc3525](https://github.com/diodeme/Gold-Band/commit/0cc3525eee43c4a0a06cda0d4acb59e78a18bb62))
+* **acp:** dispatch pending queue prompts when switching back to auto while idle ([fdecfe4](https://github.com/diodeme/Gold-Band/commit/fdecfe49de6ed2da6d6a9c8420d13c6b6a70af8a))
+* **acp:** reopen only the named startup failure on automatic retry ([065281b](https://github.com/diodeme/Gold-Band/commit/065281bb1d0eca1555e0c44eabd02b89dae38764))
+* **acp:** schedule the idle queue kick directly instead of notifying a bare app ([2c39582](https://github.com/diodeme/Gold-Band/commit/2c39582f7ccc223847d0197ea8cfca96f49d8cd3))
+* **acp:** settle failures after prompt dispatch as manual recovery ([0257b24](https://github.com/diodeme/Gold-Band/commit/0257b24dade9af8c159213e04d806715fa40b26f))
+* **acp:** settle interactions owned by an orphaned turn ([ecb8e1a](https://github.com/diodeme/Gold-Band/commit/ecb8e1adfbebdbdbad1761a0ff337fc26686ea77))
+* **acp:** stop double-counting prompt usage across runtime recreation ([a9e72eb](https://github.com/diodeme/Gold-Band/commit/a9e72ebce3be75edce851eef06eb640375f58b39))
+* **acp:** surface unmaterialized session failures ([6dd3373](https://github.com/diodeme/Gold-Band/commit/6dd3373db4e5648c3175f95cd4e249681fe89b1b))
+* **acp:** take model and permission mode from session snapshot on continue ([77e7e62](https://github.com/diodeme/Gold-Band/commit/77e7e6296794002ceb25a90d879517c5318a7fd3))
+* **attachments:** fit stored attachment names within path length budget ([6ed95c0](https://github.com/diodeme/Gold-Band/commit/6ed95c0d7029369ef0bc8834fa12c9dcb83b9e8c))
+* **attachments:** prevent same-name inputs from overwriting history ([5359440](https://github.com/diodeme/Gold-Band/commit/53594406a5c91569b2d88b14c8e91d22accffd14))
+* **chat:** track user scroll intent for history pagination ([396dbbc](https://github.com/diodeme/Gold-Band/commit/396dbbc9fdb4fbf41b9d5382a874002d4c3c8de3))
+* **composer:** preserve long draft scroll position ([d1e1cec](https://github.com/diodeme/Gold-Band/commit/d1e1cec208d326dd77ecaffc3ad7f6d579eea2ee))
+* **conversation:** preserve background sidebar refreshes ([0d4a90c](https://github.com/diodeme/Gold-Band/commit/0d4a90c22550f662f3a5c2519c61872eafd3b3bb))
+* **conversation:** preserve background sidebar refreshes ([291680c](https://github.com/diodeme/Gold-Band/commit/291680c1f17e0de0909581eae54cbcb879b6a9d7))
+* **conversation:** unify queue pause state and add composer draft box ([f2c93c2](https://github.com/diodeme/Gold-Band/commit/f2c93c2fb6d2f5d678f5c9f28920f2cb46e94129))
+* **conversation:** unify queue pause state and split out a composer draft box ([33094a3](https://github.com/diodeme/Gold-Band/commit/33094a3473378d0d22c7c65a3a2a588b9b2e910e))
+* **i18n:** prioritize Chinese script over region ([ee3d5fa](https://github.com/diodeme/Gold-Band/commit/ee3d5fabac150bd106cd08b3308ca6c940d98101))
+* **im:** adopt the resolved Feishu owner name right after connect ([d54ea8f](https://github.com/diodeme/Gold-Band/commit/d54ea8f6a495137cd45486372c24e7024eea69fd))
+* **im:** cancel retired requests and render accepted approvals ([69321b5](https://github.com/diodeme/Gold-Band/commit/69321b5c7651eed570af4f1251ec3f64369249d7))
+* **im:** finalize cards of requests the runtime ended without an answer ([0080bdb](https://github.com/diodeme/Gold-Band/commit/0080bdb46d0990d59c39b0be5fe091a2c125fe0e))
+* **im:** keep file and SQLite work of IM command paths off the async runtime ([e12da66](https://github.com/diodeme/Gold-Band/commit/e12da662d2bf6bb0b9f55e29bb5afd757ba37a78))
+* **im:** never requeue a source card whose resolution already exists ([fbbb7d4](https://github.com/diodeme/Gold-Band/commit/fbbb7d4977db7641c6438ecbbc58a6406adf12fe))
+* **im:** project accepted form answers once for both connectors ([aeaf5f7](https://github.com/diodeme/Gold-Band/commit/aeaf5f7471968d48c3ac865436ae54cb15ee0adc))
+* **im:** resolve cancelled elicitations distinctly from declines ([1c9fc0b](https://github.com/diodeme/Gold-Band/commit/1c9fc0bae3acb90165eaf4a6359432fd6f906b7f))
+* **im:** tell the Feishu user why a slow submission was rejected ([f194cf4](https://github.com/diodeme/Gold-Band/commit/f194cf4bd47710d3e3ebd7837192273ff5c313a7))
+* **markdown:** resolve local HTML links and image previews ([9289f84](https://github.com/diodeme/Gold-Band/commit/9289f844b96e7629c623e9a8acb3531fd3bb2bb7))
+* **mcp:** allow stdio health checks to wait for package launcher installs ([48ebd69](https://github.com/diodeme/Gold-Band/commit/48ebd6955a9a4ad49f4631e83a9fde3e2e8decb6))
+* **merge:** adapt MALING picks to upstream composer and IM settings ([e06d186](https://github.com/diodeme/Gold-Band/commit/e06d186b841d634306dde1a5528a329c3690df8b))
+* **source-control:** keep commit review numstat paths off the command line ([1d54945](https://github.com/diodeme/Gold-Band/commit/1d54945923fe4127c0af37ee1e1e8b8605b0bcbc))
+* **source-control:** mark branches without upstream as new ([6e62c45](https://github.com/diodeme/Gold-Band/commit/6e62c458ffb897900eed0c118701166280303f32))
+* stabilize pause events and cross-platform regression contracts ([fea096c](https://github.com/diodeme/Gold-Band/commit/fea096c885cf352670bd7ef26ed7e38c2f4b2258))
+* **ui:** let Radix own overflow tooltip open lifecycle ([9250f28](https://github.com/diodeme/Gold-Band/commit/9250f2803d6db1ec5bc990c7c4ea51afa060a7de))
+* **ui:** open tooltips only on hover or keyboard focus ([1f9ab19](https://github.com/diodeme/Gold-Band/commit/1f9ab1968c22e6b6ca6f9754186d9a68ea5ab8b1))
+* **web:** label agent startup with acp.preparingAgent everywhere ([aa4eeff](https://github.com/diodeme/Gold-Band/commit/aa4eeffef3774fdb4b91dc07893771970278c271))
+* **workspace:** share one react-dnd manager across workspace trees ([f3f2318](https://github.com/diodeme/Gold-Band/commit/f3f2318ce5e79acef72d56ce21a3f1b3e31a2c67))
+
 ## [0.19.1](https://github.com/diodeme/Gold-Band/compare/v0.19.0...v0.19.1) (2026-10-13)
 
 

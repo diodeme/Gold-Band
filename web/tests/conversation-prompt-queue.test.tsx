@@ -27,8 +27,10 @@ const queue: ConversationPromptQueueVm = {
   dispatchMode: 'auto',
   autoDispatchSuspended: false,
   suspensionReason: null,
+  storageError: false,
   items: Array.from({ length: 5 }, (_, index) => ({
     id: `item-${index + 1}`,
+    state: 'queued' as const,
     contentPreview: `queued prompt ${index + 1}`,
     attachmentCount: index === 0 ? 2 : 0,
     quoteCount: index === 1 ? 2 : 0,
@@ -44,6 +46,7 @@ function queueWith(overrides: Partial<ConversationPromptQueueVm>): ConversationP
 function itemWith(overrides: Partial<ConversationPromptQueueVm['items'][number]>) {
   return {
     id: 'item-x',
+    state: 'queued' as const,
     contentPreview: 'queued prompt',
     attachmentCount: 0,
     quoteCount: 0,
@@ -86,6 +89,7 @@ describe('ConversationPromptQueue', () => {
       onToggleMode: vi.fn(),
       onResumeDispatch: vi.fn(),
       onClear: vi.fn(),
+      onStorageRetry: vi.fn(),
       ...overrides,
     };
     await act(async () => root.render(<ConversationPromptQueue {...props} />));
@@ -190,6 +194,94 @@ describe('ConversationPromptQueue', () => {
     const otherRow = host.querySelector('[data-queue-item-id="item-1"]');
     expect(sendingRow?.getAttribute('data-queue-sending')).toBe('true');
     expect(otherRow?.getAttribute('data-queue-sending')).toBe('false');
+  });
+
+  it('keeps editing and dispatching rows visible with state-scoped actions', async () => {
+    await renderQueue({
+      queue: queueWith({
+        items: [
+          itemWith({ id: 'item-waiting', contentPreview: 'waiting turn' }),
+          itemWith({ id: 'item-editing', contentPreview: 'handoff payload', state: 'editing' }),
+          itemWith({ id: 'item-sending', contentPreview: 'in flight', state: 'dispatching' }),
+        ],
+      }),
+    });
+
+    const editingRow = host.querySelector('[data-queue-item-id="item-editing"]');
+    expect(editingRow?.getAttribute('data-queue-item-state')).toBe('editing');
+    expect(editingRow?.textContent).toContain('取回编辑中');
+    const editingSend = editingRow?.querySelector<HTMLButtonElement>('button[aria-label="立即发送"]');
+    const editingEdit = editingRow?.querySelector<HTMLButtonElement>('button[aria-label="编辑"]');
+    const editingDelete = editingRow?.querySelector<HTMLButtonElement>('button[aria-label="删除"]');
+    expect(editingSend?.disabled).toBe(true);
+    expect(editingEdit?.disabled).toBe(true);
+    expect(editingDelete?.disabled).toBe(false);
+
+    const dispatchingRow = host.querySelector('[data-queue-item-id="item-sending"]');
+    expect(dispatchingRow?.getAttribute('data-queue-item-state')).toBe('dispatching');
+    expect(dispatchingRow?.textContent).toContain('发送中');
+    expect(dispatchingRow?.getAttribute('data-queue-sending')).toBe('true');
+    const dispatchingButtons = Array.from(
+      dispatchingRow?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+    );
+    expect(dispatchingButtons.length).toBeGreaterThan(0);
+    expect(dispatchingButtons.every((button) => button.disabled)).toBe(true);
+
+    // Queued rows keep every action.
+    const waitingRow = host.querySelector('[data-queue-item-id="item-waiting"]');
+    expect(waitingRow?.getAttribute('data-queue-item-state')).toBe('queued');
+    const waitingSend = waitingRow?.querySelector<HTMLButtonElement>('button[aria-label="立即发送"]');
+    expect(waitingSend?.disabled).toBe(false);
+  });
+
+  it('counts only queued items in the header summary and the clear confirmation', async () => {
+    await renderQueue({
+      queue: queueWith({
+        items: [
+          itemWith({ id: 'item-waiting', contentPreview: 'waiting turn' }),
+          itemWith({ id: 'item-editing', state: 'editing' }),
+          itemWith({ id: 'item-sending', state: 'dispatching' }),
+        ],
+      }),
+    });
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-queue-trigger="true"]');
+    expect(trigger?.textContent).toContain('1/10');
+
+    const more = host.querySelector<HTMLButtonElement>('button[aria-label="更多操作"]');
+    await act(async () => more?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })));
+    await act(async () => more?.click());
+    const clearItem = await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return Array.from(document.body.querySelectorAll('[role="menuitem"]'))
+        .find((item) => item.textContent?.includes('清空待发送'));
+    });
+    expect(clearItem).toBeTruthy();
+    await act(async () => clearItem?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })));
+    await act(async () => clearItem?.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(document.body.textContent).toContain('将移除 1 条待发送消息');
+  });
+
+  it('surfaces a queue storage failure with a retry instead of hiding the panel', async () => {
+    const onStorageRetry = vi.fn().mockResolvedValue(undefined);
+    await renderQueue({
+      onStorageRetry,
+      queue: queueWith({ storageError: true, items: [] }),
+    });
+
+    const surface = host.querySelector('[data-testid="conversation-prompt-queue"]');
+    expect(surface).toBeTruthy();
+    expect(host.querySelector('[data-queue-storage-error="true"]')?.textContent)
+      .toContain('待发送队列读取失败');
+    const retry = host.querySelector<HTMLButtonElement>('[data-queue-storage-retry="true"]');
+    expect(retry).toBeTruthy();
+    // Controls over unreadable durable state stay disabled until the read succeeds.
+    const modeToggle = host.querySelector<HTMLButtonElement>('[data-queue-mode="auto"] [role="switch"]');
+    expect(modeToggle?.hasAttribute('disabled')).toBe(true);
+
+    await act(async () => retry?.click());
+    expect(onStorageRetry).toHaveBeenCalledTimes(1);
   });
 
   it('toggles the dispatch mode through the auto-send switch', async () => {

@@ -1051,6 +1051,8 @@
       "prompt-queue-full": "待傳送佇列已滿，最多可保留 10 條。",
       "prompt-queue-item-not-found": "這條待傳送內容已不存在。",
       "prompt-queue-item-dispatching": "這條內容正在傳送，暫時無法操作。",
+
+      "prompt-queue-item-editing": "這條內容正在取回編輯，暫時無法操作。",
       "prompt-queue-empty": "待傳送佇列為空。",
       "prompt-queue-revision-conflict": "待傳送順序已發生變化，請在清單更新後重試。",
       "prompt-queue-invalid-order": "待傳送順序無效，請重試。",
@@ -2375,7 +2377,13 @@
       "interruptConfirmTitle": "要立即傳送這則內容嗎？",
       "interruptConfirmDescription": "目前的回覆會先停止，接著傳送這則內容。",
       "interruptConfirmSkip": "之後不再提示",
-      "interruptConfirmAction": "停止並傳送"
+      "interruptConfirmAction": "停止並傳送",
+
+      "itemStateEditing": "取回編輯中",
+
+      "itemStateSending": "傳送中",
+
+      "storageError": "待傳送佇列讀取失敗"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2388,7 +2396,9 @@
       "delete": "刪除草稿",
       "deleteConfirmTitle": "刪除這條草稿？",
       "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用會一起刪除，此操作無法復原。",
-      "takeConflict": "輸入框已有內容，草稿仍保留在草稿箱。"
+      "takeConflict": "輸入框已有內容，草稿仍保留在草稿箱。",
+
+      "takeDeleteKept": "內容已取回輸入框，原草稿仍保留在草稿箱。"
     },
     "sending": "傳送中",
     "sendFailed": "傳送失敗",

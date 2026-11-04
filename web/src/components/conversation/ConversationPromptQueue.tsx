@@ -8,7 +8,6 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import {
-  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
@@ -24,11 +23,12 @@ import {
   FileText,
   MoreHorizontal,
   PauseCircle,
+  Pencil,
   Play,
   SendHorizontal,
   UserRound,
   Paperclip,
-  Pencil,
+  TriangleAlert,
   Trash2,
 } from 'lucide-react';
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
@@ -68,7 +68,10 @@ import {
 import { cn } from '@/lib/utils';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { savePromptQueueSettings, usePromptQueueSettings } from '@/lib/prompt-queue-settings-store';
-import type { ConversationPromptQueueVm, ConversationQueuedPromptVm } from '@/types';
+import type {
+  ConversationPromptQueueVm,
+  ConversationQueuedPromptVm,
+} from '@/types';
 
 const DEFAULT_VISIBLE_ITEMS = 3;
 
@@ -80,7 +83,10 @@ export function moveQueueItemIds(
   const fromIndex = itemIds.indexOf(activeId);
   const toIndex = itemIds.indexOf(overId);
   if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return [...itemIds];
-  return arrayMove([...itemIds], fromIndex, toIndex);
+  const next = [...itemIds];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  return next;
 }
 
 export interface ConversationPromptQueueProps {
@@ -100,6 +106,8 @@ export interface ConversationPromptQueueProps {
   onToggleMode: (mode: 'auto' | 'manual') => void | Promise<void>;
   onResumeDispatch: () => void | Promise<void>;
   onClear: () => void | Promise<void>;
+  /** Re-reads the durable queue after a storage failure was surfaced. */
+  onStorageRetry: () => void | Promise<void>;
 }
 
 export function ConversationPromptQueue({
@@ -118,6 +126,7 @@ export function ConversationPromptQueue({
   onToggleMode,
   onResumeDispatch,
   onClear,
+  onStorageRetry,
 }: ConversationPromptQueueProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
@@ -133,23 +142,38 @@ export function ConversationPromptQueue({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  // Every durable state stays visible: `dispatching` is the in-flight pending
+  // row and `editing` keeps a composer handoff reservation observable instead
+  // of hiding queued user content.
   const orderedItems = useMemo(() => {
     if (!optimisticOrder || optimisticOrder.baseRevision !== queue.revision) return queue.items;
     const itemsById = new Map(queue.items.map((item) => [item.id, item]));
-    const items = optimisticOrder.itemIds.flatMap((id) => {
-      const item = itemsById.get(id);
-      return item ? [item] : [];
-    });
-    return items.length === queue.items.length ? items : queue.items;
+    // Non-queued rows keep their FIFO anchors; queued rows fill the queued
+    // slots in the optimistic order.
+    const queued = queue.items.filter((item) => item.state === 'queued');
+    const optimisticQueued = optimisticOrder.itemIds
+      .map((id) => itemsById.get(id))
+      .filter((item): item is ConversationQueuedPromptVm => Boolean(item));
+    if (optimisticQueued.length !== queued.length) return queue.items;
+    let cursor = 0;
+    const reordered = queue.items.map((item) => (
+      item.state === 'queued' ? (optimisticQueued[cursor++] ?? item) : item
+    ));
+    return reordered.length === queue.items.length ? reordered : queue.items;
   }, [optimisticOrder, queue.items, queue.revision]);
+  const queuedItems = useMemo(
+    () => orderedItems.filter((item) => item.state === 'queued'),
+    [orderedItems],
+  );
   const hasMore = orderedItems.length > DEFAULT_VISIBLE_ITEMS;
   const visibleItems = showAll ? orderedItems : orderedItems.slice(0, DEFAULT_VISIBLE_ITEMS);
   const autoMode = queue.dispatchMode === 'auto';
   // A pause only qualifies automatic dispatch; manual mode has nothing to resume.
   const suspended = autoMode && queue.autoDispatchSuspended && queue.suspensionReason != null;
-  // The whole surface hides when there is nothing pending; the durable mode
-  // and suspension resurface with the panel once items exist again.
-  if (queue.items.length === 0) return null;
+  const controlsDisabled = mutationPending || queue.storageError;
+  // The whole surface hides when there is nothing pending and nothing failed;
+  // a storage failure must stay visible with its retry entry.
+  if (queue.items.length === 0 && !queue.storageError) return null;
 
   const requestSendNow = (itemId: string) => {
     if (interruptsActiveTurn && confirmInterrupt) {
@@ -171,8 +195,9 @@ export function ConversationPromptQueue({
   };
 
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || mutationPending) return;
-    const currentIds = orderedItems.map((item) => item.id);
+    if (!over || mutationPending || queue.storageError) return;
+    const currentIds = queuedItems.map((item) => item.id);
+    if (!currentIds.includes(String(active.id))) return;
     const nextIds = moveQueueItemIds(currentIds, String(active.id), String(over.id));
     if (nextIds.every((id, index) => id === currentIds[index])) return;
     setOptimisticOrder({ baseRevision: queue.revision, itemIds: nextIds });
@@ -204,7 +229,7 @@ export function ConversationPromptQueue({
               <ListPlus className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="text-muted-foreground">{t('acp.promptQueue.title')}</span>
               <span className="truncate font-medium text-foreground">
-                {t('acp.promptQueue.summary', { count: queue.items.length, max: queue.maxItems })}
+                {t('acp.promptQueue.summary', { count: queuedItems.length, max: queue.maxItems })}
               </span>
             </span>
             <ChevronDown
@@ -251,13 +276,13 @@ export function ConversationPromptQueue({
               <label
                 className={cn(
                   'inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-ui-caption text-muted-foreground',
-                  mutationPending ? 'cursor-not-allowed' : 'cursor-pointer',
+                  controlsDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
                 )}
                 data-queue-mode={queue.dispatchMode}
               >
                 <Switch
                   checked={autoMode}
-                  disabled={mutationPending}
+                  disabled={controlsDisabled}
                   aria-label={t('acp.promptQueue.autoSend')}
                   onCheckedChange={(checked) => {
                     void onToggleMode(checked ? 'auto' : 'manual');
@@ -280,7 +305,7 @@ export function ConversationPromptQueue({
                       variant="ghost"
                       size="icon"
                       className="size-6 rounded-full text-muted-foreground"
-                      disabled={mutationPending}
+                      disabled={controlsDisabled}
                       aria-label={t('acp.promptQueue.moreActions')}
                     >
                       <MoreHorizontal className="size-3.5" />
@@ -309,7 +334,7 @@ export function ConversationPromptQueue({
               <AlertDialogTitle>{t('acp.promptQueue.clearConfirmTitle')}</AlertDialogTitle>
               <AlertDialogDescription>
                 {t('acp.promptQueue.clearConfirmDescription', {
-                  count: queue.items.length,
+                  count: queuedItems.length,
                 })}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -328,6 +353,26 @@ export function ConversationPromptQueue({
         </AlertDialog>
         </div>
       </div>
+      {queue.storageError ? (
+        <div
+          className="flex items-center gap-2 border-t border-border/60 px-3 py-1.5 text-xs text-destructive"
+          data-queue-storage-error="true"
+        >
+          <TriangleAlert className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{t('acp.promptQueue.storageError')}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 rounded-full px-2 text-ui-caption"
+            disabled={mutationPending}
+            onClick={() => { void onStorageRetry(); }}
+            data-queue-storage-retry="true"
+          >
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
       <AlertDialog
         open={interruptConfirmItemId !== null}
         onOpenChange={(nextOpen) => {
@@ -357,11 +402,11 @@ export function ConversationPromptQueue({
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext
-            items={visibleItems.map((item) => item.id)}
+            items={queuedItems.map((item) => item.id)}
             strategy={verticalListSortingStrategy}
           >
             <div className="px-3 pb-1.5" data-queue-items="true">
-              {visibleItems.map((item) => (
+              {visibleItems.map((item) => (item.state === 'queued' ? (
                 <QueueItem
                   key={item.id}
                   index={orderedItems.findIndex((candidate) => candidate.id === item.id)}
@@ -374,7 +419,14 @@ export function ConversationPromptQueue({
                   onSendNow={() => requestSendNow(item.id)}
                   onDelete={() => { void onDelete(item.id); }}
                 />
-              ))}
+              ) : (
+                <StaticQueueRow
+                  key={item.id}
+                  item={item}
+                  mutationPending={mutationPending}
+                  onDelete={() => { void onDelete(item.id); }}
+                />
+              )))}
             </div>
           </SortableContext>
         </DndContext>
@@ -448,6 +500,7 @@ function QueueItem({
         isDragging && 'relative z-10 bg-card opacity-80 shadow-sm',
       )}
       data-queue-item-id={item.id}
+      data-queue-item-state="queued"
       data-queue-dragging={isDragging ? 'true' : 'false'}
       data-queue-sending={sending ? 'true' : 'false'}
     >
@@ -539,6 +592,89 @@ function QueueItem({
             <Pencil className="size-3.5" />
           </QueueIconButton>
           <QueueIconButton label={t('acp.promptQueue.delete')} disabled={mutationPending} onClick={onDelete} destructive>
+            <Trash2 className="size-3.5" />
+          </QueueIconButton>
+        </div>
+      </TooltipProvider>
+    </div>
+  );
+}
+
+interface StaticQueueRowProps {
+  item: ConversationQueuedPromptVm;
+  mutationPending: boolean;
+  onDelete: () => void;
+}
+
+/** A non-queued row: an in-flight dispatch or a composer edit handoff. */
+function StaticQueueRow({ item, mutationPending, onDelete }: StaticQueueRowProps) {
+  const { t } = useTranslation();
+  const sending = item.state === 'dispatching';
+  // Send/edit never act on a row outside `queued`.
+  const sendEditDisabled = true;
+  // Deleting an `editing` row is the explicit recovery lever when a handoff
+  // reservation cannot be released; a dispatching row is provider-bound and
+  // keeps every action disabled.
+  const deleteDisabled = mutationPending || sending;
+  return (
+    <div
+      className="flex min-h-8 min-w-0 items-center gap-1.5 py-1 text-xs"
+      data-queue-item-id={item.id}
+      data-queue-item-state={item.state}
+      data-queue-sending={sending ? 'true' : 'false'}
+    >
+      <span className="size-7 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        {item.contentPreview.trim() ? (
+          <p className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]">
+            {item.contentPreview}
+          </p>
+        ) : null}
+        <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
+          <span className="inline-flex items-center gap-1" data-queue-item-state-label="true">
+            {sending
+              ? <Loader2 className="size-3 animate-spin" style={{ willChange: 'transform' }} />
+              : <Pencil className="size-3" />}
+            {sending
+              ? t('acp.promptQueue.itemStateSending')
+              : t('acp.promptQueue.itemStateEditing')}
+          </span>
+          {item.attachmentCount > 0 ? (
+            <span className="inline-flex items-center gap-1">
+              <Paperclip className="size-3" />
+              {item.attachmentCount}
+            </span>
+          ) : null}
+          {item.quoteCount > 0 ? (
+            <span className="inline-flex items-center gap-1">
+              <MessageSquareQuote className="size-3" />
+              {t('acp.userQuoteCount', { count: item.quoteCount })}
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <TooltipProvider delayDuration={250}>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <QueueIconButton
+            label={t('acp.promptQueue.sendNow')}
+            disabled={sendEditDisabled}
+            onClick={() => {}}
+          >
+            <SendHorizontal className="size-3.5" />
+          </QueueIconButton>
+          <QueueIconButton
+            label={t('acp.promptQueue.edit')}
+            disabled={sendEditDisabled}
+            onClick={() => {}}
+          >
+            <Pencil className="size-3.5" />
+          </QueueIconButton>
+          <QueueIconButton
+            label={t('acp.promptQueue.delete')}
+            disabled={deleteDisabled}
+            onClick={onDelete}
+            destructive
+          >
             <Trash2 className="size-3.5" />
           </QueueIconButton>
         </div>

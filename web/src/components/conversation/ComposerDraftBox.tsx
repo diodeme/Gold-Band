@@ -133,6 +133,13 @@ function ScopedComposerDraftBox({
     if (open) void load();
   }, [open, load]);
 
+  // The bounded summary (≤20 items × 280-char previews) is prefetched on mount
+  // so the saved-draft count is visible before the box is ever opened; the
+  // list body still only renders inside the popover.
+  useEffect(() => {
+    void load();
+  }, [load]);
+
   const count = box?.items.length ?? 0;
   const maxItems = box?.maxItems ?? 0;
   const full = box != null && count >= maxItems;
@@ -174,6 +181,10 @@ function ScopedComposerDraftBox({
     mutationInFlight.current = true;
     beginPending(draftId);
     setError(null);
+    // Tracks whether the composer already accepted the payload: a failure
+    // after that point must explain that the content was restored and the
+    // stored copy survived, instead of a bare storage error.
+    let restored = false;
     try {
       const result = await getConversationComposerDraft(projectId, taskId, draftId);
       if (!active.current) return;
@@ -182,6 +193,7 @@ function ScopedComposerDraftBox({
         setError(t('acp.composerDrafts.takeConflict'));
         return;
       }
+      restored = true;
       // Delete only after the composer has accepted the complete payload.
       const next = await deleteConversationComposerDraft(projectId, taskId, draftId);
       if (!active.current) return;
@@ -190,7 +202,11 @@ function ScopedComposerDraftBox({
       setError(null);
       setOpen(false);
     } catch (takeError) {
-      if (active.current) setError(displayAppError(t, takeError));
+      if (active.current) {
+        setError(restored
+          ? t('acp.composerDrafts.takeDeleteKept')
+          : displayAppError(t, takeError));
+      }
     } finally {
       mutationInFlight.current = false;
       if (active.current) endPending();

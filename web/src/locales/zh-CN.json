@@ -1051,6 +1051,8 @@
       "prompt-queue-full": "待发送队列已满，最多可保留 10 条。",
       "prompt-queue-item-not-found": "这条待发送内容已不存在。",
       "prompt-queue-item-dispatching": "这条内容正在发送，暂时无法操作。",
+
+      "prompt-queue-item-editing": "这条内容正在取回编辑，暂时无法操作。",
       "prompt-queue-empty": "待发送队列为空。",
       "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
       "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
@@ -2375,7 +2377,10 @@
       "interruptConfirmTitle": "立即发送这条内容？",
       "interruptConfirmDescription": "当前回复会被停止，然后发送这条内容。",
       "interruptConfirmSkip": "后续不再提示",
-      "interruptConfirmAction": "停止并发送"
+      "interruptConfirmAction": "停止并发送",
+      "itemStateEditing": "取回编辑中",
+      "itemStateSending": "发送中",
+      "storageError": "待发送队列读取失败"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2388,7 +2393,8 @@
       "delete": "删除草稿",
       "deleteConfirmTitle": "删除这条草稿？",
       "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用会一起删除，此操作无法撤销。",
-      "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。"
+      "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。",
+      "takeDeleteKept": "内容已取回输入框，原草稿仍保留在草稿箱。"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",

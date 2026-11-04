@@ -1038,11 +1038,13 @@ function browserQueuedConversationRun(): ConversationRunVm {
         dispatchMode: browserQueuedPromptQueueMode,
         autoDispatchSuspended: browserQueuedPromptSuspended,
         suspensionReason: browserQueuedPromptSuspended ? 'stopped' : null,
+        storageError: false,
         items: [
           ...browserQueuedPromptDrafts
             .filter((item) => browserRemovedQueuedPromptIds.indexOf(item.id) < 0)
             .map((item) => ({
               id: item.id,
+              state: 'queued' as const,
               contentPreview: Array.from(item.content.slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS * 2))
                 .slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS).join(''),
               attachmentCount: item.attachmentPaths.length,

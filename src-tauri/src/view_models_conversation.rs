@@ -773,12 +773,18 @@ pub struct ConversationPromptQueueVm {
     pub auto_dispatch_suspended: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suspension_reason: Option<String>,
+    /// The durable queue file could not be read; the panel must surface the
+    /// failure instead of silently projecting an empty queue.
+    pub storage_error: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationQueuedPromptVm {
     pub id: String,
+    /// Durable lifecycle state of the item (`queued` / `editing` /
+    /// `dispatching`); the projection keeps every state visible.
+    pub state: String,
     pub content_preview: String,
     pub attachment_count: usize,
     pub quote_count: usize,
@@ -1166,15 +1172,39 @@ fn direct_prompt_queue_vm(
     if conversation_run_mode(app, task_id) != Some(ConversationRunMode::Direct) {
         return None;
     }
-    let queue = load_prompt_queue(attempt_dir).unwrap_or_default();
+    let queue = match load_prompt_queue(attempt_dir) {
+        Ok(queue) => queue,
+        Err(_) => {
+            // An unreadable queue file is a storage failure the panel must
+            // surface with a retry; projecting an empty queue would silently
+            // hide the user's durable pending messages.
+            return Some(ConversationPromptQueueVm {
+                revision: 0,
+                items: Vec::new(),
+                max_items: MAX_QUEUED_PROMPTS,
+                dispatch_mode: "auto".to_string(),
+                auto_dispatch_suspended: false,
+                suspension_reason: None,
+                storage_error: true,
+            });
+        }
+    };
     Some(ConversationPromptQueueVm {
         revision: queue.revision,
+        // Every durable state stays visible: `dispatching` rows render the
+        // in-flight pending state and an `editing` row keeps a stuck edit
+        // reservation recoverable instead of hiding queued content.
         items: queue
             .items
             .into_iter()
-            .filter(|item| item.state == QueuedPromptState::Queued)
             .map(|item| ConversationQueuedPromptVm {
                 id: item.id,
+                state: match item.state {
+                    QueuedPromptState::Queued => "queued",
+                    QueuedPromptState::Editing => "editing",
+                    QueuedPromptState::Dispatching => "dispatching",
+                }
+                .to_string(),
                 content_preview: item
                     .content
                     .chars()
@@ -1197,6 +1227,7 @@ fn direct_prompt_queue_vm(
             SuspensionReason::Stopped => "stopped".to_string(),
             SuspensionReason::Failed => "failed".to_string(),
         }),
+        storage_error: false,
     })
 }
 
@@ -4857,8 +4888,9 @@ mod tests {
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
     use gold_band::acp::prompt_queue::{
-        DispatchMode, SuspensionReason, enqueue_prompt, load_prompt_queue, mark_user_priority,
-        set_dispatch_mode, suspend_auto_dispatch,
+        DispatchMode, SuspensionReason, claim_queued_prompt, enqueue_prompt, load_prompt_queue,
+        mark_user_priority, queue_path, read_queued_prompt, set_dispatch_mode,
+        suspend_auto_dispatch,
     };
     use gold_band::app::{
         App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
@@ -7969,6 +8001,98 @@ mod tests {
                 .count(),
             404
         );
+    }
+
+    #[test]
+    fn direct_prompt_queue_vm_keeps_every_item_state_visible() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        let editing = enqueue_prompt(&attempt_dir, "edit handoff".to_string(), Vec::new()).unwrap();
+        let dispatching =
+            enqueue_prompt(&attempt_dir, "in flight".to_string(), Vec::new()).unwrap();
+        let queued = enqueue_prompt(&attempt_dir, "waiting".to_string(), Vec::new()).unwrap();
+        read_queued_prompt(&attempt_dir, &editing.id).unwrap();
+        claim_queued_prompt(&attempt_dir, &dispatching.id).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        // Every durable state stays visible so a stuck reservation or an
+        // in-flight dispatch never hides queued user content.
+        let states: Vec<(&str, &str)> = queue
+            .items
+            .iter()
+            .map(|item| (item.id.as_str(), item.state.as_str()))
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                (editing.id.as_str(), "editing"),
+                (dispatching.id.as_str(), "dispatching"),
+                (queued.id.as_str(), "queued"),
+            ]
+        );
+        assert!(!queue.storage_error);
+    }
+
+    #[test]
+    fn direct_prompt_queue_vm_surfaces_storage_read_failures() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        enqueue_prompt(&attempt_dir, "unreadable".to_string(), Vec::new()).unwrap();
+        std::fs::write(queue_path(&attempt_dir), b"{broken").unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        // An unreadable queue file is a failure the panel must surface, not an
+        // empty queue the UI silently hides.
+        assert!(queue.storage_error);
+        assert!(queue.items.is_empty());
     }
 
     #[test]

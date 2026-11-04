@@ -1051,6 +1051,8 @@
       "prompt-queue-full": "保留中のキューがいっぱいです。最大 10 個のプロンプトを保持できます。",
       "prompt-queue-item-not-found": "このキューに入れられたプロンプトはもう存在しません。",
       "prompt-queue-item-dispatching": "このプロンプトは送信中のため、現在変更できません。",
+
+      "prompt-queue-item-editing": "このプロンプトは編集用に取得中のため、現在操作できません。",
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
       "prompt-queue-invalid-order": "送信待ちの順序が無効です。もう一度試してください。",
@@ -2375,7 +2377,13 @@
       "interruptConfirmTitle": "この内容を今すぐ送信しますか？",
       "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
       "interruptConfirmSkip": "今後表示しない",
-      "interruptConfirmAction": "停止して送信"
+      "interruptConfirmAction": "停止して送信",
+
+      "itemStateEditing": "編集用に取得中",
+
+      "itemStateSending": "送信中",
+
+      "storageError": "送信待ちキューの読み取りに失敗しました"
     },
     "composerDrafts": {
       "title": "下書きボックス",
@@ -2388,7 +2396,9 @@
       "delete": "下書きを削除",
       "deleteConfirmTitle": "この下書きを削除しますか？",
       "deleteConfirmDescription": "本文、引用、ロール、添付参照が一緒に削除されます。この操作は取り消せません。",
-      "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。"
+      "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。",
+
+      "takeDeleteKept": "内容は入力欄に戻しました。元の下書きも下書きボックスに残っています。"
     },
     "sending": "送信中",
     "sendFailed": "送信に失敗しました",

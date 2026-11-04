@@ -1051,6 +1051,8 @@
       "prompt-queue-full": "A fila pendente está cheia. Ela pode guardar até 10 itens.",
       "prompt-queue-item-not-found": "Este conteúdo na fila não existe mais.",
       "prompt-queue-item-dispatching": "Este conteúdo está sendo enviado e não pode ser alterado agora.",
+
+      "prompt-queue-item-editing": "Este prompt está sendo restaurado para edição e não pode ser alterado agora.",
       "prompt-queue-empty": "A fila pendente está vazia.",
       "prompt-queue-revision-conflict": "A ordem pendente mudou. Tente novamente após a lista atualizar.",
       "prompt-queue-invalid-order": "A ordem pendente é inválida. Tente novamente.",
@@ -2375,7 +2377,13 @@
       "interruptConfirmTitle": "Enviar esta mensagem agora?",
       "interruptConfirmDescription": "A resposta atual será interrompida antes do envio desta mensagem.",
       "interruptConfirmSkip": "Não perguntar novamente",
-      "interruptConfirmAction": "Interromper e enviar"
+      "interruptConfirmAction": "Interromper e enviar",
+
+      "itemStateEditing": "Restaurando para edição",
+
+      "itemStateSending": "Enviando",
+
+      "storageError": "Não foi possível ler a fila de envio"
     },
     "composerDrafts": {
       "title": "Rascunhos",
@@ -2388,7 +2396,9 @@
       "delete": "Excluir rascunho",
       "deleteConfirmTitle": "Excluir este rascunho?",
       "deleteConfirmDescription": "O texto, as citações, o papel e as referências de anexos serão removidos. Não será possível desfazer.",
-      "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos."
+      "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos.",
+
+      "takeDeleteKept": "O conteúdo foi restaurado para o campo de entrada; o rascunho original continua salvo."
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",

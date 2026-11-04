@@ -1051,6 +1051,8 @@
       "prompt-queue-full": "대기열이 가득 찼습니다. 최대 10개의 프롬프트를 보관할 수 있습니다.",
       "prompt-queue-item-not-found": "이 대기 중인 프롬프트가 더 이상 존재하지 않습니다.",
       "prompt-queue-item-dispatching": "이 프롬프트가 전송 중이므로 지금은 변경할 수 없습니다.",
+
+      "prompt-queue-item-editing": "이 프롬프트는 편집을 위해 가져오는 중이라 지금은 변경할 수 없습니다.",
       "prompt-queue-empty": "대기열이 비어 있습니다.",
       "prompt-queue-revision-conflict": "대기 순서가 변경되었습니다. 목록이 업데이트된 뒤 다시 시도해 주세요.",
       "prompt-queue-invalid-order": "대기 순서가 유효하지 않습니다. 다시 시도해 주세요.",
@@ -2375,7 +2377,13 @@
       "interruptConfirmTitle": "이 내용을 지금 보낼까요?",
       "interruptConfirmDescription": "현재 답변을 중지한 뒤 이 내용을 보냅니다.",
       "interruptConfirmSkip": "다시 묻지 않기",
-      "interruptConfirmAction": "중지하고 보내기"
+      "interruptConfirmAction": "중지하고 보내기",
+
+      "itemStateEditing": "편집용으로 가져오는 중",
+
+      "itemStateSending": "전송 중",
+
+      "storageError": "전송 대기 큐를 읽지 못했습니다"
     },
     "composerDrafts": {
       "title": "임시 보관함",
@@ -2388,7 +2396,9 @@
       "delete": "임시 저장 삭제",
       "deleteConfirmTitle": "이 임시 저장 내용을 삭제할까요?",
       "deleteConfirmDescription": "본문, 인용, 역할, 첨부 참조가 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-      "takeConflict": "입력란에 내용이 있어 초안이 보관함에 그대로 남아 있습니다."
+      "takeConflict": "입력란에 내용이 있어 초안이 보관함에 그대로 남아 있습니다.",
+
+      "takeDeleteKept": "내용을 입력창으로 가져왔고, 원본 초안은 임시 보관함에 그대로 남아 있습니다."
     },
     "sending": "전송 중",
     "sendFailed": "전송 실패",

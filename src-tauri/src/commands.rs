@@ -10261,6 +10261,7 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
         PromptQueueError::Full => "conversation.prompt-queue-full",
         PromptQueueError::NotFound => "conversation.prompt-queue-item-not-found",
         PromptQueueError::Dispatching => "conversation.prompt-queue-item-dispatching",
+        PromptQueueError::Editing => "conversation.prompt-queue-item-editing",
         PromptQueueError::Empty => "conversation.prompt-queue-empty",
         PromptQueueError::RevisionConflict => "conversation.prompt-queue-revision-conflict",
         PromptQueueError::InvalidOrder => "conversation.prompt-queue-invalid-order",
@@ -15478,6 +15479,12 @@ mod tests {
                 .content,
             content
         );
+    }
+
+    #[test]
+    fn prompt_queue_editing_conflict_maps_to_its_own_error_code() {
+        let error = prompt_queue_command_error(PromptQueueError::Editing);
+        assert_eq!(error.code, "conversation.prompt-queue-item-editing");
     }
 
     #[tokio::test]

@@ -1557,3 +1557,14 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 过度设计评审：没有新增 aggregate 或并行 canonical 数据；仅在既有队列生命周期内增加必要的 `editing` 状态，因为 `queued` 无法阻止自动 claim、`dispatching` 又代表 provider 发送，无法表达 composer reservation 的恢复不变量。继续复用 queue item id、revision、delete/release 命令、draft store 与输入草稿状态；transfer lock 只保护 composer 交接临界区，不覆盖文件 I/O、provider 执行或网络调用。
 
 性能影响评审：队列最多 10 条、草稿最多 20 条；lifecycle 列表从最多 64,000 字符正文/条降为最多 280 字符预览/条，完整 payload 仅在用户编辑单条时读取，无 N+1 与轮询。编辑交接增加一次有界的队列 reservation/release 原子写入，临界区不包含 UI、网络或 provider 调用；草稿 load 仍是有界单文件读取并运行于 blocking pool。
+
+## 35. 2026-11-04：队列状态可见性与编辑预订生命周期收敛
+
+状态：已实现并完成定向回归。
+
+- 根因（P1，实现不完善）：队列 lifecycle 投影只保留 `queued` 条目，`direct_prompt_queue_vm` 又把读取失败吞成空队列（`unwrap_or_default`）；`editing` 预订的进程内 owner 标记无 TTL——release 失败或 webview 在交接窗口刷新后，条目从 UI 消失、不能删除（行已不渲染、清空也保留 editing 项）、不能 claim，直到应用重启。`claim_queued_prompt` 还允许"立即发送"抢走 editing 条目，编辑冲突复用 dispatching 错误码产生"正在发送"的误导文案。
+- 修复：投影保留全部状态并携带逐条 `state`（`dispatching` 行级 pending、全部操作禁用；`editing` 行显示"取回编辑中"、仅保留删除作为显式恢复杠杆）；`ConversationPromptQueueVm` 新增 `storageError`，读取失败时面板显示错误与重试（重试走一次 `getAcpSession` 重读）并禁用队列控制，不再静默投影为空队列；edit 预订标记记录预订时刻，超过 120s TTL 后 reconcile 把孤儿回滚为 `queued` 并清除标记；`read/take/claim` 对 `editing` 返回独立 `conversation.prompt-queue-item-editing` 错误码；`claim_queued_prompt` 收紧为仅 `queued` 可 claim。标题计数与清空确认只统计 `queued` 条目；拖拽排序与 reorder 载荷只覆盖 `queued` 条目。
+- 草稿箱：组件挂载时预取同一有界摘要（≤20 条 × 280 字符预览，复用 list 命令与 single-flight 门禁）使计数徽标在首次打开前可见；取出成功但删除失败时提示"内容已取回输入框，原草稿仍保留在草稿箱"，不再只报裸存储错误。
+- 回归（先红后绿）：prompt_queue 新增 editing 边界拒绝（read/claim）、active 预订保持、TTL 过期回滚 3 项；view_models 新增全状态可见、存储失败 2 项；commands 新增错误映射 1 项；前端 conversation-prompt-queue 新增状态行、queued 计数、存储错误+重试 3 项，composer-draft-box 更新徽标预取契约并新增 take 删除失败文案 1 项。TTL 回滚测试因与标记结构改造同批落地为绿，其余新测试均先在旧行为上失败。
+- 过度设计评审：不新增 aggregate 或旁路状态；`state`/`storageError` 是既有 durable 事实的投影补全，TTL 是 owner 标记的生命周期补齐而非第二套状态机；editing 行的删除入口复用既有 delete 命令。
+- 性能影响评审：投影仍受 10 条 × 280 字符上界约束；徽标预取为单文件有界读取且挂在既有 list 命令与 in-flight 门禁下；TTL 判断为 O(1) 内存操作，reconcile 仅在孤儿出现时多一次原子写。

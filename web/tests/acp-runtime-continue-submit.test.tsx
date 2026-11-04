@@ -1891,8 +1891,10 @@ describe('ACP Direct queue submission', () => {
       promptQueue: {
         revision: 3,
         maxItems: 10,
+        storageError: false,
         items: [{
           id: 'queue-item-1',
+          state: 'queued' as const,
           contentPreview: '排队中的这条要完整回到输入框',
           attachmentCount: 0,
           quoteCount: 0,
@@ -1968,8 +1970,10 @@ describe('ACP Direct queue submission', () => {
       promptQueue: {
         revision: 3,
         maxItems: 10,
+        storageError: false,
         items: [{
           id: 'queue-item-1',
+          state: 'queued' as const,
           contentPreview: '这条排队内容不能因为恢复冲突而丢失',
           attachmentCount: 0,
           quoteCount: 0,

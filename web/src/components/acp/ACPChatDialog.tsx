@@ -6454,6 +6454,28 @@ export function ACPChatDialog(
     }
   };
 
+  /** Re-reads the canonical session so a surfaced queue storage failure can
+   * converge without a page re-entry; all staleness guards live in
+   * applySessionUpdate. */
+  const retryQueuedPromptStorage = async () => {
+    if (queueMutationPending || queueSubmitPending) return;
+    setQueueMutationPending(true);
+    setSendError(null);
+    try {
+      const updated = await getAcpSession(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+        latestSessionRef.current,
+        outerNodeId, outerAttemptId,
+      );
+      applySessionUpdate(updated, 'queue-storage-retry');
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+    }
+  };
+
   const send = async (historyText?: string) => {
     if (composerDraftStoragePendingRef.current) return;
     if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
@@ -7253,6 +7275,7 @@ export function ACPChatDialog(
                 onToggleMode={setQueuedPromptDispatchMode}
                 onResumeDispatch={resumeQueuedPromptDispatch}
                 onClear={clearQueuedPrompts}
+                onStorageRetry={retryQueuedPromptStorage}
               />
             ) : null}
             {readOnly && !showDisabledComposer ? null : composerState.externalKind && !showDisabledComposer ? (

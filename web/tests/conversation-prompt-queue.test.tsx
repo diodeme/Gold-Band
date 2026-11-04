@@ -29,7 +29,7 @@ const queue: ConversationPromptQueueVm = {
   suspensionReason: null,
   items: Array.from({ length: 5 }, (_, index) => ({
     id: `item-${index + 1}`,
-    content: `queued prompt ${index + 1}`,
+    contentPreview: `queued prompt ${index + 1}`,
     attachmentCount: index === 0 ? 2 : 0,
     quoteCount: index === 1 ? 2 : 0,
     workspaceFileCount: index === 2 ? 1 : 0,
@@ -44,7 +44,7 @@ function queueWith(overrides: Partial<ConversationPromptQueueVm>): ConversationP
 function itemWith(overrides: Partial<ConversationPromptQueueVm['items'][number]>) {
   return {
     id: 'item-x',
-    content: 'queued prompt',
+    contentPreview: 'queued prompt',
     attachmentCount: 0,
     quoteCount: 0,
     workspaceFileCount: 0,
@@ -147,6 +147,20 @@ describe('ConversationPromptQueue', () => {
     await act(async () => editButton.click());
     expect(onRestore).toHaveBeenCalledWith('item-1');
     expect(host.querySelector('[data-queue-item-id="item-1"]')).toBe(firstRow);
+  });
+
+  it('renders the bounded content preview without a hidden full payload', async () => {
+    const boundedPreview = '长'.repeat(280);
+    await renderQueue({
+      queue: queueWith({
+        items: [itemWith({ id: 'item-long', contentPreview: boundedPreview })],
+      }),
+    });
+
+    const row = host.querySelector('[data-queue-item-id="item-long"]');
+    expect(row).toBeTruthy();
+    expect(row?.textContent).toContain('长');
+    expect(row?.textContent).not.toContain('结尾标记');
   });
 
   it('protects an existing composer draft from being overwritten', async () => {
@@ -352,7 +366,7 @@ describe('ConversationPromptQueue', () => {
   it('resurfaces the durable manual mode and suspension once items exist again', async () => {
     await renderQueue({
       queue: queueWith({
-        items: [itemWith({ id: 'queued-again', content: '再次排队' })],
+        items: [itemWith({ id: 'queued-again', contentPreview: '再次排队' })],
         dispatchMode: 'manual',
         autoDispatchSuspended: true,
         suspensionReason: 'failed',
@@ -363,7 +377,7 @@ describe('ConversationPromptQueue', () => {
 
     await renderQueue({
       queue: queueWith({
-        items: [itemWith({ id: 'queued-again', content: '再次排队' })],
+        items: [itemWith({ id: 'queued-again', contentPreview: '再次排队' })],
         autoDispatchSuspended: true,
         suspensionReason: 'failed',
       }),
@@ -398,7 +412,7 @@ describe('ConversationPromptQueue', () => {
         revision: 1,
         items: [itemWith({
           id: 'file-only',
-          content: '',
+          contentPreview: '',
           workspaceFileCount: 2,
         })],
       }),
@@ -416,12 +430,12 @@ describe('ConversationPromptQueue', () => {
         items: [
           itemWith({
             id: 'role-only',
-            content: '',
+            contentPreview: '',
             roleName: '开发',
           }),
           itemWith({
             id: 'role-with-text',
-            content: '爱仕达',
+            contentPreview: '爱仕达',
             roleName: '开发',
             createdAt: '2026-09-16T00:00:01Z',
           }),

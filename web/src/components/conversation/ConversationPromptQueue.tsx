@@ -475,12 +475,12 @@ function QueueItem({
         {index + 1}
       </span>
       <div className="min-w-0 flex-1">
-        {item.content.trim() ? (
+        {item.contentPreview.trim() ? (
           <p
             data-queue-item-content="true"
             className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]"
           >
-            {item.content}
+            {item.contentPreview}
           </p>
         ) : null}
         {item.attachmentCount > 0

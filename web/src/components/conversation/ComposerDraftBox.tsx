@@ -57,6 +57,8 @@ export interface ComposerDraftBoxProps {
   captureDraft: () => Promise<CapturedComposerDraft | null>;
   /** Puts a taken draft into the empty composer; returns false when the composer filled up meanwhile. */
   restoreDraft: (draft: ConversationQueuedPromptDraftVm) => boolean;
+  /** Acquires the composer transfer lock before any read/consume mutation. */
+  acquireMutation?: () => boolean;
   onPendingChange?: (pending: boolean) => void;
 }
 
@@ -72,6 +74,7 @@ function ScopedComposerDraftBox({
   composerOccupied,
   captureDraft,
   restoreDraft,
+  acquireMutation,
   onPendingChange,
 }: ComposerDraftBoxProps) {
   const { t } = useTranslation();
@@ -137,6 +140,7 @@ function ScopedComposerDraftBox({
 
   const save = async () => {
     if (disabled || mutationInFlight.current || !canSave || full) return;
+    if (acquireMutation && !acquireMutation()) return;
     mutationInFlight.current = true;
     beginPending('save');
     setError(null);
@@ -166,6 +170,7 @@ function ScopedComposerDraftBox({
 
   const take = async (draftId: string) => {
     if (disabled || mutationInFlight.current || composerOccupied) return;
+    if (acquireMutation && !acquireMutation()) return;
     mutationInFlight.current = true;
     beginPending(draftId);
     setError(null);
@@ -194,6 +199,7 @@ function ScopedComposerDraftBox({
 
   const remove = async (draftId: string) => {
     if (disabled || mutationInFlight.current) return;
+    if (acquireMutation && !acquireMutation()) return;
     mutationInFlight.current = true;
     beginPending(draftId);
     setError(null);

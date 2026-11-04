@@ -1043,7 +1043,8 @@ function browserQueuedConversationRun(): ConversationRunVm {
             .filter((item) => browserRemovedQueuedPromptIds.indexOf(item.id) < 0)
             .map((item) => ({
               id: item.id,
-              content: item.content,
+              contentPreview: Array.from(item.content.slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS * 2))
+                .slice(0, BROWSER_COMPOSER_DRAFT_PREVIEW_CHARS).join(''),
               attachmentCount: item.attachmentPaths.length,
               quoteCount: item.quotes.length,
               workspaceFileCount: item.workspaceFiles?.length ?? 0,
@@ -2431,9 +2432,11 @@ export const browserApi: RuntimeApi = {
   reorderConversationQueuedPrompts(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision, _orderedItemIds, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ lifecycle: null });
   },
-  restoreConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
+  getConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
     const item = browserQueuedPromptDrafts.find((candidate) => candidate.id === itemId);
-    if (!item) return Promise.reject(new Error('queued prompt not found'));
+    if (!item || browserRemovedQueuedPromptIds.indexOf(itemId) >= 0) {
+      return Promise.reject({ code: 'conversation.prompt-queue-item-not-found', params: {} });
+    }
     return Promise.resolve({
       draft: {
         content: item.content,
@@ -2444,6 +2447,9 @@ export const browserApi: RuntimeApi = {
       },
       lifecycle: null,
     });
+  },
+  releaseConversationQueuedPromptEdit(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ lifecycle: browserQueuedPromptQueueLifecycle() });
   },
   deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
     const index = browserRemovedQueuedPromptIds.indexOf(itemId);

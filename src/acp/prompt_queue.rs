@@ -20,6 +20,8 @@ static PROMPT_QUEUE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ACTIVE_DISPATCHES: LazyLock<Mutex<HashMap<String, ActiveDispatch>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_EDIT_RESERVATIONS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 static AUTO_DISPATCH_SUSPENSIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 static AUTO_DISPATCH_REPLY_BATCHES: LazyLock<Mutex<HashMap<String, u32>>> =
@@ -36,6 +38,8 @@ struct ActiveDispatch {
 pub enum QueuedPromptState {
     Queued,
     Dispatching,
+    /// Reserved by the composer edit handoff; automatic dispatch cannot claim it.
+    Editing,
 }
 
 /// User's durable choice of how queued prompts leave the queue.
@@ -281,7 +285,26 @@ pub fn delete_queued_prompt(
     attempt_dir: &Utf8Path,
     item_id: &str,
 ) -> Result<PromptQueue, PromptQueueError> {
-    take_queued_prompt(attempt_dir, item_id).map(|(_, queue)| queue)
+    let result = with_typed_queue_lock(attempt_dir, || {
+        let mut queue =
+            load_and_reconcile_unlocked(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
+        let index = queue
+            .items
+            .iter()
+            .position(|item| item.id == item_id)
+            .ok_or(PromptQueueError::NotFound)?;
+        if queue.items[index].state == QueuedPromptState::Dispatching {
+            return Err(PromptQueueError::Dispatching);
+        }
+        queue.items.remove(index);
+        persist_mutation_unlocked(attempt_dir, &mut queue)
+            .map_err(|_| PromptQueueError::Storage)?;
+        Ok(queue)
+    });
+    if result.is_ok() {
+        clear_edit_active(attempt_dir, item_id).map_err(|_| PromptQueueError::Storage)?;
+    }
+    result
 }
 
 pub fn take_queued_prompt(
@@ -296,7 +319,7 @@ pub fn take_queued_prompt(
             .iter()
             .position(|item| item.id == item_id)
             .ok_or(PromptQueueError::NotFound)?;
-        if queue.items[index].state == QueuedPromptState::Dispatching {
+        if queue.items[index].state != QueuedPromptState::Queued {
             return Err(PromptQueueError::Dispatching);
         }
         let item = queue.items.remove(index);
@@ -304,6 +327,69 @@ pub fn take_queued_prompt(
             .map_err(|_| PromptQueueError::Storage)?;
         Ok((item, queue))
     })
+}
+
+/// Reserves one queued item for the composer edit handoff without consuming
+/// its payload. The durable `editing` state prevents an automatic dispatcher
+/// from claiming the item between the read and the composer acceptance.
+///
+/// The caller deletes the item explicitly only after the composer has accepted
+/// the payload, or releases the reservation when the handoff is rejected.
+pub fn read_queued_prompt(
+    attempt_dir: &Utf8Path,
+    item_id: &str,
+) -> Result<(QueuedPrompt, PromptQueue), PromptQueueError> {
+    let result = with_typed_queue_lock(attempt_dir, || {
+        let mut queue =
+            load_and_reconcile_unlocked(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
+        let item = queue
+            .items
+            .iter_mut()
+            .find(|item| item.id == item_id)
+            .ok_or(PromptQueueError::NotFound)?;
+        if item.state != QueuedPromptState::Queued {
+            return Err(PromptQueueError::Dispatching);
+        }
+        item.state = QueuedPromptState::Editing;
+        let read = item.clone();
+        // Install the in-process owner before publishing the durable state.
+        // Otherwise a concurrent lifecycle read could see an apparently
+        // orphaned `editing` item and restore it to `queued` before the
+        // handoff owns it.
+        mark_edit_active(attempt_dir, &read.id).map_err(|_| PromptQueueError::Storage)?;
+        if persist_mutation_unlocked(attempt_dir, &mut queue).is_err() {
+            let _ = clear_edit_active(attempt_dir, &read.id);
+            return Err(PromptQueueError::Storage);
+        }
+        Ok((read, queue))
+    });
+    result
+}
+
+/// Releases an edit reservation without consuming the queued item.
+/// Releasing an already-released or already-deleted item is idempotent.
+pub fn release_queued_prompt_edit(
+    attempt_dir: &Utf8Path,
+    item_id: &str,
+) -> Result<PromptQueue, PromptQueueError> {
+    let result = with_typed_queue_lock(attempt_dir, || {
+        let mut queue =
+            load_and_reconcile_unlocked(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
+        let Some(item) = queue.items.iter_mut().find(|item| item.id == item_id) else {
+            return Ok(queue);
+        };
+        if item.state != QueuedPromptState::Editing {
+            return Ok(queue);
+        }
+        item.state = QueuedPromptState::Queued;
+        persist_mutation_unlocked(attempt_dir, &mut queue)
+            .map_err(|_| PromptQueueError::Storage)?;
+        Ok(queue)
+    });
+    if result.is_ok() {
+        clear_edit_active(attempt_dir, item_id).map_err(|_| PromptQueueError::Storage)?;
+    }
+    result
 }
 
 /// Records a real user submission so a pending automatic claim can observe
@@ -625,17 +711,27 @@ pub fn settle_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue>
     let result = with_queue_lock(attempt_dir, || {
         let mut queue = load_queue_unlocked(attempt_dir)?;
         let needs_version_reconciliation = queue.version < PROMPT_QUEUE_VERSION;
+        let has_orphaned_edit = queue.items.iter().any(|item| {
+            item.state == QueuedPromptState::Editing && !edit_is_active(attempt_dir, &item.id)
+        });
         let settled_ids = queue
             .items
             .iter()
             .filter(|item| item.state == QueuedPromptState::Dispatching)
             .map(|item| item.id.clone())
             .collect::<Vec<_>>();
-        if settled_ids.is_empty() && !needs_version_reconciliation {
+        if settled_ids.is_empty() && !needs_version_reconciliation && !has_orphaned_edit {
             return Ok((queue, settled_ids));
         }
         let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
         queue.items.retain_mut(|item| {
+            if item.state == QueuedPromptState::Editing {
+                if edit_is_active(attempt_dir, &item.id) {
+                    return true;
+                }
+                item.state = QueuedPromptState::Queued;
+                return true;
+            }
             if item.state != QueuedPromptState::Dispatching {
                 if needs_version_reconciliation && accepted_prompt_ids.contains(&item.prompt_id) {
                     return false;
@@ -735,10 +831,17 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     let has_orphaned_dispatch = queue.items.iter().any(|item| {
         item.state == QueuedPromptState::Dispatching && !dispatch_is_active(attempt_dir, item)
     });
+    let has_orphaned_edit = queue.items.iter().any(|item| {
+        item.state == QueuedPromptState::Editing && !edit_is_active(attempt_dir, &item.id)
+    });
     // Suspensions persisted before reasons existed can only originate from a
     // user stop; infer that instead of presenting an unexplained pause.
     let has_legacy_suspension = queue.auto_dispatch_suspended && queue.suspension_reason.is_none();
-    if !needs_version_reconciliation && !has_orphaned_dispatch && !has_legacy_suspension {
+    if !needs_version_reconciliation
+        && !has_orphaned_dispatch
+        && !has_orphaned_edit
+        && !has_legacy_suspension
+    {
         return Ok(queue);
     }
     let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
@@ -757,6 +860,14 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
         if accepted && item.state != QueuedPromptState::Dispatching {
             changed = true;
             return false;
+        }
+        if item.state == QueuedPromptState::Editing {
+            if edit_is_active(attempt_dir, &item.id) {
+                return true;
+            }
+            changed = true;
+            item.state = QueuedPromptState::Queued;
+            return true;
         }
         if item.state != QueuedPromptState::Dispatching {
             return true;
@@ -825,6 +936,32 @@ fn clear_dispatch_active_prompt(attempt_dir: &Utf8Path, prompt_id: &str) -> Resu
         .map_err(|_| anyhow!("active prompt dispatch registry poisoned"))?
         .remove(&dispatch_prompt_key(attempt_dir, prompt_id));
     Ok(())
+}
+
+fn mark_edit_active(attempt_dir: &Utf8Path, item_id: &str) -> Result<()> {
+    ACTIVE_EDIT_RESERVATIONS
+        .lock()
+        .map_err(|_| anyhow!("active prompt edit registry poisoned"))?
+        .insert(edit_item_key(attempt_dir, item_id));
+    Ok(())
+}
+
+fn clear_edit_active(attempt_dir: &Utf8Path, item_id: &str) -> Result<()> {
+    ACTIVE_EDIT_RESERVATIONS
+        .lock()
+        .map_err(|_| anyhow!("active prompt edit registry poisoned"))?
+        .remove(&edit_item_key(attempt_dir, item_id));
+    Ok(())
+}
+
+fn edit_is_active(attempt_dir: &Utf8Path, item_id: &str) -> bool {
+    ACTIVE_EDIT_RESERVATIONS
+        .lock()
+        .is_ok_and(|reservations| reservations.contains(&edit_item_key(attempt_dir, item_id)))
+}
+
+fn edit_item_key(attempt_dir: &Utf8Path, item_id: &str) -> String {
+    format!("{}::{item_id}", queue_path(attempt_dir))
 }
 
 fn dispatch_prompt_is_active(attempt_dir: &Utf8Path, prompt_id: &str) -> bool {
@@ -1099,6 +1236,73 @@ mod tests {
                 .to_conversation_prompt_input()
                 .workspace_files,
             sources
+        );
+    }
+
+    #[test]
+    fn reading_a_queued_prompt_for_editing_reserves_but_does_not_consume_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(&dir, "edit me".to_string(), Vec::new()).unwrap();
+        let revision = load_prompt_queue(&dir).unwrap().revision;
+
+        let (read, queue) = read_queued_prompt(&dir, &queued.id).unwrap();
+
+        assert_eq!(read.content, queued.content);
+        assert_eq!(read.state, QueuedPromptState::Editing);
+        assert_eq!(queue.items[0].id, queued.id);
+        assert_eq!(queue.items[0].state, QueuedPromptState::Editing);
+        assert_eq!(queue.revision, revision + 1);
+        // A second editor and the automatic dispatcher cannot claim the reservation.
+        assert_eq!(
+            read_queued_prompt(&dir, &queued.id).unwrap_err(),
+            PromptQueueError::Dispatching
+        );
+
+        let released = release_queued_prompt_edit(&dir, &queued.id).unwrap();
+        assert_eq!(released.items[0].state, QueuedPromptState::Queued);
+        let (read_again, _) = read_queued_prompt(&dir, &queued.id).unwrap();
+        assert_eq!(read_again.content, queued.content);
+        delete_queued_prompt(&dir, &queued.id).unwrap();
+        assert_eq!(
+            read_queued_prompt(&dir, "queued-missing").unwrap_err(),
+            PromptQueueError::NotFound
+        );
+    }
+
+    #[test]
+    fn orphaned_edit_reservation_is_restored_after_process_state_is_lost() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(&dir, "recover edit".to_string(), Vec::new()).unwrap();
+        let mut persisted = load_prompt_queue(&dir).unwrap();
+        persisted.items[0].state = QueuedPromptState::Editing;
+        crate::storage::write_json(&queue_path(&dir), &persisted).unwrap();
+
+        let recovered = settle_dispatching_prompts(&dir).unwrap();
+
+        assert_eq!(recovered.items[0].id, queued.id);
+        assert_eq!(recovered.items[0].state, QueuedPromptState::Queued);
+        assert!(matches!(
+            claim_next_for_auto_dispatch(&dir, recovered.revision).unwrap(),
+            AutoClaimResult::Claimed(item) if item.id == queued.id
+        ));
+    }
+
+    #[test]
+    fn reading_a_dispatching_prompt_for_editing_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(&dir, "in flight".to_string(), Vec::new()).unwrap();
+        claim_queued_prompt(&dir, &queued.id).unwrap();
+
+        assert_eq!(
+            read_queued_prompt(&dir, &queued.id).unwrap_err(),
+            PromptQueueError::Dispatching
+        );
+        assert_eq!(
+            load_prompt_queue(&dir).unwrap().items[0].state,
+            QueuedPromptState::Dispatching
         );
     }
 

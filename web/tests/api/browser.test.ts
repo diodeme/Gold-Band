@@ -163,7 +163,7 @@ describe('browserApi', () => {
     expect(item).not.toHaveProperty('attachmentPaths');
     expect(item).not.toHaveProperty('quotes');
 
-    const restored = await browserApi.restoreConversationQueuedPrompt(
+    const restored = await browserApi.getConversationQueuedPrompt(
       'default',
       'mock-task',
       'run-053',

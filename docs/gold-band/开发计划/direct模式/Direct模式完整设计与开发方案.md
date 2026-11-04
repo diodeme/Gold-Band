@@ -1542,3 +1542,18 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 - `composer-drafts.json` 加载时校验 version、条数上限和 ID 唯一性；违反 invariant 返回 `conversation.composer-draft-invalid`，坏 JSON 保持 `conversation.composer-draft-storage-failed`，两者都不会重写原文件。
 - 取出草稿时附件与结构化文件引用解析失败不再吞错：保留稳定来源，chip 标记不可用并禁用预览/打开；用户可移除后处理，发送前仍由后端最终校验。删除草稿增加 AlertDialog 二次确认，七语言同步。
 - 回归：reservation 两项 Rust 命令层测试、草稿命令/摘要 3 项、草稿存储 9 项、输入上限 1 项全部通过；前端草稿、角色快照、附件 Tab、禁发、删除确认、不可用引用与 i18n 相关 5 文件 87 项通过，生产 TypeScript 通过。浏览器深链 `/chat/projects/default/tasks/mock-task/runs/run-053` 验证保存、计数、删除确认与取消保留。
+
+## 34. 2026-11-03：队列编辑交接与生命周期投影收敛
+
+状态：已实现并完成定向回归。
+
+- 修复队列编辑的破坏式读取：新增 `read_queued_prompt` 与 `get_conversation_queued_prompt`，读取原子地把目标从 `queued` 预订为 `editing` 并返回完整 authoring payload，不消费载荷；前端按 `get → restoreIfEmpty → delete` 顺序交接，失败时调用 release 恢复为 `queued`。`editing` 项不会被自动 dispatcher claim，输入占用、迟到写入、组件卸载、读取/恢复失败或删除失败均保留原队列项；`dispatching`/`editing` 项仍拒绝新的编辑，进程重启时孤儿 `editing` reservation 自动恢复为 `queued`。
+- 草稿箱取出与队列编辑共用 composer transfer lock，避免草稿 take、队列 restore 和删除/保存操作并发写入同一个输入草稿。队列编辑期间禁用草稿箱入口与输入交互，草稿存储在途时队列编辑也不会启动。
+- 队列 lifecycle 与列表 VM 改为只投影 `contentPreview`，每条最多 280 个 Unicode 字符；完整正文仍只通过显式 get 命令读取。Browser mock、Desktop API、Tauri command registration 和类型契约同步更名，删除旧的破坏式 restore 入口，并注册显式 release 命令用于恢复失败的 `editing` reservation。
+- 草稿箱加载时复用普通 prompt 的正文、引用数量与角色正文上限校验；超限旧文件返回 `conversation.composer-draft-invalid`，不自动重写原文件。
+
+回归验收：`gold-band` prompt queue 45 项、composer drafts 11 项通过；Desktop 队列 VM 预览、草稿摘要与 task 作用域测试通过；前端 `acp-runtime-continue-submit`、`conversation-prompt-queue`、composer draft box 与 browser API 共 119 项通过；`cargo fmt --all` 与 `cargo check -p gold-band --tests` 通过。
+
+过度设计评审：没有新增 aggregate 或并行 canonical 数据；仅在既有队列生命周期内增加必要的 `editing` 状态，因为 `queued` 无法阻止自动 claim、`dispatching` 又代表 provider 发送，无法表达 composer reservation 的恢复不变量。继续复用 queue item id、revision、delete/release 命令、draft store 与输入草稿状态；transfer lock 只保护 composer 交接临界区，不覆盖文件 I/O、provider 执行或网络调用。
+
+性能影响评审：队列最多 10 条、草稿最多 20 条；lifecycle 列表从最多 64,000 字符正文/条降为最多 280 字符预览/条，完整 payload 仅在用户编辑单条时读取，无 N+1 与轮询。编辑交接增加一次有界的队列 reservation/release 原子写入，临界区不包含 UI、网络或 provider 调用；草稿 load 仍是有界单文件读取并运行于 blocking pool。

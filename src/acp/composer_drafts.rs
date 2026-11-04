@@ -14,6 +14,9 @@ use crate::provider::{
     ConversationPromptInput, PromptWorkspaceFileRef, UserPromptQuote, UserPromptRole,
     conversation_prompt_has_payload,
 };
+use crate::provider::{
+    MAX_USER_PROMPT_QUOTES, MAX_USER_PROMPT_ROLE_CONTENT_CHARS, MAX_USER_PROMPT_TEXT_CHARS,
+};
 use crate::storage::{read_json, with_file_lock, write_json};
 
 pub const COMPOSER_DRAFTS_FILE_NAME: &str = "composer-drafts.json";
@@ -201,6 +204,19 @@ fn validate_invariants(drafts: &ComposerDraftBox) -> Result<(), ComposerDraftErr
     {
         return Err(ComposerDraftError::Invalid);
     }
+    // Files written before the shared prompt bounds existed (or edited by
+    // hand) must not turn the box into an unbounded JSON payload; the same
+    // limits the save path enforces also hold on load.
+    for draft in &drafts.items {
+        if draft.content.chars().count() > MAX_USER_PROMPT_TEXT_CHARS
+            || draft.quotes.len() > MAX_USER_PROMPT_QUOTES
+            || draft.role.as_ref().is_some_and(|role| {
+                role.content.chars().count() > MAX_USER_PROMPT_ROLE_CONTENT_CHARS
+            })
+        {
+            return Err(ComposerDraftError::Invalid);
+        }
+    }
     Ok(())
 }
 
@@ -382,6 +398,97 @@ mod tests {
             .version
                 == COMPOSER_DRAFTS_VERSION + 1
         );
+    }
+
+    #[test]
+    fn oversized_legacy_payloads_are_rejected_at_load_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = task_dir(&temp);
+        std::fs::create_dir_all(&dir).unwrap();
+        let oversized = ComposerDraftBox {
+            version: COMPOSER_DRAFTS_VERSION,
+            revision: 1,
+            items: vec![ComposerDraft {
+                id: "draft-oversized".to_string(),
+                content: "x".repeat(MAX_USER_PROMPT_TEXT_CHARS + 1),
+                quotes: Vec::new(),
+                role: None,
+                attachment_paths: Vec::new(),
+                workspace_files: Vec::new(),
+                created_at: "2026-11-03T00:00:00Z".to_string(),
+            }],
+        };
+        std::fs::write(
+            drafts_path(&dir),
+            serde_json::to_string(&oversized).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(load_composer_drafts(&dir), Err(ComposerDraftError::Invalid));
+        // A file written before the bounds existed is never rewritten by a read.
+        assert!(
+            std::fs::read_to_string(drafts_path(&dir))
+                .unwrap()
+                .contains("draft-oversized")
+        );
+    }
+
+    #[test]
+    fn over_quoted_and_over_sized_role_drafts_are_rejected_at_load_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = task_dir(&temp);
+        let mk = |quotes: Vec<UserPromptQuote>, role: Option<UserPromptRole>| ComposerDraftBox {
+            version: COMPOSER_DRAFTS_VERSION,
+            revision: 1,
+            items: vec![ComposerDraft {
+                id: "draft-boundary".to_string(),
+                content: "text".to_string(),
+                quotes,
+                role,
+                attachment_paths: Vec::new(),
+                workspace_files: Vec::new(),
+                created_at: "2026-11-03T00:00:00Z".to_string(),
+            }],
+        };
+        let quote = UserPromptQuote {
+            id: "quote-1".to_string(),
+            text: "text".to_string(),
+            source: crate::provider::UserPromptQuoteSource::AgentMessage {
+                message_key: "message-1".to_string(),
+            },
+        };
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            drafts_path(&dir),
+            serde_json::to_string(&mk(
+                (0..=MAX_USER_PROMPT_QUOTES)
+                    .map(|index| UserPromptQuote {
+                        id: format!("quote-{index}"),
+                        ..quote.clone()
+                    })
+                    .collect(),
+                None,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_composer_drafts(&dir), Err(ComposerDraftError::Invalid));
+
+        std::fs::write(
+            drafts_path(&dir),
+            serde_json::to_string(&mk(
+                Vec::new(),
+                Some(UserPromptRole {
+                    profile_id: "dev".to_string(),
+                    name: "Developer".to_string(),
+                    content: "x".repeat(MAX_USER_PROMPT_ROLE_CONTENT_CHARS + 1),
+                }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_composer_drafts(&dir), Err(ComposerDraftError::Invalid));
     }
 
     #[test]

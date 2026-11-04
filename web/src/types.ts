@@ -2918,7 +2918,7 @@ export interface ResolveAppExitInput {
 
 export interface ConversationQueuedPromptVm {
   id: string;
-  content: string;
+  contentPreview: string;
   attachmentCount: number;
   quoteCount: number;
   workspaceFileCount: number;

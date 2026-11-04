@@ -12,6 +12,9 @@ const apiMocks = vi.hoisted(() => ({
   showConversationMessageAttachment: vi.fn(),
   listConversationComposerDrafts: vi.fn(),
   saveConversationComposerDraft: vi.fn(),
+  getConversationQueuedPrompt: vi.fn(),
+  releaseConversationQueuedPromptEdit: vi.fn(),
+  deleteConversationQueuedPrompt: vi.fn(),
 }));
 
 vi.mock('@/api', async () => {
@@ -438,6 +441,9 @@ beforeEach(() => {
   apiMocks.stopActiveSession.mockReset();
   apiMocks.listConversationComposerDrafts.mockReset().mockResolvedValue({ revision: 0, maxItems: 20, items: [] });
   apiMocks.saveConversationComposerDraft.mockReset();
+  apiMocks.getConversationQueuedPrompt.mockReset();
+  apiMocks.releaseConversationQueuedPromptEdit.mockReset().mockResolvedValue({ lifecycle: null });
+  apiMocks.deleteConversationQueuedPrompt.mockReset();
   apiMocks.continueConversationRuntime.mockReset();
   apiMocks.getAcpSession.mockReset().mockResolvedValue(null);
   apiMocks.submitConversationPrompt.mockReset().mockResolvedValue({
@@ -1875,6 +1881,181 @@ describe('ACP Direct queue submission', () => {
       expect(textarea?.value).toBe('');
       expect(container.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('1');
     } finally {
+      await unmount(root);
+    }
+  });
+
+  it('edits a queued prompt through a non-destructive read and deletes the item only after the composer accepts it', async () => {
+    const lifecycle = {
+      ...activeDirectLifecycle(),
+      promptQueue: {
+        revision: 3,
+        maxItems: 10,
+        items: [{
+          id: 'queue-item-1',
+          contentPreview: '排队中的这条要完整回到输入框',
+          attachmentCount: 0,
+          quoteCount: 0,
+          workspaceFileCount: 0,
+          createdAt: '2026-11-03T00:00:00Z',
+        }],
+      },
+    };
+    const { container, id, root, session } = await renderActiveDirectDialog();
+    await act(async () => {
+      apiMocks.getAcpSession.mockResolvedValue(session);
+      root.render(
+        <TestProviders>
+          <ACPChatDialog
+            session={session}
+            projectId={`project-${id}`}
+            taskId={`task-${id}`}
+            runId={`run-${id}`}
+            roundId={session.roundId}
+            nodeId={session.nodeId}
+            attemptId={session.attemptId}
+            runtimeComposerContext={{
+              isOrchestrated: false,
+              lifecycle,
+              promptQueueEnabled: true,
+              workflowValid: true,
+            }}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TestProviders>,
+      );
+    });
+    apiMocks.getConversationQueuedPrompt.mockResolvedValue({
+      draft: {
+        content: '排队中的这条要完整回到输入框',
+        quotes: [],
+        attachmentPaths: [],
+        workspaceFiles: [],
+      },
+      lifecycle: null,
+    });
+    const emptiedLifecycle = {
+      ...lifecycle,
+      promptQueue: { ...lifecycle.promptQueue, revision: 4, items: [] },
+    };
+    apiMocks.deleteConversationQueuedPrompt.mockResolvedValue({ lifecycle: emptiedLifecycle });
+    try {
+      const editButton = container.querySelector<HTMLButtonElement>('button[aria-label="编辑"]');
+      expect(editButton).toBeTruthy();
+      await flushInteraction(() => {
+        editButton?.click();
+      });
+
+      expect(apiMocks.getConversationQueuedPrompt).toHaveBeenCalledTimes(1);
+      expect(apiMocks.getConversationQueuedPrompt.mock.calls[0][6]).toBe('queue-item-1');
+      // The composer accepted the payload, so the durable item is consumed now.
+      expect(apiMocks.deleteConversationQueuedPrompt).toHaveBeenCalledTimes(1);
+      expect(apiMocks.deleteConversationQueuedPrompt.mock.calls[0][6]).toBe('queue-item-1');
+      expect(apiMocks.releaseConversationQueuedPromptEdit).not.toHaveBeenCalled();
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      expect(textarea?.value).toBe('排队中的这条要完整回到输入框');
+      expect(container.querySelector('[data-queue-item-id="queue-item-1"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps the queued item when the composer fills up during the edit handoff', async () => {
+    const lifecycle = {
+      ...activeDirectLifecycle(),
+      promptQueue: {
+        revision: 3,
+        maxItems: 10,
+        items: [{
+          id: 'queue-item-1',
+          contentPreview: '这条排队内容不能因为恢复冲突而丢失',
+          attachmentCount: 0,
+          quoteCount: 0,
+          workspaceFileCount: 0,
+          createdAt: '2026-11-03T00:00:00Z',
+        }],
+      },
+    };
+    const { container, id, root, session } = await renderActiveDirectDialog();
+    await act(async () => {
+      apiMocks.getAcpSession.mockResolvedValue(session);
+      root.render(
+        <TestProviders>
+          <ACPChatDialog
+            session={session}
+            projectId={`project-${id}`}
+            taskId={`task-${id}`}
+            runId={`run-${id}`}
+            roundId={session.roundId}
+            nodeId={session.nodeId}
+            attemptId={session.attemptId}
+            runtimeComposerContext={{
+              isOrchestrated: false,
+              lifecycle,
+              promptQueueEnabled: true,
+              workflowValid: true,
+            }}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TestProviders>,
+      );
+    });
+    // A late failed-submit restore lands while the read is in flight and
+    // claims the empty composer, so the queue payload can no longer land.
+    const draftKey = createAcpEventWindowCacheKey({
+      projectId: `project-${id}`, taskId: `task-${id}`, runId: `run-${id}`,
+      roundId: session.roundId, nodeId: session.nodeId, attemptId: session.attemptId, branchId: 'root',
+    });
+    const seedHost = document.createElement('div');
+    document.body.append(seedHost);
+    const seedRoot = createRoot(seedHost);
+    function LateDraftSeeder() {
+      const controller = useAcpComposerDraft(draftKey);
+      React.useLayoutEffect(() => {
+        controller.restoreIfEmpty({
+          content: '迟到恢复的失败提交草稿',
+          attachments: [],
+          quotes: [],
+          workspaceFiles: [],
+        });
+      }, []);
+      return <output data-late-draft-content={controller.draft.content} />;
+    }
+    apiMocks.getConversationQueuedPrompt.mockImplementation(async () => {
+      await act(async () => {
+        seedRoot.render(<LateDraftSeeder />);
+      });
+      return {
+        draft: {
+          content: '这条排队内容不能因为恢复冲突而丢失',
+          quotes: [],
+          attachmentPaths: [],
+          workspaceFiles: [],
+        },
+        lifecycle: null,
+      };
+    });
+    try {
+      const editButton = container.querySelector<HTMLButtonElement>('button[aria-label="编辑"]');
+      await flushInteraction(() => {
+        editButton?.click();
+      });
+
+      // Read/consume separation: a rejected handoff must not consume the item.
+      expect(apiMocks.getConversationQueuedPrompt).toHaveBeenCalledTimes(1);
+      expect(apiMocks.releaseConversationQueuedPromptEdit).toHaveBeenCalledTimes(1);
+      expect(apiMocks.deleteConversationQueuedPrompt).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-queue-item-id="queue-item-1"]')).toBeTruthy();
+      expect(container.textContent).toContain('输入框状态已变化，无法恢复这条待发送内容。');
+      // The late writer's payload stays; nothing was overwritten.
+      expect(seedHost.querySelector('[data-late-draft-content="迟到恢复的失败提交草稿"]')).toBeTruthy();
+    } finally {
+      await act(async () => seedRoot.unmount());
+      seedHost.remove();
       await unmount(root);
     }
   });

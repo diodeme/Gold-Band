@@ -279,7 +279,8 @@ import {
   continueConversationRuntime,
   recoverConversationRuntime,
   reorderConversationQueuedPrompts,
-  restoreConversationQueuedPrompt,
+  getConversationQueuedPrompt,
+  releaseConversationQueuedPromptEdit,
   resumeConversationPromptQueue,
   setConversationPromptQueueMode,
   statAttachmentFiles,
@@ -1468,6 +1469,10 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
   const [roleProfiles, setRoleProfiles] = useState<ProfileVm[]>([]);
   useEffect(() => {
     if (!roleSelectionEnabled) {
@@ -1788,11 +1793,21 @@ export function ACPChatDialog(
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const [queueSendingItemId, setQueueSendingItemId] = useState<string | null>(null);
   const composerDraftStoragePendingRef = useRef(false);
+  const composerMutationInFlightRef = useRef(false);
   const [composerDraftStoragePending, setComposerDraftStoragePending] = useState(false);
+  const acquireComposerMutation = useCallback(() => {
+    if (composerMutationInFlightRef.current) return false;
+    composerMutationInFlightRef.current = true;
+    return true;
+  }, []);
+  const releaseComposerMutation = useCallback(() => {
+    composerMutationInFlightRef.current = false;
+  }, []);
   const changeComposerDraftStoragePending = useCallback((pending: boolean) => {
     composerDraftStoragePendingRef.current = pending;
     setComposerDraftStoragePending(pending);
-  }, []);
+    if (!pending) releaseComposerMutation();
+  }, [releaseComposerMutation]);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const canonicalTimelineCoverageRef = useRef<{
     eventWindowKey: string;
@@ -6248,22 +6263,85 @@ export function ACPChatDialog(
   };
 
   const restoreQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending || queueSubmitPending || composerDraftOccupied) return;
+    if (
+      queueMutationPending
+      || queueSubmitPending
+      || composerDraftOccupied
+      || composerDraftStoragePendingRef.current
+      || !acquireComposerMutation()
+    ) return;
     setQueueMutationPending(true);
     setQueueRestorePending(true);
     setSendError(null);
+    let editReserved = false;
+    const handoffIsCurrent = () => (
+      mountedRef.current && sessionIdentityRef.current === sessionIdentity
+    );
+    const releaseEditReservation = async () => {
+      if (!editReserved) return;
+      try {
+        const released = await releaseConversationQueuedPromptEdit(
+          projectId, taskId, runId, roundId, nodeId, attemptId,
+          itemId, outerNodeId, outerAttemptId,
+        );
+        if (handoffIsCurrent()) applyQueueLifecycle(released.lifecycle);
+      } finally {
+        editReserved = false;
+      }
+    };
     try {
-      const result = await restoreConversationQueuedPrompt(
+      // Reserve/read first. The durable queue item is consumed only after the
+      // empty composer accepts the complete payload, matching the draft-box
+      // get -> restore -> delete contract. The reservation prevents automatic
+      // dispatch from claiming it between these two handoff steps.
+      const result = await getConversationQueuedPrompt(
         projectId, taskId, runId, roundId, nodeId, attemptId,
         itemId, outerNodeId, outerAttemptId,
       );
+      editReserved = true;
+      if (!handoffIsCurrent()) {
+        try {
+          await releaseEditReservation();
+        } catch {
+          // The durable reservation will be recovered on the next queue read.
+        }
+        return;
+      }
       applyQueueLifecycle(result.lifecycle);
       if (!restoreDraftIntoComposer(result.draft)) {
-        setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        try {
+          await releaseEditReservation();
+        } catch {
+          // Preserve the user-facing handoff conflict; reconciliation will
+          // recover an abandoned edit reservation after process restart.
+        }
+        if (handoffIsCurrent()) setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        return;
       }
+      if (!handoffIsCurrent()) {
+        try {
+          await releaseEditReservation();
+        } catch {
+          // The durable reservation will be recovered on the next queue read.
+        }
+        return;
+      }
+      const deleted = await deleteConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      editReserved = false;
+      if (handoffIsCurrent()) applyQueueLifecycle(deleted.lifecycle);
     } catch (error) {
-      setSendError(displayAppError(t, error));
+      try {
+        await releaseEditReservation();
+      } catch {
+        // Keep the original operation error; durable reconciliation handles
+        // an edit reservation if storage is unavailable during cleanup.
+      }
+      if (handoffIsCurrent()) setSendError(displayAppError(t, error));
     } finally {
+      releaseComposerMutation();
       setQueueMutationPending(false);
       setQueueRestorePending(false);
     }
@@ -7261,11 +7339,12 @@ export function ACPChatDialog(
                   <ComposerDraftBox
                     projectId={projectId}
                     taskId={taskId}
-                    disabled={readOnly || composerInputDisabled}
+                    disabled={readOnly || composerInputDisabled || queueRestorePending}
                     canSave={composerDraftSavable}
                     composerOccupied={composerDraftOccupied}
                     captureDraft={captureComposerDraft}
                     restoreDraft={restoreDraftIntoComposer}
+                    acquireMutation={acquireComposerMutation}
                     onPendingChange={changeComposerDraftStoragePending}
                   />
                 )}

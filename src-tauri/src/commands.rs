@@ -10,11 +10,11 @@ use gold_band::acp::prompt_queue::{
     SuspensionReason, TerminalDispatchRecovery, auto_dispatch_is_suspended,
     claim_next_for_auto_dispatch, claim_queued_prompt, clear_auto_dispatch_reply_batch,
     clear_queued_prompts, complete_accepted_prompt, delete_queued_prompt, enqueue_prompt,
-    load_prompt_queue, mark_user_priority, record_auto_dispatch_reply_completion,
-    recover_terminal_dispatch, release_queued_prompt, reorder_queued_prompts,
-    request_auto_dispatch_suspension, resume_auto_dispatch, set_dispatch_mode,
-    settle_dispatching_prompt, suspend_after_failed_turn, suspend_auto_dispatch,
-    take_queued_prompt,
+    load_prompt_queue, mark_user_priority, read_queued_prompt,
+    record_auto_dispatch_reply_completion, recover_terminal_dispatch, release_queued_prompt,
+    release_queued_prompt_edit, reorder_queued_prompts, request_auto_dispatch_suspension,
+    resume_auto_dispatch, set_dispatch_mode, settle_dispatching_prompt, suspend_after_failed_turn,
+    suspend_auto_dispatch,
 };
 use gold_band::acp::turn_files::{
     ATTACHMENT_ACCESS_DENIED, ATTACHMENT_NOT_FOUND, CHANGE_SET_NOT_FOUND, TurnFileChangeSet,
@@ -118,9 +118,9 @@ use crate::view_models::{
     task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
-    ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
-    conversation_is_orchestrated, conversation_run_mode, conversation_session_successor,
-    conversation_task_activity_from_prompt,
+    ConversationAttemptLifecycleVm, ConversationTaskActivityVm, PROMPT_CONTENT_PREVIEW_CHARS,
+    conversation_attempt_lifecycle_vm, conversation_is_orchestrated, conversation_run_mode,
+    conversation_session_successor, conversation_task_activity_from_prompt,
 };
 use crate::wallpaper::{
     ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
@@ -2226,7 +2226,7 @@ pub struct ConversationQueuedPromptDraftVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ConversationPromptQueueRestoreVm {
+pub struct ConversationPromptQueueReadVm {
     pub draft: ConversationQueuedPromptDraftVm,
     pub lifecycle: Option<ConversationAttemptLifecycleVm>,
 }
@@ -7285,8 +7285,13 @@ pub fn reorder_conversation_queued_prompts(
     })
 }
 
+/// Read/consume separation for editing a queued prompt: returns the complete
+/// authoring payload without touching the durable item. The caller deletes
+/// the item explicitly only after the composer has accepted the payload, so
+/// a rejected handoff (occupied input, unmounted composer, a late competing
+/// writer) never loses the queued content.
 #[tauri::command]
-pub fn restore_conversation_queued_prompt(
+pub async fn get_conversation_queued_prompt(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -7298,7 +7303,7 @@ pub fn restore_conversation_queued_prompt(
     item_id: String,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
-) -> CommandResult<ConversationPromptQueueRestoreVm> {
+) -> CommandResult<ConversationPromptQueueReadVm> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
@@ -7309,9 +7314,12 @@ pub fn restore_conversation_queued_prompt(
         outer_node_id,
         outer_attempt_id,
     );
-    let (item, _) = take_queued_prompt(&locator.attempt_dir(&app), &item_id)
-        .map_err(prompt_queue_command_error)?;
-    Ok(ConversationPromptQueueRestoreVm {
+    let attempt_dir = locator.attempt_dir(&app);
+    let (item, _) = spawn_blocking_command(move || {
+        read_queued_prompt(&attempt_dir, &item_id).map_err(prompt_queue_command_error)
+    })
+    .await?;
+    Ok(ConversationPromptQueueReadVm {
         draft: ConversationQueuedPromptDraftVm {
             content: item.content,
             quotes: item.quotes,
@@ -7319,6 +7327,43 @@ pub fn restore_conversation_queued_prompt(
             role: item.role,
             workspace_files: item.workspace_files,
         },
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+/// Releases an edit reservation after the composer rejected the handoff.
+/// This is intentionally separate from delete so an occupied or unmounted
+/// composer never consumes the durable queue item.
+#[tauri::command]
+pub async fn release_conversation_queued_prompt_edit(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let attempt_dir = locator.attempt_dir(&app);
+    spawn_blocking_command(move || {
+        release_queued_prompt_edit(&attempt_dir, &item_id).map_err(prompt_queue_command_error)
+    })
+    .await?;
+    Ok(ConversationPromptQueueMutationVm {
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
 }
@@ -7572,8 +7617,6 @@ pub struct ConversationComposerDraftReadVm {
     pub drafts: ConversationComposerDraftBoxVm,
 }
 
-const COMPOSER_DRAFT_PREVIEW_CHARS: usize = 280;
-
 fn composer_draft_box_vm(
     drafts: gold_band::acp::composer_drafts::ComposerDraftBox,
 ) -> ConversationComposerDraftBoxVm {
@@ -7592,7 +7635,7 @@ fn composer_draft_box_vm(
                 content_preview: draft
                     .content
                     .chars()
-                    .take(COMPOSER_DRAFT_PREVIEW_CHARS)
+                    .take(PROMPT_CONTENT_PREVIEW_CHARS)
                     .collect(),
                 created_at: draft.created_at,
             })
@@ -15420,7 +15463,7 @@ mod tests {
         let summary = composer_draft_box_vm(drafts);
         assert_eq!(
             summary.items[0].content_preview.chars().count(),
-            COMPOSER_DRAFT_PREVIEW_CHARS
+            PROMPT_CONTENT_PREVIEW_CHARS
         );
         assert_eq!(summary.items[0].attachment_count, 1);
         assert!(

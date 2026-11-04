@@ -779,7 +779,7 @@ pub struct ConversationPromptQueueVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationQueuedPromptVm {
     pub id: String,
-    pub content: String,
+    pub content_preview: String,
     pub attachment_count: usize,
     pub quote_count: usize,
     pub workspace_file_count: usize,
@@ -1153,6 +1153,11 @@ pub(crate) fn conversation_is_orchestrated(app: &App, task_id: &str) -> bool {
         .is_orchestrated()
 }
 
+/// Shared bound for one-line prompt projections (queue items, draft
+/// summaries). Full payloads leave the backend only through explicit
+/// read/detail commands, never through list or lifecycle projections.
+pub(crate) const PROMPT_CONTENT_PREVIEW_CHARS: usize = 280;
+
 fn direct_prompt_queue_vm(
     app: &App,
     task_id: &str,
@@ -1170,7 +1175,11 @@ fn direct_prompt_queue_vm(
             .filter(|item| item.state == QueuedPromptState::Queued)
             .map(|item| ConversationQueuedPromptVm {
                 id: item.id,
-                content: item.content,
+                content_preview: item
+                    .content
+                    .chars()
+                    .take(PROMPT_CONTENT_PREVIEW_CHARS)
+                    .collect(),
                 attachment_count: item.attachment_paths.len(),
                 quote_count: item.quotes.len(),
                 workspace_file_count: item.workspace_files.len(),
@@ -4832,23 +4841,24 @@ mod tests {
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm, PromptActivity, attempt_control_mode, attempt_control_projection,
-        auto_config_from_vm, conversation_attempt_lifecycle_vm, conversation_run_summary_page_vm,
-        conversation_run_vm, conversation_session_successors_from_state,
-        conversation_sidebar_bootstrap_vm, conversation_sidebar_vm_from_sources,
-        conversation_status_from_session, conversation_task_activity, conversation_task_page_vm,
-        conversation_task_row_vm, conversation_workspace_vms, create_conversation_run_vm,
-        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
-        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
-        paged_task_ids_by_activity, rerun_conversation_task_vm, scheduled_content_snapshot,
-        scheduled_task_vms_from_sources, touch_conversation_activity_at, update_task_metadata_vm,
-        validate_conversation_create_vm, workflow_binding_missing_item,
+        ConversationWorkspaceVm, PROMPT_CONTENT_PREVIEW_CHARS, PromptActivity,
+        attempt_control_mode, attempt_control_projection, auto_config_from_vm,
+        conversation_attempt_lifecycle_vm, conversation_run_summary_page_vm, conversation_run_vm,
+        conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
+        conversation_sidebar_vm_from_sources, conversation_status_from_session,
+        conversation_task_activity, conversation_task_page_vm, conversation_task_row_vm,
+        conversation_workspace_vms, create_conversation_run_vm, create_conversation_task_vm,
+        derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
+        find_leaf_by_key, lifecycle_is_active, paged_task_ids_by_activity,
+        rerun_conversation_task_vm, scheduled_content_snapshot, scheduled_task_vms_from_sources,
+        touch_conversation_activity_at, update_task_metadata_vm, validate_conversation_create_vm,
+        workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
     use gold_band::acp::prompt_queue::{
-        DispatchMode, SuspensionReason, enqueue_prompt, mark_user_priority, set_dispatch_mode,
-        suspend_auto_dispatch,
+        DispatchMode, SuspensionReason, enqueue_prompt, load_prompt_queue, mark_user_priority,
+        set_dispatch_mode, suspend_auto_dispatch,
     };
     use gold_band::app::{
         App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
@@ -7846,7 +7856,7 @@ mod tests {
         assert_eq!(leaf.lifecycle.continue_kind, None);
         assert!(!leaf.lifecycle.runtime.continuable);
         assert_eq!(queue.items.len(), 1);
-        assert_eq!(queue.items[0].content, "persist after stop");
+        assert_eq!(queue.items[0].content_preview, "persist after stop");
         assert_eq!(queue.items[0].workspace_file_count, 1);
     }
 
@@ -7905,6 +7915,60 @@ mod tests {
         assert_eq!(queue.dispatch_mode, "manual");
         assert!(!queue.auto_dispatch_suspended);
         assert_eq!(queue.suspension_reason, None);
+    }
+
+    #[test]
+    fn direct_prompt_queue_vm_projects_a_bounded_content_preview() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        let long_content = format!("{}{}", "长".repeat(400), "结尾标记");
+        enqueue_prompt(&attempt_dir, long_content, Vec::new()).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        // The lifecycle projection carries a bounded preview only; the full
+        // payload stays behind the explicit read command.
+        assert_eq!(
+            queue.items[0].content_preview.chars().count(),
+            PROMPT_CONTENT_PREVIEW_CHARS
+        );
+        assert!(!queue.items[0].content_preview.contains("结尾标记"));
+        assert!(
+            serde_json::to_value(&queue.items[0])
+                .unwrap()
+                .get("content")
+                .is_none()
+        );
+        assert_eq!(
+            load_prompt_queue(&attempt_dir).unwrap().items[0]
+                .content
+                .chars()
+                .count(),
+            404
+        );
     }
 
     #[test]

@@ -1014,28 +1014,43 @@ fn encode_inline_jpeg(image: &DynamicImage) -> Option<Vec<u8>> {
     Some(encoded)
 }
 
-/// Persists attachments added by a user turn into the owning attempt before
-/// projecting them into ACP content blocks and timeline metadata.
-pub fn resolve_user_input_attachments(
+/// One attachment published into the content-addressed user input store.
+#[derive(Debug, Clone)]
+pub struct PublishedUserInputAttachment {
+    /// Durable destination under `<root>/user-inputs/<digest>/<name>`.
+    pub destination: Utf8PathBuf,
+    /// Content digest directory name under the store root.
+    pub digest: String,
+    /// Original file name as provided by the sender (display identity).
+    pub name: String,
+}
+
+/// Publishes user input attachment bytes into the content-addressed
+/// `<root>/user-inputs/<digest>/<name>` store and returns the durable
+/// destinations. Pure byte publication: no content projection.
+///
+/// Callers that persist durable references to attachments (Direct prompt
+/// queue items, composer drafts) publish at write time so the reference never
+/// points at process-scoped temp storage the OS may reclaim.
+pub fn publish_user_input_attachments(
     paths: &[String],
-    attempt_dir: &Utf8Path,
-    policy: AttachmentProjectionPolicy,
-) -> Result<Vec<ResolvedAttachment>> {
+    root: &Utf8Path,
+) -> Result<Vec<PublishedUserInputAttachment>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
 
-    std::fs::create_dir_all(attempt_dir)?;
-    let attempt_root = dunce::canonicalize(attempt_dir)?;
+    std::fs::create_dir_all(root)?;
+    let store_root = dunce::canonicalize(root)?;
     let user_inputs_dir = user_input_attachment_directory(
-        &attempt_root.join(USER_INPUT_ATTACHMENT_PREFIX),
-        &attempt_root,
+        &store_root.join(USER_INPUT_ATTACHMENT_PREFIX),
+        &store_root,
     )?;
     // `<user-inputs>/<digest>/<name>`: the digest directory has a fixed width, so the remaining
     // budget for the stored name is known before any bytes are copied.
     let name_budget = USER_INPUT_ATTACHMENT_PATH_MAX_UNITS
         .saturating_sub(path_utf16_units(&user_inputs_dir) + USER_INPUT_ATTACHMENT_DIGEST_LEN + 2);
-    let mut resolved = Vec::with_capacity(paths.len());
+    let mut published = Vec::with_capacity(paths.len());
     for path in paths {
         let source = std::path::Path::new(path);
         let name = source
@@ -1098,12 +1113,32 @@ pub fn resolve_user_input_attachments(
             }
             Err(error) => return Err(error.error.into()),
         }
+        published.push(PublishedUserInputAttachment {
+            destination: Utf8PathBuf::from_path_buf(destination)
+                .map_err(|_| anyhow::anyhow!("user input attachment path is not UTF-8"))?,
+            digest,
+            name: name.to_string(),
+        });
+    }
+    Ok(published)
+}
+
+/// Persists attachments added by a user turn into the owning attempt before
+/// projecting them into ACP content blocks and timeline metadata.
+pub fn resolve_user_input_attachments(
+    paths: &[String],
+    attempt_dir: &Utf8Path,
+    policy: AttachmentProjectionPolicy,
+) -> Result<Vec<ResolvedAttachment>> {
+    let published = publish_user_input_attachments(paths, attempt_dir)?;
+    let mut resolved = Vec::with_capacity(published.len());
+    for item in published {
         let mut attachment = resolved_attachment(
-            &destination,
-            &format!("{USER_INPUT_ATTACHMENT_PREFIX}/{digest}"),
+            item.destination.as_std_path(),
+            &format!("{USER_INPUT_ATTACHMENT_PREFIX}/{}", item.digest),
             policy,
         )?;
-        attachment.meta.name = name.to_string();
+        attachment.meta.name = item.name;
         resolved.push(attachment);
     }
     Ok(resolved)
@@ -1155,8 +1190,9 @@ pub const USER_INPUT_ATTACHMENT_PATH_MAX_UNITS: usize = 259;
 pub const USER_INPUT_ATTACHMENT_PATH_TOO_LONG_CODE: &str = "runtime.io.attachment-path-too-long";
 /// NTFS caps a component at 255 UTF-16 units and ext4/APFS at 255 bytes; both are enforced.
 const USER_INPUT_ATTACHMENT_NAME_MAX_UNITS: usize = 255;
-/// 128-bit BLAKE3 prefix in hex. Scope is one attempt, and reuse of an existing destination is
-/// byte-verified, so a prefix collision fails loudly instead of aliasing different content.
+/// 128-bit BLAKE3 prefix in hex. Scope is one store root (an attempt or a task
+/// drafts root), and reuse of an existing destination is byte-verified, so a
+/// prefix collision fails loudly instead of aliasing different content.
 const USER_INPUT_ATTACHMENT_DIGEST_LEN: usize = 32;
 
 fn validate_user_input_attachment_name(name: &str) -> Result<()> {

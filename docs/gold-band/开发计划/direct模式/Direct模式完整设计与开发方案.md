@@ -1568,3 +1568,14 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 - 回归（先红后绿）：prompt_queue 新增 editing 边界拒绝（read/claim）、active 预订保持、TTL 过期回滚 3 项；view_models 新增全状态可见、存储失败 2 项；commands 新增错误映射 1 项；前端 conversation-prompt-queue 新增状态行、queued 计数、存储错误+重试 3 项，composer-draft-box 更新徽标预取契约并新增 take 删除失败文案 1 项。TTL 回滚测试因与标记结构改造同批落地为绿，其余新测试均先在旧行为上失败。
 - 过度设计评审：不新增 aggregate 或旁路状态；`state`/`storageError` 是既有 durable 事实的投影补全，TTL 是 owner 标记的生命周期补齐而非第二套状态机；editing 行的删除入口复用既有 delete 命令。
 - 性能影响评审：投影仍受 10 条 × 280 字符上界约束；徽标预取为单文件有界读取且挂在既有 list 命令与 in-flight 门禁下；TTL 判断为 O(1) 内存操作，reconcile 仅在孤儿出现时多一次原子写。
+
+## 36. 2026-11-04：队列与草稿附件的内容寻址所有权
+
+状态：已实现并完成定向回归。
+
+- 根因（P0，设计缺陷）：队列项与草稿的 `attachmentPaths` 直接保存前端 materialize 到系统临时目录（`%TEMP%/gold-band/conversation-attachments/`）的绝对路径。durable 实体引用进程外非 durable 存储：Windows 存储感知清理 temp 后，队列自动派发在 `validate_attachment_paths` 处以 `attachment-not-found` 失败并暂停（`failed`），草稿取出降级为不可用 chip，违背"不随 attempt、停止或重启丢失"的承诺。
+- 修复（复用既有发布器，不新建存储）：admission 路径已存在内容寻址发布机制（`<root>/user-inputs/<BLAKE3-128 摘要前缀>/<存储名>`，同文件系统 staging + `persist_noclobber` + 冲突字节校验 + 去重复用）。从 `resolve_user_input_attachments` 拆出纯字节发布函数 `publish_user_input_attachments(paths, root) -> Vec<PublishedUserInputAttachment>`（不含图片派生等内容投影重活），resolve 改为消费它、行为不变。两个 durable 写入边界改为先发布再持久化：Direct 忙时入队发布到当前 attempt 的 `user-inputs/`（`enqueue_busy_conversation_prompt`，调用点整体移入 blocking pool）；草稿保存发布到 task 级 `user-inputs/`（`persist_composer_draft`，草稿跨 attempt 存活故不挂在单一 attempt 下）。发布失败按既有 `conversation.attachment-materialize-failed` 结构化错误拒绝写入，队列项/草稿不落盘、调用方保留原输入。派发、立即发送、编辑交接、草稿取出零改动：admission 对相同字节命中相同 digest 直接复用，编辑交接/取出直接引用 durable 路径。
+- 清理策略：内容寻址 + 去重 ⇒ 不做按条删除（多实体可共享 digest，无引用计数时删除会破坏他者）；磁盘上界为每个唯一内容每存储根一份（task 与 attempt 各一）。未来需要回收时引入 digest 引用计数 GC，本轮明确不做。存量指向 temp 的旧队列项/草稿不迁移（开发阶段破坏式更新），维持既有降级行为。
+- 回归（先红后绿）：`busy_enqueue_publishes_attachments_into_durable_attempt_storage`、`composer_draft_save_publishes_attachments_into_task_storage` 均先在"路径原样保存"旧行为上失败（发布未发生、无 `user-inputs` 目录），接线后转绿；两条测试都包含"删除 OS 临时源文件后 durable 路径仍可读"的验收断言。desktop 990 项、prompt_queue 48 项、composer_drafts 11 项通过；provider 附件套件与本机基线一致（5 项 `stevendeng`/`STEVEN~1` 长短名路径断言为既有环境失败，与本次改动无关）。
+- 过度设计评审：不新增存储结构、引用计数或 GC；复用 admission 的内容寻址发布器，改动收敛在两个写入边界；前端与 browser mock 零改动。
+- 性能影响评审：入队/存草稿各增加一次有界字节拷贝（≤10 文件 × 25MB，用户显式触发）；发布运行于 blocking pool 且不持队列/草稿文件锁（锁只覆盖 JSON 原子写）；派发时 admission 命中 digest 仅做字节校验读，不重写。无轮询、无 N+1。

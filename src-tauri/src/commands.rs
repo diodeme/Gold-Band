@@ -7720,6 +7720,28 @@ pub async fn list_conversation_composer_drafts(
     .await
 }
 
+/// Validates and persists one composer draft. Attachment bytes are published
+/// into the task's content-addressed store first so the durable draft never
+/// references process-scoped temp storage.
+fn persist_composer_draft(
+    app: &App,
+    task_id: &str,
+    input: ConversationPromptInput,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationComposerDraftBoxVm> {
+    let task_dir = composer_draft_task_dir(app, task_id)?;
+    validate_composer_draft_input(app, task_id, &input, attachment_paths.as_deref())?;
+    // The draft is task-scoped and must survive new runs and attempts, so its
+    // attachments are published under the task store, not one attempt's.
+    let published = publish_attachments_for_durable_reference(
+        &attachment_paths.unwrap_or_default(),
+        &task_dir,
+    )?;
+    gold_band::acp::composer_drafts::save_composer_draft(&task_dir, input, published)
+        .map(|(_, drafts)| composer_draft_box_vm(drafts))
+        .map_err(composer_draft_command_error)
+}
+
 #[tauri::command]
 pub async fn save_conversation_composer_draft(
     state: State<'_, DesktopState>,
@@ -7729,18 +7751,8 @@ pub async fn save_conversation_composer_draft(
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationComposerDraftBoxVm> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    spawn_blocking_command(move || {
-        let task_dir = composer_draft_task_dir(&app, &task_id)?;
-        validate_composer_draft_input(&app, &task_id, &input, attachment_paths.as_deref())?;
-        gold_band::acp::composer_drafts::save_composer_draft(
-            &task_dir,
-            input,
-            attachment_paths.unwrap_or_default(),
-        )
-        .map(|(_, drafts)| composer_draft_box_vm(drafts))
-        .map_err(composer_draft_command_error)
-    })
-    .await
+    spawn_blocking_command(move || persist_composer_draft(&app, &task_id, input, attachment_paths))
+        .await
 }
 
 #[tauri::command]
@@ -8133,7 +8145,38 @@ fn enqueue_busy_conversation_prompt(
             serde_json::json!({}),
         ));
     }
-    enqueue_prompt(attempt_dir, input, attachment_paths).map_err(prompt_queue_command_error)
+    // The durable queue item must own its attachment bytes: publish them into
+    // the attempt's content-addressed store so the reference never points at
+    // process-scoped temp storage the OS may reclaim.
+    let published = publish_attachments_for_durable_reference(&attachment_paths, attempt_dir)?;
+    enqueue_prompt(attempt_dir, input, published).map_err(prompt_queue_command_error)
+}
+
+/// Publishes attachment bytes into the content-addressed user input store
+/// under `root` and returns the durable destination paths.
+///
+/// Durable entities (prompt queue items, composer drafts) store these
+/// destinations instead of the caller's scratch paths.
+fn publish_attachments_for_durable_reference(
+    paths: &[String],
+    root: &Utf8Path,
+) -> CommandResult<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    gold_band::provider::publish_user_input_attachments(paths, root)
+        .map(|published| {
+            published
+                .into_iter()
+                .map(|item| item.destination.to_string())
+                .collect()
+        })
+        .map_err(|_| {
+            CommandErrorVm::new(
+                "conversation.attachment-materialize-failed",
+                serde_json::json!({}),
+            )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8216,12 +8259,18 @@ async fn submit_conversation_prompt_inner(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        let queued = enqueue_busy_conversation_prompt(
-            &attempt_dir,
-            input,
-            attachment_paths.unwrap_or_default(),
-            source,
-        )?;
+        // Publishing attachment bytes is bounded file I/O; keep it off the
+        // async runtime together with the durable queue write.
+        let enqueue_attempt_dir = attempt_dir.clone();
+        let queued = spawn_blocking_command(move || {
+            enqueue_busy_conversation_prompt(
+                &enqueue_attempt_dir,
+                input,
+                attachment_paths.unwrap_or_default(),
+                source,
+            )
+        })
+        .await?;
         touch_task_activity_at_best_effort(
             &app,
             &locator.task_id,
@@ -15583,6 +15632,97 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_prompt_queue(&dir).unwrap().items[0], item);
+    }
+
+    #[test]
+    fn busy_enqueue_publishes_attachments_into_durable_attempt_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt")).unwrap();
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        let scratch = Utf8PathBuf::from_path_buf(temp.path().join("scratch")).unwrap();
+        std::fs::create_dir_all(scratch.as_std_path()).unwrap();
+        let source = scratch.join("notes.txt");
+        std::fs::write(source.as_std_path(), b"queued attachment bytes").unwrap();
+
+        let item = enqueue_busy_conversation_prompt(
+            &dir,
+            ConversationPromptInput::from("attached note".to_string()),
+            vec![source.to_string()],
+            PromptSubmissionSource::Composer,
+        )
+        .unwrap();
+
+        assert_eq!(item.attachment_paths.len(), 1);
+        let stored = Utf8Path::new(&item.attachment_paths[0]);
+        // Path forms differ between the raw tempdir and canonicalized storage
+        // (8.3 short names), so compare both sides canonically.
+        let stored_canonical = std::fs::canonicalize(stored).unwrap();
+        let store_canonical = std::fs::canonicalize(dir.join("user-inputs")).unwrap();
+        assert!(stored_canonical.starts_with(&store_canonical));
+        assert_eq!(std::fs::read(stored).unwrap(), b"queued attachment bytes");
+        // The durable reference must survive the OS reclaiming its scratch area.
+        std::fs::remove_file(source.as_std_path()).unwrap();
+        assert!(stored.exists());
+        assert_eq!(
+            load_prompt_queue(&dir).unwrap().items[0].attachment_paths,
+            item.attachment_paths
+        );
+    }
+
+    #[test]
+    fn composer_draft_save_publishes_attachments_into_task_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-draft-attachment-publish-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let task_dir = app.paths.task_dir("task-1");
+        std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+        write_json(
+            &task_dir.join("authoring").join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": false,
+                "directConfig": null,
+                "agentIdentity": null,
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.task_file("task-1"),
+            &serde_json::json!({ "version": 1 }),
+        )
+        .unwrap();
+        let scratch = Utf8PathBuf::from_path_buf(root.join("scratch")).unwrap();
+        std::fs::create_dir_all(scratch.as_std_path()).unwrap();
+        let source = scratch.join("draft-image.png");
+        std::fs::write(source.as_std_path(), b"draft attachment bytes").unwrap();
+
+        persist_composer_draft(
+            &app,
+            "task-1",
+            ConversationPromptInput::from("draft with attachment".to_string()),
+            Some(vec![source.to_string()]),
+        )
+        .unwrap();
+
+        let stored_paths = gold_band::acp::composer_drafts::load_composer_drafts(&task_dir)
+            .unwrap()
+            .items[0]
+            .attachment_paths
+            .clone();
+        assert_eq!(stored_paths.len(), 1);
+        let stored = Utf8Path::new(&stored_paths[0]);
+        let stored_canonical = std::fs::canonicalize(stored).unwrap();
+        let store_canonical = std::fs::canonicalize(task_dir.join("user-inputs")).unwrap();
+        assert!(stored_canonical.starts_with(&store_canonical));
+        assert_eq!(std::fs::read(stored).unwrap(), b"draft attachment bytes");
+        // The durable draft must survive the OS reclaiming its scratch area.
+        std::fs::remove_file(source.as_std_path()).unwrap();
+        assert!(stored.exists());
     }
 
     #[test]

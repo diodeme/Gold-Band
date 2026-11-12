@@ -1,0 +1,22 @@
+{
+  "$schema": "../../theme-sdk/schema/theme-manifest-v2.schema.json",
+  "schemaVersion": 2,
+  "contractVersion": 2,
+  "id": "builtin.meadow",
+  "version": "1.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "春野",
+    "en": "Meadow"
+  },
+  "author": "Gold Band",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "avatars"
+  ]
+}

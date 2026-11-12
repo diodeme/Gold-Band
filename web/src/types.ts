@@ -11,10 +11,22 @@ export type FontStackPreference = { source: 'theme' } | { source: 'custom'; fami
 export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
-export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
+/**
+ * Wallpaper source per color scheme. `theme` inherits the theme's default
+ * slot assignment; an optional `assetId` pins one theme-declared wallpaper
+ * across all slots (slot styling stays with the theme). `user` references an
+ * imported asset; `none` explicitly renders no wallpaper at all.
+ */
+export type WallpaperImagePreference =
+  | { source: 'theme'; assetId?: string }
+  | { source: 'user'; assetId: string }
+  | { source: 'none' };
+/** `cover` fills and crops, `contain` letterboxes with the theme background. */
+export type WallpaperFitPreference = 'cover' | 'contain';
 export interface WallpaperSchemePersonalization {
   image: WallpaperImagePreference;
   opacityPercent: number;
+  fit?: WallpaperFitPreference;
 }
 export type WorkflowGraphDirectionPreference = 'auto' | 'horizontal' | 'vertical';
 export interface PersonalizationPreference {

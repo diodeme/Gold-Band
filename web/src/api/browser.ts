@@ -2611,7 +2611,22 @@ export const browserApi: RuntimeApi = {
   },
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging, browser });
+    let effective = personalization;
+    if (current.appearance.themeId !== appearance.themeId) {
+      const collapsed = structuredClone(personalization);
+      const byScheme = collapsed.wallpaper.byColorScheme;
+      for (const scheme of ['light', 'dark'] as const) {
+        // Theme pins never cross themes; themes without declared wallpapers
+        // cannot hold the theme source at all.
+        if (byScheme[scheme].image.source === 'theme') {
+          byScheme[scheme].image = appearance.themeId === 'builtin.mobius'
+            ? { source: 'theme' }
+            : { source: 'none' };
+        }
+      }
+      effective = collapsed;
+    }
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization: effective, language, useLocalClaude, verboseLogging, browser });
     return Promise.resolve(preferences);
   },
   applyDesktopZoom(percent: number) {
@@ -2799,6 +2814,23 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
   },
+  saveDesktopWallpaperFit(colorScheme, fit) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            fit,
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
   restoreThemeDesktopWallpaper(colorScheme) {
     const current = browserPreviewState.getPreferences();
     const personalization = {
@@ -2810,6 +2842,44 @@ export const browserApi: RuntimeApi = {
           [colorScheme]: {
             ...current.personalization.wallpaper.byColorScheme[colorScheme],
             image: { source: 'theme' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  clearDesktopWallpaper(colorScheme) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'none' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  selectThemeDesktopWallpaper(colorScheme, assetId) {
+    const current = browserPreviewState.getPreferences();
+    const trimmed = assetId.trim();
+    if (!trimmed) {
+      return Promise.reject({ code: 'personalization.wallpaper-invalid', params: { assetId } });
+    }
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'theme' as const, assetId: trimmed },
           },
         },
       },

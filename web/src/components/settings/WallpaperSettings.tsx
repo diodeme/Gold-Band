@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ImageIcon, ImagePlus, Loader2, Maximize2, RotateCcw } from 'lucide-react';
+import { Check, ChevronDown, ImageIcon, ImagePlus, Maximize2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -12,24 +12,33 @@ import {
   WALLPAPER_OPACITY_STEP,
   normalizeWallpaperOpacityPercent,
   selectedWallpaper,
+  themeWallpaperOptions,
+  themeWallpaperPin,
 } from '@/lib/wallpaper';
 import { cn } from '@/lib/utils';
 import { previewWallpaperOpacity, type ResolvedThemeWallpaperDescriptor } from '@/theme';
-import type { PersonalizationPreference, ResolvedColorScheme, WallpaperPreferencesVm, WallpaperSchemePersonalization } from '@/types';
+import type { ThemeWallpaperSlot } from '@/theme-contract';
+import type { PersonalizationPreference, ResolvedColorScheme, WallpaperFitPreference, WallpaperPreferencesVm, WallpaperSchemePersonalization } from '@/types';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 const WALLPAPER_COLOR_SCHEMES = ['light', 'dark'] as const satisfies readonly ResolvedColorScheme[];
+
+/** Per color scheme: the theme's resolved wallpaper slot assignment. */
+type ThemeWallpaperSlotMap = Partial<Record<ThemeWallpaperSlot, ResolvedThemeWallpaperDescriptor>>;
 
 interface WallpaperSettingsProps {
   preferences: WallpaperPreferencesVm;
   personalization: PersonalizationPreference['wallpaper'];
   activeColorScheme: ResolvedColorScheme;
-  themeWallpapersByColorScheme: Partial<Record<ResolvedColorScheme, ResolvedThemeWallpaperDescriptor>>;
+  themeWallpapersByColorScheme: Partial<Record<ResolvedColorScheme, ThemeWallpaperSlotMap>>;
   busy: boolean;
   onImportWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
   onSelectRecentWallpaper: (colorScheme: ResolvedColorScheme, wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
   onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onClearWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectThemeWallpaper: (colorScheme: ResolvedColorScheme, assetId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperFit: (colorScheme: ResolvedColorScheme, fit: WallpaperFitPreference) => Promise<WallpaperPreferencesVm | undefined>;
 }
 
 export function WallpaperSettings({
@@ -42,6 +51,9 @@ export function WallpaperSettings({
   onSelectRecentWallpaper,
   onSaveWallpaperOpacity,
   onRestoreThemeWallpaper,
+  onClearWallpaper,
+  onSelectThemeWallpaper,
+  onSaveWallpaperFit,
 }: WallpaperSettingsProps) {
   const { t } = useTranslation();
   const [editingColorScheme, setEditingColorScheme] = useState<ResolvedColorScheme>(activeColorScheme);
@@ -76,7 +88,7 @@ export function WallpaperSettings({
             colorScheme={colorScheme}
             preferences={preferences}
             personalization={personalization.byColorScheme[colorScheme]}
-            themeWallpaper={themeWallpapersByColorScheme[colorScheme]}
+            themeWallpaperSlotMap={themeWallpapersByColorScheme[colorScheme] ?? {}}
             disabled={busy || updating}
             updating={updating}
             runUpdate={runUpdate}
@@ -84,6 +96,9 @@ export function WallpaperSettings({
             onSelectRecentWallpaper={onSelectRecentWallpaper}
             onSaveWallpaperOpacity={onSaveWallpaperOpacity}
             onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+            onClearWallpaper={onClearWallpaper}
+            onSelectThemeWallpaper={onSelectThemeWallpaper}
+            onSaveWallpaperFit={onSaveWallpaperFit}
           />
         </TabsContent>
       ))}
@@ -95,7 +110,7 @@ interface WallpaperSchemeSettingsProps {
   colorScheme: ResolvedColorScheme;
   preferences: WallpaperPreferencesVm;
   personalization: WallpaperSchemePersonalization;
-  themeWallpaper?: ResolvedThemeWallpaperDescriptor;
+  themeWallpaperSlotMap: ThemeWallpaperSlotMap;
   disabled: boolean;
   updating: boolean;
   runUpdate: (action: () => Promise<WallpaperPreferencesVm | undefined>) => Promise<WallpaperPreferencesVm | undefined>;
@@ -103,13 +118,16 @@ interface WallpaperSchemeSettingsProps {
   onSelectRecentWallpaper: WallpaperSettingsProps['onSelectRecentWallpaper'];
   onSaveWallpaperOpacity: WallpaperSettingsProps['onSaveWallpaperOpacity'];
   onRestoreThemeWallpaper: WallpaperSettingsProps['onRestoreThemeWallpaper'];
+  onClearWallpaper: WallpaperSettingsProps['onClearWallpaper'];
+  onSelectThemeWallpaper: WallpaperSettingsProps['onSelectThemeWallpaper'];
+  onSaveWallpaperFit: WallpaperSettingsProps['onSaveWallpaperFit'];
 }
 
 function WallpaperSchemeSettings({
   colorScheme,
   preferences,
   personalization,
-  themeWallpaper,
+  themeWallpaperSlotMap,
   disabled,
   updating,
   runUpdate,
@@ -117,15 +135,30 @@ function WallpaperSchemeSettings({
   onSelectRecentWallpaper,
   onSaveWallpaperOpacity,
   onRestoreThemeWallpaper,
+  onClearWallpaper,
+  onSelectThemeWallpaper,
+  onSaveWallpaperFit,
 }: WallpaperSchemeSettingsProps) {
   const measuredWallpaperRef = useWebviewMeasuredContainer<HTMLDivElement>('wallpaper-settings');
   const { t } = useTranslation();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [opacityPercent, setOpacityPercent] = useState(() => normalizeWallpaperOpacityPercent(personalization.opacityPercent));
+  const themeWallpaper = themeWallpaperSlotMap.settings;
+  const themeOptions = themeWallpaperOptions(Object.values(themeWallpaperSlotMap));
   const customWallpaper = selectedWallpaper(preferences, personalization.image);
-  const previewUrl = customWallpaper?.imageUrl ?? themeWallpaper?.url ?? null;
+  const suppressed = personalization.image.source === 'none';
+  const pinnedAssetId = themeWallpaperPin(personalization.image);
+  const pinnedOption = pinnedAssetId
+    ? themeOptions.find((option) => option.assetId === pinnedAssetId) ?? null
+    : null;
+  const previewUrl = customWallpaper?.imageUrl
+    ?? (suppressed ? null : pinnedOption?.url ?? themeWallpaper?.url ?? null);
   const previewOpacity = customWallpaper ? opacityPercent / 100 : themeWallpaper?.opacity ?? 1;
+  // The settings slot is the representative default for selection marking.
+  const activeThemeAssetId = customWallpaper || suppressed
+    ? null
+    : pinnedAssetId ?? themeWallpaper?.assetId ?? null;
 
   useEffect(() => {
     setOpacityPercent(normalizeWallpaperOpacityPercent(personalization.opacityPercent));
@@ -136,9 +169,66 @@ function WallpaperSchemeSettings({
     if (saved) setPickerOpen(false);
   };
 
+  // The wallpaper source is an explicit three-state choice; switching to a
+  // custom wallpaper is routed through the picker because it needs an image.
+  type WallpaperSource = 'theme' | 'user' | 'none';
+  const themeAvailable = themeOptions.length > 0;
+  const sourceValue: WallpaperSource = suppressed
+    ? 'none'
+    : customWallpaper
+      ? 'user'
+      // Themes without declared wallpapers cannot hold the theme source; the
+      // backend collapses it on theme switch and the UI falls back to none.
+      : themeAvailable ? 'theme' : 'none';
+  const sourceBadge = sourceValue === 'user'
+    ? t('settings.wallpaper.customActive')
+    : sourceValue === 'none'
+      ? t('settings.wallpaper.noneActive')
+      : t('settings.wallpaper.themeActive');
+  // Opening from a segment click must escape the current click cycle, or the
+  // popover's outside-press dismissal immediately closes it again.
+  const openPicker = () => {
+    window.setTimeout(() => setPickerOpen(true), 0);
+  };
+  const chooseSource = (value: string) => {
+    if (value === sourceValue) return;
+    if (value === 'none') {
+      void clearWallpaper();
+    } else if (value === 'theme') {
+      void restoreTheme();
+    } else {
+      openPicker();
+    }
+  };
+  // Clicking the already-selected image segment opens the picker to swap the
+  // image; the disabled segment never opens anything. When the picker is open,
+  // pressing a segment first dismisses it (outside press) — remember that at
+  // pointerdown so the following click does not immediately reopen it.
+  const pickerOpenAtPointerDown = useRef(false);
+  const trackPickerStateAtPointerDown = () => {
+    pickerOpenAtPointerDown.current = pickerOpen;
+  };
+  const handleSegmentClick = (value: WallpaperSource) => {
+    if (pickerOpenAtPointerDown.current) return;
+    if (value === 'user') {
+      if (sourceValue === 'user' && !pickerOpen) openPicker();
+    } else if (value === 'theme' && sourceValue === 'theme' && !pickerOpen) {
+      openPicker();
+    }
+  };
+
   const selectRecent = async (wallpaperId: string) => {
     const saved = await runUpdate(() => onSelectRecentWallpaper(colorScheme, wallpaperId));
     if (saved) setPickerOpen(false);
+  };
+
+  const selectThemeWallpaper = async (assetId: string) => {
+    const saved = await runUpdate(() => onSelectThemeWallpaper(colorScheme, assetId));
+    if (saved) setPickerOpen(false);
+  };
+
+  const clearWallpaper = async () => {
+    await runUpdate(() => onClearWallpaper(colorScheme));
   };
 
   const restoreTheme = async () => {
@@ -153,6 +243,10 @@ function WallpaperSchemeSettings({
       setOpacityPercent(persisted);
       previewWallpaperOpacity(colorScheme, persisted);
     }
+  };
+
+  const commitFit = async (fit: WallpaperFitPreference) => {
+    await runUpdate(() => onSaveWallpaperFit(colorScheme, fit));
   };
 
   return (
@@ -184,7 +278,7 @@ function WallpaperSchemeSettings({
                 <Maximize2 className="size-3.5" aria-hidden="true" />
               </span>
               <span className="absolute bottom-2 left-2 rounded-md bg-background/85 px-2 py-1 text-ui-micro font-medium text-foreground shadow-sm backdrop-blur-sm">
-                {customWallpaper ? t('settings.wallpaper.customActive') : t('settings.wallpaper.themeActive')}
+                {sourceBadge}
               </span>
             </button>
           </DialogTrigger>
@@ -220,10 +314,10 @@ function WallpaperSchemeSettings({
         <div className="relative aspect-video w-64 max-w-full shrink-0 overflow-hidden rounded-lg border border-border/45 bg-muted/35">
           <div className="flex size-full flex-col items-center justify-center gap-2 text-muted-foreground">
             <ImageIcon className="size-5" aria-hidden="true" />
-            <span className="text-xs">{t('settings.wallpaper.themeEmpty')}</span>
+            <span className="text-xs">{suppressed ? t('settings.wallpaper.none') : t('settings.wallpaper.themeEmpty')}</span>
           </div>
           <span className="absolute bottom-2 left-2 rounded-md bg-background/85 px-2 py-1 text-ui-micro font-medium text-foreground shadow-sm backdrop-blur-sm">
-            {t('settings.wallpaper.themeActive')}
+            {sourceBadge}
           </span>
         </div>
       )}
@@ -234,16 +328,82 @@ function WallpaperSchemeSettings({
             <div className="text-sm font-semibold text-foreground">{t('settings.wallpaper.chooseTitle')}</div>
             <div className="text-xs text-muted-foreground">{t('settings.wallpaper.description')}</div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-              <PopoverTrigger asChild>
-                <Button type="button" variant="outline" disabled={disabled}>
-                  {updating ? <Loader2 className="animate-spin" /> : <ImagePlus />}
-                  {t('settings.wallpaper.choose')}
-                </Button>
-              </PopoverTrigger>
+              <PopoverAnchor asChild>
+                <Tabs value={sourceValue} onValueChange={chooseSource}>
+                  <TabsList variant="bare">
+                    <TabsTrigger
+                      value="theme"
+                      disabled={disabled || !themeAvailable}
+                      className="hover:bg-muted/70 data-[state=active]:hover:bg-background"
+                      onPointerDown={trackPickerStateAtPointerDown}
+                      onClick={() => handleSegmentClick('theme')}
+                    >
+                      {t('settings.wallpaper.sourceTheme')}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="user"
+                      disabled={disabled}
+                      className="gap-1 hover:bg-muted/70 data-[state=active]:hover:bg-background"
+                      onPointerDown={trackPickerStateAtPointerDown}
+                      onClick={() => handleSegmentClick('user')}
+                    >
+                      {t('settings.wallpaper.sourceCustom')}
+                      {sourceValue === 'user' ? <ChevronDown className="size-3 opacity-60" aria-hidden="true" /> : null}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="none"
+                      disabled={disabled}
+                      className="hover:bg-muted/70 data-[state=active]:hover:bg-background"
+                    >
+                      {t('settings.wallpaper.sourceDisable')}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </PopoverAnchor>
               <PopoverContent align="end" className="w-[min(22rem,calc(100vw-2rem))] p-2">
-                <div className="px-1 pb-2 text-xs font-medium text-muted-foreground">
+                {themeOptions.length > 0 ? (
+                  <>
+                    <div className="px-1 pb-2 text-xs font-medium text-muted-foreground">
+                      {t('settings.wallpaper.themeGallery')}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {themeOptions.map((option) => {
+                        const selected = option.assetId === activeThemeAssetId;
+                        return (
+                          <button
+                            key={option.assetId}
+                            type="button"
+                            aria-label={t('settings.wallpaper.useThemeWallpaper')}
+                            aria-pressed={selected}
+                            className={cn(
+                              'group relative aspect-video min-w-0 overflow-hidden rounded-md border border-border/45 bg-muted outline-none transition-[border-color,box-shadow,filter] hover:brightness-95 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                              selected && 'border-primary ring-1 ring-primary/45',
+                            )}
+                            disabled={disabled}
+                            onClick={() => void selectThemeWallpaper(option.assetId)}
+                          >
+                            <img
+                              src={option.url}
+                              alt=""
+                              width={320}
+                              height={180}
+                              loading="lazy"
+                              className="size-full object-cover"
+                            />
+                            {selected ? (
+                              <span className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                                <Check className="size-3" aria-hidden="true" />
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+                <div className="px-1 pb-2 pt-3 text-xs font-medium text-muted-foreground">
                   {t('settings.wallpaper.recent')}
                 </div>
                 {preferences.recentWallpapers.length > 0 ? (
@@ -294,37 +454,49 @@ function WallpaperSchemeSettings({
                 </div>
               </PopoverContent>
             </Popover>
-            {personalization.image.source === 'user' ? (
-              <Button type="button" variant="ghost" disabled={disabled} onClick={() => void restoreTheme()}>
-                <RotateCcw />
-                {t('settings.wallpaper.restoreTheme')}
-              </Button>
-            ) : null}
           </div>
         </div>
 
+        {!themeAvailable ? (
+          <div className="text-xs text-muted-foreground">{t('settings.wallpaper.themeUnavailable')}</div>
+        ) : null}
+
         {customWallpaper ? (
-          <div className="grid min-w-0 grid-cols-[auto_minmax(120px,1fr)_3ch] items-center gap-3">
-            <label htmlFor={`wallpaper-opacity-${colorScheme}`} className="text-sm text-foreground">
-              {t('settings.wallpaper.visibility')}
-            </label>
-            <Slider
-              id={`wallpaper-opacity-${colorScheme}`}
-              value={[opacityPercent]}
-              min={MIN_WALLPAPER_OPACITY_PERCENT}
-              max={MAX_WALLPAPER_OPACITY_PERCENT}
-              step={WALLPAPER_OPACITY_STEP}
-              disabled={disabled}
-              aria-label={t('settings.wallpaper.visibility')}
-              onValueChange={([value]) => {
-                const normalized = normalizeWallpaperOpacityPercent(value);
-                setOpacityPercent(normalized);
-                previewWallpaperOpacity(colorScheme, normalized);
-              }}
-              onValueCommit={([value]) => void commitOpacity(value)}
-            />
-            <span className="text-right text-sm tabular-nums text-muted-foreground">{opacityPercent}%</span>
-          </div>
+          <>
+            <div className="grid min-w-0 grid-cols-[auto_minmax(120px,1fr)_3ch] items-center gap-3">
+              <label htmlFor={`wallpaper-opacity-${colorScheme}`} className="text-sm text-foreground">
+                {t('settings.wallpaper.visibility')}
+              </label>
+              <Slider
+                id={`wallpaper-opacity-${colorScheme}`}
+                value={[opacityPercent]}
+                min={MIN_WALLPAPER_OPACITY_PERCENT}
+                max={MAX_WALLPAPER_OPACITY_PERCENT}
+                step={WALLPAPER_OPACITY_STEP}
+                disabled={disabled}
+                aria-label={t('settings.wallpaper.visibility')}
+                onValueChange={([value]) => {
+                  const normalized = normalizeWallpaperOpacityPercent(value);
+                  setOpacityPercent(normalized);
+                  previewWallpaperOpacity(colorScheme, normalized);
+                }}
+                onValueCommit={([value]) => void commitOpacity(value)}
+              />
+              <span className="text-right text-sm tabular-nums text-muted-foreground">{opacityPercent}%</span>
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <span className="text-sm text-foreground">{t('settings.wallpaper.fitLabel')}</span>
+              <Tabs
+                value={personalization.fit ?? 'cover'}
+                onValueChange={(value) => void commitFit(value as WallpaperFitPreference)}
+              >
+                <TabsList variant="bare">
+                  <TabsTrigger value="cover" disabled={disabled}>{t('settings.wallpaper.fitCover')}</TabsTrigger>
+                  <TabsTrigger value="contain" disabled={disabled}>{t('settings.wallpaper.fitContain')}</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+          </>
         ) : null}
       </div>
     </div>

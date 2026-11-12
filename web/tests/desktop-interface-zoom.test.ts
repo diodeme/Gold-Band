@@ -64,14 +64,17 @@ describe('interface zoom preference', () => {
 });
 
 describe('interface zoom wiring contract', () => {
-  it('exposes the zoom row in settings with preview and commit handlers', () => {
+  it('exposes the zoom row in settings with a commit-only slider', () => {
     const source = readFileSync(path.resolve(__dirname, '../src/pages/SettingsPage.tsx'), 'utf8');
     expect(source).toContain('data-interface-zoom-row="true"');
     expect(source).toContain('data-interface-zoom-invalid="true"');
     expect(source).toContain('parseInterfaceZoomInput');
-    expect(source).toContain('previewZoomPercent');
     expect(source).toContain('chooseZoomPercent');
     expect(source).toContain('onValueCommit');
+    // Dragging must not re-apply the webview zoom mid-gesture (it re-layouts
+    // the page and kicks the slider away from the pointer); only the local
+    // draft follows the thumb and the commit applies + persists the zoom.
+    expect(source).not.toContain('previewZoomPercent');
   });
 
   it('applies the persisted zoom at startup and persists through the shared save path', () => {

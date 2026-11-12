@@ -619,8 +619,17 @@ export const desktopApi: RuntimeApi = {
   saveDesktopWallpaperOpacity(colorScheme, opacityPercent) {
     return invokeCommand<PreferencesVm>('save_desktop_wallpaper_opacity', { input: { colorScheme, opacityPercent } }).then(withWallpaperAssetUrls);
   },
+  saveDesktopWallpaperFit(colorScheme, fit) {
+    return invokeCommand<PreferencesVm>('save_desktop_wallpaper_fit', { input: { colorScheme, fit } }).then(withWallpaperAssetUrls);
+  },
   restoreThemeDesktopWallpaper(colorScheme) {
     return invokeCommand<PreferencesVm>('restore_theme_desktop_wallpaper', { input: { colorScheme } }).then(withWallpaperAssetUrls);
+  },
+  clearDesktopWallpaper(colorScheme) {
+    return invokeCommand<PreferencesVm>('clear_desktop_wallpaper', { input: { colorScheme } }).then(withWallpaperAssetUrls);
+  },
+  selectThemeDesktopWallpaper(colorScheme, assetId) {
+    return invokeCommand<PreferencesVm>('select_theme_desktop_wallpaper', { input: { colorScheme, assetId } }).then(withWallpaperAssetUrls);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;

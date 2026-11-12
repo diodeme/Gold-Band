@@ -659,8 +659,20 @@ export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, op
   return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
 }
 
+export function saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('./types').WallpaperFitPreference) {
+  return getRuntimeApi().saveDesktopWallpaperFit(colorScheme, fit);
+}
+
 export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
   return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
+}
+
+export function clearDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().clearDesktopWallpaper(colorScheme);
+}
+
+export function selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string) {
+  return getRuntimeApi().selectThemeDesktopWallpaper(colorScheme, assetId);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {

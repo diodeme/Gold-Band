@@ -4,7 +4,10 @@ use std::io::{Cursor, Write};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
-use gold_band::config::{PersonalizationPreference, ResolvedColorScheme, WallpaperImagePreference};
+use gold_band::config::{
+    PersonalizationPreference, ResolvedColorScheme, WallpaperFitPreference,
+    WallpaperImagePreference,
+};
 use gold_band::storage::{read_json, write_json};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
@@ -50,6 +53,26 @@ pub struct SaveDesktopWallpaperOpacityInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreThemeDesktopWallpaperInput {
+    pub color_scheme: ResolvedColorScheme,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearDesktopWallpaperInput {
+    pub color_scheme: ResolvedColorScheme,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectThemeDesktopWallpaperInput {
+    pub asset_id: String,
+    pub color_scheme: ResolvedColorScheme,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveDesktopWallpaperFitInput {
+    pub fit: WallpaperFitPreference,
     pub color_scheme: ResolvedColorScheme,
 }
 
@@ -162,7 +185,7 @@ pub fn reconcile_wallpaper_personalization(
             .iter()
             .any(|record| record.id == *asset_id && record_is_valid(root, record));
         if !exists {
-            wallpaper.image = WallpaperImagePreference::Theme;
+            wallpaper.image = WallpaperImagePreference::Theme { asset_id: None };
             changed = true;
         }
     }
@@ -671,7 +694,7 @@ mod tests {
                 .wallpaper
                 .for_color_scheme(ResolvedColorScheme::Light)
                 .image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization
@@ -680,6 +703,41 @@ mod tests {
                 .image,
             WallpaperImagePreference::User {
                 asset_id: valid.asset_id
+            }
+        );
+    }
+
+    #[test]
+    fn reconcile_keeps_explicit_none_and_theme_pins_untouched() {
+        let temp = tempdir().unwrap();
+        let root = root(&temp);
+        let mut personalization = PersonalizationPreference::default();
+        personalization
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::None;
+        personalization
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("mobius-band-dark".to_string()),
+        };
+
+        assert!(!reconcile_wallpaper_personalization(&root, &mut personalization).unwrap());
+        assert_eq!(
+            personalization
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            personalization
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::Theme {
+                asset_id: Some("mobius-band-dark".to_string()),
             }
         );
     }

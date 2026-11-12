@@ -40,6 +40,12 @@
       }
     ]
   },
+  "builtin.meadow": {
+    "schemaVersion": 2,
+    "count": 0,
+    "totalBytes": 0,
+    "records": []
+  },
   "builtin.mobius": {
     "schemaVersion": 2,
     "count": 2,

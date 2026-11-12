@@ -587,7 +587,10 @@ export interface RuntimeApi {
   importDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm | null>;
   selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string): Promise<PreferencesVm>;
   saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number): Promise<PreferencesVm>;
+  saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('../types').WallpaperFitPreference): Promise<PreferencesVm>;
   restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
+  clearDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
+  selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;

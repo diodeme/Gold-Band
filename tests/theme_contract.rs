@@ -10,10 +10,15 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
         .map(|theme| theme.id.as_str())
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(catalog.len(), 3);
+    assert_eq!(catalog.len(), 4);
     assert_eq!(
         ids,
-        BTreeSet::from(["builtin.gold-band", "builtin.mobius", "builtin.tech-neutral"])
+        BTreeSet::from([
+            "builtin.gold-band",
+            "builtin.mobius",
+            "builtin.tech-neutral",
+            "builtin.meadow"
+        ])
     );
     for theme in catalog {
         assert!(!theme.name.zh_cn.is_empty());
@@ -74,15 +79,20 @@ fn rust_catalog_contains_only_the_supported_builtin_packages() {
     assert!(mobius.visual_quality_profiles.is_some());
     assert!(mobius.fonts.is_none());
     assert!(mobius.wallpapers.is_some());
-    assert!(mobius
-        .visual_quality_profiles
-        .as_ref()
-        .is_some_and(|profiles| !profiles
-            .performance
-            .wallpapers
+    assert!(
+        mobius
+            .visual_quality_profiles
             .as_ref()
-            .is_some_and(|wallpapers| wallpapers.enabled)));
-    assert_eq!(mobius.schemes.light.material.model, ThemeMaterialModel::Solid);
+            .is_some_and(|profiles| !profiles
+                .performance
+                .wallpapers
+                .as_ref()
+                .is_some_and(|wallpapers| wallpapers.enabled))
+    );
+    assert_eq!(
+        mobius.schemes.light.material.model,
+        ThemeMaterialModel::Solid
+    );
     assert_eq!(
         gold_band.schemes.light.material.model,
         ThemeMaterialModel::Solid

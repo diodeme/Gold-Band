@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperFitPreference, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -47,7 +47,6 @@ import {
   INTERFACE_ZOOM_MIN,
   INTERFACE_ZOOM_STEP,
   parseInterfaceZoomInput,
-  previewInterfaceZoomPercent,
   withInterfaceZoomPercent,
 } from '@/lib/desktop-zoom';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
@@ -114,6 +113,9 @@ interface SettingsPageProps {
   onSelectRecentWallpaper: (colorScheme: ResolvedColorScheme, wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
   onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onClearWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectThemeWallpaper: (colorScheme: ResolvedColorScheme, assetId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperFit: (colorScheme: ResolvedColorScheme, fit: WallpaperFitPreference) => Promise<WallpaperPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -123,7 +125,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onClearWallpaper, onSelectThemeWallpaper, onSaveWallpaperFit, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const measuredThemeDrawerRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-drawer');
   const readOnly = useReadOnlyExperience();
   useThemeWallpaperSurface();
@@ -248,11 +250,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     applyPersonalization(withTypographySize(personalization, kind, { source: 'custom', px: value }));
   };
 
-  const previewZoomPercent = (value: number) => {
-    setInterfaceZoomPercent(value);
-    void previewInterfaceZoomPercent(value);
-  };
-
   const chooseZoomPercent = (value: number) => {
     const next = withInterfaceZoomPercent(personalization, value);
     setPersonalization(next);
@@ -299,8 +296,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const effectiveAppearance = resolveAppearance(appearance);
   const themeWallpapersByColorScheme = useMemo(() => ({
-    light: resolveAppearance({ ...appearance, colorScheme: 'light' }).wallpapers.settings,
-    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }).wallpapers.settings,
+    light: resolveAppearance({ ...appearance, colorScheme: 'light' }).wallpapers,
+    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }).wallpapers,
   }), [appearance]);
   const currentTheme = getThemePackage(appearance.themeId);
   const defaultUiFontDisplayName = themeFontStackDisplayName(
@@ -326,19 +323,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         title={<span className="text-title">{t('settings.title')}</span>}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
-        <TabsList className={cn('grid w-full max-w-md', readOnly ? 'grid-cols-2' : 'grid-cols-3')}>
-          <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
-          <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
-          {!readOnly && <TabsTrigger value="advanced" className="min-w-0 px-1">
-            <span className="inline-flex min-w-0 items-center gap-1">
-              <span>{t('settings.tabs.advanced')}</span>
-              {showAdvancedUpdateDot ? <UpdateDot /> : null}
-            </span>
-          </TabsTrigger>}
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="flex min-h-0 flex-1 flex-col">
+        {/* The tab rail lives outside the scroll container: it is pinned by
+            layout, so scrolling content can never render behind it. */}
+        <div className="shrink-0 border-b border-border/45 px-5 py-3 xl:px-6">
+          <TabsList className={cn('grid w-full max-w-md', readOnly ? 'grid-cols-2' : 'grid-cols-3')}>
+            <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
+            <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
+            {!readOnly && <TabsTrigger value="advanced" className="min-w-0 px-1">
+              <span className="inline-flex min-w-0 items-center gap-1">
+                <span>{t('settings.tabs.advanced')}</span>
+                {showAdvancedUpdateDot ? <UpdateDot /> : null}
+              </span>
+            </TabsTrigger>}
+          </TabsList>
+        </div>
 
+        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <TabsContent value="general" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.language')}>
@@ -445,7 +446,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   </div>
                   <InterfaceZoomControl
                     value={interfaceZoomPercent}
-                    onPreview={previewZoomPercent}
                     onCommit={chooseZoomPercent}
                   />
                 </div>
@@ -519,6 +519,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 onSelectRecentWallpaper={onSelectRecentWallpaper}
                 onSaveWallpaperOpacity={onSaveWallpaperOpacity}
                 onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+                onClearWallpaper={onClearWallpaper}
+                onSelectThemeWallpaper={onSelectThemeWallpaper}
+                onSaveWallpaperFit={onSaveWallpaperFit}
               />
             </SettingsSection>}
 
@@ -682,10 +685,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
               </SettingsSection>
           </AppCard>
         </TabsContent>
-      </Tabs>
 
-      {clientVersion ? <Badge variant="outline" className="font-mono text-muted-foreground"><span className="mr-2 size-2 rounded-full bg-gold-success" /> {t('settings.clientVersion', { version: clientVersion })}</Badge> : null}
-      </div>
+        {clientVersion ? <Badge variant="outline" className="font-mono text-muted-foreground"><span className="mr-2 size-2 rounded-full bg-gold-success" /> {t('settings.clientVersion', { version: clientVersion })}</Badge> : null}
+        </div>
+      </Tabs>
     </Page>
   );
 }
@@ -872,20 +875,22 @@ function FontPreviewSample({ sample, fontFamily }: { sample: string; fontFamily:
  */
 function InterfaceZoomControl({
   value,
-  onPreview,
   onCommit,
 }: {
   value: number;
-  onPreview: (value: number) => void;
   onCommit: (value: number) => void;
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState(String(value));
+  // The thumb follows the drag locally; the webview zoom is only applied on
+  // commit so mid-gesture re-layouts cannot kick the slider away.
+  const [sliderValue, setSliderValue] = useState(value);
   const [invalid, setInvalid] = useState(false);
   // External value changes (reset button, persisted shortcut commits) resync
   // the input text and clear any stale invalid hint.
   useEffect(() => {
     setDraft(String(value));
+    setSliderValue(value);
     setInvalid(false);
   }, [value]);
   const commitDraft = () => {
@@ -929,14 +934,14 @@ function InterfaceZoomControl({
         min={INTERFACE_ZOOM_MIN}
         max={INTERFACE_ZOOM_MAX}
         step={INTERFACE_ZOOM_STEP}
-        value={[value]}
+        value={[sliderValue]}
         onValueChange={(values) => {
-          const next = values[0] ?? value;
+          const next = values[0] ?? sliderValue;
+          setSliderValue(next);
           setDraft(String(next));
           setInvalid(false);
-          onPreview(next);
         }}
-        onValueCommit={(values) => onCommit(values[0] ?? value)}
+        onValueCommit={(values) => onCommit(values[0] ?? sliderValue)}
       />
       <Tooltip>
         <TooltipTrigger asChild>

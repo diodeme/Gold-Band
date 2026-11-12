@@ -74,7 +74,7 @@
     },
     "input": {
       "$type": "color",
-      "$value": "#c9c2b6"
+      "$value": "#B6C2D8"
     },
     "ring": {
       "$type": "color",
@@ -284,17 +284,50 @@
       "$type": "color",
       "$value": "#CC332B"
     },
-    "attention": { "$type": "color", "$value": "#3558ad" },
-    "attentionForeground": { "$type": "color", "$value": "#ffffff" },
-    "emphasis": { "$type": "color", "$value": "#8a5a1f" },
-    "statusRunningSurface": { "$type": "color", "$value": "rgba(53,88,173,.10)" },
-    "statusRunningBorder": { "$type": "color", "$value": "rgba(53,88,173,.30)" },
-    "statusSuccessSurface": { "$type": "color", "$value": "rgba(10,122,94,.10)" },
-    "statusSuccessBorder": { "$type": "color", "$value": "rgba(10,122,94,.30)" },
-    "statusWarningSurface": { "$type": "color", "$value": "rgba(157,95,7,.10)" },
-    "statusWarningBorder": { "$type": "color", "$value": "rgba(157,95,7,.30)" },
-    "statusDangerSurface": { "$type": "color", "$value": "rgba(204,51,43,.10)" },
-    "statusDangerBorder": { "$type": "color", "$value": "rgba(204,51,43,.30)" },
+    "attention": {
+      "$type": "color",
+      "$value": "#3558ad"
+    },
+    "attentionForeground": {
+      "$type": "color",
+      "$value": "#ffffff"
+    },
+    "emphasis": {
+      "$type": "color",
+      "$value": "#8a5a1f"
+    },
+    "statusRunningSurface": {
+      "$type": "color",
+      "$value": "rgba(53,88,173,.10)"
+    },
+    "statusRunningBorder": {
+      "$type": "color",
+      "$value": "rgba(53,88,173,.30)"
+    },
+    "statusSuccessSurface": {
+      "$type": "color",
+      "$value": "rgba(10,122,94,.10)"
+    },
+    "statusSuccessBorder": {
+      "$type": "color",
+      "$value": "rgba(10,122,94,.30)"
+    },
+    "statusWarningSurface": {
+      "$type": "color",
+      "$value": "rgba(157,95,7,.10)"
+    },
+    "statusWarningBorder": {
+      "$type": "color",
+      "$value": "rgba(157,95,7,.30)"
+    },
+    "statusDangerSurface": {
+      "$type": "color",
+      "$value": "rgba(204,51,43,.10)"
+    },
+    "statusDangerBorder": {
+      "$type": "color",
+      "$value": "rgba(204,51,43,.30)"
+    },
     "permission": {
       "$type": "color",
       "$value": "#8a5a1f"

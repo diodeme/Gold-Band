@@ -1021,7 +1021,8 @@
     },
     "composer": {
       "context-limit-exceeded": "上下文最多可包含 {{max}} 個引用和附件。",
-      "referenceUnavailable": "引用已失效"
+      "referenceUnavailable": "引用已失效",
+      "resizeHandle": "拖動調整輸入框高度"
     },
     "conversation": {
       "task-not-found": "找不到該工作階段。",
@@ -1938,7 +1939,6 @@
     "loadFailed": "無法載入本輪檔案變化",
     "partial": "部分檔案變化無法完整捕獲",
     "showMore": "再顯示 {{count}} 個檔案",
-    "collapse": "收起檔案清單",
     "openDiff": "查看 {{path}} 的差異",
     "openVersion": "查看 {{path}} 的本輪版本",
     "deletedFile": "已刪除 {{path}}",
@@ -2272,6 +2272,16 @@
     "scrollForHistory": "— 上滑查看歷史資訊 —",
     "returnToLatest": "回到最新",
     "rawSearchPlaceholder": "搜尋原始幀內容…",
+    "turnRail": {
+      "label": "會話導航",
+      "jump": "跳轉到：{{preview}}",
+      "kind": {
+        "prompt": "使用者提問",
+        "tool": "工具呼叫",
+        "compaction": "上下文壓縮",
+        "permission": "權限請求"
+      }
+    },
     "rawKindPlaceholder": "事件類型",
     "rawKindAll": "全部事件",
     "rawDirectionAll": "全部方向",
@@ -2842,6 +2852,7 @@
       "description": "自訂桌布會覆蓋主題套件的桌布，並隨用戶端尺寸自適應。",
       "recent": "最近使用",
       "useRecent": "使用此最近桌布",
+      "deleteRecent": "刪除此桌布",
       "noRecent": "沒有最近桌布",
       "import": "匯入新桌布",
       "sourceTheme": "主題桌布",

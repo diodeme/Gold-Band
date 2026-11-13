@@ -49,6 +49,7 @@ import {
   selectRecentDesktopWallpaper,
   restoreThemeDesktopWallpaper,
   clearDesktopWallpaper,
+  deleteRecentDesktopWallpaper,
   selectThemeDesktopWallpaper,
   saveDesktopWallpaperFit,
   startRemoteConversationRun,
@@ -2373,6 +2374,18 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
+  const onDeleteRecentWallpaper = useCallback(async (wallpaperId: string): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await deleteRecentDesktopWallpaper(wallpaperId);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
   const onSelectThemeWallpaper = useCallback(async (colorScheme: ResolvedColorScheme, assetId: string): Promise<WallpaperPreferencesVm | undefined> => {
     setError(null);
     try {
@@ -2579,6 +2592,7 @@ export function App() {
           onSaveWallpaperOpacity={onSaveWallpaperOpacity}
           onRestoreThemeWallpaper={onRestoreThemeWallpaper}
           onClearWallpaper={onClearWallpaper}
+          onDeleteRecentWallpaper={onDeleteRecentWallpaper}
           onSelectThemeWallpaper={onSelectThemeWallpaper}
           onSaveWallpaperFit={onSaveWallpaperFit}
           onSaveUpdaterSettings={onSaveUpdaterSettings}
@@ -2939,6 +2953,7 @@ export function App() {
             onSaveWallpaperOpacity={onSaveWallpaperOpacity}
             onRestoreThemeWallpaper={onRestoreThemeWallpaper}
             onClearWallpaper={onClearWallpaper}
+            onDeleteRecentWallpaper={onDeleteRecentWallpaper}
             onSelectThemeWallpaper={onSelectThemeWallpaper}
             onSaveWallpaperFit={onSaveWallpaperFit}
             onSaveUpdaterSettings={onSaveUpdaterSettings}

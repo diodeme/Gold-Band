@@ -124,9 +124,10 @@ use crate::view_models_conversation::{
     conversation_session_successor,
 };
 use crate::wallpaper::{
-    ClearDesktopWallpaperInput, ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
-    SaveDesktopWallpaperFitInput, SaveDesktopWallpaperOpacityInput,
-    SelectRecentDesktopWallpaperInput, SelectThemeDesktopWallpaperInput, import_wallpaper_image,
+    ClearDesktopWallpaperInput, DeleteRecentWallpaperInput, ImportDesktopWallpaperInput,
+    RestoreThemeDesktopWallpaperInput, SaveDesktopWallpaperFitInput,
+    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput,
+    SelectThemeDesktopWallpaperInput, delete_recent_wallpaper, import_wallpaper_image,
     load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
     select_recent_wallpaper,
 };
@@ -6692,6 +6693,68 @@ fn acp_live_event_context(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnIndexEntryVm {
+    pub seq: u64,
+    pub timestamp: String,
+    /// Dominant rail kind: prompt | tool | compaction | permission.
+    pub kind: gold_band::acp::events::ConversationTurnKind,
+    pub prompt_preview: Option<String>,
+}
+
+/// Session-level turn navigation index for the conversation turn rail: one
+/// entry per user prompt with the dominant event kind of the turn. Reads the
+/// durable branch timeline only; live in-flight turns appear once committed.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn get_conversation_turn_index(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<Vec<ConversationTurnIndexEntryVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
+    let branch_id =
+        branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    let result = (move || {
+        let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+            (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node,
+                outer_attempt,
+                &node_id,
+                &attempt_id,
+            ),
+            _ => app
+                .paths
+                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id),
+        };
+        let timeline_path =
+            gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+        let events = gold_band::acp::events::load_timeline_items(&timeline_path)
+            .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
+        Ok(gold_band::acp::events::conversation_turn_index(&events)
+            .into_iter()
+            .map(|entry| ConversationTurnIndexEntryVm {
+                seq: entry.seq,
+                timestamp: entry.timestamp,
+                kind: entry.kind,
+                prompt_preview: entry.prompt_preview,
+            })
+            .collect::<Vec<_>>())
+    })();
+    result
+}
+
 #[tauri::command]
 pub async fn get_acp_session(
     state: State<'_, DesktopState>,
@@ -10334,6 +10397,26 @@ pub fn clear_desktop_wallpaper(
         .for_color_scheme_mut(input.color_scheme)
         .image = WallpaperImagePreference::None;
     persist_desktop_personalization(&state, &context, personalization)
+}
+
+/// Deletes one imported wallpaper from the recent list; a color scheme still
+/// selecting it falls back to the theme's default assignment.
+#[tauri::command]
+pub async fn delete_recent_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: DeleteRecentWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let root = context.app().paths.user_gold_band_dir();
+    let mut personalization = spawn_blocking_command(move || {
+        let mut personalization = context.config.personalization.clone();
+        delete_recent_wallpaper(&root, &input.wallpaper_id, &mut personalization)
+            .map_err(wallpaper_command_error)?;
+        Ok(personalization)
+    })
+    .await?;
+    let latest = state.context().map_err(command_error)?;
+    persist_desktop_personalization(&state, &latest, personalization)
 }
 
 /// A theme wallpaper pin must reference an asset the theme assigns to that

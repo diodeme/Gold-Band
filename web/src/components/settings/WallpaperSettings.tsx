@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ImageIcon, ImagePlus, Maximize2 } from 'lucide-react';
+import { Check, ChevronDown, ImageIcon, ImagePlus, Maximize2, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -37,6 +37,7 @@ interface WallpaperSettingsProps {
   onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
   onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
   onClearWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onDeleteRecentWallpaper: (wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSelectThemeWallpaper: (colorScheme: ResolvedColorScheme, assetId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSaveWallpaperFit: (colorScheme: ResolvedColorScheme, fit: WallpaperFitPreference) => Promise<WallpaperPreferencesVm | undefined>;
 }
@@ -52,6 +53,7 @@ export function WallpaperSettings({
   onSaveWallpaperOpacity,
   onRestoreThemeWallpaper,
   onClearWallpaper,
+  onDeleteRecentWallpaper,
   onSelectThemeWallpaper,
   onSaveWallpaperFit,
 }: WallpaperSettingsProps) {
@@ -97,6 +99,7 @@ export function WallpaperSettings({
             onSaveWallpaperOpacity={onSaveWallpaperOpacity}
             onRestoreThemeWallpaper={onRestoreThemeWallpaper}
             onClearWallpaper={onClearWallpaper}
+            onDeleteRecentWallpaper={onDeleteRecentWallpaper}
             onSelectThemeWallpaper={onSelectThemeWallpaper}
             onSaveWallpaperFit={onSaveWallpaperFit}
           />
@@ -119,6 +122,7 @@ interface WallpaperSchemeSettingsProps {
   onSaveWallpaperOpacity: WallpaperSettingsProps['onSaveWallpaperOpacity'];
   onRestoreThemeWallpaper: WallpaperSettingsProps['onRestoreThemeWallpaper'];
   onClearWallpaper: WallpaperSettingsProps['onClearWallpaper'];
+  onDeleteRecentWallpaper: WallpaperSettingsProps['onDeleteRecentWallpaper'];
   onSelectThemeWallpaper: WallpaperSettingsProps['onSelectThemeWallpaper'];
   onSaveWallpaperFit: WallpaperSettingsProps['onSaveWallpaperFit'];
 }
@@ -136,6 +140,7 @@ function WallpaperSchemeSettings({
   onSaveWallpaperOpacity,
   onRestoreThemeWallpaper,
   onClearWallpaper,
+  onDeleteRecentWallpaper,
   onSelectThemeWallpaper,
   onSaveWallpaperFit,
 }: WallpaperSchemeSettingsProps) {
@@ -229,6 +234,10 @@ function WallpaperSchemeSettings({
 
   const clearWallpaper = async () => {
     await runUpdate(() => onClearWallpaper(colorScheme));
+  };
+
+  const deleteRecent = async (wallpaperId: string) => {
+    await runUpdate(() => onDeleteRecentWallpaper(wallpaperId));
   };
 
   const restoreTheme = async () => {
@@ -412,32 +421,48 @@ function WallpaperSchemeSettings({
                       const selected = personalization.image.source === 'user'
                         && wallpaper.id === personalization.image.assetId;
                       return (
-                        <button
+                        <div
                           key={wallpaper.id}
-                          type="button"
-                          aria-label={t('settings.wallpaper.useRecent')}
-                          aria-pressed={selected}
                           className={cn(
-                            'group relative aspect-video min-w-0 overflow-hidden rounded-md border border-border/45 bg-muted outline-none transition-[border-color,box-shadow,filter] hover:brightness-95 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                            'group/recent relative aspect-video min-w-0 overflow-hidden rounded-md border border-border/45 bg-muted outline-none transition-[border-color,box-shadow,filter] focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 hover:brightness-95',
                             selected && 'border-primary ring-1 ring-primary/45',
                           )}
-                          disabled={disabled}
-                          onClick={() => void selectRecent(wallpaper.id)}
                         >
-                          <img
-                            src={wallpaper.thumbnailUrl}
-                            alt=""
-                            width={320}
-                            height={180}
-                            loading="lazy"
-                            className="size-full object-cover"
-                          />
-                          {selected ? (
-                            <span className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
-                              <Check className="size-3" aria-hidden="true" />
-                            </span>
-                          ) : null}
-                        </button>
+                          <button
+                            type="button"
+                            aria-label={t('settings.wallpaper.useRecent')}
+                            aria-pressed={selected}
+                            className={cn(
+                              'size-full cursor-pointer outline-none',
+                              selected && 'brightness-[.97]',
+                            )}
+                            disabled={disabled}
+                            onClick={() => void selectRecent(wallpaper.id)}
+                          >
+                            <img
+                              src={wallpaper.thumbnailUrl}
+                              alt=""
+                              width={320}
+                              height={180}
+                              loading="lazy"
+                              className="size-full object-cover"
+                            />
+                            {selected ? (
+                              <span className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                                <Check className="size-3" aria-hidden="true" />
+                              </span>
+                            ) : null}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={t('settings.wallpaper.deleteRecent')}
+                            className="absolute left-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-background/85 text-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity outline-none hover:bg-background focus-visible:opacity-100 group/recent:hover:opacity-100 group/recent:focus-within:opacity-100"
+                            disabled={disabled}
+                            onClick={() => void deleteRecent(wallpaper.id)}
+                          >
+                            <Trash2 className="size-3" aria-hidden="true" />
+                          </button>
+                        </div>
                       );
                     })}
                   </div>

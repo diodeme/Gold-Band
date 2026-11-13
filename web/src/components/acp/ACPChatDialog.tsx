@@ -329,6 +329,7 @@ import {
 import i18n, { displayAppError, displayStatus } from "@/i18n";
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import { currentAcpExecutionError } from '@/lib/acp-execution-error';
+import { ConversationTurnRail } from './ConversationTurnRail';
 import { UNRESOLVED_WORK_LOCATION, workspaceRootRef, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
 import type {
   AcpElicitationRequestVm,
@@ -5905,6 +5906,41 @@ export function ACPChatDialog(
   };
   canonicalHeadHandoffRef.current = returnToLatestEvents;
 
+  // Turn rail jump: anchor to the first loaded item at or after the target
+  // turn's seq. When the target predates the loaded window, scrolling to the
+  // top drives the existing older-page pagination; a bounded poll anchors as
+  // soon as the target's key mounts.
+  const handleTurnRailJump = (seq: number) => {
+    const anchorItem = timeline.find(
+      (item): item is (typeof timeline)[number] & { seq: number } =>
+        'seq' in item && typeof item.seq === 'number' && item.seq >= seq,
+    );
+    const scrollToKey = (key: string): boolean => {
+      const element = document.querySelector<HTMLElement>(
+        `[data-acp-item-key="${CSS.escape(key)}"]`,
+      );
+      if (!element) return false;
+      element.scrollIntoView({ block: 'start' });
+      return true;
+    };
+    if (anchorItem && scrollToKey(timelineEventKey(anchorItem))) return;
+    const scroller = document.querySelector<HTMLElement>(
+      '[data-acp-conversation-rail="timeline"]',
+    )?.closest('.overflow-y-auto');
+    if (!scroller) return;
+    scroller.scrollTo({ top: 0 });
+    const deadline = Date.now() + 10_000;
+    const poll = () => {
+      const target = timeline.find(
+        (item) => 'seq' in item && typeof item.seq === 'number' && item.seq >= seq,
+      );
+      if (target && scrollToKey(timelineEventKey(target))) return;
+      if (Date.now() > deadline || scroller.scrollTop > 8) return;
+      window.requestAnimationFrame(poll);
+    };
+    window.requestAnimationFrame(poll);
+  };
+
   const handleReturnToLatestEvents = () => {
     pendingBranchViewRestoreRef.current = null;
     viewportManualIntentRef.current = false;
@@ -7062,6 +7098,22 @@ export function ACPChatDialog(
         title={visibleError?.source === 'runtime' ? runtimeComposerContext?.runtimeErrorTitle ?? undefined : undefined}
       />
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+        {canvasMode !== "raw" ? (
+          <ConversationTurnRail
+            locator={{
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              branchId,
+              outerNodeId,
+              outerAttemptId,
+            }}
+            onJumpToSeq={handleTurnRailJump}
+          />
+        ) : null}
         {canvasMode === "raw" ? (
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">
             <RawFrameViewer

@@ -64,6 +64,12 @@ pub struct ClearDesktopWallpaperInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteRecentWallpaperInput {
+    pub wallpaper_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SelectThemeDesktopWallpaperInput {
     pub asset_id: String,
     pub color_scheme: ResolvedColorScheme,
@@ -185,6 +191,44 @@ pub fn reconcile_wallpaper_personalization(
             .iter()
             .any(|record| record.id == *asset_id && record_is_valid(root, record));
         if !exists {
+            wallpaper.image = WallpaperImagePreference::Theme { asset_id: None };
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// Deletes one recent wallpaper: the record leaves the store, its files are
+/// removed, and any color scheme still selecting it falls back to the theme's
+/// default assignment (same semantics as the startup reconciliation for a
+/// missing asset). Returns whether the personalization changed.
+pub fn delete_recent_wallpaper(
+    root: &Utf8Path,
+    wallpaper_id: &str,
+    personalization: &mut PersonalizationPreference,
+) -> Result<bool, WallpaperError> {
+    let mut store = load_store(root)?;
+    let Some(position) = store
+        .recent_wallpapers
+        .iter()
+        .position(|record| record.id == wallpaper_id)
+    else {
+        return Err(WallpaperError::new(
+            "wallpaper.recent-not-found",
+            serde_json::json!({ "wallpaperId": wallpaper_id }),
+        ));
+    };
+    let record = store.recent_wallpapers.remove(position);
+    persist_store(root, &store)?;
+    remove_record_files(root, &record);
+
+    let mut changed = false;
+    for color_scheme in [ResolvedColorScheme::Light, ResolvedColorScheme::Dark] {
+        let wallpaper = personalization.wallpaper.for_color_scheme_mut(color_scheme);
+        if matches!(
+            &wallpaper.image,
+            WallpaperImagePreference::User { asset_id } if asset_id == &record.id
+        ) {
             wallpaper.image = WallpaperImagePreference::Theme { asset_id: None };
             changed = true;
         }
@@ -708,6 +752,65 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn delete_recent_wallpaper_removes_record_files_and_falls_back_selection() {
+        let temp = tempdir().unwrap();
+        let root = root(&temp);
+        let source = root.join("source.png");
+        write_fixture(&source, 3);
+        let saved = import_wallpaper_image(
+            &root,
+            ImportDesktopWallpaperInput {
+                source_path: source.to_string(),
+                color_scheme: ResolvedColorScheme::Light,
+            },
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        let mut personalization = PersonalizationPreference::default();
+        personalization
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::User {
+            asset_id: saved.asset_id.clone(),
+        };
+        let changed =
+            delete_recent_wallpaper(&root, &saved.asset_id, &mut personalization).unwrap();
+        assert!(
+            changed,
+            "the selected scheme falls back to the theme default"
+        );
+        assert_eq!(
+            personalization
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            personalization
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+
+        let store = load_resolved_wallpaper_preferences(&root).unwrap();
+        assert!(store.recent_wallpapers.is_empty());
+        // Both the full image and the thumbnail files are gone.
+        let directory = wallpapers_dir(&root);
+        let remaining = fs::read_dir(directory.as_std_path())
+            .map(|entries| entries.filter_map(|entry| entry.ok()).count())
+            .unwrap_or(0);
+        assert_eq!(remaining, 0);
+
+        // Deleting an unknown id reports the structured not-found error.
+        let mut again = PersonalizationPreference::default();
+        let error = delete_recent_wallpaper(&root, "missing", &mut again).unwrap_err();
+        assert_eq!(error.code, "wallpaper.recent-not-found");
+    }
+
     fn reconcile_keeps_explicit_none_and_theme_pins_untouched() {
         let temp = tempdir().unwrap();
         let root = root(&temp);

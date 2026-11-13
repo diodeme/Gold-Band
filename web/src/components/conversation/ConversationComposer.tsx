@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
+import { useComposerResize } from '@/hooks/use-composer-resize';
+import { ComposerResizeHandle } from '@/components/conversation/ComposerResizeHandle';
 import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
@@ -806,6 +808,11 @@ export function ConversationComposer({
   // text-indent behavior, which only affects the first line).
   const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || remoteBinding !== null);
 
+  const inputScrollRef = useRef<HTMLDivElement | null>(null);
+  const resize = useComposerResize({
+    getBaseHeight: () => inputScrollRef.current?.getBoundingClientRect().height ?? 0,
+  });
+
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
       || agents[0]?.agentType
@@ -1142,10 +1149,12 @@ export function ConversationComposer({
           onSubmit={() => { void handleSubmit(); }}
           disabled={readOnly || busy || submittingAttachments || branchMutationPending}
           className={cn(
+            'group/composer',
             CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName,
             slashCommands.isOpen && 'z-50',
           )}
         >
+          {!readOnly ? <ComposerResizeHandle resize={resize} /> : null}
           <ComposerContextArea
             attachments={attachments}
             remoteAttachments={remoteBinding?.attachments}
@@ -1175,7 +1184,11 @@ export function ConversationComposer({
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
           >
-            <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>
+            <div
+              ref={inputScrollRef}
+              className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}
+              style={resize.inputContainerStyle ?? undefined}
+            >
               <ComposerLeadingAdornment
                 committedSlashCommand={committedSlashCommand}
                 remoteBinding={remoteBinding}

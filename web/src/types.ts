@@ -23,6 +23,14 @@ export type WallpaperImagePreference =
   | { source: 'none' };
 /** `cover` fills and crops, `contain` letterboxes with the theme background. */
 export type WallpaperFitPreference = 'cover' | 'contain';
+/** Session-level turn navigation index entry for the conversation turn rail. */
+export interface ConversationTurnIndexEntryVm {
+  seq: number;
+  timestamp: string;
+  /** prompt | tool | compaction | permission */
+  kind: 'prompt' | 'tool' | 'compaction' | 'permission';
+  promptPreview: string | null;
+}
 export interface WallpaperSchemePersonalization {
   image: WallpaperImagePreference;
   opacityPercent: number;

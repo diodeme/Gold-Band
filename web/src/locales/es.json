@@ -1021,7 +1021,8 @@
     },
     "composer": {
       "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos.",
-      "referenceUnavailable": "Referencia no disponible"
+      "referenceUnavailable": "Referencia no disponible",
+      "resizeHandle": "Arrastra para ajustar la altura del cuadro de entrada"
     },
     "conversation": {
       "task-not-found": "No se pudo encontrar esta conversación.",
@@ -1938,7 +1939,6 @@
     "loadFailed": "No se pudieron cargar los cambios de archivos de este turno",
     "partial": "Algunos cambios de archivos no se capturaron por completo",
     "showMore": "Mostrar {{count}} archivos más",
-    "collapse": "Contraer lista de archivos",
     "openDiff": "Ver diff de {{path}}",
     "openVersion": "Ver versión capturada de {{path}}",
     "deletedFile": "Eliminado {{path}}",
@@ -2272,6 +2272,16 @@
     "scrollForHistory": "— Desplázate hacia arriba para ver el historial —",
     "returnToLatest": "Volver al más reciente",
     "rawSearchPlaceholder": "Buscar contenido de tramas sin procesar…",
+    "turnRail": {
+      "label": "Navegación de conversación",
+      "jump": "Saltar a: {{preview}}",
+      "kind": {
+        "prompt": "Pregunta del usuario",
+        "tool": "Llamada de herramienta",
+        "compaction": "Compacción de contexto",
+        "permission": "Solicitud de permiso"
+      }
+    },
     "rawKindPlaceholder": "Tipo de evento",
     "rawKindAll": "Todos los eventos",
     "rawDirectionAll": "Todas las direcciones",
@@ -2837,6 +2847,7 @@
       }
     },
     "wallpaper": {
+    "deleteRecent": "Eliminar este fondo de pantalla",
       "title": "Fondo de pantalla",
       "chooseTitle": "Fondo de pantalla del escritorio",
       "description": "Un fondo de pantalla personalizado reemplaza el del tema y se adapta al tamaño del cliente.",

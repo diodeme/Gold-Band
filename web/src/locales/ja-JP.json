@@ -1021,7 +1021,8 @@
     },
     "composer": {
       "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
-      "referenceUnavailable": "参照は利用できません"
+      "referenceUnavailable": "参照は利用できません",
+      "resizeHandle": "ドラッグして入力欄の高さを調整"
     },
     "conversation": {
       "task-not-found": "この会話は見つかりませんでした。",
@@ -1938,7 +1939,6 @@
     "loadFailed": "このターンのファイル変更を読み込めません",
     "partial": "一部のファイル変更を完全にキャプチャできませんでした",
     "showMore": "{{count}} 件のファイルをさらに表示",
-    "collapse": "ファイルリストを折りたたむ",
     "openDiff": "{{path}} の差分を表示",
     "openVersion": "{{path}} のキャプチャされたバージョンを表示する",
     "deletedFile": "{{path}} を削除しました",
@@ -2272,6 +2272,16 @@
     "scrollForHistory": "— 履歴を上にスクロールします —",
     "returnToLatest": "最新に戻る",
     "rawSearchPlaceholder": "生のフレーム コンテンツを検索…",
+    "turnRail": {
+      "label": "会話ナビゲーション",
+      "jump": "ジャンプ：{{preview}}",
+      "kind": {
+        "prompt": "ユーザーの質問",
+        "tool": "ツール呼び出し",
+        "compaction": "コンテキスト圧縮",
+        "permission": "権限リクエスト"
+      }
+    },
     "rawKindPlaceholder": "イベントの種類",
     "rawKindAll": "すべてのイベント",
     "rawDirectionAll": "全方向",
@@ -2842,6 +2852,7 @@
       "description": "カスタム壁紙はテーマの壁紙をオーバーライドし、クライアントのサイズに適応します。",
       "recent": "最近使用した",
       "useRecent": "この最近の壁紙を使う",
+      "deleteRecent": "この壁紙を削除",
       "noRecent": "最近の壁紙はありません",
       "import": "新しい壁紙をインポートする",
       "sourceTheme": "テーマ壁紙",

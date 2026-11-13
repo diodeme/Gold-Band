@@ -114,6 +114,7 @@ interface SettingsPageProps {
   onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
   onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
   onClearWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onDeleteRecentWallpaper: (wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSelectThemeWallpaper: (colorScheme: ResolvedColorScheme, assetId: string) => Promise<WallpaperPreferencesVm | undefined>;
   onSaveWallpaperFit: (colorScheme: ResolvedColorScheme, fit: WallpaperFitPreference) => Promise<WallpaperPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
@@ -125,7 +126,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onClearWallpaper, onSelectThemeWallpaper, onSaveWallpaperFit, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, clientVersion, busy, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onClearWallpaper, onDeleteRecentWallpaper, onSelectThemeWallpaper, onSaveWallpaperFit, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const measuredThemeDrawerRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-drawer');
   const readOnly = useReadOnlyExperience();
   useThemeWallpaperSurface();
@@ -520,6 +521,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 onSaveWallpaperOpacity={onSaveWallpaperOpacity}
                 onRestoreThemeWallpaper={onRestoreThemeWallpaper}
                 onClearWallpaper={onClearWallpaper}
+                onDeleteRecentWallpaper={onDeleteRecentWallpaper}
                 onSelectThemeWallpaper={onSelectThemeWallpaper}
                 onSaveWallpaperFit={onSaveWallpaperFit}
               />

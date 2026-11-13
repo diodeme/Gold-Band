@@ -1021,7 +1021,8 @@
     },
     "composer": {
       "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
-      "referenceUnavailable": "Reference unavailable"
+      "referenceUnavailable": "Reference unavailable",
+      "resizeHandle": "Drag to resize the input box"
     },
     "conversation": {
       "task-not-found": "This conversation could not be found.",
@@ -1938,7 +1939,6 @@
     "loadFailed": "Unable to load this turn's file changes",
     "partial": "Some file changes could not be captured completely",
     "showMore": "Show {{count}} more files",
-    "collapse": "Collapse file list",
     "openDiff": "View diff for {{path}}",
     "openVersion": "View this turn's version of {{path}}",
     "deletedFile": "Deleted {{path}}",
@@ -2272,6 +2272,16 @@
     "scrollForHistory": "— Scroll up for history —",
     "returnToLatest": "Back to latest",
     "rawSearchPlaceholder": "Search raw frame content…",
+    "turnRail": {
+      "label": "Conversation navigation",
+      "jump": "Jump to: {{preview}}",
+      "kind": {
+        "prompt": "User prompt",
+        "tool": "Tool call",
+        "compaction": "Context compaction",
+        "permission": "Permission request"
+      }
+    },
     "rawKindPlaceholder": "Event type",
     "rawKindAll": "All events",
     "rawDirectionAll": "All directions",
@@ -2842,6 +2852,7 @@
       "description": "A custom wallpaper overrides the theme wallpaper and adapts to the client size.",
       "recent": "Recently used",
       "useRecent": "Use this recent wallpaper",
+      "deleteRecent": "Delete this wallpaper",
       "noRecent": "No recent wallpapers",
       "import": "Import new wallpaper",
       "sourceTheme": "Theme wallpaper",

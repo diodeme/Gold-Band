@@ -258,6 +258,10 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
+export function getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, outerNodeId, outerAttemptId);
+}
+
 export function reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport) {
   return getRuntimeApi().reportSourceControlLoad(report);
 }
@@ -669,6 +673,10 @@ export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
 
 export function clearDesktopWallpaper(colorScheme: ResolvedColorScheme) {
   return getRuntimeApi().clearDesktopWallpaper(colorScheme);
+}
+
+export function deleteRecentDesktopWallpaper(wallpaperId: string) {
+  return getRuntimeApi().deleteRecentDesktopWallpaper(wallpaperId);
 }
 
 export function selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string) {

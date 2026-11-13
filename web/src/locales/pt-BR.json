@@ -1021,7 +1021,8 @@
     },
     "composer": {
       "context-limit-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
-      "referenceUnavailable": "Referência indisponível"
+      "referenceUnavailable": "Referência indisponível",
+      "resizeHandle": "Arraste para ajustar a altura da caixa de entrada"
     },
     "conversation": {
       "task-not-found": "Esta conversa não foi encontrada.",
@@ -1938,7 +1939,6 @@
     "loadFailed": "Não foi possível carregar as alterações de arquivo deste turno",
     "partial": "Algumas alterações de arquivo não puderam ser capturadas completamente",
     "showMore": "Mostrar {{count}} arquivos a mais",
-    "collapse": "Recolher lista de arquivos",
     "openDiff": "Ver diff de {{path}}",
     "openVersion": "Ver versão capturada de {{path}}",
     "deletedFile": "Excluído {{path}}",
@@ -2272,6 +2272,16 @@
     "scrollForHistory": "— Role para cima para ver histórico —",
     "returnToLatest": "Voltar ao mais recente",
     "rawSearchPlaceholder": "Pesquisar conteúdo de frame bruto…",
+    "turnRail": {
+      "label": "Navegação da conversa",
+      "jump": "Ir para: {{preview}}",
+      "kind": {
+        "prompt": "Pergunta do usuário",
+        "tool": "Chamada de ferramenta",
+        "compaction": "Compactação de contexto",
+        "permission": "Solicitação de permissão"
+      }
+    },
     "rawKindPlaceholder": "Tipo de evento",
     "rawKindAll": "Todos os eventos",
     "rawDirectionAll": "Todas as direções",
@@ -2837,6 +2847,7 @@
       }
     },
     "wallpaper": {
+    "deleteRecent": "Excluir este papel de parede",
       "title": "Papel de parede",
       "chooseTitle": "Papel de parede da área de trabalho",
       "description": "Um papel de parede personalizado substitui o do tema e se adapta ao tamanho do cliente.",

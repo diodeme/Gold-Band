@@ -1021,7 +1021,8 @@
     },
     "composer": {
       "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
-      "referenceUnavailable": "引用已失效"
+      "referenceUnavailable": "引用已失效",
+      "resizeHandle": "拖动调整输入框高度"
     },
     "conversation": {
       "task-not-found": "找不到该会话。",
@@ -1938,7 +1939,6 @@
     "loadFailed": "无法加载本轮文件变化",
     "partial": "部分文件变化无法完整捕获",
     "showMore": "再显示 {{count}} 个文件",
-    "collapse": "收起文件列表",
     "openDiff": "查看 {{path}} 的差异",
     "openVersion": "查看 {{path}} 的本轮版本",
     "deletedFile": "已删除 {{path}}",
@@ -2272,6 +2272,16 @@
     "scrollForHistory": "— 上滑查看历史信息 —",
     "returnToLatest": "回到最新",
     "rawSearchPlaceholder": "检索原始帧内容…",
+    "turnRail": {
+      "label": "会话导航",
+      "jump": "跳转到：{{preview}}",
+      "kind": {
+        "prompt": "用户提问",
+        "tool": "工具调用",
+        "compaction": "上下文压缩",
+        "permission": "权限请求"
+      }
+    },
     "rawKindPlaceholder": "事件类型",
     "rawKindAll": "全部事件",
     "rawDirectionAll": "全部方向",
@@ -2837,6 +2847,7 @@
       "description": "自定义壁纸会覆盖主题包壁纸，并随客户端尺寸自适应。",
       "recent": "最近使用",
       "useRecent": "使用此最近壁纸",
+      "deleteRecent": "删除此壁纸",
       "noRecent": "暂无最近壁纸",
       "import": "导入新壁纸",
       "sourceTheme": "主题壁纸",

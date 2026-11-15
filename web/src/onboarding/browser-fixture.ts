@@ -58,6 +58,7 @@ export function createBrowserSetupApi(): SetupApi {
       return result;
     },
     skipGit: async () => { status.state = { status: 'pending', gitDecision: 'skip' }; },
+    deferSetup: async () => { if (status.state.status === 'pending') status.state = { status: 'deferred', gitDecision: status.state.gitDecision }; },
     cancelEnvironment: async (requestId) => { if (environment?.requestId === requestId) environment = null; },
     start: async (receive) => {
       requireEnvironment();
@@ -65,8 +66,11 @@ export function createBrowserSetupApi(): SetupApi {
       const npxLaunchable = environment?.report?.npxLaunchable ?? false;
       if (fixture !== 'all-unavailable') receive({ type: 'checking', generation, agentId: agent.agentType, label: agent.displayName });
       timers.set(generation, setTimeout(() => {
-        if (fixture !== 'all-unavailable') receive({ type: 'ready', generation, agent });
-        unavailableEvents(generation, npxLaunchable).forEach(receive);
+        if (fixture === 'no-agents') receive({ type: 'unavailable', generation, agentId: agent.agentType, label: agent.displayName, iconKey: agent.agentType, reason: { kind: 'not-installed' } });
+        else {
+          if (fixture !== 'all-unavailable') receive({ type: 'ready', generation, agent });
+          unavailableEvents(generation, npxLaunchable).forEach(receive);
+        }
         receive({ type: 'finished', generation, nextCursor: null });
       }, 600));
       return generation;

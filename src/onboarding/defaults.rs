@@ -339,8 +339,11 @@ pub fn apply(
             check.tool == super::environment::EnvironmentTool::Git
                 && check.status == EnvironmentStatus::Ready
         });
-        let git_skipped = match settings.onboarding {
-            Some(OnboardingState::Pending { git_decision }) => git_decision == GitDecision::Skip,
+        let git_skipped = match &settings.onboarding {
+            Some(
+                OnboardingState::Pending { git_decision }
+                | OnboardingState::Deferred { git_decision },
+            ) => *git_decision == GitDecision::Skip,
             _ => request.git_skipped,
         };
         if !git_ready && !git_skipped {

@@ -134,7 +134,7 @@ describe('conversation visual hierarchy contract', () => {
     expect(sidebar).toContain('text-sm font-medium leading-5 text-sidebar-foreground/80');
     expect(sidebar).toContain('truncate text-sm');
     expect(sidebar.match(/className="space-y-0\.5"/gu) ?? []).toHaveLength(2);
-    expect(sidebar).toContain("bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground");
+    expect(sidebar).toContain("'font-medium text-sidebar-accent-foreground', !runListOwnsSelection && 'bg-sidebar-accent/70'");
     expect(sidebar).toContain('text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55');
     expect(sidebar).not.toContain('text-ui-micro tabular-nums text-muted-foreground');
   });
@@ -155,9 +155,56 @@ describe('conversation visual hierarchy contract', () => {
     expect(sidebar).toContain('flex flex-col gap-0.5');
     expect(sidebar).toContain("compact ? 'h-6.5 gap-2");
     expect(sidebar).toContain('data-conversation-sidebar-heading="pinned"');
-    expect(sidebar).toContain('sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar');
+    // Group headings align with the fixed navigation buttons (px-2/gap-2,
+    // 3.5 icons) so the "more" row and the tree anchors read as one column,
+    // and hover with a subtle background instead of a text-only tint.
+    // Nav icons must carry their own size-* class and the "more" button must
+    // wrap its svgs in spans (2026-11-07): span-level `[&_svg]:size-*` loses
+    // the specificity race to the Button base's
+    // `[&_svg:not([class*='size-'])]:size-4` (icons rendered 16px), and a
+    // direct svg child matches the base's `has-[>svg]:px-3`, overriding px-2
+    // and shifting the "more" row 4px right of the nav column.
+    expect(sidebar).toContain('sticky top-0 z-[1] flex w-full items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-left text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent/60');
+    expect(sidebar).toContain('icon={<Bot className="size-3.5" />}');
+    expect(sidebar).toContain('icon={<Library className="size-3.5" />}');
+    expect(sidebar).toContain('icon={<Route className="size-3.5" />}');
+    expect(sidebar).toContain('<span><Ellipsis className="size-3.5" /></span>');
+    expect(sidebar).not.toContain('[&_svg]:size-3.5');
+    expect(sidebar).not.toContain('[&_svg]:size-4');
     expect(sidebar).toContain('text-left text-sm font-medium text-sidebar-foreground');
     expect(sidebar).not.toContain('text-left text-sm font-medium text-muted-foreground');
     expect(sidebar).toContain("label={t('scheduled.management.title')}");
+    // A structural separator restores the boundary between the fixed
+    // navigation zone and the conversation tree (2026-11-06).
+    expect(sidebar).toContain('data-conversation-sidebar-separator="navigation"');
+  });
+
+  it('keeps the sidebar tree hover, plus-button and run-nesting contracts', () => {
+    const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
+
+    // Workspace rows hover with the same accent as task rows; group anchors
+    // stay a step lighter (see the heading contract above).
+    expect(sidebar).toContain('rounded-lg bg-sidebar py-1 pl-5 pr-1 hover:bg-sidebar-accent');
+    expect(sidebar).toMatch(/<Plus className="size-3\.5" \/>/u);
+    expect(sidebar).not.toContain('<Plus className="size-3" />');
+    // The hover action clusters and the "more" chevron share one right inset
+    // (right-2 = 8px inside the row; 20px from the sidebar edge measured
+    // 2026-11-07 — right-1 left the chevron 8px past the clusters). The title
+    // reserves pr-18 on hover so truncated names never underlap the cluster.
+    expect(sidebar).toContain('absolute right-2 top-1/2');
+    expect(sidebar).not.toContain('absolute right-1 top-1/2');
+    expect(sidebar).toContain('group-hover:pr-18');
+    expect(sidebar).not.toContain('group-hover:pr-17');
+    // Run rows nest one level under their task row: the guide border starts at
+    // the task text indent and the row stretches to full width so hover and
+    // active shading match the parent row instead of floating indented.
+    expect(sidebar).toContain('ml-7 mt-1 space-y-1 border-l border-border/60');
+    expect(sidebar).toContain('rounded-md -ml-7 pl-9 pr-2 py-1 cursor-pointer text-xs leading-4');
+    expect(sidebar).not.toContain('ml-3 mt-1 space-y-1 border-l border-border/60 pl-2');
+    // Recent rows reuse the full task row (run history, pin, rename) with the
+    // workspace name prefixed to the relative time (no dangling separator when
+    // the time is absent).
+    expect(sidebar).toContain('scope="recent"');
+    expect(sidebar).toContain("workspaceName && relativeTime ? `${workspaceName} · ${relativeTime}` : (workspaceName ?? relativeTime)");
   });
 });

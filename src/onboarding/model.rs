@@ -21,6 +21,13 @@ pub enum OnboardingState {
         request_fingerprint: String,
     },
     ExistingInstall,
+    /// New install where the user chose to enter the app and finish setup later.
+    /// This state does not bypass the runtime gate: it can only be written after
+    /// the current environment report passes. The Git decision is retained so a
+    /// later settings-driven setup can finish without asking the user again.
+    Deferred {
+        git_decision: GitDecision,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -91,6 +91,9 @@ interface WorkspaceShellProps {
   onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
   onRequestPinnedTasks: (cursor?: string | null) => void;
   onRequestRecentTasks: (cursor?: string | null) => void;
+  /** Collapsing a sidebar list resets it to the default first page. */
+  onResetWorkspaceTaskPage?: (projectId: string) => void;
+  onResetRecentTaskPage?: () => void;
   onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
@@ -337,6 +340,8 @@ function WorkspaceShellLayout({
   onRequestWorkspaceTasks,
   onRequestPinnedTasks,
   onRequestRecentTasks,
+  onResetWorkspaceTaskPage,
+  onResetRecentTaskPage,
   onRequestTaskRuns,
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
@@ -832,6 +837,8 @@ function WorkspaceShellLayout({
               onRequestWorkspaceTasks={onRequestWorkspaceTasks}
               onRequestPinnedTasks={onRequestPinnedTasks}
               onRequestRecentTasks={onRequestRecentTasks}
+              onResetWorkspaceTaskPage={onResetWorkspaceTaskPage}
+              onResetRecentTaskPage={onResetRecentTaskPage}
               onRequestTaskRuns={onRequestTaskRuns}
             />
           ) : null}

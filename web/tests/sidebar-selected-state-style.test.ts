@@ -29,7 +29,7 @@ describe('sidebar selected-state styles', () => {
     expect(source).not.toContain('text-sm font-medium text-muted-foreground');
     expect(source).not.toContain('text-xs font-medium text-muted-foreground');
     expect(source).toContain('text-sm font-medium leading-5 text-sidebar-foreground/80');
-    expect(source).toContain('text-sidebar-foreground cursor-pointer');
+    expect(source).toContain("deadRecentRow ? 'text-sidebar-foreground/70' : 'cursor-pointer'");
     expect(source).not.toContain('text-sidebar-foreground/85 cursor-pointer');
     expect(source).toContain('tabular-nums text-muted-foreground/55');
   });
@@ -40,8 +40,11 @@ describe('sidebar selected-state styles', () => {
       'utf8',
     );
 
-    expect(source).toContain('icon={<Library />}');
-    expect(source).toContain('icon={<Route />}');
+    // Icons carry their own size-* class: span-level `[&_svg]:size-*` loses
+    // to the Button base's `[&_svg:not([class*='size-'])]:size-4` and never
+    // applied (2026-11-07 nav-column fix).
+    expect(source).toContain('icon={<Library className="size-3.5" />}');
+    expect(source).toContain('icon={<Route className="size-3.5" />}');
     expect(source).not.toContain('icon={<Boxes />}');
     expect(source).not.toContain('icon={<Workflow />}');
   });

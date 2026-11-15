@@ -16,6 +16,7 @@ export const desktopSetupApi: SetupApi = {
   },
   cancelEnvironment: (requestId) => invokeCommand('cancel_setup_environment', { requestId }),
   skipGit: () => invokeCommand('skip_setup_git'),
+  deferSetup: () => invokeCommand('defer_setup'),
   start: (onEvent, after) => invokeCommand('start_setup_agent_detection', { onEvent: channel(onEvent), after: after ?? null }),
   cancel: (generation) => invokeCommand('cancel_setup_detection', { generation }),
   probeModel: (generation, agentId, modelId) => invokeCommand('probe_setup_model', { generation, agentId, modelId }),

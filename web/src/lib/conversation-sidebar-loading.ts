@@ -322,6 +322,32 @@ export function applyConversationRecentTaskPage(
   };
 }
 
+/** Collapsing a list drops everything paged beyond the default first page so
+ *  reopening shows the default page size again; the next expand re-requests
+ *  page one through the existing not-loaded path. */
+export function resetConversationWorkspaceTaskPage(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+): ConversationSidebarVm {
+  if (!sidebar.workspaces.some((workspace) => workspace.projectId === projectId)) return sidebar;
+  return {
+    ...sidebar,
+    tasksByWorkspace: { ...sidebar.tasksByWorkspace, [projectId]: [] },
+    workspaceTaskPages: {
+      ...sidebar.workspaceTaskPages,
+      [projectId]: { status: 'not-loaded', nextCursor: null },
+    },
+  };
+}
+
+export function resetConversationRecentTaskPage(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  return {
+    ...sidebar,
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
+  };
+}
+
 /** Projects one task-row transform into recent rows, preserving `workspaceName`. */
 export function mapConversationRecentTasks(
   recentTasks: ConversationRecentTaskRowVm[],

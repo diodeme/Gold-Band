@@ -6,9 +6,10 @@ export interface DefaultExecutionProfile {
   configOptions: Record<string, string>;
   modelBoundOverrides: Record<string, Record<string, string>>;
 }
+export type SetupGitDecision = 'undecided' | 'skip';
 export interface SetupStatus {
   platform: DesktopPlatform;
-  state: { status: 'pending'; gitDecision: 'undecided' | 'skip' } | { status: 'completed' | 'existing-install' };
+  state: { status: 'pending'; gitDecision: SetupGitDecision } | { status: 'deferred'; gitDecision: SetupGitDecision } | { status: 'completed' | 'existing-install' };
   gitMinimumVersion: string;
   environmentPolicy: { node: { ranges: string[]; recommendedVersion: string; helpUrl: string }; npm: { ranges: string[] }; gitHelpUrl: string };
   defaultExecutionProfile: DefaultExecutionProfile | null;
@@ -54,6 +55,7 @@ export interface SetupApi {
   environment(requestId: string, onChecked?: (check: EnvironmentCheck) => void): Promise<EnvironmentReport>;
   cancelEnvironment(requestId: string): Promise<void>;
   skipGit(): Promise<void>;
+  deferSetup(): Promise<void>;
   start(onEvent: (event: SetupEvent) => void, after?: string): Promise<string>;
   cancel(generation: string): Promise<void>;
   probeModel(generation: string, agentId: string, modelId: string): Promise<SetupAgent>;

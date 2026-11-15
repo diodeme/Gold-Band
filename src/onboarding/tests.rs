@@ -101,6 +101,23 @@ fn ready() -> EnvironmentReport {
 }
 
 #[test]
+fn deferred_setup_preserves_git_skip_for_later_apply() {
+    let (_temp, app, _, selection) = fixture();
+    let mut request = request(&app, selection);
+    // The request no longer carries the Git decision; it must be recovered from
+    // the persisted deferred onboarding state.
+    request.git_skipped = false;
+
+    initialization::defer(&app.paths).unwrap();
+
+    let settings = apply(&app, &request, &ready()).unwrap();
+    assert!(matches!(
+        settings.onboarding,
+        Some(OnboardingState::Completed { .. })
+    ));
+}
+
+#[test]
 fn setup_preview_is_read_only_apply_updates_all_slots_and_is_idempotent() {
     let (_temp, app, _, selection) = fixture();
     let settings_before = std::fs::read(app.paths.user_settings_file()).unwrap();

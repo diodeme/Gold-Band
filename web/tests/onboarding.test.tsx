@@ -130,6 +130,21 @@ it('shows completed Git before a slow runtime check finishes', async () => {
   expect(mocks.business).not.toHaveBeenCalled();
 });
 
+it('restores a deferred Git skip decision for a later setup run', async () => {
+  status.state = { status: 'deferred', gitDecision: 'skip' };
+  vi.spyOn(api, 'environment').mockResolvedValue({
+    npxLaunchable: true,
+    checks: [
+      { tool: 'git', status: 'missing', version: null, executablePath: null },
+      { tool: 'node', status: 'ready', version: '24.22.0', executablePath: null },
+      { tool: 'npm', status: 'ready', version: '11.19.1', executablePath: null },
+      { tool: 'npx', status: 'ready', version: '11.19.1', executablePath: null },
+    ],
+  });
+  await render();
+  expect(button('Next').disabled).toBe(false);
+});
+
 it('does not let late preliminary progress overwrite final runtime validation', async () => {
   let progress: ((check: EnvironmentCheck) => void) | undefined;
   vi.spyOn(api, 'environment').mockImplementation(async (_id, onChecked) => {
@@ -317,6 +332,27 @@ it('shows an empty result only after Agent detection completes normally', async 
   expect(host.textContent).toContain(emptyMessage);
 });
 
+it('clears pending probes when the detection batch finishes', async () => {
+  await thirdStep();
+  await act(async () => receive({ type: 'checking', generation: 'generation-1', agentId: 'unfinished', label: 'Unfinished Agent' }));
+  expect(host.textContent).toContain(i18n.t('onboarding.discovering'));
+  await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
+  expect(host.textContent).not.toContain(i18n.t('onboarding.discovering'));
+  expect(host.textContent).toContain(i18n.t('onboarding.noAgents'));
+  expect(button('Set up later')).toBeDefined();
+});
+it('offers set up later after detection completes even when an Agent is available', async () => {
+  await act(async () => root.render(<OnboardingGate />));
+  await click('Next');
+  await click('Next');
+  await ready();
+  await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
+  expect(button('Set up later')).toBeDefined();
+  await click('Set up later');
+  await act(async () => { await vi.dynamicImportSettled(); });
+  expect(host.textContent).toContain('Business application');
+  expect((await api.status()).state.status).toBe('deferred');
+});
 it('marks Agent detection complete before model and permission choices are filled', async () => {
   await thirdStep();
   await ready();
@@ -621,4 +657,27 @@ it('opens the defaults entry directly for an existing installation', async () =>
   expect(host.textContent).toContain('Connect an Agent');
   expect(api.start).toHaveBeenCalledTimes(1);
   expect(mocks.business).not.toHaveBeenCalled();
+});
+it('enters the business application when no Agent is available and the user chooses to set up later', async () => {
+  await act(async () => root.render(<OnboardingGate />));
+  await click('Next');
+  await click('Next');
+  expect(button('Set up later')).toBeUndefined();
+  await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
+  expect(button('Set up later')).toBeDefined();
+  await click('Set up later');
+  await act(async () => { await vi.dynamicImportSettled(); });
+  expect(host.textContent).toContain('Business application');
+  expect(window.location.hash).toBe('');
+  expect((await api.status()).state.status).toBe('deferred');
+});
+
+it('opens the business application on startup after setup was deferred', async () => {
+  status.state = { status: 'deferred', gitDecision: 'undecided' };
+  window.location.hash = '#/tasks';
+  await act(async () => root.render(<OnboardingGate />));
+  await act(async () => { await vi.dynamicImportSettled(); });
+  expect(host.textContent).toContain('Business application');
+  expect(mocks.business).toHaveBeenCalled();
+  expect(api.start).not.toHaveBeenCalled();
 });

@@ -3,8 +3,7 @@ import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Gl
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
-import { useLoadMoreSentinel } from '@/hooks/use-load-more-sentinel';
-import type { ConversationPage, ConversationRecentTaskRowVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
+import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { CONVERSATION_TASK_PAGE_SIZE } from '@/lib/conversation-sidebar-loading';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -25,9 +24,8 @@ import { ResidentPin } from '@/components/conversation/ResidentPin';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
-// Manual retry/load-more buttons already render the section's error state; the
-// request rejection exists for the auto-load sentinel, so manual requests
-// swallow it instead of surfacing unhandled rejections.
+// Manual retry/load-more buttons already render the section's error state, so
+// manual requests swallow rejections instead of surfacing unhandled ones.
 function requestSidebarPage(request: () => unknown) {
   Promise.resolve(request()).catch(() => {});
 }
@@ -97,7 +95,10 @@ interface ConversationSidebarProps {
   onOpenProjectMemory?: (workspace: { projectId: string; name: string }) => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   onRetryBootstrap: () => void;
-  /** Rejects on failure so the auto-load sentinel can stop its chain. */
+  /** Collapsing a list resets it to its default first page so reopening shows
+   *  the default page size again; the next expand re-requests page one. */
+  onResetWorkspaceTaskPage?: (projectId: string) => void;
+  onResetRecentTaskPage?: () => void;
   onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void | Promise<unknown>;
   onRequestPinnedTasks: (cursor?: string | null) => void;
   onRequestRecentTasks: (cursor?: string | null) => void | Promise<unknown>;
@@ -126,6 +127,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onOpenProjectMemory,
   onRemoveWorkspace,
   onRetryBootstrap,
+  onResetWorkspaceTaskPage,
+  onResetRecentTaskPage,
   onRequestWorkspaceTasks,
   onRequestPinnedTasks,
   onRequestRecentTasks,
@@ -134,7 +137,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
-  const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
+  const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null, recent: null });
   const [activeRunListScope, setActiveRunListScope] = useState<ConversationSidebarRunListScope>('workspace');
   const [recentCollapsed, setRecentCollapsed] = useState(false);
   const [pinnedCollapsed, setPinnedCollapsed] = useState(() => {
@@ -198,7 +201,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const handledWorkspaceRevealRequestRef = useRef<number | null>(null);
   const pendingTaskRevealRef = useRef<number | null>(null);
   const conversationViewportRef = useRef<HTMLDivElement>(null);
-  const runListInteractionScopeRef = useRef<ConversationSidebarRunListScope | null>(null);
+  const runListInteractionRef = useRef<{ scope: ConversationSidebarRunListScope; taskKey: string } | null>(null);
   const initialWorkspaceId = active.kind === 'conversation-run'
     ? active.projectId
     : (defaultExpandedWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
@@ -265,12 +268,45 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   };
 
   const toggleWorkspacesCollapsed = () => {
-    setWorkspacesCollapsed((prev) => {
-      const next = !prev;
-      lastSavedWorkspacesCollapsedRef.current = next;
-      saveConversationPreference('workspaces.collapsed', next).catch(() => {});
-      return next;
-    });
+    const next = !workspacesCollapsed;
+    setWorkspacesCollapsed(next);
+    lastSavedWorkspacesCollapsedRef.current = next;
+    saveConversationPreference('workspaces.collapsed', next).catch(() => {});
+    if (next) {
+      // Collapsing the group folds every expanded workspace away: reset their
+      // task pages so reopening shows the default first page instead of
+      // everything the user paged through last time, and drop the section's
+      // expanded-run key so a remembered task cannot come back expanded with
+      // an empty (not-loaded) run list.
+      setExpandedTaskKeys((prev) => (prev.workspace ? { ...prev, workspace: null } : prev));
+      for (const [projectId, expanded] of Object.entries(expandedWorkspaces)) {
+        if (expanded) onResetWorkspaceTaskPage?.(projectId);
+      }
+    } else {
+      // Reopening restores remembered-expanded workspaces whose pages were
+      // reset on collapse: re-request the default first page for each.
+      for (const [projectId, expanded] of Object.entries(expandedWorkspaces)) {
+        if (!expanded) continue;
+        const status = vm.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
+        if (status === 'not-loaded' || status === 'error') {
+          requestSidebarPage(() => onRequestWorkspaceTasks(projectId));
+        }
+      }
+    }
+  };
+
+  const toggleRecentCollapsed = () => {
+    const next = !recentCollapsed;
+    setRecentCollapsed(next);
+    if (next) {
+      onResetRecentTaskPage?.();
+      setExpandedTaskKeys((prev) => (prev.recent ? { ...prev, recent: null } : prev));
+    } else {
+      const status = vm.recentTaskPage?.status ?? 'not-loaded';
+      if (status === 'not-loaded' || status === 'error') {
+        requestSidebarPage(() => onRequestRecentTasks());
+      }
+    }
   };
 
   const togglePinnedWorkspace = (projectId: string) => {
@@ -286,9 +322,18 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
   useEffect(() => {
     if (!activeTaskKey) return;
-    const interactionScope = runListInteractionScopeRef.current;
-    runListInteractionScopeRef.current = null;
-    if (interactionScope === 'pinned') return;
+    // A user interaction owns the highlight scope for the task it activated.
+    // Data refreshes for the SAME task (run-history loads, page loads,
+    // activity updates) re-run this effect; they must not be re-classified
+    // as external activation and steal the scope back to the workspace copy.
+    const interaction = runListInteractionRef.current;
+    if (interaction && interaction.taskKey === activeTaskKey
+      && (interaction.scope === 'pinned' || interaction.scope === 'recent')) return;
+    // External activation (search dialog, deep link) of another task owns the
+    // workspace copy again: a previous recent/pinned interaction must not
+    // leave the highlight scope stuck there with an expanded-but-unhighlighted
+    // row.
+    setActiveRunListScope('workspace');
     if (workspaceRevealRequest?.taskId && active.kind === 'conversation-run'
       && workspaceRevealRequest.projectId === active.projectId && workspaceRevealRequest.taskId === active.taskId) return;
     setExpandedTaskKeys((prev) => prev.workspace === activeTaskKey
@@ -303,20 +348,31 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
   const toggleWorkspace = (projectId: string) => {
     cancelPendingTaskReveal();
-    setExpandedWorkspaces((prev) => {
-      const expanding = !prev[projectId];
-      if (expanding) {
-        const status = vm.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
-        if (status === 'not-loaded' || status === 'error') {
-          requestSidebarPage(() => onRequestWorkspaceTasks(projectId));
-        }
+    const expanding = !expandedWorkspaces[projectId];
+    if (expanding) {
+      const status = vm.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
+      if (status === 'not-loaded' || status === 'error') {
+        requestSidebarPage(() => onRequestWorkspaceTasks(projectId));
       }
-      return { ...prev, [projectId]: expanding };
-    });
+    } else {
+      // Collapsing resets to the default first page; the next expand
+      // re-requests page one (see the expanding branch above). The section's
+      // expanded-run key drops with it so reopening cannot render an expanded
+      // task with an empty not-loaded run list.
+      onResetWorkspaceTaskPage?.(projectId);
+      setExpandedTaskKeys((prev) => (prev.workspace ? { ...prev, workspace: null } : prev));
+    }
+    setExpandedWorkspaces((prev) => ({ ...prev, [projectId]: expanding }));
   };
 
-  const markRunListInteraction = (scope: ConversationSidebarRunListScope) => {
-    runListInteractionScopeRef.current = scope;
+  const markRunListInteraction = (
+    scope: ConversationSidebarRunListScope,
+    task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+  ) => {
+    runListInteractionRef.current = {
+      scope,
+      taskKey: conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid),
+    };
     setActiveRunListScope(scope);
   };
 
@@ -325,7 +381,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     task: ConversationTaskRowVm,
     runId: string,
   ) => {
-    markRunListInteraction(scope);
+    markRunListInteraction(scope, task);
     onSelect({
       kind: 'conversation-run',
       projectId: task.projectId,
@@ -342,7 +398,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
   const toggleTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
     const taskKey = conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid);
-    markRunListInteraction(scope);
+    markRunListInteraction(scope, task);
     if (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error') {
       onRequestTaskRuns(task);
     }
@@ -350,7 +406,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   };
 
   const expandTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
-    markRunListInteraction(scope);
+    markRunListInteraction(scope, task);
     if (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error') {
       onRequestTaskRuns(task);
     }
@@ -400,12 +456,12 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         <div className="flex flex-col gap-0.5">
           <SidebarButton
             active={activeNavigationKey === 'quick-chat'}
-            icon={<MessageSquare />}
+            icon={<MessageSquare className="size-4" />}
             label={t('conversation.sidebar.newChat')}
             onClick={onNewConversation}
           />
           {!readOnly && <SidebarButton
-            icon={<Search />}
+            icon={<Search className="size-4" />}
             label={t('conversation.sidebar.search')}
             onClick={onSearch}
           />}
@@ -418,21 +474,21 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           <SidebarButton
             compact
             active={activeNavigationKey === 'agents'}
-            icon={<Bot />}
+            icon={<Bot className="size-3.5" />}
             label={t('conversation.sidebar.agentManagement')}
             onClick={() => onSelect({ kind: 'agents' })}
           />
           <SidebarButton
             compact
             active={activeNavigationKey === 'contexts'}
-            icon={<Library />}
+            icon={<Library className="size-3.5" />}
             label={t('conversation.sidebar.contextManagement')}
             onClick={() => onSelect({ kind: 'contexts' })}
           />
           <SidebarButton
             compact
             active={activeNavigationKey === 'run-mode-management'}
-            icon={<Route />}
+            icon={<Route className="size-3.5" />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
@@ -445,9 +501,12 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   moreNavigationActive && !moreNavigationOpen && 'bg-sidebar-accent text-sidebar-accent-foreground',
                 )}
               >
-                <Ellipsis className="size-3.5" />
+                {/* Spans keep both svgs out of direct-child position: the Button
+                    base's `has-[>svg]:px-3` otherwise overrides px-2 and shifts
+                    the whole row 4px right of the nav column. */}
+                <span><Ellipsis className="size-3.5" /></span>
                 <span className="min-w-0 flex-1 truncate text-left">{t('conversation.sidebar.more')}</span>
-                <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', moreNavigationOpen && 'rotate-180')} />
+                <span className="shrink-0"><ChevronDown className={cn('size-3.5 transition-transform', moreNavigationOpen && 'rotate-180')} /></span>
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent
@@ -458,7 +517,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 <SidebarButton
                   compact
                   active={active.kind === 'remote-tasks'}
-                  icon={<Globe />}
+                  icon={<Globe className="size-3.5" />}
                   label={t('conversation.sidebar.remoteTaskManagement')}
                   onClick={() => {
                     setMoreNavigationOpen(true);
@@ -469,7 +528,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               <SidebarButton
                 compact
                 active={activeNavigationKey === 'scheduled-tasks'}
-                icon={<AlarmClock />}
+                icon={<AlarmClock className="size-3.5" />}
                 label={t('scheduled.management.title')}
                 onClick={() => {
                   setMoreNavigationOpen(true);
@@ -480,6 +539,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           </Collapsible>
         </div>
         </div>
+
+        {/* The fixed navigation and the conversation tree are two zones: keep a
+            structural separator between them (lost in the 2026-11-05 IA pass). */}
+        <Separator data-conversation-sidebar-separator="navigation" className="mx-1 my-1.5 opacity-45" />
 
         {/* Pinned and workspace sections share the conversation scroll region. */}
         <ScrollArea
@@ -499,10 +562,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               type="button"
               data-conversation-sidebar-heading="pinned"
               aria-expanded={!pinnedCollapsed}
-              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              className="sticky top-0 z-[1] flex w-full items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-left text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
-              <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
+              <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', pinnedCollapsed && '-rotate-90')} />
               {t('conversation.sidebar.pinned')}
             </button>
             {!pinnedCollapsed ? (
@@ -577,24 +640,24 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             the entry point stays at the first level, mirroring the
             per-workspace new-conversation button one level down. */}
           <div data-conversation-sidebar-region="workspaces" className="pt-1">
-            <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-sm font-medium text-sidebar-foreground">
+            <div className="group sticky top-0 z-[1] flex w-full items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent/60">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
                     data-conversation-sidebar-heading="workspaces"
                     aria-expanded={!workspacesCollapsed}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-sidebar-accent-foreground group-hover:pr-17"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left hover:text-sidebar-accent-foreground group-hover:pr-18"
                     onClick={toggleWorkspacesCollapsed}
                   >
-                    <ChevronDown className={cn('size-3 shrink-0 transition-transform', workspacesCollapsed && '-rotate-90')} />
+                    <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', workspacesCollapsed && '-rotate-90')} />
                     <span className="truncate">{t('conversation.sidebar.workspaces')}</span>
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="right">{t('conversation.sidebar.workspaces')}</TooltipContent>
               </Tooltip>
               {!readOnly && onAddWorkspace ? (
-                <span className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -604,7 +667,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         aria-label={t('conversation.sidebar.addWorkspace')}
                         onClick={onAddWorkspace}
                       >
-                        <Plus className="size-3" />
+                        <Plus className="size-3.5" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>{t('conversation.sidebar.addWorkspace')}</TooltipContent>
@@ -631,14 +694,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 data-conversation-workspace-group={ws.projectId}
                 className="mb-2"
               >
-                <div data-conversation-workspace-header className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar py-1 pl-5 pr-1">
+                <div data-conversation-workspace-header className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 rounded-lg bg-sidebar py-1 pl-5 pr-1 hover:bg-sidebar-accent">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
                         data-conversation-workspace-id={ws.projectId}
                         aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-medium leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-17"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-medium leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-18"
                         onClick={() => toggleWorkspace(ws.projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -649,7 +712,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       {ws.workspacePath}
                     </TooltipContent>
                   </Tooltip>
-                  <span className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                     {!readOnly && onOpenProjectMemory ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -662,7 +725,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     ) : null}
                     {!readOnly && onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
-                        <Plus className="size-3" />
+                        <Plus className="size-3.5" />
                       </Button>
                     ) : null}
                     {onRemoveWorkspace ? (
@@ -732,11 +795,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       && (vm.tasksByWorkspace[ws.projectId] ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
                       <div className="pl-7 pr-3 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allConversationsShown')}</div>
                     ) : null}
-                    <LoadMoreSentinel
-                      marker={`workspace:${ws.projectId}`}
-                      enabled={vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && Boolean(vm.workspaceTaskPages[ws.projectId]?.nextCursor)}
-                      onLoadMore={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}
-                    />
                   </div>
                 ) : null}
               </div>
@@ -759,20 +817,26 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               type="button"
               data-conversation-sidebar-heading="recent"
               aria-expanded={!recentCollapsed}
-              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
-              onClick={() => setRecentCollapsed((collapsed) => !collapsed)}
+              className="sticky top-0 z-[1] flex w-full items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-left text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+              onClick={toggleRecentCollapsed}
             >
-              <ChevronDown className={cn('size-3 transition-transform', recentCollapsed && '-rotate-90')} />
+              <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', recentCollapsed && '-rotate-90')} />
               {t('conversation.sidebar.recent')}
             </button>
             {!recentCollapsed ? (
               <div className="mt-1 space-y-0.5">
                 {(vm.recentTasks ?? []).map((row) => (
-                  <RecentTaskRow
+                  <TaskRow
                     key={`recent-${conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid)}`}
-                    row={row}
-                    isActive={active.kind === 'conversation-run' && active.projectId === row.projectId && active.taskId === row.taskId}
-                    onSelect={onSelect}
+                    task={row}
+                    workspaceName={row.workspaceName}
+                    pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid))}
+                    isActive={isConversationSidebarRunListScopeActive('recent', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === row.projectId && active.taskId === row.taskId && (!active.taskUuid || !row.taskUuid || active.taskUuid === row.taskUuid)}
+                    activeRunKey={isConversationSidebarRunListScopeActive('recent', activeRunListScope) ? activeRunKey : null}
+                    expanded={expandedTaskKeys.recent === conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid)}
+                    scope="recent"
+                    commands={rowCommands}
+                    residencyEditable={Boolean(onSetResident)}
                     t={t}
                   />
                 ))}
@@ -799,11 +863,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   && (vm.recentTasks ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
                   <div className="pl-5 pr-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
                 ) : null}
-                <LoadMoreSentinel
-                  marker="recent"
-                  enabled={(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && Boolean(vm.recentTaskPage?.nextCursor)}
-                  onLoadMore={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}
-                />
               </div>
             ) : null}
         </div>
@@ -812,7 +871,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
         {/* Settings */}
         <Separator className="mx-1 my-1.5 opacity-45" />
-        <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
+        <SidebarButton icon={<Settings className="size-4" />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
         </aside>
 
         <AlertDialog
@@ -910,7 +969,7 @@ export function shouldShowConversationSidebarActivity(
   return task.runMode === 'direct' && Boolean(task.agentIdentity) && taskActive;
 }
 
-export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
+export type ConversationSidebarRunListScope = 'pinned' | 'workspace' | 'recent';
 
 export type ConversationSidebarExpandedTaskKeys = Record<ConversationSidebarRunListScope, string | null>;
 
@@ -989,6 +1048,7 @@ const TaskRow = memo(function TaskRow({
   task,
   scope,
   pinned,
+  workspaceName,
   isActive,
   activeRunKey,
   expanded,
@@ -999,6 +1059,8 @@ const TaskRow = memo(function TaskRow({
   task: ConversationTaskRowVm;
   scope: ConversationSidebarRunListScope;
   pinned: boolean;
+  /** Cross-workspace recent rows carry their workspace name next to the time. */
+  workspaceName?: string;
   isActive: boolean;
   activeRunKey?: string | null;
   expanded: boolean;
@@ -1011,8 +1073,8 @@ const TaskRow = memo(function TaskRow({
   const onToggleRuns = () => commands.toggleRuns(scope, task);
   const onExpandRuns = () => commands.expandRuns(scope, task);
   const onLoadMoreRuns = () => commands.loadMoreRuns(task);
-  // Pinned-section rows only offer unpin; workspace rows choose by the pinned flag.
-  const onPin = scope === 'workspace' ? () => commands.pin(task) : undefined;
+  // Pinned-section rows only offer unpin; workspace and recent rows choose by the pinned flag.
+  const onPin = scope === 'pinned' ? undefined : () => commands.pin(task);
   const onUnpin = () => commands.unpin(task);
   const onSetResident = residencyEditable ? (resident: boolean) => commands.setResident(task, resident) : undefined;
   const onRename = (title: string) => commands.rename(task, title);
@@ -1026,6 +1088,7 @@ const TaskRow = memo(function TaskRow({
   const [editValue, setEditValue] = useState(task.title);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasRuns = shouldShowConversationSidebarRunList(task);
+  const runListOwnsSelection = doesConversationSidebarRunListOwnSelection(task, activeRunKey, expanded && hasRuns);
 
   const latestRun = task.latestRun;
   const isDirect = task.runMode === 'direct';
@@ -1084,6 +1147,10 @@ const TaskRow = memo(function TaskRow({
     onDelete?.();
   };
 
+  // Recent rows without a run have nowhere to navigate: render them as static
+  // rows without hover/cursor affordances or hover actions (parity with the
+  // former RecentTaskRow, commit cd214297).
+  const deadRecentRow = scope === 'recent' && !task.latestRun;
   const taskRow = (
     <div
       data-conversation-task-row={scope}
@@ -1091,10 +1158,16 @@ const TaskRow = memo(function TaskRow({
       data-task-id={task.taskId}
       data-task-uuid={task.taskUuid ?? undefined}
       className={cn(
-        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2 text-sidebar-foreground cursor-pointer',
-        isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2 text-sidebar-foreground',
+        deadRecentRow ? 'text-sidebar-foreground/70' : 'cursor-pointer',
+        // Selection sinks to the active run row while it is visible in the
+        // expanded run list; the task row keeps only its weight then, so
+        // exactly one row carries the accent at any time.
+        isActive
+          ? cn('font-medium text-sidebar-accent-foreground', !runListOwnsSelection && 'bg-sidebar-accent/70')
+          : !deadRecentRow && 'hover:bg-sidebar-accent',
       )}
-      onClick={handleRowClick}
+      onClick={deadRecentRow ? undefined : handleRowClick}
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
@@ -1157,10 +1230,13 @@ const TaskRow = memo(function TaskRow({
           <span className="inline-flex h-4 shrink-0 items-center" role="status" aria-label={t('status.running')}>
             <AcpProcessingSpinner className="size-3" />
           </span>
-        ) : relativeTime ? (
-          <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
+        ) : relativeTime || workspaceName ? (
+          <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">
+            {workspaceName && relativeTime ? `${workspaceName} · ${relativeTime}` : (workspaceName ?? relativeTime)}
+          </span>
         ) : null}
       </div>
+      {deadRecentRow ? null : (
       <span data-demo-task-actions={readOnly || undefined} className="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
         {(
           <Tooltip>
@@ -1210,6 +1286,7 @@ const TaskRow = memo(function TaskRow({
           </Tooltip>
         )}
       </span>
+      )}
     </div>
   );
 
@@ -1228,7 +1305,7 @@ const TaskRow = memo(function TaskRow({
         </ContextMenu>
       ) : taskRow}
       {expanded && hasRuns ? (
-        <div className="ml-3 mt-1 space-y-1 border-l border-border/60 pl-2">
+        <div className="ml-7 mt-1 space-y-1 border-l border-border/60">
           {task.runs.map((run) => {
             const color = conversationSidebarRunStatusClass(run);
             const runTime = run.status !== 'running'
@@ -1245,7 +1322,11 @@ const TaskRow = memo(function TaskRow({
               >
                 <div
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs leading-4',
+                    // Runs nest one level under the task row: the guide border
+                    // sits at the task text indent (28px) and the row stretches
+                    // back to full width so hover/active shading matches the
+                    // parent task row instead of floating indented.
+                    'flex items-center gap-2 rounded-md -ml-7 pl-9 pr-2 py-1 cursor-pointer text-xs leading-4',
                     isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId, task.taskUuid)
                       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
@@ -1270,7 +1351,7 @@ const TaskRow = memo(function TaskRow({
             );
           })}
           {task.runHistoryStatus === 'loading' ? (
-            <div className="flex items-center gap-2 pl-5 pr-2 py-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 pl-2 pr-2 py-1 text-xs text-muted-foreground">
               <Loader2 className="size-3 animate-spin" />
               {t('conversation.sidebar.loadingRuns')}
             </div>
@@ -1308,104 +1389,6 @@ const TaskRow = memo(function TaskRow({
   );
 });
 
-// ── Recent (cross-workspace) row ──
-
-/** Lightweight navigation row for the merged recent list. Full row interactions
- *  (runs, rename, pin) stay in the workspace and pinned sections. */
-const RecentTaskRow = memo(function RecentTaskRow({
-  row,
-  isActive,
-  onSelect,
-  t,
-}: {
-  row: ConversationRecentTaskRowVm;
-  isActive: boolean;
-  onSelect: (page: ConversationPage) => void;
-  t: (key: string, options?: Record<string, unknown>) => string;
-}) {
-  const useAgentIdentity = conversationSidebarIdentityKind(row) === 'agent-icon';
-  const latestRun = row.latestRun;
-  const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
-  const relativeTime = row.lastActivityAt && (row.runMode === 'direct' || row.latestRun?.status !== 'running')
-    ? formatCompactRelativeTime(row.lastActivityAt, t('conversation.runtime.justNow'))
-    : null;
-  const recentRowBody = (
-    <>
-      <span className="flex size-4 shrink-0 items-center justify-center">
-        {useAgentIdentity && row.agentIdentity ? (
-          <img src={agentIconSrc(row.agentIdentity.iconKey)} alt="" className={agentIconClass(row.agentIdentity.iconKey, 'size-3')} />
-        ) : (
-          <span className={cn('size-1.5 rounded-full', latestColor)} />
-        )}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
-      <span className="shrink-0 truncate text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">
-        {relativeTime ? `${row.workspaceName} · ${relativeTime}` : row.workspaceName}
-      </span>
-    </>
-  );
-  // Rows without a run have nowhere to navigate: render a static row instead
-  // of a dead clickable button with hover/cursor affordances.
-  if (!latestRun) {
-    return (
-      <div
-        data-recent-task-id={row.taskId}
-        data-recent-task-project={row.projectId}
-        className={cn(
-          'flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-5 pr-2 text-left text-sidebar-foreground/70',
-          isActive && 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground',
-        )}
-      >
-        {recentRowBody}
-      </div>
-    );
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          data-recent-task-id={row.taskId}
-          data-recent-task-project={row.projectId}
-          className={cn(
-            'flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-5 pr-2 text-left text-sidebar-foreground',
-            isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'cursor-pointer hover:bg-sidebar-accent',
-          )}
-          onClick={() => {
-            onSelect({
-              kind: 'conversation-run',
-              projectId: row.projectId,
-              taskId: row.taskId,
-              taskUuid: row.taskUuid,
-              runId: latestRun.runId,
-            });
-          }}
-        >
-          {recentRowBody}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
-        {row.workspaceName} · {row.title}
-      </TooltipContent>
-    </Tooltip>
-  );
-});
-
-/** Invisible tail sentinel: scrolls into view -> load the next page. */
-const LoadMoreSentinel = memo(function LoadMoreSentinel({
-  enabled,
-  onLoadMore,
-  marker,
-}: {
-  enabled: boolean;
-  onLoadMore: () => void;
-  marker: string;
-}) {
-  const setSentinel = useLoadMoreSentinel(enabled, onLoadMore);
-  if (!enabled) return null;
-  return <div ref={setSentinel} data-load-more-sentinel={marker} aria-hidden className="h-px" />;
-});
-
 // ── Sidebar Button ──
 
 function SidebarButton({
@@ -1431,7 +1414,12 @@ function SidebarButton({
       )}
       onClick={onClick}
     >
-      <span className={cn(compact ? '[&_svg]:size-3.5' : '[&_svg]:size-4')}>{icon}</span>
+      {/* The span keeps svgs out of direct-child position so the Button base's
+          `has-[>svg]:px-3` cannot override the row's px-2 padding. Icon sizes
+          are set by an explicit size-* class on each icon at the call site:
+          span-level `[&_svg]:size-*` loses the specificity race to the Button
+          base's `[&_svg:not([class*='size-'])]:size-4` and never applied. */}
+      <span>{icon}</span>
       <span>{label}</span>
     </Button>
   );
@@ -1498,4 +1486,17 @@ export function isConversationSidebarRunActive(
   taskUuid?: string | null,
 ) {
   return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId, taskUuid);
+}
+
+/** The expanded run list owns the selection accent while the active run row is
+ *  actually rendered in it; otherwise (collapsed list, run history not yet
+ *  loaded, or the active run sits beyond the loaded page) the task row keeps
+ *  the accent so exactly one row stays highlighted at any time. */
+export function doesConversationSidebarRunListOwnSelection(
+  task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid' | 'runs'>,
+  activeRunKey: string | null | undefined,
+  runListExpanded: boolean,
+) {
+  if (activeRunKey == null || !runListExpanded) return false;
+  return task.runs.some((run) => isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId, task.taskUuid));
 }

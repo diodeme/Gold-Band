@@ -15,6 +15,7 @@
 | Git 版本低时提醒，可跳过 | 检查安装、版本和可执行性；缺失、过低或无法判断均可显式跳过；运行 Git 相关功能时仍检查 | 跳过引导不等于绕过工作流执行前置条件 |
 | Node.js/npm/npx 异常是否阻断 | 同页检查 Node.js、npm、npx 和组合兼容性，任何结果都不阻断引导，只按影响范围提示；npx 不能启动时跳过依赖 npx 的候选并说明原因 | 运行环境依赖由各 Agent 的启动方式决定，不是所有 ACP Agent 的硬依赖 |
 | 检测可用 Agent 并选择模型 | 自动发现并有界诊断；全部诊断成功的 Agent 自动配置到 Agent 管理，第三步选择器只展示诊断成功且已保存的 Agent；模型来自实际 ACP 能力 | 用户只需选择默认 Agent 和模型，无需额外添加或从异常候选中筛选 |
+| Agent 检测结束（无论是否有可用项）或检测失败 | 运行环境检测完成后提供“稍后设置”，把首次引导转为 `deferred` 并进入主界面；不标记完成，不修改默认偏好和工作流，之后可从设置重新运行引导 | 允许用户先进入应用，避免首次引导成为必须立即完成的阻塞 |
 | 更新所有默认工作流 | 按内置模板身份批量更新 `WorkflowModelBindings`，先预览再一次提交；保留工作流结构及权限语义 | 防止覆盖用户模板、运行快照和已有任务 |
 | 第一次安装启动时展示 | 以当前用户配置空间的首次初始化为界；升级、重装保留配置不反复强制引导 | 安装包事件不是可靠的业务身份 |
 
@@ -91,11 +92,12 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 - 引导为独立页面 `#/onboarding`，在 workspace 选择前可用；`#/onboarding/defaults` 用于已有用户直接预览默认配置应用。首屏仅加载状态与静态策略，业务 React App 延迟挂载；首次 pending 时延后业务恢复、搜索索引、远程服务与调度启动，提交成功后只启动一次。
 - 初始化在任何默认配置 seeding 之前判断是否已有用户数据，并写入一次性的 onboarding 状态。不能在默认文件已生成后仅用“settings.json 是否存在”判断首次使用。
 - 新用户进入引导；中途关闭客户端后重新进入并重测环境；已完成用户正常进入主界面。
+- Agent 步骤在运行环境检测完成且本轮检测结束（无论是否有可用 Agent）或检测失败时提供“稍后设置”；该动作将 `pending` 转为 `deferred` 并进入主界面。即使已有可用 Agent，defer 也不会自动选择它；deferred 不等于 completed：不设置默认 Agent、模型或工作流绑定，用户之后可从设置重新运行引导。
 - 引导、加载状态与业务页面共用应用入口的窗口关闭协调器。关闭窗口或退出应用时先保存文件草稿；保存失败沿用“重试／取消／丢弃”确认。取消保留未保存内容与当前引导检测，页面切换不得卸载关闭保护或中断待处理的确认。平台值随轻量启动状态返回，不为关闭保护提前加载业务 App。
 - 已有旧版用户标记为 `existing-install`，提供设置中的主动入口；不因新增字段缺失而把所有老用户拦在 npm 步骤。
 - 设置页的主动入口纳入“通用”卡片内的“引导与工作流”标准分区，位于浏览器设置之后，与其他设置共用标题列、内容列、留白及分隔线；不在卡片外另放操作横栏。“首次启动引导”与“默认工作流”分别占一行，提供简短用途说明和紧凑描边按钮。后者标为“配置默认项”，说明仅调整内置工作流、不影响自定义工作流；点击只进入原配置流程，不能直接应用。窄窗口和长译文按内容宽度换行，不新增嵌套卡片或独立滚动区。
 - 重装保留配置、客户端正常升级不触发重新初始化。换电脑携带配置后由当前运行前置检查发现环境变化，并提供重新配置入口。
-- 引导期间可访问语言／主题、帮助和退出；业务启动入口不能绕过引导。本版本不提供外部 deep link 直接启动业务页面的入口，也不承诺完成引导后恢复启动前 hash；完成后进入 workspace 选择或默认业务入口。
+- 引导期间可访问语言／主题、帮助和退出；业务启动入口不能绕过引导。受控例外只有 Agent 步骤的“稍后设置”：其前置条件是本次运行环境报告已通过，写入 `deferred` 后才允许挂载业务 App。本版本不提供外部 deep link 直接启动业务页面的入口，也不承诺完成引导后恢复启动前 hash；完成后进入 workspace 选择或默认业务入口。
 - 尚无 workspace 时，Doctor 使用应用管理的隔离临时目录，不执行项目脚本、不初始化用户仓库；首次选择真实 workspace 后按正常运行规则再次预检。
 
 ### 4.2 第一步：检查 Git（允许跳过）
@@ -134,7 +136,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 5. 页面底部展示将更新的内置模板名称、模板数和执行 slot 数，所选 Agent、模型与权限保留在上方表单。
 6. 点击“应用配置并开始使用”，后端校验并提交；成功后进入 workspace 选择或默认业务入口。
 
-状态行分三种：有可用项时显示“检测到 N 个可用 Agent”；正常结束只有不可用项时显示“检测到的 Agent 暂不可用，请查看下方原因。”；正常结束什么都没检测到时才显示“未检测到已安装的 Agent。安装任一 Agent 后重新检测。”。
+状态行分三种：有可用项时显示“检测到 N 个可用 Agent”；正常结束只有不可用项时显示“检测到的 Agent 暂不可用，请查看下方原因。”；正常结束什么都没检测到时才显示“未检测到已安装的 Agent。安装任一 Agent 后重新检测。”。完成本轮检测后（无论是否有可用 Agent）或检测失败时，本步骤提供“稍后设置”：用户可先进入主界面，之后从设置重新运行引导；即使已有可用 Agent，该动作也不自动选择 Agent，不修改默认偏好或内置工作流。
 
 选择器下方的“N 个 Agent 暂不可用”折叠区（shadcn/ui `Collapsible`）只列本机已安装但不能用的 Agent，按结构化原因展示：
 - `runtime-required`：显示“需要 npm/npx”和“查看运行环境”，返回第二步展示同一份报告，不隐式重测。
@@ -275,16 +277,16 @@ DefaultExecutionProfile
 | 安装策略／Catalog | 构建产物，随应用版本变化 | 打包只读 |
 | 实际 Agent 配置及可执行路径 | `SettingsConfig.agents`，新候选诊断成功后自动登记 | 是，不等待最终应用 |
 | 默认执行偏好 | `SettingsConfig.defaultExecutionProfile` | 是，一份 |
-| 首次引导是否完成、Git 跳过意图 | `SettingsConfig.onboarding` | 是 |
+| 首次引导生命周期（pending／deferred／completed／existing-install）、Git 跳过意图 | `SettingsConfig.onboarding` | 是 |
 | 环境检查结果 | 现有后端环境请求持有 request ID、取消标志及完成报告；页面仅投影 | 否；退出释放、重进检测 |
 | Agent 能力／诊断 | 既有 Provider diagnostic 领域 | 复用现有缓存，不复制到 onboarding |
 | 当前模型选择／展开状态 | 向导页面局部草稿 | 否；最终提交才持久化 |
 | 模板绑定 | `WorkflowTemplateStore` 内 `WorkflowModelBindings` | 是，继续使用既有 revision |
 | 应用中的跨文件操作 | 一个有界的提交恢复记录 | 临时持久化，完成即清理 |
 
-建议 onboarding 持久态为 `pending { gitDecision } | completed { schemaVersion, completedAt, lastApplyId, requestFingerprint } | existing-install`。当前步骤由策略、意图和本次探测结果推导，不另存三个 `stepCompleted` 布尔值。
+建议 onboarding 持久态为 `pending { gitDecision } | deferred { gitDecision } | completed { schemaVersion, completedAt, lastApplyId, requestFingerprint } | existing-install`。当前步骤由策略、意图和本次探测结果推导，不另存三个 `stepCompleted` 布尔值。`deferred` 只表示用户主动选择稍后完成首次配置，不表示配置已完成。
 
-`gitDecision` 仅记录 `undecided | skip`；通过版本检查属于实时事实。已有用户主动进入引导时保留既有 completed/existing-install 状态，只有最后提交成功才更新默认偏好和工作流绑定；此前成功诊断的新 Agent 已独立保存，取消不删除这些成果，也不破坏既有配置。
+`gitDecision` 仅记录 `undecided | skip`；通过版本检查属于实时事实。`deferred` 保留进入该状态时的 Git 决策，后续从设置应用默认配置时可直接复用，不要求用户重复选择。只有运行环境报告已通过后才允许写入 `deferred`，因此该状态不绕过 npm 门槛；它也不保留 Agent、模型或工作流绑定的部分提交。已有用户主动进入引导时保留既有 completed/existing-install 状态，只有最后提交成功才更新默认偏好和工作流绑定；此前成功诊断的新 Agent 已独立保存，取消不删除这些成果，也不破坏既有配置。
 
 新增持久数据的必要性：默认选择和首次完成意图无法从已有各模板绑定中唯一推导；跨文件操作 ID 表示一次明确应用，不能由单模板 binding revision 表达。所有模板、Agent、项目继续复用现有 canonical identity，不新增 workspace identity、候选 Agent 数据库或额外模型配置表。
 
@@ -301,6 +303,7 @@ DefaultExecutionProfile
 | `get_onboarding_status` | 无 | 状态、策略摘要、渠道；不运行 Doctor、不读历史或模板正文 |
 | `check_setup_environment` / `cancel_setup_environment` | request ID | 返回并保留 4 项检查的完整报告；同页主动重测替换旧请求与报告，退出引导释放；原生 `git`／`node` 每项最多 5 秒，`npm`／`npx` launcher 每项最多 15 秒 |
 | `skip_setup_git` | 当前引导意图 | 更新 skip 意图并返回权威状态；没有 npm skip 接口 |
+| `defer_setup` | 当前引导生命周期与本次环境报告 | 仅在 controller 持有已通过的环境报告时把 `pending { gitDecision }` 转为 `deferred { gitDecision }`；通过 `spawn_blocking` 执行配置写入与 runtime 启动，不阻塞 IPC/主线程；不修改 Agent、默认偏好或工作流；重复调用幂等 |
 | `start_setup_agent_detection` / `cancel_setup_detection` | after cursor、refresh、事件 channel／generation | 校验本次后端环境报告，不启动环境命令；编排只读发现、有界诊断和成功后自动配置；不创建或迁移模板与默认配置；逐项返回正式健康 Agent 与进度 |
 | `discovery::candidates`（内部） | 已配置实例、after cursor | 当前发布 11 个、第一阶段 13 个、第二阶段最多 14 个经过平台过滤的 Catalog 候选，以及每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
 | `probe_setup_model` | 已配置且诊断成功的 Agent ID、model ID、generation | 复用模型探测，返回目标模型配置目录 |
@@ -354,6 +357,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 - 保留三个步骤，第三步末尾的应用预览不是第四个页面；标题、操作区固定，中间单滚动区。
 - 使用现有 shadcn/ui 控件和主题 token；窄窗口纵向排列，长路径安全断行，支持键盘、焦点与读屏。
 - 选择器只展示可用 Agent；已安装但不可用的 Agent 进入暂不可用折叠区，只展示原因与“查看运行环境”，不提供单项重试或程序选择。选择器在收到 `unavailable` 或 `withdrawn` 后移除对应项并禁用提交，避免保留失效选择。
+- 检测结束（无论是否有可用 Agent）或检测失败后提供“稍后设置”次按钮和一句结果说明；仅在本次运行环境检测已完成且 Agent 检测已结束时显示，检测中或环境报告已释放时不显示。按钮使用现有 Button ghost 变体，窄窗口与长译文随底栏换行。
 - 任何预计超过 300ms 的操作在触发后 100ms 内显示局部中间态；刷新保留成功项和当前选择。
 - 环境检测通过既有 Tauri Channel 投影逐项进度；Git 的完成结果可先放行对应步骤，Node/npm/npx 的初步版本结果不作为联合就绪事实。最终报告到达后丢弃迟到进度，重测开始即替换旧报告。
 - 检测状态、诊断状态和草稿留在向导局部，不把每次变化加入 App 全局高频 Context。
@@ -490,6 +494,18 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 过度设计复核：复用现有 Agent ID、配置 fingerprint、Doctor 快照、generation 和配置提交锁；删除引导重复诊断与失败写入，不新增状态机、持久字段、缓存、队列或依赖。
 
 性能复核：当前 11 个内置候选和不超过 50 个自定义 Agent 的规模下，已配置健康项只做一次内存 Map 查询并减少外部进程；只有未配置候选启动既有有界 Doctor，并发上限、截止时间、I/O 范围和 UI 状态订阅均不扩大。
+
+### 13.3 2026-11-09 首次安装 Agent 检测后的受控退出修复
+
+- 现象：首次安装用户在 Agent 步骤检测结束仍无可用 Agent 时只能重新检测或关闭客户端，无法进入主界面；同时产品要求检测结束后允许用户先进入应用，即使已有可用 Agent。
+- 根因：`OnboardingGate` 把 `pending` 作为硬门禁，第三步的 `canSelect` 又要求已选择可用 Agent；持久态没有“用户主动稍后设置”的合法状态。属于正确设计下的实现缺口，不是探测逻辑错误。
+- 修复：新增 `deferred` 生命周期态与 `defer_setup` 命令；命令复用 `SetupController.checked_environment()`，只在本次运行环境报告已通过时把 `pending` 转为 `deferred`，不修改 Agent、默认偏好或工作流，成功后启动业务 runtime。Agent 步骤在检测结束（无论是否有可用 Agent）或检测失败时显示“稍后设置”，点击后持久化并进入主界面；下次启动看到 `deferred` 直接挂载业务 App，设置页的重新运行引导保持可用。
+- 审查修复：`deferred` 保留 `gitDecision`，`defaults::apply` 对 `pending` 与 `deferred` 统一消费该决策；`defer_setup` 改为 `async` + `spawn_blocking`，避免配置写入和 runtime 启动阻塞 IPC/主线程。
+- 红测试证据：`enters the business application when no Agent is available and the user chooses to set up later` 在旧实现上失败于找不到“稍后设置”按钮；放宽为“检测完成即有可用 Agent 也显示”后，`offers set up later after detection completes even when an Agent is available` 在修改前同样失败于按钮不存在。两次修改后对应测试均通过。另补 `deferred_setup_survives_restart_and_is_idempotent`、pending 批次结束清理和 deferred 启动挂载业务 App 的回归。
+- 后端回归：新增 `deferred_setup_preserves_git_skip_for_later_apply`，固定跳过 Git 后 defer 仍保留决策，并可在 `request.git_skipped=false` 时完成默认配置应用。
+- 自动化验收：`npx vitest run --config web/vitest.config.ts web/tests/onboarding.test.tsx` 43 项通过；相关 i18n、设置与关闭保护测试 24 项通过；`cargo test -p gold-band --lib onboarding::initialization` 6 项通过；`cargo test -p gold-band --lib onboarding::tests::deferred_setup_preserves_git_skip_for_later_apply` 1 项通过；`cargo check -p gold-band-desktop --all-targets` 通过，保留既有未使用代码告警；`npm run web:build` 通过。浏览器 fixture 以 `onboardingFixture=no-agents` 验证无 Agent 空结果、稍后设置、URL 离开引导页及 600×640 窄窗布局，页面 error 日志为空；浏览器无法承载依赖 Tauri 的业务运行时，业务主界面挂载由 DOM 回归测试固定。
+- 过度设计复核：只新增一个带 Git 决策的生命周期状态、一个命令和一个次要按钮；复用既有环境报告、`SettingsConfig` 事实源和 `start_business_runtime`，不新增 aggregate、持久表、缓存、队列或依赖。
+- 性能复核：defer 路径只执行一次已通过报告的读取、一次 settings 原子写和一次既有 runtime 启动调用，并通过 `spawn_blocking` 将阻塞性 I/O 移出 IPC/主线程；不增加扫描、轮询、高频 IPC 或 UI 全量订阅，数据规模与引导原有 11 个精选候选／50 个自定义实例一致。
 
 ## 14. 官方资料与代码证据
 

@@ -42,12 +42,27 @@ pub fn skip_git(paths: &GoldBandPaths) -> Result<SettingsConfig> {
     with_configuration(&paths.user_gold_band_dir(), || {
         let mut settings = load_settings_file(&paths.user_settings_file())?;
         match settings.onboarding.as_mut() {
-            Some(OnboardingState::Pending { git_decision }) => *git_decision = GitDecision::Skip,
+            Some(OnboardingState::Pending { git_decision })
+            | Some(OnboardingState::Deferred { git_decision }) => *git_decision = GitDecision::Skip,
             Some(OnboardingState::Completed { .. } | OnboardingState::ExistingInstall) => {
                 return Ok(settings);
             }
             None => return Err(SetupError::new("setup.initialization-required").into()),
         }
+        save_settings_file(&paths.user_settings_file(), &settings)?;
+        load_settings_file(&paths.user_settings_file())
+    })
+}
+
+pub fn defer(paths: &GoldBandPaths) -> Result<SettingsConfig> {
+    with_configuration(&paths.user_gold_band_dir(), || {
+        let mut settings = load_settings_file(&paths.user_settings_file())?;
+        let git_decision = match &settings.onboarding {
+            Some(OnboardingState::Pending { git_decision }) => *git_decision,
+            Some(_) => return Ok(settings),
+            None => return Err(SetupError::new("setup.initialization-required").into()),
+        };
+        settings.onboarding = Some(OnboardingState::Deferred { git_decision });
         save_settings_file(&paths.user_settings_file(), &settings)?;
         load_settings_file(&paths.user_settings_file())
     })
@@ -78,6 +93,18 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({"status":"pending", "gitDecision":"skip"})
+        );
+    }
+
+    #[test]
+    fn deferred_state_serializes_git_decision() {
+        let value = serde_json::to_value(OnboardingState::Deferred {
+            git_decision: GitDecision::Skip,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"status": "deferred", "gitDecision": "skip"})
         );
     }
 
@@ -116,6 +143,42 @@ mod tests {
         assert_eq!(
             initialize(&paths).unwrap().onboarding,
             Some(OnboardingState::ExistingInstall)
+        );
+    }
+
+    #[test]
+    fn deferred_setup_survives_restart_and_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        assert_eq!(
+            initialize(&paths).unwrap().onboarding,
+            Some(OnboardingState::Pending {
+                git_decision: GitDecision::Undecided
+            })
+        );
+        assert_eq!(
+            defer(&paths).unwrap().onboarding,
+            Some(OnboardingState::Deferred {
+                git_decision: GitDecision::Undecided
+            })
+        );
+        assert_eq!(
+            initialize(&paths).unwrap().onboarding,
+            Some(OnboardingState::Deferred {
+                git_decision: GitDecision::Undecided
+            })
+        );
+        assert_eq!(
+            defer(&paths).unwrap().onboarding,
+            Some(OnboardingState::Deferred {
+                git_decision: GitDecision::Undecided
+            })
+        );
+        assert_eq!(
+            skip_git(&paths).unwrap().onboarding,
+            Some(OnboardingState::Deferred {
+                git_decision: GitDecision::Skip
+            })
         );
     }
 }

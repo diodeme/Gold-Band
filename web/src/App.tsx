@@ -233,6 +233,8 @@ import {
   applyConversationRecentTaskPage,
   beginConversationRecentTaskLoad,
   failConversationRecentTaskLoad,
+  resetConversationWorkspaceTaskPage,
+  resetConversationRecentTaskPage,
   conversationSidebarBootstrapInvalidationKeys,
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
@@ -469,7 +471,7 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 }
 
 /** Shell callbacks App keeps identity-stable across renders. */
-type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
+type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationResetWorkspaceTaskPage' | 'onConversationResetRecentTaskPage' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
 
 export function App() {
   const { t } = useTranslation();
@@ -937,6 +939,19 @@ export function App() {
       void loadConversationWorkspaceTasks(projectId).catch(() => {});
     }
   }, [loadConversationWorkspaceTasks, cancelConversationSidebarReveal]);
+  // "最近使用"的语义是**发起**而非打开：新建会话、继续旧会话、rerun、排队
+  // 实际派发都算使用；仅点开查看不计入。create/rerun 在各自成功路径标记；
+  // 继续会话与队列派发由会话事件监听标记（见 subscribeConversationEvents）。
+  // 静默标记：不带 create 路径的 reveal/草稿工作空间切换副作用。
+  const markConversationWorkspaceUsed = useCallback((projectId: string) => {
+    if (conversationSidebarRef.current.lastActiveWorkspaceId === projectId) return;
+    setConversationSidebar((prev) => {
+      const next = prioritizeConversationSidebarWorkspace(prev, projectId);
+      conversationSidebarRef.current = next;
+      return next;
+    });
+    saveLastConversationWorkspace(projectId).catch(() => {});
+  }, []);
   const activeWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === effectiveWorkspaceId)
     ?? conversationSidebar.workspaces[0];
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
@@ -1377,6 +1392,16 @@ export function App() {
       if (!active) return;
       const projectId = event.projectId?.trim();
       const taskUuid = event.taskUuid?.trim();
+      // 发起即使用：当前打开的会话出现新回合活动（继续旧会话/队列实际
+      // 派发的首批事件）时，把该工作空间静默标记为最近使用——侧栏即时
+      // 置顶并持久化；其它工作空间的后台任务（定时/编排）不打扰排序。
+      if (
+        projectId
+        && conversationPageRef.current.kind === 'conversation-run'
+        && conversationPageRef.current.projectId === projectId
+      ) {
+        markConversationWorkspaceUsed(projectId);
+      }
       const sidebarTask = projectId
         ? findConversationTask(conversationSidebarRef.current, projectId, event.taskId)
         : null;
@@ -1408,7 +1433,7 @@ export function App() {
       active = false;
       dispose();
     };
-  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, conversationShellReady]);
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, markConversationWorkspaceUsed, conversationShellReady]);
 
   useEffect(() => {
     if (!appSessionReady) return;
@@ -2559,9 +2584,8 @@ export function App() {
     onConversationSearch: () => setConversationSearchOpen(true),
     onConversationRetrySidebar: () => { void loadConversationSidebarBootstrap().catch(() => {}); },
     onConversationRequestWorkspaceTasks: (projectId, cursor) => {
-      // The raw rejection reaches the auto-load sentinel (which stops its
-      // chain on failure); the failure state itself is already contained in
-      // the sidebar page status, and manual sidebar buttons swallow it.
+      // The failure state itself is already contained in the sidebar page
+      // status, and manual sidebar buttons swallow the rejection.
       return loadConversationWorkspaceTasks(projectId, cursor);
     },
     onConversationRequestPinnedTasks: (cursor) => {
@@ -2569,6 +2593,26 @@ export function App() {
     },
     onConversationRequestRecentTasks: (cursor) => {
       return loadConversationRecentTasks(cursor);
+    },
+    onConversationResetWorkspaceTaskPage: (projectId) => {
+      // Invalidate any in-flight page load first: a stale append landing after
+      // the reset would repopulate the cleared list (the generation check
+      // skips it), and a fresh page-1 request must not dedupe onto the stale
+      // flight.
+      conversationSidebarFlights.invalidate(`workspace:${projectId}`);
+      setConversationSidebar((current) => {
+        const next = resetConversationWorkspaceTaskPage(current, projectId);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+    },
+    onConversationResetRecentTaskPage: () => {
+      conversationSidebarFlights.invalidate('recent');
+      setConversationSidebar((current) => {
+        const next = resetConversationRecentTaskPage(current);
+        conversationSidebarRef.current = next;
+        return next;
+      });
     },
     onConversationRequestTaskRuns: (task, cursor) => {
       void loadConversationRunHistory(task, cursor).catch(() => {});
@@ -2748,6 +2792,8 @@ export function App() {
       onConversationRequestWorkspaceTasks={shellCommands.onConversationRequestWorkspaceTasks}
       onConversationRequestPinnedTasks={shellCommands.onConversationRequestPinnedTasks}
       onConversationRequestRecentTasks={shellCommands.onConversationRequestRecentTasks}
+      onConversationResetWorkspaceTaskPage={shellCommands.onConversationResetWorkspaceTaskPage}
+      onConversationResetRecentTaskPage={shellCommands.onConversationResetRecentTaskPage}
       onConversationRequestTaskRuns={shellCommands.onConversationRequestTaskRuns}
       onConversationPauseRun={shellCommands.onConversationPauseRun}
       onConversationRenameTask={shellCommands.onConversationRenameTask}

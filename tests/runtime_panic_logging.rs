@@ -31,6 +31,6 @@ fn runtime_log_preserves_panic_payload_location_and_backtrace() {
     assert!(log.contains("panic_payload="));
     assert!(log.contains("persisted panic diagnostic probe"));
     assert!(log.contains("panic_location="));
-    assert!(log.contains("tests\\runtime_panic_logging.rs:"));
+    assert!(log.contains(&format!("{}:", file!())));
     assert!(log.contains("panic_backtrace="));
 }

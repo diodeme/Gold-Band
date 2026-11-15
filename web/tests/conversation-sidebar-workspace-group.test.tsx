@@ -289,4 +289,88 @@ describe('ConversationSidebar workspaces group', () => {
       act(() => root.unmount());
     }
   });
+
+  it('collapsing a workspace or the group resets pages so reopening shows the default first page', () => {
+    // 2026-11-06: fold-away is a natural reset gesture — anything paged beyond
+    // the default page size is dropped, and the next expand re-requests page
+    // one through the not-loaded path instead of replaying the deep pages.
+    const onResetWorkspaceTaskPage = vi.fn();
+    const onRequestWorkspaceTasks = vi.fn();
+    const baseVm = sidebarVm({ 'workspaces.collapsed': false });
+    const taskB = {
+      projectId: 'workspace-b', taskId: 'task-001', taskUuid: 'uuid-001',
+      title: 'Target', autoTitle: false, runMode: 'direct', runs: [],
+      runHistoryStatus: 'ready' as const, runsNextCursor: null, pinned: false,
+    };
+    baseVm.tasksByWorkspace = { 'workspace-a': [], 'workspace-b': [taskB] };
+    baseVm.workspaceTaskPages = {
+      'workspace-a': { status: 'ready', nextCursor: null },
+      'workspace-b': { status: 'ready', nextCursor: null },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root: Root = createRoot(container);
+    act(() => {
+      root.render(
+        <ConversationSidebar
+          {...callbacks}
+          onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+          onResetWorkspaceTaskPage={onResetWorkspaceTaskPage}
+          vm={baseVm}
+          active={{ kind: 'conversation-home' }}
+        />,
+      );
+    });
+    try {
+      // workspace-a auto-expands via the initial reconcile; open workspace-b.
+      act(() => {
+        container.querySelector('[data-conversation-workspace-id="workspace-b"]')!.click();
+      });
+      expect(onResetWorkspaceTaskPage).not.toHaveBeenCalled();
+      // Collapsing the workspace row resets only that workspace.
+      act(() => {
+        container.querySelector('[data-conversation-workspace-id="workspace-b"]')!.click();
+      });
+      expect(onResetWorkspaceTaskPage).toHaveBeenCalledTimes(1);
+      expect(onResetWorkspaceTaskPage).toHaveBeenCalledWith('workspace-b');
+      // Collapsing the group resets every still-expanded workspace.
+      onResetWorkspaceTaskPage.mockClear();
+      act(() => {
+        container.querySelector('[data-conversation-sidebar-heading="workspaces"]')!.click();
+      });
+      expect(onResetWorkspaceTaskPage).toHaveBeenCalledTimes(1);
+      expect(onResetWorkspaceTaskPage).toHaveBeenCalledWith('workspace-a');
+
+      // Reopening the group (click, not a preference echo) restores
+      // remembered-expanded workspaces whose pages were reset (not-loaded):
+      // the default first page is re-requested instead of rendering an
+      // expanded workspace with no rows and no load affordance.
+      const resetVm = sidebarVm({ 'workspaces.collapsed': true });
+      resetVm.tasksByWorkspace = { 'workspace-a': [], 'workspace-b': [] };
+      resetVm.workspaceTaskPages = {
+        'workspace-a': { status: 'not-loaded', nextCursor: null },
+        'workspace-b': { status: 'not-loaded', nextCursor: null },
+      };
+      onRequestWorkspaceTasks.mockClear();
+      act(() => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+            onResetWorkspaceTaskPage={onResetWorkspaceTaskPage}
+            vm={resetVm}
+            active={{ kind: 'conversation-home' }}
+          />,
+        );
+      });
+      expect(container.querySelector('[data-conversation-sidebar-heading="workspaces"]')!.getAttribute('aria-expanded')).toBe('false');
+      act(() => {
+        container.querySelector('[data-conversation-sidebar-heading="workspaces"]')!.click();
+      });
+      expect(onRequestWorkspaceTasks).toHaveBeenCalledWith('workspace-a');
+    } finally {
+      act(() => root.unmount());
+      document.body.replaceChildren();
+    }
+  });
 });

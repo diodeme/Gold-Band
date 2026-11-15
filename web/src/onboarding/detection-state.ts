@@ -55,7 +55,7 @@ export function setupDetectionReducer(state: SetupDetectionState, action: Action
       const current = { ...state, generation: event.generation };
       if (event.type === 'failed') return setupDetectionReducer(current, { type: 'detection-failed' });
       if (event.type === 'checking') return { ...current, pending: { ...state.pending, [event.agentId]: event.label } };
-      if (event.type === 'finished') return { ...current, phase: 'completed', nextCursor: event.nextCursor };
+      if (event.type === 'finished') return { ...current, phase: 'completed', pending: {}, nextCursor: event.nextCursor };
       const id = event.type === 'ready' ? event.agent.agentType : event.agentId;
       const settled = { ...current, pending: without(state.pending, id), agents: without(state.agents, id), unavailable: without(state.unavailable, id) };
       if (event.type === 'ready') return { ...settled, agents: { ...settled.agents, [id]: event.agent } };

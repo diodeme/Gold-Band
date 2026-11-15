@@ -470,6 +470,7 @@ fn run() -> anyhow::Result<()> {
             onboarding::check_setup_environment,
             onboarding::cancel_setup_environment,
             onboarding::skip_setup_git,
+            onboarding::defer_setup,
             onboarding::start_setup_agent_detection,
             onboarding::cancel_setup_detection,
             onboarding::probe_setup_model,

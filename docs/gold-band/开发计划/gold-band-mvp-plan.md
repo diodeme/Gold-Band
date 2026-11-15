@@ -1681,8 +1681,8 @@ run 创建编号规则统一由 runtime 负责：普通启动和会话页重跑�
 
 - 普通 Worker 的 `Completed + Failure/Invalid` attempt 支持从精确 locator 重跑；已完成 Run 不原地复活，而是创建 successor Run，继承锚点以前的 canonical trace、node 状态、产物和附件，并追加 fresh attempt，依次执行该节点及最新 Workflow 的后续节点。历史失败 attempt 与当前已完成失败节点共用该接口；`ErrorBlocked` 暂不支持。
 - successor 记录 source Run UUID、round/node/attempt、operation ID、继承水位和 authoring revision；source 首次交接后封存，保持原结果并拒绝 continue、ACP 追问、执行计划当前写入和继承 attempt 写入。相同 source UUID + locator 幂等返回同一 successor；操作记录和 runtime recovery candidate 支持提交中断后的物化恢复，恢复阶段不调用 provider。
-- 复用现有 execution-plan 锁、attempt execution fencing、后台 driver、原子 JSON 和实际 workspace/worktree。拒绝未提交 trace、目标删除、工作区丢失、资源超限和符号链接；前缀最多 4096 steps、4096 个资源项、256 MiB，round 元数据读取也有界。重跑不回滚 Git 或外部副作用，不复制旧 ACP session、worker-ref、聊天和 Raw 日志。
-- 会话运行图为最新失败节点和历史失败 attempt 提供重跑入口，确认后导航到 successor；来源 Run 只读，继承 attempt 只读，ErrorBlocked 不显示入口。接口回归覆盖终态/历史重跑、最新工作流后继执行、并发幂等、source seal、迟到写入、恢复中断、资源边界和 ErrorBlocked。
+- 复用现有 execution-plan 锁、attempt execution fencing、后台 driver、原子 JSON 和实际 workspace/worktree。拒绝未提交 trace、目标删除、工作区丢失、资源超限和符号链接；前缀最多 4096 steps、4096 个资源项、256 MiB，round 元数据读取也有界，复制阶段基于来源 Run capability 和 no-follow 打开复核，防止预检后的路径替换逃逸。重跑不回滚 Git 或外部副作用，不复制旧 ACP session、worker-ref、聊天和 Raw 日志。
+- 会话运行图为最新失败节点和历史失败 attempt 提供重跑入口，确认后导航到 successor；来源 Run 只读，继承 attempt 只读，ErrorBlocked 不显示入口。接口回归覆盖终态/历史重跑、最新工作流后继执行、并发幂等、source seal、迟到写入、恢复中断、资源边界、历史动态图 child 收敛和 ErrorBlocked。
 
 ### `run kill`
 MVP 行为：

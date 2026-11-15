@@ -10,6 +10,8 @@ use std::{
 
 use anyhow::{Result, anyhow, ensure};
 use camino::Utf8PathBuf;
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
 use serde::{Deserialize, Serialize};
 
 use super::ids::{generate_uuid, now_rfc3339_like, reserve_next_run_dir};
@@ -40,6 +42,8 @@ const QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);
 const QUIESCE_POLL: Duration = Duration::from_millis(25);
 const MAX_QUIESCE_RUNS: usize = 256;
 const MAX_QUIESCE_METADATA_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -336,6 +340,144 @@ fn origin(operation: &RerunOperation) -> Result<&RunRerunOrigin> {
         })
 }
 
+struct CommittedDynamicGraph {
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    path: Utf8PathBuf,
+}
+
+fn check_quiesce_directory(
+    path: &camino::Utf8Path,
+    root: &camino::Utf8Path,
+    task_id: &str,
+    source_run_id: &str,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+    ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_dir(),
+        failure("workflow.retry.invalid-locator", task_id, source_run_id)
+    );
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+    let canonical_path = fs::canonicalize(path)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+    ensure!(
+        canonical_path.starts_with(&canonical_root),
+        failure("workflow.retry.invalid-locator", task_id, source_run_id)
+    );
+    Ok(())
+}
+
+fn quiesce_rounds(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    total_bytes: &mut u64,
+    source_run_id: &str,
+) -> Result<Vec<RoundState>> {
+    let directory = app.paths.run_dir(task_id, run_id).join("rounds");
+    check_quiesce_directory(&directory, &app.paths.runtime_root, task_id, source_run_id)?;
+    let mut rounds = Vec::new();
+    for (index, entry) in fs::read_dir(&directory)?.enumerate() {
+        ensure!(
+            index < MAX_SOURCE_ROUNDS,
+            failure("workflow.retry.prefix-too-large", task_id, source_run_id)
+        );
+        let entry = entry?;
+        let round_dir = Utf8PathBuf::from_path_buf(entry.path())
+            .map_err(|_| anyhow!("non-utf8 rerun round directory"))?;
+        check_quiesce_directory(&round_dir, &app.paths.runtime_root, task_id, source_run_id)?;
+        let path = round_dir.join("round.json");
+        check_quiesce_metadata(
+            &path,
+            &app.paths.runtime_root,
+            total_bytes,
+            task_id,
+            source_run_id,
+        )?;
+        let round: RoundState = read_json(&path)?;
+        validate_round_state(&round)?;
+        ensure!(
+            round.run_id == run_id,
+            failure("workflow.retry.stale-locator", task_id, source_run_id)
+        );
+        let directory_name = round_dir
+            .file_name()
+            .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+        ensure!(
+            directory_name == round.id,
+            failure("workflow.retry.stale-locator", task_id, source_run_id)
+        );
+        validate_locator(task_id, source_run_id, &[&round.id])?;
+        rounds.push(round);
+    }
+    rounds.sort_by_key(|round| round.index);
+    Ok(rounds)
+}
+
+fn committed_dynamic_graphs(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    run: &RunState,
+    rounds: &[RoundState],
+    total_bytes: &mut u64,
+    source_run_id: &str,
+) -> Result<Vec<CommittedDynamicGraph>> {
+    let mut graphs = Vec::new();
+    for round in rounds {
+        let trace = canonical_trace_for_round(run, rounds, round)?;
+        for step in &trace {
+            validate_locator(task_id, source_run_id, &[&step.node_id, &step.attempt_id])?;
+            let node_path =
+                app.paths
+                    .node_file(task_id, run_id, &round.id, &step.node_id, &step.attempt_id);
+            check_quiesce_metadata(
+                &node_path,
+                &app.paths.runtime_root,
+                total_bytes,
+                task_id,
+                source_run_id,
+            )?;
+            let node: NodeState = read_json(&node_path)?;
+            validate_node_state(&node)?;
+            ensure!(
+                node.run_id == run_id
+                    && node.round_id == round.id
+                    && node.node_id == step.node_id
+                    && node.attempt_id == step.attempt_id,
+                failure("workflow.retry.stale-locator", task_id, source_run_id)
+            );
+            if node.node_type != NodeType::AiDynamic {
+                continue;
+            }
+            let path = app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                &round.id,
+                &step.node_id,
+                &step.attempt_id,
+            );
+            check_quiesce_metadata(
+                &path,
+                &app.paths.runtime_root,
+                total_bytes,
+                task_id,
+                source_run_id,
+            )?;
+            graphs.push(CommittedDynamicGraph {
+                round_id: round.id.clone(),
+                node_id: step.node_id.clone(),
+                attempt_id: step.attempt_id.clone(),
+                path,
+            });
+        }
+    }
+    Ok(graphs)
+}
+
 // A stopped parent cannot publish a new child after its graph lock has
 // converged. Follow the durable child IDs instead of the task's Run history.
 fn stopped_execution_roots(
@@ -368,85 +510,81 @@ fn stopped_execution_roots(
             .pause_run_state(task_id, &run_id, PauseReason::ProcessInterrupted)
             .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
         roots.insert(app.paths.run_dir(task_id, &run_id));
-        let Some(locator) = run.current_execution_locator() else {
-            continue;
-        };
-        validate_locator(
-            task_id,
-            source_run_id,
-            &[&locator.round_id, &locator.node_id, &locator.attempt_id],
-        )?;
-        let state_lock = super::orchestrator::dynamic_state_lock_for(
-            &app.paths.runtime_root,
+        let rounds = quiesce_rounds(app, task_id, &run_id, &mut metadata_bytes, source_run_id)?;
+        let graphs = committed_dynamic_graphs(
+            app,
             task_id,
             &run_id,
-            &locator.round_id,
-            &locator.node_id,
-            &locator.attempt_id,
-        )
-        .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
-        let _guard = state_lock.lock();
-        let graph_path = app.paths.dynamic_graph_file(
-            task_id,
-            &run_id,
-            &locator.round_id,
-            &locator.node_id,
-            &locator.attempt_id,
-        );
-        match fs::symlink_metadata(&graph_path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            result => {
-                result
-                    .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
-            }
-        }
-        check_quiesce_metadata(
-            &graph_path,
-            &app.paths.runtime_root,
+            &run,
+            &rounds,
             &mut metadata_bytes,
-            task_id,
             source_run_id,
         )?;
-        let mut graph = crate::dynamic_store::load_dynamic_graph(&graph_path, &app.paths.repo_root)
-            .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
-        ensure!(
-            graph.run.parent_run_id == run_id
-                && graph.run.parent_round_id == locator.round_id
-                && graph.run.parent_node_id == locator.node_id
-                && graph.run.parent_attempt_id == locator.attempt_id,
-            failure("workflow.retry.stale-locator", task_id, source_run_id)
-        );
-        for child_run_id in graph
-            .nodes
-            .iter()
-            .filter_map(|node| node.child_run_id.as_ref())
-        {
-            validate_locator(task_id, source_run_id, &[child_run_id])?;
-            ensure!(
-                discovered.insert(child_run_id.clone()),
-                failure("workflow.retry.stale-locator", task_id, source_run_id)
-            );
-            ensure!(
-                discovered.len() <= MAX_QUIESCE_RUNS,
-                failure("workflow.retry.prefix-too-large", task_id, source_run_id)
-            );
-            pending.push(child_run_id.clone());
-        }
-        if graph.run.status != crate::dynamic::DynamicRunStatus::Completed {
-            super::orchestrator::pause_dynamic_graph_runtime_state(
-                &mut graph,
-                PauseReason::ProcessInterrupted,
-            );
-            super::orchestrator::persist_dynamic_graph_for_resume_unlocked(
-                app,
+        for locator in graphs {
+            validate_locator(
+                task_id,
+                source_run_id,
+                &[&locator.round_id, &locator.node_id, &locator.attempt_id],
+            )?;
+            let state_lock = super::orchestrator::dynamic_state_lock_for(
+                &app.paths.runtime_root,
                 task_id,
                 &run_id,
                 &locator.round_id,
                 &locator.node_id,
                 &locator.attempt_id,
-                &graph,
             )
             .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
+            let _guard = state_lock.lock();
+            check_quiesce_metadata(
+                &locator.path,
+                &app.paths.runtime_root,
+                &mut metadata_bytes,
+                task_id,
+                source_run_id,
+            )?;
+            let mut graph =
+                crate::dynamic_store::load_dynamic_graph(&locator.path, &app.paths.repo_root)
+                    .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+            ensure!(
+                graph.run.parent_run_id == run_id
+                    && graph.run.parent_round_id == locator.round_id
+                    && graph.run.parent_node_id == locator.node_id
+                    && graph.run.parent_attempt_id == locator.attempt_id,
+                failure("workflow.retry.stale-locator", task_id, source_run_id)
+            );
+            for child_run_id in graph
+                .nodes
+                .iter()
+                .filter_map(|node| node.child_run_id.as_ref())
+            {
+                validate_locator(task_id, source_run_id, &[child_run_id])?;
+                ensure!(
+                    discovered.insert(child_run_id.clone()),
+                    failure("workflow.retry.stale-locator", task_id, source_run_id)
+                );
+                ensure!(
+                    discovered.len() <= MAX_QUIESCE_RUNS,
+                    failure("workflow.retry.prefix-too-large", task_id, source_run_id)
+                );
+                pending.push(child_run_id.clone());
+            }
+            if graph.run.status != crate::dynamic::DynamicRunStatus::Completed {
+                super::orchestrator::pause_dynamic_graph_runtime_state(
+                    &mut graph,
+                    PauseReason::ProcessInterrupted,
+                );
+                super::orchestrator::persist_dynamic_graph_for_resume_unlocked(
+                    app,
+                    task_id,
+                    &run_id,
+                    &locator.round_id,
+                    &locator.node_id,
+                    &locator.attempt_id,
+                    &graph,
+                )
+                .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
+            }
         }
     }
     Ok(roots)
@@ -597,21 +735,7 @@ fn materialize(app: &App, task_id: &str, operation: &RerunOperation) -> Result<P
         validate_round_state(&round)?;
         write_json(&app.paths.round_file(task_id, &run.id, &round.id), &round)?;
     }
-    let mut copied_bytes = 0_u64;
-    for (source_file, relative) in files {
-        let target = app.paths.run_dir(task_id, &run.id).join(relative);
-        fs::create_dir_all(target.parent().expect("asset parent"))?;
-        let remaining = MAX_PREFIX_BYTES - copied_bytes;
-        let copied = std::io::copy(
-            &mut fs::File::open(source_file)?.take(remaining + 1),
-            &mut fs::File::create(target)?,
-        )?;
-        ensure!(
-            copied <= remaining,
-            failure("workflow.retry.prefix-too-large", task_id, &source.id)
-        );
-        copied_bytes += copied;
-    }
+    copy_assets(app, task_id, &run.id, &source.id, &files)?;
     let round: RoundState = read_json(&app.paths.round_file(
         task_id,
         &run.id,
@@ -663,6 +787,61 @@ fn materialize(app: &App, task_id: &str, operation: &RerunOperation) -> Result<P
         round,
         node,
     })
+}
+
+fn copy_assets(
+    app: &App,
+    task_id: &str,
+    target_run_id: &str,
+    source_run_id: &str,
+    files: &[(Utf8PathBuf, Utf8PathBuf)],
+) -> Result<()> {
+    let runtime_dir = Dir::open_ambient_dir(&app.paths.runtime_root, ambient_authority())
+        .map_err(|_| failure("workflow.retry.invalid-locator", task_id, source_run_id))?;
+    let source_root = app.paths.run_dir(task_id, source_run_id);
+    let source_relative = source_root
+        .strip_prefix(&app.paths.runtime_root)
+        .map_err(|_| failure("workflow.retry.invalid-locator", task_id, source_run_id))?;
+    let source_dir = runtime_dir
+        .open_dir(source_relative)
+        .map_err(|_| failure("workflow.retry.invalid-locator", task_id, source_run_id))?;
+    let mut copied_bytes = 0_u64;
+    for (_source_file, relative) in files {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        #[cfg(windows)]
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let source = source_dir
+            .open_with(relative, &options)
+            .map_err(|_| failure("workflow.retry.invalid-locator", task_id, source_run_id))?;
+        let metadata = source
+            .metadata()
+            .map_err(|_| failure("workflow.retry.invalid-locator", task_id, source_run_id))?;
+        ensure!(
+            metadata.is_file(),
+            failure("workflow.retry.invalid-locator", task_id, source_run_id)
+        );
+        let remaining = MAX_PREFIX_BYTES - copied_bytes;
+        ensure!(
+            metadata.len() <= remaining,
+            failure("workflow.retry.prefix-too-large", task_id, source_run_id)
+        );
+
+        let target = app.paths.run_dir(task_id, target_run_id).join(relative);
+        fs::create_dir_all(target.parent().expect("asset parent"))?;
+        let copied = std::io::copy(
+            &mut source.take(remaining.saturating_add(1)),
+            &mut fs::File::create(target)?,
+        )?;
+        ensure!(
+            copied <= remaining,
+            failure("workflow.retry.prefix-too-large", task_id, source_run_id)
+        );
+        copied_bytes += copied;
+    }
+    Ok(())
 }
 
 fn accepted(app: &App, operation: &RerunOperation) -> Result<RetryCurrentNodeAccepted> {
@@ -1193,6 +1372,274 @@ mod tests {
     }
 
     #[test]
+    fn quiesce_cancels_child_from_historical_dynamic_graph() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let app = App::with_config(repo_root.clone(), crate::config::RuntimeConfig::default());
+        let paths = GoldBandPaths::new(app.paths.repo_root.clone());
+        let task_id = "task-tree";
+
+        let mut source = tree_run("run-source", "worker", RunStatus::Paused);
+        source.current_round = Some("round-002".to_string());
+        source.current_node = Some("worker".to_string());
+        write_json(&paths.run_file(task_id, "run-source"), &source).unwrap();
+
+        let mut historical_round = child_round();
+        historical_round.run_id = "run-source".to_string();
+        historical_round.status = RunStatus::Completed;
+        historical_round.outcome = Some(crate::domain::RunOutcome::Success);
+        historical_round.trace = vec![RoundTraceStep {
+            sequence: 1,
+            node_id: "dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: None,
+            edge_outcome: None,
+            entered_at: "2026-11-13T00:00:00Z".to_string(),
+        }];
+        write_json(
+            &paths.round_file(task_id, "run-source", "round-001"),
+            &historical_round,
+        )
+        .unwrap();
+
+        let mut dynamic = child_node();
+        dynamic.run_id = "run-source".to_string();
+        dynamic.round_id = "round-001".to_string();
+        dynamic.node_id = "dynamic".to_string();
+        dynamic.node_type = NodeType::AiDynamic;
+        dynamic.status = RunStatus::Completed;
+        dynamic.outcome = Some(crate::domain::NodeOutcome::Success);
+        dynamic.runtime_execution_id = None;
+        dynamic.finished_at = Some("2026-11-13T00:00:01Z".to_string());
+        write_node_state(
+            &paths.node_file(task_id, "run-source", "round-001", "dynamic", "attempt-001"),
+            &dynamic,
+        )
+        .unwrap();
+
+        let mut current_round = child_round();
+        current_round.id = "round-002".to_string();
+        current_round.run_id = "run-source".to_string();
+        current_round.index = 2;
+        current_round.status = RunStatus::Paused;
+        current_round.trace = vec![RoundTraceStep {
+            sequence: 1,
+            node_id: "worker".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: None,
+            edge_outcome: None,
+            entered_at: "2026-11-13T00:00:02Z".to_string(),
+        }];
+        write_json(
+            &paths.round_file(task_id, "run-source", "round-002"),
+            &current_round,
+        )
+        .unwrap();
+
+        let mut worker = child_node();
+        worker.run_id = "run-source".to_string();
+        worker.round_id = "round-002".to_string();
+        worker.node_id = "worker".to_string();
+        worker.status = RunStatus::Paused;
+        worker.runtime_execution_id = None;
+        write_node_state(
+            &paths.node_file(task_id, "run-source", "round-002", "worker", "attempt-001"),
+            &worker,
+        )
+        .unwrap();
+
+        let mut graph = source_graph(app.paths.repo_root.clone());
+        graph.run.status = crate::dynamic::DynamicRunStatus::Completed;
+        graph.run.outcome = Some(crate::domain::RunOutcome::Success);
+        graph.run.current_node_ids.clear();
+        graph.nodes[0].status = DynamicNodeStatus::Completed;
+        graph.nodes[0].outcome = Some(crate::domain::NodeOutcome::Success);
+        graph.nodes[0].runtime_execution_id = None;
+        graph.nodes[0].runtime_execution_phase = Some(RuntimeExecutionPhase::Terminal);
+        graph.nodes[0].finished_at = Some("2026-11-13T00:00:01Z".to_string());
+        let graph_path =
+            paths.dynamic_graph_file(task_id, "run-source", "round-001", "dynamic", "attempt-001");
+        write_json(&graph_path, &graph).unwrap();
+        let history = fs::read(&graph_path).unwrap();
+
+        write_json(
+            &paths.run_file(task_id, "run-child"),
+            &tree_run("run-child", "child", RunStatus::Running),
+        )
+        .unwrap();
+        let mut child_round = child_round();
+        child_round.trace = vec![RoundTraceStep {
+            sequence: 1,
+            node_id: "child".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: None,
+            edge_outcome: None,
+            entered_at: "2026-11-13T00:00:00Z".to_string(),
+        }];
+        write_json(
+            &paths.round_file(task_id, "run-child", "round-001"),
+            &child_round,
+        )
+        .unwrap();
+        write_node_state(
+            &paths.node_file(task_id, "run-child", "round-001", "child", "attempt-001"),
+            &child_node(),
+        )
+        .unwrap();
+        let child_attempt =
+            paths.attempt_dir(task_id, "run-child", "round-001", "child", "attempt-001");
+        let activity =
+            register_test_prompt_activity(child_attempt.clone(), PromptActivity::Running);
+        let background = app.clone_for_background();
+        let worker = thread::spawn(move || quiesce(&background, task_id, "run-source"));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let cancelled = loop {
+            if crate::acp::client::prompt_activity(&child_attempt)
+                == Some(PromptActivity::CancelRequested)
+            {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        activity.mark_stopped();
+        worker.join().unwrap().unwrap();
+        assert!(
+            cancelled,
+            "historical committed graph child must be cancelled"
+        );
+        assert_eq!(fs::read(&graph_path).unwrap(), history);
+        assert_eq!(
+            app.run_status(task_id, "run-child").unwrap().status,
+            RunStatus::Paused
+        );
+    }
+
+    #[test]
+    fn asset_copy_rejects_a_directory_replaced_after_preflight() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let paths = GoldBandPaths::new(app.paths.repo_root.clone());
+        let task_id = "task-assets";
+        let mut round = child_round();
+        round.run_id = "run-source".to_string();
+        round.trace = vec![RoundTraceStep {
+            sequence: 1,
+            node_id: "worker".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: None,
+            edge_outcome: None,
+            entered_at: "2026-11-13T00:00:00Z".to_string(),
+        }];
+        write_json(
+            &paths.round_file(task_id, "run-source", "round-001"),
+            &round,
+        )
+        .unwrap();
+        let mut node = child_node();
+        node.run_id = "run-source".to_string();
+        node.node_id = "worker".to_string();
+        write_node_state(
+            &paths.node_file(task_id, "run-source", "round-001", "worker", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        let artifact = paths.artifact_file(
+            task_id,
+            "run-source",
+            "round-001",
+            "worker",
+            "attempt-001",
+            "secret.txt",
+        );
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(&artifact, "safe").unwrap();
+        let files = assets(&app, task_id, "run-source", &[round.clone()]).unwrap();
+        assert_eq!(files.len(), 1);
+
+        let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt.json"), "external").unwrap();
+        fs::remove_dir_all(artifact.parent().unwrap()).unwrap();
+        let link = artifact.parent().unwrap().to_path_buf();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let output = crate::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "failed to create test junction: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        assert!(link.is_dir(), "test replacement link must exist");
+        assert_eq!(
+            fs::read_to_string(&files[0].0).unwrap(),
+            "external",
+            "link={} outside={} source={}",
+            link,
+            outside,
+            files[0].0
+        );
+        let result = copy_assets(&app, task_id, "run-target", "run-source", &files);
+        #[cfg(windows)]
+        fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        fs::remove_file(&link).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(
+            crate::runtime_error::normalize_runtime_error(&error).code_str(),
+            "workflow.retry.invalid-locator",
+            "asset replacement must be rejected as invalid locator: {error:#}"
+        );
+        let copied = paths.artifact_file(
+            task_id,
+            "run-target",
+            "round-001",
+            "worker",
+            "attempt-001",
+            "secret.txt",
+        );
+        assert!(
+            !copied.exists(),
+            "an replaced external asset must not be copied"
+        );
+    }
+
+    fn traced_round(run_id: &str, node_id: &str) -> RoundState {
+        let mut round = child_round();
+        round.run_id = run_id.to_string();
+        round.trace = vec![RoundTraceStep {
+            sequence: 1,
+            node_id: node_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: None,
+            edge_outcome: None,
+            entered_at: "2026-11-13T00:00:00Z".to_string(),
+        }];
+        round
+    }
+
+    fn traced_node(run_id: &str, node_id: &str, node_type: NodeType) -> NodeState {
+        let mut node = child_node();
+        node.run_id = run_id.to_string();
+        node.node_id = node_id.to_string();
+        node.node_type = node_type;
+        node
+    }
+
+    #[test]
     fn quiesce_cancels_and_waits_for_sibling_child_run() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1206,6 +1653,22 @@ mod tests {
         )
         .unwrap();
         write_json(
+            &paths.round_file(task_id, source_run_id, "round-001"),
+            &traced_round(source_run_id, "dynamic"),
+        )
+        .unwrap();
+        write_node_state(
+            &paths.node_file(
+                task_id,
+                source_run_id,
+                "round-001",
+                "dynamic",
+                "attempt-001",
+            ),
+            &traced_node(source_run_id, "dynamic", NodeType::AiDynamic),
+        )
+        .unwrap();
+        write_json(
             &paths.run_file(task_id, "run-child"),
             &tree_run("run-child", "child", RunStatus::Running),
         )
@@ -1214,12 +1677,12 @@ mod tests {
             paths.attempt_dir(task_id, "run-child", "round-001", "child", "attempt-001");
         write_json(
             &paths.round_file(task_id, "run-child", "round-001"),
-            &child_round(),
+            &traced_round("run-child", "child"),
         )
         .unwrap();
         write_node_state(
             &paths.node_file(task_id, "run-child", "round-001", "child", "attempt-001"),
-            &child_node(),
+            &traced_node("run-child", "child", NodeType::AiDynamic),
         )
         .unwrap();
         write_json(
@@ -1255,8 +1718,7 @@ mod tests {
             &tree_run("run-grandchild", "child", RunStatus::Running),
         )
         .unwrap();
-        let mut grandchild_round = child_round();
-        grandchild_round.run_id = "run-grandchild".to_string();
+        let grandchild_round = traced_round("run-grandchild", "child");
         write_json(
             &paths.round_file(task_id, "run-grandchild", "round-001"),
             &grandchild_round,
@@ -1357,6 +1819,35 @@ mod tests {
             run.execution.phase = RuntimeExecutionPhase::Terminal;
             write_json(&app.paths.run_file("task-tree", run_id), &run).unwrap();
         }
+        for (run_id, node_id) in [("run-source", "dynamic"), ("run-child", "child")] {
+            let mut round = traced_round(run_id, node_id);
+            round.status = RunStatus::Completed;
+            round.outcome = Some(crate::domain::RunOutcome::Success);
+            write_json(
+                &app.paths.round_file("task-tree", run_id, "round-001"),
+                &round,
+            )
+            .unwrap();
+            let mut node = traced_node(
+                run_id,
+                node_id,
+                if run_id == "run-source" {
+                    NodeType::AiDynamic
+                } else {
+                    NodeType::Worker
+                },
+            );
+            node.status = RunStatus::Completed;
+            node.outcome = Some(crate::domain::NodeOutcome::Success);
+            node.runtime_execution_id = None;
+            node.finished_at = Some("2026-11-13T00:00:01Z".to_string());
+            write_node_state(
+                &app.paths
+                    .node_file("task-tree", run_id, "round-001", node_id, "attempt-001"),
+                &node,
+            )
+            .unwrap();
+        }
         let mut graph = source_graph(app.paths.repo_root.clone());
         graph.run.status = crate::dynamic::DynamicRunStatus::Completed;
         graph.run.outcome = Some(crate::domain::RunOutcome::Success);
@@ -1446,6 +1937,24 @@ mod tests {
                 ),
             )
             .unwrap();
+            if case != "pause-state-invalid" {
+                write_json(
+                    &app.paths.round_file("task-tree", "run-source", "round-001"),
+                    &traced_round("run-source", "dynamic"),
+                )
+                .unwrap();
+                write_node_state(
+                    &app.paths.node_file(
+                        "task-tree",
+                        "run-source",
+                        "round-001",
+                        "dynamic",
+                        "attempt-001",
+                    ),
+                    &traced_node("run-source", "dynamic", NodeType::AiDynamic),
+                )
+                .unwrap();
+            }
             let mut graph = source_graph(app.paths.repo_root.clone());
             match case {
                 "cycle" => graph.nodes[0].child_run_id = Some("run-source".to_string()),
@@ -1512,6 +2021,22 @@ mod tests {
         write_json(
             &app.paths.run_file("task-tree", "run-source"),
             &tree_run("run-source", "dynamic", RunStatus::Paused),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file("task-tree", "run-source", "round-001"),
+            &traced_round("run-source", "dynamic"),
+        )
+        .unwrap();
+        write_node_state(
+            &app.paths.node_file(
+                "task-tree",
+                "run-source",
+                "round-001",
+                "dynamic",
+                "attempt-001",
+            ),
+            &traced_node("run-source", "dynamic", NodeType::AiDynamic),
         )
         .unwrap();
         let graph = source_graph(app.paths.repo_root.clone());

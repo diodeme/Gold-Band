@@ -1286,6 +1286,12 @@ fn invoke_agent(
         language,
     };
     let attempt_dir = operation_dir.join(attempt_name);
+    let executable_adapter = app.executable_agent_adapter(agent_type).map_err(|error| {
+        analytics_error(
+            "analytics.execution-failed",
+            json!({ "reason": error.to_string() }),
+        )
+    })?;
     let lifecycle_owner = claim_agent_prompt_lifecycle(
         &attempt_dir,
         &turn_id,
@@ -1296,7 +1302,7 @@ fn invoke_agent(
     )?;
     let run = client::run_prompt(
         agent_type,
-        &agent_config.adapter,
+        &executable_adapter,
         operation_dir.to_path_buf(),
         operation_dir.to_path_buf(),
         attempt_dir,

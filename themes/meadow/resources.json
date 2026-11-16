@@ -1,4 +1,19 @@
 {
   "schemaVersion": 2,
-  "assets": []
+  "assets": [
+    {
+      "id": "meadow-kite-light",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/meadow-kite-light.webp",
+      "licenseId": "meadow-inhouse",
+      "required": true
+    },
+    {
+      "id": "meadow-bamboo-dark",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/meadow-bamboo-dark.webp",
+      "licenseId": "meadow-inhouse",
+      "required": true
+    }
+  ]
 }

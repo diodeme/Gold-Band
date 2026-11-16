@@ -14242,30 +14242,30 @@ mod tests {
     #[test]
     fn theme_wallpaper_pins_accept_only_scheme_declared_assets() {
         let catalog = gold_band::theme::builtin_theme_catalog().unwrap();
-        let mobius = catalog
+        let vista = catalog
             .iter()
-            .find(|theme| theme.id == "builtin.mobius")
-            .expect("builtin.mobius present in catalog");
+            .find(|theme| theme.id == "builtin.vista")
+            .expect("builtin.vista present in catalog");
         assert!(
             theme_scheme_wallpaper_asset_known(
-                mobius,
+                vista,
                 ResolvedColorScheme::Light,
-                "mobius-band-light"
+                "vista-inkwash-light"
             ),
             "the light scheme's slots declare the light band asset"
         );
         assert!(!theme_scheme_wallpaper_asset_known(
-            mobius,
+            vista,
             ResolvedColorScheme::Light,
-            "mobius-band-dark"
+            "vista-summit-dark"
         ));
         assert!(!theme_scheme_wallpaper_asset_known(
-            mobius,
+            vista,
             ResolvedColorScheme::Dark,
-            "mobius-band-light"
+            "vista-inkwash-light"
         ));
         assert!(!theme_scheme_wallpaper_asset_known(
-            mobius,
+            vista,
             ResolvedColorScheme::Light,
             "not-an-asset"
         ));
@@ -14276,7 +14276,7 @@ mod tests {
         assert!(!theme_scheme_wallpaper_asset_known(
             gold_band,
             ResolvedColorScheme::Light,
-            "mobius-band-light"
+            "vista-inkwash-light"
         ));
     }
 

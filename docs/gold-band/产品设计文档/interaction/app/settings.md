@@ -49,7 +49,7 @@
 
 当前支持：
 - Gold Band：默认设计风格，采用类 OpenAI 的白/近黑编辑界面；浅色以纯白画布、墨黑主操作和青绿色焦点建立层级，深色以近黑画布、克制灰阶和同一青绿色焦点保持一致。
-- 莫比乌斯（Möbius，`builtin.mobius`）：以产品 Logo 的莫比乌斯环带配色为基准的品牌主题。深色取 Logo 原生画布——近黑底 + 杏橙 `#E99D54` 主色；浅色做纸墨反转——暖纸底 + 藏蓝 `#244892` 主色、藏蓝灰 `#B6C2D8` 输入控件边框；品牌朱红 `#CC332B` 承担 danger 族。会话页与设置页铺深浅对称的莫比乌斯环带壁纸（一根连续缎带：朱红/藏蓝在带端平滑过渡、中心交叉穿插、两环开口内侧杏橙月牙衬底），性能档自动关闭壁纸。主题不携带字体资产，排版继承全局 canonical 字体注册。
+- 画境（Vista，`builtin.vista`，原 builtin.mobius 经远山过渡更名）：两景主题，深浅各取一景且与 Logo 色系解耦（Logo 三色预留给未来品牌主题）。深色"雪峰之夜"——近黑画布 `#0f0e10` + 金杏主色 `#E8A54A`，铺黑金雪山星空壁纸；浅色"水彩长卷"——暖纸底 `#faf8f4` + 黛青主色 `#2F6157`（青黛颜料）、去饱和砖红 `#B0483F` danger、黛青灰 `#B6C2D8` 输入控件边框，铺纸墨水彩人物壁纸。会话页与设置页铺深浅壁纸，性能档自动关闭。主题不携带字体资产，排版继承全局 canonical 字体注册。
 - 春野（Meadow，`builtin.meadow`）：春意护眼主题，深浅双方案均为绿基调。浅色画布为"春芽绿纸" `#E4EEDF`（相对亮度 0.845，比纯白少约 15% 入眼光通量、G-B 差 15 的可感知嫩绿——护眼两项物理指标由测试固化在 0.80–0.86 亮度带与绿意下限），浮层卡片保持近白（`#F2F7EE`/`#F5F9F2`）维持清新层次、避免全表面染绿的油墨感；松绿主色 `#358050`。深色"春夜"为柔化松绿：底 `#202624`（表面低饱和偏中性）、嫩芽绿主色 `#7FC494`、亮白绿前景 `#E4EBE2`。全色板压制蓝光（链接保留唯一低饱和钢蓝）。代码与 Diff 使用更亮"纸面层"（浅 `#FDFEFC` / 深 `#303A36`）承载 Shiki 固定色板，diff 以低饱和 tint + 亮度阶梯 + 边条冗余编码。无壁纸、无字体资产、无质量档；全量 fg/bg 配对 WCAG AA、纸面亮度台阶与护眼亮度带由 `web/tests/meadow-theme.test.ts` 固化。
 - 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
 - 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
@@ -78,7 +78,7 @@
 
 点击当前主题
   主题抽屉
-    [ Gold Band ] [ 莫比乌斯 ] [ 技术中性 ]
+    [ Gold Band ] [ 画境 ] [ 春野 ] [ 技术中性 ]
 ```
 
 视觉规则：
@@ -197,8 +197,8 @@
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
 - 个性化权威字段为 `personalization`：`schemaVersion = 5`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度、Agent / 个人头像图片与形状的 `source`、界面缩放 `interfaceZoomPercent`（50–250，默认 100）以及工作流图布局方向 `workflowGraphDirection`（`auto | horizontal | vertical`，默认 `auto`）。v4 及更早文件在加载时由 `normalized()` 升级并补默认值，不保留双读。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
-- 内置 `builtin.gold-band`、`builtin.mobius`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
-- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。`builtin.mobius` 声明 `wallpapers` 与 `visual-quality-profiles` 能力，会话页与设置页铺深浅对称的环带壁纸，质量档可一键关闭壁纸；Gold Band 与技术中性不声明质量能力，不显示质量档控件。
+- 内置 `builtin.gold-band`、`builtin.vista`、`builtin.meadow`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
+- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。`builtin.vista` 声明 `wallpapers` 与 `visual-quality-profiles` 能力，会话页与设置页铺画境两景壁纸，质量档可一键关闭壁纸；`builtin.gold-band`（温馨学习角/星空）与 `builtin.meadow`（风筝/竹夜）声明 `wallpapers` 但不声明质量能力；技术中性保持纯色，不声明壁纸能力。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
 - Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页提供用户壁纸覆盖入口，但不改变主题包声明；“默认字体”显示当前主题 stack 的本地化 `displayName`，语言不参与 family 解析。
@@ -340,3 +340,4 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 - 「高级」页的“待发送”分组提供「立即发送前确认打断当前回复」开关，默认开启。开启时，会话回复进行中点击待发送队列的“立即发送”会先弹确认框；关闭后直接打断并发送。确认框中的“后续不再提示”与该开关写入同一偏好。
 - 偏好保存在用户级设置的 `confirmQueuedPromptInterrupt`，后端是唯一事实源；前端以单一 store 懒加载一次，写入以最后一次请求为准，加载完成前按默认值（确认）处理，避免慢加载跳过确认。
+- 2026-11-16 主题壁纸接入与远山更名：① \`builtin.mobius\`（莫比乌斯）更名为 \`builtin.highland\`（远山 / Highland），配色从 Logo 三色迁移为远山两景锚点（浅色黛青 \`#2F6157\` 主色 + 砖红 \`#B0483F\` danger、深色金杏 \`#E8A54A\`），Logo 藏蓝/朱红/杏橙预留给未来品牌主题；壁纸替换为黑金雪山（深）与纸墨水彩（浅）。② 六张新壁纸以规范命名接入：Gold Band（goldband-study-light / goldband-stargaze-dark）、春野（meadow-kite-light / meadow-bamboo-dark）、画境（vista-inkwash-light / vista-summit-dark），全部 2048×1280 WebP；三主题新增 \`wallpapers\` 能力，技术中性保持纯色。③ 源图为 AIGC JPEG 伪装 .png，经 Rust image 管线（Lanczos3 缩放 + WebP 编码）规范化转换。

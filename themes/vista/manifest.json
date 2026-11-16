@@ -2,12 +2,12 @@
   "$schema": "../../theme-sdk/schema/theme-manifest-v2.schema.json",
   "schemaVersion": 2,
   "contractVersion": 2,
-  "id": "builtin.mobius",
+  "id": "builtin.vista",
   "version": "1.0.0",
   "source": "builtin",
   "name": {
-    "zh-CN": "莫比乌斯",
-    "en": "Möbius"
+    "zh-CN": "画境",
+    "en": "Vista"
   },
   "author": "Gold Band",
   "schemes": [
@@ -23,7 +23,10 @@
   ],
   "visualQualityProfiles": {
     "default": "full",
-    "supported": ["full", "performance"],
+    "supported": [
+      "full",
+      "performance"
+    ],
     "performance": "visual-quality/performance.json"
   }
 }

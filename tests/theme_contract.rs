@@ -15,7 +15,7 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
         ids,
         BTreeSet::from([
             "builtin.gold-band",
-            "builtin.mobius",
+            "builtin.vista",
             "builtin.tech-neutral",
             "builtin.meadow"
         ])
@@ -70,17 +70,17 @@ fn rust_catalog_contains_only_the_supported_builtin_packages() {
     let tech_neutral = builtin_theme("builtin.tech-neutral")
         .expect("catalog should deserialize")
         .expect("technology-neutral theme should be registered");
-    let mobius = builtin_theme("builtin.mobius")
+    let vista = builtin_theme("builtin.vista")
         .expect("catalog should deserialize")
-        .expect("mobius theme should be registered");
+        .expect("vista theme should be registered");
 
     assert!(gold_band.visual_quality_profiles.is_none());
     assert!(tech_neutral.visual_quality_profiles.is_none());
-    assert!(mobius.visual_quality_profiles.is_some());
-    assert!(mobius.fonts.is_none());
-    assert!(mobius.wallpapers.is_some());
+    assert!(vista.visual_quality_profiles.is_some());
+    assert!(vista.fonts.is_none());
+    assert!(vista.wallpapers.is_some());
     assert!(
-        mobius
+        vista
             .visual_quality_profiles
             .as_ref()
             .is_some_and(|profiles| !profiles
@@ -90,7 +90,7 @@ fn rust_catalog_contains_only_the_supported_builtin_packages() {
                 .is_some_and(|wallpapers| wallpapers.enabled))
     );
     assert_eq!(
-        mobius.schemes.light.material.model,
+        vista.schemes.light.material.model,
         ThemeMaterialModel::Solid
     );
     assert_eq!(

@@ -34,7 +34,7 @@
     },
     "primary": {
       "$type": "color",
-      "$value": "#244892"
+      "$value": "#2F6157"
     },
     "primaryForeground": {
       "$type": "color",
@@ -66,7 +66,7 @@
     },
     "destructive": {
       "$type": "color",
-      "$value": "#CC332B"
+      "$value": "#B0483F"
     },
     "border": {
       "$type": "color",
@@ -78,11 +78,11 @@
     },
     "ring": {
       "$type": "color",
-      "$value": "#244892"
+      "$value": "#2F6157"
     },
     "selection": {
       "$type": "color",
-      "$value": "#e4eaf6"
+      "$value": "#DFEDE9"
     },
     "selectionForeground": {
       "$type": "color",
@@ -146,11 +146,11 @@
     },
     "permissionCard": {
       "$type": "color",
-      "$value": "#e8edf7"
+      "$value": "#E3EEEA"
     },
     "permissionCardForeground": {
       "$type": "color",
-      "$value": "#244892"
+      "$value": "#2F6157"
     },
     "workspaceTab": {
       "$type": "color",
@@ -194,19 +194,19 @@
     },
     "diffRemoved": {
       "$type": "color",
-      "$value": "rgba(204,51,43,.12)"
+      "$value": "rgba(176,72,63,.12)"
     },
     "diffRemovedForeground": {
       "$type": "color",
-      "$value": "#a82b24"
+      "$value": "#9A3E36"
     },
     "diffModified": {
       "$type": "color",
-      "$value": "rgba(36,72,146,.12)"
+      "$value": "rgba(47,97,87,.12)"
     },
     "diffModifiedForeground": {
       "$type": "color",
-      "$value": "#35508f"
+      "$value": "#27524A"
     },
     "sidebar": {
       "$type": "color",
@@ -218,7 +218,7 @@
     },
     "sidebarPrimary": {
       "$type": "color",
-      "$value": "#244892"
+      "$value": "#2F6157"
     },
     "sidebarPrimaryForeground": {
       "$type": "color",
@@ -238,7 +238,7 @@
     },
     "sidebarRing": {
       "$type": "color",
-      "$value": "#244892"
+      "$value": "#2F6157"
     },
     "workspace": {
       "$type": "color",
@@ -266,11 +266,11 @@
     },
     "link": {
       "$type": "color",
-      "$value": "#244892"
+      "$value": "#2F6157"
     },
     "running": {
       "$type": "color",
-      "$value": "#3558ad"
+      "$value": "#33708A"
     },
     "success": {
       "$type": "color",
@@ -282,11 +282,11 @@
     },
     "danger": {
       "$type": "color",
-      "$value": "#CC332B"
+      "$value": "#B0483F"
     },
     "attention": {
       "$type": "color",
-      "$value": "#3558ad"
+      "$value": "#33708A"
     },
     "attentionForeground": {
       "$type": "color",
@@ -298,11 +298,11 @@
     },
     "statusRunningSurface": {
       "$type": "color",
-      "$value": "rgba(53,88,173,.10)"
+      "$value": "rgba(51,112,138,.10)"
     },
     "statusRunningBorder": {
       "$type": "color",
-      "$value": "rgba(53,88,173,.30)"
+      "$value": "rgba(51,112,138,.30)"
     },
     "statusSuccessSurface": {
       "$type": "color",
@@ -322,11 +322,11 @@
     },
     "statusDangerSurface": {
       "$type": "color",
-      "$value": "rgba(204,51,43,.10)"
+      "$value": "rgba(176,72,63,.10)"
     },
     "statusDangerBorder": {
       "$type": "color",
-      "$value": "rgba(204,51,43,.30)"
+      "$value": "rgba(176,72,63,.30)"
     },
     "permission": {
       "$type": "color",

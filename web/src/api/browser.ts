@@ -2651,7 +2651,7 @@ export const browserApi: RuntimeApi = {
         // Theme pins never cross themes; themes without declared wallpapers
         // cannot hold the theme source at all.
         if (byScheme[scheme].image.source === 'theme') {
-          byScheme[scheme].image = appearance.themeId === 'builtin.mobius'
+          byScheme[scheme].image = appearance.themeId === 'builtin.vista'
             ? { source: 'theme' }
             : { source: 'none' };
         }

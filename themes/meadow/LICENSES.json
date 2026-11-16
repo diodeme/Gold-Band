@@ -1,4 +1,10 @@
 {
   "schemaVersion": 2,
-  "licenses": []
+  "licenses": [
+    {
+      "id": "meadow-inhouse",
+      "name": "Meadow Wallpapers",
+      "license": "Proprietary (in-house illustration assets)"
+    }
+  ]
 }

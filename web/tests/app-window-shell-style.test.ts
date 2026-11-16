@@ -25,7 +25,7 @@ describe('App window shell style', () => {
     expect(styles).not.toMatch(/^\.app-window-shell::before/mu);
     expect(styles).toContain('@import "./themes/generated/builtin-themes.css"');
     expect(generatedThemeStyles).toContain(":root[data-theme='builtin.gold-band'] .app-window-shell");
-    expect(generatedThemeStyles).toContain(":root[data-theme='builtin.mobius'] .app-window-shell");
+    expect(generatedThemeStyles).toContain(":root[data-theme='builtin.vista'] .app-window-shell");
     expect(generatedThemeStyles).toContain(":root[data-theme='builtin.tech-neutral'] .app-window-shell");
     expect(styles).not.toContain('z-index: 60');
   });

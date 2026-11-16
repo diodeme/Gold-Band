@@ -67,10 +67,10 @@ describe('desktop wallpaper preferences', () => {
     expect(preferences.personalization.wallpaper.byColorScheme.light.image).toEqual({ source: 'none' });
     expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'theme' });
 
-    preferences = await browserApi.selectThemeDesktopWallpaper('dark', 'mobius-band-dark');
+    preferences = await browserApi.selectThemeDesktopWallpaper('dark', 'vista-summit-dark');
     expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({
       source: 'theme',
-      assetId: 'mobius-band-dark',
+      assetId: 'vista-summit-dark',
     });
     expect(preferences.personalization.wallpaper.byColorScheme.light.image).toEqual({ source: 'none' });
 

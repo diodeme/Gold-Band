@@ -56,14 +56,16 @@ const AA_PAIRS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 describe('builtin.meadow theme package', () => {
-  it('ships the localized eye-care theme with both color schemes', () => {
+  it('ships the localized eye-care theme with spring wallpapers', () => {
     const meadow = getThemePackage('builtin.meadow');
     expect(meadow.name).toEqual({ 'zh-CN': '春野', en: 'Meadow' });
-    expect(meadow.capabilities).toEqual(['tokens', 'component-recipes', 'avatars']);
+    expect(meadow.capabilities).toEqual(['tokens', 'component-recipes', 'avatars', 'wallpapers']);
     expect(meadow.fonts).toBeUndefined();
-    expect(meadow.wallpapers).toBeUndefined();
     expect(meadow.visualQualityProfiles).toBeUndefined();
-    expect(meadow.assets.records).toEqual([]);
+    expect(meadow.wallpapers?.light.conversation.assetId).toBe('meadow-kite-light');
+    expect(meadow.wallpapers?.dark.conversation.assetId).toBe('meadow-bamboo-dark');
+    expect(meadow.assets.records.filter((asset) => asset.kind === 'wallpaper').map(({ id }) => id).sort())
+      .toEqual(['meadow-bamboo-dark', 'meadow-kite-light']);
     expect(themePackageSummaries.map(({ id }) => id)).toContain('builtin.meadow');
   });
 

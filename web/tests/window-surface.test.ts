@@ -8,10 +8,10 @@ describe('desktop window surface', () => {
   it('maps every concrete theme to the workspace surface used during native resize', () => {
     expect(getThemePackage('builtin.gold-band').schemes.light.windowSurface).toBe('#ffffff');
     expect(getThemePackage('builtin.tech-neutral').schemes.light.windowSurface).toBe('#ffffff');
-    expect(getThemePackage('builtin.mobius').schemes.light.windowSurface).toBe('#faf8f4');
+    expect(getThemePackage('builtin.vista').schemes.light.windowSurface).toBe('#faf8f4');
     expect(getThemePackage('builtin.gold-band').schemes.dark.windowSurface).toBe('#0f0f0f');
     expect(getThemePackage('builtin.tech-neutral').schemes.dark.windowSurface).toBe('#111111');
-    expect(getThemePackage('builtin.mobius').schemes.dark.windowSurface).toBe('#0f0e10');
+    expect(getThemePackage('builtin.vista').schemes.dark.windowSurface).toBe('#0f0e10');
   });
 
   it('uses the Windows composition resize path and keeps the window hidden until the first themed frame', () => {

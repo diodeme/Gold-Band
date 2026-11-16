@@ -823,7 +823,7 @@ mod tests {
             .wallpaper
             .for_color_scheme_mut(ResolvedColorScheme::Dark)
             .image = WallpaperImagePreference::Theme {
-            asset_id: Some("mobius-band-dark".to_string()),
+            asset_id: Some("vista-summit-dark".to_string()),
         };
 
         assert!(!reconcile_wallpaper_personalization(&root, &mut personalization).unwrap());
@@ -840,7 +840,7 @@ mod tests {
                 .for_color_scheme(ResolvedColorScheme::Dark)
                 .image,
             WallpaperImagePreference::Theme {
-                asset_id: Some("mobius-band-dark".to_string()),
+                asset_id: Some("vista-summit-dark".to_string()),
             }
         );
     }

@@ -34,7 +34,7 @@
     },
     "primary": {
       "$type": "color",
-      "$value": "#E99D54"
+      "$value": "#E8A54A"
     },
     "primaryForeground": {
       "$type": "color",
@@ -78,7 +78,7 @@
     },
     "ring": {
       "$type": "color",
-      "$value": "#E99D54"
+      "$value": "#E8A54A"
     },
     "selection": {
       "$type": "color",
@@ -218,7 +218,7 @@
     },
     "sidebarPrimary": {
       "$type": "color",
-      "$value": "#E99D54"
+      "$value": "#E8A54A"
     },
     "sidebarPrimaryForeground": {
       "$type": "color",
@@ -238,7 +238,7 @@
     },
     "sidebarRing": {
       "$type": "color",
-      "$value": "#E99D54"
+      "$value": "#E8A54A"
     },
     "workspace": {
       "$type": "color",
@@ -284,20 +284,53 @@
       "$type": "color",
       "$value": "#e0564c"
     },
-    "attention": { "$type": "color", "$value": "#6d8fe0" },
-    "attentionForeground": { "$type": "color", "$value": "#10131f" },
-    "emphasis": { "$type": "color", "$value": "#f2b878" },
-    "statusRunningSurface": { "$type": "color", "$value": "rgba(124,150,223,.10)" },
-    "statusRunningBorder": { "$type": "color", "$value": "rgba(124,150,223,.30)" },
-    "statusSuccessSurface": { "$type": "color", "$value": "rgba(72,163,124,.10)" },
-    "statusSuccessBorder": { "$type": "color", "$value": "rgba(72,163,124,.30)" },
-    "statusWarningSurface": { "$type": "color", "$value": "rgba(217,154,61,.10)" },
-    "statusWarningBorder": { "$type": "color", "$value": "rgba(217,154,61,.30)" },
-    "statusDangerSurface": { "$type": "color", "$value": "rgba(224,86,76,.10)" },
-    "statusDangerBorder": { "$type": "color", "$value": "rgba(224,86,76,.30)" },
+    "attention": {
+      "$type": "color",
+      "$value": "#6d8fe0"
+    },
+    "attentionForeground": {
+      "$type": "color",
+      "$value": "#10131f"
+    },
+    "emphasis": {
+      "$type": "color",
+      "$value": "#f2b878"
+    },
+    "statusRunningSurface": {
+      "$type": "color",
+      "$value": "rgba(124,150,223,.10)"
+    },
+    "statusRunningBorder": {
+      "$type": "color",
+      "$value": "rgba(124,150,223,.30)"
+    },
+    "statusSuccessSurface": {
+      "$type": "color",
+      "$value": "rgba(72,163,124,.10)"
+    },
+    "statusSuccessBorder": {
+      "$type": "color",
+      "$value": "rgba(72,163,124,.30)"
+    },
+    "statusWarningSurface": {
+      "$type": "color",
+      "$value": "rgba(217,154,61,.10)"
+    },
+    "statusWarningBorder": {
+      "$type": "color",
+      "$value": "rgba(217,154,61,.30)"
+    },
+    "statusDangerSurface": {
+      "$type": "color",
+      "$value": "rgba(224,86,76,.10)"
+    },
+    "statusDangerBorder": {
+      "$type": "color",
+      "$value": "rgba(224,86,76,.30)"
+    },
     "permission": {
       "$type": "color",
-      "$value": "#E99D54"
+      "$value": "#E8A54A"
     },
     "titlebar": {
       "$type": "color",

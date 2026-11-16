@@ -1,7 +1,7 @@
 {
   "light": {
     "conversation": {
-      "assetId": "mobius-band-light",
+      "assetId": "meadow-kite-light",
       "fit": "cover",
       "position": "center",
       "repeat": "no-repeat",
@@ -10,7 +10,7 @@
       "overlayOpacity": 0.1
     },
     "settings": {
-      "assetId": "mobius-band-light",
+      "assetId": "meadow-kite-light",
       "fit": "cover",
       "position": "center",
       "repeat": "no-repeat",
@@ -21,7 +21,7 @@
   },
   "dark": {
     "conversation": {
-      "assetId": "mobius-band-dark",
+      "assetId": "meadow-bamboo-dark",
       "fit": "cover",
       "position": "center",
       "repeat": "no-repeat",
@@ -30,7 +30,7 @@
       "overlayOpacity": 0.08
     },
     "settings": {
-      "assetId": "mobius-band-dark",
+      "assetId": "meadow-bamboo-dark",
       "fit": "cover",
       "position": "center",
       "repeat": "no-repeat",

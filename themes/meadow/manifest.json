@@ -17,6 +17,7 @@
   "capabilities": [
     "tokens",
     "component-recipes",
-    "avatars"
+    "avatars",
+    "wallpapers"
   ]
 }

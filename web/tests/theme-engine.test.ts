@@ -64,8 +64,8 @@ describe('theme package contract', () => {
     expect(themePackageSummaries.map(({ id }) => id)).toEqual([
       'builtin.gold-band',
       'builtin.meadow',
-      'builtin.mobius',
       'builtin.tech-neutral',
+      'builtin.vista',
     ]);
   });
 

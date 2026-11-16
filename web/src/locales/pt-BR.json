@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "Este Agent está sem o comando de inicialização. Adicione o comando no gerenciamento de Agents e execute o diagnóstico novamente.",
     "npx-cache.busy": "Já há um reparo de cache em andamento. Tente novamente mais tarde.",
     "npx-cache.unavailable": "Não foi possível verificar um cache npx reparável. Execute o diagnóstico.",
     "npx-cache.changed": "O diagnóstico, a configuração ou o cache mudou. Feche o diálogo e tente novamente.",
@@ -1090,6 +1091,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "O Workflow está em execução, então o nó atual não pode ser repetido.",
+        "run-terminal": "O Workflow terminou, então o nó atual não pode ser repetido.",
+        "node-not-retryable": "O nó atual não pode ser repetido no estado em que está.",
+        "error-blocked": "O Workflow está bloqueado por um erro, então o nó atual não pode ser repetido.",
+        "manual-check-pending": "O nó atual está aguardando confirmação manual e não pode ser repetido.",
+        "unsupported-node": "Este tipo de nó não oferece suporte à repetição.",
+        "stale-locator": "O nó atual foi alterado. Continue a partir do estado mais recente.",
+        "workflow-invalid": "A configuração do Workflow ou o ambiente de execução é inválido, então o nó atual não pode ser repetido.",
+        "invalid-locator": "A posição do nó é inválida. Atualize e tente novamente.",
+        "source-sealed": "Esta execução está selada. Não pode continuar nem receber mensagens.",
+        "inherited-attempt": "Este nó foi herdado. Veja sua sessão na execução de origem.",
+        "source-busy": "A sessão de origem ainda está parando. Tente novamente em instantes.",
+        "prefix-too-large": "O histórico necessário é grande demais. Inicie uma nova execução a partir do início da tarefa.",
+        "target-missing": "Este nó não existe mais no Workflow mais recente.",
+        "workspace-unavailable": "O espaço de trabalho de origem está indisponível. Restaure-o primeiro.",
+        "plan-changed": "A configuração do Workflow mudou. Atualize e tente novamente."
+      },
       "agent-doctor-failed": "Agent {{agentType}} não passou no doctor.",
       "agent-doctor-required": "Agent {{agentType}} deve passar no doctor primeiro.",
       "permission-mode-unsupported": "Agent {{agentType}} não suporta modo de permissão {{permissionMode}}.",
@@ -2548,9 +2567,11 @@
     "viewSession": "Ver sessão",
     "viewLog": "Ver log",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Tentar novamente a partir deste nó",
+    "retryCurrentNode": "Tentar o nó atual novamente",
     "layoutPending": "Organizando o grafo do fluxo de trabalho",
-    "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho"
+    "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho",
+    "rerunFailedNode": "Executar novamente a partir deste nó",
+    "rerunFailedAttempt": "Executar novamente a partir de {{attempt}}"
   },
   "settings": {
     "title": "Configurações",
@@ -3181,7 +3202,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "Esta sessão está sendo controlada pelo runtime, então a entrada está temporariamente indisponível",
       "composerStoppingPlaceholder": "Parando sessão atual…",
-      "composerStoppedPlaceholder": "Esta sessão parou. Você pode digitar qualquer mensagem para continuar a execução"
+      "composerStoppedPlaceholder": "Esta sessão parou. Você pode digitar qualquer mensagem para continuar a execução",
+      "nodeRerunConfirmTitle": "Executar novamente a partir de {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Interrompa a execução de origem, crie um novo Run com o Workflow mais recente e execute novamente este nó e os seguintes. Alterações existentes no espaço de trabalho e ações externas serão mantidas.",
+      "sourceSealed": "A execução de origem está selada. Seu histórico continua disponível.",
+      "rerunHistoryHint": "As sessões anteriores permanecem na execução de origem.",
+      "viewRerunSource": "Ver execução de origem"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git está desatualizado",

@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "Este Agent no tiene comando de inicio. Añade el comando en la gestión de Agents y vuelve a ejecutar el diagnóstico.",
     "npx-cache.busy": "Ya hay una reparación de caché en curso. Inténtalo más tarde.",
     "npx-cache.unavailable": "No se pudo verificar un directorio de caché npx reparable. Vuelve a ejecutar el diagnóstico de entorno.",
     "npx-cache.changed": "El diagnóstico, la configuración o la caché han cambiado. Cierra el diálogo y reintenta.",
@@ -1090,6 +1091,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "El Workflow está en ejecución, así que no se puede reintentar el nodo actual.",
+        "run-terminal": "El Workflow ha finalizado, así que no se puede reintentar el nodo actual.",
+        "node-not-retryable": "El nodo actual no se puede reintentar en su estado actual.",
+        "error-blocked": "El Workflow está bloqueado por un error, así que no se puede reintentar el nodo actual.",
+        "manual-check-pending": "El nodo actual está esperando confirmación manual y no se puede reintentar.",
+        "unsupported-node": "Este tipo de nodo no admite reintentos.",
+        "stale-locator": "El nodo actual ha cambiado. Continúa desde el estado más reciente.",
+        "workflow-invalid": "La configuración del Workflow o el entorno de ejecución no son válidos, así que no se puede reintentar el nodo actual.",
+        "invalid-locator": "La ubicación del nodo no es válida. Actualiza e inténtalo de nuevo.",
+        "source-sealed": "Esta ejecución está sellada. No puede continuar ni recibir mensajes.",
+        "inherited-attempt": "Este nodo es heredado. Consulta su sesión en la ejecución de origen.",
+        "source-busy": "La sesión de origen aún se está deteniendo. Inténtalo de nuevo en unos instantes.",
+        "prefix-too-large": "El historial necesario es demasiado grande. Inicia una nueva ejecución desde el principio de la tarea.",
+        "target-missing": "Este nodo ya no existe en el Workflow más reciente.",
+        "workspace-unavailable": "El espacio de trabajo de origen no está disponible. Restáuralo primero.",
+        "plan-changed": "La configuración del Workflow cambió. Actualiza e inténtalo de nuevo."
+      },
       "agent-doctor-failed": "El Agent {{agentType}} no ha superado doctor.",
       "agent-doctor-required": "El Agent {{agentType}} debe superar doctor primero.",
       "permission-mode-unsupported": "El Agent {{agentType}} no admite el modo de permiso {{permissionMode}}.",
@@ -2548,9 +2567,11 @@
     "viewSession": "Ver sesión",
     "viewLog": "Ver registro",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Reintentar desde este nodo",
+    "retryCurrentNode": "Reintentar nodo actual",
     "layoutPending": "Organizando el gráfico del flujo de trabajo",
-    "layoutFailed": "No se pudo organizar el gráfico del flujo de trabajo"
+    "layoutFailed": "No se pudo organizar el gráfico del flujo de trabajo",
+    "rerunFailedNode": "Volver a ejecutar desde este nodo",
+    "rerunFailedAttempt": "Volver a ejecutar desde {{attempt}}"
   },
   "settings": {
     "title": "Configuración",
@@ -3181,7 +3202,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "Esta sesión está controlada por runtime, por lo que la entrada no está disponible temporalmente",
       "composerStoppingPlaceholder": "Deteniendo la sesión actual…",
-      "composerStoppedPlaceholder": "Esta sesión se detuvo. Puede introducir cualquier mensaje para continuar la ejecución"
+      "composerStoppedPlaceholder": "Esta sesión se detuvo. Puede introducir cualquier mensaje para continuar la ejecución",
+      "nodeRerunConfirmTitle": "¿Volver a ejecutar desde {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Detén la ejecución de origen, crea un nuevo Run con el Workflow más reciente y vuelve a ejecutar este nodo y los siguientes. Se conservarán los cambios del espacio de trabajo y las acciones externas.",
+      "sourceSealed": "La ejecución de origen está sellada. Su historial sigue disponible.",
+      "rerunHistoryHint": "Las sesiones anteriores permanecen en la ejecución de origen.",
+      "viewRerunSource": "Ver ejecución de origen"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git está desactualizado",

@@ -24,6 +24,7 @@ fn sample_run() -> RunState {
         pause_reason: None,
         task_uuid: None,
         uuid: None,
+        rerun: None,
         last_executed_node: None,
         worktree: None,
         execution: Default::default(),

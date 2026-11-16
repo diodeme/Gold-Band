@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "This Agent is missing its launch command. Add the command in Agent management, then run diagnostics again.",
     "npx-cache.busy": "A cache repair is already in progress. Try again later.",
     "npx-cache.unavailable": "No repairable npx cache directory could be verified. Run diagnostics again.",
     "npx-cache.changed": "Diagnostics, configuration or cache changed. Close this dialog and try again.",
@@ -1090,6 +1091,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "The Workflow is running, so the current node cannot be retried.",
+        "run-terminal": "The Workflow has ended, so the current node cannot be retried.",
+        "node-not-retryable": "The current node cannot be retried in its current state.",
+        "error-blocked": "The Workflow is blocked by an error, so the current node cannot be retried.",
+        "manual-check-pending": "The current node is waiting for manual confirmation and cannot be retried.",
+        "unsupported-node": "This node type does not support retry.",
+        "stale-locator": "The current node has changed. Continue from the latest state.",
+        "workflow-invalid": "The Workflow configuration or runtime environment is invalid, so the current node cannot be retried.",
+        "invalid-locator": "The node location is invalid. Refresh and try again.",
+        "source-sealed": "This run is sealed. It cannot continue or accept messages.",
+        "inherited-attempt": "This is an inherited node. View its session in the source run.",
+        "source-busy": "The source session is still stopping. Try again shortly.",
+        "prefix-too-large": "The required history is too large. Start a new run from the task entry.",
+        "target-missing": "This node no longer exists in the latest Workflow.",
+        "workspace-unavailable": "The source workspace is unavailable. Restore it first.",
+        "plan-changed": "The Workflow configuration changed. Refresh and try again."
+      },
       "agent-doctor-failed": "Agent {{agentType}} has not passed doctor.",
       "agent-doctor-required": "Agent {{agentType}} must pass doctor first.",
       "permission-mode-unsupported": "Agent {{agentType}} does not support permission mode {{permissionMode}}.",
@@ -2548,9 +2567,11 @@
     "viewSession": "View session",
     "viewLog": "View log",
     "copyNodeId": "Copy node id",
-    "retryFromNode": "Retry from this node",
+    "retryCurrentNode": "Retry current node",
     "layoutPending": "Arranging workflow graph",
-    "layoutFailed": "Couldn’t arrange the workflow graph"
+    "layoutFailed": "Couldn’t arrange the workflow graph",
+    "rerunFailedNode": "Rerun from this node",
+    "rerunFailedAttempt": "Rerun from {{attempt}}"
   },
   "settings": {
     "title": "Settings",
@@ -3181,7 +3202,12 @@
       "worktree": "Worktree",
       "composerRuntimeControlledPlaceholder": "This session is being controlled by the runtime, so input is temporarily unavailable",
       "composerStoppingPlaceholder": "Stopping current session…",
-      "composerStoppedPlaceholder": "This session has stopped. You can enter any message to continue the run"
+      "composerStoppedPlaceholder": "This session has stopped. You can enter any message to continue the run",
+      "nodeRerunConfirmTitle": "Rerun from {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Stop the source run, create a new Run using the latest Workflow, and execute this node and its successors again. Existing workspace changes and external actions will remain.",
+      "sourceSealed": "The source run is sealed. Its history is still available.",
+      "rerunHistoryHint": "Previous sessions remain in the source run.",
+      "viewRerunSource": "View source run"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git is out of date",

@@ -655,6 +655,21 @@ impl DesktopState {
                 .paths
                 .run_file(&candidate.task_id, &candidate.run_id);
             if !run_path.is_file() {
+                if let Err(error) =
+                    workspace_app.recover_pending_node_rerun(&candidate.task_id, &candidate.run_id)
+                {
+                    report
+                        .blocked_project_ids
+                        .insert(candidate.project_id.clone());
+                    report.failures.push(ConversationWorkspaceRecoveryFailure {
+                        workspace_path: candidate.workspace_path.clone(),
+                        code: "runtime.workspace-recovery-failed",
+                        message: format!("{error:#}"),
+                    });
+                    continue;
+                }
+            }
+            if !run_path.is_file() {
                 self.consume_runtime_recovery_candidate(&candidate, &mut report);
                 continue;
             }
@@ -2160,6 +2175,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution,

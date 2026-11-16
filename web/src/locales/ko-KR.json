@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "이 Agent에 시작 명령이 없습니다. Agent 관리에서 명령을 입력한 뒤 다시 진단하세요.",
     "npx-cache.busy": "캐시 복구가 이미 진행 중입니다. 잠시 후 다시 시도하세요.",
     "npx-cache.unavailable": "복구할 수 있는 npx 캐시 디렉터리를 확인할 수 없습니다. 환경 진단을 다시 실행하세요.",
     "npx-cache.changed": "진단, 설정 또는 캐시가 변경되었습니다. 대화 상자를 닫고 다시 시도하세요.",
@@ -1090,6 +1091,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "Workflow가 실행 중이므로 현재 노드를 다시 시도할 수 없습니다.",
+        "run-terminal": "Workflow가 종료되었으므로 현재 노드를 다시 시도할 수 없습니다.",
+        "node-not-retryable": "현재 노드는 현재 상태에서 다시 시도할 수 없습니다.",
+        "error-blocked": "Workflow가 오류로 차단되어 현재 노드를 다시 시도할 수 없습니다.",
+        "manual-check-pending": "현재 노드가 수동 확인을 기다리고 있어 다시 시도할 수 없습니다.",
+        "unsupported-node": "이 노드 유형은 다시 시도를 지원하지 않습니다.",
+        "stale-locator": "현재 노드가 변경되었습니다. 최신 상태에서 작업하세요.",
+        "workflow-invalid": "Workflow 구성 또는 실행 환경이 유효하지 않아 현재 노드를 다시 시도할 수 없습니다.",
+        "invalid-locator": "노드 위치가 올바르지 않습니다. 새로 고친 후 다시 시도하세요.",
+        "source-sealed": "봉인된 실행이므로 계속 실행하거나 메시지를 보낼 수 없습니다.",
+        "inherited-attempt": "상속된 기록 노드입니다. 원본 실행에서 세션을 확인하세요.",
+        "source-busy": "원본 세션을 중지하는 중입니다. 잠시 후 다시 시도하세요.",
+        "prefix-too-large": "필요한 기록 데이터가 너무 큽니다. 작업 시작점부터 새로 실행하세요.",
+        "target-missing": "최신 Workflow에 이 노드가 없습니다.",
+        "workspace-unavailable": "원본 작업 공간을 사용할 수 없습니다. 먼저 복원하세요.",
+        "plan-changed": "Workflow 설정이 변경되었습니다. 새로 고친 후 다시 시도하세요."
+      },
       "agent-doctor-failed": "Agent {{agentType}}가 doctor를 통과하지 못했습니다.",
       "agent-doctor-required": "Agent {{agentType}}는 먼저 doctor를 통과해야 합니다.",
       "permission-mode-unsupported": "Agent {{agentType}}는 권한 모드 {{permissionMode}}를 지원하지 않습니다.",
@@ -2548,9 +2567,11 @@
     "viewSession": "세션 보기",
     "viewLog": "로그 보기",
     "copyNodeId": "node id 복사",
-    "retryFromNode": "이 노드부터 다시 시도",
+    "retryCurrentNode": "현재 노드 다시 시도",
     "layoutPending": "워크플로 그래프 배치 중",
-    "layoutFailed": "워크플로 그래프를 배치하지 못했습니다"
+    "layoutFailed": "워크플로 그래프를 배치하지 못했습니다",
+    "rerunFailedNode": "이 노드부터 다시 실행",
+    "rerunFailedAttempt": "{{attempt}}부터 다시 실행"
   },
   "settings": {
     "title": "설정",
@@ -3181,7 +3202,12 @@
       "worktree": "작업 트리",
       "composerRuntimeControlledPlaceholder": "이 대화는 runtime이 실행 중이라 잠시 입력할 수 없습니다",
       "composerStoppingPlaceholder": "현재 대화를 중지하는 중…",
-      "composerStoppedPlaceholder": "이 대화는 중지되었습니다. 내용을 입력하면 실행을 계속할 수 있습니다"
+      "composerStoppedPlaceholder": "이 대화는 중지되었습니다. 내용을 입력하면 실행을 계속할 수 있습니다",
+      "nodeRerunConfirmTitle": "{{node}} / {{attempt}}부터 다시 실행할까요?",
+      "nodeRerunConfirmDescription": "원본 실행을 중지하고 최신 Workflow로 새 Run을 만든 뒤 이 노드와 후속 노드를 다시 실행합니다. 기존 작업 공간 변경과 외부 작업은 취소되지 않습니다.",
+      "sourceSealed": "원본 실행이 봉인되었습니다. 기록은 계속 볼 수 있습니다.",
+      "rerunHistoryHint": "이전 세션은 원본 실행에 남아 있습니다.",
+      "viewRerunSource": "원본 실행 보기"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git 버전이 너무 낮음",

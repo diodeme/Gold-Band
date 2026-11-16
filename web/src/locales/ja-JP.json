@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "この Agent には起動コマンドがありません。Agent 管理でコマンドを入力し、もう一度診断してください。",
     "npx-cache.busy": "キャッシュの修復中です。しばらくしてから再試行してください。",
     "npx-cache.unavailable": "修復可能な npx キャッシュを確認できません。診断を再実行してください。",
     "npx-cache.changed": "診断、設定、またはキャッシュが変更されました。ダイアログを閉じて再試行してください。",
@@ -1090,6 +1091,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "Workflow は実行中です。現在のノードは再試行できません。",
+        "run-terminal": "Workflow は終了しています。現在のノードは再試行できません。",
+        "node-not-retryable": "現在のノードは現在の状態では再試行できません。",
+        "error-blocked": "Workflow はエラーでブロックされています。現在のノードは再試行できません。",
+        "manual-check-pending": "現在のノードは手動確認を待っているため、再試行できません。",
+        "unsupported-node": "このノード種別は再試行に対応していません。",
+        "stale-locator": "現在のノードが変更されました。最新の状態から操作してください。",
+        "workflow-invalid": "Workflow の設定または実行環境が無効なため、現在のノードを再試行できません。",
+        "invalid-locator": "ノードの位置が無効です。更新して再試行してください。",
+        "source-sealed": "この実行は封印されているため、続行やメッセージ送信はできません。",
+        "inherited-attempt": "継承された履歴ノードです。セッションは元の実行で確認してください。",
+        "source-busy": "元のセッションを停止中です。しばらくしてから再試行してください。",
+        "prefix-too-large": "必要な履歴データが大きすぎます。タスクの先頭から新しく実行してください。",
+        "target-missing": "最新の Workflow にこのノードはありません。",
+        "workspace-unavailable": "元のワークスペースを利用できません。先に復元してください。",
+        "plan-changed": "Workflow の設定が変更されました。更新して再試行してください。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} は doctor を通過していません。",
       "agent-doctor-required": "Agent {{agentType}} は先に doctor を通過する必要があります。",
       "permission-mode-unsupported": "Agent {{agentType}} は権限モード {{permissionMode}} をサポートしていません。",
@@ -2548,9 +2567,11 @@
     "viewSession": "セッションを見る",
     "viewLog": "ログを表示する",
     "copyNodeId": "node id をコピー",
-    "retryFromNode": "このノードから再試行",
+    "retryCurrentNode": "現在のノードを再試行",
     "layoutPending": "ワークフローグラフを配置中",
-    "layoutFailed": "ワークフローグラフを配置できませんでした"
+    "layoutFailed": "ワークフローグラフを配置できませんでした",
+    "rerunFailedNode": "このノードから再実行",
+    "rerunFailedAttempt": "{{attempt}} から再実行"
   },
   "settings": {
     "title": "設定",
@@ -3181,7 +3202,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "このセッションは runtime によって制御されているため、入力は一時的に利用できません",
       "composerStoppingPlaceholder": "現在のセッションを停止しています…",
-      "composerStoppedPlaceholder": "このセッションは停止されました。任意のメッセージを入力して実行を続行できます"
+      "composerStoppedPlaceholder": "このセッションは停止されました。任意のメッセージを入力して実行を続行できます",
+      "nodeRerunConfirmTitle": "{{node}} / {{attempt}} から再実行しますか？",
+      "nodeRerunConfirmDescription": "元の実行を停止し、最新の Workflow で新しい Run を作成して、このノード以降を再実行します。既存のワークスペースの変更や外部操作は取り消されません。",
+      "sourceSealed": "元の実行は封印されています。履歴は引き続き閲覧できます。",
+      "rerunHistoryHint": "以前のセッションは元の実行に残ります。",
+      "viewRerunSource": "元の実行を表示"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git が古い",

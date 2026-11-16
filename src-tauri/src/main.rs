@@ -71,21 +71,21 @@ use commands::{
     read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
     release_conversation_queued_prompt_edit, remove_recent_workspace, renew_acp_session_lease,
     reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
-    respond_elicitation, restore_theme_desktop_wallpaper, retry_run, save_auto_template,
-    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_desktop_wallpaper_opacity, save_interface_zoom_percent, save_metrics_settings,
-    save_multica_connection_address, save_task_workflow, save_updater_settings,
-    save_workflow_graph_direction, save_workflow_template, search_acp_prompts, search_acp_sessions,
-    search_tasks, select_recent_desktop_avatar, select_recent_desktop_wallpaper,
-    select_recent_workspace, set_acp_session_auto_accept, set_acp_session_config_option,
-    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
-    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
-    start_github_pull_request_create, start_run, start_update_install, stop_active_session,
-    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template,
-    use_conversation_queued_prompt, write_skill,
+    report_webview_environment, rerun_failed_node, resolve_turn_attachment_file,
+    respond_acp_permission, respond_elicitation, restore_theme_desktop_wallpaper,
+    retry_current_node, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
+    save_desktop_preferences, save_desktop_wallpaper_opacity, save_interface_zoom_percent,
+    save_metrics_settings, save_multica_connection_address, save_task_workflow,
+    save_updater_settings, save_workflow_graph_direction, save_workflow_template,
+    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_auto_accept,
+    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
+    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
+    start_github_login, start_github_pull_request_create, start_run, start_update_install,
+    stop_active_session, stop_git_state_monitor, submit_conversation_prompt, submit_manual_check,
+    toggle_mcp_server, update_agent, update_auto_template, update_mcp_server,
+    update_notification_attention, update_profile, update_skill_sync_targets,
+    update_workflow_template, use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
@@ -256,11 +256,37 @@ pub(crate) fn start_business_runtime(handle: tauri::AppHandle) {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!(
-            "failed to start {} desktop: {error:?}",
-            channel::current_channel_config().app_name
+        let app_name = channel::current_channel_config().app_name;
+        let message = format!("failed to start {app_name} desktop: {error:?}");
+        eprintln!("{message}");
+        show_startup_failure(&app_name, &message);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_startup_failure(app_name: &str, message: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
+    use windows::core::PCWSTR;
+
+    let mut text: Vec<u16> = message.encode_utf16().collect();
+    text.push(0);
+    let mut title: Vec<u16> = app_name.encode_utf16().collect();
+    title.push(0);
+    // The Windows GUI subsystem has no console attached in release builds; this native
+    // dialog is the last visible boundary before process exit.
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_ICONERROR,
         );
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_startup_failure(_app_name: &str, message: &str) {
+    eprintln!("{message}");
 }
 
 fn run() -> anyhow::Result<()> {
@@ -619,7 +645,8 @@ fn run() -> anyhow::Result<()> {
             pause_run,
             stop_active_session,
             submit_manual_check,
-            retry_run,
+            retry_current_node,
+            rerun_failed_node,
             show_artifact,
             show_attachment,
             show_worker_ref,

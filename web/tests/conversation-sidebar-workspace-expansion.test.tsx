@@ -19,7 +19,8 @@ vi.mock('@/components/ui/scroll-area', () => ({
 
 import { ConversationSidebar } from '@/components/conversation/ConversationSidebar';
 import { conversationSidebarRunStateRefreshTarget } from '@/lib/conversation-sidebar-activity';
-import { applyConversationTaskPage, ConversationSidebarSingleFlight } from '@/lib/conversation-sidebar-loading';
+import { applyConversationTaskPage } from '@/lib/conversation-sidebar-loading';
+import { RefreshSingleFlight } from '@/lib/refresh-single-flight';
 import type { ConversationSidebarVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -77,7 +78,7 @@ describe('ConversationSidebar workspace expansion intent', () => {
     let vm = sidebarVm();
     const onSelect = vi.fn();
     const render = () => root.render(<ConversationSidebar {...callbacks} onSelect={onSelect} vm={vm} active={{ kind: 'conversation-home' }} defaultExpandedWorkspaceId="workspace-a" />);
-    const flights = new ConversationSidebarSingleFlight();
+    const flights = new RefreshSingleFlight();
     let resolveOldPage!: () => void;
     const oldPage = new Promise<void>((resolve) => { resolveOldPage = resolve; });
     const task = {

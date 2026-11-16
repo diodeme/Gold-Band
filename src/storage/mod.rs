@@ -465,6 +465,21 @@ impl GoldBandPaths {
         self.run_dir(task_id, run_id).join("run.json")
     }
 
+    pub fn node_rerun_operation_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        operation_id: &str,
+    ) -> Utf8PathBuf {
+        self.run_dir(task_id, run_id)
+            .join("reruns")
+            .join(format!("{operation_id}.json"))
+    }
+
+    pub fn pending_node_rerun_file(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {
+        self.run_dir(task_id, run_id).join("rerun.pending.json")
+    }
+
     pub fn workflow_snapshot_file(&self, task_id: &str, run_id: &str) -> Utf8PathBuf {
         self.run_dir(task_id, run_id).join("workflow.snapshot.json")
     }

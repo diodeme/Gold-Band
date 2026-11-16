@@ -125,6 +125,24 @@ pub fn publish_initial_workflow(
     workflow: WorkflowDsl,
     model_bindings: WorkflowModelBindings,
 ) -> PlanResult<ExecutionPlanSnapshot> {
+    publish_initial_workflow_at_revision(
+        paths,
+        task_id,
+        run_id,
+        workflow,
+        model_bindings,
+        read_authoring_revision(paths, task_id),
+    )
+}
+
+pub(crate) fn publish_initial_workflow_at_revision(
+    paths: &GoldBandPaths,
+    task_id: &str,
+    run_id: &str,
+    workflow: WorkflowDsl,
+    model_bindings: WorkflowModelBindings,
+    source_authoring_revision: u64,
+) -> PlanResult<ExecutionPlanSnapshot> {
     publish_initial(
         paths,
         task_id,
@@ -134,6 +152,7 @@ pub fn publish_initial_workflow(
             workflow,
             model_bindings,
         },
+        source_authoring_revision,
     )
 }
 
@@ -149,6 +168,7 @@ pub fn publish_initial_auto(
         run_id,
         ExecutionPlanRunMode::Auto,
         ExecutionPlanPayload::Auto { config },
+        read_authoring_revision(paths, task_id),
     )
 }
 
@@ -336,6 +356,7 @@ fn publish_initial(
     run_id: &str,
     run_mode: ExecutionPlanRunMode,
     payload: ExecutionPlanPayload,
+    source_authoring_revision: u64,
 ) -> PlanResult<ExecutionPlanSnapshot> {
     let _write = lock::acquire_plan_write_wait(&lock_key(paths, task_id, run_id))?;
     if paths.execution_plan_manifest_file(task_id, run_id).exists() {
@@ -345,7 +366,7 @@ fn publish_initial(
         schema_version: SCHEMA_VERSION,
         plan_revision: 1,
         run_mode,
-        source_authoring_revision: read_authoring_revision(paths, task_id),
+        source_authoring_revision,
         published_at: Utc::now().to_rfc3339(),
         payload,
     };

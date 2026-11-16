@@ -108,12 +108,13 @@ use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
     AcpSessionConfigVm, AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput,
     AcpToolDetailVm, AgentRegistryVm, AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm,
-    LogQueryInput, McpServerVm, PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm,
-    RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm,
-    TaskListVm, UpdateBadgeStateVm, WorkflowVm, acp_activity_detail_vm_for_attempt,
-    acp_raw_frame_page_vm, acp_session_config_vm, acp_session_vm, acp_tool_detail_vm_for_attempt,
-    agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm,
-    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm,
+    LogQueryInput, McpServerVm, PreferencesVm, RetryCurrentNodeAcceptedVm, RoundDetailVm,
+    RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm,
+    SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
+    acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_config_vm,
+    acp_session_vm, acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm,
+    dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm,
+    retry_current_node_accepted_vm, round_detail_vm, run_detail_vm, run_summary_vm,
     session_metadata_from_attempt_dir, skill_content_vm, skill_list_vm, skill_meta_vm,
     task_detail_vm, task_list_vm, workflow_vm,
 };
@@ -560,6 +561,14 @@ fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> Command
 }
 
 fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> CommandResult<()> {
+    app.ensure_attempt_writable(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        locator.outer_node_id().unwrap_or(&locator.node_id),
+        locator.outer_attempt_id().unwrap_or(&locator.attempt_id),
+    )
+    .map_err(command_error)?;
     if let Some(target) = conversation_session_successor(
         app,
         &locator.task_id,
@@ -747,6 +756,9 @@ fn admit_conversation_prompt_turn(
     attachment_paths: &[String],
 ) -> CommandResult<(gold_band::acp::events::AcpTurnAdmission, AcpAdapterConfig)> {
     let executable_adapter = resolved_conversation_prompt_adapter(app, locator)?;
+    let _admission = app
+        .begin_run_write_admission(&locator.task_id, &locator.run_id)
+        .map_err(command_error)?;
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
@@ -5275,18 +5287,80 @@ pub async fn submit_manual_check(
 }
 
 #[tauri::command]
-pub fn retry_run(
+pub async fn retry_current_node(
     app_handle: AppHandle,
-    state: State<'_, DesktopState>,
+    project_id: String,
     task_id: String,
     run_id: String,
-) -> CommandResult<RunSummaryVm> {
-    let _ = state.record_heartbeat_activity();
-    let base_app = state.app().map_err(command_error)?;
-    let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
-    app.run_retry(&task_id, &run_id)
-        .map(run_summary_vm)
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    retry_current_node_command(
+        move || {
+            let state = app_handle.state::<DesktopState>();
+            let _ = state.record_heartbeat_activity();
+            resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))
+        },
+        task_id,
+        run_id,
+        expected_round_id,
+        expected_node_id,
+        expected_attempt_id,
+    )
+    .await
+}
+
+async fn retry_current_node_command(
+    prepare_app: impl FnOnce() -> CommandResult<ConfiguredConversationApp> + Send + 'static,
+    task_id: String,
+    run_id: String,
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    // Workspace resolution, executable preflight, lock waits and durable commit
+    // belong to one blocking job; only the accepted result returns to IPC.
+    spawn_blocking_command(move || {
+        let app = prepare_app()?;
+        app.retry_current_node(
+            &task_id,
+            &run_id,
+            &expected_round_id,
+            &expected_node_id,
+            &expected_attempt_id,
+        )
+        .map(retry_current_node_accepted_vm)
         .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rerun_failed_node(
+    app_handle: AppHandle,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    spawn_blocking_command(move || {
+        let state = app_handle.state::<DesktopState>();
+        let _ = state.record_heartbeat_activity();
+        let app = resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))?;
+        app.rerun_failed_node(
+            &task_id,
+            &run_id,
+            &expected_round_id,
+            &expected_node_id,
+            &expected_attempt_id,
+        )
+        .map(retry_current_node_accepted_vm)
+        .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -8703,7 +8777,14 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let app_handle_for_task = app_handle.clone();
     let lifecycle_path_for_stop = lifecycle_path.clone();
     let turn_id_for_stop = turn_id.clone();
+    let locator_for_execution = locator.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        {
+            let _admission = app
+                .begin_run_write_admission(&task_id, &run_id)
+                .map_err(command_error)?;
+            ensure_conversation_prompt_available(&app, &locator_for_execution)?;
+        }
         let ConversationPromptInput {
             display_text,
             quotes,
@@ -13610,6 +13691,87 @@ mod tests {
     }
 
     #[test]
+    fn current_node_retry_command_yields_until_preparation_finishes() {
+        let caller_thread = std::thread::current().id();
+        let (entered, preparation) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (yielded, after_poll) = std::sync::mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            let preparation_thread = preparation.recv().unwrap();
+            if preparation_thread != caller_thread {
+                after_poll.recv().unwrap();
+            }
+            release.send(()).unwrap();
+            preparation_thread
+        });
+
+        let mut command = std::pin::pin!(retry_current_node_command(
+            move || {
+                entered.send(std::thread::current().id()).unwrap();
+                released.recv().unwrap();
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": "retry-project" }),
+                ))
+            },
+            "task-1".into(),
+            "run-1".into(),
+            "round-1".into(),
+            "worker".into(),
+            "attempt-001".into(),
+        ));
+        let first_poll = std::future::Future::poll(
+            command.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        );
+        let returned_pending = first_poll.is_pending();
+        let _ = yielded.send(());
+        let preparation_thread = observer.join().unwrap();
+        let result = match first_poll {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => tauri::async_runtime::block_on(command),
+        };
+        let error = result.unwrap_err();
+
+        assert_ne!(
+            preparation_thread, caller_thread,
+            "retry preparation must not run on the command caller thread"
+        );
+        assert!(
+            returned_pending,
+            "retry command must yield before blocked preparation finishes"
+        );
+        assert_eq!(error.code, "workspace.not-found");
+        assert_eq!(
+            error.params,
+            serde_json::json!({ "projectId": "retry-project" })
+        );
+    }
+
+    #[test]
+    fn current_node_retry_command_preserves_admission_error_locator() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let error = tauri::async_runtime::block_on(retry_current_node_command(
+            move || Ok(ConfiguredConversationApp(App::new(repo_root))),
+            "task-1".into(),
+            "run-1".into(),
+            "round-1".into(),
+            "worker".into(),
+            "attempt-001".into(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, "workflow.retry.node-not-retryable");
+        assert_eq!(error.params["taskId"], "task-1");
+        assert_eq!(error.params["runId"], "run-1");
+        assert_eq!(
+            error.params["causeCode"],
+            "conversation.run-mode-unavailable"
+        );
+    }
+
+    #[test]
     fn runtime_workspace_validation_runs_outside_the_caller_thread() {
         let caller_thread = std::thread::current().id();
 
@@ -15981,10 +16143,8 @@ mod tests {
 
     #[test]
     fn composer_draft_save_publishes_attachments_into_task_storage() {
-        let root = std::env::temp_dir().join(format!(
-            "gold-band-draft-attachment-publish-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
         let task_dir = app.paths.task_dir("task-1");
         std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
@@ -16046,12 +16206,10 @@ mod tests {
         // resolve against the relocated root.
         let project_root = task_dir.ancestors().nth(2).unwrap().to_path_buf();
         let task_suffix = task_dir.strip_prefix(&project_root).unwrap().to_path_buf();
-        let moved_parent = std::env::temp_dir().join(format!(
-            "gold-band-draft-attachment-moved-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&moved_parent).unwrap();
-        let moved_project_root = moved_parent.join(project_root.file_name().unwrap_or_default());
+        let moved_parent = tempfile::tempdir().unwrap();
+        let moved_project_root = moved_parent
+            .path()
+            .join(project_root.file_name().unwrap_or_default());
         std::fs::rename(&project_root, &moved_project_root).unwrap();
         let moved_task_dir =
             Utf8PathBuf::from_path_buf(moved_project_root.join(&task_suffix)).unwrap();
@@ -16377,6 +16535,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16474,7 +16633,14 @@ mod tests {
                 "outcome": null,
                 "trigger": "initial",
                 "started_at": "2026-08-12T00:00:00Z",
-                "trace": []
+                "trace": [{
+                    "sequence": 1,
+                    "node_id": locator.node_id,
+                    "attempt_id": locator.attempt_id,
+                    "from_node_id": null,
+                    "edge_outcome": null,
+                    "entered_at": "2026-08-12T00:00:00Z"
+                }]
             }),
         )
         .unwrap();
@@ -16494,11 +16660,13 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
         };
 
+        write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
         assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
@@ -16581,6 +16749,56 @@ mod tests {
             }),
         )
         .unwrap();
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Success),
+            started_at: "2026-08-16T00:00:00Z".to_string(),
+            updated_at: "2026-08-16T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-002".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            rerun: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        for (attempt_id, outcome) in [
+            ("attempt-001", NodeOutcome::Failure),
+            ("attempt-002", NodeOutcome::Success),
+        ] {
+            let node = NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "review".to_string(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(outcome),
+                started_at: "2026-08-16T00:00:00Z".to_string(),
+                finished_at: Some("2026-08-16T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            };
+            write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, "review", attempt_id),
+                &node,
+            )
+            .unwrap();
+        }
         write_json(
             &app.paths
                 .worker_ref_file(task_id, run_id, round_id, "review", "attempt-001"),
@@ -16666,10 +16884,13 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
         };
+
+        write_json(&app.paths.run_file(&run.task_id, &run.id), &run).unwrap();
 
         assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
@@ -16714,6 +16935,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16938,6 +17160,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -17451,6 +17674,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(PauseReason::WaitingForUserInput),
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -17938,6 +18162,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid.clone()),
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -18102,6 +18327,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid),
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),

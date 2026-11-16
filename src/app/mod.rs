@@ -1,5 +1,6 @@
 mod conversation_run;
 mod execution_plan_service;
+mod failed_node_rerun;
 mod ids;
 pub mod intervention;
 mod node_executor;
@@ -21,12 +22,13 @@ pub use self::conversation_run::{
     ConversationRunLaunch, ConversationWorkLocation, CreateConversationTaskCommand,
     CreatedConversationRun, PreparedConversationTask, conversation_auto_title,
 };
+pub use self::failed_node_rerun::RunWriteAdmissionGuard;
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
     direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
     make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
-pub use self::orchestrator::{AcceptedRun, PreparedRun};
+pub use self::orchestrator::{AcceptedRun, PreparedRun, RetryCurrentNodeAccepted};
 pub use self::runtime_recovery::{
     RuntimeCandidateRegistration, RuntimeRecoveryCoordinator, RuntimeRecoveryError,
 };
@@ -48,10 +50,7 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
     validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
-use crate::dynamic::{
-    DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids, write_dynamic_node_state,
-};
+use crate::dynamic::{dynamic_leaf_is_active, write_dynamic_node_state};
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
@@ -99,12 +98,12 @@ use self::orchestrator::{
     prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
     prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
     reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
+    retry_current_node as orchestrator_retry_current_node,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
-    run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
-    run_start_background as orchestrator_run_start_background,
+    run_start as orchestrator_run_start, run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
     validate_manual_check_submission as orchestrator_validate_manual_check_submission,
@@ -158,7 +157,7 @@ pub(crate) fn attempt_runtime_state_lock(
 ) -> &'static Mutex<()> {
     let key = format!(
         "{}/{task_id}/{run_id}/{round_id}/{node_id}/{attempt_id}",
-        app.paths.repo_root
+        app.paths.runtime_root
     );
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -1461,7 +1460,8 @@ pub enum AcpPromptLifecycleEvent {
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
-    run.status == RunStatus::Paused
+    !run.is_sealed()
+        && run.status == RunStatus::Paused
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
@@ -4635,9 +4635,18 @@ impl App {
         deadline: acp_client::DoctorDeadline,
     ) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
+        let adapter = match config.executable_adapter(&agent_id) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                return Ok(ProviderDoctorProbe {
+                    doctor: DoctorResult::from_anyhow(&err),
+                    commands: Vec::new(),
+                });
+            }
+        };
         match acp_client::doctor_with_deadline(
             &agent_id,
-            &config.executable_adapter(&agent_id)?,
+            &adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -5418,7 +5427,7 @@ impl App {
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
         let Ok(state_lock) = dynamic_state_lock_for(
-            &self.paths.repo_root,
+            &self.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -5443,24 +5452,7 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        for dynamic_node in &mut graph.nodes {
-            if dynamic_node.status != DynamicNodeStatus::Completed {
-                dynamic_node.status = DynamicNodeStatus::Paused;
-                dynamic_node.outcome = None;
-                dynamic_node.pause_reason = Some(pause_reason);
-                dynamic_node.runtime_error = None;
-                let now = now_rfc3339_like();
-                dynamic_node.pause_runtime_execution(now.clone());
-                dynamic_node.finished_at = Some(now);
-            }
-        }
-
-        graph.run.status = DynamicRunStatus::Paused;
-        graph.run.phase = DynamicRunPhase::Executing;
-        graph.run.outcome = None;
-        graph.run.pause_reason = Some(pause_reason);
-        refresh_dynamic_current_leaf_ids(&mut graph);
-        graph.run.updated_at = now_rfc3339_like();
+        orchestrator::pause_dynamic_graph_runtime_state(&mut graph, pause_reason);
         let _ = write_json(&graph_path, &graph);
         let _ = write_json(
             &self
@@ -5514,6 +5506,27 @@ impl App {
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
+        self.run_pause_with_descendants(task_id, run_id, reason, true)
+    }
+
+    /// Commits this Run's stop fence. Bounded tree traversal owns descendant
+    /// discovery and cancellation separately, without recursive metadata reads.
+    pub(crate) fn pause_run_state(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        reason: PauseReason,
+    ) -> Result<RunState> {
+        self.run_pause_with_descendants(task_id, run_id, reason, false)
+    }
+
+    fn run_pause_with_descendants(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        reason: PauseReason,
+        interrupt_descendants: bool,
+    ) -> Result<RunState> {
         loop {
             let observed = self.run_status(task_id, run_id)?;
             if observed.status != RunStatus::Running {
@@ -5586,7 +5599,9 @@ impl App {
             }
             drop(guard);
 
-            self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            if interrupt_descendants {
+                self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            }
             self.publish_committed_attempt_pause(&run);
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -5878,7 +5893,7 @@ impl App {
         attempt_id: &str,
     ) -> Result<bool> {
         dynamic_resume_target_is_active(
-            &self.paths.repo_root,
+            &self.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -6095,6 +6110,7 @@ impl App {
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PreparedAcpPrompt> {
+        self.ensure_attempt_writable(task_id, run_id, round_id, node_id, attempt_id)?;
         let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
         let validated = validate_workflow_snapshot(workflow)?;
         self.validate_workflow_agents(&validated)?;
@@ -6152,6 +6168,7 @@ impl App {
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PreparedAcpPrompt> {
+        self.ensure_attempt_writable(task_id, run_id, round_id, outer_node_id, outer_attempt_id)?;
         prepare_dynamic_acp_prompt(
             self,
             task_id,
@@ -6418,8 +6435,22 @@ impl App {
         )
     }
 
-    pub fn run_retry(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        orchestrator_run_retry(self, task_id, run_id)
+    pub fn retry_current_node(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        expected_round_id: &str,
+        expected_node_id: &str,
+        expected_attempt_id: &str,
+    ) -> Result<RetryCurrentNodeAccepted> {
+        orchestrator_retry_current_node(
+            self,
+            task_id,
+            run_id,
+            expected_round_id,
+            expected_node_id,
+            expected_attempt_id,
+        )
     }
 
     pub fn run_start(
@@ -6978,6 +7009,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: reason,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -6991,7 +7023,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "2026-08-10T00:00:00Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![crate::runtime::RoundTraceStep {
+                sequence: 1,
+                node_id: "worker".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                from_node_id: None,
+                edge_outcome: None,
+                entered_at: "2026-08-10T00:00:00Z".to_string(),
+            }],
             uuid: None,
         };
         let node = NodeState {
@@ -7751,6 +7790,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(reason),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -9476,6 +9516,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: crate::runtime::RuntimeExecutionState::new(
@@ -9993,6 +10034,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -10114,6 +10156,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),

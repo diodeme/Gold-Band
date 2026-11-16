@@ -197,11 +197,11 @@ const task = {
 
 const graph = {
   nodes: [
-    { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
-    { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
-    { id: 'test', label: 'Checking output result...', nodeType: 'worker', status: 'running', outcome: null, runtimeDisplay: runtimeDisplay('running', null, true), attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
-    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'finalize', label: 'Finalize result', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', retryable: false, status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', retryable: false, status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
+    { id: 'test', label: 'Checking output result...', nodeType: 'worker', retryable: false, status: 'running', outcome: null, runtimeDisplay: runtimeDisplay('running', null, true), attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
+    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', retryable: false, status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'finalize', label: 'Finalize result', nodeType: 'worker', retryable: false, status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'prepare', to: 'plan', label: 'success' },
@@ -214,8 +214,8 @@ const graph = {
 
 const failedAcceptanceGraph = {
   nodes: [
-    { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', status: 'completed', outcome: 'success', runtimeDisplay: runtimeDisplay('completed', 'success'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'completed', outcome: 'failure', runtimeDisplay: runtimeDisplay('completed', 'failure'), attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', retryable: false, status: 'completed', outcome: 'success', runtimeDisplay: runtimeDisplay('completed', 'success'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'accept', label: 'accept', nodeType: 'worker', retryable: false, status: 'completed', outcome: 'failure', runtimeDisplay: runtimeDisplay('completed', 'failure'), attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'observed' },
@@ -225,8 +225,8 @@ const failedAcceptanceGraph = {
 
 const errorBlockedGraph = {
   nodes: [
-    { id: 'dev', label: 'dev', nodeType: 'worker', status: 'paused', outcome: null, runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
-    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'dev', label: 'dev', nodeType: 'worker', retryable: false, status: 'paused', outcome: null, runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
+    { id: 'accept', label: 'accept', nodeType: 'worker', retryable: false, status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
@@ -281,6 +281,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
 export const mockErrorBlockedConversationRun: ConversationRunVm = {
   projectId: 'default',
   taskId: 'mock-task',
+  taskUuid: 'browser-mock-task-uuid',
   runId: 'run-051',
   runMode: 'workflow',
   workflowTemplateId: 'default',

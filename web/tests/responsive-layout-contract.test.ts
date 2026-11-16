@@ -30,10 +30,6 @@ const workspaceSelectSource = readFileSync(
   fileURLToPath(new URL('../src/pages/WorkspaceSelectPage.tsx', import.meta.url)),
   'utf8',
 );
-const runDetailSource = readFileSync(
-  fileURLToPath(new URL('../src/pages/RunDetailPage.tsx', import.meta.url)),
-  'utf8',
-);
 const workflowEditorSource = readFileSync(
   fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)),
   'utf8',
@@ -260,8 +256,6 @@ describe('responsive desktop layout contracts', () => {
   it('stacks fixed desktop splits before their actual containers are wide enough', () => {
     expect(workspaceSelectSource).toContain('grid grid-cols-1');
     expect(workspaceSelectSource).toContain('lg:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.55fr)]');
-    expect(runDetailSource).toContain('@container/run-detail');
-    expect(runDetailSource).toContain('@4xl/run-detail:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]');
     expect(workflowEditorSource).toContain('@container/workflow-editor');
     expect(workflowEditorSource).toContain("data-workflow-editor-layout={isCompact ? 'compact' : 'split'}");
     expect(workflowEditorSource).toContain('<ResizablePanelGroup orientation="horizontal"');
@@ -281,7 +275,7 @@ describe('responsive desktop layout contracts', () => {
     expect(workflowEditorSource).toContain('<ScrollArea className="size-full">');
     expect(workflowEditorSource).toContain("'@container/workflow-editor min-h-0',");
     expect(workflowEditorSource).toContain(": 'h-[clamp(520px,calc(100dvh-11rem),760px)]',");
-    expect(workflowEditorSource).toContain("',\n          className,");
+    expect(workflowEditorSource).toMatch(/:\s*'h-\[clamp\(520px,calc\(100dvh-11rem\),760px\)\]',\s*className,/);
   });
 
   it('keeps raw frame search separate while filters wrap horizontally inside the workspace width', () => {

@@ -752,7 +752,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn delete_recent_wallpaper_removes_record_files_and_falls_back_selection() {
         let temp = tempdir().unwrap();
         let root = root(&temp);
@@ -811,6 +810,7 @@ mod tests {
         assert_eq!(error.code, "wallpaper.recent-not-found");
     }
 
+    #[test]
     fn reconcile_keeps_explicit_none_and_theme_pins_untouched() {
         let temp = tempdir().unwrap();
         let root = root(&temp);

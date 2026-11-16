@@ -251,7 +251,7 @@ function AcpConversationComposerContent({
           onValueChange={history.onChange}
           onSubmit={submit}
           isLoading={sending}
-          maxHeight={resize.promptInputMaxHeight ?? 320}
+          maxHeight={resize.promptInputMaxHeight === null ? null : (resize.promptInputMaxHeight ?? 320)}
           className={cn(
             'group/composer relative bg-card !shadow-none transition-colors',
             ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,

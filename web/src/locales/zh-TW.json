@@ -1020,9 +1020,9 @@
       "continue-launch-channel-closed": "工作流還原未能啟動，請重試。"
     },
     "composer": {
+      "resizeHandle": "拖動調整輸入框高度",
       "context-limit-exceeded": "上下文最多可包含 {{max}} 個引用和附件。",
-      "referenceUnavailable": "引用已失效",
-      "resizeHandle": "拖動調整輸入框高度"
+      "referenceUnavailable": "引用已失效"
     },
     "conversation": {
       "task-not-found": "找不到該工作階段。",

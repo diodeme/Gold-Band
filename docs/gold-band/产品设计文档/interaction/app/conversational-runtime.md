@@ -971,9 +971,9 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ## 2026-11-12 会话导航竖轨
 
-- 会话视区左缘竖轨（≥1440px 视口显示，窄窗隐藏）：每个已提交 turn 一个点，按 turn 内最显著事件着色（权限 `warning` > 压缩 `accent` > 工具 `muted` > 用户 `primary`）；流式进行中的 turn 不进入竖轨，delta 流不触发竖轨重渲染。
-- 数据源是会话级 turn 索引 `get_conversation_turn_index`（读持久 timeline.jsonl 的纯投影：prompt 事件开新条目、后续事件按显著度升级，preview 截 80 字符），与当前已加载窗口解耦；懒加载，不阻塞会话首屏。
-- 分章：跨日或每 40 turn 开新章（先满足者）；章标签 = 日期 + 该章首个用户提问前 30 字（机械截断）。AI 生成章节标题不做——无开关位、无数据字段、无任何预留。
+- 会话视区左缘竖轨：每个已提交 turn 一个点，按 turn 内最显著事件着色（权限 `warning` > 压缩 `link` > 工具 `muted` > 用户 `primary`）；压缩标记不用 `accent`（它是 hover 表面色，深色画布上几乎不可见）。流式进行中的 turn 不进入竖轨，delta 流不触发竖轨重渲染。
+- 数据源是会话级 turn 索引 `get_conversation_turn_index`（读持久 timeline.jsonl 的纯投影：prompt 事件开新条目、后续事件按显著度升级，preview 截 80 字符，支持 `afterSeq` 增量），与当前已加载窗口解耦；懒加载，不阻塞会话首屏。竖轨随会话 canonical 最新水位（newestSeq/coveredRevision）增量刷新，同一 attempt 内新提交的 turn 会按 seq 合并进竖轨，不整段重读。
+- 竖轨不做分章、不做视口宽度 gating（当前所有视口宽度都渲染）。AI 生成章节标题不做——无开关位、无数据字段、无任何预留。
 - 点击跳转：目标在已加载窗口内 → 按 `data-acp-item-key` 锚定滚动；目标早于窗口 → 滚动到顶驱动既有向上分页，目标键挂载后锚定（10 秒上限、用户手动滚动即中止）。
 - hover 预览：共享 Tooltip 懒渲染（类型 + 时间 + prompt 摘要）。
 

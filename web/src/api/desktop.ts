@@ -474,8 +474,8 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
-  getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, outerNodeId, outerAttemptId) {
-    return invokeCommand<import('../types').ConversationTurnIndexEntryVm[]>('get_conversation_turn_index', { projectId, taskId, runId, roundId, nodeId, attemptId, branchId: branchId ?? null, outerNodeId: outerNodeId ?? null, outerAttemptId: outerAttemptId ?? null });
+  getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, afterSeq, outerNodeId, outerAttemptId) {
+    return invokeCommand<import('../types').ConversationTurnIndexEntryVm[]>('get_conversation_turn_index', { projectId, taskId, runId, roundId, nodeId, attemptId, branchId: branchId ?? null, afterSeq: afterSeq ?? null, outerNodeId: outerNodeId ?? null, outerAttemptId: outerAttemptId ?? null });
   },
   getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand<import('../types').AcpActivityDetailVm>('get_acp_activity_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });

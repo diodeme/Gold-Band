@@ -1020,9 +1020,9 @@
       "continue-launch-channel-closed": "The workflow resume did not start. Try again."
     },
     "composer": {
+      "resizeHandle": "Drag to resize the input box",
       "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
-      "referenceUnavailable": "Reference unavailable",
-      "resizeHandle": "Drag to resize the input box"
+      "referenceUnavailable": "Reference unavailable"
     },
     "conversation": {
       "task-not-found": "This conversation could not be found.",

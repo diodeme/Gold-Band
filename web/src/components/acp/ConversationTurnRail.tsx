@@ -28,8 +28,26 @@ export interface ConversationTurnRailLocator {
 
 interface ConversationTurnRailProps {
   locator: ConversationTurnRailLocator;
+  /**
+   * Canonical timeline progress watermark (e.g. the session's newest
+   * seq/covered revision). Bumping it means new committed turns may exist
+   * beyond what the rail already shows, so the rail fetches only entries
+   * after its newest known seq and merges them — never a full re-read.
+   */
+  refreshSignal: number;
   /** Jumps the conversation timeline to the turn starting at `seq`. */
   onJumpToSeq: (seq: number) => void;
+}
+
+function mergeTurnEntries(
+  current: ConversationTurnIndexEntryVm[],
+  incremental: ConversationTurnIndexEntryVm[],
+): ConversationTurnIndexEntryVm[] {
+  if (incremental.length === 0) return current;
+  if (current.length === 0) return incremental;
+  const bySeq = new Map(current.map((entry) => [entry.seq, entry]));
+  for (const entry of incremental) bySeq.set(entry.seq, entry);
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
 /**
@@ -40,15 +58,17 @@ interface ConversationTurnRailProps {
  * Mounted by the conversation viewport outside the scroll container so it
  * stays fixed while the timeline scrolls.
  */
-export function ConversationTurnRail({ locator, onJumpToSeq }: ConversationTurnRailProps) {
+export function ConversationTurnRail({ locator, refreshSignal, onJumpToSeq }: ConversationTurnRailProps) {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<ConversationTurnIndexEntryVm[] | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const newestSeqRef = useRef<number | null>(null);
 
   const locatorKey = JSON.stringify(locator);
   useEffect(() => {
     let cancelled = false;
     const current = JSON.parse(locatorKey) as ConversationTurnRailLocator;
+    newestSeqRef.current = null;
     setEntries(null);
     import('@/api/client').then(({ getRuntimeApi }) =>
       getRuntimeApi().getConversationTurnIndex(
@@ -59,11 +79,17 @@ export function ConversationTurnRail({ locator, onJumpToSeq }: ConversationTurnR
         current.nodeId,
         current.attemptId,
         current.branchId ?? null,
+        null,
         current.outerNodeId ?? null,
         current.outerAttemptId ?? null,
       ),
     ).then((loaded) => {
-      if (!cancelled) setEntries(loaded);
+      if (!cancelled) {
+        newestSeqRef.current = loaded.length > 0
+          ? loaded[loaded.length - 1].seq
+          : null;
+        setEntries(loaded);
+      }
     }).catch(() => {
       if (!cancelled) setEntries([]);
     });
@@ -71,6 +97,43 @@ export function ConversationTurnRail({ locator, onJumpToSeq }: ConversationTurnR
       cancelled = true;
     };
   }, [locatorKey]);
+
+  // Incremental refresh: when the canonical session watermark advances, ask
+  // the backend only for turns newer than the newest one already shown and
+  // merge them by seq. This keeps the read proportional to new turns instead
+  // of rescanning the whole projection.
+  useEffect(() => {
+    const newestSeq = newestSeqRef.current;
+    if (newestSeq === null) return;
+    let cancelled = false;
+    const current = JSON.parse(locatorKey) as ConversationTurnRailLocator;
+    import('@/api/client').then(({ getRuntimeApi }) =>
+      getRuntimeApi().getConversationTurnIndex(
+        current.projectId ?? null,
+        current.taskId,
+        current.runId,
+        current.roundId,
+        current.nodeId,
+        current.attemptId,
+        current.branchId ?? null,
+        newestSeq,
+        current.outerNodeId ?? null,
+        current.outerAttemptId ?? null,
+      ),
+    ).then((incremental) => {
+      if (cancelled || incremental.length === 0) return;
+      newestSeqRef.current = incremental[incremental.length - 1].seq;
+      setEntries((previous) => mergeTurnEntries(previous ?? [], incremental));
+    }).catch(() => {
+      // The rail keeps its current projection; the next watermark bump retries.
+    });
+    return () => {
+      cancelled = true;
+    };
+    // refreshSignal is the only trigger: the locator effect above handles
+    // identity resets (newestSeqRef.current is null until the initial load
+    // finishes, so this never races the first fetch).
+  }, [locatorKey, refreshSignal]);
 
   // The list opens at the newest turns; older ones scroll in from above.
   useEffect(() => {

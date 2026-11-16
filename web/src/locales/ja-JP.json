@@ -1020,9 +1020,9 @@
       "continue-launch-channel-closed": "ワークフローの再開は開始されませんでした。もう一度やり直してください。"
     },
     "composer": {
+      "resizeHandle": "ドラッグして入力欄の高さを調整",
       "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
-      "referenceUnavailable": "参照は利用できません",
-      "resizeHandle": "ドラッグして入力欄の高さを調整"
+      "referenceUnavailable": "参照は利用できません"
     },
     "conversation": {
       "task-not-found": "この会話は見つかりませんでした。",

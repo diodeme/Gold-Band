@@ -258,8 +258,8 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
-export function getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, outerNodeId, outerAttemptId);
+export function getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, afterSeq?: number | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, afterSeq, outerNodeId, outerAttemptId);
 }
 
 export function reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport) {

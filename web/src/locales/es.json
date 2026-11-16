@@ -1020,9 +1020,9 @@
       "continue-launch-channel-closed": "La reanudación del flujo de trabajo no se inició. Vuelva a intentarlo."
     },
     "composer": {
+      "resizeHandle": "Arrastra para ajustar la altura del cuadro de entrada",
       "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos.",
-      "referenceUnavailable": "Referencia no disponible",
-      "resizeHandle": "Arrastra para ajustar la altura del cuadro de entrada"
+      "referenceUnavailable": "Referencia no disponible"
     },
     "conversation": {
       "task-not-found": "No se pudo encontrar esta conversación.",
@@ -2278,7 +2278,7 @@
       "kind": {
         "prompt": "Pregunta del usuario",
         "tool": "Llamada de herramienta",
-        "compaction": "Compacción de contexto",
+        "compaction": "Compactación de contexto",
         "permission": "Solicitud de permiso"
       }
     },

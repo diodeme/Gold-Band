@@ -2834,6 +2834,11 @@ export function ACPChatDialog(
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
+  // Mirror of the stable timeline for callbacks that must observe items
+  // mounted AFTER the callback was created (e.g. the turn-rail jump poll
+  // waiting for older-page pagination to load the target item).
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
   const effectiveTimelineGeneration = acpSessionTimelineGeneration(effective);
   const executionExited = Boolean(currentAcpExecutionError(projectionLifecycle));
   const timelineWindowOwner = useMemo<AcpTimelineWindowOwner>(() => ({
@@ -5909,10 +5914,15 @@ export function ACPChatDialog(
   // Turn rail jump: anchor to the first loaded item at or after the target
   // turn's seq. When the target predates the loaded window, scrolling to the
   // top drives the existing older-page pagination; a bounded poll anchors as
-  // soon as the target's key mounts.
+  // soon as the target's key mounts. The poll reads the timeline through a
+  // ref so pages loaded after the click are visible to it, and it treats
+  // "the anchor scrolled into place" (scroller no longer at the very top) as
+  // success-adjacent rather than aborting mid-pagination: user-driven scroll
+  // away from the top is indistinguishable from the jump landing, and in both
+  // cases continuing to poll would fight the user.
   const handleTurnRailJump = (seq: number) => {
-    const anchorItem = timeline.find(
-      (item): item is (typeof timeline)[number] & { seq: number } =>
+    const findAnchor = () => timelineRef.current.find(
+      (item): item is (typeof timelineRef.current)[number] & { seq: number } =>
         'seq' in item && typeof item.seq === 'number' && item.seq >= seq,
     );
     const scrollToKey = (key: string): boolean => {
@@ -5923,6 +5933,7 @@ export function ACPChatDialog(
       element.scrollIntoView({ block: 'start' });
       return true;
     };
+    const anchorItem = findAnchor();
     if (anchorItem && scrollToKey(timelineEventKey(anchorItem))) return;
     const scroller = document.querySelector<HTMLElement>(
       '[data-acp-conversation-rail="timeline"]',
@@ -5931,9 +5942,9 @@ export function ACPChatDialog(
     scroller.scrollTo({ top: 0 });
     const deadline = Date.now() + 10_000;
     const poll = () => {
-      const target = timeline.find(
-        (item) => 'seq' in item && typeof item.seq === 'number' && item.seq >= seq,
-      );
+      // Reflect pages committed since the click: the ref always points at
+      // the newest stable timeline, unlike the captured render's array.
+      const target = findAnchor();
       if (target && scrollToKey(timelineEventKey(target))) return;
       if (Date.now() > deadline || scroller.scrollTop > 8) return;
       window.requestAnimationFrame(poll);
@@ -7111,6 +7122,10 @@ export function ACPChatDialog(
               outerNodeId,
               outerAttemptId,
             }}
+            // Canonical head watermark: whenever the session admits newer
+            // durable events, the rail incrementally fetches turns after its
+            // newest known seq instead of staying on the opening snapshot.
+            refreshSignal={currentSession?.eventPage.newestSeq ?? 0}
             onJumpToSeq={handleTurnRailJump}
           />
         ) : null}

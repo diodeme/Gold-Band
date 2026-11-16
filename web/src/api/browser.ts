@@ -8,6 +8,7 @@ import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { boundedRecentWallpapers } from '@/lib/wallpaper';
+import { builtinThemes } from '@/themes/builtin-themes';
 import { readBrowserMemory, writeBrowserMemory } from './browserMemory';
 
 const browserFontCandidates = [
@@ -2302,7 +2303,7 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
-  getConversationTurnIndex(): Promise<ConversationTurnIndexEntryVm[]> {
+  getConversationTurnIndex(_projectId?: string | null, _taskId?: string, _runId?: string, _roundId?: string, _nodeId?: string, _attemptId?: string, _branchId?: string | null, afterSeq?: number | null): Promise<ConversationTurnIndexEntryVm[]> {
     // Browser preview has no durable timeline; a long synthetic session (~90
     // turns across several chapters and days) exercises the rail's grouping,
     // coloring, centering growth and internal scroll affordances.
@@ -2319,16 +2320,18 @@ export const browserApi: RuntimeApi = {
     const total = 92;
     const entries: ConversationTurnIndexEntryVm[] = [];
     for (let index = 0; index < total; index += 1) {
+      const seq = index + 1;
+      if (afterSeq != null && seq <= afterSeq) continue;
       const dayOffset = Math.floor(index / 34);
       const hour = 9 + (index % 8);
       const timestamp = new Date(Date.UTC(2026, 10, 9 + dayOffset, hour, index * 7 % 60, 0)).toISOString();
       const kind = index === 0 ? 'prompt' : kinds[index % kinds.length];
       entries.push({
-        seq: index + 1,
+        seq,
         timestamp,
         kind,
         promptPreview: kind === 'prompt'
-          ? `第 ${index + 1} 轮：${topics[index % topics.length]}`
+          ? `第 ${seq} 轮：${topics[index % topics.length]}`
           : null,
       });
     }
@@ -2647,11 +2650,17 @@ export const browserApi: RuntimeApi = {
     if (current.appearance.themeId !== appearance.themeId) {
       const collapsed = structuredClone(personalization);
       const byScheme = collapsed.wallpaper.byColorScheme;
+      // Theme pins never cross themes; themes without declared wallpapers
+      // cannot hold the theme source at all. Capability comes from the theme
+      // manifest, so every wallpaper-capable builtin (gold-band, meadow,
+      // vista) keeps its pin instead of collapsing to none.
+      const targetTheme = builtinThemes.find((theme) => theme.id === appearance.themeId);
+      const themeHasWallpapers = (scheme: 'light' | 'dark') =>
+        Boolean(targetTheme?.wallpapers?.[scheme]
+          && Object.keys(targetTheme.wallpapers[scheme]!).length > 0);
       for (const scheme of ['light', 'dark'] as const) {
-        // Theme pins never cross themes; themes without declared wallpapers
-        // cannot hold the theme source at all.
         if (byScheme[scheme].image.source === 'theme') {
-          byScheme[scheme].image = appearance.themeId === 'builtin.vista'
+          byScheme[scheme].image = themeHasWallpapers(scheme)
             ? { source: 'theme' }
             : { source: 'none' };
         }

@@ -1020,9 +1020,9 @@
       "continue-launch-channel-closed": "A retomada do fluxo de trabalho não iniciou. Tente novamente."
     },
     "composer": {
+      "resizeHandle": "Arraste para ajustar a altura da caixa de entrada",
       "context-limit-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
-      "referenceUnavailable": "Referência indisponível",
-      "resizeHandle": "Arraste para ajustar a altura da caixa de entrada"
+      "referenceUnavailable": "Referência indisponível"
     },
     "conversation": {
       "task-not-found": "Esta conversa não foi encontrada.",

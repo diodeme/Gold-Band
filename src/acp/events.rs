@@ -1833,6 +1833,14 @@ pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiE
     Ok(items)
 }
 
+/// Loads timeline items WITHOUT hydrating artifact blobs. Navigation-level
+/// projections (turn index) only need kind/id/seq/timestamp/content fields, so
+/// tool outputs and diffs stay on disk — this keeps the read proportional to
+/// the index, not to the heaviest artifacts in the session.
+pub fn load_timeline_items_without_hydration(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    with_jsonl_file_lock(path, || load_timeline_items_for_storage_unlocked(path))
+}
+
 pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
@@ -4151,12 +4159,27 @@ fn normalize_timeline_timestamp(raw: &str) -> String {
 /// user prompt items (`userTextDelta` with a `gold-band-user-prompt-*` id) —
 /// plain `userTextDelta` chunks and other user-driven events do not open turns.
 pub fn conversation_turn_index(events: &[AcpUiEvent]) -> Vec<ConversationTurnIndexEntry> {
+    conversation_turn_index_after(events, None)
+}
+
+/// Incremental variant: only returns entries for turns whose prompt seq is
+/// greater than `after_seq`, letting the rail merge new turns without
+/// re-reading the full projection each time.
+pub fn conversation_turn_index_after(
+    events: &[AcpUiEvent],
+    after_seq: Option<u64>,
+) -> Vec<ConversationTurnIndexEntry> {
     let mut sorted: Vec<&AcpUiEvent> = events.iter().collect();
     sorted.sort_by_key(|event| event.seq);
     let mut index: Vec<ConversationTurnIndexEntry> = Vec::new();
     for event in sorted {
         let kind = event.kind.as_str();
         if kind == "userTextDelta" && event.id.starts_with("gold-band-user-prompt-") {
+            if let Some(after) = after_seq {
+                if event.seq <= after {
+                    continue;
+                }
+            }
             index.push(ConversationTurnIndexEntry {
                 seq: event.seq,
                 timestamp: normalize_timeline_timestamp(&event.timestamp),
@@ -4190,7 +4213,27 @@ pub fn conversation_turn_index(events: &[AcpUiEvent]) -> Vec<ConversationTurnInd
 
 #[cfg(test)]
 mod tests {
-    use super::{ConversationTurnKind, conversation_turn_index};
+    use super::{ConversationTurnKind, conversation_turn_index, conversation_turn_index_after};
+
+    #[test]
+    fn turn_index_after_returns_only_entries_beyond_the_cursor() {
+        let events = vec![
+            user_prompt(1, "第一问"),
+            ui_event(2, "toolCall", None),
+            user_prompt(4, "第二问"),
+            ui_event(5, "permissionRequest", None),
+            user_prompt(6, "第三问"),
+        ];
+        // Full projection is unchanged when no cursor is given.
+        assert_eq!(conversation_turn_index_after(&events, None).len(), 3);
+        // A cursor at the second prompt keeps only later turns.
+        let incremental = conversation_turn_index_after(&events, Some(4));
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].seq, 6);
+        // A cursor at or past the newest prompt yields nothing new.
+        assert!(conversation_turn_index_after(&events, Some(6)).is_empty());
+        assert!(conversation_turn_index_after(&events, Some(99)).is_empty());
+    }
 
     fn ui_event(seq: u64, kind: &str, content: Option<&str>) -> super::AcpUiEvent {
         super::AcpUiEvent {

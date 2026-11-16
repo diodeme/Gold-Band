@@ -6708,7 +6708,7 @@ pub struct ConversationTurnIndexEntryVm {
 /// durable branch timeline only; live in-flight turns appear once committed.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn get_conversation_turn_index(
+pub async fn get_conversation_turn_index(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
     task_id: String,
@@ -6717,13 +6717,18 @@ pub fn get_conversation_turn_index(
     node_id: String,
     attempt_id: String,
     branch_id: Option<String>,
+    after_seq: Option<u64>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Vec<ConversationTurnIndexEntryVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
     let branch_id =
         branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
-    let result = (move || {
+    // The branch id feeds a filesystem path join; validate it exactly like the
+    // other timeline commands so a crafted id cannot escape the attempt dir.
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
+        .map_err(command_error)?;
+    spawn_blocking_command(move || {
         let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
             (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
                 &task_id,
@@ -6740,9 +6745,13 @@ pub fn get_conversation_turn_index(
         };
         let timeline_path =
             gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
-        let events = gold_band::acp::events::load_timeline_items(&timeline_path)
+        // Navigation projections never render artifact bodies, so the read
+        // skips blob hydration and stays proportional to the turn index; the
+        // whole scan also runs off the main thread and only holds the file
+        // lock for the lean parse.
+        let events = gold_band::acp::events::load_timeline_items_without_hydration(&timeline_path)
             .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
-        Ok(gold_band::acp::events::conversation_turn_index(&events)
+        Ok(gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
             .into_iter()
             .map(|entry| ConversationTurnIndexEntryVm {
                 seq: entry.seq,
@@ -6751,10 +6760,9 @@ pub fn get_conversation_turn_index(
                 prompt_preview: entry.prompt_preview,
             })
             .collect::<Vec<_>>())
-    })();
-    result
+    })
+    .await
 }
-
 #[tauri::command]
 pub async fn get_acp_session(
     state: State<'_, DesktopState>,
@@ -10408,14 +10416,28 @@ pub async fn delete_recent_desktop_wallpaper(
 ) -> CommandResult<PreferencesVm> {
     let context = state.context().map_err(command_error)?;
     let root = context.app().paths.user_gold_band_dir();
-    let mut personalization = spawn_blocking_command(move || {
-        let mut personalization = context.config.personalization.clone();
-        delete_recent_wallpaper(&root, &input.wallpaper_id, &mut personalization)
+    // The blocking closure only removes the store record and files; the image
+    // fallback is re-applied to the LATEST preference snapshot afterwards so a
+    // concurrent settings change (opacity, fonts, zoom, source) made while the
+    // files were being deleted is never silently overwritten.
+    let deleted = spawn_blocking_command(move || {
+        let mut scratch = PersonalizationPreference::default();
+        delete_recent_wallpaper(&root, &input.wallpaper_id, &mut scratch)
             .map_err(wallpaper_command_error)?;
-        Ok(personalization)
+        Ok(input.wallpaper_id)
     })
     .await?;
     let latest = state.context().map_err(command_error)?;
+    let mut personalization = latest.config.personalization.clone();
+    for scheme in [ResolvedColorScheme::Light, ResolvedColorScheme::Dark] {
+        let wallpaper = personalization.wallpaper.for_color_scheme_mut(scheme);
+        if matches!(
+            &wallpaper.image,
+            WallpaperImagePreference::User { asset_id } if *asset_id == deleted
+        ) {
+            wallpaper.image = WallpaperImagePreference::Theme { asset_id: None };
+        }
+    }
     persist_desktop_personalization(&state, &latest, personalization)
 }
 

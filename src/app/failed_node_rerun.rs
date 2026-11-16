@@ -58,6 +58,17 @@ struct RerunOperation {
     initial_run: RunState,
     workflow: WorkflowDsl,
     model_bindings: WorkflowModelBindings,
+    /// The completed workspace writers displaced by this handoff. This must
+    /// survive replacing the source seal so recovery can finish their drain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    previous_successors: Vec<PreviousSuccessor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviousSuccessor {
+    run_id: String,
+    run_uuid: Option<String>,
 }
 
 /// Uses the existing dispatch lock: mutation admission and source sealing
@@ -521,9 +532,17 @@ fn stopped_execution_roots(
     app: &App,
     task_id: &str,
     source_run_id: &str,
+    previous_successors: &[String],
 ) -> Result<HashSet<Utf8PathBuf>> {
     let mut pending = vec![source_run_id.to_string()];
     let mut discovered = HashSet::from([source_run_id.to_string()]);
+    for previous in previous_successors {
+        ensure!(
+            discovered.insert(previous.clone()),
+            failure("workflow.retry.stale-locator", task_id, source_run_id)
+        );
+        pending.push(previous.clone());
+    }
     let mut roots = HashSet::new();
     let mut metadata_bytes = 0_u64;
     while let Some(run_id) = pending.pop() {
@@ -660,8 +679,13 @@ fn check_quiesce_metadata(
     Ok(())
 }
 
-fn quiesce(app: &App, task_id: &str, source_run_id: &str) -> Result<()> {
-    let roots = stopped_execution_roots(app, task_id, source_run_id)?;
+fn quiesce(
+    app: &App,
+    task_id: &str,
+    source_run_id: &str,
+    previous_successors: &[String],
+) -> Result<()> {
+    let roots = stopped_execution_roots(app, task_id, source_run_id, previous_successors)?;
     let deadline = Instant::now() + QUIESCE_TIMEOUT;
     loop {
         let active = crate::acp::client::active_prompt_attempts_under_roots(&roots)
@@ -707,12 +731,26 @@ fn materialize(app: &App, task_id: &str, operation: &RerunOperation) -> Result<P
         )
     );
     let source = app.run_status(task_id, &origin.source_run_id)?;
+    ensure_current_successor_owner(app, task_id, &source)?;
     ensure!(
         source.is_sealed() && source.uuid == origin.source_run_uuid,
         failure("workflow.retry.stale-locator", task_id, &source.id)
     );
     ensure_source_sealed_for_operation(&source, operation, task_id)?;
-    quiesce(app, task_id, &source.id)?;
+    if let Some(previous) = operation.previous_successors.last() {
+        let _dispatch = execution_plan::acquire_plan_write_wait(&execution_plan::lock_key(
+            &app.paths,
+            task_id,
+            &previous.run_id,
+        ))?;
+        seal_previous_successor(app, task_id, operation, previous)?;
+    }
+    let previous_successor_ids = operation
+        .previous_successors
+        .iter()
+        .map(|previous| previous.run_id.clone())
+        .collect::<Vec<_>>();
+    quiesce(app, task_id, &source.id, &previous_successor_ids)?;
     let rounds = prefix(
         app,
         task_id,
@@ -935,19 +973,135 @@ fn seal_matches_operation(run: &RunState, operation: &RerunOperation) -> bool {
         })
 }
 
-fn ensure_sealed_successor_settled(app: &App, task_id: &str, source: &RunState) -> Result<()> {
+fn ensure_current_successor_owner(app: &App, task_id: &str, run: &RunState) -> Result<()> {
+    let Some(origin) = run.rerun.as_ref().and_then(|rerun| rerun.origin.as_ref()) else {
+        return Ok(());
+    };
+    let source = app
+        .run_status(task_id, &origin.source_run_id)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, &run.id))?;
+    ensure!(
+        source.uuid == origin.source_run_uuid,
+        failure("workflow.retry.stale-locator", task_id, &run.id)
+    );
     let seal = source
         .rerun
         .as_ref()
-        .and_then(|rerun| rerun.sealed_by.as_ref())
-        .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, &source.id))?;
-    let successor = app
-        .run_status(task_id, &seal.successor_run_id)
-        .map_err(|_| failure("workflow.retry.stale-locator", task_id, &source.id))?;
+        .and_then(|rerun| rerun.sealed_by.as_ref());
     ensure!(
-        successor.status == RunStatus::Completed,
-        failure("workflow.retry.source-sealed", task_id, &source.id)
+        seal.is_some_and(|seal| {
+            seal.operation_id == origin.operation_id && seal.successor_run_id == run.id
+        }),
+        failure("workflow.retry.source-sealed", task_id, &run.id)
     );
+    Ok(())
+}
+
+fn ensure_sealed_successor_settled(
+    app: &App,
+    task_id: &str,
+    source: &RunState,
+) -> Result<Vec<RunState>> {
+    let mut chain = Vec::new();
+    let mut current = source.clone();
+    let mut visited = HashSet::from([source.id.clone()]);
+    loop {
+        let seal = current
+            .rerun
+            .as_ref()
+            .and_then(|rerun| rerun.sealed_by.as_ref())
+            .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, &source.id))?;
+        ensure!(
+            visited.insert(seal.successor_run_id.clone()),
+            failure("workflow.retry.stale-locator", task_id, &source.id)
+        );
+        ensure!(
+            visited.len() <= MAX_QUIESCE_RUNS,
+            failure("workflow.retry.prefix-too-large", task_id, &source.id)
+        );
+        let successor = app
+            .run_status(task_id, &seal.successor_run_id)
+            .map_err(|_| failure("workflow.retry.stale-locator", task_id, &source.id))?;
+        ensure!(
+            successor.id == seal.successor_run_id && successor.task_id == task_id,
+            failure("workflow.retry.stale-locator", task_id, &source.id)
+        );
+        ensure!(
+            successor.status == RunStatus::Completed,
+            failure("workflow.retry.source-sealed", task_id, &source.id)
+        );
+        chain.push(successor.clone());
+        if !successor.is_sealed() {
+            return Ok(chain);
+        }
+        current = successor;
+    }
+}
+
+/// The caller holds this previous writer's dispatch write guard. Reuse its
+/// canonical attempt lock and seal so admission and queued ACP probes observe
+/// exactly the same fence, without changing the completed lifecycle.
+fn seal_previous_successor(
+    app: &App,
+    task_id: &str,
+    operation: &RerunOperation,
+    previous: &PreviousSuccessor,
+) -> Result<()> {
+    let source = origin(operation)?;
+    validate_locator(task_id, &source.source_run_id, &[&previous.run_id])?;
+    ensure!(
+        previous.run_id != source.source_run_id && previous.run_id != operation.initial_run.id,
+        failure(
+            "workflow.retry.stale-locator",
+            task_id,
+            &source.source_run_id
+        )
+    );
+    let observed = app.run_status(task_id, &previous.run_id)?;
+    let locator = observed.current_execution_locator().ok_or_else(|| {
+        failure(
+            "workflow.retry.stale-locator",
+            task_id,
+            &source.source_run_id,
+        )
+    })?;
+    let lock = super::attempt_runtime_state_lock(
+        app,
+        task_id,
+        &previous.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    );
+    let _state = lock
+        .lock()
+        .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    let mut run = app.run_status(task_id, &previous.run_id)?;
+    ensure!(
+        run.id == previous.run_id && run.task_id == task_id && run.uuid == previous.run_uuid,
+        failure(
+            "workflow.retry.stale-locator",
+            task_id,
+            &source.source_run_id
+        )
+    );
+    ensure!(
+        run.status == RunStatus::Completed
+            && (!run.is_sealed() || seal_matches_operation(&run, operation)),
+        failure(
+            "workflow.retry.source-sealed",
+            task_id,
+            &source.source_run_id
+        )
+    );
+    if !run.is_sealed() {
+        run.rerun.get_or_insert_with(Default::default).sealed_by = Some(RunRerunSeal {
+            operation_id: source.operation_id.clone(),
+            successor_run_id: operation.initial_run.id.clone(),
+            sealed_at: now_rfc3339_like(),
+        });
+        write_json(&app.paths.run_file(task_id, &run.id), &run)?;
+    }
     Ok(())
 }
 
@@ -987,6 +1141,17 @@ fn commit_operation(
     let mut staged = operation.clone();
     let operation_id = source_origin.operation_id.clone();
     let observed = app.run_status(task_id, run_id)?;
+    ensure_current_successor_owner(app, task_id, &observed)?;
+    ensure!(
+        !(observed.is_sealed()
+            && observed
+                .rerun
+                .as_ref()
+                .and_then(|rerun| rerun.origin.as_ref())
+                .is_some()
+            && !seal_matches_operation(&observed, &staged)),
+        failure("workflow.retry.source-sealed", task_id, run_id)
+    );
     if observed.is_sealed() {
         if seal_matches_operation(&observed, &staged) {
             return Ok(CommittedRerunOperation {
@@ -994,14 +1159,19 @@ fn commit_operation(
                 candidate: None,
             });
         }
-        if let Err(error) = ensure_sealed_successor_settled(app, task_id, &observed) {
-            // A losing locator was never accepted; do not leave an operation
-            // record that a later duplicate could recover as if it had been.
-            let _ = fs::remove_file(operation_path);
-            return Err(error);
-        }
+        let previous = ensure_sealed_successor_settled(app, task_id, &observed)?;
+        staged.previous_successors = previous
+            .into_iter()
+            .map(|previous| PreviousSuccessor {
+                run_id: previous.id,
+                run_uuid: previous.uuid,
+            })
+            .collect();
     }
 
+    // Persist the displaced writer before changing the source seal. Recovery
+    // then knows which writer to fence/drain even if either seal write fails.
+    write_json(operation_path, &staged)?;
     write_json(
         &app.paths
             .pending_node_rerun_file(task_id, &staged.initial_run.id),
@@ -1118,8 +1288,10 @@ impl App {
     }
 
     pub fn ensure_run_writable(&self, task_id: &str, run_id: &str) -> Result<()> {
+        let run = self.run_status(task_id, run_id)?;
+        ensure_current_successor_owner(self, task_id, &run)?;
         ensure!(
-            !self.run_status(task_id, run_id)?.is_sealed(),
+            !run.is_sealed(),
             failure("workflow.retry.source-sealed", task_id, run_id)
         );
         Ok(())
@@ -1134,6 +1306,7 @@ impl App {
         attempt_id: &str,
     ) -> Result<()> {
         let run = self.run_status(task_id, run_id)?;
+        ensure_current_successor_owner(self, task_id, &run)?;
         ensure!(
             !run.is_sealed(),
             failure("workflow.retry.source-sealed", task_id, run_id)
@@ -1238,6 +1411,7 @@ impl App {
             &[task_id, run_id, round_id, node_id, attempt_id],
         )?;
         let source = self.run_status(task_id, run_id)?;
+        ensure_current_successor_owner(self, task_id, &source)?;
         ensure!(
             source.pause_reason != Some(PauseReason::ErrorBlocked),
             failure("workflow.retry.error-blocked", task_id, run_id)
@@ -1257,6 +1431,14 @@ impl App {
             return launch_committed_operation(self, task_id, committed);
         }
         if source.is_sealed() {
+            if source
+                .rerun
+                .as_ref()
+                .and_then(|rerun| rerun.origin.as_ref())
+                .is_some()
+            {
+                return Err(failure("workflow.retry.source-sealed", task_id, run_id));
+            }
             ensure_sealed_successor_settled(self, task_id, &source)?;
         }
         // Snapshot authoring under its existing lock, executable preflight outside
@@ -1377,6 +1559,7 @@ impl App {
                     initial_run: run,
                     workflow,
                     model_bindings: authoring.model_bindings,
+                    previous_successors: Vec::new(),
                 };
                 write_json(&operation_path, &operation)?;
             }
@@ -1667,7 +1850,7 @@ mod tests {
         let activity =
             register_test_prompt_activity(child_attempt.clone(), PromptActivity::Running);
         let background = app.clone_for_background();
-        let worker = thread::spawn(move || quiesce(&background, task_id, "run-source"));
+        let worker = thread::spawn(move || quiesce(&background, task_id, "run-source", &[]));
         let deadline = Instant::now() + Duration::from_secs(2);
         let cancelled = loop {
             if crate::acp::client::prompt_activity(&child_attempt)
@@ -1937,7 +2120,7 @@ mod tests {
         let (done, completion) = mpsc::channel();
         let background_app = app.clone_for_background();
         let worker = std::thread::spawn(move || {
-            let result = quiesce(&background_app, task_id, source_run_id);
+            let result = quiesce(&background_app, task_id, source_run_id, &[]);
             done.send(()).unwrap();
             result
         });
@@ -2052,7 +2235,7 @@ mod tests {
         let activity =
             register_test_prompt_activity(child_attempt.clone(), PromptActivity::Running);
         let background = app.clone_for_background();
-        let worker = thread::spawn(move || quiesce(&background, "task-tree", "run-source"));
+        let worker = thread::spawn(move || quiesce(&background, "task-tree", "run-source", &[]));
         let deadline = Instant::now() + Duration::from_secs(2);
         let cancelled = loop {
             if crate::acp::client::prompt_activity(&child_attempt)
@@ -2178,7 +2361,7 @@ mod tests {
                     .set_len(MAX_QUIESCE_METADATA_BYTES + 1)
                     .unwrap();
             }
-            let error = quiesce(&app, "task-tree", "run-source").unwrap_err();
+            let error = quiesce(&app, "task-tree", "run-source", &[]).unwrap_err();
             assert_eq!(
                 crate::runtime_error::normalize_runtime_error(&error).code_str(),
                 expected,
@@ -2250,7 +2433,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let result = quiesce(&app, "task-tree", "run-source");
+        let result = quiesce(&app, "task-tree", "run-source", &[]);
         #[cfg(windows)]
         fs::remove_dir(&link).unwrap();
         #[cfg(unix)]

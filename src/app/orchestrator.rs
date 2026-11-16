@@ -20474,6 +20474,8 @@ mod tests {
             wait_for_rerun_settlement(&app, &first.run.id).outcome,
             Some(RunOutcome::Success)
         );
+        app.begin_run_write_admission("task-retry", &first.run.id)
+            .unwrap();
 
         let second = app
             .rerun_failed_node(
@@ -20488,11 +20490,342 @@ mod tests {
         invocations
             .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
             .unwrap();
+        let previous_admission = app.begin_run_write_admission("task-retry", &first.run.id);
+        let previous_attempt = app.ensure_attempt_writable(
+            "task-retry",
+            &first.run.id,
+            &first.locator.round_id,
+            &first.locator.node_id,
+            &first.locator.attempt_id,
+        );
+        app.begin_run_write_admission("task-retry", &second.run.id)
+            .unwrap();
         release.send(()).unwrap();
         assert_eq!(
             wait_for_rerun_settlement(&app, &second.run.id).outcome,
             Some(RunOutcome::Success)
         );
+        for result in [previous_admission.map(|_| ()), previous_attempt] {
+            assert_eq!(
+                normalize_runtime_error(&result.expect_err("previous successor must be fenced"))
+                    .code_str(),
+                "workflow.retry.source-sealed"
+            );
+        }
+        assert!(
+            app.ensure_run_writable("task-retry", &first.run.id)
+                .is_err()
+        );
+        app.ensure_run_writable("task-retry", &second.run.id)
+            .unwrap();
+    }
+
+    #[test]
+    fn failed_node_rerun_drains_previous_successor_before_publishing_the_next() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+        let first = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        let completed = wait_for_rerun_settlement(&app, &first.run.id);
+        let previous_attempt = app.paths.attempt_dir(
+            "task-retry",
+            &first.run.id,
+            &first.locator.round_id,
+            &first.locator.node_id,
+            &first.locator.attempt_id,
+        );
+        let activity = crate::acp::client::register_test_prompt_activity(
+            previous_attempt.clone(),
+            crate::acp::client::PromptActivity::Running,
+        );
+        let background = app.clone_for_background();
+        let worker = thread::spawn(move || {
+            background.rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            )
+        });
+        let deadline = std::time::Instant::now() + RETRY_ADMISSION_TEST_TIMEOUT;
+        let mut premature_invocation = false;
+        let cancelled = loop {
+            if crate::acp::client::prompt_activity(&previous_attempt)
+                == Some(crate::acp::client::PromptActivity::CancelRequested)
+            {
+                break true;
+            }
+            if invocations.try_recv().is_ok() {
+                premature_invocation = true;
+                break false;
+            }
+            if worker.is_finished() || std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let previous_fenced = app
+            .ensure_run_writable("task-retry", &first.run.id)
+            .is_err();
+        let visible_runs = app.run_list("task-retry").unwrap().len();
+        let source_key = crate::execution_plan::lock_key(&app.paths, "task-retry", "run-retry");
+        let previous_key = crate::execution_plan::lock_key(&app.paths, "task-retry", &first.run.id);
+        let dispatch_locked = crate::execution_plan::dispatch_write_held(&source_key)
+            || crate::execution_plan::dispatch_write_held(&previous_key);
+        activity.mark_stopped();
+        let second = worker.join().unwrap().unwrap();
+        if !premature_invocation {
+            invocations
+                .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+                .unwrap();
+        }
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &second.run.id);
+        assert!(
+            cancelled,
+            "handoff must cancel the previous successor's live ACP"
+        );
+        assert!(
+            previous_fenced,
+            "completed does not revoke ACP write permission"
+        );
+        assert_eq!(
+            visible_runs, 2,
+            "do not publish a successor before the previous ACP stops"
+        );
+        assert!(
+            !dispatch_locked,
+            "provider drain must happen outside dispatch locks"
+        );
+        let previous = app.run_status("task-retry", &first.run.id).unwrap();
+        assert_eq!(previous.status, completed.status);
+        assert_eq!(previous.outcome, completed.outcome);
+    }
+
+    #[test]
+    fn failed_node_rerun_recovery_restores_previous_successor_fence_and_drain() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+        let first = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &first.run.id);
+        let second = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &second.run.id);
+
+        // Crash after the new source seal, before the previous writer's seal
+        // and the target publish. Only the durable operation can find R2 now.
+        let pending_path = app
+            .paths
+            .pending_node_rerun_file("task-retry", &second.run.id);
+        let pending: serde_json::Value = read_json(&pending_path).unwrap();
+        let target_dir =
+            std::fs::canonicalize(app.paths.run_dir("task-retry", &second.run.id)).unwrap();
+        assert!(target_dir.starts_with(std::fs::canonicalize(temp.path()).unwrap()));
+        std::fs::rename(target_dir, temp.path().join("finished-successor")).unwrap();
+        write_json(&pending_path, &pending).unwrap();
+        let mut previous = app.run_status("task-retry", &first.run.id).unwrap();
+        previous.rerun.as_mut().unwrap().sealed_by = None;
+        write_json(&app.paths.run_file("task-retry", &previous.id), &previous).unwrap();
+        let previous_attempt = app.paths.attempt_dir(
+            "task-retry",
+            &first.run.id,
+            &first.locator.round_id,
+            &first.locator.node_id,
+            &first.locator.attempt_id,
+        );
+        let activity = crate::acp::client::register_test_prompt_activity(
+            previous_attempt.clone(),
+            crate::acp::client::PromptActivity::Running,
+        );
+        let background = app.clone_for_background();
+        let target = second.run.id.clone();
+        let recovery =
+            thread::spawn(move || background.recover_pending_node_rerun("task-retry", &target));
+        let deadline = std::time::Instant::now() + RETRY_ADMISSION_TEST_TIMEOUT;
+        let cancelled = loop {
+            if crate::acp::client::prompt_activity(&previous_attempt)
+                == Some(crate::acp::client::PromptActivity::CancelRequested)
+            {
+                break true;
+            }
+            if recovery.is_finished() || std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let published_early = app.paths.run_file("task-retry", &second.run.id).exists();
+        let fenced = app
+            .ensure_run_writable("task-retry", &first.run.id)
+            .is_err();
+        activity.mark_stopped();
+        assert!(recovery.join().unwrap().unwrap());
+        assert!(
+            cancelled,
+            "recovery must drain the displaced writer from its journal identity"
+        );
+        assert!(
+            !published_early,
+            "recovery must wait before publishing the new Run"
+        );
+        assert!(fenced, "recovery must restore an interrupted seal write");
+        let recovered = app.run_status("task-retry", &second.run.id).unwrap();
+        assert_eq!(recovered.status, RunStatus::Paused);
+        assert_eq!(
+            recovered.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert!(
+            invocations.try_recv().is_err(),
+            "recovery must never invoke the provider"
+        );
+
+        // A replacement with the same local run id must not be fenced/drained.
+        let target_dir =
+            std::fs::canonicalize(app.paths.run_dir("task-retry", &second.run.id)).unwrap();
+        assert!(target_dir.starts_with(std::fs::canonicalize(temp.path()).unwrap()));
+        std::fs::rename(target_dir, temp.path().join("recovered-successor")).unwrap();
+        write_json(&pending_path, &pending).unwrap();
+        previous.uuid = Some("replacement-successor".to_string());
+        write_json(&app.paths.run_file("task-retry", &previous.id), &previous).unwrap();
+        let error = app
+            .recover_pending_node_rerun("task-retry", &second.run.id)
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.stale-locator"
+        );
+        assert!(!app.paths.run_file("task-retry", &second.run.id).exists());
+        assert!(
+            !app.run_status("task-retry", &first.run.id)
+                .unwrap()
+                .is_sealed()
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_checks_the_writer_at_the_end_of_forwarded_seals() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+        let first = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        let mut first_run = wait_for_rerun_settlement(&app, &first.run.id);
+        let (mut round, mut node) = current_attempt_state(&app, "task-retry", &first_run).unwrap();
+        first_run.outcome = Some(RunOutcome::Failure);
+        round.outcome = Some(RunOutcome::Failure);
+        node.outcome = Some(NodeOutcome::Failure);
+        persist_runtime_state(&app, "task-retry", &first_run, &round, &node).unwrap();
+        let nested = app
+            .rerun_failed_node(
+                "task-retry",
+                &first.run.id,
+                &first.locator.round_id,
+                &first.locator.node_id,
+                &first.locator.attempt_id,
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        let overlapping = app.rerun_failed_node(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-002",
+        );
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &nested.run.id);
+        if let Ok(overlapping) = overlapping.as_ref() {
+            invocations
+                .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+                .unwrap();
+            release.send(()).unwrap();
+            wait_for_rerun_settlement(&app, &overlapping.run.id);
+        }
+        let error = overlapping
+            .err()
+            .expect("a completed intermediate Run cannot hide its active successor");
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.source-sealed"
+        );
+        let next = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        let previous_admission = app.begin_run_write_admission("task-retry", &nested.run.id);
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &next.run.id);
+        assert_eq!(
+            normalize_runtime_error(
+                &previous_admission
+                    .err()
+                    .expect("fence the actual previous writer")
+            )
+            .code_str(),
+            "workflow.retry.source-sealed",
+        );
+        app.ensure_run_writable("task-retry", &next.run.id).unwrap();
     }
 
     #[test]

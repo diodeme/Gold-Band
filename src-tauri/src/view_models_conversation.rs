@@ -33,7 +33,8 @@ use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{PromptWorkspaceFileRef, conversation_prompt_has_payload};
 use gold_band::runtime::{
-    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
+    NodeState, RoundState, RoundTraceStep, RunState, RuntimeExecutionPhase, RuntimeExecutionState,
+    TaskState, WorkerRefState, canonical_trace_for_round,
 };
 use gold_band::runtime_error::RuntimeErrorInfo;
 use gold_band::storage::{read_json, write_json};
@@ -678,6 +679,16 @@ pub struct ConversationRunVm {
     pub runtime_error: Option<RuntimeErrorInfo>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
+    pub sealed: bool,
+    pub rerun_successor_run_id: Option<String>,
+    pub rerun_origin: Option<gold_band::runtime::RunRerunOrigin>,
+}
+
+fn rerun_successor_run_id(run: &RunState) -> Option<String> {
+    run.rerun
+        .as_ref()
+        .and_then(|metadata| metadata.sealed_by.as_ref())
+        .map(|seal| seal.successor_run_id.clone())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -739,6 +750,7 @@ pub struct ConversationSessionLeafVm {
     pub runtime_display: RuntimeDisplayVm,
     pub lifecycle: ConversationAttemptLifecycleVm,
     pub current: bool,
+    pub inherited: bool,
     pub manual_check_pending: bool,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -3578,114 +3590,137 @@ fn resolve_terminal_session_successor(
     None
 }
 
-fn conversation_session_successors_from_state(
+fn committed_attempts_by_node(
     app: &App,
     task_id: &str,
     run_id: &str,
-    rounds: &[RoundState],
+    round_id: &str,
+    trace: &[RoundTraceStep],
+) -> anyhow::Result<HashMap<String, Vec<NodeState>>> {
+    let mut attempts = HashMap::<String, Vec<NodeState>>::new();
+    for step in trace {
+        let path = app
+            .paths
+            .node_file(task_id, run_id, round_id, &step.node_id, &step.attempt_id);
+        let node: NodeState = read_json(&path)?;
+        gold_band::runtime::validate_node_state(&node)?;
+        anyhow::ensure!(
+            node.run_id == run_id
+                && node.round_id == round_id
+                && node.node_id == step.node_id
+                && node.attempt_id == step.attempt_id,
+            "runtime.trace-node-identity-mismatch"
+        );
+        attempts.entry(step.node_id.clone()).or_default().push(node);
+    }
+    Ok(attempts)
+}
+
+fn conversation_session_successors_from_state(
+    app: &App,
+    task_id: &str,
+    round: &RoundState,
+    trace: &[RoundTraceStep],
+    attempts: &HashMap<String, Vec<NodeState>>,
     workflow: Option<&WorkflowDsl>,
 ) -> anyhow::Result<HashMap<ConversationSessionLocator, ConversationSessionTargetVm>> {
     let mut direct = HashMap::<ConversationSessionLocator, ConversationSessionLocator>::new();
+    let run_id = &round.run_id;
 
     if let Some(workflow) = workflow {
-        for round in rounds {
-            let mut trace = round.trace.clone();
-            trace.sort_by_key(|step| step.sequence);
-            let mut latest_by_node = HashMap::<String, ConversationSessionLocator>::new();
-            for step in trace {
-                let target = ConversationSessionLocator {
-                    round_id: round.id.clone(),
-                    node_id: step.node_id.clone(),
-                    attempt_id: step.attempt_id.clone(),
-                    outer_node_id: None,
-                    outer_attempt_id: None,
-                };
-                if workflow_edge_continues_session(
-                    workflow,
-                    step.from_node_id.as_deref(),
-                    &step.node_id,
-                    step.edge_outcome.as_deref(),
-                ) && let Some(source) = latest_by_node.get(&step.node_id)
-                {
-                    let worker_ref_path = app.paths.worker_ref_file(
-                        task_id,
-                        run_id,
-                        &source.round_id,
-                        &source.node_id,
-                        &source.attempt_id,
-                    );
-                    if source != &target && worker_ref_can_continue(&worker_ref_path) {
-                        direct.insert(source.clone(), target.clone());
-                    }
+        let mut latest_by_node = HashMap::<String, ConversationSessionLocator>::new();
+        for step in trace {
+            let target = ConversationSessionLocator {
+                round_id: round.id.clone(),
+                node_id: step.node_id.clone(),
+                attempt_id: step.attempt_id.clone(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            };
+            if workflow_edge_continues_session(
+                workflow,
+                step.from_node_id.as_deref(),
+                &step.node_id,
+                step.edge_outcome.as_deref(),
+            ) && let Some(source) = latest_by_node.get(&step.node_id)
+            {
+                let worker_ref_path = app.paths.worker_ref_file(
+                    task_id,
+                    run_id,
+                    &source.round_id,
+                    &source.node_id,
+                    &source.attempt_id,
+                );
+                if source != &target && worker_ref_can_continue(&worker_ref_path) {
+                    direct.insert(source.clone(), target.clone());
                 }
-                latest_by_node.insert(step.node_id, target);
             }
+            latest_by_node.insert(step.node_id.clone(), target);
         }
     }
 
-    for round in rounds {
-        for node in app.node_list(task_id, run_id, &round.id)? {
-            if node.node_type != NodeType::AiDynamic {
+    for node_attempts in attempts.values() {
+        for outer_attempt in node_attempts {
+            if outer_attempt.node_type != NodeType::AiDynamic {
                 continue;
             }
-            for outer_attempt in app.attempt_list(task_id, run_id, &round.id, &node.node_id)? {
-                let dynamic_path = app.paths.dynamic_graph_file(
+            let node_id = &outer_attempt.node_id;
+            let dynamic_path = app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                &round.id,
+                node_id,
+                &outer_attempt.attempt_id,
+            );
+            if !dynamic_path.exists() {
+                continue;
+            }
+            let graph = load_dynamic_graph(&dynamic_path, &app.paths.repo_root)?;
+            for dynamic_node in &graph.nodes {
+                if dynamic_node.session_mode != SessionMode::Continue {
+                    continue;
+                }
+                let Some(source_node_id) = dynamic_node.continue_from_node_id.as_ref() else {
+                    continue;
+                };
+                let attempt_id = default_dynamic_attempt_id();
+                let source = ConversationSessionLocator {
+                    round_id: round.id.clone(),
+                    node_id: source_node_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    outer_node_id: Some(node_id.clone()),
+                    outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
+                };
+                let target = ConversationSessionLocator {
+                    round_id: round.id.clone(),
+                    node_id: dynamic_node.id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    outer_node_id: Some(node_id.clone()),
+                    outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
+                };
+                let source_attempt_dir = app.paths.dynamic_node_attempt_dir(
                     task_id,
                     run_id,
                     &round.id,
-                    &node.node_id,
+                    node_id,
                     &outer_attempt.attempt_id,
+                    source_node_id,
+                    &attempt_id,
                 );
-                if !dynamic_path.exists() {
-                    continue;
-                }
-                let graph = load_dynamic_graph(&dynamic_path, &app.paths.repo_root)?;
-                for dynamic_node in &graph.nodes {
-                    if dynamic_node.session_mode != SessionMode::Continue {
-                        continue;
-                    }
-                    let Some(source_node_id) = dynamic_node.continue_from_node_id.as_ref() else {
-                        continue;
-                    };
-                    let attempt_id = default_dynamic_attempt_id();
-                    let source = ConversationSessionLocator {
-                        round_id: round.id.clone(),
-                        node_id: source_node_id.clone(),
-                        attempt_id: attempt_id.clone(),
-                        outer_node_id: Some(node.node_id.clone()),
-                        outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
-                    };
-                    let target = ConversationSessionLocator {
-                        round_id: round.id.clone(),
-                        node_id: dynamic_node.id.clone(),
-                        attempt_id: attempt_id.clone(),
-                        outer_node_id: Some(node.node_id.clone()),
-                        outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
-                    };
-                    let source_attempt_dir = app.paths.dynamic_node_attempt_dir(
-                        task_id,
-                        run_id,
-                        &round.id,
-                        &node.node_id,
-                        &outer_attempt.attempt_id,
-                        source_node_id,
-                        &attempt_id,
-                    );
-                    let target_attempt_dir = app.paths.dynamic_node_attempt_dir(
-                        task_id,
-                        run_id,
-                        &round.id,
-                        &node.node_id,
-                        &outer_attempt.attempt_id,
-                        &dynamic_node.id,
-                        &attempt_id,
-                    );
-                    if source != target
-                        && target_attempt_dir.exists()
-                        && worker_ref_can_continue(&source_attempt_dir.join("worker-ref.json"))
-                    {
-                        direct.insert(source, target);
-                    }
+                let target_attempt_dir = app.paths.dynamic_node_attempt_dir(
+                    task_id,
+                    run_id,
+                    &round.id,
+                    node_id,
+                    &outer_attempt.attempt_id,
+                    &dynamic_node.id,
+                    &attempt_id,
+                );
+                if source != target
+                    && target_attempt_dir.exists()
+                    && worker_ref_can_continue(&source_attempt_dir.join("worker-ref.json"))
+                {
+                    direct.insert(source, target);
                 }
             }
         }
@@ -3714,13 +3749,26 @@ pub(crate) fn conversation_session_successor(
     if !conversation_is_orchestrated(app, task_id) {
         return Ok(None);
     }
-    let round = read_json::<RoundState>(&app.paths.round_file(task_id, run_id, round_id))?;
+    let run = app.run_status(task_id, run_id)?;
+    let round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
+    let current_round_id = run
+        .current_round
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("runtime.current-round-missing"))?;
+    let current_round: RoundState = if current_round_id == round_id {
+        round.clone()
+    } else {
+        read_json(&app.paths.round_file(task_id, run_id, current_round_id))?
+    };
+    let trace = canonical_trace_for_round(&run, std::slice::from_ref(&current_round), &round)?;
+    let attempts = committed_attempts_by_node(app, task_id, run_id, round_id, &trace)?;
     let workflow = app.current_run_workflow(task_id, run_id).ok();
     let successors = conversation_session_successors_from_state(
         app,
         task_id,
-        run_id,
-        &[round],
+        &round,
+        &trace,
+        &attempts,
         workflow.as_ref(),
     )?;
     Ok(successors
@@ -3854,17 +3902,13 @@ pub fn conversation_run_vm(
         .unwrap_or_default();
 
     let rounds = app.round_list(task_id, run_id)?;
-    let session_successors = if is_orchestrated {
-        conversation_session_successors_from_state(
-            app,
-            task_id,
-            run_id,
-            &rounds,
-            workflow_snapshot.as_ref(),
-        )?
-    } else {
-        HashMap::new()
-    };
+    let current_round = rounds
+        .iter()
+        .find(|round| run.current_round.as_deref() == Some(round.id.as_str()));
+    if is_orchestrated && current_round.is_none() {
+        return Err(anyhow::anyhow!("runtime.current-round-missing"));
+    }
+    let mut session_successors = HashMap::new();
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
     let run_worktree = run.worktree.as_ref();
@@ -3872,12 +3916,50 @@ pub fn conversation_run_vm(
     let runtime_resumable = is_run_continuable(&run);
 
     for round in &rounds {
-        // List all nodes for this round (latest attempt per node)
-        let mut nodes = app.node_list(task_id, run_id, &round.id)?;
-        let trace_node_order: HashMap<String, usize> = {
-            let mut order = HashMap::new();
+        if current_round
+            .is_some_and(|current| round.id != current.id && round.index > current.index)
+        {
+            continue;
+        }
+        let trace = if is_orchestrated {
+            canonical_trace_for_round(&run, &rounds, round)?
+        } else {
             let mut trace = round.trace.clone();
             trace.sort_by_key(|step| step.sequence);
+            trace
+        };
+        let mut committed_attempts = if is_orchestrated {
+            Some(committed_attempts_by_node(
+                app, task_id, run_id, &round.id, &trace,
+            )?)
+        } else {
+            None
+        };
+        let inherited_attempts: HashSet<(&str, &str)> = trace
+            .iter()
+            .filter(|step| run.is_inherited_step(round, step))
+            .map(|step| (step.node_id.as_str(), step.attempt_id.as_str()))
+            .collect();
+        if let Some(attempts) = &committed_attempts {
+            session_successors.extend(conversation_session_successors_from_state(
+                app,
+                task_id,
+                round,
+                &trace,
+                attempts,
+                workflow_snapshot.as_ref(),
+            )?);
+        }
+        let mut nodes = if let Some(attempts) = &committed_attempts {
+            attempts
+                .values()
+                .filter_map(|items| items.last().cloned())
+                .collect()
+        } else {
+            app.node_list(task_id, run_id, &round.id)?
+        };
+        let trace_node_order: HashMap<String, usize> = {
+            let mut order = HashMap::new();
             for (index, step) in trace.iter().enumerate() {
                 order.entry(step.node_id.clone()).or_insert(index);
             }
@@ -3901,7 +3983,13 @@ pub fn conversation_run_vm(
 
         for node in &nodes {
             let is_ai_dynamic = node.node_type == NodeType::AiDynamic;
-            let all_attempts = app.attempt_list(task_id, run_id, &round.id, &node.node_id)?;
+            let all_attempts = if let Some(attempts) = &mut committed_attempts {
+                attempts
+                    .remove(&node.node_id)
+                    .expect("node came from committed attempts")
+            } else {
+                app.attempt_list(task_id, run_id, &round.id, &node.node_id)?
+            };
 
             // Build child nodes for AI-DYNAMIC
             let mut outer_nodes: Option<Vec<ConversationTreeNodeVm>> = None;
@@ -4106,6 +4194,10 @@ pub fn conversation_run_vm(
                                     runtime_display: dyn_runtime_display.clone(),
                                     lifecycle: lifecycle.clone(),
                                     current: dyn_current,
+                                    inherited: inherited_attempts.contains(&(
+                                        node.node_id.as_str(),
+                                        latest_attempt.attempt_id.as_str(),
+                                    )),
                                     manual_check_pending: false,
                                     started_at: dyn_node.started_at.clone(),
                                     finished_at: dyn_node.finished_at.clone(),
@@ -4259,6 +4351,8 @@ pub fn conversation_run_vm(
                         runtime_display: runtime_display.clone(),
                         lifecycle: lifecycle.clone(),
                         current,
+                        inherited: inherited_attempts
+                            .contains(&(node.node_id.as_str(), attempt.attempt_id.as_str())),
                         manual_check_pending,
                         started_at: Some(attempt.started_at.clone()),
                         finished_at: attempt.finished_at.clone(),
@@ -4477,6 +4571,12 @@ pub fn conversation_run_vm(
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
         worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+        sealed: run.is_sealed(),
+        rerun_successor_run_id: rerun_successor_run_id(&run),
+        rerun_origin: run
+            .rerun
+            .as_ref()
+            .and_then(|metadata| metadata.origin.clone()),
     })
 }
 
@@ -4883,7 +4983,7 @@ pub fn create_conversation_run_vm(
                 project_id: input.project_id.clone(),
                 task_id: task_id.clone(),
                 task_uuid: task_uuid.clone(),
-                run_id: run.id,
+                run_id: run.id.clone(),
                 run_mode: input.run_mode.clone(),
                 workflow_template_id: input.workflow_template_id.clone(),
                 direct_config: input.direct_config.clone(),
@@ -4911,6 +5011,12 @@ pub fn create_conversation_run_vm(
                 runtime_error: None,
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+                sealed: run.is_sealed(),
+                rerun_successor_run_id: rerun_successor_run_id(&run),
+                rerun_origin: run
+                    .rerun
+                    .as_ref()
+                    .and_then(|metadata| metadata.origin.clone()),
             }
         });
     let task = conversation_task_row_vm(app, &input.project_id, &task_id, false, None)?;
@@ -4965,7 +5071,7 @@ pub fn rerun_conversation_task_vm(
                 .ok()
                 .and_then(|task| task.uuid)
                 .or_else(|| Some(task_id.to_string())),
-            run_id: run.id,
+            run_id: run.id.clone(),
             run_mode: "workflow".to_string(),
             workflow_template_id: None,
             direct_config: read_conversation_metadata(app, task_id)
@@ -4996,6 +5102,12 @@ pub fn rerun_conversation_task_vm(
             runtime_error: None,
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+            sealed: run.is_sealed(),
+            rerun_successor_run_id: rerun_successor_run_id(&run),
+            rerun_origin: run
+                .rerun
+                .as_ref()
+                .and_then(|metadata| metadata.origin.clone()),
         })
     })
 }
@@ -5244,6 +5356,44 @@ mod tests {
             ]
         }))
         .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "success",
+                "started_at": round.started_at,
+                "updated_at": round.started_at,
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": round_id,
+                "current_node": "review",
+                "current_attempt": "attempt-003",
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        for step in &round.trace {
+            gold_band::storage::write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, &step.node_id, &step.attempt_id),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "node_id": step.node_id,
+                    "node_type": "worker",
+                    "run_id": run_id,
+                    "round_id": round_id,
+                    "attempt_id": step.attempt_id,
+                    "status": "completed",
+                    "outcome": "success",
+                    "started_at": step.entered_at,
+                    "finished_at": step.entered_at,
+                    "resolved_config": {}
+                }),
+            )
+            .unwrap();
+        }
         for (attempt_id, session_id) in [
             ("attempt-001", "session-001"),
             ("attempt-002", "session-001"),
@@ -5264,11 +5414,15 @@ mod tests {
             .unwrap();
         }
 
+        let attempts =
+            super::committed_attempts_by_node(&app, task_id, run_id, round_id, &round.trace)
+                .unwrap();
         let successors = conversation_session_successors_from_state(
             &app,
             task_id,
-            run_id,
-            std::slice::from_ref(&round),
+            &round,
+            &round.trace,
+            &attempts,
             Some(&workflow),
         )
         .unwrap();
@@ -5304,12 +5458,162 @@ mod tests {
         let new_session_successors = conversation_session_successors_from_state(
             &app,
             task_id,
-            run_id,
-            &[round],
+            &round,
+            &round.trace,
+            &attempts,
             Some(&new_session_workflow),
         )
         .unwrap();
         assert!(new_session_successors.is_empty());
+    }
+
+    #[test]
+    fn historical_round_session_lookup_keeps_the_current_round_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_trace_order_fixture(&app);
+        let run_path = app.paths.run_file("task-trace", "run-001");
+        let mut run: gold_band::runtime::RunState =
+            gold_band::storage::read_json(&run_path).unwrap();
+        let mut current: RoundState = gold_band::storage::read_json(&app.paths.round_file(
+            "task-trace",
+            "run-001",
+            "round-001",
+        ))
+        .unwrap();
+        current.id = "round-002".to_string();
+        current.index = 2;
+        current.trigger = gold_band::domain::RoundTrigger::NewRound;
+        for step in &current.trace {
+            let mut node: gold_band::runtime::NodeState =
+                gold_band::storage::read_json(&app.paths.node_file(
+                    "task-trace",
+                    "run-001",
+                    "round-001",
+                    &step.node_id,
+                    &step.attempt_id,
+                ))
+                .unwrap();
+            node.round_id = current.id.clone();
+            gold_band::storage::write_json(
+                &app.paths.node_file(
+                    "task-trace",
+                    "run-001",
+                    &current.id,
+                    &step.node_id,
+                    &step.attempt_id,
+                ),
+                &node,
+            )
+            .unwrap();
+        }
+        gold_band::storage::write_json(
+            &app.paths.round_file("task-trace", "run-001", &current.id),
+            &current,
+        )
+        .unwrap();
+        run.current_round = Some(current.id.clone());
+        run.transition_current_execution(RuntimeExecutionPhase::Terminal, run.updated_at.clone())
+            .unwrap();
+        gold_band::storage::write_json(&run_path, &run).unwrap();
+
+        let successor = super::conversation_session_successor(
+            &app,
+            "task-trace",
+            "run-001",
+            "round-001",
+            "方案",
+            "attempt-001",
+            None,
+            None,
+        )
+        .expect("a completed historical round remains available after the run advances");
+        assert!(successor.is_none());
+    }
+
+    #[test]
+    fn workflow_session_tree_keeps_committed_node_after_empty_attempt_reservation() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_trace_order_fixture(&app);
+        let baseline = conversation_run_vm(&app, "default", "task-trace", "run-001", None).unwrap();
+        std::fs::create_dir_all(app.paths.attempt_dir(
+            "task-trace",
+            "run-001",
+            "round-001",
+            "验收",
+            "attempt-002",
+        ))
+        .unwrap();
+
+        let actual = conversation_run_vm(&app, "default", "task-trace", "run-001", None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&actual.session_tree).unwrap(),
+            serde_json::to_value(&baseline.session_tree).unwrap(),
+            "an uncommitted empty directory must not hide the committed node or its sessions",
+        );
+    }
+
+    #[test]
+    fn workflow_session_tree_ignores_uncommitted_attempts_and_trace_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_trace_order_fixture(&app);
+        let baseline = conversation_run_vm(&app, "default", "task-trace", "run-001", None).unwrap();
+        let mut orphan: gold_band::runtime::NodeState = gold_band::storage::read_json(
+            &app.paths
+                .node_file("task-trace", "run-001", "round-001", "验收", "attempt-001"),
+        )
+        .unwrap();
+        orphan.attempt_id = "attempt-002".to_string();
+        orphan.status = gold_band::domain::RunStatus::Running;
+        orphan.outcome = None;
+        orphan.finished_at = None;
+        gold_band::storage::write_json(
+            &app.paths.node_file(
+                "task-trace",
+                "run-001",
+                "round-001",
+                "验收",
+                &orphan.attempt_id,
+            ),
+            &orphan,
+        )
+        .unwrap();
+        let round_path = app.paths.round_file("task-trace", "run-001", "round-001");
+        let mut round: RoundState = gold_band::storage::read_json(&round_path).unwrap();
+        let mut step = round.trace.last().unwrap().clone();
+        step.sequence += 1;
+        step.attempt_id = orphan.attempt_id;
+        step.from_node_id = Some("验收".to_string());
+        step.edge_outcome = Some("retry".to_string());
+        round.trace.push(step);
+        gold_band::storage::write_json(&round_path, &round).unwrap();
+
+        let actual = conversation_run_vm(&app, "default", "task-trace", "run-001", None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&actual.session_tree).unwrap(),
+            serde_json::to_value(&baseline.session_tree).unwrap(),
+            "only attempts committed by the run locator belong to the conversation tree",
+        );
+        assert_eq!(actual.active_sessions.len(), baseline.active_sessions.len());
+    }
+
+    #[test]
+    fn workflow_session_tree_rejects_a_missing_committed_attempt() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_trace_order_fixture(&app);
+        std::fs::remove_file(app.paths.node_file(
+            "task-trace",
+            "run-001",
+            "round-001",
+            "开发",
+            "attempt-001",
+        ))
+        .unwrap();
+
+        assert!(conversation_run_vm(&app, "default", "task-trace", "run-001", None).is_err());
     }
 
     #[test]
@@ -5383,9 +5687,15 @@ mod tests {
         .unwrap();
 
         let rounds = app.round_list(task_id, run_id).unwrap();
-        let successors =
-            conversation_session_successors_from_state(&app, task_id, run_id, &rounds, None)
-                .unwrap();
+        let run = app.run_status(task_id, run_id).unwrap();
+        let round = &rounds[0];
+        let trace = gold_band::runtime::canonical_trace_for_round(&run, &rounds, round).unwrap();
+        let attempts =
+            super::committed_attempts_by_node(&app, task_id, run_id, round_id, &trace).unwrap();
+        let successors = conversation_session_successors_from_state(
+            &app, task_id, round, &trace, &attempts, None,
+        )
+        .unwrap();
         let target = successors
             .get(&ConversationSessionLocator {
                 round_id: round_id.to_string(),
@@ -8357,6 +8667,23 @@ mod tests {
             }),
         )
         .unwrap();
+        let round_path = app.paths.round_file("task-046", "run-060", "round-001");
+        let mut round: RoundState = gold_band::storage::read_json(&round_path).unwrap();
+        for step in &mut round.trace {
+            step.sequence += 1;
+        }
+        round.trace.insert(
+            0,
+            gold_band::runtime::RoundTraceStep {
+                sequence: 1,
+                node_id: "测试".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                from_node_id: None,
+                edge_outcome: None,
+                entered_at: "2026-06-15T00:00:00Z".to_string(),
+            },
+        );
+        gold_band::storage::write_json(&round_path, &round).unwrap();
         std::fs::create_dir_all(attempt_dir.join("acp.timeline.jsonl").as_std_path()).unwrap();
 
         let vm = conversation_run_vm(
@@ -9048,7 +9375,14 @@ mod tests {
                 "outcome": null,
                 "trigger": "initial",
                 "started_at": "2026-06-15T00:00:00Z",
-                "trace": []
+                "trace": [{
+                    "sequence": 1,
+                    "node_id": outer_node_id,
+                    "attempt_id": outer_attempt_id,
+                    "from_node_id": null,
+                    "edge_outcome": null,
+                    "entered_at": "2026-06-15T00:00:00Z"
+                }]
             }),
         )
         .unwrap();

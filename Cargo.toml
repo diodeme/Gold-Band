@@ -69,6 +69,7 @@ atomic-write-file = "0.2"
 fs2 = "0.4"
 rmcp = { version = "3.2", default-features = false, features = ["server", "transport-io"] }
 blake3 = "1"
+cap-std = "3"
 similar = "3.1"
 unicode-properties = { version = "0.1", features = ["general-category"] }
 

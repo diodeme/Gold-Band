@@ -3,7 +3,6 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  ConversationSidebarSingleFlight,
   CONVERSATION_SIDEBAR_TASK_WINDOW,
   applyConversationSidebarBootstrap,
   applyConversationRunSummaryPage,
@@ -13,6 +12,7 @@ import {
   clearConversationLocatedTask,
   locateConversationSidebarTask,
 } from '@/lib/conversation-sidebar-loading';
+import { RefreshSingleFlight } from '@/lib/refresh-single-flight';
 import { applyConversationTaskSnapshot } from '@/lib/conversation-task-state';
 import { applyConversationSidebarTaskActivity, applyConversationSidebarTerminalResultUpdate } from '@/lib/conversation-sidebar-activity';
 
@@ -159,7 +159,7 @@ describe('conversation sidebar progressive loading', () => {
   });
 
   it('coalesces duplicate loads for the same scope', async () => {
-    const flights = new ConversationSidebarSingleFlight();
+    const flights = new RefreshSingleFlight();
     const request = vi.fn(async () => 'done');
 
     const first = flights.run('workspace:project-a', request);
@@ -171,7 +171,7 @@ describe('conversation sidebar progressive loading', () => {
   });
 
   it('fences a late page after its entity scope is invalidated', async () => {
-    const flights = new ConversationSidebarSingleFlight();
+    const flights = new RefreshSingleFlight();
     const generation = flights.generation('workspace:project-a');
 
     flights.invalidate('workspace:project-a');
@@ -181,7 +181,7 @@ describe('conversation sidebar progressive loading', () => {
   });
 
   it('rereads a workspace after background creation arrives during an older page request', async () => {
-    const flights = new ConversationSidebarSingleFlight();
+    const flights = new RefreshSingleFlight();
     let resolveOldPage!: (tasks: string[]) => void;
     const oldPage = new Promise<string[]>((resolve) => { resolveOldPage = resolve; });
     const published: string[][] = [];
@@ -206,7 +206,7 @@ describe('conversation sidebar progressive loading', () => {
   });
 
   it('keeps only the latest pending refresh and waits for it after a failed load', async () => {
-    const flights = new ConversationSidebarSingleFlight();
+    const flights = new RefreshSingleFlight();
     let rejectOldPage!: (error: Error) => void;
     const oldPage = new Promise<string>((_resolve, reject) => { rejectOldPage = reject; });
     const first = flights.run('runs:project-a:uuid-1', () => oldPage);
@@ -222,7 +222,7 @@ describe('conversation sidebar progressive loading', () => {
   });
 
   it('discards pending refreshes when their scope is invalidated', async () => {
-    const flights = new ConversationSidebarSingleFlight();
+    const flights = new RefreshSingleFlight();
     let resolveOldPage!: (value: string) => void;
     const oldPage = new Promise<string>((resolve) => { resolveOldPage = resolve; });
     const first = flights.run('workspace:project-a', () => oldPage);

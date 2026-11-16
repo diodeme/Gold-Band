@@ -83,6 +83,7 @@ import type {
   MulticaUpstreamPullEventVm,
   MulticaUpstreamPullPendingVm,
   RuntimeAssetInstalledEventVm,
+  RuntimeAssetUninstalledEventVm,
   UpstreamPullDecisionKind,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
@@ -506,7 +507,8 @@ export interface RuntimeApi {
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("../types").DirectBackgroundControl | null, expectedTurnId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
-  retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  retryCurrentNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
+  rerunFailedNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
@@ -701,6 +703,9 @@ export interface RuntimeApi {
   /// multica 被动安装落地（M5-cr）：runtime-assets push-install 成功落库后触发，按 assetType
   /// 重拉对应列表；仅桌面端实现（浏览器桩永不触发）。
   subscribeRuntimeAssetInstalled?(listener: (event: RuntimeAssetInstalledEventVm) => void): Promise<() => void>;
+  /// multica 被动卸载落地（M5-cw，与安装对称）：runtime-assets uninstall 成功移除后触发，
+  /// 按 assetType 重拉对应列表；仅桌面端实现（浏览器桩永不触发）。
+  subscribeRuntimeAssetUninstalled?(listener: (event: RuntimeAssetUninstalledEventVm) => void): Promise<() => void>;
   /// 提交拉取决策（三选一）；manual 必须带非空 manualText。决策迟到（拉取已收口）→ 结构化错误。
   decideUpstreamPull(taskId: string, nodeId: string, decision: UpstreamPullDecisionKind, manualText?: string | null): Promise<void>;
 

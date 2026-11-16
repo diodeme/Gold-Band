@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useTranslation } from 'react-i18next';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import {
@@ -39,6 +39,11 @@ import {
 import { pathFromRoute, taskListPage } from '@/routes';
 import type { ResidentPinToggleProps } from '@/components/conversation/ResidentPin';
 import type { AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
+
+function conversationRunScopeKey(run: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid' | 'runId'>) {
+  return conversationRunCacheKey(run)
+    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
+}
 
 function activeSessionKey(session: {
   roundId: string;
@@ -83,6 +88,7 @@ interface ConversationRunPageProps {
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
+  onNodeRetry?: (node: GraphNodeVm) => void | Promise<void>;
   onSelectSession: (leaf: ConversationSessionLocator, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
@@ -105,6 +111,7 @@ export function ConversationRunPage({
   workflowTemplates = null,
   onWorkflowTemplatesChange,
   onExecutionPlanSaved,
+  onNodeRetry,
   onSelectSession,
   onLifecycleSnapshot,
   onAutoFollowChange,
@@ -141,19 +148,29 @@ export function ConversationRunPage({
   };
   const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const sessionTreeExpansionRunKey = conversationRunCacheKey(run)
-    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
+  const runScopeKey = conversationRunScopeKey(run);
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
     runKey: string;
     expansion: ConversationSessionTreeExpansion;
   }>(() => ({
-    runKey: sessionTreeExpansionRunKey,
+    runKey: runScopeKey,
     expansion: initialSessionTreeExpansion,
   }));
-  const sessionTreeExpansion = sessionTreeExpansionState.runKey === sessionTreeExpansionRunKey
+  const sessionTreeExpansion = sessionTreeExpansionState.runKey === runScopeKey
     ? sessionTreeExpansionState.expansion
     : initialSessionTreeExpansion;
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
+  const [nodeRerunTarget, setNodeRerunTarget] = useState<GraphNodeVm | null>(null);
+  const nodeRerunDecisionRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const nodeRerunScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    setNodeRerunTarget(null);
+    nodeRerunScopeRef.current = null;
+    return () => {
+      nodeRerunDecisionRef.current?.(false);
+      nodeRerunDecisionRef.current = null;
+    };
+  }, [runScopeKey]);
   const isAtBottomRef = useRef(true);
   const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
@@ -176,11 +193,11 @@ export function ConversationRunPage({
   const handleSessionTreeExpansionChange = useCallback((branchKey: string, open: boolean) => {
     const nextExpansion = { ...sessionTreeExpansion, [branchKey]: open };
     setSessionTreeExpansionState({
-      runKey: sessionTreeExpansionRunKey,
+      runKey: runScopeKey,
       expansion: nextExpansion,
     });
     onSessionTreeExpansionChange(nextExpansion);
-  }, [onSessionTreeExpansionChange, sessionTreeExpansion, sessionTreeExpansionRunKey]);
+  }, [onSessionTreeExpansionChange, sessionTreeExpansion, runScopeKey]);
 
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
@@ -256,17 +273,40 @@ export function ConversationRunPage({
   const workflowTemplatesRef = useRef(workflowTemplates);
   const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
   const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
+  const onNodeRetryRef = useRef(onNodeRetry);
+  const previousWorkflowGraphRef = useRef(run.workflowGraph);
   runRef.current = run;
   agentRegistryRef.current = agentRegistry;
   onExecutionPlanSavedRef.current = onExecutionPlanSaved;
   workflowTemplatesRef.current = workflowTemplates;
   onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
   handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
+  onNodeRetryRef.current = onNodeRetry;
+  useEffect(() => {
+    const previousGraph = previousWorkflowGraphRef.current;
+    previousWorkflowGraphRef.current = run.workflowGraph;
+    if (previousGraph === run.workflowGraph) return;
+    const activeResource = workspace.tabs?.find((tab) => tab.key === workspace.activeTabKey);
+    if (activeResource?.kind === 'workflow-view') workspace.refreshResourceRenderers?.();
+  }, [run.workflowGraph, workspace.activeTabKey, workspace.refreshResourceRenderers, workspace.tabs]);
   const onExecutionPlanSavedStable = useCallback((saved: ExecutionPlanSaveResultVm) => {
     return onExecutionPlanSavedRef.current?.(saved);
   }, []);
   const onNodeOpenSessionStable = useCallback((node: GraphNodeVm) => {
     handleWorkflowNodeOpenSessionRef.current(node);
+  }, []);
+  const onNodeRetryStable = useCallback(async (node: GraphNodeVm) => {
+    const runKey = runRef.current ? conversationRunScopeKey(runRef.current) : null;
+    if (node.status === 'completed') {
+      nodeRerunDecisionRef.current?.(false);
+      nodeRerunScopeRef.current = runKey;
+      const confirmed = await new Promise<boolean>((resolve) => {
+        nodeRerunDecisionRef.current = resolve;
+        setNodeRerunTarget(node);
+      });
+      if (!confirmed || !runRef.current || conversationRunScopeKey(runRef.current) !== runKey) return;
+    }
+    await onNodeRetryRef.current?.(node);
   }, []);
 
   const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
@@ -289,9 +329,10 @@ export function ConversationRunPage({
         onWorkflowTemplatesChange={(store) => onWorkflowTemplatesChangeRef.current?.(store)}
         onExecutionPlanSaved={onExecutionPlanSavedStable}
         onNodeOpenSession={onNodeOpenSessionStable}
+        onNodeRetry={onNodeRetryStable}
       />
     );
-  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable]);
+  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable, onNodeRetryStable]);
 
   useEffect(() => {
     const unregister = [
@@ -316,6 +357,7 @@ export function ConversationRunPage({
   const isRunning = run.runStatus === 'running';
   const isDirect = run.runMode === 'direct';
   const selectedLeaf = findSelectedLeaf(run);
+  const sessionReadOnly = readOnly || run.sealed === true || selectedLeaf?.inherited === true;
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
   useEffect(() => () => {
     manualCheckNavigationVersionRef.current += 1;
@@ -347,7 +389,7 @@ export function ConversationRunPage({
   const selectedOuterAttemptId = selectedLeaf?.outerAttemptId ?? null;
   const selectedRuntimeCode = selectedLeaf?.runtimeDisplay?.code ?? null;
   const showLaunchingSession = isRunning && !selectedLeaf;
-  const selectedContentIdentity = selectedLeaf
+  const selectedContentIdentity = selectedLeaf && !selectedLeaf.inherited
       ? createAcpEventWindowCacheKey({
         cacheNamespace: run.taskUuid ?? `${run.projectId}:${run.taskId}`,
         projectId: run.projectId,
@@ -371,7 +413,7 @@ export function ConversationRunPage({
       ? hasHydratedAcpSessionContent(selectedContentIdentity)
       : false,
   );
-  const showPageLoadingState = shouldShowConversationContentLoadingState(
+  const showPageLoadingState = !selectedLeaf?.inherited && shouldShowConversationContentLoadingState(
     selectedContentQueryState,
     selectedLeaf,
   );
@@ -639,12 +681,23 @@ export function ConversationRunPage({
       ) : null}
 
       {/* Main chat area */}
+      {run.sealed || run.rerunOrigin ? (
+        <div className="flex shrink-0 items-center gap-3 px-5 py-2 text-xs text-muted-foreground">
+          <span>{t(run.sealed ? 'conversation.runtime.sourceSealed' : 'conversation.runtime.rerunHistoryHint')}</span>
+          {run.rerunOrigin ? <a className="underline underline-offset-4" href={pathFromRoute('task-orchestration', taskListPage, {
+            kind: 'conversation-run', projectId: run.projectId, taskId: run.taskId, taskUuid: run.taskUuid,
+            runId: run.rerunOrigin.sourceRunId,
+          })}>{t('conversation.runtime.viewRerunSource')}</a> : null}
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1">
-        {selectedLeaf ? (
+        {selectedLeaf?.inherited ? (
+          <ConversationEmptySessionState label={t('conversation.runtime.rerunHistoryHint')} active={false} />
+        ) : selectedLeaf ? (
           <ACPChatDialog
             key={selectedContentIdentity}
-            readOnly={readOnly}
-            showDisabledComposer={readOnly}
+            readOnly={sessionReadOnly}
+            showDisabledComposer={readOnly && !run.sealed}
             agentRegistry={agentRegistry}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
@@ -669,10 +722,10 @@ export function ConversationRunPage({
             allowEventOnlySessionShell={false}
             wallpaperSurface
             worktreePath={worktreePathOfLocation(selectedLeaf.workLocation)}
-            showBranchControl={!readOnly}
+            showBranchControl={!sessionReadOnly}
             managedWorktreeBranch={worktreeBranchOfLocation(selectedLeaf.workLocation)}
             runtimeComposerContext={runtimeComposerContext}
-            manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
+            manualCheckPending={!sessionReadOnly && selectedLeaf.manualCheckPending && selectedLeaf.current}
             onSubmitManualCheck={handleSubmitManualCheck}
             showSystemPromptAction={!isDirect}
             roleSelectionEnabled={isDirect}
@@ -697,13 +750,35 @@ export function ConversationRunPage({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('conversation.runtime.rerunConfirmTitle')}</AlertDialogTitle>
-            <p className="text-sm text-muted-foreground">{t('conversation.runtime.rerunConfirmDescription')}</p>
+            <AlertDialogDescription>{t('conversation.runtime.rerunConfirmDescription')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
             <AlertDialogAction onClick={onRerun}>
               {t('conversation.runtime.rerunConfirmAction')}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={nodeRerunTarget !== null && nodeRerunScopeRef.current === runScopeKey} onOpenChange={(open) => {
+        if (open) return;
+        nodeRerunDecisionRef.current?.(false);
+        nodeRerunDecisionRef.current = null;
+        setNodeRerunTarget(null);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('conversation.runtime.nodeRerunConfirmTitle', { node: nodeRerunTarget?.nodeId, attempt: nodeRerunTarget?.attemptId })}</AlertDialogTitle>
+            <AlertDialogDescription>{t('conversation.runtime.nodeRerunConfirmDescription')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              nodeRerunDecisionRef.current?.(true);
+              nodeRerunDecisionRef.current = null;
+              setNodeRerunTarget(null);
+            }}>{t('graph.rerunFailedNode')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

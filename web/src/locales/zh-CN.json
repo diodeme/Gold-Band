@@ -780,6 +780,7 @@
       "auth-required-missing-env": "此 Agent 需要认证。请先配置环境变量：{{env}}。",
       "auth-required-login": "此 Agent 需要认证。请完成供应商认证后重新检查。"
     },
+    "agent.launch-command-missing": "此 Agent 缺少启动命令，请在 Agent 管理中补充命令后重新诊断。",
     "npx-cache.busy": "已有缓存修复正在进行，请稍后重试。",
     "npx-cache.unavailable": "无法确认可修复的 npx 缓存目录，请重新运行环境诊断。",
     "npx-cache.changed": "诊断、配置或缓存已变化，请关闭弹窗后重试。",
@@ -1096,6 +1097,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "工作流正在运行，不能重试当前节点。",
+        "run-terminal": "工作流已结束，不能重试当前节点。",
+        "node-not-retryable": "当前节点当前状态不能重试。",
+        "error-blocked": "工作流已被错误阻塞，不能重试当前节点。",
+        "manual-check-pending": "当前节点正在等待人工确认，不能重试。",
+        "unsupported-node": "当前节点类型不支持重试。",
+        "stale-locator": "当前节点已变化，请按最新状态操作。",
+        "workflow-invalid": "工作流配置或运行环境无效，无法重试当前节点。",
+        "invalid-locator": "节点位置无效，请刷新后重试。",
+        "source-sealed": "此运行已封存，不能继续执行或发送消息。",
+        "inherited-attempt": "这是继承的历史节点，请在来源运行中查看会话。",
+        "source-busy": "来源会话仍在停止中，请稍后重试。",
+        "prefix-too-large": "重跑所需历史数据过大，请从更早的任务入口重新运行。",
+        "target-missing": "最新工作流中已没有这个节点。",
+        "workspace-unavailable": "来源工作区已不可用，请先恢复工作区。",
+        "plan-changed": "工作流配置已变化，请刷新后重试。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} 未通过 doctor。",
       "agent-doctor-required": "Agent {{agentType}} 需要先通过 doctor。",
       "permission-mode-unsupported": "Agent {{agentType}} 不支持权限模式 {{permissionMode}}。",
@@ -2569,9 +2588,11 @@
     "viewSession": "查看会话",
     "viewLog": "查看日志",
     "copyNodeId": "复制 node id",
-    "retryFromNode": "从该节点重试",
+    "retryCurrentNode": "重试当前节点",
     "layoutPending": "正在排布工作流图",
-    "layoutFailed": "工作流图排布失败"
+    "layoutFailed": "工作流图排布失败",
+    "rerunFailedNode": "从此节点重跑",
+    "rerunFailedAttempt": "从 {{attempt}} 重跑"
   },
   "settings": {
     "title": "设置",
@@ -3202,7 +3223,12 @@
       "worktree": "工作树",
       "composerRuntimeControlledPlaceholder": "当前会话由 runtime 运行中，暂不可输入",
       "composerStoppingPlaceholder": "正在停止当前会话…",
-      "composerStoppedPlaceholder": "当前会话已停止，你可以输入任何内容继续运行"
+      "composerStoppedPlaceholder": "当前会话已停止，你可以输入任何内容继续运行",
+      "nodeRerunConfirmTitle": "从 {{node}} / {{attempt}} 重跑？",
+      "nodeRerunConfirmDescription": "将停止来源运行，使用最新工作流创建新的 Run，并从此节点重新执行后续节点。现有工作区更改和外部操作不会撤销。",
+      "sourceSealed": "来源运行已封存，可继续查看历史。",
+      "rerunHistoryHint": "旧会话保留在来源运行中。",
+      "viewRerunSource": "查看来源运行"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git 版本过低",

@@ -3,7 +3,7 @@ export function resolveRightWorkspaceFileTarget(source: import('./types').Prompt
 export function revealRightWorkspaceFile(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().revealRightWorkspaceFile(source); }
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, RuntimeAssetInstalledEventVm, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -246,8 +246,12 @@ export function submitManualCheck(projectId: string | null | undefined, taskId: 
   return getRuntimeApi().submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome);
 }
 
-export function retryRun(taskId: string, runId: string) {
-  return getRuntimeApi().retryRun(taskId, runId);
+export function retryCurrentNode(request: Parameters<ReturnType<typeof getRuntimeApi>['retryCurrentNode']>[0]) {
+  return getRuntimeApi().retryCurrentNode(request);
+}
+
+export function rerunFailedNode(request: Parameters<ReturnType<typeof getRuntimeApi>['rerunFailedNode']>[0]) {
+  return getRuntimeApi().rerunFailedNode(request);
 }
 
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {
@@ -1049,6 +1053,11 @@ export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
 /// multica 被动安装落地（M5-cr）：按 event.assetType 重拉对应列表（App.tsx 消费）。
 export function subscribeRuntimeAssetInstalled(listener: (event: RuntimeAssetInstalledEventVm) => void) {
   return getRuntimeApi().subscribeRuntimeAssetInstalled?.(listener) ?? Promise.resolve(() => {});
+}
+
+/// multica 被动卸载落地（M5-cw，与安装对称）：按 event.assetType 重拉对应列表（App.tsx 消费）。
+export function subscribeRuntimeAssetUninstalled(listener: (event: RuntimeAssetUninstalledEventVm) => void) {
+  return getRuntimeApi().subscribeRuntimeAssetUninstalled?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function subscribeUpstreamPullEvents(listener: Parameters<NonNullable<RuntimeApi['subscribeUpstreamPullEvents']>>[0]) {

@@ -501,6 +501,22 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
         let node_id = req.runtime_context.node_id.clone();
         let attempt_id = req.runtime_context.attempt_id.clone();
         let session_mode = req.session_mode;
+        if node_id == "dev" && attempt_id == "attempt-001" {
+            // A crash leftover must never become the source of a later continue.
+            let orphan = req.attempt_dir.parent().unwrap().join("attempt-999");
+            gold_band::storage::write_json(
+                &orphan.join("worker-ref.json"),
+                &serde_json::json!({
+                    "version": gold_band::domain::VERSION,
+                    "provider": "claude-acp",
+                    "mode": "continue",
+                    "supports_open_session": true,
+                    "supports_continue_session": true,
+                    "continue_ref": { "sessionId": "uncommitted-session" },
+                    "open_command": null
+                }),
+            )?;
+        }
         let review_count = if node_id == "review" {
             self.invocations
                 .lock()
@@ -1769,6 +1785,15 @@ fn transition_continue_uses_latest_target_attempt_ref() {
     assert_eq!(run.outcome, Some(RunOutcome::Success));
 
     let invocations = provider.invocations.lock().unwrap();
+    let review_attempts = invocations
+        .iter()
+        .filter(|invocation| invocation.runtime_context.node_id == "review")
+        .map(|invocation| invocation.runtime_context.attempt_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        review_attempts,
+        ["attempt-001", "attempt-002", "attempt-003"]
+    );
     let dev_invocations = invocations
         .iter()
         .filter(|invocation| invocation.runtime_context.node_id == "dev")
@@ -2369,6 +2394,7 @@ fn error_blocked_run_is_not_continuable() {
         pause_reason: Some(PauseReason::ErrorBlocked),
         task_uuid: None,
         uuid: None,
+        rerun: None,
         last_executed_node: None,
         worktree: None,
         execution: Default::default(),

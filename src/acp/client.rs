@@ -479,6 +479,13 @@ impl DoctorDeadline {
 }
 
 pub fn doctor_diagnostic_error(error: &anyhow::Error) -> DiagnosticError {
+    if let Some(setup) = error.downcast_ref::<crate::onboarding::model::SetupError>() {
+        return DiagnosticError {
+            code: setup.code.to_string(),
+            params: setup.params.clone(),
+            raw: None,
+        };
+    }
     if let Some(start) = error.downcast_ref::<crate::acp::adapter::AcpAdapterStartFailed>() {
         return DiagnosticError {
             code: "acp.adapter-start-failed".to_string(),
@@ -1200,6 +1207,26 @@ pub fn prompt_activity_under(root: &Utf8Path) -> Option<PromptActivity> {
         })
 }
 
+/// Reads live activity under an explicit set of execution roots without
+/// loading persisted sessions. CancelRequested stays live until Stopped.
+pub fn active_prompt_attempts_under_roots(
+    roots: &std::collections::HashSet<Utf8PathBuf>,
+) -> Result<Vec<Utf8PathBuf>> {
+    let controls = PROVIDER_CONTROLS
+        .lock()
+        .map_err(|_| anyhow!("provider control registry poisoned"))?;
+    Ok(controls
+        .iter()
+        .filter(|(key, control)| {
+            control.state() != ProviderControlState::Stopped
+                && Utf8Path::new(key)
+                    .ancestors()
+                    .any(|path| roots.contains(path))
+        })
+        .map(|(key, _)| Utf8PathBuf::from(key.as_str()))
+        .collect())
+}
+
 /// Delivers the cancellation control signal without inspecting conversation
 /// history. Callers that need timeline bookkeeping must invoke
 /// [`settle_attempt_prompt_interactions`] after this returns.
@@ -1293,6 +1320,47 @@ fn unregister_provider_control(attempt_dir: &Utf8Path, control: &Arc<ProviderCon
     }
 }
 
+#[cfg(test)]
+pub(crate) struct TestPromptActivityRegistration {
+    attempt_dir: Utf8PathBuf,
+    control: Arc<ProviderControl>,
+}
+
+#[cfg(test)]
+impl TestPromptActivityRegistration {
+    pub(crate) fn mark_stopped(&self) {
+        self.control.mark_stopped();
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestPromptActivityRegistration {
+    fn drop(&mut self) {
+        unregister_provider_control(&self.attempt_dir, &self.control);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn register_test_prompt_activity(
+    attempt_dir: Utf8PathBuf,
+    activity: PromptActivity,
+) -> TestPromptActivityRegistration {
+    let control = register_provider_control(&attempt_dir);
+    match activity {
+        PromptActivity::Starting => {}
+        PromptActivity::Accepted => control.mark_accepted(),
+        PromptActivity::Running => control.mark_running(),
+        PromptActivity::CancelRequested => {
+            control.mark_running();
+            control.request_prompt_cancel();
+        }
+    }
+    TestPromptActivityRegistration {
+        attempt_dir,
+        control,
+    }
+}
+
 struct ProviderControlRegistration {
     attempt_dir: Utf8PathBuf,
     control: Arc<ProviderControl>,
@@ -1348,13 +1416,24 @@ impl RuntimeStopProbe {
         if self.lifecycle_turn_is_stopped() {
             return true;
         }
+        // Sealing fences every source-run prompt, including a queued follow-up
+        // that reaches provider registration after cancellation has completed.
+        let run_state = read_json::<serde_json::Value>(&self.run_file).ok();
+        if run_state.as_ref().is_some_and(|run| {
+            run.pointer("/rerun/sealedBy")
+                .is_some_and(|seal| !seal.is_null())
+        }) {
+            return true;
+        }
         if !self.runtime_generation_owned {
             return false;
         }
         self.attempt_state_file
             .as_ref()
             .is_some_and(|path| self.attempt_state_is_stopped(path))
-            || self.run_state_is_stopped()
+            || run_state
+                .as_ref()
+                .is_some_and(|run| self.run_state_is_stopped(run))
     }
 
     fn lifecycle_turn_is_stopped(&self) -> bool {
@@ -1395,37 +1474,33 @@ impl RuntimeStopProbe {
             })
     }
 
-    fn run_state_is_stopped(&self) -> bool {
-        read_json::<serde_json::Value>(&self.run_file)
-            .ok()
-            .is_some_and(|run| {
-                let status = run
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let pause_reason = run
-                    .get("pauseReason")
-                    .or_else(|| run.get("pause_reason"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                status.eq_ignore_ascii_case("paused")
-                    && normalize_stop_code(pause_reason) == "process-interrupted"
-                    && run
-                        .get("currentRound")
-                        .or_else(|| run.get("current_round"))
-                        .and_then(Value::as_str)
-                        == Some(self.round_id.as_str())
-                    && run
-                        .get("currentNode")
-                        .or_else(|| run.get("current_node"))
-                        .and_then(Value::as_str)
-                        == Some(self.node_id.as_str())
-                    && run
-                        .get("currentAttempt")
-                        .or_else(|| run.get("current_attempt"))
-                        .and_then(Value::as_str)
-                        == Some(self.attempt_id.as_str())
-            })
+    fn run_state_is_stopped(&self, run: &Value) -> bool {
+        let status = run
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let pause_reason = run
+            .get("pauseReason")
+            .or_else(|| run.get("pause_reason"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        status.eq_ignore_ascii_case("paused")
+            && normalize_stop_code(pause_reason) == "process-interrupted"
+            && run
+                .get("currentRound")
+                .or_else(|| run.get("current_round"))
+                .and_then(Value::as_str)
+                == Some(self.round_id.as_str())
+            && run
+                .get("currentNode")
+                .or_else(|| run.get("current_node"))
+                .and_then(Value::as_str)
+                == Some(self.node_id.as_str())
+            && run
+                .get("currentAttempt")
+                .or_else(|| run.get("current_attempt"))
+                .and_then(Value::as_str)
+                == Some(self.attempt_id.as_str())
     }
 }
 
@@ -11036,6 +11111,16 @@ mod tests {
     }
 
     #[test]
+    fn doctor_diagnostic_error_preserves_setup_error_codes() {
+        let error = anyhow::anyhow!(crate::onboarding::model::SetupError::new(
+            "agent.launch-command-missing"
+        ));
+        let diagnostic = super::doctor_diagnostic_error(&error);
+        assert_eq!(diagnostic.code, "agent.launch-command-missing");
+        assert_eq!(diagnostic.params, json!({}));
+    }
+
+    #[test]
     fn doctor_diagnostic_error_maps_transport_interrupt_to_adapter_exited() {
         let error = anyhow::anyhow!(super::AcpTransportInterrupted);
         let diagnostic = super::doctor_diagnostic_error(&error);
@@ -17351,6 +17436,41 @@ do {
         };
 
         assert!(!probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_cancels_every_queued_prompt_after_source_sealing() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let mut run = json!({ "status": "completed", "outcome": "failure" });
+        crate::storage::write_json(&run_file, &run).unwrap();
+        let probe = RuntimeStopProbe {
+            runtime_generation_owned: false,
+            run_file: run_file.clone(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
+            lifecycle_file: None,
+            turn_id: None,
+        };
+        assert!(
+            !probe.is_stopped(),
+            "ordinary completed-run follow-ups remain usable"
+        );
+        run["rerun"] = json!({ "sealedBy": { "successorRunId": "run-002" } });
+        crate::storage::write_json(&run_file, &run).unwrap();
+        assert!(
+            probe.is_stopped(),
+            "queued NonRuntime follow-ups must observe the seal"
+        );
+        assert!(
+            RuntimeStopProbe {
+                runtime_generation_owned: true,
+                ..probe
+            }
+            .is_stopped()
+        );
     }
 
     #[test]

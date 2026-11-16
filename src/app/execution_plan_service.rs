@@ -305,7 +305,7 @@ impl App {
             plan_revision: snapshot.plan_revision,
             authoring_revision,
             execution_revision: run.execution.revision,
-            current_editable: current_run_editable(run.status, run.outcome),
+            current_editable: !run.is_sealed() && current_run_editable(run.status, run.outcome),
             diverged,
             current_round: run.current_round.clone(),
             current_node: run.current_node.clone(),
@@ -331,6 +331,12 @@ impl App {
         let mut resume_identity_risks = Vec::new();
         let mut affected = Vec::new();
         if command.target.includes_current() {
+            if run.is_sealed() {
+                blocking.push(ExecutionPlanError::new(
+                    "workflow.retry.source-sealed",
+                    serde_json::json!({ "runId": run.id }),
+                ));
+            }
             let staged = self.staged_current(command, snapshot);
             match staged {
                 Ok(Some(staged)) => {
@@ -392,7 +398,7 @@ impl App {
             current_round: run.current_round.clone(),
             current_node: run.current_node.clone(),
             current_attempt: run.current_attempt.clone(),
-            current_editable: current_run_editable(run.status, run.outcome),
+            current_editable: !run.is_sealed() && current_run_editable(run.status, run.outcome),
             diverged: self.plans_diverged(
                 run_mode,
                 snapshot,
@@ -425,6 +431,12 @@ impl App {
             staged.payload.clone(),
             |previous| {
                 let run = read_run_state(&self.paths, &command.task_id, &command.run_id)?;
+                if run.is_sealed() {
+                    return Err(ExecutionPlanError::new(
+                        "workflow.retry.source-sealed",
+                        serde_json::json!({ "runId": run.id }),
+                    ));
+                }
                 self.recheck_locator(&run, command)?;
                 let guard = current_guard(&self.paths, &command.task_id, &run)?;
                 let issues = evaluate_current_workflow(
@@ -1643,6 +1655,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: Some("run-uuid".to_string()),
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(RuntimeExecutionPhase::StartingNode, None, "t"),
@@ -1782,6 +1795,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: Some("run-uuid".to_string()),
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(RuntimeExecutionPhase::StartingNode, None, "t"),

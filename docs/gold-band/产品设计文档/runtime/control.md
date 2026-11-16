@@ -70,6 +70,12 @@ AI-DYNAMIC leaf 的 continue 启动窗口由进程内 request lease 表达。lea
 
 ### 3.1 Workflow execution 与 ACP 生命周期边界
 
+单节点重试和失败节点重跑仅限 Workflow 模式的普通 Worker，AI-DYNAMIC/AUTO Run 与内部节点不支持。混合 Workflow 从历史失败 Worker 重跑时，来源先暂停并封存，再按 canonical trace 枚举该 Run 所有已提交 AI-DYNAMIC attempt 的动态图，并沿其中 durable `childRunId` 递归暂停可达 child Run；不能只消费当前动态图。child 在磁盘上与来源是 sibling，不能用来源目录包含关系判断整棵执行树已停止。取消后须等待整棵树的实际 ACP activity 消失，`CancelRequested` 仍视为活跃。10 秒内未收敛返回 `workflow.retry.source-busy`，不发布 successor；后代停止后同一请求恢复原交接。无关 Run 不被取消或纳入等待，round/node/graph 元数据读取和执行树规模均有界。
+
+失败节点重跑的 source dispatch 写锁只覆盖 operation、candidate/pending、来源暂停与 seal 提交；quiesce、前缀物化、资源复制、目标 run.json 发布和后台驱动必须移出该锁，并在同一 operation 专属锁下串行。已封存来源的多个历史失败 attempt 只能串行分叉：当前 `sealedBy.successorRunId` 未 Completed 前拒绝新 handoff，Completed 后才允许下一次分叉并更新活动交接。
+
+执行树只沿已提交的 child 关系遍历，最多 256 个 Run，读取的 Run/graph 元数据累计不超过 8 MiB；不枚举 task 的 Run 历史。只暂停非终态 Run/graph，已完成的状态、outcome 和历史图保持不变，但仍沿其 child 关系取消并等待残留的实际 ACP 活动。循环或重复 child、缺失 Run、错误父 locator、符号链接元数据、越界路径和超限均以结构化 retry 错误拒绝交接；暂停或动态图持久化失败归一为 `workflow.retry.workflow-invalid`。同一持久化状态的 attempt 锁、dynamic graph 锁和 continue lease 使用 `runtime_root` 定位，切换执行 worktree 不改变其控制身份。
+
 Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立领域：
 
 - `run.json.execution` 是 Workflow/AUTO 外层执行聚合阶段的唯一权威源，包含单调 `revision`、外层 attempt locator 与 `StartingNode / RunningNode / FinalizingArtifact / RepairingArtifact / AwaitingManualCheck / Transitioning / LaunchingNextNode / PreparingWorkspace / Paused / Terminal`。普通 workflow attempt 直接使用该阶段；AI-DYNAMIC 的并行 leaf 另由各自 `DynamicNodeState.runtimeExecutionId / runtimeExecutionPhase / runtimeLifecycleRevision / runtimeLifecycleUpdatedAt` 管理，不能把任一 leaf 的阶段写回父聚合，也不能把父 revision 与 leaf revision 比较。
@@ -122,7 +128,8 @@ edge target 规则：
 ## 4. session 继承
 - `session=new`：目标 worker 新开会话。
 - `session=continue`：仅当目标 provider 支持 continue session 时可用。
-- continue ref 来自目标 worker 节点当前最新 attempt 的 worker ref；找不到时降级为普通新会话上下文。
+- continue ref 来自当前 round 的 canonical trace 中目标 worker 最后一个已提交 attempt 的 worker ref；必须在预留新 attempt 目录前解析，不能用物理目录最大编号查找。目标从未执行或已提交 attempt 没有 continue ref 时，使用普通新会话上下文。
+- 新 attempt 编号属于目标节点自己的序列：目标首次执行从 `attempt-001` 开始，后续从目标最后一个已提交 attempt 递增；原子目录预留只用于跳过冲突/崩溃遗留目录，不把源节点编号或孤立目录当作执行历史。
 - 上一节点的 primary/output artifact 可作为 feedback summary 进入下一次 worker 调用。
 
 ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workflow worker 与 AI-DYNAMIC 内部 worker / acceptance / merge 复用同一套规则：
@@ -155,6 +162,8 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 
 新 round 使用同一 workflow snapshot。`new_round_entry="$entry"` 表示从当前 workflow 的 `entry` 开始；也可以填写任一真实 worker 节点 id，让下一轮从该节点开始。历史 task / run 如果缺失 `new_round_entry`，运行启动、重跑冻结 snapshot、以及运行态读取 frozen snapshot 时，都会在 snapshot 校验前仅对 `$new-round` 边补为 `$entry`，让旧数据继续按当时的“从 workflow entry 重开”语义执行；规范化结果只写入本次 run 的 `workflow.snapshot.json`，不回写 `authoring/workflow.json`，作者态新保存的 workflow 仍然必须显式声明该字段。下一轮的 hidden runtime context 不会直接继承上一轮完整前序链；只有当前 round 的入口节点会额外看到入口之前的稳定前缀节点最新产物，以及触发 `$new-round` 的上一 round 最后节点原因。例如 `A -> B -> C` 且新 round 从 `B` 开始时，入口 `B` 会看到 `A` 的产物和上一轮 `C` 触发重开的原因；本轮 `B` 重新执行后，后续 `C` 只看到本轮 `B`，不继续携带上一轮 `A/C` 的附件或触发原因。触发 `$new-round` 的上一 round 最后节点会作为“进入本轮的原因”写入入口节点 hidden context 的前序流转原因，包含该节点 output artifact、预览和 attachments，但不进入 predecessor chain。若 workflow 声明了 `control.max_rounds`，该值限制 `$new-round` 可打开的新 round 数，初始 round 不计入；超过限制时当前 run / round 以 failure 结束。
 
+入口上下文属于本轮首条 trace step 及其连续的同节点 `retry` 后继，不绑定首个 attempt 的精确 ID。同 Run 当前节点重试和 successor Run 失败节点重跑都必须为入口的新会话重新构造稳定前缀产物与 `$new-round` 触发上下文；入口此前的 attempts 仍按本轮前序事实保留。作用域依据 trace sequence、`from_node_id` 和 `edge_outcome=retry` 派生，不新增持久化入口身份。执行进入后继节点，或通过普通 workflow edge 回到同名入口节点后，不再附带这组跨轮上下文；该回返节点后续的 retry 也不恢复首次入口作用域。
+
 ## 7. 人工 check 暂停
 启用 `manual_check=true` 的 worker 在 provider 会话自然结束后进入：
 
@@ -178,6 +187,8 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 `runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过显式“继续工作流”动作恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。暂停期间输入区继续提供 NonRuntime 普通对话，独立 continue action 才恢复 Runtime。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused UI snapshot 不得让输入区短暂降级。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
 后台失败收敛成功后，状态写入方返回本次已提交的暂停时间；错误事件与生命周期投影复用同一时间，不在发布时重新取时钟。迟到错误遇到已暂停的同一 attempt 时，沿用已存 `Run.updated_at`，不能把诊断时间当作新的状态转换。Direct 后台 Stop 的 `expiresAtMs` 是单调时钟活动窗口到壁钟的显示投影，session 与 connection generation 才是操作身份；分次读取按采样区间和毫秒舍入验证，不要求投影时间逐字相等。
+
+新 Run 与当前节点 retry 共用后台驱动。driver 在进入后继节点或新 round 后，必须同步更新自己持有的 run、round、node；后续 error/panic 只按这组当前 locator 与 `runtime_execution_id` 收敛实际拥有的执行，不得始终使用最初启动节点。仍需保留 stale owner 防护，用户已停止或新 execution 已接管时，旧 driver 不得改写新事实。
 
 ### 8.1 用户停止优先级与 ACP 收尾
 

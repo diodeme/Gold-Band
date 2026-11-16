@@ -515,6 +515,7 @@ pub fn catalog_agent_default_config(agent_id: &str) -> Option<ManagedAgentConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAdapterConfig {
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -669,6 +670,11 @@ impl ManagedAgentConfig {
     pub fn executable_adapter(&self, agent_id: &ManagedAgentId) -> Result<AcpAdapterConfig> {
         let mut adapter = self.adapter.clone();
         adapter.apply_catalog_launch(agent_id);
+        if adapter.command.trim().is_empty() {
+            return Err(
+                crate::onboarding::model::SetupError::new("agent.launch-command-missing").into(),
+            );
+        }
         let local_launch = crate::agent_catalog::builtin_agent(agent_id.as_str())
             .and_then(|entry| entry.local_launch.as_ref());
         if let Some(path) = &self.executable_path {

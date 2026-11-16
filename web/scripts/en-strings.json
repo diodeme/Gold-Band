@@ -3669,6 +3669,46 @@
     "zh": "待发送队列保存失败，请重试。"
   },
   {
+    "path": "errors.workflow.retry.run-active",
+    "en": "The Workflow is running, so the current node cannot be retried.",
+    "zh": "工作流正在运行，不能重试当前节点。"
+  },
+  {
+    "path": "errors.workflow.retry.run-terminal",
+    "en": "The Workflow has ended, so the current node cannot be retried.",
+    "zh": "工作流已结束，不能重试当前节点。"
+  },
+  {
+    "path": "errors.workflow.retry.node-not-retryable",
+    "en": "The current node cannot be retried in its current state.",
+    "zh": "当前节点当前状态不能重试。"
+  },
+  {
+    "path": "errors.workflow.retry.error-blocked",
+    "en": "The Workflow is blocked by an error, so the current node cannot be retried.",
+    "zh": "工作流已被错误阻塞，不能重试当前节点。"
+  },
+  {
+    "path": "errors.workflow.retry.manual-check-pending",
+    "en": "The current node is waiting for manual confirmation and cannot be retried.",
+    "zh": "当前节点正在等待人工确认，不能重试。"
+  },
+  {
+    "path": "errors.workflow.retry.unsupported-node",
+    "en": "This node type does not support retry.",
+    "zh": "当前节点类型不支持重试。"
+  },
+  {
+    "path": "errors.workflow.retry.stale-locator",
+    "en": "The current node has changed. Continue from the latest state.",
+    "zh": "当前节点已变化，请按最新状态操作。"
+  },
+  {
+    "path": "errors.workflow.retry.workflow-invalid",
+    "en": "The Workflow configuration or runtime environment is invalid, so the current node cannot be retried.",
+    "zh": "工作流配置或运行环境无效，无法重试当前节点。"
+  },
+  {
     "path": "errors.workflow.agent-doctor-failed",
     "en": "Agent {{agentType}} has not passed doctor.",
     "zh": "Agent {{agentType}} 未通过 doctor。"
@@ -8844,9 +8884,9 @@
     "zh": "复制 node id"
   },
   {
-    "path": "graph.retryFromNode",
-    "en": "Retry from this node",
-    "zh": "从该节点重试"
+    "path": "graph.retryCurrentNode",
+    "en": "Retry current node",
+    "zh": "重试当前节点"
   },
   {
     "path": "settings.path",

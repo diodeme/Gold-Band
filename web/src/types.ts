@@ -233,6 +233,13 @@ export interface RuntimeAssetInstalledEventVm {
   installedDisplayName: string;
 }
 
+/// multica 被动卸载落地事件载荷（M5-cw，与安装事件对称的本地反馈闭环）：前端按
+/// `assetType` 只重拉对应列表；`uninstalledKey` 供日志/排查对账。
+export interface RuntimeAssetUninstalledEventVm {
+  assetType: string;
+  uninstalledKey: string;
+}
+
 /// 待决上游拉取槽（M5-cj 卡片水合，list_upstream_pull_pendings 返回）：重进会话后恢复
 /// 决策卡片/等待态的数据源；`retried` 标识「继续等待」已选过一轮（恢复为等待态而非选择态）。
 export interface MulticaUpstreamPullPendingVm {
@@ -1793,6 +1800,30 @@ export interface RunSummaryVm {
   pauseReason?: string | null;
 }
 
+export interface RetryCurrentNodeRequest {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  expectedRoundId: string;
+  expectedNodeId: string;
+  expectedAttemptId: string;
+}
+
+export interface RetryCurrentNodeLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+}
+
+export interface RetryCurrentNodeAcceptedVm {
+  operationId: string;
+  locator: RetryCurrentNodeLocatorVm;
+  run: RunSummaryVm;
+}
+
 export interface RoundSummaryVm {
   id: string;
   runId: string;
@@ -1830,6 +1861,7 @@ export interface RuntimeDisplayVm {
 
 export interface GraphNodeVm {
   id: string;
+  roundId?: string | null;
   nodeId?: string | null;
   sequence?: number | null;
   label: string;
@@ -1845,6 +1877,7 @@ export interface GraphNodeVm {
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
+  retryable: boolean;
   iconKey?: string | null;
   sessionMode?: string | null;
   continueFromNodeId?: string | null;
@@ -1861,6 +1894,7 @@ export interface GraphAttemptVm {
   sessionMode?: string | null;
   acpSessionId?: string | null;
   current: boolean;
+  retryable: boolean;
 }
 
 export interface GraphEdgeVm {
@@ -3115,6 +3149,7 @@ export interface ConversationSessionLeafVm {
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
+  inherited?: boolean;
   manualCheckPending: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -3252,6 +3287,19 @@ export interface ConversationRunVm {
   runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+  sealed?: boolean;
+  rerunSuccessorRunId?: string | null;
+  rerunOrigin?: {
+    sourceRunId: string;
+    sourceRunUuid?: string | null;
+    sourceRoundId: string;
+    sourceRoundIndex: number;
+    sourceNodeId: string;
+    sourceAttemptId: string;
+    operationId: string;
+    inheritedTraceSequence: number;
+    sourceAuthoringRevision: number;
+  } | null;
 }
 
 export interface ScheduledTaskConfig {

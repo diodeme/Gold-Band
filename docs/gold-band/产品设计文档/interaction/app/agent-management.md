@@ -161,6 +161,7 @@ Agent Cards
 - Agent 管理页不承载 Node.js/npm/npx 的全局运行环境报告或重测；这些交互属于首次启动引导。Agent Doctor 因 npx/npm 失败时只在当前卡片展示结构化原因，用户可通过设置页“重新运行引导”进入全局环境检测。
 - 最近检测时间（展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`）
 - 错误原因（如果有）
+- 持久化自定义 Agent 缺少启动命令时不得阻断桌面启动或其他 Agent 加载；该实例保留在列表中并处于不可用状态，诊断展示 `agent.launch-command-missing`，用户补充命令并保存后重新诊断
 - doctor 失败时在诊断状态旁显示问号帮助入口；该入口使用 shadcn/ui `Popover`，点击或键盘激活后展示 raw 原因与 ACP Registry 配置帮助，不使用自定义大面板。raw 原因优先取 ACP JSON-RPC `error.message`、已分类故障 stderr（`params.reason`，限 2000 字符）和启动失败 `osError`；没有这些原始原因时才回退到本地化错误句。配置帮助仅包含参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，使用产品链接样式，点击后通过统一 `openWebTarget` 在内置浏览器打开，不走系统浏览器，也不在卡片内展开具体下载步骤
 - Agent 管理页复用当前工作空间的 draft 右侧工作区投影（与快速对话、创建定时任务相同），因此诊断帮助可以打开内置浏览器；未打开工作区时右栏保持收起
 - 诊断运行中按钮展示圆形加载动效

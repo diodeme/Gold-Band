@@ -15,6 +15,29 @@
 - 验收：WebView 6 个文件 / 28 项、Agent 17 个文件 / 64 项通过；Web TypeScript 与 `npm run web:build` 通过。生产构建的 `main` chunk 已确认本地启动表先于目录构造；内置浏览器加载生产产物进入 `/chat`，Agent 管理页正常，控制台无 warning/error，并用 unsupported fixture 确认 Windows 页面显示 WebView2 Runtime 指引且无 macOS 文案。Web 全量回归为 3400 项通过、10 个既有文件共 126 项失败，失败集中在 ACP 重入时序、Marketing 资源超时和既有 DOM 契约，与本次改动文件无关。
 - 性能与过度设计评审：修复只恢复常量初始化顺序，平台判断为一次 UA 正则匹配，不增加持久状态、监听器、缓存、异步链路或依赖；错误页仍是启动路径上的最小 DOM 投影。无需引入新的启动状态机或平台版本矩阵。
 
+## 2026-11-13 CodeBuddy 多轮执行配置统一
+
+- 根因：首轮执行通过 `ManagedAgentConfig::executable_adapter()` 把用户选择的 CodeBuddy executable 解析为本机 ACP launch；Direct 后续轮、AI-DYNAMIC 与个人分析直接透传 `ManagedAgentConfig.adapter` 的 npm catalog 配置。同一 workspace 连接签名漂移导致健康 ACP 连接被按 `ConfigChanged` 替换，形成首轮成功、二轮失败。
+- 实现：新增 `App::executable_agent_adapter()` 统一执行入口解析，Direct 两个 `run_prompt` 调用点、AI-DYNAMIC 与个人分析共用该结果；Direct/AI-DYNAMIC 在 durable turn admission 前解析并把同一结果传入执行层，个人分析在 claim lifecycle 前解析，避免配置失败绕过 ACP terminal guard；不改变连接池替换、崩溃恢复和 Agent 配置保存语义。
+- 验收：接口测试固定同一 CodeBuddy 实例配置重复解析结果完全一致，且用户显式 executable 必须解析为 canonical 本机路径与本机 ACP arguments；无效 executable 在 admission 前返回 `setup.executable-path-invalid` 且不创建 lifecycle；正式执行入口源码不再直接消费裸 `adapter` 配置。
+- 过度设计与性能评审：不新增缓存、状态机、错误码或第二连接池；每轮仅复用一次既有路径解析和文件存在性检查，成本为常数级，避免把配置漂移伪装成连接生命周期问题。
+
+## 2026-11-09 工作流当前节点重试设计方案
+
+- 状态：已实现并完成定向验收。详细设计及实施证据见[工作流当前节点重试设计方案](生命周期整理/工作流当前节点重试设计方案.md)。
+- 2026-11-09 评审修复：续接引用与 attempt 编号统一使用目标节点的已提交历史；历史会话查询补齐当前 round 上下文；会话树按 canonical trace 读取正式节点与 attempts；retry 与新 Run 复用持续更新当前节点的后台驱动。新增回归与验收证据记入详细方案第 19 节。
+- 2026-11-10 并发与计划一致性修复：固定 Workflow Continue 与 completed recovery 先在既有 attempt lock 内复核状态，再登记 recovery candidate，防止迟到请求破坏已接受 retry 的恢复索引。retry 预检记录当前 execution-plan revision，提交按 plan read lock → attempt lock 复核版本并持锁到 node → round → run 落盘；版本冲突不创建 attempt，重新提交使用新计划。迁移最初 7 项 App 用例及整库补查的 1 项 IM 投影用例的缺失 canonical trace fixture，保持生产严格校验。技术方案、红绿证据与最终验收统一见详细方案第 20 节；不新增持久字段、队列、依赖或第二套生命周期。
+- 2026-11-11 重试命令线程隔离修复：Tauri 入口改为异步，workspace 解析、预检、锁等待和 durable commit 一起复用既有 `spawn_blocking_command`；保留原 expected locator、幂等、错误与 accepted 契约。以可控准备门闩复现调用线程被占用，再验证等待期间命令让出执行权及结构化错误完整返回。实施与验收证据见详细方案第 22 节；不新增状态、队列或依赖。
+- 2026-11-15 评审修复：失败节点重跑改为同一来源串行交接，当前 successor 未 Completed 前拒绝不同历史失败 locator，Completed 后才允许下一次分叉并更新活动 seal；source dispatch 写锁缩短为提交 operation/pending/candidate、暂停与封存，quiesce 与资产复制移至 operation 专属锁；底层状态/IO 错误统一映射 `workflow.retry.workflow-invalid`，Run 切换时清理节点重跑确认框状态。红绿证据、锁边界与性能评审见《工作流失败节点重跑技术方案》第 13 节。
+- 2026-11-16 评审修复：启动恢复路径同样把 source dispatch 写锁收缩到 seal/operation 校验；失败 attempt 重跑统一排除 successor 继承前缀；`GraphNodeVm.retryable` 补齐 successor 封存门禁；节点重跑确认框改用非空 Run scope；`ConversationRunVm` 暴露 `rerunSuccessorRunId`，来源页在 successor 状态变化时自动刷新。P3 性能与 prompt 分类问题本期不处理，详见《工作流失败节点重跑技术方案》第 14 节。
+- 2026-11-13 审查修复：新 round 的入口上下文由首个精确 attempt 扩展为首节点及其连续 retry 链，同 Run 重试和 successor Run 失败节点重跑共用该作用域；普通边回返与后继节点继续隔离。Direct 命令回归 fixture 补齐 durable Run，保留生产可写性检查。设计、接口回归及性能评审见当前节点重试方案第 23 节和[失败节点重跑技术方案](生命周期整理/工作流失败节点重跑技术方案.md)。
+- 根因定性：现有 `run_retry` 已能按 canonical `current_round/current_node/current_attempt` 创建新 attempt，但缺少显式“当前节点可重试”契约、expected locator CAS、并发防护和后台 accepted 语义；会话页运行图的“从该节点重试”仍是硬编码禁用占位。修订后明确 Completed Run 生命周期不可回退，`Completed + Failure` 走 successor run / handoff；本方案只处理 `Paused + RuntimeAbnormal` 且当前 node 为 `Paused + outcome=null` 的未终结 Run。ErrorBlocked 不依赖事件日志猜测错误类别，第一阶段一律拒绝。继续复用 Run/Round/Node/Attempt 状态机、round trace、runtime candidate、既有后台驱动和错误契约，不新增持久字段、队列或平行状态机。
+- 命令设计：以 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)` 替换语义模糊的 `retry_run(taskId, runId)`。后端在旧 attempt 锁内重读权威状态并校验纯生命周期 readiness 与 expected locator，按旧 current locator 截断 canonical trace 后通过原子目录预留创建同 node 新 attempt（将现有 `next_attempt_id` 的读最大值逻辑收敛为 `reserve_next_attempt_dir`），按 node -> round -> run 原子替换提交；只有 run current pointer 指向新 locator 才算 durable accepted。该 pointer 只是当前位置转移与新 trace step 的 commit marker，不是同 locator 状态更新的通用 revision；已完成的更早 round 使用完整已校验 trace。返回 `RetryCurrentNodeAcceptedVm`（Run summary、完整新 locator、稳定 operationId），执行交由后台线程。相同 expected locator 重投时，如果 current 是它在 canonical trace 中的直接 retry successor，则返回同一 `operationId + locator` 和重投时的最新 Run summary，而不创建新 attempt；其他 locator 变化才返回 stale。运行中、终态 Run、ErrorBlocked、已完成节点、人工检查等待和 AI-DYNAMIC 内部节点分别映射稳定错误码；Agent/profile/model/Git 属于提交前 executable preflight，不进入 Graph VM 常数级投影。手动 retry 不改变 `control.max_attempts` 仅统计 failure 修复跳转的既有语义。
+- UI 契约：`GraphNodeVm` 新增后端派生的 `retryable` 投影；当前可重试节点右键显示“重试当前节点”，不可重试节点隐藏入口。回调经运行图资源面板、会话页到 App 的既有命令链路传递，pending 按完整 locator 去重，stale locator 只刷新并提示，不自动重试。七语言同步删除 `graph.retryFromNode` 并新增 `graph.retryCurrentNode`。
+- 验收计划：Rust 覆盖 `Paused + RuntimeAbnormal + node Paused/outcome=null` 重试、Completed + Success/Failure 原地拒绝且状态不回退、ErrorBlocked 与 `recover-completed-attempt` 边界、旧 attempt 保留、canonical trace 截断、原子 attempt 目录预留与崩溃遗留编号空洞、stale locator 拒绝、并发重复请求只成功一次、running/manual check/dynamic 内部节点拒绝、accepted operation identity、spawn 失败与重启恢复只做一次 terminalize、后台失败收敛和 AI-DYNAMIC Git 前置校验；Web 覆盖菜单显隐与点击回调、全屏图透传、pending 去重、stale 刷新、七语言契约和右侧工作区 memo 隔离；随后执行类型检查、生产构建与内置浏览器 deep link 实测。
+- 过度设计与性能评审：不引入第三方组件、新持久字段、新缓存或平行状态机；readiness、accepted DTO 与 canonical trace helper 只显式化既有生命周期和提交边界。第一阶段排除需要新增结构化错误事实才能安全判断的 ErrorBlocked retry。后端 JSON 读取为常数个文件，canonical trace 截断为 `O(t)`，attempt ID 正常通过原子目录预留为 `O(1)`，不扫描全量 attempt 目录；前端仅增加菜单谓词和 memo 比较字段，无全量历史扫描、N+1 或扩大订阅范围；无需新增 benchmark。
+- 实施结果：`retry_current_node` 完整 locator、CAS、canonical trace 截断、幂等 accepted identity、后台驱动与 `GraphNodeVm.retryable` 已落地；旧 `retry_run`、旧 `RunDetailPage` 和 `graph.retryFromNode` 已删除，七语言与运行图回调链路已同步。定向验收共通过 Rust 27 项、Web 35 项，`cargo check`、Web 类型检查和生产构建通过；内置浏览器验证当前节点菜单显隐、480px 窄窗口以及浅色/深色主题，验证后已关闭页面并停止 Vite。
+
 ## 2026-10-21 首次启动引导
 
 三步引导、首次／旧安装分流、只读发现与成功后自动登记、真实模型目录、默认工作流批量绑定及两文件恢复已实现；七语言、设置重跑入口与 Direct／AUTO 新配置初值同步接入。候选 Node/npm 策略仍待真实供应商与跨平台安装矩阵，未把元数据检查当作发布验收。实施清单和验证证据统一见[首次启动引导开发计划](新增流程/首次启动引导开发计划.md)。
@@ -1654,7 +1677,8 @@ enum ControlDecision {
 例如：
 - `start_run()`
 - `continue_run()`
-- `retry_run()`
+- `retry_current_node()`（仅未终结 Run 的当前失败节点，完整 locator CAS）
+- `rerun_failed_node()`（已完成失败 Attempt 创建 successor Run）
 - `pause_run()`
 - `open_session()`
 
@@ -1676,6 +1700,13 @@ MVP 主流程：
 桌面端 `start_run` command 需要在第 4 步完成后立即返回初始 run summary，并把第 5 步交给后台线程执行，避免 UI 等待完整 workflow 跑完后才恢复响应。若最新 Run 尚未进入终止态，桌面端不允许继续新建 Run。
 
 run 创建编号规则统一由 runtime 负责：普通启动和会话页重跑都扫描当前 task 的 `runs/` 目录最大 `run-NNN` 后递增，并先原子创建目标 run 目录占位，再写入 `run.json`、`workflow.snapshot.json`、`round.json` 和首个 `node.json`。前端不得根据当前选中的 run 推导新 run id；并发重跑时目录占位失败的一方必须重新扫描最大编号再分配。
+
+### 2026-11-12：Workflow 失败节点重跑
+
+- 普通 Worker 的 `Completed + Failure/Invalid` attempt 支持从精确 locator 重跑；已完成 Run 不原地复活，而是创建 successor Run，继承锚点以前的 canonical trace、node 状态、产物和附件，并追加 fresh attempt，依次执行该节点及最新 Workflow 的后续节点。历史失败 attempt 与当前已完成失败节点共用该接口；`ErrorBlocked` 暂不支持。
+- successor 记录 source Run UUID、round/node/attempt、operation ID、继承水位和 authoring revision；source 首次交接后封存，保持原结果并拒绝 continue、ACP 追问、执行计划当前写入和继承 attempt 写入。相同 source UUID + locator 幂等返回同一 successor；操作记录和 runtime recovery candidate 支持提交中断后的物化恢复，恢复阶段不调用 provider。
+- 复用现有 execution-plan 锁、attempt execution fencing、后台 driver、原子 JSON 和实际 workspace/worktree。拒绝未提交 trace、目标删除、工作区丢失、资源超限和符号链接；前缀最多 4096 steps、4096 个资源项、256 MiB，round 元数据读取也有界，复制阶段基于来源 Run capability 和 no-follow 打开复核，防止预检后的路径替换逃逸。重跑不回滚 Git 或外部副作用，不复制旧 ACP session、worker-ref、聊天和 Raw 日志。
+- 会话运行图为最新失败节点和历史失败 attempt 提供重跑入口，确认后导航到 successor；来源 Run 只读，继承 attempt 只读，ErrorBlocked 不显示入口。接口回归覆盖终态/历史重跑、最新工作流后继执行、并发幂等、source seal、迟到写入、恢复中断、资源边界、历史动态图 child 收敛和 ErrorBlocked。
 
 ### `run kill`
 MVP 行为：

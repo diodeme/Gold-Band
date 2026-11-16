@@ -58,6 +58,7 @@ describe('ConversationSidebar Direct terminal result dot', () => {
         }],
       },
       workspaceTaskPages: { 'project-001': { status: 'ready', nextCursor: null } },
+      preferences: { 'workspaces.collapsed': false },
     };
     const container = document.createElement('div');
     document.body.append(container);

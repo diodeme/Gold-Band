@@ -7,7 +7,7 @@
 //! - [`markdown_source`]: 需求正文 markdown 转义解码（tiptap 序列化源码 → 纯文本，M5-bx）
 //!
 //! 后续里程碑追加：
-//! - `loop_`（M2）：启动全量 register / 常驻 15s 心跳（连接后即持续）/ recover-orphans / 取消检测
+//! - `loop_`（M2）：启动全量 register / 常驻 3s 心跳（连接后即持续）/ recover-orphans / 取消检测
 //! - `runtime_assets`（M5-cq）：角色共享通道 B 工单（list 盘点 / export 提取 / push-install 安装）
 //! - `state`（M2+）：运行期内存状态（runtime_id 映射、在飞任务映射）
 //! - `vm`（M3）：远程任务展示 VM（RemoteTaskVm / RemoteConversationSidebarVm）

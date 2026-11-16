@@ -257,6 +257,7 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   closeWorkspace: () => void | Promise<void>;
   setWidth: (width: number) => void;
   renderResource: (resource: RightWorkspaceResource) => ReactNode;
+  refreshResourceRenderers: () => void;
   projectId: string | null;
   conversationDirectoryEntry: ConversationDirectoryWorkspaceEntry | null;
   setConversationDirectoryEntry: (entry: ConversationDirectoryWorkspaceEntry | null) => void;
@@ -756,6 +757,9 @@ export function RightWorkspaceProvider({
     if (commit({ type: 'synchronize', resource })) render();
   }, [commit]);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
+  const refreshResourceRenderers = useCallback(() => {
+    renderRenderer();
+  }, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
     renderRenderer();
@@ -785,9 +789,10 @@ export function RightWorkspaceProvider({
     closeWorkspace,
     setWidth,
     renderResource,
+    refreshResourceRenderers,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, shellState]);
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, refreshResourceRenderers, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, shellState]);
   const commands = useMemo<RightWorkspaceCommands>(() => ({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,

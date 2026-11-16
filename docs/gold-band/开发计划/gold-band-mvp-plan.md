@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-13 CodeBuddy 多轮执行配置统一
+
+- 根因：首轮执行通过 `ManagedAgentConfig::executable_adapter()` 把用户选择的 CodeBuddy executable 解析为本机 ACP launch；Direct 后续轮、AI-DYNAMIC 与个人分析直接透传 `ManagedAgentConfig.adapter` 的 npm catalog 配置。同一 workspace 连接签名漂移导致健康 ACP 连接被按 `ConfigChanged` 替换，形成首轮成功、二轮失败。
+- 实现：新增 `App::executable_agent_adapter()` 统一执行入口解析，Direct 两个 `run_prompt` 调用点、AI-DYNAMIC 与个人分析共用该结果；Direct/AI-DYNAMIC 在 durable turn admission 前解析并把同一结果传入执行层，个人分析在 claim lifecycle 前解析，避免配置失败绕过 ACP terminal guard；不改变连接池替换、崩溃恢复和 Agent 配置保存语义。
+- 验收：接口测试固定同一 CodeBuddy 实例配置重复解析结果完全一致，且用户显式 executable 必须解析为 canonical 本机路径与本机 ACP arguments；无效 executable 在 admission 前返回 `setup.executable-path-invalid` 且不创建 lifecycle；正式执行入口源码不再直接消费裸 `adapter` 配置。
+- 过度设计与性能评审：不新增缓存、状态机、错误码或第二连接池；每轮仅复用一次既有路径解析和文件存在性检查，成本为常数级，避免把配置漂移伪装成连接生命周期问题。
+
 ## 2026-10-21 首次启动引导
 
 三步引导、首次／旧安装分流、只读发现与成功后自动登记、真实模型目录、默认工作流批量绑定及两文件恢复已实现；七语言、设置重跑入口与 Direct／AUTO 新配置初值同步接入。候选 Node/npm 策略仍待真实供应商与跨平台安装矩阵，未把元数据检查当作发布验收。实施清单和验证证据统一见[首次启动引导开发计划](新增流程/首次启动引导开发计划.md)。

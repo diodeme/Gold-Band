@@ -39,6 +39,9 @@ export const MULTICA_UPSTREAM_PULL_SETTLED_EVENT = 'gold-band://multica-upstream
 // multica 被动安装落地（M5-cr：runtime-assets push-install 成功落库后按 assetType 重拉
 // 对应列表），与 Rust 侧 `src-tauri/src/multica/runtime_assets.rs` 的事件常量对应。
 export const RUNTIME_ASSET_INSTALLED_EVENT = 'gold-band://runtime-asset-installed';
+// multica 被动卸载落地（M5-cw：runtime-assets uninstall 成功移除后按 assetType 重拉对应
+// 列表，与安装事件对称——否则本地运行中列表仍显示已删条目），Rust 侧同上对应。
+export const RUNTIME_ASSET_UNINSTALLED_EVENT = 'gold-band://runtime-asset-uninstalled';
 
 // ── 个人分析 / 排程 ──
 export const PERSONAL_ANALYTICS_UPDATED_EVENT = 'gold-band://personal-analytics-updated';

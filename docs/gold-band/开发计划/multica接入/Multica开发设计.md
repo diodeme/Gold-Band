@@ -3248,6 +3248,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.96 改动九十四：runtime-assets 协议对齐 multica Runtime 页签重构（M5-cz，2026-11-13）
+
+**背景**：multica 把「角色管理」「工作流管理」页面重构为**共享 / Runtime 双页签**（共享：目录发布/安装/导出/删除；Runtime：浏览本机资产清单、逐条发布/卸载/查看），并给出权威对接文档 `.claude/design/multica/2026-11-13-maling-runtime-asset-protocol.md`。逐条对照其 §4 八项改动清单：**六项已满足**（uninstall 心跳分支与幂等执行器、install 写入语义、list `is_builtin`、workflow export 剥 modelBindings、role frontmatter name==key、端点区分、60s 窗口——M5-cq/cr/cw 内网已验证）；真实差异四处，全部是对齐性小改。
+
+**实现**：
+
+- ① **list 支持 `asset_type:"all"`**（协议 §3.1 新枚举值）：原实现只认空串 = 全量，`all` 会落入未知类型 → `supported:false`——重构后用户打开 Runtime 页签即降级报错。提取纯函数 `list_scope(asset_type) -> ListScope{want_role, want_workflow, supported}`，空串与 `all` 同为 role+workflow 合并盘点，`handle_list` 消费之（原 inline 布尔判断上收，可单测）。
+- ② **install 回报字段改名 `installed_name` → `installed_key`**（协议 §3.3「建议回传」；旧角色对接文档确用 installed_name，重构后改名）：`RuntimeAssetsInstallResult` 字段重命名，保留 `installed_display_name`（multica 反馈 P3 协商字段）与 `outcome`（#6 落库形态）；role/workflow 两个构造点同步。
+- ③ **uninstall 回报字段改名 `uninstalled_key` → `removed_key`**（协议 §3.4 示例字段；result 是自由 map，multica 仅透传 UI）：`RuntimeAssetsUninstallResult` 字段重命名。**本地 Tauri 事件 `gold-band://runtime-asset-uninstalled` 载荷的 `uninstalledKey` 不动**——那是另一契约（前端 `web/tests/runtime-asset-uninstalled-event.test.ts` 锁定）。
+- ④ **classify 接受详情 `action:"export"`**（协议 §2 详情枚举含 export；心跳 ack 侧仍别名 install 兼容已部署客户端）：`classify_runtime_assets_request` 的 install 臂扩为 `"install" | "export"`，export/push-install 仍按 item_id 空/非空区分。
+
+**方案自评审**：过度设计——四处均为常量比较与字段重命名，无新状态/抽象/IO；`ListScope` 是把既有 inline 判断上收为纯函数（换可测性，非新概念）。明确**不做**：角色重装不引入「同 key 跳过」——本地角色 key 空间是 `pf-` id、安装后不保留市场 slug，「重装落改名副本」是内网多轮验证后的协商行为（P3 display name 正为此），工作流侧 ReusedExisting 跳过已实现（协议 §4 第 3 项措辞是「确认」而非新增）；256KB 上限不做 daemon 预检——服务端发布时校验（ARTIFACT_TOO_LARGE），预检属重复校验；§5 三缺口（conflict_strategy / installed_version / workflow deps）文档明说不阻塞本期。性能——零影响（无新 IO/状态，字段改名不进热路径）。
+
+**验证结果**：`cargo test -p gold-band-desktop --bin gold-band-desktop "multica::"` **295 passed**（+2：`classify_accepts_explicit_export_action`——role/workflow 两形态显式 export 均正确路由，漂移先红；`list_scope_treats_all_as_full_enumeration`——空/all 同义、单类型只回该类型、未知降级 supported:false；既有 client 序列化测试更新为断言 `installed_key`/`removed_key` 且旧字段名不再出现）；`cargo clippy -p gold-band-desktop --all-targets` 对改动文件零告警；`cargo fmt` 通过。
+
+**文件**：`src-tauri/src/multica/{client,runtime_assets}.rs`；文档 `接入方案.md` D5（权威契约指针 + 详情 action 枚举 + `all` 语义 + 回报字段名）、本条。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

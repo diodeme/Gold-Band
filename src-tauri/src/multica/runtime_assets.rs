@@ -5,7 +5,8 @@
 //! 的上传面板/安装/卸载入口遥控本机干活，码灵**纯被动**——主动行为仅心跳认领：既有的 3s
 //! 定时 tick + 工单完成上报后的补发排空链（M5-cx，对齐 multica daemon handlePendingWorkHint）：
 //! - **list（盘点）**：按详情 `asset_type` 枚举本地资产，只报摘要不报正文（正文仅在
-//!   export/install 全量传输）；asset_type 空 = 未分化的全量盘点（role + workflow 逐条带 type）；
+//!   export/install 全量传输）；asset_type 空（旧 server 未分化）与 `all`（2026-11-13 协议
+//!   §3.1 新枚举值，Runtime 页签重构后显式下发）同为全量盘点（role + workflow 逐条带 type）；
 //! - **export（提取）**：按 `asset_key`（= 资产 id）读完整资产回传，multica 暂存后自行发布；
 //! - **push-install（推送安装）**：把 multica 推来的资产正文落为本地资产，回报实际落库名
 //!   （role 恒新用户角色；workflow 同 key 用户模板跳过、builtin id 物化用户副本，均不覆盖）；
@@ -150,7 +151,9 @@ pub(crate) fn classify_runtime_assets_request(
 ) -> Result<RuntimeAssetsWorkOrder, String> {
     match detail.action.as_str() {
         "list" => Ok(RuntimeAssetsWorkOrder::List),
-        "install" => {
+        // 2026-11-13 协议 §2：详情 action 枚举显式含 "export"（心跳 ack 侧仍把 export 别名回
+        // install 以兼容已部署客户端）；两值同臂处理，export/push-install 仍按 item_id 区分。
+        "install" | "export" => {
             let payload = detail
                 .payload
                 .clone()
@@ -275,7 +278,7 @@ pub(crate) fn workflow_asset_summaries(templates: &[WorkflowTemplate]) -> Vec<Ru
 /// 两种本地存储同构（`(id, is_built_in)` 投影），决策单一真源。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UninstallPlan {
-    /// 资产已不在本地：按成功上报（`uninstalled_key` 原样带回）。
+    /// 资产已不在本地：按成功上报（`removed_key` 原样带回）。
     IdempotentSuccess,
     /// 内置资产只读：failed 上报。
     ReadonlyBuiltIn,
@@ -406,12 +409,47 @@ pub(crate) async fn handle_runtime_assets_request<R: Runtime>(
     crate::multica::loop_::heartbeat_once(&app, &client, &workspace_id, &runtime_id).await;
 }
 
-/// list 工单：按详情 `asset_type` 枚举本地资产 → 摘要上报（正文不上传）。
+/// list 工单的资产类型 → 盘点范围（纯函数，可单测）。
 ///
+/// - `""`（旧 server 未分化盘点）与 `"all"`（2026-11-13 协议 §3.1 新枚举值，Runtime 页签重构后
+///   显式下发）同为 role + workflow 合并上报，逐条带 `type`；
 /// - `role` → 只报角色；`workflow` → 只报模板（web 弹窗按传入类型渲染，**必须只回该类型**，
 ///   混入另一类会显示错乱——工作流对接说明 §4.2）；
-/// - 空 → role + workflow 一并回报，逐条带 `type`（未分化盘点的建议形态）；
-/// - 其它类型 → `supported: false` + 空 assets，如实回报能力（server 据此不再下发该类型工单）。
+/// - 未知类型 → 空范围 + `supported: false`（合法完成态，UI 降级提示而非报错；server 据此
+///   不再下发该类型）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ListScope {
+    want_role: bool,
+    want_workflow: bool,
+    supported: bool,
+}
+
+fn list_scope(asset_type: &str) -> ListScope {
+    match asset_type {
+        "" | "all" => ListScope {
+            want_role: true,
+            want_workflow: true,
+            supported: true,
+        },
+        ASSET_TYPE_ROLE => ListScope {
+            want_role: true,
+            want_workflow: false,
+            supported: true,
+        },
+        ASSET_TYPE_WORKFLOW => ListScope {
+            want_role: false,
+            want_workflow: true,
+            supported: true,
+        },
+        _ => ListScope {
+            want_role: false,
+            want_workflow: false,
+            supported: false,
+        },
+    }
+}
+
+/// list 工单：按详情 `asset_type` 枚举本地资产 → 摘要上报（正文不上传）。
 async fn handle_list<R: Runtime>(
     app: AppHandle<R>,
     client: MulticaClient,
@@ -419,13 +457,14 @@ async fn handle_list<R: Runtime>(
     request_id: String,
     asset_type: String,
 ) {
-    let want_role = asset_type.is_empty() || asset_type == ASSET_TYPE_ROLE;
-    let want_workflow = asset_type.is_empty() || asset_type == ASSET_TYPE_WORKFLOW;
+    let scope = list_scope(&asset_type);
     let report = match home_app(&app) {
         None => failed_list_report("app state unavailable".to_string()),
         Some(app) => {
             // 目录/store 扫描是阻塞 FS（角色十级文件 <10ms、模板单 JSON 文件），放
             // spawn_blocking 不占 async worker；只读请求的类型，不引入另一类的失败耦合。
+            let want_role = scope.want_role;
+            let want_workflow = scope.want_workflow;
             let scan = tauri::async_runtime::spawn_blocking(move || {
                 let mut assets = Vec::new();
                 if want_role {
@@ -446,7 +485,7 @@ async fn handle_list<R: Runtime>(
             match scan {
                 Ok(Ok(assets)) => RuntimeAssetsListReport {
                     status: "completed",
-                    supported: want_role || want_workflow,
+                    supported: scope.supported,
                     assets,
                     error: None,
                 },
@@ -501,7 +540,7 @@ async fn handle_export<R: Runtime>(
     report_install(&client, &runtime_id, &request_id, report).await;
 }
 
-/// push-install 工单（角色）：交换文档 → 新本地用户角色 → 回报 `installed_name`（新 profile.id）。
+/// push-install 工单（角色）：交换文档 → 新本地用户角色 → 回报 `installed_key`（新 profile.id）。
 ///
 /// 落库恒为 `create_profile`（新 id 的新用户角色）：与既有角色重名时转换层改名拷贝、
 /// `pf-builtin-*`/`is_builtin` 推送落为用户副本——内置角色只读、用户数据不覆盖（ADR-0008 D6）。
@@ -541,10 +580,11 @@ async fn handle_push_install<R: Runtime>(
                         payload: None,
                         result: Some(RuntimeAssetsReportResult::Install(
                             RuntimeAssetsInstallResult {
-                                // id = 资产 key（回查句柄）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
+                                // id = 资产 key（回查句柄，M5-cz 起字段名 installed_key 对齐
+                                // 2026-11-13 协议 §3.3）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
                                 // multica 反馈 P3——仅市场名兜底拿不到这个值）；outcome = 落库形态
                                 //（#6：created / renamed-copy，服务端不再靠名称兜底猜）。
-                                installed_name: entry.id,
+                                installed_key: entry.id,
                                 installed_display_name: entry.name,
                                 outcome: outcome.as_wire_str(),
                             },
@@ -637,10 +677,11 @@ async fn handle_push_install_workflow<R: Runtime>(
                         payload: None,
                         result: Some(RuntimeAssetsReportResult::Install(
                             RuntimeAssetsInstallResult {
-                                // 与角色同约定：id = 资产 key（跳过时是既有模板 id），展示名 = 实际
-                                // 落库名（builtin 副本派生 id 场景用户可读）；outcome = 落库形态
-                                //（#6：created / reused-existing——「已装过跳过」不再与新装混淆）。
-                                installed_name: template.id,
+                                // 与角色同约定：id = 资产 key（跳过时是既有模板 id，M5-cz 起字段名
+                                // installed_key 对齐协议），展示名 = 实际落库名（builtin 副本派生 id
+                                // 场景用户可读）；outcome = 落库形态（#6：created / reused-existing
+                                // ——「已装过跳过」不再与新装混淆）。
+                                installed_key: template.id,
                                 installed_display_name: template.name,
                                 outcome: outcome.as_wire_str(),
                             },
@@ -658,7 +699,7 @@ async fn handle_push_install_workflow<R: Runtime>(
     report_install(&client, &runtime_id, &request_id, report).await;
 }
 
-/// uninstall 工单（角色）：决策（存在性/内置预检）→ 删除或幂等成功 → 回报 `uninstalled_key`。
+/// uninstall 工单（角色）：决策（存在性/内置预检）→ 删除或幂等成功 → 回报 `removed_key`。
 ///
 /// 删除走 `App::delete_profile(key, force=true)`：multica 确认弹窗已承担本地 UI
 /// 「引用计数二次确认」的职责（force=false 会在角色被模板/任务引用时报
@@ -707,7 +748,7 @@ async fn handle_uninstall<R: Runtime>(
     report_install(&client, &runtime_id, &request_id, report).await;
 }
 
-/// uninstall 工单（工作流）：决策 → 删除模板或幂等成功 → 回报 `uninstalled_key`。
+/// uninstall 工单（工作流）：决策 → 删除模板或幂等成功 → 回报 `removed_key`。
 ///
 /// 与角色同构；`App::delete_workflow_template` 自带 builtin 只读与 `last_used_template_id`
 /// 重置语义，直接复用。
@@ -782,15 +823,15 @@ fn uninstall_report<R: Runtime>(
     }
 }
 
-/// uninstall completed 的上报 body：`result.uninstalled_key` 带回资产 key（multica 建议，
-/// 便于 UI 对账与排查）。
+/// uninstall completed 的上报 body：`result.removed_key` 带回资产 key（2026-11-13 协议 §3.4
+/// 示例字段，M5-cz 对齐；便于 UI 对账与排查）。
 fn completed_uninstall_report(asset_key: &str) -> RuntimeAssetsInstallReport {
     RuntimeAssetsInstallReport {
         status: "completed",
         payload: None,
         result: Some(RuntimeAssetsReportResult::Uninstall(
             RuntimeAssetsUninstallResult {
-                uninstalled_key: asset_key.to_string(),
+                removed_key: asset_key.to_string(),
             },
         )),
         error: None,
@@ -1014,6 +1055,44 @@ mod tests {
             classify_runtime_assets_request(&detail("uninstall", "", json!({"asset_key": " "})))
                 .is_err()
         );
+    }
+
+    /// 2026-11-13 协议 §2：详情 action 枚举显式含 "export"（心跳 ack 侧仍把 export 别名回
+    /// install 以兼容已部署客户端）；两值同臂处理，export/push-install 仍按 item_id 区分。
+    /// 漂移先红——否则升级后的 server 显式下发 export 时会被 failed"unsupported action"。
+    #[test]
+    fn classify_accepts_explicit_export_action() {
+        assert!(matches!(
+            classify_runtime_assets_request(&detail("export", "", json!({"asset_key": "pf-abc"}))),
+            Ok(RuntimeAssetsWorkOrder::Export { ref asset_key }) if asset_key == "pf-abc"
+        ));
+        assert!(matches!(
+            classify_runtime_assets_request(&detail_typed(
+                "workflow",
+                "export",
+                "",
+                json!({"asset_key": "my-pipeline"})
+            )),
+            Ok(RuntimeAssetsWorkOrder::ExportWorkflow { ref asset_key }) if asset_key == "my-pipeline"
+        ));
+    }
+
+    /// 2026-11-13 协议 §3.1：asset_type 新增显式 `all`（multica Runtime 页签重构后打开页签
+    /// 即下发）；与空串（旧 server 未分化盘点）同为 role+workflow 合并上报。漂移先红——
+    /// 否则重构后 UI 打开 Runtime 页签会拿到 supported:false 而降级报错。
+    #[test]
+    fn list_scope_treats_all_as_full_enumeration() {
+        for asset_type in ["", "all"] {
+            let scope = list_scope(asset_type);
+            assert!(scope.want_role && scope.want_workflow && scope.supported);
+        }
+        let role = list_scope(ASSET_TYPE_ROLE);
+        assert!(role.want_role && !role.want_workflow && role.supported);
+        let workflow = list_scope(ASSET_TYPE_WORKFLOW);
+        assert!(!workflow.want_role && workflow.want_workflow && workflow.supported);
+        // 未知类型：空范围 + supported:false（合法完成态，UI 降级提示而非报错）。
+        let unknown = list_scope("agent");
+        assert!(!unknown.want_role && !unknown.want_workflow && !unknown.supported);
     }
 
     #[test]

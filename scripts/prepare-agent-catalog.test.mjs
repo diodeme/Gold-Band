@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
-  BUILTIN_AGENT_IDS, SimulatedPublicationCrash, buildAgentCatalog, generateAgentCatalog,
+  ACP_REGISTRY_URL, AgentCatalogFetchError, BUILTIN_AGENT_IDS, SimulatedPublicationCrash,
+  buildAgentCatalog, generateAgentCatalog,
   recoverAgentCatalogPublication,
 } from './prepare-agent-catalog.mjs';
 
@@ -379,6 +380,60 @@ test('catalog describes installed ACP commands independently of npm launchers', 
   assert.equal(catalog.agents.find((entry) => entry.id === 'codex-acp').installedCommand, 'codex');
   assert.equal(catalog.agents.find((entry) => entry.id === 'pi-acp').installedCommand, 'pi');
   assert.equal(catalog.agents.find((entry) => entry.id === 'cursor').localLaunch, null);
+});
+
+test('retries a transient registry request before publishing the catalog', async () => {
+  const root = await createGenerationRoot();
+  let registryAttempts = 0;
+  try {
+    const registry = registryFixture();
+    const catalog = await generateAgentCatalog({
+      repoRoot: root,
+      retrySleep: async () => {},
+      fetchJson: async (url) => {
+        if (url.endsWith('/registry.json') && registryAttempts++ === 0) {
+          throw new TypeError('fetch failed');
+        }
+        if (url.endsWith('/registry.json')) return registry;
+        return { version: decodeURIComponent(url.split('/').pop()) };
+      },
+      fetchIcon: async (url) => `<svg xmlns="https://www.w3.org/2000/svg">${url}</svg>`,
+    });
+
+    assert.equal(catalog.agents.length, BUILTIN_AGENT_IDS.length);
+    assert.equal(registryAttempts, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('exhausted catalog requests identify the stage, URL and attempt count', async () => {
+  const root = await createGenerationRoot();
+  let registryAttempts = 0;
+  try {
+    await assert.rejects(
+      () => generateAgentCatalog({
+        repoRoot: root,
+        retrySleep: async () => {},
+        fetchJson: async () => {
+          registryAttempts += 1;
+          throw new TypeError('fetch failed');
+        },
+      }),
+      (error) => {
+        assert.ok(error instanceof AgentCatalogFetchError);
+        assert.equal(error.code, 'AGENT_CATALOG_FETCH_FAILED');
+        assert.equal(error.stage, 'registry');
+        assert.equal(error.url, ACP_REGISTRY_URL);
+        assert.equal(error.attempts, 3);
+        assert.match(error.message, /fetch failed/);
+        return true;
+      },
+    );
+    assert.equal(registryAttempts, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 async function createGenerationRoot(policy = officialPolicy()) {

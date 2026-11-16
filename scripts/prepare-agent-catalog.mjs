@@ -33,6 +33,9 @@ const architectures = ['x86_64', 'aarch64'];
 const sourceKinds = ['official-registry', 'local-supplement'];
 const integrationOrigins = ['official', 'community-adapter'];
 const publicationJournalSchemaVersion = 2;
+const NETWORK_TIMEOUT_MS = 15_000;
+const NETWORK_MAX_ATTEMPTS = 3;
+const NETWORK_RETRY_BASE_DELAY_MS = 500;
 
 const overrides = {
   'claude-acp': {
@@ -359,16 +362,72 @@ export class SimulatedPublicationCrash extends Error {
   }
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, { headers: { accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Failed to fetch ${url}: HTTP ${response.status}`);
+class CatalogHttpError extends Error {
+  constructor(url, status) {
+    super(`HTTP ${status} from ${url}`);
+    this.name = 'CatalogHttpError';
+    this.code = 'AGENT_CATALOG_HTTP_ERROR';
+    this.status = status;
+    this.retryable = status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+}
+
+export class AgentCatalogFetchError extends Error {
+  constructor({ stage, url, attempts, cause }) {
+    super(
+      `Agent catalog ${stage} request failed after ${attempts} attempts for ${url}: ${describeError(cause)}`,
+      { cause },
+    );
+    this.name = 'AgentCatalogFetchError';
+    this.code = 'AGENT_CATALOG_FETCH_FAILED';
+    this.stage = stage;
+    this.url = url;
+    this.attempts = attempts;
+  }
+}
+
+async function fetchJson(url, { signal } = {}) {
+  const response = await fetch(url, { headers: { accept: 'application/json' }, signal });
+  if (!response.ok) throw new CatalogHttpError(url, response.status);
   return response.json();
 }
 
-async function fetchIcon(url) {
-  const response = await fetch(url, { headers: { accept: 'image/svg+xml' } });
-  if (!response.ok) throw new Error(`Failed to fetch icon ${url}: HTTP ${response.status}`);
+async function fetchIcon(url, { signal } = {}) {
+  const response = await fetch(url, { headers: { accept: 'image/svg+xml' }, signal });
+  if (!response.ok) throw new CatalogHttpError(url, response.status);
   return response.text();
+}
+
+async function requestWithRetry(url, stage, request, options = {}) {
+  const maxAttempts = options.maxAttempts ?? NETWORK_MAX_ATTEMPTS;
+  const timeoutMs = options.timeoutMs ?? NETWORK_TIMEOUT_MS;
+  const retrySleep = options.retrySleep ?? ((delayMs) => new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, delayMs);
+  }));
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await request({ signal: AbortSignal.timeout(timeoutMs), attempt });
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts || !isRetryableRequestError(error)) break;
+      await retrySleep(NETWORK_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+    }
+  }
+
+  throw new AgentCatalogFetchError({ stage, url, attempts: maxAttempts, cause: lastError });
+}
+
+function isRetryableRequestError(error) {
+  return !(error instanceof CatalogHttpError) || error.retryable;
+}
+
+function describeError(error) {
+  if (!error) return 'unknown error';
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error?.cause?.code ?? error?.code;
+  return code && !message.includes(code) ? `${message} (${code})` : message;
 }
 
 export async function generateAgentCatalog(options = {}) {
@@ -381,11 +440,22 @@ export async function generateAgentCatalog(options = {}) {
   const localRaw = await readFile(paths.localSupplement, 'utf8');
   const localSupplement = JSON.parse(localRaw);
   const localDigest = sha256(localRaw);
+  const networkOptions = {
+    maxAttempts: options.networkMaxAttempts,
+    timeoutMs: options.networkTimeoutMs,
+    retrySleep: options.retrySleep,
+  };
+  const fetchJsonImpl = options.fetchJson ?? fetchJson;
 
   await hooks.beforeRegistryFetch?.();
   const registry = offline
     ? JSON.parse(await readFile(paths.snapshot, 'utf8'))
-    : await (options.fetchJson ?? fetchJson)(ACP_REGISTRY_URL);
+    : await requestWithRetry(
+      ACP_REGISTRY_URL,
+      'registry',
+      ({ signal }) => fetchJsonImpl(ACP_REGISTRY_URL, { signal }),
+      networkOptions,
+    );
   await hooks.afterRegistryFetch?.();
   const raw = `${JSON.stringify(registry, null, 2)}\n`;
   const fetchedAt = process.env.SOURCE_DATE_EPOCH
@@ -399,7 +469,12 @@ export async function generateAgentCatalog(options = {}) {
       const spec = npa(agent.args[1]);
       const url = `https://registry.npmjs.org/${encodeURIComponent(spec.name)}/${encodeURIComponent(spec.fetchSpec)}`;
       await hooks.beforeNpmPinValidation?.();
-      const metadata = await (options.fetchJson ?? fetchJson)(url);
+      const metadata = await requestWithRetry(
+        url,
+        `npm metadata for ${agent.id}`,
+        ({ signal }) => fetchJsonImpl(url, { signal }),
+        networkOptions,
+      );
       if (!metadata || metadata.version !== spec.fetchSpec) {
         throw new Error(`Pinned package ${agent.args[1]} validation failed.`);
       }
@@ -411,7 +486,15 @@ export async function generateAgentCatalog(options = {}) {
     await mkdir(staging, { recursive: true });
     await writeFile(join(staging, 'snapshot.json'), raw, 'utf8');
     await writeFile(join(staging, 'agent-catalog.json'), `${JSON.stringify(catalog, null, 2)}\n`, 'utf8');
-    await stageIcons(root, staging, catalog, offline, options.fetchIcon ?? fetchIcon, hooks);
+    await stageIcons(
+      root,
+      staging,
+      catalog,
+      offline,
+      options.fetchIcon ?? fetchIcon,
+      hooks,
+      networkOptions,
+    );
     await hooks.beforeCatalogValidation?.();
     const staged = await validateStagedCatalog(staging, catalog);
     await publishStagedCatalog(root, staged, hooks);
@@ -440,7 +523,7 @@ function relativeTarget(root, target) {
   return value.split(sep).join('/');
 }
 
-async function stageIcons(root, staging, catalog, offline, fetchIconImpl, hooks) {
+async function stageIcons(root, staging, catalog, offline, fetchIconImpl, hooks, networkOptions) {
   const sourceDir = join(root, 'web', 'public', 'agent-icons');
   const targetDir = join(staging, 'icons');
   await mkdir(targetDir, { recursive: true });
@@ -455,7 +538,12 @@ async function stageIcons(root, staging, catalog, offline, fetchIconImpl, hooks)
       ? await readFile(join(sourceDir, `${agent.iconKey}.svg`), 'utf8')
       : await (async () => {
         await hooks.beforeIconDownload?.();
-        return fetchIconImpl(agent.iconUrl);
+        return requestWithRetry(
+          agent.iconUrl,
+          `icon for ${agent.id}`,
+          ({ signal }) => fetchIconImpl(agent.iconUrl, { signal }),
+          networkOptions,
+        );
       })();
     await hooks.beforeIconValidation?.();
     const trimmed = svg.trimStart();

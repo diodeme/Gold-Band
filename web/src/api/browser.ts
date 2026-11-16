@@ -3739,6 +3739,10 @@ export const browserApi: RuntimeApi = {
     // 浏览器桩：无 multica daemon，被动安装事件永不产生。
     return Promise.resolve(() => {});
   },
+  subscribeRuntimeAssetUninstalled() {
+    // 浏览器桩：无 multica daemon，被动卸载事件永不产生。
+    return Promise.resolve(() => {});
+  },
   subscribeUpstreamPullEvents() {
     // 浏览器桩：无 multica 拉取链路，永不产生决策事件。
     return Promise.resolve(() => {});

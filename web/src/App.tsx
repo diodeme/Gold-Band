@@ -64,6 +64,7 @@ import {
   subscribeConversationTerminalResultUpdates,
   subscribeRemoteTaskUpdates,
   subscribeRuntimeAssetInstalled,
+  subscribeRuntimeAssetUninstalled,
   updateNotificationAttention,
   recordActivity,
 } from './api';
@@ -1453,6 +1454,33 @@ export function App() {
     let active = true;
     let unlisten: (() => void) | undefined;
     void subscribeRuntimeAssetInstalled((event) => {
+      if (!active) return;
+      if (event.assetType === 'workflow') {
+        getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
+      } else if (event.assetType === 'role') {
+        // best-effort 吞错（data-loading §3/§6）：后台重拉失败不得清空已加载的基础数据。
+        loadProfiles().catch(() => {});
+      }
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [loadProfiles]);
+
+  // multica 被动卸载（runtime-assets uninstall）与安装对称：后台移除后按 assetType 重拉对应
+  // 列表，否则运行中的列表仍显示已删条目（M5-cw，M5-cr 同类问题的卸载侧）。幂等成功（本地
+  // 无变化）不触发事件，重拉仅在真删除后发生。
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void subscribeRuntimeAssetUninstalled((event) => {
       if (!active) return;
       if (event.assetType === 'workflow') {
         getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});

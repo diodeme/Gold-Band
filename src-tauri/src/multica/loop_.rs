@@ -6,7 +6,7 @@
 //! - **recover-orphans**：启动 register 后，对每个 runtime_id 清残留的在飞任务。
 //! - **启动 reconcile**：recover-orphans 后，崩溃残留的 task_conversations 条目 remote cancelled/404
 //!   -> 作废本地 Paused run（不在 failed 上作废，保断点续跑，开发设计 4.4）。
-//! - **常驻 15s 心跳 + 自愈注册 + 取消检测**：与 multica 建立连接后始终保持心跳（不再仅在任务执行时）；
+//! - **常驻 3s 心跳 + 自愈注册 + 取消检测**：与 multica 建立连接后始终保持心跳（不再仅在任务执行时）；
 //!   每 tick 先自愈注册（已连接但 runtime_ids 缺失的已绑定 workspace -> 重注册，根因修复 Bug 1），
 //!   再对 `(workspace_id, runtime_id)` 发心跳（runtime 行失效 404 -> 清缓存触发下 tick 自愈重注册），
 //!   再对在飞 active_run 做取消检测--remote failed/cancelled/404 -> 作废本地 run（接入方案 C5）。
@@ -35,7 +35,12 @@ use crate::multica::state::SharedMulticaState;
 use crate::state::DesktopState;
 
 /// 常驻心跳间隔（秒）。≠ metrics 的 15min；两套并存，互不干扰（开发设计 2.6 / 第 6 章表3）。
-pub const MULTICA_HEARTBEAT_INTERVAL_SECS: u64 = 15;
+///
+/// M5-cx 改动 1：15s → 3s（multica 侧心跳优化对齐）。拉取式通道下码灵无 WS/企微中继，
+/// 网页端操作的感知等待从 avg ~7.5s / max 15s 降到 avg ~1.5s / max 3s；每 daemon 每 3s
+/// 一次心跳的负载 multica 侧已评估可忽略。tick 内其余维护（自愈注册/rerun 排空/取消检测）
+/// 随同一节奏加速：正常态零 server 调用，有任务在飞时为每 run 一次轻量 GET（可接受）。
+pub const MULTICA_HEARTBEAT_INTERVAL_SECS: u64 = 3;
 
 /// 注册单个 workspace 并缓存 runtime_id（启动全量 / 自愈增量 / connect 触发 / 绑定即时 共用底层）。
 ///
@@ -88,7 +93,7 @@ pub(crate) async fn register_workspace(
 
 /// 连接建立后即时注册所有已绑定 workspace（`connect_multica` 触发）。
 ///
-/// 用户刚连上就想看到 runtime 在线、任务可领取--不等 15s 心跳 tick 自愈（根因修复 Bug 1：旧实现
+/// 用户刚连上就想看到 runtime 在线、任务可领取--不等 3s 心跳 tick 自愈（根因修复 Bug 1：旧实现
 /// `connect_multica` 不注册，首连后要等启动 loop 或重启才注册，期间心跳空转）。best-effort：逐条尝试，
 /// 失败仅 warn（自愈 tick 兜底重试）。复用 [`resolve_startup_params`] 取 client+workspaces+daemon_id。
 pub(crate) async fn register_all_bound_workspaces<R: Runtime>(app: &AppHandle<R>) {
@@ -199,7 +204,7 @@ async fn run_startup_registration<R: Runtime>(app: &AppHandle<R>) {
     reconcile_startup_orphans(app, &client).await;
 }
 
-/// 常驻心跳循环（15s）：自愈注册 + 心跳 + 取消检测。
+/// 常驻心跳循环（3s）：自愈注册 + 心跳 + 取消检测。
 ///
 /// 与 multica 建立连接后即持续维持在线（不再仅任务执行期间）。每 tick 顺序：
 /// 1. 自愈注册：已连接但 runtime_ids 缺失的已绑定 workspace -> 重注册（根因修复 Bug 1）；
@@ -220,54 +225,8 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
             //    ack 携带 skill 待办时 spawn 独立任务处理（dispatch_pending_skill_work，不阻塞 tick）。
             let stage = Instant::now();
             let pairs = collect_runtime_id_pairs(&app);
-            let shared = app.try_state::<SharedMulticaState>();
             for (workspace_id, runtime_id) in &pairs {
-                match client.heartbeat(runtime_id).await {
-                    Ok(ack) => {
-                        // story dev/test 拆分（R8 方案 1）：ack 回传就绪变化 diff，非空即表示某 test
-                        // 任务的可执行性已翻转——典型来自「父 dev 由**其它 agent** 完成」，本机没有任何
-                        // 信号源，必须靠此通道感知。
-                        //
-                        // 只当**刷新信号**：不本地增量 patch（pending 列表是唯一事实源，本地 map 会与之漂移
-                        // ——state 规约「投影不得反向成为事实源」）。发既有事件 → 页面经
-                        // useEventDrivenRefresh 重取 pending（自带最新 is_ready）。
-                        //
-                        // 与 skill 待办解耦：不并入 dispatch_pending_skill_work 的早返回（两件事各自独立）。
-                        if ack_signals_readiness_change(&ack) {
-                            emit_remote_tasks_updated(&app);
-                        }
-                        // 角色共享工单（通道 B）与 skill 待办同模型派发；不需要 provider（上报 body
-                        // 不含 provider 字段），先于 ack 的 move 取引用分发。
-                        dispatch_pending_runtime_assets(
-                            &app,
-                            &client,
-                            runtime_id,
-                            ack.pending_runtime_assets.as_ref(),
-                        );
-                        dispatch_pending_skill_work(&app, &client, workspace_id, runtime_id, ack)
-                    }
-                    Err(error) => {
-                        if matches!(error, MulticaError::TaskNotFound) {
-                            // runtime 行已被 server 删除/失效：旧 runtime_id 永久 404，清缓存触发自愈重注册。
-                            tracing::warn!(
-                                workspace_id = %workspace_id,
-                                runtime_id = %runtime_id,
-                                "multica runtime gone (404), clearing for re-register"
-                            );
-                            if let Some(shared) = shared.as_ref() {
-                                if let Ok(mut guard) = shared.lock() {
-                                    guard.clear_runtime_id(workspace_id);
-                                }
-                            }
-                        } else {
-                            tracing::warn!(
-                                runtime_id = %runtime_id,
-                                %error,
-                                "multica heartbeat failed (will retry next tick)"
-                            );
-                        }
-                    }
-                }
+                heartbeat_once(&app, &client, workspace_id, runtime_id).await;
             }
             trace_stage("heartbeat", stage);
 
@@ -297,6 +256,69 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
             );
         }
         tokio::time::sleep(Duration::from_secs(MULTICA_HEARTBEAT_INTERVAL_SECS)).await;
+    }
+}
+
+/// 对单个 runtime 发一次心跳并消费 ack 全字段（M5-cx 改动 2 抽取：定时 tick 与工单后补发共用真源）。
+///
+/// ack 消费：就绪变化 diff → 发既有事件刷新 pending（R8 方案 1，只当刷新信号不本地 patch）；
+/// runtime-assets 工单 / skill 待办各自 spawn 独立任务（不阻塞心跳节奏）。runtime-assets 工单
+/// 处理完成上报后会再调本函数补发认领（排空链，见 `runtime_assets` 尾部），任何 ack 信号都不会
+/// 因补发路径丢失。心跳失败（非 404）仅 warn，由 3s 定时 tick 兜底重试；404 清缓存触发自愈重注册。
+pub(crate) async fn heartbeat_once<R: Runtime>(
+    app: &AppHandle<R>,
+    client: &MulticaClient,
+    workspace_id: &str,
+    runtime_id: &str,
+) {
+    let shared = app.try_state::<SharedMulticaState>();
+    match client.heartbeat(runtime_id).await {
+        Ok(ack) => {
+            // story dev/test 拆分（R8 方案 1）：ack 回传就绪变化 diff，非空即表示某 test
+            // 任务的可执行性已翻转——典型来自「父 dev 由**其它 agent** 完成」，本机没有任何
+            // 信号源，必须靠此通道感知。
+            //
+            // 只当**刷新信号**：不本地增量 patch（pending 列表是唯一事实源，本地 map 会与之漂移
+            // ——state 规约「投影不得反向成为事实源」）。发既有事件 → 页面经
+            // useEventDrivenRefresh 重取 pending（自带最新 is_ready）。
+            //
+            // 与 skill 待办解耦：不并入 dispatch_pending_skill_work 的早返回（两件事各自独立）。
+            if ack_signals_readiness_change(&ack) {
+                emit_remote_tasks_updated(app);
+            }
+            // 角色共享工单（通道 B）与 skill 待办同模型派发；不需要 provider（上报 body
+            // 不含 provider 字段），先于 ack 的 move 取引用分发。workspace_id 随工单透传，
+            // 供处理完成后按 (workspace_id, runtime_id) 补发心跳（M5-cx 改动 2）。
+            dispatch_pending_runtime_assets(
+                app,
+                client,
+                workspace_id,
+                runtime_id,
+                ack.pending_runtime_assets.as_ref(),
+            );
+            dispatch_pending_skill_work(app, client, workspace_id, runtime_id, ack)
+        }
+        Err(error) => {
+            if matches!(error, MulticaError::TaskNotFound) {
+                // runtime 行已被 server 删除/失效：旧 runtime_id 永久 404，清缓存触发自愈重注册。
+                tracing::warn!(
+                    workspace_id = %workspace_id,
+                    runtime_id = %runtime_id,
+                    "multica runtime gone (404), clearing for re-register"
+                );
+                if let Some(shared) = shared.as_ref() {
+                    if let Ok(mut guard) = shared.lock() {
+                        guard.clear_runtime_id(workspace_id);
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    %error,
+                    "multica heartbeat failed (will retry next tick)"
+                );
+            }
+        }
     }
 }
 
@@ -486,9 +508,12 @@ fn ack_signals_readiness_change(ack: &HeartbeatAck) -> bool {
 /// 与 skill 待办同模型：**绝不阻塞心跳 tick**——详情 GET（权威 action 判定）在 spawn 任务内
 /// 完成，本地角色读写与上报的耗时/失败都不影响 runtime 在线维持；上报失败由服务端 60s running
 /// 超时终态化兜底。ack 里的 `action` 只是建议，处理侧不依赖它（server 每次 beat 最多派一个）。
+/// `workspace_id` 随工单透传：处理完成上报后按 (workspace_id, runtime_id) 补发心跳排空后续
+/// 工单（M5-cx 改动 2，不等下一个 3s tick）。
 fn dispatch_pending_runtime_assets<R: Runtime>(
     app: &AppHandle<R>,
     client: &MulticaClient,
+    workspace_id: &str,
     runtime_id: &str,
     pending: Option<&PendingRuntimeAssetsRef>,
 ) {
@@ -496,6 +521,7 @@ fn dispatch_pending_runtime_assets<R: Runtime>(
         tauri::async_runtime::spawn(runtime_assets::handle_runtime_assets_request(
             app.clone(),
             client.clone(),
+            workspace_id.to_string(),
             runtime_id.to_string(),
             pending.id.clone(),
         ));
@@ -644,8 +670,18 @@ fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ack_signals_readiness_change, is_active_terminal, is_orphan_terminal};
+    use super::{
+        MULTICA_HEARTBEAT_INTERVAL_SECS, ack_signals_readiness_change, is_active_terminal,
+        is_orphan_terminal,
+    };
     use crate::multica::client::HeartbeatAck;
+
+    /// M5-cx 契约：心跳间隔 3s 与 multica 侧心跳优化对齐（拉取式通道下操作等待 avg ~1.5s /
+    /// max 3s 的前提）。漂移会直接改变网页端操作的感知延迟，先红。
+    #[test]
+    fn heartbeat_interval_is_multica_aligned_3s() {
+        assert_eq!(MULTICA_HEARTBEAT_INTERVAL_SECS, 3);
+    }
 
     #[test]
     fn active_terminal_flags_failed_and_cancelled() {

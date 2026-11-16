@@ -6,7 +6,7 @@ import { useOptionalRightWorkspaceCommands } from '@/components/workspace/right-
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { displayAppError } from '../i18n';
 import { agentDiagnosticBannerReason, agentDiagnosticHelpReason } from '@/lib/agent-diagnostic';
-import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentDiagnosticVm, ManagedAgentInput, ManagedAgentVm } from '../types';
+import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentConnectionRequirementsVm, AgentRegistryVm, ManagedAgentDiagnosticVm, ManagedAgentInput, ManagedAgentVm } from '../types';
 import { AgentCacheRepair } from '@/components/AgentCacheRepair';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
@@ -164,6 +164,8 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const hasFormChanges = editor.context.mode === 'create'
     || editor.initialEditInput === null
     || hasManagedAgentInputChanged(editor.initialEditInput, currentInput);
+  const editorCatalogAgent = catalog.find((entry) => entry.agentType === editor.selectedType);
+  const editorDiagnostic = vm?.agents.find((agent) => agent.agentType === editor.selectedType)?.diagnostic ?? null;
 
   useEffect(() => {
     if (!notice) return;
@@ -459,6 +461,17 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             <SheetDescription>{editor.context.mode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
+            <AgentConnectionGuide
+              requirements={editor.context.source === 'catalog' ? editorCatalogAgent?.connectionRequirements : undefined}
+              command={editor.form.command}
+              args={parseArgs(editor.argsText)}
+              diagnostic={editorDiagnostic}
+              mode={editor.context.mode}
+              formChanged={hasFormChanges}
+              checking={diagnosingType === editor.selectedType || automaticDiagnosingType === editor.selectedType}
+              readOnly={readOnly}
+              onCheck={editor.context.mode === 'edit' ? () => void runDoctor(editor.selectedType) : undefined}
+            />
             <Field label={t('agentManagement.agentId')} description={t('agentManagement.agentIdDescription')}>
               <AgentIdInput
                 value={editor.selectedType}
@@ -942,6 +955,63 @@ function parseAgentDirs(value: string, primaryAgentDirs: string[]) {
   const primary = new Set(primaryAgentDirs.map((directory) => directory.trim()).filter(Boolean));
   return [...new Set(value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean))]
     .filter((directory) => !primary.has(directory));
+}
+
+export function AgentConnectionGuide({
+  requirements,
+  command,
+  args,
+  diagnostic,
+  mode,
+  formChanged,
+  checking,
+  readOnly,
+  onCheck,
+}: {
+  requirements?: AgentConnectionRequirementsVm;
+  command: string;
+  args: string[];
+  diagnostic?: ManagedAgentDiagnosticVm | null;
+  mode: 'create' | 'edit';
+  formChanged: boolean;
+  checking: boolean;
+  readOnly: boolean;
+  onCheck?: () => void;
+}) {
+  const { t } = useTranslation();
+  const pathCommand = requirements?.pathCommand ?? command;
+  const pathArgs = requirements?.pathArgs ?? args;
+  const launch = [pathCommand, ...pathArgs].filter(Boolean).join(' ');
+  const npxFallback = requirements?.npxFallback;
+  const displayedDiagnostic = diagnostic && mode === 'edit' && formChanged
+    ? { ...diagnostic, status: 'stale', available: false, error: null }
+    : diagnostic;
+  const diagnosticReason = !formChanged && displayedDiagnostic?.error ? agentDiagnosticBannerReason(t, displayedDiagnostic) : null;
+  const canCheckNow = mode === 'edit' && !formChanged && Boolean(onCheck);
+  return <section data-slot="agent-connection-guide" className="rounded-lg border border-border/60 bg-muted/25 px-3.5 py-3 text-sm">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h3 className="text-sm font-semibold text-foreground">{t('agentManagement.connectionGuide.title')}</h3>
+      <DiagnosticBadge diagnostic={displayedDiagnostic} />
+    </div>
+    <dl className="mt-2.5 grid gap-1.5 text-xs leading-5">
+      <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2"><dt className="text-muted-foreground">{t('agentManagement.connectionGuide.command')}</dt><dd className="min-w-0"><code className="break-all font-mono text-foreground">{launch || '-'}</code></dd></div>
+      <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2"><dt className="text-muted-foreground">{t('agentManagement.connectionGuide.path')}</dt><dd className="min-w-0 break-words text-muted-foreground">{t('agentManagement.connectionGuide.pathRequirement', { command: pathCommand || '-' })}</dd></div>
+      {requirements?.installedCli ? <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2"><dt className="text-muted-foreground">{t('agentManagement.connectionGuide.fallback')}</dt><dd className="min-w-0 break-words text-muted-foreground">{t('agentManagement.connectionGuide.installedCli', { command: requirements.installedCli })}</dd></div> : null}
+      {npxFallback ? <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2"><dt className="text-muted-foreground">npx</dt><dd className="min-w-0 break-all text-muted-foreground"><code className="font-mono">{npxFallback.command} {npxFallback.args.join(' ')}</code>{requirements?.npxRequiresPreparedPackage ? <span className="mt-1 block">{t('agentManagement.connectionGuide.preparedFallback')}</span> : null}</dd></div> : null}
+      <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-2"><dt className="text-muted-foreground">{t('agentManagement.connectionGuide.auth')}</dt><dd className="min-w-0 break-words text-muted-foreground">{t('agentManagement.connectionGuide.authRequirement')}</dd></div>
+    </dl>
+    <p className="mt-2.5 border-t border-border/50 pt-2.5 text-xs leading-5 text-muted-foreground">{t('agentManagement.connectionGuide.steps')}</p>
+    <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>{t('agentManagement.connectionGuide.result')}</span>
+        {displayedDiagnostic ? <span className="tabular-nums">{formatLocalDateTime(displayedDiagnostic.checkedAt)}</span> : <span>{t('agentManagement.status.unknown')}</span>}
+      </div>
+      {canCheckNow ? <Button type="button" size="sm" variant="outline" disabled={readOnly || checking} onClick={onCheck}>{checking ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}{t(checking ? 'agentManagement.diagnosing' : 'agentManagement.connectionGuide.checkNow')}</Button> : null}
+    </div>
+    {mode === 'create' ? <p className="mt-2 text-xs text-muted-foreground">{t('agentManagement.connectionGuide.saveToCheck')}</p> : null}
+    {mode === 'edit' && formChanged ? <p className="mt-2 text-xs text-gold-warning">{t('agentManagement.connectionGuide.formChanged')}</p> : null}
+    {diagnosticReason ? <p role="alert" className="mt-2 break-words text-xs text-destructive">{diagnosticReason}</p> : null}
+  </section>;
 }
 
 function parseArgs(value: string) {

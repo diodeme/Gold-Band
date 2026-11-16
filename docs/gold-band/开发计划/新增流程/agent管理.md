@@ -222,3 +222,12 @@ Agent 实例新增两个独立能力配置：
 - 红测试证据：Desktop 测试原得到 `healthy`，期望 `stale`；引导接口测试对 fingerprint 变化的可用快照原得到 `Unavailable`，期望进入 `Probe`。
 - 验证：`setup_reuses_only_matching_healthy_configured_agent_diagnostics`；`stale_agent_diagnostic_is_not_projected_as_healthy`；`agent-diagnostic-status.test.tsx` 与七语言 catalog contract。
 - 过度设计复核：复用既有诊断快照、fingerprint、Doctor 单 Agent 互斥和卡片组件；不新增持久字段、state machine、缓存或队列。性能只增加每个已配置 Agent 一次有界配置序列化哈希，正常健康快照不增加外部进程。
+
+## 2026-11-16 Agent 编辑 Sheet 接入说明
+
+- 数据：`AgentCatalogEntryVm` 增加 `connectionRequirements`，由 Catalog 的 `localLaunch`、`installedCommand` 与 npx metadata 派生 `pathCommand`、`pathArgs`、`installedCli`、`npxFallback`、`npxRequiresPreparedPackage`；不新增持久字段或独立健康状态。
+- UI：新增/编辑 Sheet 顶部展示启动命令、PATH/显式路径要求、本机 CLI 与 npx 兜底、已准备缓存限制、认证要求和固定检查步骤。编辑模式复用当前诊断快照显示结果；表单已修改时禁止立即检查旧配置，新增模式提示保存后自动检查。
+- 边界：结果权威仍是 Agent Doctor 快照；说明区只做 Catalog 投影。保存后自动诊断和关闭 Sheet 的现有流程不变。
+- 测试：Desktop 覆盖 DeepSeek 直启、Claude 本机 adapter/CLI/npx fallback、WorkBuddy 已准备缓存三种 requirements；前端 DOM 覆盖 DeepSeek 新增提示、Claude 编辑时表单变化后的重新检查提示和“立即检查”抑制；七语言 catalog contract 与 TypeScript 检查纳入回归。
+
+过度设计复核：复用现有 Catalog 字段、Sheet、Doctor 和诊断快照，不新增 API、轮询、缓存或状态机。性能只增加一次 Catalog 映射和固定文本渲染，不启动新进程。

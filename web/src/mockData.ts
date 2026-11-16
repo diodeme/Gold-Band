@@ -2,6 +2,7 @@ import type {
   AcpSessionVm,
   AgentRegistryVm,
   AgentCatalogEntryVm,
+  AgentConnectionRequirementsVm,
   AppBootstrapVm,
   ContentVm,
   LogPageVm,
@@ -632,7 +633,27 @@ export const mockAgentRegistry: AgentRegistryVm = {
   ],
 };
 
+const MOCK_LOCAL_LAUNCHES: Record<string, { command: string; args: string[]; installedCli?: string }> = {
+  'claude-acp': { command: 'claude-agent-acp', args: [], installedCli: 'claude' },
+  'codebuddy-code': { command: 'codebuddy', args: ['--acp'] },
+  'codex-acp': { command: 'codex-acp', args: [], installedCli: 'codex' },
+  'pi-acp': { command: 'pi-acp', args: [], installedCli: 'pi' },
+  qoder: { command: 'qodercli', args: ['--acp'], installedCli: 'qodercli' },
+  gemini: { command: 'gemini', args: ['--acp'] },
+  'qwen-code': { command: 'qwen', args: ['--acp', '--experimental-skills'] },
+};
+
 function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
+  const local = MOCK_LOCAL_LAUNCHES[input.agentType];
+  const defaultArgs = input.defaultArgs ?? [];
+  const npxFallback = input.defaultCommand === 'npx' ? { command: 'npx', args: defaultArgs } : null;
+  const connectionRequirements: AgentConnectionRequirementsVm = {
+    pathCommand: local?.command ?? input.defaultCommand ?? 'npx',
+    pathArgs: local?.args ?? defaultArgs,
+    installedCli: local?.installedCli ?? null,
+    npxFallback,
+    npxRequiresPreparedPackage: Boolean(npxFallback) && (!local?.installedCli || local.installedCli === local.command),
+  };
   return {
     version: '1.0.0',
     provenance: {
@@ -654,6 +675,7 @@ function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalo
     defaultArgs: [],
     defaultEnv: [],
     ...input,
+    connectionRequirements: input.connectionRequirements ?? connectionRequirements,
   };
 }
 

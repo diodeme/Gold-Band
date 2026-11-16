@@ -699,6 +699,20 @@ export interface AgentCatalogEntryVm {
   defaultCommand: string;
   defaultArgs: string[];
   defaultEnv: AgentEnvEntryVm[];
+  connectionRequirements: AgentConnectionRequirementsVm;
+}
+
+export interface AgentExecutableVm {
+  command: string;
+  args: string[];
+}
+
+export interface AgentConnectionRequirementsVm {
+  pathCommand: string;
+  pathArgs: string[];
+  installedCli: string | null;
+  npxFallback: AgentExecutableVm | null;
+  npxRequiresPreparedPackage: boolean;
 }
 
 export type AgentCatalogSourceKind = 'official-registry' | 'local-supplement';

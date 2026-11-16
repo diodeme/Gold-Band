@@ -330,6 +330,24 @@ pub struct AgentCatalogEntryVm {
     pub default_command: String,
     pub default_args: Vec<String>,
     pub default_env: Vec<AgentEnvEntryVm>,
+    pub connection_requirements: AgentConnectionRequirementsVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExecutableVm {
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConnectionRequirementsVm {
+    pub path_command: String,
+    pub path_args: Vec<String>,
+    pub installed_cli: Option<String>,
+    pub npx_fallback: Option<AgentExecutableVm>,
+    pub npx_requires_prepared_package: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1453,10 +1471,40 @@ pub fn agent_registry_vm_for_platform(
                     .into_iter()
                     .map(|(key, value)| AgentEnvEntryVm { key, value })
                     .collect(),
+                connection_requirements: agent_connection_requirements(entry),
             }
         })
         .collect();
     AgentRegistryVm { agents, catalog }
+}
+
+fn agent_connection_requirements(
+    entry: &gold_band::agent_catalog::AgentCatalogEntry,
+) -> AgentConnectionRequirementsVm {
+    let (path_command, path_args) = entry
+        .local_launch
+        .as_ref()
+        .map(|launch| (launch.command.clone(), launch.args.clone()))
+        .unwrap_or_else(|| (entry.command.clone(), entry.args.clone()));
+    let npx_fallback = entry
+        .command
+        .eq_ignore_ascii_case("npx")
+        .then(|| AgentExecutableVm {
+            command: entry.command.clone(),
+            args: entry.args.clone(),
+        });
+    let installed_cli = entry.installed_command.clone();
+    let npx_requires_prepared_package = npx_fallback.is_some()
+        && installed_cli
+            .as_deref()
+            .is_none_or(|command| command == path_command);
+    AgentConnectionRequirementsVm {
+        path_command,
+        path_args,
+        installed_cli,
+        npx_fallback,
+        npx_requires_prepared_package,
+    }
 }
 
 fn select_config_option_vms(capabilities: Option<&Value>) -> Vec<AcpSelectConfigOptionVm> {
@@ -8167,6 +8215,30 @@ mod tests {
     use gold_band::storage::write_json;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn agent_connection_requirements_cover_direct_and_npx_fallback_modes() {
+        let deepseek = agent_connection_requirements(
+            gold_band::agent_catalog::builtin_agent("deepseek-harness").unwrap(),
+        );
+        assert_eq!(deepseek.path_command, "dsh");
+        assert_eq!(deepseek.path_args, ["--profile", "acp"]);
+        assert!(deepseek.npx_fallback.is_none());
+
+        let claude = agent_connection_requirements(
+            gold_band::agent_catalog::builtin_agent("claude-acp").unwrap(),
+        );
+        assert_eq!(claude.path_command, "claude-agent-acp");
+        assert_eq!(claude.installed_cli.as_deref(), Some("claude"));
+        assert_eq!(claude.npx_fallback.as_ref().unwrap().command, "npx");
+        assert!(!claude.npx_requires_prepared_package);
+
+        let codebuddy = agent_connection_requirements(
+            gold_band::agent_catalog::builtin_agent("codebuddy-code").unwrap(),
+        );
+        assert_eq!(codebuddy.path_command, "codebuddy");
+        assert!(codebuddy.npx_requires_prepared_package);
+    }
 
     #[test]
     fn stale_agent_diagnostic_is_not_projected_as_healthy() {

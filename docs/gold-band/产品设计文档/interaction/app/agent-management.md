@@ -135,6 +135,14 @@ Agent Cards
 - 自动诊断运行期间，卡片沿用“诊断中”加载状态并暂时禁用修改、删除和重复诊断；诊断完成后通过桌面事件刷新全局 Agent registry，并按健康或异常结果展示数秒横幅
 - 新增、编辑或删除某个 agent 时，只允许影响该 agent 自身的诊断缓存；其他已诊断 agent 的状态与最近检测时间必须保留
 
+### 接入说明与检查结果（2026-11-16）
+
+- 新增和编辑 Agent 的 Sheet 在字段上方展示“接入条件”“检查步骤”和“最近结果”，不新增独立页面或第二套 Doctor。
+- 接入条件由 Catalog 的 `localLaunch`、`installedCommand` 与 npx fallback 派生：展示首选 PATH 命令及参数、可选的本机 CLI 兜底、npx fallback、npx 是否仅接受已准备缓存，以及供应商认证要求。自定义 Agent 展示当前命令、参数和通用 PATH/认证条件。
+- 检查步骤固定展示命令解析、ACP adapter 启动、initialize、session/new、能力读取和诊断进程清理；当前 Doctor 没有逐步进度事件时，不伪造每一步的实时状态。
+- 最近结果复用 `ManagedAgentVm.diagnostic`：正常、需重新诊断、异常分别展示状态、检查时间和结构化原因。新增时提示保存后自动检查；编辑时若表单未变化可“立即检查”，若已修改则提示保存后按新配置检查，并禁用针对旧配置的立即检查。
+- Agent 卡片、顶部通知和会话可用性仍只以 canonical 诊断快照为准；接入说明是 Catalog 投影和操作引导，不成为新的健康状态来源。
+
 配置持久化：
 - `settings.json` 使用 `settingsSchemaVersion` 标记结构版本；缺少版本号的旧配置视为版本 `0`
 - 桌面端、CLI、MCP 和应用服务统一通过同一个设置加载入口读取配置；旧 Agent ID、`skillsDirOverride` 和缺失的目录字段只在版本升级时迁移，并通过原子写一次性写回当前版本

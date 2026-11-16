@@ -680,7 +680,15 @@ pub struct ConversationRunVm {
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
     pub sealed: bool,
+    pub rerun_successor_run_id: Option<String>,
     pub rerun_origin: Option<gold_band::runtime::RunRerunOrigin>,
+}
+
+fn rerun_successor_run_id(run: &RunState) -> Option<String> {
+    run.rerun
+        .as_ref()
+        .and_then(|metadata| metadata.sealed_by.as_ref())
+        .map(|seal| seal.successor_run_id.clone())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4564,6 +4572,7 @@ pub fn conversation_run_vm(
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
         worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         sealed: run.is_sealed(),
+        rerun_successor_run_id: rerun_successor_run_id(&run),
         rerun_origin: run
             .rerun
             .as_ref()
@@ -5003,6 +5012,7 @@ pub fn create_conversation_run_vm(
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
                 sealed: run.is_sealed(),
+                rerun_successor_run_id: rerun_successor_run_id(&run),
                 rerun_origin: run
                     .rerun
                     .as_ref()
@@ -5093,6 +5103,7 @@ pub fn rerun_conversation_task_vm(
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
             sealed: run.is_sealed(),
+            rerun_successor_run_id: rerun_successor_run_id(&run),
             rerun_origin: run
                 .rerun
                 .as_ref()

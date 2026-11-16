@@ -20122,6 +20122,24 @@ mod tests {
         let invocation = invocations
             .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
             .unwrap();
+        let inherited_rerun = app
+            .rerun_failed_node(
+                "task-retry",
+                &accepted.run.id,
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&inherited_rerun).code_str(),
+            "workflow.retry.inherited-attempt"
+        );
+        assert!(
+            !app.run_status("task-retry", &accepted.run.id)
+                .unwrap()
+                .is_sealed()
+        );
         let source = app.run_status("task-retry", "run-retry").unwrap();
         assert_eq!(source.status, RunStatus::Completed);
         assert_eq!(source.outcome, Some(RunOutcome::Failure));
@@ -20337,6 +20355,246 @@ mod tests {
             wait_for_rerun_settlement(&app, &accepted.run.id).outcome,
             Some(RunOutcome::Success)
         );
+    }
+
+    #[test]
+    fn failed_node_rerun_quiesce_does_not_hold_the_source_dispatch_lock() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+        let mut source = app.run_status("task-retry", "run-retry").unwrap();
+        let (mut source_round, mut source_node) =
+            current_attempt_state(&app, "task-retry", &source).unwrap();
+        source.status = RunStatus::Running;
+        source.outcome = None;
+        source.execution.phase = RuntimeExecutionPhase::RunningNode;
+        source_round.status = RunStatus::Running;
+        source_round.outcome = None;
+        source_node.status = RunStatus::Running;
+        source_node.outcome = None;
+        source_node.finished_at = None;
+        source_node.runtime_execution_id = Some("source-quiesce-execution".to_string());
+        persist_runtime_state(&app, "task-retry", &source, &source_round, &source_node).unwrap();
+
+        let source_attempt = app.paths.attempt_dir(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-002",
+        );
+        let activity = crate::acp::client::register_test_prompt_activity(
+            source_attempt.clone(),
+            crate::acp::client::PromptActivity::Running,
+        );
+        let background = app.clone_for_background();
+        let worker = std::thread::spawn(move || {
+            background.rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+        });
+        let deadline = std::time::Instant::now() + RETRY_ADMISSION_TEST_TIMEOUT;
+        while !app
+            .run_status("task-retry", "run-retry")
+            .unwrap()
+            .is_sealed()
+            || crate::acp::client::prompt_activity(&source_attempt)
+                != Some(crate::acp::client::PromptActivity::CancelRequested)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "source quiesce did not begin"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let key = crate::execution_plan::lock_key(&app.paths, "task-retry", "run-retry");
+        assert!(
+            !crate::execution_plan::dispatch_write_held(&key),
+            "source quiesce must happen outside the dispatch write lock"
+        );
+        activity.mark_stopped();
+        let accepted = worker.join().unwrap().unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for_rerun_settlement(&app, &accepted.run.id).outcome,
+            Some(RunOutcome::Success)
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_rejects_a_distinct_locator_after_the_first_handoff() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+
+        let first = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        assert!(
+            app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .is_sealed()
+        );
+
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.source-sealed"
+        );
+        assert_eq!(app.run_list("task-retry").unwrap().len(), 2);
+
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for_rerun_settlement(&app, &first.run.id).outcome,
+            Some(RunOutcome::Success)
+        );
+
+        let second = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            )
+            .unwrap();
+        assert_ne!(first.run.id, second.run.id);
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for_rerun_settlement(&app, &second.run.id).outcome,
+            Some(RunOutcome::Success)
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_maps_missing_source_state_to_structured_retry_error() {
+        let temp = tempdir().unwrap();
+        let (app, _invocations, _release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        std::fs::remove_file(app.paths.node_file(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.workflow-invalid"
+        );
+        assert!(
+            !app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .is_sealed()
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_recovery_does_not_hold_the_source_dispatch_lock() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        let accepted = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &accepted.run.id);
+
+        let target_dir = app.paths.run_dir("task-retry", &accepted.run.id);
+        let pending_path = app
+            .paths
+            .pending_node_rerun_file("task-retry", &accepted.run.id);
+        let pending: serde_json::Value = read_json(&pending_path).unwrap();
+        let canonical_target = std::fs::canonicalize(&target_dir).unwrap();
+        let canonical_temp = std::fs::canonicalize(temp.path()).unwrap();
+        assert!(canonical_target.starts_with(&canonical_temp));
+        std::fs::rename(&canonical_target, temp.path().join("settled-target")).unwrap();
+        write_json(&pending_path, &pending).unwrap();
+
+        let source_attempt = app.paths.attempt_dir(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        );
+        let activity = crate::acp::client::register_test_prompt_activity(
+            source_attempt.clone(),
+            crate::acp::client::PromptActivity::Running,
+        );
+        let background = app.clone_for_background();
+        let target_run_id = accepted.run.id.clone();
+        let recovery = thread::spawn(move || {
+            background.recover_pending_node_rerun("task-retry", &target_run_id)
+        });
+        let deadline = std::time::Instant::now() + RETRY_ADMISSION_TEST_TIMEOUT;
+        while crate::acp::client::prompt_activity(&source_attempt)
+            != Some(crate::acp::client::PromptActivity::CancelRequested)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recovery quiesce did not request source cancellation"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let key = crate::execution_plan::lock_key(&app.paths, "task-retry", "run-retry");
+        assert!(
+            !crate::execution_plan::dispatch_write_held(&key),
+            "recovery quiesce must happen outside the source dispatch write lock"
+        );
+        activity.mark_stopped();
+        assert!(recovery.join().unwrap().unwrap());
     }
 
     #[test]

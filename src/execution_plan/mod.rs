@@ -31,4 +31,7 @@ pub(crate) use store::{
 };
 
 #[cfg(test)]
+pub(crate) use lock::dispatch_write_held;
+
+#[cfg(test)]
 mod tests;

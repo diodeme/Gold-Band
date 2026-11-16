@@ -544,6 +544,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 单个 task 的 run 历史损坏时，侧栏仍保留该 task 并把 run 列表降级为空；单个历史文件问题不能导致整个 workspace 从侧栏消失。完整错误仍由进入任务/运行详情后的专用接口返回。
 
 ### 停止
+- 失败节点重跑只能从当前 Run 自己执行的失败 attempt 发起；successor Run 中继承来的前缀 attempt 是历史投影，必须只读，不提供再次重跑入口。来源 Run 封存后，主节点和历史 attempt 的重跑入口统一等待当前 successor Completed 后才恢复。来源页面必须跟踪 successor 生命周期并自动重新投影，不能要求用户切页刷新。节点重跑确认框以完整 `project/task/run` scope 绑定，缺少 `taskUuid` 时也必须使用稳定的运行身份，禁止在 Run 切换后继续使用旧确认回调。
 - 停止并重跑在顶部操作区
 - composer 内也有 stop 按钮（ACP 会话停止）
 - composer 内的 ACP 停止表示“中断当前响应”，不是 workflow 配置错误；停止后的 attempt 应显示为可继续暂停

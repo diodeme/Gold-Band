@@ -84,7 +84,7 @@
 
 Workflow 的普通 Worker 在 `Completed + Failure/Invalid` 后，可从精确的历史 attempt 创建 successor Run。来源 Run 为 `ErrorBlocked` 时拒绝。当前 `Paused + RuntimeAbnormal` 节点继续使用原 Run 的新 attempt。
 
-可选 `rerun` 元数据包含 `origin` 和 `sealedBy`（Rust 字段名为 `sealed_by`）：前者记录 source Run UUID、完整锚点、操作 ID、继承的 round index/trace sequence 与 authoring revision；后者记录首次交接操作和 successor 身份。它们不增加生命周期状态。已封存 Run 保留原结果，拒绝继续执行、当前计划写入和 ACP 追问，仍可读取及从其他历史失败 attempt 分叉。
+可选 `rerun` 元数据包含 `origin` 和 `sealedBy`（Rust 字段名为 `sealed_by`）：前者记录 source Run UUID、完整锚点、操作 ID、继承的 round index/trace sequence 与 authoring revision；后者记录当前活动交接操作和 successor 身份。它们不增加生命周期状态。已封存 Run 保留原结果，拒绝继续执行、当前计划写入和 ACP 追问。当前 successor 未 Completed 时，来源拒绝新的 handoff；当前 successor Completed 后，可从其他历史失败 attempt 串行分叉，并更新 `sealedBy` 为新的活动交接。任意时刻最多只有一个 successor 持有来源工作区写权限。
 
 successor 使用任务最新可执行定义，保留到锚点为止的必要 node/产物/附件快照；目标追加新 attempt、新会话。继承 trace 水位以前的节点是历史输入，不消耗新执行的控制预算、不产生执行事件。聊天、Raw、worker-ref 和旧下游不复制。继承节点的产物按照其持久化 resolved config 解释。目标 run.json 最后发布；发布前操作由持久化重跑记录与现有 runtime recovery candidate 恢复。
 

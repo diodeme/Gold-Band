@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,7 +28,8 @@ vi.mock('@/components/ui/tooltip', () => ({
 }));
 
 vi.mock('@/components/ui/alert-dialog', () => ({
-  AlertDialog: ({ children }: { children: unknown }) => children,
+  AlertDialog: ({ open, children }: { open?: boolean; children: unknown }) =>
+    open ? <div data-dialog="alert">{children}</div> : null,
   AlertDialogAction: ({ children }: { children: unknown }) => children,
   AlertDialogCancel: ({ children }: { children: unknown }) => children,
   AlertDialogContent: ({ children }: { children: unknown }) => children,
@@ -76,7 +77,35 @@ vi.mock('@/components/theme/ThemeAssetsContext', () => ({
 }));
 
 vi.mock('@/components/workspace/ConversationRunWorkspaceResourcePanel', () => ({
-  ConversationRunWorkspaceResourcePanel: () => <div data-testid="workflow-panel" />,
+  ConversationRunWorkspaceResourcePanel: ({
+    onNodeRetry,
+  }: {
+    onNodeRetry?: (node: {
+      roundId: string;
+      nodeId: string;
+      attemptId: string;
+      status: string;
+      retryable: boolean;
+    }) => Promise<void>;
+  }) => (
+    <div data-testid="workflow-panel">
+      <button
+        type="button"
+        data-testid="node-retry-trigger"
+        onClick={() => {
+          void onNodeRetry?.({
+            roundId: 'round-1',
+            nodeId: 'dev',
+            attemptId: 'attempt-1',
+            status: 'completed',
+            retryable: true,
+          });
+        }}
+      >
+        retry node
+      </button>
+    </div>
+  ),
   confirmCloseConversationRunWorkspaceResource: () => true,
 }));
 
@@ -109,7 +138,8 @@ vi.mock('@/lib/acp-runtime-error', () => ({
 }));
 
 vi.mock('@/lib/conversation-run-cache', () => ({
-  conversationRunCacheKey: () => 'run-key',
+  conversationRunCacheKey: (run: { projectId: string; taskUuid?: string; runId: string }) =>
+    run.taskUuid?.trim() ? JSON.stringify([run.projectId, run.taskUuid, run.runId]) : null,
 }));
 
 vi.mock('@/lib/conversation-session-follow', () => ({
@@ -273,6 +303,79 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
 
     expect(workspace.registerResourceRenderer.mock.calls).toEqual(initialRegistrations);
     initialDisposers.forEach((dispose) => expect(dispose).not.toHaveBeenCalled());
+  });
+
+  it.each([
+    { label: 'with taskUuid', taskUuid: 'uuid-1' as string | undefined },
+    { label: 'without taskUuid', taskUuid: undefined },
+  ])('discards a pending node rerun confirmation when the run changes $label', async ({ taskUuid }) => {
+    const onNodeRetry = vi.fn(() => new Promise<void>(() => {}));
+    const props = {
+      taskTitle: 'Task',
+      appConfig: {
+        acpChatEventPageSize: 20,
+        acpChatEventWindowPageCount: 3,
+        conversationInlineContentMaxBytes: 1000,
+        turnFiles: { cardPreviewLimit: 3, attachmentPreviewLimit: 3 },
+      },
+      agentRegistry: null,
+      onRerun: vi.fn(),
+      onEditWorkflow: vi.fn(),
+      onSelectSession: vi.fn(),
+      followMode: 'auto' as const,
+      initialSessionTreeExpansion: {},
+      onSessionTreeExpansionChange: vi.fn(),
+      onNodeRetry,
+    };
+    const panelContainer = document.createElement('div');
+    document.body.appendChild(panelContainer);
+    const panelRoot = createRoot(panelContainer);
+    const originalRegister = workspace.registerResourceRenderer.getMockImplementation();
+    workspace.registerResourceRenderer.mockImplementation((
+      kind: string,
+      renderer: (resource: unknown) => ReactNode,
+    ) => {
+      if (kind === 'workflow-view') {
+        panelRoot.render(renderer({ kind, key: 'verify' }));
+      }
+      return vi.fn();
+    });
+
+    try {
+      const run = {
+        ...(runSnapshot(1) as unknown as ConversationRunVm),
+        taskUuid,
+      };
+      await act(async () => {
+        root.render(<ConversationRunPage {...props} run={run} />);
+      });
+      await act(async () => {
+        panelContainer
+          .querySelector<HTMLButtonElement>('[data-testid="node-retry-trigger"]')
+          ?.click();
+      });
+      expect(container.textContent).toContain('conversation.runtime.nodeRerunConfirmTitle');
+
+      const otherRun = { ...run, runId: 'run-2' } as ConversationRunVm;
+      await act(async () => {
+        root.render(<ConversationRunPage {...props} run={otherRun} />);
+      });
+      expect(container.textContent).not.toContain(
+        'conversation.runtime.nodeRerunConfirmTitle',
+      );
+
+      await act(async () => {
+        root.render(<ConversationRunPage {...props} run={run} />);
+      });
+      expect(container.textContent).not.toContain(
+        'conversation.runtime.nodeRerunConfirmTitle',
+      );
+      expect(onNodeRetry).not.toHaveBeenCalled();
+    } finally {
+      workspace.registerResourceRenderer.mockImplementation(originalRegister);
+      await act(async () => panelRoot.unmount());
+      panelContainer.remove();
+    }
   });
 
   it('refreshes an open workflow resource when the graph projection changes', async () => {

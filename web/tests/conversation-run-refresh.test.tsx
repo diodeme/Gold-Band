@@ -61,6 +61,7 @@ vi.mock('@/pages/ConversationRunPage', () => ({
     <output data-testid="run-id">{props.run.runId}</output>
     <output data-testid="task-uuid">{props.run.taskUuid}</output>
     <output data-testid="graph-status">{props.run.workflowGraph.nodes[0]?.status}</output>
+    <output data-testid="graph-retryable">{String(props.run.workflowGraph.nodes[0]?.retryable)}</output>
     <output data-testid="selected-session">{props.run.sessionTree.selectedSessionKey}</output>
     <button data-testid="retry" onClick={() => void props.onNodeRetry(props.run.workflowGraph.nodes[0])}>Retry</button>
     <button data-testid="save" onClick={() => void props.onExecutionPlanSaved()}>Save</button>
@@ -173,6 +174,45 @@ describe('conversation run refresh ordering', () => {
     expect(api.retry).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="run-id"]')?.textContent).toBe(successor.runId);
     expect(window.location.pathname).toContain('run-successor');
+  });
+
+  it('refreshes a sealed source when its successor Run changes', async () => {
+    const sealedSource = {
+      ...snapshot('completed'),
+      runId: 'run-source',
+      runOutcome: 'failure' as const,
+      sealed: true,
+      rerunSuccessorRunId: 'run-successor',
+    };
+    sealedSource.workflowGraph.nodes[0].retryable = false;
+    const settledSource = {
+      ...sealedSource,
+      workflowGraph: {
+        ...sealedSource.workflowGraph,
+        nodes: sealedSource.workflowGraph.nodes.map((node, index) => ({
+          ...node,
+          retryable: index === 0,
+        })),
+      },
+    };
+    api.getRun.mockResolvedValue(sealedSource);
+    await navigate(sealedSource.runId);
+    expect(host.querySelector('[data-testid="graph-retryable"]')?.textContent).toBe('false');
+    api.getRun.mockClear();
+    api.getRun.mockResolvedValue(settledSource);
+    await act(async () => api.listener?.({
+      projectId: 'default', taskId: 'mock-task', taskUuid: 'task-uuid', runId: 'run-successor',
+      roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-004',
+      eventKind: 'run-completed', status: 'completed', outcome: 'success',
+    }));
+    await settle();
+    expect(api.getRun).toHaveBeenCalledWith(
+      'default',
+      'mock-task',
+      'run-source',
+      'round-001/dev/attempt-003',
+    );
+    expect(host.querySelector('[data-testid="graph-retryable"]')?.textContent).toBe('true');
   });
 
   it('ignores a rerun acceptance after navigation to another run', async () => {

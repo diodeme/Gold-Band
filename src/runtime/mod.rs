@@ -431,10 +431,22 @@ pub fn current_node_retry_readiness(
 }
 
 /// Completed failures fork a successor run; they must never re-open this run.
-/// The caller additionally verifies membership in the canonical trace.
-pub fn can_rerun_failed_node(run: &RunState, node: &NodeState, workflow_mode: bool) -> bool {
+/// Inherited prefix attempts are historical projections of an earlier Run and
+/// are therefore read-only for new handoffs.
+pub fn can_rerun_failed_attempt(
+    run: &RunState,
+    round: &RoundState,
+    step: &RoundTraceStep,
+    node: &NodeState,
+    workflow_mode: bool,
+) -> bool {
     workflow_mode
         && run.pause_reason != Some(PauseReason::ErrorBlocked)
+        && !run.is_inherited_step(round, step)
+        && node.run_id == run.id
+        && node.round_id == round.id
+        && node.node_id == step.node_id
+        && node.attempt_id == step.attempt_id
         && node.node_type == NodeType::Worker
         && node.status == RunStatus::Completed
         && matches!(
@@ -1110,6 +1122,46 @@ mod tests {
             direct_retry_successor(&canonical, "node-a", "attempt-001", "node-a", "attempt-002"),
             Some("attempt-002".to_string())
         );
+    }
+
+    #[test]
+    fn failed_attempt_rerun_rejects_inherited_prefix() {
+        let mut run = test_run(RunStatus::Completed, RuntimeExecutionPhase::Terminal);
+        run.outcome = Some(RunOutcome::Failure);
+        let round = current_round(vec![trace_step(1, "node-a", "attempt-001", None, None)]);
+        let mut node = test_node(CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Failure);
+        node.runtime_execution_id = None;
+        assert!(can_rerun_failed_attempt(
+            &run,
+            &round,
+            &round.trace[0],
+            &node,
+            true
+        ));
+
+        run.rerun = Some(RunRerunMetadata {
+            origin: Some(RunRerunOrigin {
+                source_run_id: "run-source".to_string(),
+                source_run_uuid: None,
+                source_round_id: round.id.clone(),
+                source_round_index: round.index,
+                source_node_id: "node-a".to_string(),
+                source_attempt_id: "attempt-001".to_string(),
+                operation_id: "rerun-001".to_string(),
+                inherited_trace_sequence: 1,
+                source_authoring_revision: 1,
+            }),
+            sealed_by: None,
+        });
+        assert!(!can_rerun_failed_attempt(
+            &run,
+            &round,
+            &round.trace[0],
+            &node,
+            true
+        ));
     }
 
     #[test]

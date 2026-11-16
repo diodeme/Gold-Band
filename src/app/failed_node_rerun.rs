@@ -20,13 +20,13 @@ use super::orchestrator::{
 };
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_factory::create_node_state;
-use super::{App, ConversationMetadata, RetryCurrentNodeAccepted};
+use super::{App, ConversationMetadata, RetryCurrentNodeAccepted, RuntimeCandidateRegistration};
 use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
 use crate::dsl::{WorkflowDsl, validate_workflow_snapshot, workflow_contains_ai_dynamic};
 use crate::execution_plan;
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunRerunMetadata, RunRerunOrigin, RunRerunSeal,
-    RunState, RuntimeExecutionPhase, RuntimeExecutionState, can_rerun_failed_node,
+    RunState, RuntimeExecutionPhase, RuntimeExecutionState, can_rerun_failed_attempt,
     canonical_trace_for_round, validate_node_state, validate_round_state, validate_run_state,
     write_node_state,
 };
@@ -68,6 +68,29 @@ pub struct RunWriteAdmissionGuard {
 
 fn failure(code: &'static str, task_id: &str, run_id: &str) -> anyhow::Error {
     retry_error(code, task_id, run_id, serde_json::json!({}))
+}
+
+fn public_rerun_error(task_id: &str, run_id: &str, error: anyhow::Error) -> anyhow::Error {
+    let structured = error
+        .downcast_ref::<crate::runtime_error::RuntimeError>()
+        .is_some()
+        || error
+            .downcast_ref::<execution_plan::ExecutionPlanError>()
+            .is_some()
+        || error
+            .downcast_ref::<crate::workflow_model_binding::WorkflowModelBindingError>()
+            .is_some()
+        || error
+            .downcast_ref::<crate::git::GitPreflightError>()
+            .is_some()
+        || error
+            .downcast_ref::<crate::git::GitServiceError>()
+            .is_some();
+    if structured {
+        error
+    } else {
+        retry_state_error(task_id, run_id, &error)
+    }
 }
 
 fn valid_segment(value: &str) -> bool {
@@ -216,6 +239,16 @@ fn source_node(
     Ok(node)
 }
 
+fn is_retryable_failed_worker(node: &NodeState) -> bool {
+    node.node_type == NodeType::Worker
+        && node.status == RunStatus::Completed
+        && matches!(
+            node.outcome,
+            Some(crate::domain::NodeOutcome::Failure | crate::domain::NodeOutcome::Invalid)
+        )
+        && !node.manual_check_pending
+}
+
 fn admitted_prefix(
     app: &App,
     task_id: &str,
@@ -243,7 +276,11 @@ fn admitted_prefix(
         .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, &run.id))?;
     let node = source_node(app, task_id, &run.id, round, step)?;
     ensure!(
-        can_rerun_failed_node(run, &node, metadata.run_mode == "workflow"),
+        !run.is_inherited_step(round, step),
+        failure("workflow.retry.inherited-attempt", task_id, &run.id)
+    );
+    ensure!(
+        can_rerun_failed_attempt(run, round, step, &node, metadata.run_mode == "workflow"),
         failure("workflow.retry.node-not-retryable", task_id, &run.id)
     );
     Ok(rounds)
@@ -674,6 +711,7 @@ fn materialize(app: &App, task_id: &str, operation: &RerunOperation) -> Result<P
         source.is_sealed() && source.uuid == origin.source_run_uuid,
         failure("workflow.retry.stale-locator", task_id, &source.id)
     );
+    ensure_source_sealed_for_operation(&source, operation, task_id)?;
     quiesce(app, task_id, &source.id)?;
     let rounds = prefix(
         app,
@@ -692,9 +730,13 @@ fn materialize(app: &App, task_id: &str, operation: &RerunOperation) -> Result<P
         .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, &source.id))?;
     let anchor_node = source_node(app, task_id, &source.id, target_round, anchor)?;
     ensure!(
+        !source.is_inherited_step(target_round, anchor),
+        failure("workflow.retry.inherited-attempt", task_id, &source.id)
+    );
+    ensure!(
         anchor.sequence == origin.inherited_trace_sequence
             && target_round.index == origin.source_round_index
-            && can_rerun_failed_node(&source, &anchor_node, true),
+            && is_retryable_failed_worker(&anchor_node),
         failure("workflow.retry.stale-locator", task_id, &source.id)
     );
     let files = assets(app, task_id, &source.id, &rounds)?;
@@ -856,36 +898,113 @@ fn accepted(app: &App, operation: &RerunOperation) -> Result<RetryCurrentNodeAcc
     })
 }
 
-fn finish_operation(
+fn ensure_source_sealed_for_operation(
+    run: &RunState,
+    operation: &RerunOperation,
+    task_id: &str,
+) -> Result<()> {
+    let origin = origin(operation)?;
+    let seal = run
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.sealed_by.as_ref())
+        .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, &run.id))?;
+    ensure!(
+        seal.operation_id == origin.operation_id
+            && seal.successor_run_id == operation.initial_run.id,
+        failure("workflow.retry.source-sealed", task_id, &run.id)
+    );
+    Ok(())
+}
+
+fn seal_matches_operation(run: &RunState, operation: &RerunOperation) -> bool {
+    let Some(origin) = operation
+        .initial_run
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.origin.as_ref())
+    else {
+        return false;
+    };
+    run.rerun
+        .as_ref()
+        .and_then(|rerun| rerun.sealed_by.as_ref())
+        .is_some_and(|seal| {
+            seal.operation_id == origin.operation_id
+                && seal.successor_run_id == operation.initial_run.id
+        })
+}
+
+fn ensure_sealed_successor_settled(app: &App, task_id: &str, source: &RunState) -> Result<()> {
+    let seal = source
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.sealed_by.as_ref())
+        .ok_or_else(|| failure("workflow.retry.stale-locator", task_id, &source.id))?;
+    let successor = app
+        .run_status(task_id, &seal.successor_run_id)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, &source.id))?;
+    ensure!(
+        successor.status == RunStatus::Completed,
+        failure("workflow.retry.source-sealed", task_id, &source.id)
+    );
+    Ok(())
+}
+
+struct CommittedRerunOperation {
+    operation: RerunOperation,
+    candidate: Option<RuntimeCandidateRegistration>,
+}
+
+/// Commits the source handoff while the source dispatch write guard is held.
+/// Provider cancellation, prefix materialization, asset copying, and target
+/// publication deliberately happen later under the operation-specific lock.
+fn commit_operation(
     app: &App,
     task_id: &str,
-    source_run_id: &str,
-    operation: RerunOperation,
-) -> Result<RetryCurrentNodeAccepted> {
+    run_id: &str,
+    operation: &RerunOperation,
+    operation_path: &Utf8PathBuf,
+) -> Result<CommittedRerunOperation> {
     validate_run_state(&operation.initial_run)?;
-    let source_origin = origin(&operation)?;
-    validate_locator(task_id, source_run_id, &[&operation.initial_run.id])?;
+    let source_origin = origin(operation)?;
+    validate_locator(task_id, run_id, &[&operation.initial_run.id])?;
     ensure!(
-        operation.initial_run.task_id == task_id && source_origin.source_run_id == source_run_id,
-        failure("workflow.retry.stale-locator", task_id, source_run_id)
+        operation.initial_run.task_id == task_id && source_origin.source_run_id == run_id,
+        failure("workflow.retry.stale-locator", task_id, run_id)
     );
     if app
         .paths
         .run_file(task_id, &operation.initial_run.id)
         .exists()
     {
-        return accepted(app, &operation);
+        return Ok(CommittedRerunOperation {
+            operation: operation.clone(),
+            candidate: None,
+        });
     }
+
     let mut staged = operation.clone();
-    let run_id = origin(&operation)?.source_run_id.clone();
-    let run_id = run_id.as_str();
-    let operation_id = origin(&operation)?.operation_id.clone();
-    let operation_path = app
-        .paths
-        .node_rerun_operation_file(task_id, run_id, &operation_id);
+    let operation_id = source_origin.operation_id.clone();
+    let observed = app.run_status(task_id, run_id)?;
+    if observed.is_sealed() {
+        if seal_matches_operation(&observed, &staged) {
+            return Ok(CommittedRerunOperation {
+                operation: staged,
+                candidate: None,
+            });
+        }
+        if let Err(error) = ensure_sealed_successor_settled(app, task_id, &observed) {
+            // A losing locator was never accepted; do not leave an operation
+            // record that a later duplicate could recover as if it had been.
+            let _ = fs::remove_file(operation_path);
+            return Err(error);
+        }
+    }
+
     write_json(
         &app.paths
-            .pending_node_rerun_file(task_id, &operation.initial_run.id),
+            .pending_node_rerun_file(task_id, &staged.initial_run.id),
         &PendingRerun {
             source_run_id: run_id.to_string(),
             operation_id: operation_id.clone(),
@@ -894,7 +1013,7 @@ fn finish_operation(
     let candidate = app.begin_runtime_candidate(task_id, &staged.initial_run.id)?;
     if let Some(candidate) = candidate.as_ref() {
         staged.initial_run.execution.recovery_candidate_token = Some(candidate.token().to_string());
-        write_json(&operation_path, &staged)?;
+        write_json(operation_path, &staged)?;
     }
     app.pause_run_state(task_id, run_id, PauseReason::ProcessInterrupted)
         .map_err(|error| retry_state_error(task_id, run_id, &error))?;
@@ -922,7 +1041,10 @@ fn finish_operation(
                 && stopped.pause_reason != Some(PauseReason::ErrorBlocked),
             failure("workflow.retry.source-busy", task_id, run_id)
         );
-        if !stopped.is_sealed() {
+        if stopped.is_sealed() && !seal_matches_operation(&stopped, &staged) {
+            ensure_sealed_successor_settled(app, task_id, &stopped)?;
+        }
+        if !seal_matches_operation(&stopped, &staged) {
             stopped.rerun.get_or_insert_with(Default::default).sealed_by = Some(RunRerunSeal {
                 operation_id: operation_id.clone(),
                 successor_run_id: staged.initial_run.id.clone(),
@@ -931,28 +1053,53 @@ fn finish_operation(
             write_json(&app.paths.run_file(task_id, run_id), &stopped)?;
         }
     }
-    let data = materialize(app, task_id, &staged)?;
-    if let Some(candidate) = candidate {
-        candidate.commit();
-    }
-    app.emit_lifecycle_event(super::RuntimeLifecycleEvent::ConversationRunStarted {
-        project_id: app.paths.project_id.clone(),
-        task_id: task_id.to_string(),
-        run_id: staged.initial_run.id.clone(),
-        run_mode: crate::config::ConversationRunMode::Workflow,
-    });
-    let result = accepted(app, &operation)?;
-    let background = app.clone_for_background();
-    let task = task_id.to_string();
-    let fallback = data.run.clone();
-    if let Err(error) = thread::Builder::new()
-        .name("gold-band-node-rerun".to_string())
-        .spawn(move || drive_committed_run(&background, &task, data))
-    {
-        app.run_pause(task_id, &fallback.id, PauseReason::RuntimeAbnormal)?;
-        tracing::error!(%error, "failed to launch node rerun driver");
-    }
-    Ok(result)
+    Ok(CommittedRerunOperation {
+        operation: staged,
+        candidate,
+    })
+}
+
+fn launch_committed_operation(
+    app: &App,
+    task_id: &str,
+    committed: CommittedRerunOperation,
+) -> Result<RetryCurrentNodeAccepted> {
+    let operation = committed.operation;
+    let origin = origin(&operation)?;
+    let operation_path =
+        app.paths
+            .node_rerun_operation_file(task_id, &origin.source_run_id, &origin.operation_id);
+    crate::storage::with_file_lock(&operation_path, || {
+        if app
+            .paths
+            .run_file(task_id, &operation.initial_run.id)
+            .exists()
+        {
+            return accepted(app, &operation);
+        }
+        let data = materialize(app, task_id, &operation)?;
+        if let Some(candidate) = committed.candidate {
+            candidate.commit();
+        }
+        app.emit_lifecycle_event(super::RuntimeLifecycleEvent::ConversationRunStarted {
+            project_id: app.paths.project_id.clone(),
+            task_id: task_id.to_string(),
+            run_id: operation.initial_run.id.clone(),
+            run_mode: crate::config::ConversationRunMode::Workflow,
+        });
+        let result = accepted(app, &operation)?;
+        let background = app.clone_for_background();
+        let background_task = task_id.to_string();
+        let fallback = data.run.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("gold-band-node-rerun".to_string())
+            .spawn(move || drive_committed_run(&background, &background_task, data))
+        {
+            app.run_pause(task_id, &fallback.id, PauseReason::RuntimeAbnormal)?;
+            tracing::error!(%error, "failed to launch node rerun driver");
+        }
+        Ok(result)
+    })
 }
 
 impl App {
@@ -1029,32 +1176,55 @@ impl App {
                 &pending.operation_id,
             ],
         )?;
-        let _guard = execution_plan::acquire_plan_write_wait(&execution_plan::lock_key(
-            &self.paths,
+        let operation = {
+            let _guard = execution_plan::acquire_plan_write_wait(&execution_plan::lock_key(
+                &self.paths,
+                task_id,
+                &pending.source_run_id,
+            ))?;
+            let source = self.run_status(task_id, &pending.source_run_id)?;
+            if !source.is_sealed() {
+                return Ok(false);
+            }
+            let operation: RerunOperation = read_json(&self.paths.node_rerun_operation_file(
+                task_id,
+                &source.id,
+                &pending.operation_id,
+            ))?;
+            ensure!(
+                operation.initial_run.id == run_id,
+                failure("workflow.retry.stale-locator", task_id, &source.id)
+            );
+            ensure_source_sealed_for_operation(&source, &operation, task_id)?;
+            operation
+        };
+        let operation_path = self.paths.node_rerun_operation_file(
             task_id,
             &pending.source_run_id,
-        ))?;
-        let source = self.run_status(task_id, &pending.source_run_id)?;
-        if !source.is_sealed() {
-            return Ok(false);
-        }
-        let operation: RerunOperation = read_json(&self.paths.node_rerun_operation_file(
-            task_id,
-            &source.id,
             &pending.operation_id,
-        ))?;
-        ensure!(
-            operation.initial_run.id == run_id,
-            failure("workflow.retry.stale-locator", task_id, &source.id)
         );
-        if !self.paths.run_file(task_id, run_id).exists() {
-            materialize(self, task_id, &operation)?;
-            self.run_pause(task_id, run_id, PauseReason::ProcessInterrupted)?;
-        }
-        Ok(true)
+        crate::storage::with_file_lock(&operation_path, || {
+            if !self.paths.run_file(task_id, run_id).exists() {
+                materialize(self, task_id, &operation)?;
+                self.run_pause(task_id, run_id, PauseReason::ProcessInterrupted)?;
+            }
+            Ok(true)
+        })
     }
 
     pub fn rerun_failed_node(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<RetryCurrentNodeAccepted> {
+        Self::rerun_failed_node_inner(self, task_id, run_id, round_id, node_id, attempt_id)
+            .map_err(|error| public_rerun_error(task_id, run_id, error))
+    }
+
+    fn rerun_failed_node_inner(
         &self,
         task_id: &str,
         run_id: &str,
@@ -1076,14 +1246,18 @@ impl App {
         let operation_path = self
             .paths
             .node_rerun_operation_file(task_id, run_id, &operation_id);
-        if operation_path.exists() {
-            let _dispatch = execution_plan::acquire_plan_write_wait(&execution_plan::lock_key(
-                &self.paths,
-                task_id,
-                run_id,
-            ))?;
-            let operation = read_json::<RerunOperation>(&operation_path)?;
-            return finish_operation(self, task_id, run_id, operation);
+        if source.is_sealed() && operation_path.exists() {
+            let committed = {
+                let _dispatch = execution_plan::acquire_plan_write_wait(
+                    &execution_plan::lock_key(&self.paths, task_id, run_id),
+                )?;
+                let operation = read_json::<RerunOperation>(&operation_path)?;
+                commit_operation(self, task_id, run_id, &operation, &operation_path)?
+            };
+            return launch_committed_operation(self, task_id, committed);
+        }
+        if source.is_sealed() {
+            ensure_sealed_successor_settled(self, task_id, &source)?;
         }
         // Snapshot authoring under its existing lock, executable preflight outside
         // source dispatch/attempt locks. The revision is checked again at commit.
@@ -1126,6 +1300,7 @@ impl App {
         }
 
         let operation;
+        let committed;
         {
             let _authoring = execution_plan::acquire_dispatch_read(&authoring_key)?;
             let _dispatch = execution_plan::acquire_plan_write_wait(&execution_plan::lock_key(
@@ -1206,8 +1381,9 @@ impl App {
                 write_json(&operation_path, &operation)?;
             }
             drop(_authoring);
-            finish_operation(self, task_id, run_id, operation)
+            committed = commit_operation(self, task_id, run_id, &operation, &operation_path)?;
         }
+        launch_committed_operation(self, task_id, committed)
     }
 }
 

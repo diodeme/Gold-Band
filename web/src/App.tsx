@@ -1784,9 +1784,17 @@ export function App() {
 
     const refreshSelectedRunFromStateEvent: Parameters<typeof subscribeConversationRunStateUpdates>[0] = (event) => {
       if (!active) return;
-      if (event.projectId !== projectId || event.taskUuid !== taskUuid || event.runId !== runId) return;
-      const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
+      const isCurrentRun = event.runId === runId;
+      const isSuccessorRun = currentRun?.rerunSuccessorRunId === event.runId;
+      if (event.projectId !== projectId || event.taskUuid !== taskUuid || (!isCurrentRun && !isSuccessorRun)) return;
+      if (!isCurrentRun) {
+        // Retryability of a sealed source depends on its active successor. Reload
+        // the source without adopting the successor's session locator.
+        queueConversationRunRefresh(undefined, false, undefined, 0, false);
+        return;
+      }
+      const sessionKey = conversationSessionKeyFromParts(event);
       const eventLeaf = currentRun
         ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
         : null;

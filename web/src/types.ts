@@ -3257,6 +3257,7 @@ export interface ConversationRunVm {
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
   sealed?: boolean;
+  rerunSuccessorRunId?: string | null;
   rerunOrigin?: {
     sourceRunId: string;
     sourceRunUuid?: string | null;

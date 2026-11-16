@@ -2424,16 +2424,32 @@ export const browserApi: RuntimeApi = {
   rerunFailedNode(request: import('../types').RetryCurrentNodeRequest) {
     if (request.runId === 'run-051') return Promise.reject({ code: 'workflow.retry.error-blocked', params: {} });
     const source = browserFailedWorkflowFixture();
-    const graphNode = source.workflowGraph.nodes.find((node) => node.nodeId === request.expectedNodeId && node.roundId === request.expectedRoundId);
-    const anchor = graphNode?.attempts?.find((attempt) => attempt.attemptId === request.expectedAttemptId && attempt.retryable);
-    if (request.projectId !== source.projectId || request.taskId !== source.taskId || request.runId !== source.runId || !anchor) {
+    if (request.projectId !== source.projectId || request.taskId !== source.taskId || request.runId !== source.runId) {
       return Promise.reject({ code: 'workflow.retry.stale-locator', params: {} });
     }
     const runId = `run-rerun-056-${request.expectedAttemptId}`;
     const operationId = `browser-rerun-056-${request.expectedAttemptId}`;
     const attemptId = `attempt-${String(Number.parseInt(request.expectedAttemptId.slice(8), 10) + 1).padStart(3, '0')}`;
-    if (!browserConversationRuns.has(runId)) {
+    if (browserConversationRuns.has(runId)) {
+      return Promise.resolve({
+        operationId,
+        locator: { projectId: request.projectId, taskId: request.taskId, runId, roundId: request.expectedRoundId, nodeId: request.expectedNodeId, attemptId },
+        run: { ...mockRunDetail.run, id: runId, taskId: request.taskId, status: 'running', outcome: null, currentRound: request.expectedRoundId, currentNode: request.expectedNodeId, currentAttempt: attemptId },
+      });
+    }
+    const graphNode = source.workflowGraph.nodes.find((node) => node.nodeId === request.expectedNodeId && node.roundId === request.expectedRoundId);
+    const anchor = graphNode?.attempts?.find((attempt) => attempt.attemptId === request.expectedAttemptId && attempt.retryable);
+    if (!anchor) {
+      return Promise.reject({ code: 'workflow.retry.stale-locator', params: {} });
+    }
+    {
       source.sealed = true;
+      source.rerunSuccessorRunId = runId;
+      source.workflowGraph.nodes[0].retryable = false;
+      source.workflowGraph.nodes[0].attempts = source.workflowGraph.nodes[0].attempts?.map((attempt) => ({
+        ...attempt,
+        retryable: false,
+      }));
       const target = structuredClone(source);
       target.runId = runId;
       target.sealed = false;
@@ -2469,7 +2485,14 @@ export const browserApi: RuntimeApi = {
       targetGraph.attemptId = attemptId;
       targetGraph.retryable = false;
       targetGraph.runtimeDisplay = running;
-      targetGraph.attempts = [...(graphNode?.attempts ?? []).slice(0, anchorIndex + 1), { attemptId, status: 'running', runtimeDisplay: running, current: true, retryable: false }];
+      targetGraph.attempts = [
+        ...(graphNode?.attempts ?? []).slice(0, anchorIndex + 1).map((attempt) => ({
+          ...attempt,
+          current: false,
+          retryable: false,
+        })),
+        { attemptId, status: 'running', runtimeDisplay: running, current: true, retryable: false },
+      ];
       target.sessionTree.selectedSessionKey = `${current.roundId}/${current.nodeId}/${attemptId}`;
       browserConversationRuns.set(runId, target);
     }

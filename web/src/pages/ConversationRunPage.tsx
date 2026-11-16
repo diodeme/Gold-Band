@@ -40,6 +40,11 @@ import { pathFromRoute, taskListPage } from '@/routes';
 import type { ResidentPinToggleProps } from '@/components/conversation/ResidentPin';
 import type { AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, ExecutionPlanSaveResultVm, GraphNodeVm, WorkflowTemplateStore } from '../types';
 
+function conversationRunScopeKey(run: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid' | 'runId'>) {
+  return conversationRunCacheKey(run)
+    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
+}
+
 function activeSessionKey(session: {
   roundId: string;
   nodeId: string;
@@ -143,26 +148,29 @@ export function ConversationRunPage({
   };
   const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const sessionTreeExpansionRunKey = conversationRunCacheKey(run)
-    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
+  const runScopeKey = conversationRunScopeKey(run);
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
     runKey: string;
     expansion: ConversationSessionTreeExpansion;
   }>(() => ({
-    runKey: sessionTreeExpansionRunKey,
+    runKey: runScopeKey,
     expansion: initialSessionTreeExpansion,
   }));
-  const sessionTreeExpansion = sessionTreeExpansionState.runKey === sessionTreeExpansionRunKey
+  const sessionTreeExpansion = sessionTreeExpansionState.runKey === runScopeKey
     ? sessionTreeExpansionState.expansion
     : initialSessionTreeExpansion;
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
   const [nodeRerunTarget, setNodeRerunTarget] = useState<GraphNodeVm | null>(null);
   const nodeRerunDecisionRef = useRef<((confirmed: boolean) => void) | null>(null);
   const nodeRerunScopeRef = useRef<string | null>(null);
-  useEffect(() => () => {
-    nodeRerunDecisionRef.current?.(false);
-    nodeRerunDecisionRef.current = null;
-  }, [sessionTreeExpansionRunKey]);
+  useEffect(() => {
+    setNodeRerunTarget(null);
+    nodeRerunScopeRef.current = null;
+    return () => {
+      nodeRerunDecisionRef.current?.(false);
+      nodeRerunDecisionRef.current = null;
+    };
+  }, [runScopeKey]);
   const isAtBottomRef = useRef(true);
   const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
@@ -185,11 +193,11 @@ export function ConversationRunPage({
   const handleSessionTreeExpansionChange = useCallback((branchKey: string, open: boolean) => {
     const nextExpansion = { ...sessionTreeExpansion, [branchKey]: open };
     setSessionTreeExpansionState({
-      runKey: sessionTreeExpansionRunKey,
+      runKey: runScopeKey,
       expansion: nextExpansion,
     });
     onSessionTreeExpansionChange(nextExpansion);
-  }, [onSessionTreeExpansionChange, sessionTreeExpansion, sessionTreeExpansionRunKey]);
+  }, [onSessionTreeExpansionChange, sessionTreeExpansion, runScopeKey]);
 
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
@@ -288,7 +296,7 @@ export function ConversationRunPage({
     handleWorkflowNodeOpenSessionRef.current(node);
   }, []);
   const onNodeRetryStable = useCallback(async (node: GraphNodeVm) => {
-    const runKey = conversationRunCacheKey(runRef.current);
+    const runKey = runRef.current ? conversationRunScopeKey(runRef.current) : null;
     if (node.status === 'completed') {
       nodeRerunDecisionRef.current?.(false);
       nodeRerunScopeRef.current = runKey;
@@ -296,7 +304,7 @@ export function ConversationRunPage({
         nodeRerunDecisionRef.current = resolve;
         setNodeRerunTarget(node);
       });
-      if (!confirmed || conversationRunCacheKey(runRef.current) !== runKey) return;
+      if (!confirmed || !runRef.current || conversationRunScopeKey(runRef.current) !== runKey) return;
     }
     await onNodeRetryRef.current?.(node);
   }, []);
@@ -753,7 +761,7 @@ export function ConversationRunPage({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={nodeRerunTarget !== null && nodeRerunScopeRef.current === conversationRunCacheKey(run)} onOpenChange={(open) => {
+      <AlertDialog open={nodeRerunTarget !== null && nodeRerunScopeRef.current === runScopeKey} onOpenChange={(open) => {
         if (open) return;
         nodeRerunDecisionRef.current?.(false);
         nodeRerunDecisionRef.current = null;

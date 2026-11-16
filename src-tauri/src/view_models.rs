@@ -28,7 +28,7 @@ use gold_band::provider::{
 };
 use gold_band::runtime::{
     CurrentNodeRetryReadiness, NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState,
-    can_rerun_failed_node, canonical_trace_for_round, current_node_retry_readiness,
+    can_rerun_failed_attempt, canonical_trace_for_round, current_node_retry_readiness,
 };
 
 use crate::channel::current_channel_config;
@@ -2219,6 +2219,19 @@ pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
     }
 }
 
+fn sealed_source_allows_new_handoff(app: &App, task_id: &str, run: &RunState) -> bool {
+    let Some(seal) = run
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.sealed_by.as_ref())
+    else {
+        return true;
+    };
+    app.run_status(task_id, &seal.successor_run_id)
+        .map(|successor| successor.status == gold_band::domain::RunStatus::Completed)
+        .unwrap_or(false)
+}
+
 fn round_graph_vm(
     app: &App,
     task_id: &str,
@@ -2229,6 +2242,7 @@ fn round_graph_vm(
     workflow_mode: bool,
 ) -> Result<GraphVm> {
     let node_labels = workflow_node_labels(app, task_id, &run.id);
+    let sealed_source_allows_new_handoff = sealed_source_allows_new_handoff(app, task_id, run);
     if !round.trace.is_empty() {
         return round_trace_graph_vm(
             app,
@@ -2239,6 +2253,7 @@ fn round_graph_vm(
             &node_labels,
             control_failure,
             workflow_mode,
+            sealed_source_allows_new_handoff,
         );
     }
 
@@ -2291,6 +2306,7 @@ fn round_trace_graph_vm(
     node_labels: &HashMap<String, String>,
     control_failure: Option<&ControlFailureVm>,
     workflow_mode: bool,
+    sealed_source_allows_new_handoff: bool,
 ) -> Result<GraphVm> {
     const TRACE_SEQUENCE_RANK_WIDTH: u32 = 100;
     fn trace_rank_sequence(sequence: u32) -> u32 {
@@ -2428,6 +2444,7 @@ fn round_trace_graph_vm(
                     node_step,
                     node_attempt,
                     workflow_mode,
+                    sealed_source_allows_new_handoff,
                 )?);
             }
         }
@@ -2454,12 +2471,13 @@ fn round_trace_graph_vm(
             latest_node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome)));
         let current = run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&latest_step.node_id);
-        let retryable = latest_node.is_some_and(|node| {
-            can_rerun_failed_node(run, node, workflow_mode)
-                || (current
-                    && current_node_retry_readiness(run, node, workflow_mode)
-                        == CurrentNodeRetryReadiness::Ready)
-        });
+        let retryable = sealed_source_allows_new_handoff
+            && latest_node.is_some_and(|node| {
+                can_rerun_failed_attempt(run, round, latest_step, node, workflow_mode)
+                    || (current
+                        && current_node_retry_readiness(run, node, workflow_mode)
+                            == CurrentNodeRetryReadiness::Ready)
+            });
         let pause_reason = run.pause_reason.as_ref().map(enum_label);
         let runtime_display = runtime_display_vm(
             latest_status.as_deref(),
@@ -2631,6 +2649,7 @@ fn graph_attempt_vm(
     step: &RoundTraceStep,
     node: &NodeState,
     workflow_mode: bool,
+    sealed_source_allows_new_handoff: bool,
 ) -> Result<GraphAttemptVm> {
     let status = enum_label(&node.status);
     let outcome = node.outcome.map(|outcome| enum_label(&outcome));
@@ -2668,7 +2687,8 @@ fn graph_attempt_vm(
             &node.attempt_id,
         ),
         current,
-        retryable: can_rerun_failed_node(run, node, workflow_mode),
+        retryable: sealed_source_allows_new_handoff
+            && can_rerun_failed_attempt(run, round, step, node, workflow_mode),
     })
 }
 
@@ -8225,10 +8245,100 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::app::App;
     use gold_band::domain::{PauseReason, RunStatus, VERSION};
-    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
+    use gold_band::runtime::{
+        RunRerunMetadata, RunRerunOrigin, RunRerunSeal, RunState, RuntimeExecutionPhase,
+        RuntimeExecutionState,
+    };
     use gold_band::storage::write_json;
     use serde_json::json;
     use tempfile::tempdir;
+
+    fn handoff_run(id: &str, status: RunStatus) -> RunState {
+        let phase = if status == RunStatus::Completed {
+            RuntimeExecutionPhase::Terminal
+        } else {
+            RuntimeExecutionPhase::RunningNode
+        };
+        RunState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            task_id: "task-handoff".to_string(),
+            task_uuid: None,
+            status,
+            outcome: (status == RunStatus::Completed)
+                .then_some(gold_band::domain::RunOutcome::Success),
+            started_at: "t0".to_string(),
+            updated_at: "t0".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("dev".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            rerun: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::new(
+                phase,
+                Some(gold_band::runtime::RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "dev".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "t0",
+            ),
+        }
+    }
+
+    #[test]
+    fn sealed_source_graph_readiness_follows_the_active_successor() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let mut source = handoff_run("run-source", RunStatus::Paused);
+        source.status = RunStatus::Completed;
+        source.outcome = Some(gold_band::domain::RunOutcome::Failure);
+        source.current_round = None;
+        source.current_node = None;
+        source.current_attempt = None;
+        source.execution = RuntimeExecutionState::new(RuntimeExecutionPhase::Terminal, None, "t0");
+        source.rerun = Some(RunRerunMetadata {
+            origin: None,
+            sealed_by: Some(RunRerunSeal {
+                operation_id: "rerun-001".to_string(),
+                successor_run_id: "run-successor".to_string(),
+                sealed_at: "t0".to_string(),
+            }),
+        });
+        write_json(&app.paths.run_file("task-handoff", "run-source"), &source).unwrap();
+
+        write_json(
+            &app.paths.run_file("task-handoff", "run-successor"),
+            &handoff_run("run-successor", RunStatus::Running),
+        )
+        .unwrap();
+        assert!(!sealed_source_allows_new_handoff(
+            &app,
+            "task-handoff",
+            &source
+        ));
+
+        let mut successor = handoff_run("run-successor", RunStatus::Completed);
+        successor.execution =
+            RuntimeExecutionState::new(RuntimeExecutionPhase::Terminal, None, "t1");
+        write_json(
+            &app.paths.run_file("task-handoff", "run-successor"),
+            &successor,
+        )
+        .unwrap();
+        assert!(sealed_source_allows_new_handoff(
+            &app,
+            "task-handoff",
+            &source
+        ));
+    }
 
     #[test]
     fn mcp_server_list_projects_managed_memory_as_a_standard_stdio_server() {
@@ -9508,6 +9618,64 @@ mod tests {
         assert!(
             completed.graph.nodes[0].retryable,
             "a completed failed attempt must expose rerun"
+        );
+
+        let mut successor = run.clone();
+        successor.id = "run-successor".to_string();
+        successor.status = RunStatus::Running;
+        successor.outcome = None;
+        successor.pause_reason = None;
+        successor.execution = RuntimeExecutionState::new(
+            RuntimeExecutionPhase::RunningNode,
+            successor.current_execution_locator(),
+            "t1",
+        );
+        write_json(&app.paths.run_file(task_id, "run-successor"), &successor).unwrap();
+        run.rerun = Some(RunRerunMetadata {
+            origin: None,
+            sealed_by: Some(RunRerunSeal {
+                operation_id: "rerun-001".to_string(),
+                successor_run_id: "run-successor".to_string(),
+                sealed_at: "t1".to_string(),
+            }),
+        });
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        let successor_running = round_detail_vm(&app, task_id, run_id, round_id, None).unwrap();
+        assert!(
+            !successor_running.graph.nodes[0].retryable,
+            "a sealed source must hide rerun while its successor is active"
+        );
+
+        successor.status = RunStatus::Completed;
+        successor.outcome = Some(RunOutcome::Success);
+        successor.execution =
+            RuntimeExecutionState::new(RuntimeExecutionPhase::Terminal, None, "t2");
+        write_json(&app.paths.run_file(task_id, "run-successor"), &successor).unwrap();
+        let successor_completed = round_detail_vm(&app, task_id, run_id, round_id, None).unwrap();
+        assert!(
+            successor_completed.graph.nodes[0].retryable,
+            "a sealed source may expose the next handoff after its successor settles"
+        );
+
+        run.rerun = Some(RunRerunMetadata {
+            origin: Some(RunRerunOrigin {
+                source_run_id: "run-source".to_string(),
+                source_run_uuid: None,
+                source_round_id: round_id.to_string(),
+                source_round_index: 1,
+                source_node_id: "worker".to_string(),
+                source_attempt_id: "attempt-002".to_string(),
+                operation_id: "rerun-002".to_string(),
+                inherited_trace_sequence: 2,
+                source_authoring_revision: 1,
+            }),
+            sealed_by: None,
+        });
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        let inherited = round_detail_vm(&app, task_id, run_id, round_id, None).unwrap();
+        assert!(
+            !inherited.graph.nodes[0].retryable,
+            "an inherited failed attempt must remain historical and read-only"
         );
     }
 

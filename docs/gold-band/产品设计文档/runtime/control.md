@@ -72,6 +72,8 @@ AI-DYNAMIC leaf 的 continue 启动窗口由进程内 request lease 表达。lea
 
 单节点重试和失败节点重跑仅限 Workflow 模式的普通 Worker，AI-DYNAMIC/AUTO Run 与内部节点不支持。混合 Workflow 从历史失败 Worker 重跑时，来源先暂停并封存，再按 canonical trace 枚举该 Run 所有已提交 AI-DYNAMIC attempt 的动态图，并沿其中 durable `childRunId` 递归暂停可达 child Run；不能只消费当前动态图。child 在磁盘上与来源是 sibling，不能用来源目录包含关系判断整棵执行树已停止。取消后须等待整棵树的实际 ACP activity 消失，`CancelRequested` 仍视为活跃。10 秒内未收敛返回 `workflow.retry.source-busy`，不发布 successor；后代停止后同一请求恢复原交接。无关 Run 不被取消或纳入等待，round/node/graph 元数据读取和执行树规模均有界。
 
+失败节点重跑的 source dispatch 写锁只覆盖 operation、candidate/pending、来源暂停与 seal 提交；quiesce、前缀物化、资源复制、目标 run.json 发布和后台驱动必须移出该锁，并在同一 operation 专属锁下串行。已封存来源的多个历史失败 attempt 只能串行分叉：当前 `sealedBy.successorRunId` 未 Completed 前拒绝新 handoff，Completed 后才允许下一次分叉并更新活动交接。
+
 执行树只沿已提交的 child 关系遍历，最多 256 个 Run，读取的 Run/graph 元数据累计不超过 8 MiB；不枚举 task 的 Run 历史。只暂停非终态 Run/graph，已完成的状态、outcome 和历史图保持不变，但仍沿其 child 关系取消并等待残留的实际 ACP 活动。循环或重复 child、缺失 Run、错误父 locator、符号链接元数据、越界路径和超限均以结构化 retry 错误拒绝交接；暂停或动态图持久化失败归一为 `workflow.retry.workflow-invalid`。同一持久化状态的 attempt 锁、dynamic graph 锁和 continue lease 使用 `runtime_root` 定位，切换执行 worktree 不改变其控制身份。
 
 Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立领域：

@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-11-03T09:32:03.543Z"
+    "fetchedAt": "2026-11-12T02:31:27.857Z"
   },
   "agents": [
     {
@@ -63,7 +63,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.10.22",
+      "version": "2026.11.11",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -87,7 +87,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.66.0",
+      "version": "0.68.0",
       "description": "Google's official CLI for Gemini",
       "repository": "https://github.com/google-gemini/gemini-cli",
       "website": "https://geminicli.com",
@@ -96,7 +96,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.66.0",
+        "@google/gemini-cli@0.68.0",
         "--acp"
       ],
       "localLaunch": {
@@ -118,7 +118,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.179.3",
+      "version": "2.183.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -127,7 +127,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.179.3",
+        "@tencent-ai/codebuddy-code@2.183.0",
         "--acp"
       ],
       "localLaunch": {
@@ -147,7 +147,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.57.0",
+      "version": "1.59.0",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",
@@ -169,7 +169,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.26.6",
+      "version": "0.27.2",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -178,7 +178,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.26.6",
+        "@qwen-code/qwen-code@0.27.2",
         "--acp",
         "--experimental-skills"
       ],
@@ -200,7 +200,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "2.2.5",
+      "version": "2.2.7",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",
@@ -225,7 +225,7 @@
       "id": "kimi",
       "label": "Kimi Code",
       "version": "1.52.0",
-      "description": "Moonshot AI's coding assistant",
+      "description": "Archived by Moonshot AI. Use Kimi Code instead",
       "repository": "https://github.com/MoonshotAI/kimi-cli",
       "website": "https://moonshotai.github.io/kimi-cli/",
       "iconKey": "kimi",

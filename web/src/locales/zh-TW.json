@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "此 Agent 缺少啟動命令，請在 Agent 管理中補充命令後重新診斷。",
     "npx-cache.busy": "已有快取修復正在進行，請稍後重試。",
     "npx-cache.unavailable": "無法確認可修復的 npx 快取目錄，請重新執行環境診斷。",
     "npx-cache.changed": "診斷、設定或快取已變更，請關閉對話方塊後重試。",

@@ -515,6 +515,7 @@ pub fn catalog_agent_default_config(agent_id: &str) -> Option<ManagedAgentConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAdapterConfig {
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -660,6 +661,11 @@ impl ManagedAgentConfig {
     pub fn executable_adapter(&self, agent_id: &ManagedAgentId) -> Result<AcpAdapterConfig> {
         let mut adapter = self.adapter.clone();
         adapter.apply_catalog_launch(agent_id);
+        if adapter.command.trim().is_empty() {
+            return Err(
+                crate::onboarding::model::SetupError::new("agent.launch-command-missing").into(),
+            );
+        }
         let local_launch = crate::agent_catalog::builtin_agent(agent_id.as_str())
             .and_then(|entry| entry.local_launch.as_ref());
         if let Some(path) = &self.executable_path {
@@ -1012,11 +1018,13 @@ pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
         .feishu_scan_auth
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 13;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
+const LEGACY_CODEBUDDY_DISPLAY_NAME: &str = "CodeBuddy";
+const CURRENT_CODEBUDDY_DISPLAY_NAME: &str = "WorkBuddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1090,6 +1098,10 @@ impl SettingsConfig {
                 .entry("imIntegrations".to_string())
                 .or_insert_with(|| serde_json::json!({ "channels": [] }));
             migrate_removed_im_notification_preferences(settings);
+            migrated = true;
+        }
+        if version < 13 {
+            migrate_codebuddy_display_name(settings);
             migrated = true;
         }
         if migrated {
@@ -1335,6 +1347,21 @@ fn migrate_codex_acp_package(
         }
     }
     Ok(())
+}
+
+fn migrate_codebuddy_display_name(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(display_name) = settings
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|agents| agents.get_mut("codebuddy-code"))
+        .and_then(|agent| agent.get_mut("adapter"))
+        .and_then(|adapter| adapter.get_mut("displayName"))
+    else {
+        return;
+    };
+    if display_name.as_str() == Some(LEGACY_CODEBUDDY_DISPLAY_NAME) {
+        *display_name = serde_json::Value::String(CURRENT_CODEBUDDY_DISPLAY_NAME.to_string());
+    }
 }
 
 fn migrate_managed_agent_directories(
@@ -3422,6 +3449,51 @@ mod tests {
         assert!(!notifications.run_success);
         assert!(notifications.run_failure);
         assert!(!notifications.acp_turn_finished);
+    }
+
+    #[test]
+    fn settings_v12_renames_default_codebuddy_display_name() {
+        let migrate = |display_name: &str| {
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 12,
+                "agents": {
+                    "codebuddy-code": {
+                        "adapter": {
+                            "command": "npx",
+                            "displayName": display_name
+                        }
+                    }
+                }
+            }))
+            .unwrap()
+        };
+        let codebuddy = ManagedAgentId::from_str("codebuddy-code").unwrap();
+
+        let (settings, migrated) = migrate("CodeBuddy");
+        assert!(migrated);
+        assert_eq!(
+            settings
+                .agents
+                .unwrap()
+                .get(&codebuddy)
+                .unwrap()
+                .adapter
+                .display_name,
+            "WorkBuddy"
+        );
+
+        let (settings, migrated) = migrate("Custom CodeBuddy");
+        assert!(migrated);
+        assert_eq!(
+            settings
+                .agents
+                .unwrap()
+                .get(&codebuddy)
+                .unwrap()
+                .adapter
+                .display_name,
+            "Custom CodeBuddy"
+        );
     }
 
     #[test]

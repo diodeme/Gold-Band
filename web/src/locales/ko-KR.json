@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "이 Agent에 시작 명령이 없습니다. Agent 관리에서 명령을 입력한 뒤 다시 진단하세요.",
     "npx-cache.busy": "캐시 복구가 이미 진행 중입니다. 잠시 후 다시 시도하세요.",
     "npx-cache.unavailable": "복구할 수 있는 npx 캐시 디렉터리를 확인할 수 없습니다. 환경 진단을 다시 실행하세요.",
     "npx-cache.changed": "진단, 설정 또는 캐시가 변경되었습니다. 대화 상자를 닫고 다시 시도하세요.",

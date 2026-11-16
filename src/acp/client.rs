@@ -477,6 +477,13 @@ impl DoctorDeadline {
 }
 
 pub fn doctor_diagnostic_error(error: &anyhow::Error) -> DiagnosticError {
+    if let Some(setup) = error.downcast_ref::<crate::onboarding::model::SetupError>() {
+        return DiagnosticError {
+            code: setup.code.to_string(),
+            params: setup.params.clone(),
+            raw: None,
+        };
+    }
     if let Some(start) = error.downcast_ref::<crate::acp::adapter::AcpAdapterStartFailed>() {
         return DiagnosticError {
             code: "acp.adapter-start-failed".to_string(),
@@ -10922,6 +10929,16 @@ mod tests {
             "test-model"
         );
         assert!(!attempt.exists());
+    }
+
+    #[test]
+    fn doctor_diagnostic_error_preserves_setup_error_codes() {
+        let error = anyhow::anyhow!(crate::onboarding::model::SetupError::new(
+            "agent.launch-command-missing"
+        ));
+        let diagnostic = super::doctor_diagnostic_error(&error);
+        assert_eq!(diagnostic.code, "agent.launch-command-missing");
+        assert_eq!(diagnostic.params, json!({}));
     }
 
     #[test]

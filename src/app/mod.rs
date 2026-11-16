@@ -4630,9 +4630,18 @@ impl App {
         deadline: acp_client::DoctorDeadline,
     ) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
+        let adapter = match config.executable_adapter(&agent_id) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                return Ok(ProviderDoctorProbe {
+                    doctor: DoctorResult::from_anyhow(&err),
+                    commands: Vec::new(),
+                });
+            }
+        };
         match acp_client::doctor_with_deadline(
             &agent_id,
-            &config.executable_adapter(&agent_id)?,
+            &adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,

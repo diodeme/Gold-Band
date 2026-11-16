@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "This Agent is missing its launch command. Add the command in Agent management, then run diagnostics again.",
     "npx-cache.busy": "A cache repair is already in progress. Try again later.",
     "npx-cache.unavailable": "No repairable npx cache directory could be verified. Run diagnostics again.",
     "npx-cache.changed": "Diagnostics, configuration or cache changed. Close this dialog and try again.",

@@ -256,11 +256,37 @@ pub(crate) fn start_business_runtime(handle: tauri::AppHandle) {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!(
-            "failed to start {} desktop: {error:?}",
-            channel::current_channel_config().app_name
+        let app_name = channel::current_channel_config().app_name;
+        let message = format!("failed to start {app_name} desktop: {error:?}");
+        eprintln!("{message}");
+        show_startup_failure(&app_name, &message);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_startup_failure(app_name: &str, message: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
+    use windows::core::PCWSTR;
+
+    let mut text: Vec<u16> = message.encode_utf16().collect();
+    text.push(0);
+    let mut title: Vec<u16> = app_name.encode_utf16().collect();
+    title.push(0);
+    // The Windows GUI subsystem has no console attached in release builds; this native
+    // dialog is the last visible boundary before process exit.
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_ICONERROR,
         );
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_startup_failure(_app_name: &str, message: &str) {
+    eprintln!("{message}");
 }
 
 fn run() -> anyhow::Result<()> {

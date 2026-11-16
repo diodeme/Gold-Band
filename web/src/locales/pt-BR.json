@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "Este Agent está sem o comando de inicialização. Adicione o comando no gerenciamento de Agents e execute o diagnóstico novamente.",
     "npx-cache.busy": "Já há um reparo de cache em andamento. Tente novamente mais tarde.",
     "npx-cache.unavailable": "Não foi possível verificar um cache npx reparável. Execute o diagnóstico.",
     "npx-cache.changed": "O diagnóstico, a configuração ou o cache mudou. Feche o diálogo e tente novamente.",

@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "Este Agent no tiene comando de inicio. Añade el comando en la gestión de Agents y vuelve a ejecutar el diagnóstico.",
     "npx-cache.busy": "Ya hay una reparación de caché en curso. Inténtalo más tarde.",
     "npx-cache.unavailable": "No se pudo verificar un directorio de caché npx reparable. Vuelve a ejecutar el diagnóstico de entorno.",
     "npx-cache.changed": "El diagnóstico, la configuración o la caché han cambiado. Cierra el diálogo y reintenta.",

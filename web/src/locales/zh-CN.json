@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "此 Agent 缺少启动命令，请在 Agent 管理中补充命令后重新诊断。",
     "npx-cache.busy": "已有缓存修复正在进行，请稍后重试。",
     "npx-cache.unavailable": "无法确认可修复的 npx 缓存目录，请重新运行环境诊断。",
     "npx-cache.changed": "诊断、配置或缓存已变化，请关闭弹窗后重试。",

@@ -775,6 +775,7 @@
     }
   },
   "errors": {
+    "agent.launch-command-missing": "この Agent には起動コマンドがありません。Agent 管理でコマンドを入力し、もう一度診断してください。",
     "npx-cache.busy": "キャッシュの修復中です。しばらくしてから再試行してください。",
     "npx-cache.unavailable": "修復可能な npx キャッシュを確認できません。診断を再実行してください。",
     "npx-cache.changed": "診断、設定、またはキャッシュが変更されました。ダイアログを閉じて再試行してください。",

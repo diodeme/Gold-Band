@@ -3238,7 +3238,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **方案自评审**：过度设计——四处均为常量比较与字段重命名，无新状态/抽象/IO；`ListScope` 是把既有 inline 判断上收为纯函数（换可测性，非新概念）。明确**不做**：角色重装不引入「同 key 跳过」——本地角色 key 空间是 `pf-` id、安装后不保留市场 slug，「重装落改名副本」是内网多轮验证后的协商行为（P3 display name 正为此），工作流侧 ReusedExisting 跳过已实现（协议 §4 第 3 项措辞是「确认」而非新增）；256KB 上限不做 daemon 预检——服务端发布时校验（ARTIFACT_TOO_LARGE），预检属重复校验；§5 三缺口（conflict_strategy / installed_version / workflow deps）文档明说不阻塞本期。性能——零影响（无新 IO/状态，字段改名不进热路径）。
 
-**验证结果**：`cargo test -p gold-band-desktop --bin gold-band-desktop "multica::"` **295 passed**（+2：`classify_accepts_explicit_export_action`——role/workflow 两形态显式 export 均正确路由，漂移先红；`list_scope_treats_all_as_full_enumeration`——空/all 同义、单类型只回该类型、未知降级 supported:false；既有 client 序列化测试更新为断言 `installed_key`/`removed_key` 且旧字段名不再出现）；`cargo clippy -p gold-band-desktop --all-targets` 对改动文件零告警；`cargo fmt` 通过。
+**验证结果**：`cargo test -p gold-band-desktop --bin gold-band-desktop "multica::"` **267 passed**（+2：`classify_accepts_explicit_export_action`——role/workflow 两形态显式 export 均正确路由，漂移先红；`list_scope_treats_all_as_full_enumeration`——空/all 同义、单类型只回该类型、未知降级 supported:false；既有 client 序列化测试更新为断言 `installed_key`/`removed_key` 且旧字段名不再出现；265 基线 + 2 = 267，M5-cz 首次落地于 feature_multica_20261112 时同批为 295——该分支另含 M5-cy transcript 测试）；`cargo clippy -p gold-band-desktop --all-targets` 对改动文件零告警；`cargo fmt` 通过。
 
 **文件**：`src-tauri/src/multica/{client,runtime_assets}.rs`；文档 `接入方案.md` D5（权威契约指针 + 详情 action 枚举 + `all` 语义 + 回报字段名）、本条。
 

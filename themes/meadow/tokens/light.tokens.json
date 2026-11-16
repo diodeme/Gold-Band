@@ -210,7 +210,7 @@
     },
     "sidebar": {
       "$type": "color",
-      "$value": "#DEE9D8"
+      "$value": "#CFE2CD"
     },
     "sidebarForeground": {
       "$type": "color",
@@ -226,7 +226,7 @@
     },
     "sidebarAccent": {
       "$type": "color",
-      "$value": "#E3EDDE"
+      "$value": "#C4D9C2"
     },
     "sidebarAccentForeground": {
       "$type": "color",
@@ -234,7 +234,7 @@
     },
     "sidebarBorder": {
       "$type": "color",
-      "$value": "#DCE5D7"
+      "$value": "#BCCFB9"
     },
     "sidebarRing": {
       "$type": "color",
@@ -334,15 +334,15 @@
     },
     "titlebar": {
       "$type": "color",
-      "$value": "#DEE9D8"
+      "$value": "#CFE2CD"
     },
     "titlebarForeground": {
       "$type": "color",
-      "$value": "#5C665A"
+      "$value": "#47534A"
     },
     "titlebarMuted": {
       "$type": "color",
-      "$value": "#7A8677"
+      "$value": "#576558"
     },
     "titlebarBorder": {
       "$type": "color",
@@ -350,7 +350,7 @@
     },
     "titlebarHover": {
       "$type": "color",
-      "$value": "#E4EEDF"
+      "$value": "#C6DBC4"
     },
     "scrollbarTrack": {
       "$type": "color",

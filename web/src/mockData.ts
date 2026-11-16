@@ -519,6 +519,53 @@ export const mockBootstrap: AppBootstrapVm = {
   needsWorkspace: false,
 };
 
+const MOCK_LOCAL_LAUNCHES: Record<string, { command: string; args: string[]; installedCli?: string }> = {
+  'claude-acp': { command: 'claude-agent-acp', args: [], installedCli: 'claude' },
+  'codebuddy-code': { command: 'codebuddy', args: ['--acp'] },
+  'codex-acp': { command: 'codex-acp', args: [], installedCli: 'codex' },
+  'pi-acp': { command: 'pi-acp', args: [], installedCli: 'pi' },
+  qoder: { command: 'qodercli', args: ['--acp'], installedCli: 'qodercli' },
+  gemini: { command: 'gemini', args: ['--acp'] },
+  'qwen-code': { command: 'qwen', args: ['--acp', '--experimental-skills'] },
+};
+
+function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
+  const local = MOCK_LOCAL_LAUNCHES[input.agentType];
+  const defaultArgs = input.defaultArgs ?? [];
+  const defaultCommand = input.defaultCommand ?? 'npx';
+  const npxFallback = defaultCommand === 'npx' ? { command: 'npx', args: defaultArgs } : null;
+  const connectionRequirements: AgentConnectionRequirementsVm = {
+    pathCommand: local?.command ?? defaultCommand,
+    pathArgs: local?.args ?? defaultArgs,
+    installedCli: local?.installedCli ?? null,
+    npxFallback,
+    npxRequiresPreparedPackage: Boolean(npxFallback) && (!local?.installedCli || local.installedCli === local.command),
+  };
+  return {
+    version: '1.0.0',
+    provenance: {
+      sourceKind: 'official-registry',
+      integrationOrigin: 'official',
+      validatedVersion: '1.0.0',
+    },
+    description: '',
+    repository: null,
+    website: null,
+    primaryAgentDir: '',
+    projectPrimaryAgentDir: null,
+    compatibleAgentDirs: [],
+    configured: false,
+    supportsSystemPrompt: false,
+    supportsExternalSessionSync: false,
+    defaultDisplayName: input.label,
+    defaultCommand: 'npx',
+    defaultArgs: [],
+    defaultEnv: [],
+    ...input,
+    connectionRequirements: input.connectionRequirements ?? connectionRequirements,
+  };
+}
+
 export const mockAgentRegistry: AgentRegistryVm = {
   agents: [
     {
@@ -632,52 +679,6 @@ export const mockAgentRegistry: AgentRegistryVm = {
     mockCatalogEntry({ agentType: 'amp-acp', label: 'Amp', iconKey: 'amp-acp', primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'], defaultDisplayName: 'Amp', defaultCommand: 'amp-acp' }),
   ],
 };
-
-const MOCK_LOCAL_LAUNCHES: Record<string, { command: string; args: string[]; installedCli?: string }> = {
-  'claude-acp': { command: 'claude-agent-acp', args: [], installedCli: 'claude' },
-  'codebuddy-code': { command: 'codebuddy', args: ['--acp'] },
-  'codex-acp': { command: 'codex-acp', args: [], installedCli: 'codex' },
-  'pi-acp': { command: 'pi-acp', args: [], installedCli: 'pi' },
-  qoder: { command: 'qodercli', args: ['--acp'], installedCli: 'qodercli' },
-  gemini: { command: 'gemini', args: ['--acp'] },
-  'qwen-code': { command: 'qwen', args: ['--acp', '--experimental-skills'] },
-};
-
-function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
-  const local = MOCK_LOCAL_LAUNCHES[input.agentType];
-  const defaultArgs = input.defaultArgs ?? [];
-  const npxFallback = input.defaultCommand === 'npx' ? { command: 'npx', args: defaultArgs } : null;
-  const connectionRequirements: AgentConnectionRequirementsVm = {
-    pathCommand: local?.command ?? input.defaultCommand ?? 'npx',
-    pathArgs: local?.args ?? defaultArgs,
-    installedCli: local?.installedCli ?? null,
-    npxFallback,
-    npxRequiresPreparedPackage: Boolean(npxFallback) && (!local?.installedCli || local.installedCli === local.command),
-  };
-  return {
-    version: '1.0.0',
-    provenance: {
-      sourceKind: 'official-registry',
-      integrationOrigin: 'official',
-      validatedVersion: '1.0.0',
-    },
-    description: '',
-    repository: null,
-    website: null,
-    primaryAgentDir: '',
-    projectPrimaryAgentDir: null,
-    compatibleAgentDirs: [],
-    configured: false,
-    supportsSystemPrompt: false,
-    supportsExternalSessionSync: false,
-    defaultDisplayName: input.label,
-    defaultCommand: 'npx',
-    defaultArgs: [],
-    defaultEnv: [],
-    ...input,
-    connectionRequirements: input.connectionRequirements ?? connectionRequirements,
-  };
-}
 
 export const mockTaskList: TaskListVm = {
   cards: [

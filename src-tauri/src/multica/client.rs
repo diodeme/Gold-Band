@@ -71,7 +71,7 @@ const NETWORK_RETRY_BASE_SECS: u64 = 1;
 /// 心跳 tick 内的高频调用（heartbeat / 取消检测 / 自愈 register）正常 <1s；server 慢响应或网络抖动时，
 /// 若沿用 30s 全局超时，单 tick 串行阻塞会累积，威胁 runtime 在线维持（离线超 150s 被 sweeper 回收）
 /// 与取消检测的及时性。给这些调用更短的 per-request 上界，使退化网络下单 tick 也能快速失败、
-/// 下一 tick（15s）重试——而非一个 tick 阻塞数分钟。
+/// 下一 tick（3s）重试——而非一个 tick 阻塞数分钟。
 const LIVENESS_TIMEOUT_SECS: u64 = 10;
 
 /// 单个 issue 附件下载超时（秒），覆盖 client 级 30s 默认值（M5-bu）。
@@ -685,7 +685,9 @@ pub enum SkillFilesResponse {
 /// `Value` 由处理侧按工单解析（`runtime_assets::classify_runtime_assets_request`）。
 #[derive(Debug, Deserialize)]
 pub struct RuntimeAssetsRequest {
-    /// `list` | `install`（详情权威值；ack 里的 action 只是建议）。
+    /// `list` | `install` | `uninstall`（详情权威值；ack 里的 action 只是建议）。wire 上
+    /// export 仍是 `install`（multica 兼容已部署客户端的别名：item_id 空 + payload.asset_key
+    /// 即 export）。
     pub action: String,
     /// `role` | `workflow`（list 工单也以详情该字段为权威——ack 对 list 不带 asset_type，
     /// 必须先 GET 再回报；空 = 尚未分化的旧 server，按 role 容忍）。
@@ -736,30 +738,51 @@ pub enum RuntimeAssetPayload {
     Workflow(gold_band::app::MulticaWorkflowExchange),
 }
 
-/// export / push-install 工单上报 body（`POST .../assets/install/{requestId}/result`，两形态共用）。
+/// export / push-install / uninstall 工单上报 body（`POST .../assets/install/{requestId}/result`
+/// 三动作共用——路径段 install 是历史命名，multica 侧约定不新建 /uninstall/.../result）。
 ///
-/// export completed → `payload`（资产正文）；push-install completed → `result`（实际落库名字
-/// + 可读展示名）；failed → `error`。
+/// export completed → `payload`（资产正文）；push-install completed → `result`（实际落库 key
+/// + 可读展示名）；uninstall completed → `result`（`removed_key`）；failed → `error`。
 #[derive(Debug, Serialize)]
 pub struct RuntimeAssetsInstallReport {
     pub status: &'static str,
     pub payload: Option<RuntimeAssetPayload>,
-    pub result: Option<RuntimeAssetsInstallResult>,
+    pub result: Option<RuntimeAssetsReportResult>,
     pub error: Option<String>,
+}
+
+/// completed 上报的 `result` 载荷（push-install 与 uninstall 双形态）。
+///
+/// multica 对 result 仅透传给 UI 轮询、不解析具体字段（自由 map）；untagged 序列化即内层
+/// 对象本身，与该契约兼容且保留码灵侧类型安全。
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RuntimeAssetsReportResult {
+    Install(RuntimeAssetsInstallResult),
+    Uninstall(RuntimeAssetsUninstallResult),
 }
 
 /// push-install completed 的结果。
 ///
-/// `installed_name` = 新本地 profile.id（key 空间与 list/export 统一，网页端可据此回查）；
-/// `installed_display_name` = 实际落库展示名（multica 反馈 P3——id 形如 `pf-mcx1a2` 用户不可读；
-/// 改名拷贝场景下它是**实际**名「xx-2」而非市场原名，multica 侧市场名兜底无法覆盖）；
-/// `outcome` = 落库形态（#6，`created` / `renamed-copy` / `reused-existing`）——服务端不再
-/// 从 id/名称兜底猜测「装了副本」还是「全新安装/已装过」。
+/// `installed_key` = 实际落库资产 key（role：新本地 profile.id；workflow：落库模板 id——
+/// 均与 list/export 同一 key 空间，网页端可据此回查；M5-cz 字段名对齐 2026-11-13 协议文档
+/// §3.3，旧字段名 `installed_name`）；`installed_display_name` = 实际落库展示名（multica 反馈
+/// P3——id 形如 `pf-mcx1a2` 用户不可读；改名拷贝场景下它是**实际**名「xx-2」而非市场原名，
+/// multica 侧市场名兜底无法覆盖；builtin 改名副本时必传）；`outcome` = 落库形态（#6，
+/// `created` / `renamed-copy` / `reused-existing`）——服务端不再从 id/名称兜底猜测「装了副本」
+/// 还是「全新安装/已装过」。
 #[derive(Debug, Serialize)]
 pub struct RuntimeAssetsInstallResult {
-    pub installed_name: String,
+    pub installed_key: String,
     pub installed_display_name: String,
     pub outcome: &'static str,
+}
+
+/// uninstall completed 的结果：带回被卸载的 asset key 便于 multica UI / 排查对账
+/// （2026-11-13 协议文档 §3.4 示例字段 `removed_key`，M5-cz 对齐；旧字段名 `uninstalled_key`）。
+#[derive(Debug, Serialize)]
+pub struct RuntimeAssetsUninstallResult {
+    pub removed_key: String,
 }
 
 /// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
@@ -815,7 +838,7 @@ impl MulticaClient {
     /// 发送已认证请求并按状态码映射错误（map_status）。
     ///
     /// `per_request_timeout` 覆盖 client 级 30s 默认——liveness/轻量调用（取消检测）传短超时，
-    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（15s 周期，单 tick 阻塞会延误
+    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（3s 周期，单 tick 阻塞会延误
     /// runtime 在线维持与取消检测）。`workspace_id` 注入 `X-Workspace-ID` 头（skill 拉取 REST 是
     /// workspace 维度接口，与 [`json_send`] 对称）。
     async fn send(
@@ -1030,7 +1053,7 @@ impl MulticaClient {
     /// `POST /api/daemon/register` —— 单次注册（无 client 内重试 + liveness 短超时），供常驻心跳 tick 自愈用。
     ///
     /// 与 [`register`](MulticaClient::register) 的区别：后者带 `with_network_retry`（3 次，单次最长 30s），
-    /// 适合一次性调用。而自愈注册由 15s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
+    /// 适合一次性调用。而自愈注册由 3s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
     /// 弱网下单 tick 可超 90s，阻塞后续心跳/取消检测（runtime 离线超 150s 会被 sweeper 回收）。
     /// 故自愈路径用单次 register + per-request 短超时：失败下 tick 自然重试，单 tick 耗时有界。
     pub async fn register_once(
@@ -1051,7 +1074,7 @@ impl MulticaClient {
         })
     }
 
-    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）并取回待办 ack。
+    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（常驻 3s）并取回待办 ack。
     ///
     /// body `{runtime_id, supports_batch_import: true}`。响应携带 skill 发现/导入待办
     /// （[`HeartbeatAck`]，仅非空时下发）——调用方（心跳 tick）据 ack 分发处理，**绝不**在本方法内
@@ -1163,7 +1186,8 @@ impl MulticaClient {
         .await
     }
 
-    /// `POST /api/daemon/runtimes/{rid}/assets/install/{requestId}/result` —— export/push-install 上报。
+    /// `POST /api/daemon/runtimes/{rid}/assets/install/{requestId}/result` —— export/push-install/uninstall
+    /// 上报（三动作共用端点，install 路径段为 multica 历史命名）。
     pub async fn report_runtime_assets_install_result(
         &self,
         runtime_id: &str,
@@ -3210,6 +3234,16 @@ mod tests {
         .unwrap();
         assert_eq!(install.item_id, "item-uuid");
         assert!(install.payload.is_some());
+        // uninstall（M5-cw）：action=uninstall + item_id 恒空 + payload={asset_key}。
+        let uninstall: RuntimeAssetsRequest = serde_json::from_value(json!({
+            "id": "r4", "action": "uninstall", "asset_type": "role",
+            "item_id": "", "slug": "", "version": "", "status": "running",
+            "payload": {"asset_key": "pf-mcx1a2"}
+        }))
+        .unwrap();
+        assert_eq!(uninstall.action, "uninstall");
+        assert!(uninstall.item_id.is_empty());
+        assert!(uninstall.payload.is_some());
     }
 
     #[test]
@@ -3286,23 +3320,44 @@ mod tests {
         assert!(json["payload"].get("modelBindings").is_none());
         assert!(json["payload"].get("is_builtin").is_none());
 
-        // push-install completed：result.installed_name（= 新本地 profile.id）+
-        // installed_display_name（实际展示名，multica 反馈 P3）+ outcome（#6 落库形态）；
-        // failed：error。
+        // push-install completed：result.installed_key（= 新本地 profile.id，M5-cz 起字段名
+        // 对齐 2026-11-13 协议 §3.3，旧名 installed_name）+ installed_display_name（实际
+        // 展示名，multica 反馈 P3）+ outcome（#6 落库形态）；failed：error。
         let install = RuntimeAssetsInstallReport {
             status: "completed",
             payload: None,
-            result: Some(RuntimeAssetsInstallResult {
-                installed_name: "pf-new-id".into(),
-                installed_display_name: "开发工程师".into(),
-                outcome: "created",
-            }),
+            result: Some(RuntimeAssetsReportResult::Install(
+                RuntimeAssetsInstallResult {
+                    installed_key: "pf-new-id".into(),
+                    installed_display_name: "开发工程师".into(),
+                    outcome: "created",
+                },
+            )),
             error: None,
         };
         let json = serde_json::to_value(&install).unwrap();
-        assert_eq!(json["result"]["installed_name"], "pf-new-id");
+        assert_eq!(json["result"]["installed_key"], "pf-new-id");
         assert_eq!(json["result"]["installed_display_name"], "开发工程师");
         assert_eq!(json["result"]["outcome"], "created");
+        assert!(json["result"].get("installed_name").is_none());
+        assert!(json["payload"].is_null());
+
+        // uninstall completed（M5-cw）：result.removed_key（M5-cz 起字段名对齐协议 §3.4，
+        // 旧名 uninstalled_key；untagged——wire 即内层对象，multica 对 result 仅透传）；
+        // 三动作共用 install result 端点。
+        let uninstall = RuntimeAssetsInstallReport {
+            status: "completed",
+            payload: None,
+            result: Some(RuntimeAssetsReportResult::Uninstall(
+                RuntimeAssetsUninstallResult {
+                    removed_key: "pf-mcx1a2".into(),
+                },
+            )),
+            error: None,
+        };
+        let json = serde_json::to_value(&uninstall).unwrap();
+        assert_eq!(json["result"]["removed_key"], "pf-mcx1a2");
+        assert_eq!(json["result"].as_object().unwrap().len(), 1);
         assert!(json["payload"].is_null());
 
         let failed = RuntimeAssetsInstallReport {

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.21.1](https://github.com/MalingWB/Maling/compare/v0.21.0...v0.21.1) (2026-11-10)
+
+
+### Features
+
+* **website:** add docs and branded downloads ([530f9f4](https://github.com/MalingWB/Maling/commit/530f9f4d781264f425c0c6c9e8eeffe555c60975))
+* **website:** add docs and branded downloads ([85f4675](https://github.com/MalingWB/Maling/commit/85f467510ef4d29b9188cc44642e614ca75d2eb3))
+
+
+### Bug Fixes
+
+* **onboarding:** allow deferring setup after detection ([019bf04](https://github.com/MalingWB/Maling/commit/019bf040bfd4044581dfd9f2b9cb0c68b6b1d85a))
+* **onboarding:** preserve deferred setup state ([03a850d](https://github.com/MalingWB/Maling/commit/03a850db582755b5b55b544591257fdefa1049e3))
+* **onboarding:** support deferred setup after detection ([6e6a3ee](https://github.com/MalingWB/Maling/commit/6e6a3ee6a6963cc98862c2c3b7119fd153e7ddad))
+* **sidebar:** conversation sidebar round-two IA revision with nav-column, selection and scope fixes ([7dacff5](https://github.com/MalingWB/Maling/commit/7dacff5ffebad31ef6e0b15f9166c3988a7b6331))
+* **sidebar:** nav-column cascade fixes, single-accent selection, scope-steal regression ([2e545da](https://github.com/MalingWB/Maling/commit/2e545daa48f327b34ede02e1fdae9b1b3aa14fac))
+* **sidebar:** round-two feedback — separators, hover, run indent, recent run history, button-only paging ([0c738a6](https://github.com/MalingWB/Maling/commit/0c738a632cd804b4e84c176d63699fb347339ff1))
+
+
+### Miscellaneous Chores
+
+* release 0.21.1 ([c446b9c](https://github.com/MalingWB/Maling/commit/c446b9caced0e460cafa4aa072f0870e0b484db0))
+
 ## [0.21.0](https://github.com/MalingWB/Maling/compare/v0.20.0...v0.21.0) (2026-11-05)
 
 

@@ -754,7 +754,8 @@ fn admit_conversation_prompt_turn(
     prompt_id: Option<String>,
     input: &ConversationPromptInput,
     attachment_paths: &[String],
-) -> CommandResult<gold_band::acp::events::AcpTurnAdmission> {
+) -> CommandResult<(gold_band::acp::events::AcpTurnAdmission, AcpAdapterConfig)> {
+    let executable_adapter = resolved_conversation_prompt_adapter(app, locator)?;
     let _admission = app
         .begin_run_write_admission(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
@@ -771,7 +772,7 @@ fn admit_conversation_prompt_turn(
         gold_band::acp::events::inspect_session_turn(&lifecycle_path, &submission)
             .map_err(prompt_submission_admission_error)?
     {
-        return Ok(existing);
+        return Ok((existing, executable_adapter));
     }
     let preflight = ensure_conversation_prompt_available(app, locator);
     finish_acp_prompt_preflight(app, locator, &turn_id, &agent_label, preflight)?;
@@ -814,7 +815,7 @@ fn admit_conversation_prompt_turn(
         admission = if admission.started() { "started" } else { "existing" },
         "conversation prompt admitted"
     );
-    Ok(admission)
+    Ok((admission, executable_adapter))
 }
 
 fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
@@ -868,6 +869,16 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
         .filter(|label| !label.trim().is_empty())
         .or(provider)
         .unwrap_or_else(|| locator.node_id.clone())
+}
+
+fn resolved_conversation_prompt_adapter(
+    app: &App,
+    locator: &AttemptLocator,
+) -> CommandResult<AcpAdapterConfig> {
+    let provider = acp_turn_provider_id(app, locator)
+        .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
+    app.executable_agent_adapter(&provider)
+        .map_err(command_error)
 }
 
 fn emit_acp_turn_finished(
@@ -8438,6 +8449,7 @@ async fn submit_conversation_prompt_inner(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
+        resolved_conversation_prompt_adapter(&app, &locator)?;
         // Publishing attachment bytes is bounded file I/O; keep it off the
         // async runtime together with the durable queue write.
         let enqueue_attempt_dir = attempt_dir.clone();
@@ -8495,7 +8507,7 @@ async fn submit_conversation_prompt_inner(
             mark_user_priority(&attempt_dir).map_err(command_error)?;
         }
     }
-    let admission = admit_conversation_prompt_turn(
+    let (admission, executable_adapter) = admit_conversation_prompt_turn(
         &app_handle,
         &app,
         project_id.clone(),
@@ -8547,6 +8559,7 @@ async fn submit_conversation_prompt_inner(
             failure_operation_id,
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
+            executable_adapter.clone(),
         );
         tauri::async_runtime::spawn(async move {
             if let Err(error) = background.await {
@@ -8627,7 +8640,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    let admission = admit_conversation_prompt_turn(
+    let (admission, executable_adapter) = admit_conversation_prompt_turn(
         &app_handle,
         &app,
         project_id.clone(),
@@ -8658,6 +8671,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         admission.header().operation_id.clone(),
         outer_node_id,
         outer_attempt_id,
+        executable_adapter,
     )
     .await
 }
@@ -8677,6 +8691,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     expected_operation_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    executable_adapter: AcpAdapterConfig,
 ) -> CommandResult<()> {
     let app = app.into_inner();
     let locator = AttemptLocator::new(
@@ -8918,7 +8933,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             let config_options = current_acp_session_config_option_overrides(&attempt_dir);
             let prompt_run = client::run_prompt(
                 provider,
-                &agent_config.adapter,
+                &executable_adapter,
                 adapter_workspace_dir,
                 session_workspace_dir,
                 attempt_dir,
@@ -9105,7 +9120,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         let config_options = current_acp_session_config_option_overrides(&attempt_dir);
         let prompt_run = client::run_prompt(
             provider,
-            &agent_config.adapter,
+            &executable_adapter,
             adapter_workspace_dir,
             session_workspace_dir,
             attempt_dir,
@@ -12909,6 +12924,73 @@ mod tests {
             pathname: Some("/conversation/task-001".to_string()),
             user_agent: Some("GoldBandWebView".to_string()),
         }
+    }
+
+    #[test]
+    fn invalid_prompt_adapter_fails_before_turn_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = gold_band::config::RuntimeConfig::default();
+        let agent_id = ManagedAgentId::from_str("codebuddy-code").expect("valid managed agent id");
+        let agent = config.agents.get(&agent_id).cloned().unwrap_or_else(|| {
+            gold_band::config::catalog_agent_default_config(agent_id.as_str())
+                .expect("CodeBuddy catalog config")
+        });
+        config.agents.insert(agent_id.clone(), agent);
+        config.agents.get_mut(&agent_id).unwrap().executable_path = Some(
+            temp.path()
+                .join("missing-codebuddy.exe")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+            config,
+        );
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let mut resolved_config = gold_band::domain::ResolvedConfig::new();
+        resolved_config.insert("provider".to_string(), serde_json::json!(agent_id.as_str()));
+        write_json(
+            &app.paths.node_file(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: locator.node_id.clone(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: locator.run_id.clone(),
+                round_id: locator.round_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "2026-11-16T00:00:00Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config,
+                uuid: None,
+            },
+        )
+        .unwrap();
+
+        let error = resolved_conversation_prompt_adapter(&app, &locator).unwrap_err();
+
+        assert_eq!(error.code, "setup.executable-path-invalid");
+        assert!(!acp_lifecycle_path(&attempt_dir).exists());
     }
 
     #[test]

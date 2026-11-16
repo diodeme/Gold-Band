@@ -36,8 +36,8 @@ pub use self::runtime_recovery::{
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
 use crate::config::{
-    AppearancePreference, ConversationAutoConfig, DesktopAvailableUpdate, DesktopLanguage,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    AcpAdapterConfig, AppearancePreference, ConversationAutoConfig, DesktopAvailableUpdate,
+    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
     McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
     RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
@@ -4594,6 +4594,11 @@ impl App {
         Ok((agent_id, config))
     }
 
+    pub fn executable_agent_adapter(&self, provider: &str) -> Result<AcpAdapterConfig> {
+        let (agent_id, config) = self.managed_agent(provider)?;
+        config.executable_adapter(&agent_id)
+    }
+
     pub fn provider_for_id(&self, provider: &str) -> Result<Arc<dyn ProviderAdapter>> {
         if let Some(provider_override) = &self.provider_override {
             return Ok(provider_override.clone());
@@ -6904,7 +6909,7 @@ mod tests {
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, DesktopLanguage, DesktopUpdateBadgeState,
-        FontSizePreference, FontStackPreference, PersonalizationPreference,
+        FontSizePreference, FontStackPreference, ManagedAgentId, PersonalizationPreference,
         ProviderDiagnosticSnapshot, RemoteCompletedTask, RuntimeConfig, RuntimeLogLevel,
         StateConfig, catalog_agent_default_config,
     };
@@ -6929,6 +6934,7 @@ mod tests {
     };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
+    use std::str::FromStr;
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -6950,6 +6956,35 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
 
         assert!(!app.paths.project_manifest_file().exists());
+    }
+
+    #[test]
+    fn executable_agent_adapter_resolves_catalog_launch_consistently() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let agent_id = ManagedAgentId::from_str("codebuddy-code").unwrap();
+        let catalog_config = catalog_agent_default_config(agent_id.as_str()).unwrap();
+        let executable = temp.path().join("codebuddy.exe");
+        std::fs::write(&executable, "fixture").unwrap();
+        let mut config = RuntimeConfig::default();
+        config.agents.insert(agent_id.clone(), catalog_config);
+        config.agents.get_mut(&agent_id).unwrap().executable_path =
+            Some(executable.to_string_lossy().into_owned());
+        let app = App::with_config(repo_root, config);
+
+        let first = app.executable_agent_adapter(agent_id.as_str()).unwrap();
+        let second = app.executable_agent_adapter(agent_id.as_str()).unwrap();
+        let catalog_adapter = &app.managed_agent(agent_id.as_str()).unwrap().1.adapter;
+
+        assert_eq!(
+            std::path::Path::new(&first.command),
+            dunce::canonicalize(&executable).unwrap()
+        );
+        assert_ne!(first.command, catalog_adapter.command);
+        assert_eq!(second.command, first.command);
+        assert_eq!(second.args, first.args);
+        assert_eq!(second.env, first.env);
     }
 
     fn write_fixed_attempt_fixture(

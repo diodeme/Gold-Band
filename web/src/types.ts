@@ -233,6 +233,13 @@ export interface RuntimeAssetInstalledEventVm {
   installedDisplayName: string;
 }
 
+/// multica 被动卸载落地事件载荷（M5-cw，与安装事件对称的本地反馈闭环）：前端按
+/// `assetType` 只重拉对应列表；`uninstalledKey` 供日志/排查对账。
+export interface RuntimeAssetUninstalledEventVm {
+  assetType: string;
+  uninstalledKey: string;
+}
+
 /// 待决上游拉取槽（M5-cj 卡片水合，list_upstream_pull_pendings 返回）：重进会话后恢复
 /// 决策卡片/等待态的数据源；`retried` 标识「继续等待」已选过一轮（恢复为等待态而非选择态）。
 export interface MulticaUpstreamPullPendingVm {

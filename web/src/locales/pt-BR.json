@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "Este Agent precisa de autenticação para continuar.",
+      "auth-required-missing-env": "Este Agent precisa de autenticação. Configure primeiro estas variáveis de ambiente: {{env}}.",
+      "auth-required-login": "Este Agent precisa de autenticação. Conclua a autenticação no provedor e verifique novamente."
+    },
     "npx-cache.busy": "Já há um reparo de cache em andamento. Tente novamente mais tarde.",
     "npx-cache.unavailable": "Não foi possível verificar um cache npx reparável. Execute o diagnóstico.",
     "npx-cache.changed": "O diagnóstico, a configuração ou o cache mudou. Feche o diálogo e tente novamente.",

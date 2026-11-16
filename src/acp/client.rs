@@ -424,8 +424,8 @@ use crate::provider::{
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
-    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeError, RuntimeErrorDomain, blocked_runtime_error_info,
-    manual_runtime_error_info, normalize_runtime_error, runtime_error,
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeError, RuntimeErrorDomain, RuntimeErrorInfo,
+    blocked_runtime_error_info, manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
@@ -433,6 +433,7 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const ACP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
+const ACP_AUTHENTICATE_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3735,6 +3736,7 @@ fn authentication_method_missing_env(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|variable| variable.get("optional").and_then(Value::as_bool) != Some(true))
         .filter_map(|variable| variable.get("name").and_then(Value::as_str))
         .filter(|name| !name.trim().is_empty() && !env_exists(name))
         .map(str::to_string)
@@ -3762,10 +3764,16 @@ fn select_authentication_method<'a>(
         })
 }
 
+fn runtime_error_info(error: &anyhow::Error) -> Option<&RuntimeErrorInfo> {
+    error
+        .downcast_ref::<RuntimeError>()
+        .map(|error| &error.info)
+}
+
 fn auth_required_error(
     methods: &[Value],
     env_exists: impl Fn(&str) -> bool + Copy,
-    reason: Option<&str>,
+    source: Option<&RuntimeErrorInfo>,
 ) -> anyhow::Error {
     let missing_env = methods
         .iter()
@@ -3778,15 +3786,42 @@ fn auth_required_error(
         .filter_map(authentication_method_id)
         .map(str::to_string)
         .collect::<Vec<_>>();
-    runtime_error(manual_runtime_error_info(
+    let diagnostic = source
+        .map(|source| source.diagnostic.clone())
+        .unwrap_or_else(|| {
+            "ACP Agent requires authentication before creating a session".to_string()
+        });
+    let mut info = manual_runtime_error_info(
         RuntimeErrorDomain::Provider,
         "provider.auth-required",
-        reason.unwrap_or("ACP Agent requires authentication before creating a session"),
+        diagnostic,
         json!({
             "methods": method_ids,
             "missingEnv": missing_env,
         }),
-    ))
+    );
+    info.raw = source.and_then(|source| source.raw.clone());
+    runtime_error(info)
+}
+
+fn authentication_request_error(
+    error: anyhow::Error,
+    methods: &[Value],
+    env_exists: impl Fn(&str) -> bool + Copy,
+) -> anyhow::Error {
+    let Some(source) = runtime_error_info(&error).cloned() else {
+        // Cancellation, doctor timeouts and raw transport failures are not authentication facts.
+        return error;
+    };
+    if is_transport_interruption(&error)
+        || matches!(
+            source.code_str(),
+            "acp.adapter-exited" | "acp.doctor-timeout" | "runtime.transport-interrupted"
+        )
+    {
+        return error;
+    }
+    auth_required_error(methods, env_exists, Some(&source))
 }
 
 fn session_load_params(
@@ -4858,14 +4893,14 @@ impl<'a> AcpRuntime<'a> {
         mcp_servers: &[Value],
     ) -> Result<bool> {
         let session_new_started_at = Instant::now();
+        let authentication_revision = self.connection.authentication_revision()?;
         let session_new_params = session_new_params(cwd, adapter_system_prompt, mcp_servers);
         let mut session_new_result = self.request("session/new", session_new_params.clone());
-        if session_new_result
-            .as_ref()
-            .is_err_and(is_auth_required_runtime_error)
-        {
-            self.authenticate_for_session()?;
-            session_new_result = self.request("session/new", session_new_params);
+        if let Err(trigger) = session_new_result.as_ref() {
+            if is_auth_required_runtime_error(trigger) {
+                self.authenticate_for_session(trigger, authentication_revision)?;
+                session_new_result = self.request("session/new", session_new_params);
+            }
         }
         info!(
             target: "gold_band::perf",
@@ -4891,28 +4926,41 @@ impl<'a> AcpRuntime<'a> {
         Ok(false)
     }
 
-    fn authenticate_for_session(&mut self) -> Result<()> {
+    fn authenticate_for_session(
+        &mut self,
+        trigger: &anyhow::Error,
+        authentication_revision: u64,
+    ) -> Result<()> {
         let adapter_env = self.adapter_env.clone();
         let env_exists =
             |name: &str| adapter_env.contains_key(name) || std::env::var_os(name).is_some();
+        let trigger_info = runtime_error_info(trigger);
         let method = select_authentication_method(&self.auth_methods, env_exists).cloned();
         let Some(method) = method else {
-            return Err(auth_required_error(&self.auth_methods, env_exists, None));
-        };
-        let method_id = authentication_method_id(&method)
-            .ok_or_else(|| auth_required_error(&self.auth_methods, env_exists, None))?
-            .to_string();
-        let result = self.request_with_timeout(
-            "authenticate",
-            json!({ "methodId": method_id }),
-            Some(Duration::from_secs(30)),
-        );
-        match result {
-            Ok(_) => Ok(()),
-            Err(error) => Err(auth_required_error(
+            return Err(auth_required_error(
                 &self.auth_methods,
                 env_exists,
-                Some(&error.to_string()),
+                trigger_info,
+            ));
+        };
+        let method_id = authentication_method_id(&method)
+            .ok_or_else(|| auth_required_error(&self.auth_methods, env_exists, trigger_info))?
+            .to_string();
+        let connection = Arc::clone(&*self.connection);
+        let result = connection.authenticate_once(authentication_revision, || {
+            self.request_with_timeout(
+                "authenticate",
+                json!({ "methodId": method_id }),
+                Some(ACP_AUTHENTICATE_TIMEOUT),
+            )
+            .map(|_| ())
+        });
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(authentication_request_error(
+                error,
+                &self.auth_methods,
+                env_exists,
             )),
         }
     }
@@ -9876,10 +9924,10 @@ mod tests {
     static DIRECT_FIXTURE_ORDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     use crate::domain::{SessionMode, TurnControlMode};
-    use crate::runtime_error::{manual_runtime_error_info, runtime_error};
+    use crate::runtime_error::{RuntimeError, manual_runtime_error_info, runtime_error};
 
     use super::{
-        AcpAttemptUsageRecovery, AcpCancelDrainTimeout, AcpContextCompactionState,
+        AcpAttemptUsageRecovery, AcpCancelDrainTimeout, AcpCancelled, AcpContextCompactionState,
         AcpPromptFailure, AcpPromptOutputAccumulator, AcpPromptRetryState,
         AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTerminalState,
         AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
@@ -9893,28 +9941,30 @@ mod tests {
         active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
         append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
         attached_sync_required, auth_required_error, authentication_method_id,
-        cancel_attempt_prompt, canonical_prompt_event_identity, catalog_observation_is_newer,
+        authentication_method_missing_env, authentication_request_error, cancel_attempt_prompt,
+        canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
-        dispatch_attempt_prompt_cancel, drain_available_frames_bounded,
-        drain_available_frames_with_budget, drain_frames_until_quiet,
-        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
-        evaluate_provider_revision, initialize_params, is_auth_required_runtime_error,
-        is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
-        latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
-        next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
-        plan_attached_session_reuse, plan_session_restore,
-        prepare_attempt_usage_after_reuse_decision, preserve_interrupted_session_identity,
-        prompt_activity, prompt_cancel_terminal_timeout, prompt_cancellation_outcome,
-        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
-        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        scheduled_trigger_for_prompt, select_authentication_method, session_config_fingerprint,
-        session_load_params, session_new_params, session_prompt_params, session_prompt_text,
-        session_resume_params, settle_attempt_prompt_interactions, settle_prompt_event,
-        should_suppress_attached_session_update, should_suppress_session_update,
-        stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
-        timeline_position_for_live_event, turn_file_change_set_event, unregister_provider_control,
-        unsupported_client_inbound_reply, validate_session_restore_target,
+        dispatch_attempt_prompt_cancel, doctor_adapter_exited_error,
+        drain_available_frames_bounded, drain_available_frames_with_budget,
+        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
+        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        is_auth_required_runtime_error, is_pending_retry_prompt_event,
+        is_streaming_timeline_update, is_transport_interruption, latest_visible_turn_id,
+        map_prompt_terminal_drain_error, merge_tool_revision, next_prompt_retry_attempt,
+        parse_agent_capabilities, permission_decision_timeline_event, plan_attached_session_reuse,
+        plan_session_restore, prepare_attempt_usage_after_reuse_decision,
+        preserve_interrupted_session_identity, prompt_activity, prompt_cancel_terminal_timeout,
+        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, scheduled_trigger_for_prompt, select_authentication_method,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, session_resume_params, settle_attempt_prompt_interactions,
+        settle_prompt_event, should_suppress_attached_session_update,
+        should_suppress_session_update, stable_message_item_id, timeline_generation_for_live_event,
+        timeline_patch_flush_due, timeline_position_for_live_event, turn_file_change_set_event,
+        unregister_provider_control, unsupported_client_inbound_reply,
+        validate_session_restore_target,
     };
 
     #[test]
@@ -17857,6 +17907,74 @@ do {
         let selected = select_authentication_method(&methods, |name| configured.contains(name))
             .expect("configured env method");
         assert_eq!(authentication_method_id(selected), Some("token"));
+    }
+
+    #[test]
+    fn authentication_ignores_missing_optional_env_vars() {
+        let methods = vec![json!({
+            "type": "env_var",
+            "id": "token",
+            "name": "Use token",
+            "vars": [
+                {"name": "REQUIRED_TOKEN"},
+                {"name": "OPTIONAL_PROJECT", "optional": true}
+            ]
+        })];
+        let configured = std::collections::BTreeSet::from(["REQUIRED_TOKEN"]);
+
+        assert!(
+            authentication_method_missing_env(&methods[0], |name| configured.contains(name))
+                .is_empty()
+        );
+        assert!(select_authentication_method(&methods, |name| configured.contains(name)).is_some());
+        let error = auth_required_error(&methods, |name| configured.contains(name), None);
+        assert_eq!(
+            error.downcast_ref::<RuntimeError>().unwrap().info.params["missingEnv"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn authentication_maps_provider_failure_without_rewriting_operational_errors() {
+        let methods = vec![json!({
+            "type": "env_var",
+            "id": "token",
+            "name": "Use token",
+            "vars": [{"name": "REQUIRED_TOKEN"}]
+        })];
+        let env_exists = |_: &str| false;
+
+        let timeout = anyhow::anyhow!("ACP authenticate timed out after 30 seconds");
+        let preserved = authentication_request_error(timeout, &methods, env_exists);
+        assert!(preserved.downcast_ref::<RuntimeError>().is_none());
+        assert!(preserved.to_string().contains("timed out"));
+
+        let cancelled = anyhow::anyhow!(AcpCancelled);
+        let preserved = authentication_request_error(cancelled, &methods, env_exists);
+        assert!(preserved.downcast_ref::<AcpCancelled>().is_some());
+
+        let exited = doctor_adapter_exited_error("authenticate", Some(1), "bad".into());
+        let preserved = authentication_request_error(exited, &methods, env_exists);
+        assert_eq!(
+            normalize_runtime_error(&preserved).code_str(),
+            "acp.adapter-exited"
+        );
+
+        let mut info = manual_runtime_error_info(
+            RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "ACP authenticate failed: invalid token",
+            json!({"method": "authenticate"}),
+        );
+        info.raw = Some(json!({"code": -32000, "message": "invalid token"}));
+        let mapped = authentication_request_error(runtime_error(info), &methods, env_exists);
+        let mapped_info = normalize_runtime_error(&mapped);
+        assert_eq!(mapped_info.code_str(), "provider.auth-required");
+        assert_eq!(mapped_info.params["missingEnv"], json!(["REQUIRED_TOKEN"]));
+        assert_eq!(
+            mapped_info.raw,
+            Some(json!({"code": -32000, "message": "invalid token"}))
+        );
     }
 
     #[test]

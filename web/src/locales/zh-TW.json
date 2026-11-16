@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "此 Agent 需要完成驗證後才能繼續。",
+      "auth-required-missing-env": "此 Agent 需要驗證。請先設定環境變數：{{env}}。",
+      "auth-required-login": "此 Agent 需要驗證。請完成供應商驗證後重新檢查。"
+    },
     "npx-cache.busy": "已有快取修復正在進行，請稍後重試。",
     "npx-cache.unavailable": "無法確認可修復的 npx 快取目錄，請重新執行環境診斷。",
     "npx-cache.changed": "診斷、設定或快取已變更，請關閉對話方塊後重試。",

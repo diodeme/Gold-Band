@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "계속하려면 이 Agent의 인증이 필요합니다.",
+      "auth-required-missing-env": "이 Agent에는 인증이 필요합니다. 먼저 다음 환경 변수를 설정하세요: {{env}}.",
+      "auth-required-login": "이 Agent에는 인증이 필요합니다. 공급자 인증을 완료한 후 다시 확인하세요."
+    },
     "npx-cache.busy": "캐시 복구가 이미 진행 중입니다. 잠시 후 다시 시도하세요.",
     "npx-cache.unavailable": "복구할 수 있는 npx 캐시 디렉터리를 확인할 수 없습니다. 환경 진단을 다시 실행하세요.",
     "npx-cache.changed": "진단, 설정 또는 캐시가 변경되었습니다. 대화 상자를 닫고 다시 시도하세요.",

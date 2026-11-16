@@ -224,6 +224,7 @@ function isAuthRequired(error) {
 
 function missingEnvFor(method) {
   return (method?.vars ?? [])
+    .filter(variable => variable?.optional !== true)
     .map(variable => variable?.name)
     .filter(name => typeof name === 'string' && name.trim() && !process.env[name]);
 }

@@ -50,6 +50,32 @@ it('shows launch, PATH and check requirements before creating an Agent', async (
   expect(container.textContent).toContain('initialize');
 });
 
+it('shows the missing authentication variable instead of the raw provider message', async () => {
+  await i18n.changeLanguage('zh-CN');
+  await act(async () => root.render(<AgentConnectionGuide
+    requirements={{ pathCommand: 'qodercli', pathArgs: ['--acp'], installedCli: 'qodercli', npxFallback: { command: 'npx', args: ['-y', '@qoder-ai/qodercli@1.1.86', '--acp'] }, npxRequiresPreparedPackage: true }}
+    command="npx"
+    args={['-y', '@qoder-ai/qodercli@1.1.86', '--acp']}
+    diagnostic={{
+      status: 'unhealthy',
+      available: false,
+      checkedAt: '2026-11-16T00:00:00Z',
+      error: {
+        code: 'provider.auth-required',
+        params: { methods: ['qoder-personal-access-token'], missingEnv: ['QODER_PERSONAL_ACCESS_TOKEN'] },
+        raw: { message: 'Authentication required' },
+      },
+    }}
+    mode="edit"
+    formChanged={false}
+    checking={false}
+    readOnly={false}
+  />));
+
+  expect(container.textContent).toContain('QODER_PERSONAL_ACCESS_TOKEN');
+  expect(container.textContent).not.toContain('Authentication required');
+});
+
 it('marks an edited configuration as needing recheck and does not offer a stale immediate check', async () => {
   const check = vi.fn();
   await act(async () => root.render(<AgentConnectionGuide

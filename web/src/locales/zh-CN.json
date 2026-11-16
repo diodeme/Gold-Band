@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "此 Agent 需要完成认证后才能继续。",
+      "auth-required-missing-env": "此 Agent 需要认证。请先配置环境变量：{{env}}。",
+      "auth-required-login": "此 Agent 需要认证。请完成供应商认证后重新检查。"
+    },
     "npx-cache.busy": "已有缓存修复正在进行，请稍后重试。",
     "npx-cache.unavailable": "无法确认可修复的 npx 缓存目录，请重新运行环境诊断。",
     "npx-cache.changed": "诊断、配置或缓存已变化，请关闭弹窗后重试。",

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-16 ACP 认证错误与缺失环境变量修复
+
+- 根因：`authenticate` 返回的任何错误都被改写成 `provider.auth-required`，导致超时、取消和 transport 中断丢失原始结构化原因；认证方法选择忽略 ACP `AuthEnvVar.optional`；前端未消费 `methods/missingEnv`，用户看不到需要配置的具体变量。
+- 实现：只为结构化认证失败生成 `provider.auth-required` 并保留原始 raw；取消、Doctor 超时、transport 中断和 adapter 退出原样上抛。必填变量过滤 `optional`。共享连接按修订号实现认证 single-flight：并发实例只执行一次认证，成功后等待者直接重试 `session/new`，认证失败则释放等待者。新增七语言认证摘要，Agent 管理与首次引导按 `missingEnv` 展示环境变量名；会话错误横幅复用同一投影。同步修正验收脚本。
+- 验收：Rust ACP client 全量 193 项通过、6 项按设计忽略；认证定向回归 8 项通过（含共享连接 single-flight）；agent-catalog 45 项通过；前端相关回归 116 项通过，fixture 对齐后 onboarding/auth/DOM 87 项再次通过；`npm run web:build` 与 `cargo fmt --check` 通过。内置浏览器 all-unavailable fixture 可见“诊断未通过：此 Agent 需要认证。请先配置环境变量：QWEN_API_KEY。”。
+- 评审：不新增认证状态机、持久字段或连接身份；只扩展既有结构化错误消费，环境变量列表规模有界，前端投影为常数级映射。
+
 ## 2026-10-21 首次启动引导
 
 三步引导、首次／旧安装分流、只读发现与成功后自动登记、真实模型目录、默认工作流批量绑定及两文件恢复已实现；七语言、设置重跑入口与 Direct／AUTO 新配置初值同步接入。候选 Node/npm 策略仍待真实供应商与跨平台安装矩阵，未把元数据检查当作发布验收。实施清单和验证证据统一见[首次启动引导开发计划](新增流程/首次启动引导开发计划.md)。

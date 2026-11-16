@@ -43,7 +43,7 @@ export function createBrowserSetupApi(): SetupApi {
   };
   const unavailableEvents = (generation: string, npxLaunchable: boolean): SetupEvent[] => [
     { type: 'unavailable', generation, agentId: 'goose', label: 'Goose', iconKey: 'goose', reason: { kind: 'not-installed' } },
-    { type: 'unavailable', generation, agentId: 'qwen-code', label: 'Qwen Code', iconKey: 'qwen-code', reason: { kind: 'doctor-failed', launch: 'local', error: { code: 'acp.session-request-failed', params: { method: 'session/new' }, raw: { message: 'Authentication required' } } } },
+    { type: 'unavailable', generation, agentId: 'qwen-code', label: 'Qwen Code', iconKey: 'qwen-code', reason: { kind: 'doctor-failed', launch: 'local', error: { code: 'provider.auth-required', params: { methods: ['qwen-personal-access-token'], missingEnv: ['QWEN_API_KEY'] }, raw: { message: 'Authentication required' } } } },
     npxLaunchable
       ? { type: 'unavailable', generation, agentId: 'claude-acp', label: 'Claude', iconKey: 'claude', reason: { kind: 'doctor-failed', launch: 'npx', error: { code: 'acp.adapter-exited', params: { reason: "SyntaxError: Unexpected token '??='" } } } }
       : { type: 'unavailable', generation, agentId: 'claude-acp', label: 'Claude', iconKey: 'claude', reason: { kind: 'runtime-required', tool: 'npx' } },

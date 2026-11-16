@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "この Agent を続行するには認証が必要です。",
+      "auth-required-missing-env": "この Agent には認証が必要です。先に次の環境変数を設定してください：{{env}}。",
+      "auth-required-login": "この Agent には認証が必要です。プロバイダーの認証を完了してから、もう一度確認してください。"
+    },
     "npx-cache.busy": "キャッシュの修復中です。しばらくしてから再試行してください。",
     "npx-cache.unavailable": "修復可能な npx キャッシュを確認できません。診断を再実行してください。",
     "npx-cache.changed": "診断、設定、またはキャッシュが変更されました。ダイアログを閉じて再試行してください。",

@@ -192,7 +192,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 ### 5.3 认证与诊断契约
 
-ACP client 读取 `initialize.authMethods`，与 `agentCapabilities` 一起保存在共享连接的初始化结果中；首次初始化、并发等待和后续复用连接的运行实例都取得同一份结果，不重复 initialize。`session/new` 返回结构化 AuthRequired 时，优先使用已有完整环境变量的 `env_var` 方法执行一次 `authenticate`，成功后只重试一次 `session/new`。没有可用协议方法时（例如仅有缺少环境变量的 `env_var` 或 `terminal` 方法）返回 `provider.auth-required`，保留方法 ID 和缺失环境变量名；不能向 terminal 方法直接发送 authenticate。来源 S4。
+ACP client 读取 `initialize.authMethods`，与 `agentCapabilities` 一起保存在共享连接的初始化结果中；首次初始化、并发等待和后续复用连接的运行实例都取得同一份结果，不重复 initialize。认证同样按连接 single-flight：同一连接不会并发执行重复 `authenticate`；首个实例成功后，等待者直接重试 `session/new`，失败则释放等待者按各自错误路径收敛。`session/new` 返回结构化 AuthRequired 时，优先使用已有全部必填环境变量的 `env_var` 方法执行一次 `authenticate`，成功后只重试一次 `session/new`；ACP `optional` 变量缺失不影响方法可用性，也不进入 `missingEnv`。没有可用协议方法时（例如仅有缺少必填环境变量的 `env_var` 或 `terminal` 方法）返回 `provider.auth-required`，保留方法 ID 和缺失环境变量名；不能向 terminal 方法直接发送 authenticate。只有认证 RPC 的结构化失败转换为 `provider.auth-required`；Doctor 超时、用户取消、transport 中断与 adapter 退出保持原错误码。来源 S4。
 
 供应商账号登录仍由其官方流程处理，完成后重新诊断；客户端不新增账号、token 存储或内嵌登录界面。检测页不恢复准备指引或自定义 ACP 折叠区。
 

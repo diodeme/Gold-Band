@@ -365,12 +365,13 @@ it('lists installed but unusable Agents with structured reasons and hides uninst
   await thirdStep();
   await act(async () => receive(unavailableEvent('goose', { kind: 'not-installed' })));
   await act(async () => receive(unavailableEvent('claude-acp', { kind: 'runtime-required', tool: 'npx' })));
-  await act(async () => receive(unavailableEvent('qwen-code', { kind: 'doctor-failed', launch: 'local', error: { code: 'acp.session-request-failed', params: { method: 'session/new' }, raw: { message: 'Authentication required' } } })));
+  await act(async () => receive(unavailableEvent('qwen-code', { kind: 'doctor-failed', launch: 'local', error: { code: 'provider.auth-required', params: { methods: ['qoder-personal-access-token'], missingEnv: ['QODER_PERSONAL_ACCESS_TOKEN'] }, raw: { message: 'Authentication required' } } })));
   await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
   expect(host.textContent).toContain(i18n.t('onboarding.allUnavailable'));
   expect(host.textContent).toContain('Unavailable Agents: 2');
   expect(host.textContent).toContain('Requires npm/npx');
-  expect(host.textContent).toContain('Diagnosis failed: Authentication required');
+  expect(host.textContent).toContain('QODER_PERSONAL_ACCESS_TOKEN');
+  expect(host.textContent).not.toContain('Diagnosis failed: Authentication required');
   expect(host.textContent).not.toContain('goose');
   expect(host.querySelectorAll('select')[1].options.length).toBe(1);
   expect(button('Preview changes').disabled).toBe(true);

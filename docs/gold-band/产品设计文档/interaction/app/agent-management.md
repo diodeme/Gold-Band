@@ -141,6 +141,7 @@ Agent Cards
 - 接入条件由 Catalog 的 `localLaunch`、`installedCommand` 与 npx fallback 派生：展示首选 PATH 命令及参数、可选的本机 CLI 兜底、npx fallback、npx 是否仅接受已准备缓存，以及供应商认证要求。自定义 Agent 展示当前命令、参数和通用 PATH/认证条件。
 - 检查步骤固定展示命令解析、ACP adapter 启动、initialize、session/new、能力读取和诊断进程清理；当前 Doctor 没有逐步进度事件时，不伪造每一步的实时状态。
 - 最近结果复用 `ManagedAgentVm.diagnostic`：正常、需重新诊断、异常分别展示状态、检查时间和结构化原因。新增时提示保存后自动检查；编辑时若表单未变化可“立即检查”，若已修改则提示保存后按新配置检查，并禁用针对旧配置的立即检查。
+- `provider.auth-required` 只表示真正的认证事实，展示七语言摘要并从结构化 `params.missingEnv` 列出需要配置的环境变量；有认证方法但没有缺失环境变量时提示完成供应商认证。Doctor 超时、用户取消、transport 中断和 adapter 退出保持原错误码，不得改写成认证失败；ACP `optional` 认证变量缺失不参与阻断判断。
 - Agent 卡片、顶部通知和会话可用性仍只以 canonical 诊断快照为准；接入说明是 Catalog 投影和操作引导，不成为新的健康状态来源。
 
 配置持久化：

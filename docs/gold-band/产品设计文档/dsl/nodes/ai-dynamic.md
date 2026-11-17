@@ -74,6 +74,8 @@
 - Round 详情运行态主图内联展示 AI-DYNAMIC 内部节点时，外层 workflow 的后续边仍按 `ai-dynamic` 最终 outcome 前进，但可视化连接端点必须落到内部 dynamic graph 的出口节点，而不是复合节点占位。出口节点按内部图真实边语义计算：显式 `dependsOn`、`sessionMode=continue` 和 runtime 由 `chainId/depth` 派生的隐式成功边都会让上游节点不再视为出口；当前 V1 常见为单出口，后续允许多个无下游出口同时连接到外层后继节点。
 - 外层 run stop 时需要递归停止 AI-DYNAMIC 内部并行节点与 child workflow run，并把可达 dynamic 状态一并收敛到 `ProcessInterrupted` paused；应用关闭或启动恢复同样递归收敛为可继续暂停。可恢复本地 IO/资源、ACP transport 或 driver 异常收敛为 `RuntimeAbnormal` paused，供后续 continue 恢复；新停止链路不再把普通停止写成 killed。
 
+- `workflow-invocation` 首次执行先准备 child Run，再在父 graph 的状态锁内复核 outer/leaf execution 并持久化 `childRunId`，紧接着完成 PreparedRun 的内存 accept，之后才驱动 child。图提交失败由 PreparedRun 回滚未接受的 child；提交后节点投影写入失败则保留已链接 child 并暂停，不能删除父图已引用的 Run。恢复已有 child 同样在该锁内提交 child 的新 execution generation，provider 执行始终在锁外。父停止与 child 提交共享此边界：停止先提交时拒绝迟到启动，child 先提交时停止必须能发现并暂停 child。上述锁和 continue lease 使用持久化 `runtime_root`，不能随执行 worktree 改变。AI-DYNAMIC/AUTO Run 与内部节点不提供单节点重试；只有 Workflow 模式的普通 Worker 可使用该能力，混合 Workflow 中 AI-DYNAMIC 子树仍须服从整个 Run 的停止与交接。
+
 ### 3.1 范围权威与节点通信契约
 
 - AI-DYNAMIC 的业务范围权威顺序固定为：相关的人类最新指令 > 原始需求与明确非目标 > 用户批准的标准及运行前已纳入范围的项目契约 > 当前节点任务 > 本轮 Agent 产物。低层内容只能细化执行，不能扩大高层范围。

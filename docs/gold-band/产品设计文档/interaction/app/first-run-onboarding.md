@@ -1,8 +1,10 @@
 # 首次启动引导技术方案
 
 > 状态：2026-10-26 已补 Windows 真实客户端＋受控 ACP 的环境展示、主动重测、退出恢复、自动保存及标准版批量绑定验收；候选环境策略尚未通过全部供应商／平台的发布矩阵。\
-> 调研日期：2026-10-16；范围更新：2026-11-02。范围：Gold Band 桌面客户端，优先验收 Windows，沿用现有跨平台进程边界。\
+> 调研日期：2026-10-16；范围更新：2026-11-09。范围：Gold Band 桌面客户端，优先验收 Windows，沿用现有跨平台进程边界。\
 > 配套计划：[首次启动引导开发计划](../../../开发计划/新增流程/首次启动引导开发计划.md)。
+
+> 后续 Catalog 扩展：[DeepSeek Harness / ZCode / Qoder ACP 接入技术方案](../../../开发计划/acp接入/DeepSeek-ZCode-Qoder-ACP接入技术方案.md) 不改变本文 onboarding 状态机。当前发布版消费 14 项，新增 DeepSeek Harness、Qoder 与 ZCode；Qoder 在 Windows aarch64 被平台过滤，不会成为候选。未准入或当前平台不支持的条目不会成为候选。
 
 ## 1. 推荐决策
 
@@ -11,23 +13,25 @@
 | 原始需求 | 优化后的设计 | 原因 |
 | --- | --- | --- |
 | Git 版本低时提醒，可跳过 | 检查安装、版本和可执行性；缺失、过低或无法判断均可显式跳过；运行 Git 相关功能时仍检查 | 跳过引导不等于绕过工作流执行前置条件 |
-| npm 未安装或过低时不可跳过 | 同一步检查 Node.js、npm、npx 和组合兼容性，推荐安装配套 Node.js LTS | npm 版本达标不代表 Node.js 或 npx 可以运行 |
+| Node.js/npm/npx 异常是否阻断 | 同页检查 Node.js、npm、npx 和组合兼容性，任何结果都不阻断引导，只按影响范围提示；npx 不能启动时跳过依赖 npx 的候选并说明原因 | 运行环境依赖由各 Agent 的启动方式决定，不是所有 ACP Agent 的硬依赖 |
 | 检测可用 Agent 并选择模型 | 自动发现并有界诊断；全部诊断成功的 Agent 自动配置到 Agent 管理，第三步选择器只展示诊断成功且已保存的 Agent；模型来自实际 ACP 能力 | 用户只需选择默认 Agent 和模型，无需额外添加或从异常候选中筛选 |
-| Agent 检测结束（无论是否有可用项）或检测失败 | 运行环境已通过时提供“稍后设置”，把首次引导转为 `deferred` 并进入主界面；不标记完成，不修改默认偏好和工作流，之后可从设置重新运行引导 | 允许用户先进入应用，避免首次引导成为必须立即完成的阻塞 |
+| Agent 检测结束（无论是否有可用项）或检测失败 | 运行环境检测完成后提供“稍后设置”，把首次引导转为 `deferred` 并进入主界面；不标记完成，不修改默认偏好和工作流，之后可从设置重新运行引导 | 允许用户先进入应用，避免首次引导成为必须立即完成的阻塞 |
 | 更新所有默认工作流 | 按内置模板身份批量更新 `WorkflowModelBindings`，先预览再一次提交；保留工作流结构及权限语义 | 防止覆盖用户模板、运行快照和已有任务 |
 | 第一次安装启动时展示 | 以当前用户配置空间的首次初始化为界；升级、重装保留配置不反复强制引导 | 安装包事件不是可靠的业务身份 |
 
-明确保留 npm 不可跳过的产品要求，包括用户只选择非 npm Agent 的情况。这是本版本统一准备策略。后续若要按 Agent 按需安装，属于另一次产品决策，本期不暗中改变规则。
+2026-11-14 起运行环境不再是引导门槛：Node.js、npm、npx 的版本与组合检查只用于展示和修复建议，Agent 能否使用以 Doctor 结果为准。只有通过 npx 启动的候选依赖完整工具链；npx 无法启动（缺失、启动失败、超时）时这类候选直接跳过并返回 `runtime-required`，不启动进程。本机 ACP 命令与本机 CLI 不做版本前置判断，照常诊断。最终提交仍要求至少一个配置匹配且 Doctor 健康的 Agent。
 
 ## 2. 接入范围与环境版本策略
 
 ### 2.1 复用既有 Agent 接入
 
-本期围绕现有精选 Catalog、ACP client、Doctor 和 Agent 管理能力完成首次启动引导，保留现有供应商条目与配置。供应商新增、替换、退役及对应设置迁移不属于本需求。
+本期围绕现有精选 Catalog、ACP client、Doctor 和 Agent 管理能力完成首次启动引导，保留现有供应商条目与配置。供应商新增、替换、退役及对应设置迁移不属于本需求；后续新增条目只有在独立接入方案通过发布门槛并进入 Catalog 后，才由本文既有发现链路自动消费，不为供应商复制 onboarding 状态。
 
 引导面向新安装客户端：发现来源是精选 Catalog 与当前电脑的本机程序，不是 Agent 管理中已配置的实例数量；即使 `SettingsConfig.agents` 为空也必须完成发现。既有配置只用于复用稳定 ID、用户字段和冲突基线，不能作为可用性证据。
 
 Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使用已安装的 ACP 命令；对已发现的 Claude、Codex、Pi CLI，缺少 ACP 适配器时自动衔接对应 Catalog 的受控 npx 启动流程。仅有启动器不算安装了 Agent，只有实际 ACP 诊断成功并保存的项才算可用；不自动下载电脑上没有安装的全部精选 Agent。
+
+候选生成先调用后端统一的类型化平台判定，再进行本机发现。Catalog 平台值统一为 `windows/macos/linux` 与 `x86_64/aarch64`；Web 不解释 Node `win32/arm64` 字符串。平台不支持的内置条目不进入引导候选，直接绕过 UI 调用创建接口时仍由后端返回 `agent.unsupported-platform`。已经配置的实例不因后续限制被删除；引导继续只投影其匹配的健康诊断。
 
 ### 2.2 版本建议与事实区分
 
@@ -49,6 +53,8 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 2026-11-04 版本状态区分：`EnvironmentStatus` 增加 `unverified`，与 `unsupported` 分离。低于最小已验证 major、落在已验证 major 的接收区间外或预发布版本仍为 `unsupported`；高于或不属于任何已验证 major 的稳定版本为 `unverified`，返回 `setup.runtime-version-unverified`。2026-11-05 起，`unverified` 不再单独阻断 `runtimeReady`：只有当实际 Node/npm/npx 探针、路径一致性和 npm engines 交叉检查也通过时，才允许继续并在界面显示警告；过低、预发布、缺失、启动失败、路径不一致或 engines 不兼容仍硬阻断。`verifiedMajors` 与 `ranges` 同属打包策略，并以测试固定每个区间的下界 major 已登记。
 
+2026-11-14 版本策略降级为提示：上述 `ready / unverified / unsupported` 分级、路径一致性与 npm engines 交叉检查保持不变，但任何结果都不再阻断引导。已验证区间表示“已测试”，不是“只有这些版本能运行”；引导只诊断已准备的本机包，不触发下载，Doctor 是唯一可用性证据。npm/npx 检查额外上报其进程实际使用的 Node.js 版本与路径（`nodeVersion`、`nodeExecutablePath`），因为 npx 启动的 Agent 运行在该 Node 上。通过 npx 启动的候选 Doctor 失败且 Node.js 版本为 `unverified / unsupported` 时，失败行附带当前版本与推荐版本的提示；其他运行环境异常附带通用提示与“查看运行环境”。
+
 ## 3. 现状、根因与复用边界
 
 实施核验补充（2026-10-21）：兼容矩阵脚本已覆盖当前 Catalog 全部 6 个精选 npm 包（含 Gemini）、npm 候选版本与 6 个 OS／CPU 组合，并核验官方 Node 发布索引。未声明 engines 的项保留 unknown，全部平台运行结果仍为 not-tested；元数据通过不等同于安装、认证或实际 ACP 可用。
@@ -57,7 +63,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 | 领域 | 当前实现 | 本次用途 |
 | --- | --- | --- |
-| Agent 模板 | `scripts/prepare-agent-catalog.mjs`、`src/agent_catalog.rs`、`resources/agent-catalog.json` | 复用现有 11 类精选模板及构建期校验，作为安装发现与准备指引的来源 |
+| Agent 模板 | `scripts/prepare-agent-catalog.mjs`、`src/agent_catalog.rs`、`resources/agent-catalog.json` | 复用现有 14 类精选模板及构建期校验，作为安装发现与准备指引的来源 |
 | Agent 实例 | `SettingsConfig.agents`、`ManagedAgentId`、`ManagedAgentConfig` | 唯一实例事实源；不增加 onboarding 专用 Agent 表 |
 | Catalog 启动配置 | `src/config/managed_agents.rs` | 当前代码保存时剔除内置 command/args，读取时从 Catalog 注入；设计必须遵循实际代码 |
 | 诊断 | `src/acp/client.rs::doctor_with_deadline`、`probe_model_config` | 复用 ACP 会话建立、模型能力探测及清理；不重做健康检查 |
@@ -86,7 +92,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 - 引导为独立页面 `#/onboarding`，在 workspace 选择前可用；`#/onboarding/defaults` 用于已有用户直接预览默认配置应用。首屏仅加载状态与静态策略，业务 React App 延迟挂载；首次 pending 时延后业务恢复、搜索索引、远程服务与调度启动，提交成功后只启动一次。
 - 初始化在任何默认配置 seeding 之前判断是否已有用户数据，并写入一次性的 onboarding 状态。不能在默认文件已生成后仅用“settings.json 是否存在”判断首次使用。
 - 新用户进入引导；中途关闭客户端后重新进入并重测环境；已完成用户正常进入主界面。
-- Agent 步骤在运行环境已通过且本轮检测结束（无论是否有可用 Agent）或检测失败时提供“稍后设置”；该动作将 `pending` 转为 `deferred` 并进入主界面。即使已有可用 Agent，defer 也不会自动选择它；deferred 不等于 completed：不设置默认 Agent、模型或工作流绑定，用户之后可从设置重新运行引导。
+- Agent 步骤在运行环境检测完成且本轮检测结束（无论是否有可用 Agent）或检测失败时提供“稍后设置”；该动作将 `pending` 转为 `deferred` 并进入主界面。即使已有可用 Agent，defer 也不会自动选择它；deferred 不等于 completed：不设置默认 Agent、模型或工作流绑定，用户之后可从设置重新运行引导。
 - 引导、加载状态与业务页面共用应用入口的窗口关闭协调器。关闭窗口或退出应用时先保存文件草稿；保存失败沿用“重试／取消／丢弃”确认。取消保留未保存内容与当前引导检测，页面切换不得卸载关闭保护或中断待处理的确认。平台值随轻量启动状态返回，不为关闭保护提前加载业务 App。
 - 已有旧版用户标记为 `existing-install`，提供设置中的主动入口；不因新增字段缺失而把所有老用户拦在 npm 步骤。
 - 设置页的主动入口纳入“通用”卡片内的“引导与工作流”标准分区，位于浏览器设置之后，与其他设置共用标题列、内容列、留白及分隔线；不在卡片外另放操作横栏。“首次启动引导”与“默认工作流”分别占一行，提供简短用途说明和紧凑描边按钮。后者标为“配置默认项”，说明仅调整内置工作流、不影响自定义工作流；点击只进入原配置流程，不能直接应用。窄窗口和长译文按内容宽度换行，不新增嵌套卡片或独立滚动区。
@@ -102,21 +108,20 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 跳过只记录用户选择，不制造 `ready` 健康状态。后续仓库、worktree、提交等操作继续由 Git 领域检查实际能力。
 
-### 4.3 第二步：准备 Node.js 与 npm（不可跳过）
+### 4.3 第二步：检查运行环境
 
-页标题建议“准备 Agent 运行环境”，在同页展示 Node.js、npm、npx 三项结果，避免要求新用户理解多套安装流程。
+页标题“检查运行环境”，说明“部分 Agent 通过 npx 启动，需要 Node.js、npm 和 npx。其他 Agent 不受影响。”。同页展示 Node.js、npm、npx 三项结果；npm/npx 行额外展示其进程实际使用的 Node.js 版本与路径。
 
-- 未安装或不兼容：主操作“安装／升级 Node.js LTS”，提供官方图形安装指引和“重新检测”。
-- 全部符合策略且可执行：允许下一步。
-- 未验证 major 的稳定版本且工具链实际兼容：显示非阻断警告并允许下一步，建议优先使用推荐的 Node.js LTS；Node 23.11.0 属于此类。已验证 major 内低于补丁下限的版本仍按不支持处理。
-- npm 达标但 Node.js 太旧、npx 缺失、命令启动失败或 engines 不兼容：仍不可继续。
+- 全部符合策略：步骤条显示完成，允许下一步。
+- 任一项缺失、版本未验证或不支持、启动失败、超时或组合不一致：该项以警告色展示状态与原因，步骤条显示警告，仍允许下一步。红色只用于 Git 步骤等真正阻断的结果。
+- npx 无法启动（`npxLaunchable=false`）：额外提示“通过 npx 启动的 Agent 暂时无法使用，其他 Agent 可继续检测。”。
+- 环境检测本身未完成（检测中、请求失败或已取消）：不可进入下一步，提供“重新检测”。
 - 无网络但本地环境合格：可以继续；不能以下载站不可达判定本地环境不合格。
-- 无管理员权限：提供官方可用的用户级安装／路径选择说明；不得因此开放绕过按钮。
-- 超时、无法解析版本与执行失败不能当作“未安装”或检测成功；“未验证版本”表示版本已解析且稳定，只能在组合校验通过后作为警告继续。
+- 超时、无法解析版本与执行失败不能当作“未安装”或检测成功；版本、路径和 engines 的细分原因保持原样展示，作为修复依据。
 
-第二步检测完成后，由后端现有环境请求保留一份本次报告，进入第三步、返回步骤、刷新 Agent、加载下一批和最终应用均复用该报告，不再启动环境版本命令。后端仍检查本次报告确已完成且 runtimeReady=true，不能只禁用前端按钮，也不能接收前端自报的通过状态。默认配置直达入口同样先进行一次初始环境检测。
+第二步检测完成后，由后端现有环境请求保留一份本次报告，进入第三步、返回步骤、刷新 Agent、加载下一批和最终应用均复用该报告，不再启动环境版本命令。后端只要求报告已完成且未取消；报告中的 `npxLaunchable` 随检测批次固化，决定 npx 启动的候选是否诊断。不能接收前端自报的环境状态。默认配置直达入口同样先进行一次初始环境检测。
 
-只有首次进入引导或用户主动点击“重新检测”才启动环境命令；安装、升级或切换工具后由用户主动重测。重测开始立即替换旧报告，失败不得回用上次通过结果。报告保留 Node.js／npm／npx 的状态、版本、命令路径、实际 Node 路径及结构化原因；超时保留为超时，组合不一致展示实际差异，不归类为未安装。退出引导、页面卸载或客户端关闭时释放报告；下次进入重新检测，不设置 TTL、后台轮询或持久化健康标志。Agent 既有配置的启动失败由 Agent 管理页展示并重新诊断，引导仅隐藏不可用项，不自动重跑整套环境检查。用户随时可以退出，退出不等于完成引导。
+只有首次进入引导或用户主动点击“重新检测”才启动环境命令；安装、升级或切换工具后由用户主动重测。重测开始立即替换旧报告，失败不得回用上次通过结果。报告保留 Node.js／npm／npx 的状态、版本、命令路径、实际 Node 路径及结构化原因；启动命令路径只表示实际被调用的启动器，Windows `.cmd`、版本管理器 shim 或符号链接可以与真实 `node.exe` 路径不同，联合一致性以三次探针实际观测到的 `process.execPath` 为准。超时保留为超时，组合不一致展示实际差异，不归类为未安装。退出引导、页面卸载或客户端关闭时释放报告；下次进入重新检测，不设置 TTL、后台轮询或持久化健康标志。Agent 既有配置的启动失败由 Agent 管理页展示并重新诊断，引导仅隐藏不可用项，不自动重跑整套环境检查。用户随时可以退出，退出不等于完成引导。
 
 本期沿用现有非托管安装边界：由按钮打开官方安装页面／系统安装流程，安装后重新检测；不默认执行 `npm install -g npm@latest`，不自动更改全局 npm registry、代理或用户的 Node 版本管理器。帮助页走现有 `openWebTarget`；OAuth 仅在供应商流程需要时使用系统浏览器。
 
@@ -131,11 +136,18 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 5. 页面底部展示将更新的内置模板名称、模板数和执行 slot 数，所选 Agent、模型与权限保留在上方表单。
 6. 点击“应用配置并开始使用”，后端校验并提交；成功后进入 workspace 选择或默认业务入口。
 
-尚在检测且没有成功项时显示“正在检测可用 Agent”；本轮检测结束仍没有成功项时才显示“尚未发现可用 Agent”。检测页只展示成功且已持久化的 Agent、当前检测状态与重新检测操作，不展开“其他 Agent 与准备指引”，也不提供“高级：自定义 ACP 配置”或失败列表。不可用、未配置或诊断过期的 Agent 不展示名称、结构化原因、重试按钮或程序选择入口；既有配置的修复统一在 Agent 管理页完成。完成本轮检测后（无论是否有可用 Agent）或检测失败时，本步骤提供“稍后设置”：用户可先进入主界面，之后从设置重新运行引导；即使已有可用 Agent，该动作也不自动选择 Agent，不修改默认偏好或内置工作流。
+状态行分三种：有可用项时显示“检测到 N 个可用 Agent”；正常结束只有不可用项时显示“检测到的 Agent 暂不可用，请查看下方原因。”；正常结束什么都没检测到时才显示“未检测到已安装的 Agent。安装任一 Agent 后重新检测。”。完成本轮检测后（无论是否有可用 Agent）或检测失败时，本步骤提供“稍后设置”：用户可先进入主界面，之后从设置重新运行引导；即使已有可用 Agent，该动作也不自动选择 Agent，不修改默认偏好或内置工作流。
 
-第三步直接基于本次已通过的环境报告进入 Agent 检测，不增加环境复验等待阶段。默认配置直达入口的初始环境检测、环境阻断、Agent 检测失败、检测中和正常结束后的空结果分别呈现，不能从空列表推断“无可用 Agent”。环境阻断时在当前页展示失败工具和原因，提供“重新检测运行环境”和“查看运行环境”；前者只发起一次环境检测并在通过后自动继续 Agent，后者返回第二步展示同一份失败报告，不隐式重测。若最终应用时本次后端报告已被取消或替换为失败结果，撤销预览和应用请求、禁用提交，保留 Agent／模型／思考强度／权限草稿；用户主动重测恢复后重新预览再提交，应用动作本身不启动环境命令。
+选择器下方的“N 个 Agent 暂不可用”折叠区（shadcn/ui `Collapsible`）只列本机已安装但不能用的 Agent，按结构化原因展示：
+- `runtime-required`：显示“需要 npm/npx”和“查看运行环境”，返回第二步展示同一份报告，不隐式重测。
+- `doctor-failed`：显示“诊断未通过：{{reason}}”，reason 复用 Agent 管理页的精简原因规则（原始报错首行，120 字以内）；ⓘ Popover 展示完整原因。通过 npx 启动且运行环境有警告时附带版本或环境提示与“查看运行环境”。
+- `not-installed`：不展示，避免列出全部目录条目。
 
-每轮完整检测对未配置候选验证当前本机可用性；已配置 Agent 只在配置 fingerprint 匹配且 canonical Doctor 健康时直接复用，不由引导重复诊断或把 transient 失败写回管理页。重新检测或返回第三步时先清空上一轮可选结果并禁用提交，保留所选 ID 和模型草稿；同一 Agent 重新变为健康后恢复选择。追加下一批时保留此前已验证结果。重复检测复用正式实例，不产生副本；不可用项不进入本轮可选列表。Agent 管理页继续保留已配置项及其异常状态，不能因第三步隐藏而自动删除配置。
+折叠区默认在没有可用 Agent 时展开、有可用 Agent 时收起；用户手动展开或收起后保持用户选择。修复已配置实例仍在 Agent 管理页完成，引导不提供重试单项、程序选择或自定义 ACP 配置入口。用户至少需要选择一个可用 Agent，本步骤不提供跳过。
+
+第三步直接基于本次已完成的环境报告进入 Agent 检测，不增加环境复验等待阶段。默认配置直达入口的初始环境检测、Agent 检测失败、检测中和正常结束后的空结果分别呈现，不能从空列表推断“无可用 Agent”。若后端环境报告已被释放或取消（`setup.environment-check-required`），撤销预览和应用请求、禁用提交，状态行显示“运行环境检测未通过”并提供“重新检测运行环境”，保留 Agent／模型／思考强度／权限草稿；重测完成后自动继续 Agent，重新预览再提交，应用动作本身不启动环境命令。
+
+每轮完整检测对未配置候选验证当前本机可用性；已配置 Agent 仅在配置 fingerprint 匹配且 canonical Doctor 健康时直接复用。若上次 Doctor 成功但 fingerprint 已缺失或变化，说明该结果属于旧配置：引导对该已配置 Agent 执行一次受控重诊断，成功后更新健康快照并展示；失败只隐藏本轮结果，不覆盖管理页已有快照，也不把 transient 失败写回管理页。重新检测或返回第三步时先清空上一轮可选结果并禁用提交，保留所选 ID 和模型草稿；同一 Agent 重新变为健康后恢复选择。追加下一批时保留此前已验证结果。重复检测复用正式实例，不产生副本；不可用项不进入本轮可选列表。Agent 管理页继续保留已配置项及其异常状态，不能因第三步隐藏而自动删除配置。
 
 检测阶段只执行只读发现、诊断和成功项自动登记，不创建、迁移或升级工作流模板，也不初始化模板默认绑定。全新安装或待升级模板在预览时生成内存投影；只有最终应用在同一提交边界内写入 settings 与 workflows。取消检测保留已登记的成功 Agent，但不改变模板文件。
 
@@ -163,6 +175,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 - `executablePath` 必须由后端路径校验；运行、Doctor、发现共同使用同一解析函数。此字段用于定位已安装但不在 PATH 中的程序，不引入第二 Agent ID。
 - Catalog 的 `localLaunch` 保存已核实的本机 ACP 命令与 ACP 参数，`installedCommand` 保存需要单独适配器的底层 CLI 命令；这些是静态模板元数据，不增加实例持久字段。发现与普通运行共用 `executable_adapter`，优先采用本机 ACP 命令及正确参数，不将 npx 的包名、`-y` 传给本机 CLI。显式 `executablePath` 仍优先，但它只替换 `localLaunch.command` 的程序位置，必须继续使用 `localLaunch.args`；条目没有 `localLaunch` 时才保留原 Catalog 参数。
 - Skills 根目录与兼容目录沿用既有 Catalog 中已验证的配置，不根据底层 CLI 的目录推断适配组件目录。
+- Catalog entry 的 `sourceKind`、`integrationOrigin` 与 `validatedVersion` 只用于来源、信任和验证范围，不代替当前本机能力。社区桥接器只有通过独立真实后端门槛后才进入发布 Catalog；引导不把 candidate 或未验证条目展示给用户。
 
 ### 5.2 安装发现是只读的
 
@@ -179,9 +192,13 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 ### 5.3 认证与诊断契约
 
-当前 ACP client 未实现 `authMethods` 投影与 `authenticate` 交互，本期不增加虚假的内嵌登录接口；账号认证由供应商流程处理，完成后重新检测。检测页不恢复准备指引或自定义 ACP 折叠区。后续若实现协议认证，必须依据 initialize.authMethods 区分协议方法和 terminal 方法，不能向 terminal 类型直接发送 authenticate。来源 S4。
+ACP client 读取 `initialize.authMethods`，与 `agentCapabilities` 一起保存在共享连接的初始化结果中；首次初始化、并发等待和后续复用连接的运行实例都取得同一份结果，不重复 initialize。认证同样按连接 single-flight：同一连接不会并发执行重复 `authenticate`；首个实例成功后，等待者直接重试 `session/new`，失败则释放等待者按各自错误路径收敛。`session/new` 返回结构化 AuthRequired 时，优先使用已有全部必填环境变量的 `env_var` 方法执行一次 `authenticate`，成功后只重试一次 `session/new`；ACP `optional` 变量缺失不影响方法可用性，也不进入 `missingEnv`。没有可用协议方法时（例如仅有缺少必填环境变量的 `env_var` 或 `terminal` 方法）返回 `provider.auth-required`，保留方法 ID 和缺失环境变量名；不能向 terminal 方法直接发送 authenticate。只有认证 RPC 的结构化失败转换为 `provider.auth-required`；Doctor 超时、用户取消、transport 中断与 adapter 退出保持原错误码。来源 S4。
+
+供应商账号登录仍由其官方流程处理，完成后重新诊断；客户端不新增账号、token 存储或内嵌登录界面。检测页不恢复准备指引或自定义 ACP 折叠区。
 
 本期主路径为官方图形／浏览器准备指引，登录凭据由供应商处理。若 Agent 仅支持终端登录，属于供应商的外部准备步骤；向导不新建终端产品界面，不宣称支持尚未实现的 auth capability。
+
+引导不收集或保存供应商 token。若用户在 Agent 管理页显式使用 env 配置凭据，该 env 属于正式 Agent 配置并会保存到本机 settings；引导只复用配置指纹匹配的健康结果，不读取、展示或复制凭据正文。Qoder 等支持供应商登录的 Agent 优先使用其登录流程。
 
 统一候选处理顺序：未配置候选走 `discovered → checking → 保存正式配置与匹配诊断 → ready`；已配置候选先按稳定 Agent ID 与配置 fingerprint 读取 Agent 管理领域的 canonical Doctor 快照，只有 `available=true` 且 fingerprint 匹配才直接投影为 `ready`。已配置诊断缺失、失败或过期时不在引导中展示，也不由引导再次写入失败快照；用户在 Agent 管理页重新诊断后，下一次引导再消费新的 canonical 结果。认证缺失、协议不支持、诊断失败或保存失败均不进入可选列表。`ready` 直接由正式 Agent 配置和匹配的成功诊断投影，不新增持久化注册状态机。`missing` 与 `checking` 不混用；模型目录成功不保证未来额度充足，页面称“连接正常”，不承诺一定能推理。
 
@@ -273,9 +290,9 @@ DefaultExecutionProfile
 
 新增持久数据的必要性：默认选择和首次完成意图无法从已有各模板绑定中唯一推导；跨文件操作 ID 表示一次明确应用，不能由单模板 binding revision 表达。所有模板、Agent、项目继续复用现有 canonical identity，不新增 workspace identity、候选 Agent 数据库或额外模型配置表。
 
-内部发现使用本轮后端生成的 locator 定位尚未保存的候选；第三步选择器及模型选择只接收正式 `ManagedAgentId`。选择器是 Agent 管理事实源中健康项的过滤投影，不保存另一份候选配置，也不展示失败 Agent 或修复入口。异步结果携带探测 generation 与配置指纹，旧 Agent／旧模型的返回不得覆盖新选择；`unavailable` 只用于清理局部选择状态，不承载对客失败详情。
+内部发现使用本轮后端生成的 locator 定位尚未保存的候选；第三步选择器及模型选择只接收正式 `ManagedAgentId`。选择器是 Agent 管理事实源中健康项的过滤投影，不保存另一份候选配置，也不展示失败 Agent 或修复入口。异步结果携带探测 generation 与配置指纹，旧 Agent／旧模型的返回不得覆盖新选择；`unavailable { agentId, label, iconKey, reason }` 携带结构化原因 `not-installed | runtime-required { tool } | doctor-failed { launch: npx | local, error }`，后端不生成对客文案；Agent 管理页修改或删除配置时发布 `withdrawn { agentId }`，只清理本轮局部状态。
 
-页面用一个局部 reducer 统一环境报告与检测阶段：环境请求区分 idle／checking／ready／failed，Agent 批次区分 idle／detecting／completed／blocked-environment／failed。这里 ready 表示报告已完成，是否可继续仍由报告的 runtimeReady 决定。返回步骤或刷新 Agent 不改变环境报告；用户主动环境重测会取消旧 Agent 批次并撤销预览。环境完成结果只在 request ID 仍匹配且未取消时保存；环境阻断或检测失败后，本批次不再接收后续结果。页面序号与既有 generation 拒绝迟到响应，不增加持久字段或第二份诊断事实源。
+页面用一个局部 reducer 统一环境报告与检测阶段：环境请求区分 idle／checking／ready／failed，Agent 批次区分 idle／detecting／completed／failed。这里 ready 表示报告已完成即可继续，报告内容只用于展示与提示。reducer 同时维护可用项与暂不可用项，两者按 Agent ID 互斥：`ready` 移入可用项，非 `not-installed` 的 `unavailable` 移入暂不可用项，`withdrawn` 同时移除。返回步骤或刷新 Agent 不改变环境报告；用户主动环境重测会取消旧 Agent 批次并撤销预览。环境完成结果只在 request ID 仍匹配且未取消时保存；环境阻断或检测失败后，本批次不再接收后续结果。页面序号与既有 generation 拒绝迟到响应，不增加持久字段或第二份诊断事实源。
 
 ## 8. 接口设计
 
@@ -288,7 +305,7 @@ DefaultExecutionProfile
 | `skip_setup_git` | 当前引导意图 | 更新 skip 意图并返回权威状态；没有 npm skip 接口 |
 | `defer_setup` | 当前引导生命周期与本次环境报告 | 仅在 controller 持有已通过的环境报告时把 `pending { gitDecision }` 转为 `deferred { gitDecision }`；通过 `spawn_blocking` 执行配置写入与 runtime 启动，不阻塞 IPC/主线程；不修改 Agent、默认偏好或工作流；重复调用幂等 |
 | `start_setup_agent_detection` / `cancel_setup_detection` | after cursor、refresh、事件 channel／generation | 校验本次后端环境报告，不启动环境命令；编排只读发现、有界诊断和成功后自动配置；不创建或迁移模板与默认配置；逐项返回正式健康 Agent 与进度 |
-| `discovery::candidates`（内部） | 已配置实例、after cursor | 11 个 Catalog 候选与每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
+| `discovery::candidates`（内部） | 已配置实例、after cursor | 当前发布 11 个、第一阶段 13 个、第二阶段最多 14 个经过平台过滤的 Catalog 候选，以及每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
 | `probe_setup_model` | 已配置且诊断成功的 Agent ID、model ID、generation | 复用模型探测，返回目标模型配置目录 |
 | `preview_default_setup` | 默认选择、当前诊断引用 | 模板与 slot 更新数量、冲突、预览指纹；无写副作用 |
 | `apply_default_setup` | 默认选择、预览指纹、operation ID | 读取本次后端已完成环境报告，校验能力与预览后提交；不启动环境命令，成功后前端重新读取状态。相同请求重投保持幂等 |
@@ -300,7 +317,7 @@ DefaultExecutionProfile
 
 ```text
 setup.runtime-missing / setup.runtime-version-unsupported / setup.runtime-version-unverified
-setup.runtime-incompatible / setup.probe-timeout
+setup.runtime-incompatible（单项检查 code）/ setup.probe-timeout
 setup.agent-auth-required / setup.agent-protocol-unsupported
 setup.model-config-invalid / setup.preview-stale
 setup.configuration-conflict / setup.commit-failed
@@ -309,7 +326,7 @@ setup.recovery-required
 
 参数包含工具、Agent ID、最低／实际版本、失败阶段或冲突模板 ID。原始故障日志有界、脱敏并按需展开，不展示完整 env、token 或密码。
 
-Agent 检测的 channel 只发布 Agent 进度与结果，删除旧 `environment-checked` 事件；`failed { generation, code, params }` 保留完整结构化参数。本次环境未检测、检测中或已取消时返回 `setup.environment-check-required`；已完成但未通过时返回 `setup.runtime-incompatible`，其 `params.environment` 为完整报告。最终应用使用相同后端校验契约。单项不兼容原因采用枚举序列化的 reason（probe-unavailable、node-mismatch、node-version-mismatch、node-path-mismatch、npm-metadata-missing、npm-engines-incompatible、npm-version-mismatch、npm-package-mismatch），携带对应版本、路径或 engines 值，由前端七语言文案解释。
+Agent 检测的 channel 只发布 Agent 进度与结果，删除旧 `environment-checked` 事件；`failed { generation, code, params }` 保留完整结构化参数。本次环境未检测、检测中或已取消时返回 `setup.environment-check-required`；已完成的报告无论结果如何都不再作为命令级错误返回。最终应用使用相同后端校验契约。单项不兼容原因采用枚举序列化的 reason（probe-unavailable、node-mismatch、node-version-mismatch、npm-metadata-missing、npm-engines-incompatible、npm-version-mismatch、npm-package-mismatch），携带对应版本、路径或 engines 值，由前端七语言文案解释；启动器路径与真实进程路径不同本身不构成不兼容。
 
 ## 9. 原子提交、重试与恢复
 
@@ -339,10 +356,10 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 
 - 保留三个步骤，第三步末尾的应用预览不是第四个页面；标题、操作区固定，中间单滚动区。
 - 使用现有 shadcn/ui 控件和主题 token；窄窗口纵向排列，长路径安全断行，支持键盘、焦点与读屏。
-- 引导只展示可用 Agent；不可用、未配置或诊断过期的 Agent 不渲染失败列表、修复按钮或安装说明。选择器在收到 `unavailable` 后移除对应项并禁用提交，避免保留失效选择。
-- 检测结束（无论是否有可用 Agent）或检测失败后提供“稍后设置”次按钮和一句结果说明；仅在运行环境已通过且检测已结束时显示，检测中或环境阻断时不显示。按钮使用现有 Button ghost 变体，窄窗口与长译文随底栏换行。
+- 选择器只展示可用 Agent；已安装但不可用的 Agent 进入暂不可用折叠区，只展示原因与“查看运行环境”，不提供单项重试或程序选择。选择器在收到 `unavailable` 或 `withdrawn` 后移除对应项并禁用提交，避免保留失效选择。
+- 检测结束（无论是否有可用 Agent）或检测失败后提供“稍后设置”次按钮和一句结果说明；仅在本次运行环境检测已完成且 Agent 检测已结束时显示，检测中或环境报告已释放时不显示。按钮使用现有 Button ghost 变体，窄窗口与长译文随底栏换行。
 - 任何预计超过 300ms 的操作在触发后 100ms 内显示局部中间态；刷新保留成功项和当前选择。
-- 环境检测通过既有 Tauri Channel 投影逐项进度；Git 的完成结果可先放行对应步骤，Node/npm/npx 的初步版本结果不作为联合就绪事实。最终报告到达后丢弃迟到进度，重测失败不得复用上轮 runtimeReady 放行。
+- 环境检测通过既有 Tauri Channel 投影逐项进度；Git 的完成结果可先放行对应步骤，Node/npm/npx 的初步版本结果不作为联合就绪事实。最终报告到达后丢弃迟到进度，重测开始即替换旧报告。
 - 检测状态、诊断状态和草稿留在向导局部，不把每次变化加入 App 全局高频 Context。
 - 安装后点击重新检测时刷新实际 PATH；无需用户反复重启客户端。既有 Agent 仍无法解析时在 Agent 管理页配置已安装路径并重新诊断，引导不承载程序选择或失败修复 UI。
 - 七种界面语言同步增加 key，以 zh-CN 为语义源；不得在 Rust 中拼接对客安装说明。提示词正文无需改动；如实际实现新增提示词，另行遵守 prompt-authoring 规则。
@@ -356,7 +373,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | 数据 | 规模／增长 | 控制方式 |
 | --- | --- | --- |
 | 环境检查 | Git、Node、npm、npx 共 4 项 | 每项有限时命令，结果逐项返回 |
-| 精选 Agent | 当前 11 项 | 读取打包摘要；仅对本机已准备的候选启动有界自动诊断 |
+| 精选 Agent | 当前 14 项 | 先按当前平台过滤，再读取打包摘要；仅对本机已准备的候选启动有界自动诊断 |
 | 自定义 Agent | 当前产品验收规模不超过 50 项 | 内部候选每批至多 50 项并保持有界诊断；超过 50 项的跨批场景不是本版本产品承诺，UI 仅投影已验证且已配置项 |
 | 内置工作流 | 标准版 2 个，WB 3 个，后续受构建清单约束 | 在第三步预览时读取；算法 O(内置执行 slot 总数) |
 | 用户模板存储 | 与用户模板数及正文大小一起增长 | 现有单 JSON 预览／提交为 O(文件大小)，不假装只扫描内置就免去解析成本 |
@@ -368,7 +385,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 - 引导空壳与 loading 在触发后 100ms 内可见；状态 IPC 不等待外部进程，参考验收机 p95 ≤200ms。
 - 本地版本命令按工具类别使用有界截止时间：原生 `git`／`node` 5 秒，经 Windows shim 冷启动的 `npm`／`npx` 15 秒；结果立即投影，异常慢命令不会阻塞其它项。两类预算必须来自同一环境策略，不得在探测实现里按名称特判。
 - Doctor 沿用既有 3 分钟总预算和 4 个全局并发上限，不强行缩短为几秒；单个慢 Agent 不影响可见列表和其它可用选择。
-- 全局发现进程数量有界，不启动 11 个远程 npm 下载；首屏检测网络请求为 0。
+- 全局发现进程数量有界，不按 Catalog 总数启动远程 npm 下载；11/13/14 项都只探测本机已准备候选，首屏检测网络请求为 0。
 - 以 1,000 个用户模板、约 10 MiB 模板存储作为初始压力样本，预览／提交在后台执行，记录解析、校验、写入、锁持有时间；参考机目标分别 ≤1 秒。若超标，先拆分纯读取／维护路径或内置模板投影，不先加缓存。
 - 生产构建测量干净环境、已安装环境、单项超时和上述大模板样本；保存基线与结果，不用开发模式主观观感验收。
 
@@ -388,24 +405,31 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | --- | --- |
 | 干净首次启动，Git 未装 | 可显式跳过；界面不伪装 Git ready |
 | Git 版本边界／Windows vendor 后缀／异常输出 | 复用现有解析，最低版本上下界行为一致 |
-| npm 缺失／过低／Node 不兼容／npx 不可执行 | 按钮及后端均阻止继续或完成；无 skip 后门 |
+| Node 缺失／过低／不可执行 | 警告展示原因；允许 Agent 检测，本机 Agent 可正常发现和提交 |
+| npx 缺失、启动失败或超时 | 提示 npx 启动的 Agent 暂不可用；这类候选不启动进程，返回 `runtime-required` 并在暂不可用区展示 |
+| npm/npx 版本不受支持、engines 不兼容或实际 Node 不一致，但 npx 能启动 | 警告展示原因与实际 Node；npx 候选照常 Doctor，失败时附带版本或环境提示 |
 | 离线但本地环境齐全 | 环境步骤成功，不请求下载站 |
-| PATH 安装后变化、多套 Node、路径包含空格或中文 | 重测和正式执行使用同一有效程序组合 |
-| Node.js 23.11.0 等稳定但未验证版本，实际 npm／npx 与 engines 兼容 | 显示“未验证版本”警告但允许继续；仍执行路径、版本和 engines 联合校验 |
+| PATH 安装后变化、多套 Node、路径包含空格或中文、Node 启动器与真实 `node.exe` 路径不同 | 重测和正式执行使用同一有效程序组合；Node/npm/npx 观察到同一真实运行时即通过，启动器路径差异本身不阻断 |
+| Node.js 23.11.0 等稳定但未验证版本 | 显示“未验证版本”警告但允许继续；npx 候选诊断失败时提示当前版本与推荐版本 |
 | 第二步已通过，进入第三步／返回／刷新 Agent／最终应用 | 始终复用本次报告，不追加环境命令或环境等待阶段 |
-| 环境阻断后查看／重试／取消，旧事件迟到 | 查看复用失败报告；重试通过后继续 Agent；取消后可再重测；旧批次不覆盖当前状态 |
+| 环境报告被释放后重测／取消，旧事件迟到 | 重测完成后继续 Agent；取消后可再重测；旧批次不覆盖当前状态 |
+| 检测结束只有已安装但不可用的 Agent | 显示“检测到的 Agent 暂不可用”，折叠区默认展开并按原因展示；未安装项不展示 |
 | 普通检测异常／正常结束无 Agent | 前者提示检测失败，后者才显示正常空结果 |
-| 默认配置直达入口，环境检测缓慢或失败 | 初始检测仅一次；完成前不启动 Agent，失败显示工具原因并可主动重测 |
+| 默认配置直达入口，环境检测缓慢或有异常 | 初始检测仅一次；完成前不启动 Agent；完成后无论结果都继续 Agent 检测，运行环境步骤显示警告 |
 | 未检测／主动重测中／旧请求取消后绕过页面调用 | 后端拒绝 Agent 检测和最终应用；迟到的旧成功结果不能恢复已失效报告 |
 | 配置预览后本次后端报告取消或主动重测失败 | IPC 保留结构化原因；撤销预览、禁用提交，恢复后保留模型／思考强度／权限草稿并要求重新预览；应用不重跑命令 |
 | 全新空配置，本机已安装 ACP 命令 | 不依赖管理页预先添加，使用本机命令和 ACP 参数诊断，成功后自动登记 |
-| 用户在 Agent 管理页为 Gemini／CodeBuddy／Qwen Code 显式选择本机程序后重新诊断 | 只覆盖程序位置，使用对应 `localLaunch.args`；不得携带 npx 的 `-y` 或包名参数；引导下次运行只复用匹配的健康快照 |
+| 用户在 Agent 管理页为 Gemini／WorkBuddy／Qwen Code 显式选择本机程序后重新诊断 | 只覆盖程序位置，使用对应 `localLaunch.args`；不得携带 npx 的 `-y` 或包名参数；引导下次运行只复用匹配的健康快照 |
 | 全新空配置，仅有完整 npm 缓存且无全局命令 | 不依赖私有 `_npx` 字段，校验真实依赖与安装锁后直接诊断；成功项自动登记 |
 | 缓存安装锁缺失、包名或精确版本不一致 | 不得直接启动该缓存，沿用已有受控准备或不可用路径 |
 | 已安装 Claude／Codex／Pi CLI，尚缺 ACP 适配组件 | 自动进入对应适配器的受控准备与诊断，成功并保存后才算可用 |
 | 只有 npx 启动器，没有对应 Agent 或已准备包 | 不下载全部精选 Agent，不判为 Gold Band 可用 |
+| 当前 OS／CPU 被 Catalog 排除 | 内置候选不进入引导；直接创建由后端返回 `agent.unsupported-platform`；既有实例和引用不被删除 |
+| Qoder 本机 CLI 与 Registry 固定 npx fallback | 两条路径分别使用各自命令与参数并独立通过 Doctor；不得用本机较新版本替代固定 fallback 的证据 |
+| ZCode 尚未通过真实后端发布门槛 | 不进入发布 Catalog 和引导候选；社区桥接器 metadata 或 mock 握手不能解除阻断 |
 | 管理页已有成功诊断且配置 fingerprint 未变 | 引导直接复用健康快照，不重复启动 Doctor，不改写管理页诊断 |
-| 管理页诊断缺失、失败、过期或配置 fingerprint 已变 | 引导隐藏该 Agent，不展示失败详情或修复入口；用户在管理页重新诊断后再运行引导 |
+| 管理页诊断缺失或失败 | 引导隐藏该 Agent，不展示失败详情或修复入口；用户在管理页重新诊断后再运行引导 |
+| 管理页上次诊断成功，但配置 fingerprint 缺失或已变 | 管理页显示“需重新诊断”；引导执行一次受控重诊断，成功后展示，失败不覆盖已有快照 |
 | 既有 Agent 未登录／权限请求／取消 | 分别呈现状态；不自动批准，不遗留进程 |
 | A Agent 诊断很慢，B 通过 | B 可继续选择；不等待全量结果 |
 | 待诊断、诊断中、需登录、失败与成功项混合 | 第三步只展示成功且已持久化项，其余不作为禁用选项出现 |
@@ -496,3 +520,11 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | S5 | ACP 会话配置协议 | `https://agentclientprotocol.com/protocol/v1/session-config-options` |
 
 代码证据定位：`src/git.rs`、`src/process.rs`、`src/config/mod.rs`、`src/config/managed_agents.rs`、`src/agent_catalog.rs`、`src/acp/client.rs`、`src/workflow_model_binding.rs`、`src/app/mod.rs`、`src/storage/mod.rs`、`src-tauri/src/commands.rs`、`web/src/App.tsx`、`web/src/lib/workflow-model-bindings.ts`、`scripts/prepare-agent-catalog.mjs`。
+
+## 13.3 2026-11-12 陈旧诊断投影与引导复用一致性修复
+
+- 现象：CodeBuddy 在 Agent 管理页显示诊断正常，但首次引导不展示；用户无法从两处状态判断该 Agent 是否真的当前可用。
+- 根因：管理页只按 `diagnostic.available` 投影“正常”，引导还要求诊断保存的配置 fingerprint 与当前配置一致。配置或 schema 变化后，两者对同一快照给出相反结论；引导把曾成功但已陈旧的诊断当作不可用，静态隐藏了本可自动恢复的 Agent。
+- 修复：诊断投影新增 `stale`，仅在 `available=true` 且 fingerprint 匹配时显示“正常”，曾成功但 fingerprint 不匹配时显示“需重新诊断”并从可用 Agent 集合排除。引导遇到该状态时复用既有受控 Doctor 重测一次；失败只产生本轮 `unavailable`，不写回或清空管理页快照。
+- 测试：接口测试固定 stale 诊断返回 `Probe`，Desktop 投影测试固定 stale 状态与 `available=false`，前端 DOM 测试固定“需重新诊断”文案；所有语言目录同步维护该状态。
+- 过度设计与性能复核：复用现有 fingerprint、Doctor 调度、单 Agent 互斥和失败不落盘边界，不新增持久字段、状态机、缓存或队列。每个已配置 Agent 仅增加一次内存 fingerprint 计算；只有陈旧且上次成功的 Agent 进入既有有界 Doctor，正常健康项仍不启动进程。

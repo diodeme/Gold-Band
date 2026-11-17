@@ -1,5 +1,6 @@
 import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRecentTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { RetryCurrentNodeRequest } from '../types';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import {
   ACP_SESSION_UPDATED_EVENT,
@@ -465,8 +466,25 @@ export const desktopApi: RuntimeApi = {
   submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome) {
     return invokeCommand('submit_manual_check', { projectId, taskId, runId, roundId, nodeId, attemptId, outcome });
   },
-  retryRun(taskId: string, runId: string) {
-    return invokeCommand('retry_run', { taskId, runId });
+  retryCurrentNode(request: RetryCurrentNodeRequest) {
+    return invokeCommand('retry_current_node', {
+      projectId: request.projectId,
+      taskId: request.taskId,
+      runId: request.runId,
+      expectedRoundId: request.expectedRoundId,
+      expectedNodeId: request.expectedNodeId,
+      expectedAttemptId: request.expectedAttemptId,
+    });
+  },
+  rerunFailedNode(request: RetryCurrentNodeRequest) {
+    return invokeCommand('rerun_failed_node', {
+      projectId: request.projectId,
+      taskId: request.taskId,
+      runId: request.runId,
+      expectedRoundId: request.expectedRoundId,
+      expectedNodeId: request.expectedNodeId,
+      expectedAttemptId: request.expectedAttemptId,
+    });
   },
   getLogPage(query) {
     return invokeCommand('get_log_page', { query });

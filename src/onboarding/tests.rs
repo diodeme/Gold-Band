@@ -64,7 +64,7 @@ fn fixture() -> (
 
 fn diagnostic(candidate: &SetupCandidate) -> ProviderDiagnosticSnapshot {
     ProviderDiagnosticSnapshot {
-        config_fingerprint: Some(fingerprint(&candidate.config).unwrap()),
+        config_fingerprint: Some(candidate.config.diagnostic_fingerprint().unwrap()),
         available: true,
         error: None,
         checked_at: "2026-10-21T00:00:00Z".into(),
@@ -83,10 +83,20 @@ fn request(app: &App, selection: DefaultSetupSelection) -> ApplyDefaultSetup {
         git_skipped: true,
     }
 }
+fn prepared(
+    candidate: &SetupCandidate,
+    cwd: &std::path::Path,
+) -> anyhow::Result<Option<crate::config::AcpAdapterConfig>> {
+    Ok(match prepared_adapter(candidate, cwd, true)? {
+        PreparedAdapter::Ready(adapter) => Some(adapter),
+        PreparedAdapter::Unavailable(_) => None,
+    })
+}
+
 fn ready() -> EnvironmentReport {
     EnvironmentReport {
         checks: vec![],
-        runtime_ready: true,
+        npx_launchable: true,
     }
 }
 
@@ -139,7 +149,7 @@ fn setup_preview_is_read_only_apply_updates_all_slots_and_is_idempotent() {
         &app,
         &request,
         &EnvironmentReport {
-            runtime_ready: false,
+            npx_launchable: false,
             checks: vec![],
         },
     )
@@ -152,22 +162,9 @@ fn setup_preview_is_read_only_apply_updates_all_slots_and_is_idempotent() {
 }
 
 #[test]
-fn setup_runtime_gate_and_stale_preview_do_not_write() {
+fn setup_stale_preview_does_not_write() {
     let (_temp, app, _, selection) = fixture();
     let mut request = request(&app, selection);
-    assert!(
-        apply(
-            &app,
-            &request,
-            &EnvironmentReport {
-                checks: vec![],
-                runtime_ready: false
-            }
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("runtime-incompatible")
-    );
     request.preview_fingerprint = "stale".into();
     assert!(
         apply(&app, &request, &ready())
@@ -182,40 +179,49 @@ fn setup_runtime_gate_and_stale_preview_do_not_write() {
 }
 
 #[test]
-fn setup_runtime_failure_preserves_report_and_does_not_write() {
+fn setup_environment_problems_never_block_apply_with_a_healthy_agent() {
     use super::environment::{
         EnvironmentCheck, EnvironmentError, EnvironmentStatus, EnvironmentTool,
     };
+    let check = |tool, status, code: &str| EnvironmentCheck {
+        tool,
+        status,
+        version: None,
+        executable_path: None,
+        node_executable_path: None,
+        node_version: None,
+        error: Some(EnvironmentError {
+            code: code.into(),
+            params: serde_json::json!({ "tool": tool }),
+        }),
+    };
     let (_temp, app, _, selection) = fixture();
     let request = request(&app, selection);
-    let settings_before = std::fs::read(app.paths.user_settings_file()).unwrap();
-    let workflows_before = std::fs::read(app.paths.workflow_templates_file()).unwrap();
-    let report = EnvironmentReport {
-        runtime_ready: false,
-        checks: vec![EnvironmentCheck {
-            tool: EnvironmentTool::Npx,
-            status: EnvironmentStatus::Timeout,
-            version: None,
-            executable_path: Some("fixture/npx.cmd".into()),
-            node_executable_path: None,
-            error: Some(EnvironmentError {
-                code: "setup.probe-timeout".into(),
-                params: serde_json::json!({"tool": "npx"}),
-            }),
-        }],
-    };
-    let expected = serde_json::to_value(&report).unwrap();
-    let error = apply(&app, &request, &report).unwrap_err();
-    let error = error.downcast_ref::<SetupError>().unwrap();
-    assert_eq!(error.params["environment"], expected);
-    assert_eq!(
-        settings_before,
-        std::fs::read(app.paths.user_settings_file()).unwrap()
-    );
-    assert_eq!(
-        workflows_before,
-        std::fs::read(app.paths.workflow_templates_file()).unwrap()
-    );
+    let report = EnvironmentReport::from_checks(vec![
+        check(
+            EnvironmentTool::Node,
+            EnvironmentStatus::Missing,
+            "setup.runtime-missing",
+        ),
+        check(
+            EnvironmentTool::Npm,
+            EnvironmentStatus::Timeout,
+            "setup.probe-timeout",
+        ),
+        check(
+            EnvironmentTool::Npx,
+            EnvironmentStatus::Missing,
+            "setup.runtime-missing",
+        ),
+    ]);
+    assert!(!report.npx_launchable);
+
+    apply(&app, &request, &report).unwrap();
+
+    assert!(matches!(
+        app.load_settings().unwrap().onboarding,
+        Some(OnboardingState::Completed { .. })
+    ));
 }
 
 #[test]
@@ -614,7 +620,7 @@ fn setup_reuses_only_matching_healthy_configured_agent_diagnostics() {
     diagnostics.get_mut(&candidate.id).unwrap().available = false;
     assert!(matches!(
         candidate_detection(configured, &diagnostics),
-        CandidateDetection::Unavailable
+        CandidateDetection::Unavailable(_)
     ));
     diagnostics.get_mut(&candidate.id).unwrap().available = true;
     diagnostics
@@ -623,12 +629,12 @@ fn setup_reuses_only_matching_healthy_configured_agent_diagnostics() {
         .config_fingerprint = Some("stale".into());
     assert!(matches!(
         candidate_detection(configured, &diagnostics),
-        CandidateDetection::Unavailable
+        CandidateDetection::Probe
     ));
     diagnostics.remove(&candidate.id);
     assert!(matches!(
         candidate_detection(configured, &diagnostics),
-        CandidateDetection::Unavailable
+        CandidateDetection::Unavailable(_)
     ));
 
     let (fresh, _) = candidates(&crate::config::SettingsConfig::default(), None).unwrap();
@@ -687,7 +693,7 @@ fn setup_fresh_install_discovers_local_agents_without_saved_instances_or_npx_cac
             .adapter
             .env
             .insert("PATH".into(), temp.path().to_string_lossy().into());
-        let adapter = prepared_adapter(&candidate, temp.path())
+        let adapter = prepared(&candidate, temp.path())
             .unwrap()
             .unwrap_or_else(|| {
                 panic!("fresh install must discover local {command} without adding it first")
@@ -736,7 +742,18 @@ fn setup_fresh_install_prepares_an_adapter_for_an_installed_agent_cli() {
         .adapter
         .env
         .insert("PATH".into(), temp.path().to_string_lossy().into());
-    let adapter = prepared_adapter(&candidate, temp.path())
+    let PreparedAdapter::Unavailable(reason) =
+        prepared_adapter(&candidate, temp.path(), false).unwrap()
+    else {
+        panic!("an npx adapter must not be prepared when npx cannot start");
+    };
+    assert_eq!(
+        reason,
+        SetupUnavailableReason::RuntimeRequired {
+            tool: super::environment::EnvironmentTool::Npx
+        }
+    );
+    let adapter = prepared(&candidate, temp.path())
         .unwrap()
         .expect("a local Agent CLI must enter ACP preparation on a fresh Gold Band install");
     assert_eq!(
@@ -817,7 +834,7 @@ fn setup_fresh_install_discovers_standard_npm_cache_without_a_global_cli() {
     }).to_string()).unwrap();
     let script = package_root.join("bin/codebuddy");
     std::fs::write(&script, "#!/usr/bin/env node\n").unwrap();
-    let adapter = prepared_adapter(&candidate, temp.path()).unwrap().expect(
+    let adapter = prepared(&candidate, temp.path()).unwrap().expect(
         "a locally cached Agent must be discovered before it has a saved instance or global CLI",
     );
     assert_eq!(std::path::Path::new(&adapter.command), node);
@@ -866,9 +883,7 @@ fn setup_fresh_install_registers_all_detected_agents_before_selecting_a_default(
             "model-config-onboarding".into(),
         );
         let cwd = IsolatedProbeDirectory::new().unwrap();
-        let adapter = prepared_adapter(&candidate, cwd.0.as_std_path())
-            .unwrap()
-            .unwrap();
+        let adapter = prepared(&candidate, cwd.0.as_std_path()).unwrap().unwrap();
         let diagnostic_dir = root.join(format!("doctor-{}", candidate.id.as_str()));
         let probe = crate::acp::client::doctor_prepared_with_control(
             &candidate.id,
@@ -945,7 +960,7 @@ fn setup_installed_agents_acceptance() {
     );
     for candidate in batch {
         let cwd = IsolatedProbeDirectory::new().unwrap();
-        let adapter = prepared_adapter(&candidate, cwd.0.as_std_path())
+        let adapter = prepared(&candidate, cwd.0.as_std_path())
             .unwrap()
             .unwrap_or_else(|| panic!("{} was not discovered", candidate.id.as_str()));
         assert!(
@@ -969,7 +984,7 @@ fn setup_installed_agents_acceptance() {
             )
         });
         let snapshot = ProviderDiagnosticSnapshot {
-            config_fingerprint: Some(fingerprint(&candidate.config).unwrap()),
+            config_fingerprint: Some(candidate.config.diagnostic_fingerprint().unwrap()),
             available: true,
             error: None,
             checked_at: chrono::Utc::now().to_rfc3339(),

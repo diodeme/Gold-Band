@@ -18,6 +18,8 @@ const MONOCHROME_AGENT_ICONS = new Set([
   'opencode',
   'pi-acp',
   'qwen-code',
+  'qoder',
+  'zcode-acp',
 ]);
 
 export const AGENT_ICON_ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml';

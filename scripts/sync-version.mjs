@@ -16,6 +16,7 @@ if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
 }
 
 const root = process.cwd();
+const workspaceLockPackages = ['gold-band', 'gold-band-desktop'];
 
 function writeIfChanged(filePath, content, nextContent) {
   if (nextContent !== content) {
@@ -66,7 +67,7 @@ function updateCargoLock(relativePath, packageNames) {
 
   const content = fs.readFileSync(filePath, 'utf8');
   const nextContent = content.replace(
-    /(\[\[package\]\]\nname = "([^"]+)"\nversion = ")([^"]+)(")/g,
+    /(\[\[package\]\]\r?\nname = "([^"]+)"\r?\nversion = ")([^"]+)(")/g,
     (match, prefix, packageName, currentVersion, suffix) => {
       if (!packageNames.includes(packageName)) {
         return match;
@@ -84,7 +85,6 @@ updateJsonVersion('package-lock.json', true);
 updateJsonVersion(path.join('src-tauri', 'tauri.conf.json'));
 updateCargoToml('Cargo.toml');
 updateCargoToml(path.join('src-tauri', 'Cargo.toml'));
-updateCargoLock('Cargo.lock', ['gold-band']);
-updateCargoLock(path.join('src-tauri', 'Cargo.lock'), ['gold-band', 'gold-band-desktop']);
+updateCargoLock('Cargo.lock', workspaceLockPackages);
 
 console.log(`Synced release version ${version}`);

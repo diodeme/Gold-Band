@@ -581,6 +581,7 @@ pub fn catalog_agent_default_config(agent_id: &str) -> Option<ManagedAgentConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAdapterConfig {
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -677,6 +678,15 @@ impl AgentSkillDirectoryPolicy {
 }
 
 impl ManagedAgentConfig {
+    pub fn diagnostic_fingerprint(&self) -> anyhow::Result<String> {
+        crate::onboarding::model::fingerprint(&serde_json::json!({
+            "command": self.adapter.command,
+            "args": self.adapter.args,
+            "env": self.adapter.env,
+            "executablePath": self.executable_path,
+        }))
+    }
+
     pub fn new(
         adapter: AcpAdapterConfig,
         primary_agent_dir: impl Into<String>,
@@ -726,6 +736,11 @@ impl ManagedAgentConfig {
     pub fn executable_adapter(&self, agent_id: &ManagedAgentId) -> Result<AcpAdapterConfig> {
         let mut adapter = self.adapter.clone();
         adapter.apply_catalog_launch(agent_id);
+        if adapter.command.trim().is_empty() {
+            return Err(
+                crate::onboarding::model::SetupError::new("agent.launch-command-missing").into(),
+            );
+        }
         let local_launch = crate::agent_catalog::builtin_agent(agent_id.as_str())
             .and_then(|entry| entry.local_launch.as_ref());
         if let Some(path) = &self.executable_path {
@@ -1078,11 +1093,13 @@ pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
         .feishu_scan_auth
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 13;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
+const LEGACY_CODEBUDDY_DISPLAY_NAME: &str = "CodeBuddy";
+const CURRENT_CODEBUDDY_DISPLAY_NAME: &str = "WorkBuddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1156,6 +1173,10 @@ impl SettingsConfig {
                 .entry("imIntegrations".to_string())
                 .or_insert_with(|| serde_json::json!({ "channels": [] }));
             migrate_removed_im_notification_preferences(settings);
+            migrated = true;
+        }
+        if version < 13 {
+            migrate_codebuddy_display_name(settings);
             migrated = true;
         }
         if migrated {
@@ -1401,6 +1422,21 @@ fn migrate_codex_acp_package(
         }
     }
     Ok(())
+}
+
+fn migrate_codebuddy_display_name(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(display_name) = settings
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|agents| agents.get_mut("codebuddy-code"))
+        .and_then(|agent| agent.get_mut("adapter"))
+        .and_then(|adapter| adapter.get_mut("displayName"))
+    else {
+        return;
+    };
+    if display_name.as_str() == Some(LEGACY_CODEBUDDY_DISPLAY_NAME) {
+        *display_name = serde_json::Value::String(CURRENT_CODEBUDDY_DISPLAY_NAME.to_string());
+    }
 }
 
 fn migrate_managed_agent_directories(
@@ -3401,16 +3437,24 @@ mod tests {
             defaults,
             vec![
                 ("claude-acp", Some(".claude"), None, vec![]),
+                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
                 ("codex-acp", Some(".codex"), None, vec![".agents"]),
+                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
+                ("deepseek-harness", Some(".dsh"), None, vec![".agents"]),
+                (
+                    "zcode-acp",
+                    Some(".zcode"),
+                    Some(".agents"),
+                    vec![".agents"]
+                ),
+                ("qoder", Some(".qoder"), None, vec![".agents"]),
+                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
                 ("cursor", Some(".cursor"), None, vec![".agents"]),
                 ("gemini", Some(".gemini"), None, vec![".agents"]),
-                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
                 ("goose", Some(".goose"), None, vec![]),
                 ("qwen-code", Some(".qwen"), None, vec![]),
                 ("opencode", Some(".opencode"), None, vec![".agents"]),
-                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
                 ("amp-acp", Some(".agents"), None, vec![".claude"]),
-                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
             ]
         );
     }
@@ -3627,6 +3671,51 @@ mod tests {
         assert!(!notifications.run_success);
         assert!(notifications.run_failure);
         assert!(!notifications.acp_turn_finished);
+    }
+
+    #[test]
+    fn settings_v12_renames_default_codebuddy_display_name() {
+        let migrate = |display_name: &str| {
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 12,
+                "agents": {
+                    "codebuddy-code": {
+                        "adapter": {
+                            "command": "npx",
+                            "displayName": display_name
+                        }
+                    }
+                }
+            }))
+            .unwrap()
+        };
+        let codebuddy = ManagedAgentId::from_str("codebuddy-code").unwrap();
+
+        let (settings, migrated) = migrate("CodeBuddy");
+        assert!(migrated);
+        assert_eq!(
+            settings
+                .agents
+                .unwrap()
+                .get(&codebuddy)
+                .unwrap()
+                .adapter
+                .display_name,
+            "WorkBuddy"
+        );
+
+        let (settings, migrated) = migrate("Custom CodeBuddy");
+        assert!(migrated);
+        assert_eq!(
+            settings
+                .agents
+                .unwrap()
+                .get(&codebuddy)
+                .unwrap()
+                .adapter
+                .display_name,
+            "Custom CodeBuddy"
+        );
     }
 
     #[test]
@@ -3938,7 +4027,11 @@ mod tests {
             } else {
                 assert!(policy.project.write_dir_names.is_empty());
             }
-            expected_project_reads.extend(entry.compatible_agent_dirs.iter().cloned());
+            for directory in &entry.compatible_agent_dirs {
+                if !expected_project_reads.contains(directory) {
+                    expected_project_reads.push(directory.clone());
+                }
+            }
             assert_eq!(policy.project.read_dir_names, expected_project_reads);
         }
     }

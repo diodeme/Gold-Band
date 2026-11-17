@@ -20,6 +20,7 @@ pub mod npx_cache;
 pub mod observability;
 pub mod onboarding;
 pub mod personal_analytics;
+pub mod platform;
 pub mod process;
 pub mod prompts;
 pub mod provider;

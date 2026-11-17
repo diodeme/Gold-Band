@@ -55,6 +55,20 @@ describe('acpRuntimeErrorBannerCopy', () => {
     expect(copy?.match(/Authentication required/g)).toHaveLength(1);
     expect(copy).not.toContain('errors.provider.auth-required');
   });
+  it('shows the missing authentication variable in the localized banner', async () => {
+    await loadI18nLanguage('zh-CN');
+    const copy = acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), runtimeError({
+      code: { domain: 'provider', code: 'provider.auth-required' },
+      domain: 'provider',
+      recovery: 'manual',
+      retryPolicy: null,
+      params: { methods: ['qoder-personal-access-token'], missingEnv: ['QODER_PERSONAL_ACCESS_TOKEN'] },
+      diagnostic: 'Authentication required',
+      raw: { code: -32000, message: 'Authentication required' },
+    }));
+    expect(copy).toContain('QODER_PERSONAL_ACCESS_TOKEN');
+    expect(copy).not.toContain('errors.provider.auth-required');
+  });
   it('localizes storage failures even without diagnostic text', async () => {
     await loadI18nLanguage('zh-CN');
     expect(acpRuntimeErrorBannerCopy(i18n.t.bind(i18n), runtimeError({

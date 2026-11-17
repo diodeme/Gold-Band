@@ -118,6 +118,7 @@ fn running_run(task_id: &str, run_id: &str, execution_revision: u64) -> RunState
         new_rounds_opened: 0,
         pause_reason: None,
         uuid: Some("run-uuid".to_string()),
+        rerun: None,
         last_executed_node: None,
         worktree: None,
         execution: RuntimeExecutionState::new(RuntimeExecutionPhase::StartingNode, None, "t"),

@@ -15,8 +15,9 @@ import { loadI18nLanguage } from '@/i18n';
 import { applyAppearance } from '@/theme';
 import type { AppErrorVm, DesktopLanguage } from '@/types';
 import type { EnvironmentCheck, SetupApi, SetupApply, SetupEvent, SetupPreview, SetupSelection, SetupStatus } from './types';
-import { failureEnvironment, initialDetectionState, setupDetectionReducer, setupFailure } from './detection-state';
+import { initialDetectionState, setupDetectionReducer, setupFailure } from './detection-state';
 import { EnvironmentCheckResult } from './EnvironmentCheckResult';
+import { UnavailableAgents } from './UnavailableAgents';
 
 const STEP_KEYS = ['git', 'runtime', 'agent'] as const;
 
@@ -24,14 +25,16 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   const { t } = useTranslation();
   const [step, setStep] = useState(initialStep);
   const [detection, dispatch] = useReducer(setupDetectionReducer, initialDetectionState);
-  const { environment: environmentState, agents, pending, generation, nextCursor } = detection;
+  const { environment: environmentState, agents, unavailable, pending, generation, nextCursor } = detection;
   const { report: environment, progress: environmentProgress } = environmentState;
   const checking = environmentState.phase === 'checking';
-  const runtimeReady = environmentState.phase === 'ready' && environment?.runtimeReady;
+  const environmentReady = environmentState.phase === 'ready' && Boolean(environment);
+  const environmentFailed = environmentState.phase === 'failed';
+  const runtimeWarning = environmentReady && Boolean(environment?.checks.some((check) => check.tool !== 'git' && check.status !== 'ready'));
+  const npxUnavailable = environmentReady && environment?.npxLaunchable === false;
   const persistedGitDecision = status.state.status === 'pending' || status.state.status === 'deferred' ? status.state.gitDecision : 'undecided';
   const [gitSkipped, setGitSkipped] = useState(persistedGitDecision === 'skip');
   const detecting = detection.phase === 'detecting';
-  const runtimeBlocked = detection.phase === 'blocked-environment' || (!checking && !runtimeReady);
   const [selectedId, setSelectedId] = useState(status.defaultExecutionProfile?.agentId ?? '');
   const [modelId, setModelId] = useState(status.defaultExecutionProfile?.modelSelection.type === 'explicit' ? status.defaultExecutionProfile.modelSelection.modelId : '');
   const [modelConfig, setModelConfig] = useState({ configOptions: status.defaultExecutionProfile?.configOptions ?? {}, modelBoundOverrides: status.defaultExecutionProfile?.modelBoundOverrides ?? {} });
@@ -58,9 +61,9 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
     if (previous) void api.cancel(previous).catch(() => {});
   }, [api]);
   const reportError = useCallback((error: unknown) => {
-    const failure = setupFailure(error); const report = failureEnvironment(failure);
-    if (report || failure.code === 'setup.environment-check-required') {
-      stop(); dispatch(report ? { type: 'runtime-blocked', report } : { type: 'environment-failed' }); setPreview(undefined); request.current = null;
+    const failure = setupFailure(error);
+    if (failure.code === 'setup.environment-check-required') {
+      stop(); dispatch({ type: 'environment-failed' }); setPreview(undefined); request.current = null;
     }
     setError(failure);
   }, [stop]);
@@ -110,17 +113,17 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
     } catch (error) { if (sequence.current === current) { dispatch({ type: 'detection-failed' }); reportError(error); } }
   }, [api, stop, reportError]);
   useEffect(() => {
-    if (step !== 2 || !runtimeReady) return;
+    if (step !== 2 || !environmentReady) return;
     void start();
     return stop;
-  }, [step, runtimeReady, start, stop]);
+  }, [step, environmentReady, start, stop]);
   useEffect(() => { const leave = () => stop(); window.addEventListener('pagehide', leave); return () => window.removeEventListener('pagehide', leave); }, [stop]);
 
   const selected = agents[selectedId];
   const models = selected?.supportedModels ?? [];
   const modes = selected?.supportedModes ?? [];
   const configSections = acpCompositeConfigSections(selected?.configOptions, modelId, modelConfig.configOptions, selected?.modelBoundCatalogs);
-  const canSelect = Boolean(runtimeReady && selected && generation && (detection.phase === 'detecting' || detection.phase === 'completed') && !pending[selectedId] && !modelBusy && (!models.length || models.some((model) => model.id === modelId)) && (!modes.length || modes.some((mode) => mode.id === permission)));
+  const canSelect = Boolean(environmentReady && selected && generation && (detection.phase === 'detecting' || detection.phase === 'completed') && !pending[selectedId] && !modelBusy && (!models.length || models.some((model) => model.id === modelId)) && (!modes.length || modes.some((mode) => mode.id === permission)));
   const selection = (): SetupSelection => {
     const configOptions = Object.fromEntries(configSections.flatMap((section) => section.value ? [[section.id, section.value]] : []));
     return { profile: { agentId: selectedId, modelSelection: models.length ? { type: 'explicit', modelId } : { type: 'provider-default' }, configOptions, modelBoundOverrides: hasAuthoringModelBoundCatalog(selected?.modelBoundCatalogs, modelId) && Object.keys(configOptions).length ? { [modelId]: configOptions } : {} }, permissionModeId: permission || null };
@@ -176,10 +179,13 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   const gitReady = (environmentState.phase === 'ready' || Boolean(environmentProgress.git)) && gitCheck?.status === 'ready';
   const tools: EnvironmentCheck['tool'][] = step === 0 ? ['git'] : ['node', 'npm', 'npx'];
   const message = (failure: string | AppErrorVm) => t(`onboarding.errors.${typeof failure === 'string' ? failure : failure.code}`, { ...(typeof failure === 'string' ? {} : failure.params), defaultValue: t('onboarding.repairHint') });
-  const agentStatus = checking ? 'onboarding.checking' : runtimeBlocked ? 'onboarding.runtimeBlocked' : detection.phase === 'failed' ? 'onboarding.detectionFailed' : detecting || Object.keys(pending).length ? 'onboarding.discovering' : Object.keys(agents).length ? 'onboarding.discovered' : detection.phase === 'completed' ? 'onboarding.noAgents' : 'onboarding.discovering';
-  const showDefer = step === 2 && Boolean(runtimeReady) && !checking && !detecting && (detection.phase === 'completed' || detection.phase === 'failed');
-  const agentStepState = detecting ? 'checking' : detection.phase === 'failed' || runtimeBlocked ? 'failed' : detection.phase === 'completed' ? (Object.keys(agents).length ? 'ready' : 'failed') : 'pending';
-  const stepStates = [gitSkipped ? 'skipped' : gitReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', runtimeReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', agentStepState];
+  const readyCount = Object.keys(agents).length;
+  const unavailableAgents = Object.values(unavailable);
+  const agentStatus = checking ? 'onboarding.checking' : environmentFailed ? 'onboarding.runtimeBlocked' : detection.phase === 'failed' ? 'onboarding.detectionFailed' : detecting || Object.keys(pending).length ? 'onboarding.discovering' : readyCount ? 'onboarding.discovered' : detection.phase === 'completed' ? (unavailableAgents.length ? 'onboarding.allUnavailable' : 'onboarding.noAgents') : 'onboarding.discovering';
+  const showDefer = step === 2 && environmentReady && !checking && !detecting && (detection.phase === 'completed' || detection.phase === 'failed');
+  const agentStepState = detecting ? 'checking' : detection.phase === 'failed' || environmentFailed ? 'failed' : detection.phase === 'completed' ? (readyCount ? 'ready' : 'failed') : 'pending';
+  const runtimeStepState = checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : environmentFailed ? 'failed' : runtimeWarning ? 'warning' : 'ready';
+  const stepStates = [gitSkipped ? 'skipped' : gitReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', runtimeStepState, agentStepState];
 
   return <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <header data-tauri-drag-region className="flex shrink-0 items-center justify-between gap-3 border-b px-5 py-3">
@@ -191,12 +197,12 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
       </div>
     </header>
     <div className="shrink-0 px-6 pt-5 sm:px-10 sm:pt-7"><div className="mx-auto max-w-3xl">
-        <ol className="mb-5 flex flex-wrap items-center gap-3 text-sm text-muted-foreground" aria-label={t('onboarding.progress')}>{STEP_KEYS.map((key, index) => <li key={key} data-state={stepStates[index]} className={`flex items-center gap-2 ${step === index ? 'font-medium text-foreground' : ''}`} aria-current={step === index ? 'step' : undefined}><span className="flex size-6 shrink-0 items-center justify-center rounded-full border text-xs">{stepStates[index] === 'checking' ? <Loader2 className="size-3 animate-spin" /> : stepStates[index] === 'ready' ? <Check className="size-3" /> : stepStates[index] === 'failed' ? <AlertCircle className="size-3 text-destructive" /> : index + 1}</span><span>{t(`onboarding.steps.${key}`)}</span><span className={stepStates[index] === 'skipped' ? 'text-xs' : 'sr-only'}>{t(`onboarding.status.${stepStates[index]}`)}</span>{index < 2 && <span className="ml-1 text-muted-foreground/40">/</span>}</li>)}</ol>
+        <ol className="mb-5 flex flex-wrap items-center gap-3 text-sm text-muted-foreground" aria-label={t('onboarding.progress')}>{STEP_KEYS.map((key, index) => <li key={key} data-state={stepStates[index]} className={`flex items-center gap-2 ${step === index ? 'font-medium text-foreground' : ''}`} aria-current={step === index ? 'step' : undefined}><span className="flex size-6 shrink-0 items-center justify-center rounded-full border text-xs">{stepStates[index] === 'checking' ? <Loader2 className="size-3 animate-spin" /> : stepStates[index] === 'ready' ? <Check className="size-3" /> : stepStates[index] === 'failed' ? <AlertCircle className="size-3 text-destructive" /> : stepStates[index] === 'warning' ? <AlertCircle className="size-3 text-gold-warning" /> : index + 1}</span><span>{t(`onboarding.steps.${key}`)}</span><span className={stepStates[index] === 'skipped' ? 'text-xs' : 'sr-only'}>{t(`onboarding.status.${stepStates[index]}`)}</span>{index < 2 && <span className="ml-1 text-muted-foreground/40">/</span>}</li>)}</ol>
         <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold tracking-tight outline-none">{t(`onboarding.titles.${STEP_KEYS[step]}`)}</h1>
         <p className="mb-5 mt-3 text-sm leading-6 text-muted-foreground">{t(`onboarding.descriptions.${STEP_KEYS[step]}`)}</p>
     </div></div>
     <main className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-3xl px-6 pb-8 sm:px-10">
-        {error && !failureEnvironment(error) && <p role="alert" className="mb-5 text-sm text-destructive">{message(error)}</p>}
+        {error && <p role="alert" className="mb-5 text-sm text-destructive">{message(error)}</p>}
         {step < 2 ? <>
           <div aria-busy={checking} className="divide-y">
             {tools.map((tool) => {
@@ -207,16 +213,16 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
           </div>
           {step === 0 && <p className="mt-4 text-sm text-muted-foreground">{t('onboarding.gitVersion', { version: status.gitMinimumVersion })}</p>}
           {step === 1 && <p className="mt-4 text-sm text-muted-foreground">{t('onboarding.runtimeVersion', { version: status.environmentPolicy.node.recommendedVersion, ranges: status.environmentPolicy.node.ranges.join(' / ') })}</p>}
+          {step === 1 && npxUnavailable && <p role="status" className="mt-4 text-sm text-gold-warning">{t('onboarding.npxUnavailable')}</p>}
           <div className="mt-6 flex flex-wrap gap-2"><Button variant="outline" disabled={checking} onClick={() => void checkEnvironment()}><RefreshCw className="size-4" />{t('onboarding.recheck')}</Button><Button variant="ghost" onClick={() => void openExternalUrl(step === 0 ? status.environmentPolicy.gitHelpUrl : status.environmentPolicy.node.helpUrl)}><ExternalLink className="size-4" />{t('onboarding.installGuide')}</Button></div>
         </> : <>
-          <div className="mb-6"><div className="flex flex-wrap items-center justify-between gap-3"><p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">{(checking || detecting) && <Loader2 className="size-4 animate-spin" />}{t(agentStatus, { count: Object.keys(agents).length })}</p><Button size="sm" variant={runtimeBlocked ? 'outline' : 'ghost'} disabled={busy || detecting || checking} onClick={() => void (runtimeBlocked ? checkEnvironment() : start())}><RefreshCw className="size-4" />{t(runtimeBlocked || checking ? 'onboarding.recheckRuntime' : 'onboarding.recheck')}</Button></div>{showDefer && <p className="mt-3 text-sm text-muted-foreground">{t('onboarding.deferHint')}</p>}</div>
-          {runtimeBlocked && <section role="alert" className="mb-6" aria-label={t('onboarding.runtimeBlocked')}><div className="divide-y">{environment?.checks.filter((check) => check.tool !== 'git' && check.status !== 'ready').map((check) => <EnvironmentCheckResult key={check.tool} tool={check.tool} check={check} />)}</div><Button variant="ghost" size="sm" className="mt-2" onClick={() => setStep(1)}>{t('onboarding.viewRuntime')}<ArrowRight className="size-4" /></Button></section>}
+          <div className="mb-6"><div className="flex flex-wrap items-center justify-between gap-3"><p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">{(checking || detecting) && <Loader2 className="size-4 animate-spin" />}{t(agentStatus, { count: readyCount })}</p><Button size="sm" variant={environmentFailed ? 'outline' : 'ghost'} disabled={busy || detecting || checking} onClick={() => void (environmentFailed ? checkEnvironment() : start())}><RefreshCw className="size-4" />{t(environmentFailed || checking ? 'onboarding.recheckRuntime' : 'onboarding.recheck')}</Button></div>{showDefer && <p className="mt-3 text-sm text-muted-foreground">{t('onboarding.deferHint')}</p>}</div>
           <div className="space-y-5">
-            <label className="block space-y-2 text-sm"><span>{t('onboarding.defaultAgent')}</span><Select value={selected ? selectedId : ''} disabled={busy || !runtimeReady || !Object.keys(agents).length} onValueChange={selectAgent}><SelectTrigger aria-label={t('onboarding.defaultAgent')}><SelectValue placeholder={t('onboarding.chooseAgent')} /></SelectTrigger><SelectContent>{Object.values(agents).map((agent) => <SelectItem key={agent.agentType} value={agent.agentType}><AgentIdentityLabel iconKey={agent.iconKey ?? DEFAULT_AGENT_ICON_KEY} name={agent.displayName} /></SelectItem>)}</SelectContent></Select></label>
+            <label className="block space-y-2 text-sm"><span>{t('onboarding.defaultAgent')}</span><Select value={selected ? selectedId : ''} disabled={busy || !environmentReady || !readyCount} onValueChange={selectAgent}><SelectTrigger aria-label={t('onboarding.defaultAgent')}><SelectValue placeholder={t('onboarding.chooseAgent')} /></SelectTrigger><SelectContent>{Object.values(agents).map((agent) => <SelectItem key={agent.agentType} value={agent.agentType}><AgentIdentityLabel iconKey={agent.iconKey ?? DEFAULT_AGENT_ICON_KEY} name={agent.displayName} /></SelectItem>)}</SelectContent></Select></label>
             {selected && <>
               {acpShowsModelConfigSelect(models, selected.configOptions, modelId, selected.modelBoundCatalogs) && <div className="space-y-2 text-sm"><span>{t('onboarding.defaultModel')}</span><AcpModelThoughtSelects
                 models={models} modelValue={modelId} configOptions={selected.configOptions} modelBoundCatalogs={selected.modelBoundCatalogs} configOptionValues={modelConfig.configOptions}
-                compact triggerClassName="w-full max-w-none rounded-md" showUnspecifiedModel={false} disabled={busy || modelBusy || !runtimeReady || !generation}
+                compact triggerClassName="w-full max-w-none rounded-md" showUnspecifiedModel={false} disabled={busy || modelBusy || !environmentReady || !generation}
                 onModelChange={(value) => { if (value) void selectModel(value); }}
                 onConfigOptionChange={(optionId, value) => {
                   const current = projectAuthoringConfigOverrides(modelConfig.configOptions, selected.configOptions, selected.modelBoundCatalogs, modelId);
@@ -227,8 +233,9 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
               {!models.length && <p className="text-sm text-muted-foreground">{t('onboarding.providerDefault')}</p>}
             </>}
             {modelBusy && <p role="status" className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" />{t('onboarding.checkingModel')}</p>}
-            {selected && modes.length > 0 && <div className="space-y-2 text-sm"><span>{t('onboarding.permission')}</span><AcpSingleConfigMenu label={t('acp.permissionMode')} value={permission} options={modes} unspecifiedLabel={t('onboarding.choosePermission')} showUnspecified={false} compact triggerClassName="w-full max-w-none rounded-md" disabled={busy || !runtimeReady} onValueChange={(value) => { setPermission(value ?? ''); invalidatePreview(); }} /></div>}
+            {selected && modes.length > 0 && <div className="space-y-2 text-sm"><span>{t('onboarding.permission')}</span><AcpSingleConfigMenu label={t('acp.permissionMode')} value={permission} options={modes} unspecifiedLabel={t('onboarding.choosePermission')} showUnspecified={false} compact triggerClassName="w-full max-w-none rounded-md" disabled={busy || !environmentReady} onValueChange={(value) => { setPermission(value ?? ''); invalidatePreview(); }} /></div>}
           </div>
+          <UnavailableAgents agents={unavailableAgents} readyCount={readyCount} environment={environment} recommendedVersion={status.environmentPolicy.node.recommendedVersion} onViewRuntime={() => setStep(1)} />
           {preview && <section className="mt-7 border-t pt-5" aria-label={t('onboarding.preview')}><h2 className="font-medium">{t('onboarding.preview')}</h2><p className="mt-2 text-sm text-muted-foreground">{t('onboarding.previewSummary', { count: preview.templates.length, slots: preview.slotCount })}</p><ul className="mt-3 divide-y">{preview.templates.map((template) => <li className="py-3 text-sm" key={template.id}><div className="flex justify-between gap-3"><span>{template.name}</span><span className="shrink-0 text-muted-foreground">{t('onboarding.slots', { count: template.slotCount })}</span></div>{template.previousBindings.length > 0 && <details className="mt-2 text-muted-foreground"><summary className="cursor-pointer">{t('onboarding.previousBindings')}</summary><ul className="mt-2 space-y-2">{template.previousBindings.map((binding) => <li className="break-words" key={binding.executionSlotId}>{t('onboarding.previousBinding', { slot: binding.executionSlotId, agent: agents[binding.agentId]?.displayName ?? binding.agentId, model: binding.modelId ?? t('onboarding.defaultModelLabel') })}</li>)}</ul></details>}</li>)}</ul></section>}
           {nextCursor && <Button variant="ghost" className="mt-3" disabled={detecting || busy} onClick={() => void start(nextCursor)}>{t('onboarding.loadMore')}</Button>}
         </>}
@@ -238,7 +245,7 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
       <Button variant="ghost" disabled={busy} onClick={() => step > 0 ? setStep(step - 1) : void openExternalUrl(status.environmentPolicy.gitHelpUrl)}>{step > 0 ? <ArrowLeft className="size-4" /> : <CircleHelp className="size-4" />}{t(step > 0 ? 'onboarding.back' : 'onboarding.help')}</Button>
       <div className="flex items-center gap-2">{step === 0 && !gitReady && <Button variant="ghost" disabled={busy} onClick={async () => { setBusy(true); try { await api.skipGit(); setGitSkipped(true); setStep(1); } catch (error) { reportError(error); } finally { setBusy(false); } }}>{t('onboarding.skipGit')}</Button>}
         {step === 2 && showDefer && <Button variant="ghost" disabled={busy} onClick={() => void deferSetup()}>{busy && <Loader2 className="size-4 animate-spin" />}{t('onboarding.setUpLater')}</Button>}
-        {step < 2 ? <Button disabled={step === 0 ? !gitReady && !gitSkipped : !runtimeReady} onClick={() => setStep(step + 1)}>{t('onboarding.next')}<ArrowRight className="size-4" /></Button> : <Button disabled={busy || !canSelect} onClick={() => void (preview ? apply() : review())}>{busy && <Loader2 className="size-4 animate-spin" />}{t(preview ? 'onboarding.apply' : 'onboarding.review')}<ArrowRight className="size-4" /></Button>}
+        {step < 2 ? <Button disabled={step === 0 ? !gitReady && !gitSkipped : !environmentReady} onClick={() => setStep(step + 1)}>{t('onboarding.next')}<ArrowRight className="size-4" /></Button> : <Button disabled={busy || !canSelect} onClick={() => void (preview ? apply() : review())}>{busy && <Loader2 className="size-4 animate-spin" />}{t(preview ? 'onboarding.apply' : 'onboarding.review')}<ArrowRight className="size-4" /></Button>}
       </div>
     </footer>
   </div>;

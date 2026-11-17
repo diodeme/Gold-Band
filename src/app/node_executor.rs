@@ -149,9 +149,35 @@ fn is_current_round_entry_attempt(
     current_node_id: &str,
     current_attempt_id: &str,
 ) -> bool {
-    current_round_entry_step(round)
-        .map(|entry| entry.node_id == current_node_id && entry.attempt_id == current_attempt_id)
-        .unwrap_or(false)
+    let Some(entry) = current_round_entry_step(round) else {
+        return false;
+    };
+    if entry.node_id != current_node_id {
+        return false;
+    }
+    let Some(current) = round
+        .trace
+        .iter()
+        .find(|step| step.node_id == current_node_id && step.attempt_id == current_attempt_id)
+    else {
+        return false;
+    };
+
+    // Entry context follows an uninterrupted retry lineage. A workflow edge
+    // returning to the same node starts a different visit within this round.
+    round
+        .trace
+        .iter()
+        .filter(|step| step.sequence <= current.sequence)
+        .all(|step| {
+            if step.sequence == entry.sequence {
+                step.node_id == entry.node_id && step.attempt_id == entry.attempt_id
+            } else {
+                step.node_id == entry.node_id
+                    && step.from_node_id.as_deref() == Some(entry.node_id.as_str())
+                    && step.edge_outcome.as_deref() == Some("retry")
+            }
+        })
 }
 
 fn stable_prefix_node_ids(rounds: &[RoundState], current_round: &RoundState) -> Vec<String> {
@@ -395,6 +421,78 @@ fn predecessor_context_from_trace_ref(
     }
 }
 
+fn inherited_predecessor_context(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    trace_ref: &TraceRef,
+    branch_direction: Option<String>,
+) -> Option<PromptPredecessorContext> {
+    let node: NodeState = read_json(&app.paths.node_file(
+        task_id,
+        run_id,
+        &trace_ref.round_id,
+        &trace_ref.step.node_id,
+        &trace_ref.step.attempt_id,
+    ))
+    .ok()?;
+    let artifact = node
+        .resolved_config
+        .get("outputArtifact")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            (node.node_type == crate::domain::NodeType::AiDynamic)
+                .then_some(AI_DYNAMIC_RESULT_ARTIFACT)
+        });
+    let output_artifact = artifact.map(|name| {
+        let path = app.paths.artifact_file(
+            task_id,
+            run_id,
+            &trace_ref.round_id,
+            &trace_ref.step.node_id,
+            &trace_ref.step.attempt_id,
+            name,
+        );
+        PromptArtifactRef {
+            name: name.to_string(),
+            preview: artifact_preview(&path),
+            path,
+        }
+    });
+    Some(PromptPredecessorContext {
+        round_id: trace_ref.round_id.clone(),
+        node_id: node.node_id.clone(),
+        attempt_id: node.attempt_id.clone(),
+        node_type: format!("{:?}", node.node_type).to_ascii_lowercase(),
+        branch_kind: if node
+            .resolved_config
+            .get("manualCheck")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
+            "人工check"
+        } else if artifact.is_some() {
+            "节点输出检查"
+        } else {
+            "普通"
+        }
+        .to_string(),
+        outcome: node
+            .outcome
+            .map(|outcome| format!("{outcome:?}").to_ascii_lowercase()),
+        branch_direction,
+        output_artifact,
+        branch_reason: None,
+        attachments: predecessor_attachments(
+            app,
+            task_id,
+            run_id,
+            &trace_ref.round_id,
+            &trace_ref.step,
+        ),
+    })
+}
+
 fn build_predecessor_contexts(
     app: &App,
     task_id: &str,
@@ -405,6 +503,7 @@ fn build_predecessor_contexts(
     workflow: &ValidatedWorkflow,
 ) -> Vec<PromptPredecessorContext> {
     let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
+    let run = app.run_status(task_id, run_id).ok();
     let traces =
         scoped_predecessor_trace_refs(&rounds, current_round, current_node_id, current_attempt_id);
 
@@ -412,7 +511,6 @@ fn build_predecessor_contexts(
         .iter()
         .enumerate()
         .filter_map(|(index, trace_ref)| {
-            let node_dsl = workflow.get_node(&trace_ref.step.node_id)?;
             let next = traces.get(index + 1);
             let branch_direction = next
                 .and_then(|next| next.step.edge_outcome.clone())
@@ -432,6 +530,21 @@ fn build_predecessor_contexts(
                         None
                     }
                 });
+            if run.as_ref().is_some_and(|run| {
+                rounds
+                    .iter()
+                    .find(|round| round.id == trace_ref.round_id)
+                    .is_some_and(|round| run.is_inherited_step(round, &trace_ref.step))
+            }) {
+                return inherited_predecessor_context(
+                    app,
+                    task_id,
+                    run_id,
+                    trace_ref,
+                    branch_direction,
+                );
+            }
+            let node_dsl = workflow.get_node(&trace_ref.step.node_id)?;
             Some(predecessor_context_from_trace_ref(
                 app,
                 task_id,
@@ -458,6 +571,20 @@ pub(super) fn build_new_round_trigger_context(
     }
     let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
     let trigger = new_round_trigger_trace_ref(&rounds, current_round)?;
+    if app.run_status(task_id, run_id).ok().is_some_and(|run| {
+        rounds
+            .iter()
+            .find(|round| round.id == trigger.round_id)
+            .is_some_and(|round| run.is_inherited_step(round, &trigger.step))
+    }) {
+        return inherited_predecessor_context(
+            app,
+            task_id,
+            run_id,
+            &trigger,
+            Some("$new-round".to_string()),
+        );
+    }
     let node_dsl = workflow.get_node(&trigger.step.node_id)?;
     Some(predecessor_context_from_trace_ref(
         app,
@@ -1634,6 +1761,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -1708,6 +1836,82 @@ mod tests {
             .map(|trace_ref| format!("{}/{}", trace_ref.round_id, trace_ref.step.node_id))
             .collect::<Vec<_>>();
         assert_eq!(locators, vec!["round-002/dev"]);
+    }
+
+    #[test]
+    fn new_round_entry_context_follows_retries_but_not_workflow_reentry() {
+        let previous = traced_round(
+            "round-001",
+            1,
+            crate::domain::RoundTrigger::Initial,
+            vec![
+                trace_step(1, "plan", None),
+                trace_step(2, "dev", Some("plan")),
+            ],
+        );
+        let mut retry = trace_step(2, "dev", Some("dev"));
+        retry.attempt_id = "attempt-002".to_string();
+        retry.edge_outcome = Some("retry".to_string());
+        let mut another_retry = retry.clone();
+        another_retry.sequence = 3;
+        another_retry.attempt_id = "attempt-003".to_string();
+        let mut reentry = trace_step(5, "dev", Some("accept"));
+        reentry.attempt_id = "attempt-004".to_string();
+        reentry.edge_outcome = Some("failure".to_string());
+        let mut reentry_retry = retry.clone();
+        reentry_retry.sequence = 6;
+        reentry_retry.attempt_id = "attempt-005".to_string();
+        let current = traced_round(
+            "round-002",
+            2,
+            crate::domain::RoundTrigger::NewRound,
+            // Sequence is authoritative even if the stored array is unordered.
+            vec![
+                another_retry,
+                trace_step(1, "dev", None),
+                retry,
+                trace_step(4, "accept", Some("dev")),
+                reentry,
+                reentry_retry,
+            ],
+        );
+        let rounds = vec![previous, current.clone()];
+        for attempt in ["attempt-001", "attempt-002", "attempt-003"] {
+            let contexts = scoped_predecessor_trace_refs(&rounds, &current, "dev", attempt);
+            assert_eq!(contexts[0].round_id, "round-001", "{attempt}");
+            assert_eq!(contexts[0].step.node_id, "plan", "{attempt}");
+        }
+        for (node, attempt) in [
+            ("accept", "attempt-001"),
+            ("dev", "attempt-004"),
+            ("dev", "attempt-005"),
+            ("dev", "missing-attempt"),
+        ] {
+            let contexts = scoped_predecessor_trace_refs(&rounds, &current, node, attempt);
+            assert!(
+                contexts
+                    .iter()
+                    .all(|context| context.round_id == current.id)
+            );
+        }
+        for (outcome, from) in [("failure", "dev"), ("retry", "other")] {
+            let mut same_node_edge = current.clone();
+            same_node_edge.trace.retain(|step| step.sequence <= 2);
+            let step = same_node_edge
+                .trace
+                .iter_mut()
+                .find(|step| step.sequence == 2)
+                .unwrap();
+            step.edge_outcome = Some(outcome.to_string());
+            step.from_node_id = Some(from.to_string());
+            let contexts =
+                scoped_predecessor_trace_refs(&rounds, &same_node_edge, "dev", "attempt-002");
+            assert!(
+                contexts
+                    .iter()
+                    .all(|context| context.round_id == current.id)
+            );
+        }
     }
 
     fn write_task_prompt_input(app: &App, task_id: &str) -> crate::provider::TaskPromptInput {

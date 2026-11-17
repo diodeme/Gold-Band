@@ -212,4 +212,14 @@
 - CICD 与 WB workflow 契约在 default 和 `wb` 渠道均通过。
 - `cargo check -p gold-band --tests -j 1`、`cargo fmt --all -- --check`、`git diff --check` 通过。
 
+## 2026-11-16 DeepSeek ACP 的 MCP 协议兼容
+
+根因：`gold-band-memory` 使用 `rmcp` 自定义实现 `tools/list`，默认响应只包含工具列表；DeepSeek Harness 使用 MCP `2026-07-28` 客户端时严格要求 `ttlMs` 与 `cacheScope`，因此在工具同步阶段拒绝整个 `session/new`。这属于既有 stdio 设计在协议演进边界上的实现不完整，不改变记忆领域的数据、绑定、存储或生命周期设计。
+
+- [x] `MemoryMcp::list_tools` 根据 `RequestContext::protocol_version()` 使用 `rmcp` 原生 builder 为 `2026-07-28` 及更新协议补齐 `ttlMs=0`、`cacheScope=private`；旧协议继续省略现代字段。
+- [x] 增加真实 stdio 子进程的现代协议回归测试，覆盖 DeepSeek 的无 `initialize` 现代 `tools/list` 请求及旧协议兼容性。
+- [ ] 使用修复后的生产 EXE 通过 DeepSeek Harness 验证同时挂载 `maling-code-graph` 与 `gold-band-memory` 的完整 `session/new`；代码图谱 MCP 不修改，仅作为双 MCP 回归对象。
+
+过度设计与性能复核：复用现有 `rmcp` 版本协商和 `ListToolsResult` 类型，不增加依赖、状态、缓存或队列；仅在工具列表响应中增加一次协议版本判断和固定字段，工具数量与记忆 I/O 不变，无新增性能风险。
+
 性能复核：普通节点删除两个有界记忆文件读取、合并、最多 32 KiB 序列化和 prompt token 传输；binding 仅校验既有 locator，真实读取发生在角色调用工具时。没有新增状态、缓存、队列、后台任务、依赖或历史扫描；CICD / WB 按需增加一次有界工具读取。AI-DYNAMIC 默认并行测试仍存在既有用例间共享状态导致的偶发失败，单独运行和完整串行运行均通过，未修改该领域实现。

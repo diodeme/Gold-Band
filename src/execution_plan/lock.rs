@@ -143,6 +143,18 @@ pub fn dispatch_read_held(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+pub fn dispatch_write_held(key: &str) -> bool {
+    let Ok(shard) = shard(key) else {
+        return false;
+    };
+    shard
+        .inner
+        .lock()
+        .map(|inner| inner.writer)
+        .unwrap_or(false)
+}
+
 /// Lock order: take the execution-plan lock before `attempt_runtime_state_lock`.
 /// Provider callbacks keep using only the attempt runtime lock.
 pub fn with_dispatch_read<T>(key: &str, body: impl FnOnce() -> T) -> PlanResult<T> {

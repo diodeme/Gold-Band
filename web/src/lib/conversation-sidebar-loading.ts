@@ -457,11 +457,6 @@ export function removeConversationSidebarTask(
   };
 }
 
-type SidebarFlight = {
-  promise: Promise<unknown>;
-  refresh?: () => Promise<unknown>;
-};
-
 /**
  * Flight keys whose in-flight page loads are premise-void once a bootstrap
  * identity set lands: workspace pages, the pinned page, and the merged recent
@@ -483,53 +478,4 @@ export function conversationSidebarBootstrapInvalidationKeys(
     'pinned',
     'recent',
   ];
-}
-
-export class ConversationSidebarSingleFlight {
-  private readonly flights = new Map<string, SidebarFlight>();
-  private readonly generations = new Map<string, number>();
-
-  generation(key: string) {
-    return this.generations.get(key) ?? 0;
-  }
-
-  isCurrent(key: string, generation: number) {
-    return this.generation(key) === generation;
-  }
-
-  run<T>(key: string, request: () => Promise<T>, refresh = false): Promise<T> {
-    const current = this.flights.get(key);
-    if (current) {
-      if (refresh) current.refresh = request;
-      return current.promise as Promise<T>;
-    }
-    const flight: SidebarFlight = { promise: Promise.resolve() };
-    this.flights.set(key, flight);
-    const drain = async () => {
-      let next = request;
-      for (;;) {
-        let result: T;
-        try {
-          result = await next();
-        } catch (error) {
-          if (this.flights.get(key) !== flight || !flight.refresh) throw error;
-          next = flight.refresh as () => Promise<T>;
-          flight.refresh = undefined;
-          continue;
-        }
-        if (this.flights.get(key) !== flight || !flight.refresh) return result;
-        next = flight.refresh as () => Promise<T>;
-        flight.refresh = undefined;
-      }
-    };
-    flight.promise = drain().finally(() => {
-      if (this.flights.get(key) === flight) this.flights.delete(key);
-    });
-    return flight.promise as Promise<T>;
-  }
-
-  invalidate(key: string) {
-    this.generations.set(key, this.generation(key) + 1);
-    this.flights.delete(key);
-  }
 }

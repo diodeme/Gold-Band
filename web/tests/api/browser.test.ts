@@ -3,8 +3,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AcpSessionUpdatedEventVm } from '../../src/api/client';
 import { browserApi } from '../../src/api/browser';
+import { canonicalizeConversationPageIdentity, conversationPageMatchesRun } from '../../src/lib/conversation-navigation';
 
 describe('browserApi', () => {
+  it('resolves the ErrorBlocked preview deep link to its canonical run identity', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-051');
+    const page = canonicalizeConversationPageIdentity({
+      kind: 'conversation-run', projectId: 'default', taskId: 'mock-task', runId: 'run-051',
+    }, run.taskUuid);
+    expect(conversationPageMatchesRun(page, run)).toBe(true);
+    expect(run.pauseReason).toBe('error-blocked');
+    expect(run.workflowGraph.nodes.every((node) => !node.retryable && node.attempts?.every((attempt) => !attempt.retryable) !== false)).toBe(true);
+  });
+  it('forks a historical failed attempt once and seals only its source', async () => {
+    const request = { projectId: 'default', taskId: 'mock-task', runId: 'run-056', expectedRoundId: 'round-001', expectedNodeId: 'dev', expectedAttemptId: 'attempt-001' };
+    const first = await browserApi.rerunFailedNode(request);
+    const repeated = await browserApi.rerunFailedNode(request);
+    expect(repeated.locator).toEqual(first.locator);
+    expect(first.locator.runId).not.toBe(request.runId);
+    const source = await browserApi.getConversationRun('default', 'mock-task', request.runId);
+    const successor = await browserApi.getConversationRun('default', 'mock-task', first.locator.runId);
+    expect(source.sealed).toBe(true);
+    expect(source.runStatus).toBe('completed');
+    expect(successor.sealed).toBe(false);
+    expect(successor.sessionTree.rounds[0].nodes[0].attempts.map((attempt) => [attempt.attemptId, attempt.inherited])).toEqual([['attempt-001', true], ['attempt-002', false]]);
+    await expect(browserApi.rerunFailedNode({ ...request, runId: 'run-051' })).rejects.toMatchObject({ code: 'workflow.retry.error-blocked' });
+  });
   it('isolates saved composer drafts by project as well as task', async () => {
     const saved = await browserApi.saveConversationComposerDraft('draft-project-a', 'shared-task', { displayText: 'private draft', quotes: [] });
     const other = await browserApi.listConversationComposerDrafts('draft-project-b', 'shared-task');

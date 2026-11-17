@@ -483,7 +483,7 @@ describe('conversation sidebar navigation wiring', () => {
     expect(globalSubscription).toContain('applyConversationSidebarRunStateUpdate(current, event)');
     expect(globalSubscription).toContain('conversationRunStateRefreshRef.current?.(event)');
     expect(globalSubscription).not.toContain('getConversationSidebar(');
-    expect(selectedRunRefresh).toContain('getConversationRun(');
+    expect(selectedRunRefresh).toContain('loadConversationRun(');
     expect(selectedRunRefresh).not.toContain('getConversationSidebar(');
     expect(selectedRunStateHandler).toContain("event.eventKind === 'node-started'");
     expect(source).toContain('canonicalRunBoundaryInFlight');

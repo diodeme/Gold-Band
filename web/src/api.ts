@@ -246,8 +246,12 @@ export function submitManualCheck(projectId: string | null | undefined, taskId: 
   return getRuntimeApi().submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome);
 }
 
-export function retryRun(taskId: string, runId: string) {
-  return getRuntimeApi().retryRun(taskId, runId);
+export function retryCurrentNode(request: Parameters<ReturnType<typeof getRuntimeApi>['retryCurrentNode']>[0]) {
+  return getRuntimeApi().retryCurrentNode(request);
+}
+
+export function rerunFailedNode(request: Parameters<ReturnType<typeof getRuntimeApi>['rerunFailedNode']>[0]) {
+  return getRuntimeApi().rerunFailedNode(request);
 }
 
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {

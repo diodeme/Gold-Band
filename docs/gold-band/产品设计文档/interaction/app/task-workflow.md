@@ -251,7 +251,45 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 - AI-DYNAMIC 内部控制协议产物 `dynamic-node-completion` 也作为产物展示；runtime 必须只在 provider 已返回完整且合法的 artifact 内容后落盘该文件，不允许用 0 字节占位文件、停止前最后一句普通 assistant 文本或非法 JSON 触发产物数量和弹窗入口。
 - 点击 artifact 或 attachment 后打开二级抽屉展示完整内容；二级抽屉左上提供返回按钮，返回上一级节点详情。
 
-右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id、从该节点重跑；核心浏览路径必须通过单击节点完成。
+#### 7.1.1 当前节点重试契约
+
+> 详细实施设计见[工作流当前节点重试设计方案](../../../开发计划/生命周期整理/工作流当前节点重试设计方案.md)。
+
+右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id；当前失败的外层普通 Workflow 节点额外提供“重试当前节点”。核心浏览路径必须通过单击节点完成，历史节点不显示“从该节点重跑”入口。
+
+当前节点重试使用 canonical run 的 `current_round/current_node/current_attempt` 作为唯一执行位置，在同 round、同 node 下创建新 attempt。旧 attempt、旧产物、旧 ACP session 与日志全部保留；新 attempt 使用新 ACP session 和新产物目录。该操作不回滚下游节点，只允许用于尚未成功推进的当前节点。
+
+可用条件：
+
+- 节点是当前 canonical 外层普通 Workflow 节点，且存在稳定 attempt locator；当前 Run 尚未进入终态。
+- 当前 Run 必须为 `Paused + RuntimeAbnormal`，且当前 node 为 `Paused + outcome=null`、没有仍在推进的 runtime execution。`ErrorBlocked` 第一阶段一律不得用重试绕过；修复 workflow、profile、Agent、Git、DSL、continuation identity 或 runtime invariant 后创建 successor/new run。
+- 当前 attempt 没有 `manual_check_pending`；人工检查必须先被显式处理，不能用重试绕过。
+- 当前 Run 已发布的 execution plan、Agent、profile 与 Git/worktree 能力校验通过。
+- `Completed + Success/Failure` 均不提供当前节点重试；已完成 Run 需要使用 successor run / handoff 能力。
+- `Paused + RuntimeAbnormal` 但当前 node 已 `Completed + Success` 时使用既有 `recover-completed-attempt`，不创建新 attempt。
+
+命令契约使用 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)`。`expected` locator 是 durable CAS 条件：后端在旧 attempt 锁内重读权威状态，三者完全匹配才允许创建新 attempt；进程内锁只负责同一桌面 runtime instance 的临界区串行化，不能冒充跨进程 CAS。若 current attempt 已是 expected attempt 在 canonical trace 中的直接 retry successor，则把请求视为首次提交的幂等重投，返回同一 `operationId + locator` 与当前最新 Run 摘要；其他不匹配返回 `workflow.retry.stale-locator`，前端刷新最新 run，不得自动再次提交。终态 Run 和 ErrorBlocked 分别返回 `workflow.retry.run-terminal`、`workflow.retry.error-blocked`。重复点击、并发请求和响应丢失后的同一请求最多创建一个新 attempt。
+
+重试使用当前 Run 的 execution plan。后端在锁外按该版本完成预检，提交时按 plan read lock → attempt lock 复核版本并持锁到状态落盘。预检期间发布新版本时，返回既有 `conversation.execution-plan.revision-conflict`，不创建 attempt；刷新后重新提交使用新计划。幂等命中仍优先返回已接受操作，不因后续计划更新重复执行。新 attempt 创建后，其调用配置不随计划更新回写。
+
+“继续”、completed-attempt recovery 与 retry 在登记恢复候选前必须先复核各自的权威位置和状态。Continue 先提交时 retry 被 RunActive 拒绝；retry 先提交时迟到 Continue 或旧 completed recovery 被拒绝。失败请求不能覆盖或清理已接受执行的恢复 token，确保正常退出和重启仍能定位活跃 Run。
+
+状态提交顺序沿用 node -> round -> run：锁内先按旧 current locator 截断 `round.trace` 为 canonical 前缀，再分配下一个 attempt、创建 fresh node state、更新 current pointer、清理暂停原因并追加 retry step。`run.current_round/current_node/current_attempt` 是本次当前位置转移和新 trace step 的 durable commit marker，不是同 locator 状态更新的通用 revision；当前 round 的图、历史、恢复和执行上下文都按该 locator 截断 trace，已完成的更早 round 则使用完整已校验 trace。不能从当前 trace 尾部猜测 attempt。只有 run 文件成功原子替换并指向新 locator 后才算 accepted。
+
+会话树只展示 canonical trace 引用的节点和 attempts，节点状态来自该节点最后一个已提交 attempt。创建新 attempt 过程中留下的空目录、孤立文件和未提交尾部不得隐藏旧会话或显示额外的运行中会话；已提交节点文件损坏则明确返回读取错误。浏览历史 round 时，后端同时读取当前 round 上下文，进入新 round 后仍可打开之前的会话。
+
+新 attempt ID 通过共享目录预留 helper 原子创建：从 current attempt 的下一编号开始，已存在则递增重试，允许崩溃遗留目录造成编号空洞；不得依赖“扫描最大编号后再创建”的竞态窗口。该手动重试不改变 Workflow Control 中 `max_attempts` 仅统计 failure 修复跳转的既有语义。
+
+命令返回 `RetryCurrentNodeAcceptedVm`：包含最新 Run summary、新 attempt 完整 locator 和稳定 `operationId`；幂等重投保持 `operationId + locator` 不变，Run summary 取重投时的最新权威状态。accepted 不表示后台已完成。后续执行交由后台驱动和既有 runtime candidate / interrupted 恢复语义；后台 spawn 失败必须只做一次 terminalize，不能留下永久 running 或返回第二个 accepted。结构化错误码集中管理，后端只返回 code 与 params，不生成对客文案。
+
+重试命令使用异步 IPC；workspace 解析、环境预检、锁等待和状态提交完整进入既有 blocking pool，准备阶段不能占用窗口主线程或 async runtime 调度线程。界面在等待命令时继续响应用户操作，维持目标节点的 pending 指示；命令仍在 durable commit 与后台驱动交接完成后返回 accepted，不提前确认成功。
+
+retry 成功进入后继节点后发生异常时，暂停和错误事件必须指向实际出错的当前节点；后台驱动持续跟踪自己的执行位置，并按现有 execution identity 防止迟到失败覆盖用户停止或新执行。
+
+前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，保持到命令与最新快照读取完成。
+
+首次加载、live event、重试、停止和 execution plan 保存后的 Run 读取共用同一刷新管线。同一 `projectId/taskId/runId` 最多一个读取在途，重叠刷新只保留一个最新的后续重读；有后续重读时不向消费端发布旧结果或旧失败，等待最新重读收敛。应用快照前核对操作所属的 canonical `projectId/taskUuid/runId` 与当前页面，切换 Run 或复用可读 locator 不得串数据，旧命令返回后也不得转而刷新新页面。刷新使用返回时最新的手动 session 选择，保留用户正在浏览的历史会话；读取失败保留当前图和会话，后续刷新可以恢复。
+已打开的 workflow-view 工作区跟随 `workflowGraph` 投影更新；保持 renderer 注册稳定，只在当前图引用变化时刷新右侧图，避免中心页和右侧工作区显示不同状态。
 
 ### 7.2 会话页
 

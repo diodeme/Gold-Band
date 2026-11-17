@@ -1,7 +1,5 @@
 /** @vitest-environment jsdom */
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -204,11 +202,4 @@ describe('conversation run workflow save contract', () => {
     await act(async () => root.unmount());
   });
 
-  it('refreshes the conversation run projection after a committed execution-plan save', () => {
-    const appSource = readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
-
-    expect(appSource).toContain('onExecutionPlanSaved={async () => {');
-    expect(appSource).not.toContain('onSaveWorkflow={async (json, modelBindings) => {');
-    expect(appSource).toContain("applyConversationRunSnapshot(refreshed, 'workflow-save', {");
-  });
 });

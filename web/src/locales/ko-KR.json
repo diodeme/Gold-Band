@@ -1027,6 +1027,7 @@
       "continue-launch-channel-closed": "워크플로 재개가 시작되지 않았습니다. 다시 시도하세요."
     },
     "composer": {
+      "resizeHandle": "드래그하여 입력창 높이 조절",
       "context-limit-exceeded": "컨텍스트에는 참조와 첨부 파일을 최대 {{max}}개까지 포함할 수 있습니다.",
       "referenceUnavailable": "참조를 사용할 수 없습니다"
     },
@@ -1983,7 +1984,6 @@
     "loadFailed": "이 턴의 파일 변경을 불러올 수 없습니다",
     "partial": "일부 파일 변경을 완전히 기록하지 못했습니다",
     "showMore": "파일 {{count}}개 더 보기",
-    "collapse": "파일 목록 접기",
     "openDiff": "{{path}} diff 보기",
     "openVersion": "{{path}}의 이번 턴 버전 보기",
     "deletedFile": "{{path}} 삭제됨",
@@ -2317,6 +2317,16 @@
     "scrollForHistory": "— 위로 스크롤하여 기록 보기 —",
     "returnToLatest": "최신으로 돌아가기",
     "rawSearchPlaceholder": "원시 프레임 내용 검색…",
+    "turnRail": {
+      "label": "대화 탐색",
+      "jump": "이동: {{preview}}",
+      "kind": {
+        "prompt": "사용자 질문",
+        "tool": "도구 호출",
+        "compaction": "컨텍스트 압축",
+        "permission": "권한 요청"
+      }
+    },
     "rawKindPlaceholder": "이벤트 유형",
     "rawKindAll": "모든 이벤트",
     "rawDirectionAll": "모든 방향",
@@ -2887,13 +2897,23 @@
       "title": "배경화면",
       "chooseTitle": "데스크톱 배경화면",
       "description": "사용자 지정 배경화면은 테마 배경화면을 덮어쓰고 클라이언트 크기에 맞춥니다.",
-      "choose": "배경화면 선택",
       "recent": "최근 사용",
       "useRecent": "이 최근 배경화면 사용",
+      "deleteRecent": "이 배경화면 삭제",
       "noRecent": "최근 배경화면 없음",
       "import": "새 배경화면 가져오기",
-      "restoreTheme": "테마 배경화면 복원",
+      "sourceTheme": "테마 배경화면",
+      "sourceCustom": "사용자 지정",
+      "sourceDisable": "사용 안 함",
+      "themeUnavailable": "현재 테마에는 배경화면이 없습니다",
+      "none": "테마 배경화면 사용 안 함",
+      "noneActive": "사용 안 함",
+      "themeGallery": "테마 배경화면",
+      "useThemeWallpaper": "이 테마 배경화면 사용",
       "visibility": "배경화면 가시성",
+      "fitLabel": "맞춤 방식",
+      "fitCover": "채우기",
+      "fitContain": "맞추기",
       "previewTitle": "배경화면 미리보기",
       "expandPreview": "배경화면 미리보기 확장",
       "collapsePreview": "배경화면 미리보기 접기",

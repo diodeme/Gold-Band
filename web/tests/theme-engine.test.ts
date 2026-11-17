@@ -55,7 +55,7 @@ function themeWithVisualQualityProfile() {
 
 describe('theme package contract', () => {
   it('validates every built-in package with paired light and dark schemes', () => {
-    expect(builtinThemes).toHaveLength(2);
+    expect(builtinThemes).toHaveLength(4);
     for (const theme of builtinThemes) {
       expect(themePackageSchema.parse(theme)).toStrictEqual(theme);
       expect(theme.schemes.light).toBeDefined();
@@ -63,7 +63,9 @@ describe('theme package contract', () => {
     }
     expect(themePackageSummaries.map(({ id }) => id)).toEqual([
       'builtin.gold-band',
+      'builtin.meadow',
       'builtin.tech-neutral',
+      'builtin.vista',
     ]);
   });
 

@@ -262,6 +262,10 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
+export function getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, afterSeq?: number | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, afterSeq, outerNodeId, outerAttemptId);
+}
+
 export function reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport) {
   return getRuntimeApi().reportSourceControlLoad(report);
 }
@@ -663,8 +667,24 @@ export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, op
   return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
 }
 
+export function saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('./types').WallpaperFitPreference) {
+  return getRuntimeApi().saveDesktopWallpaperFit(colorScheme, fit);
+}
+
 export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
   return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
+}
+
+export function clearDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().clearDesktopWallpaper(colorScheme);
+}
+
+export function deleteRecentDesktopWallpaper(wallpaperId: string) {
+  return getRuntimeApi().deleteRecentDesktopWallpaper(wallpaperId);
+}
+
+export function selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string) {
+  return getRuntimeApi().selectThemeDesktopWallpaper(colorScheme, assetId);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {

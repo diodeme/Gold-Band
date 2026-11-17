@@ -492,6 +492,9 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, afterSeq, outerNodeId, outerAttemptId) {
+    return invokeCommand<import('../types').ConversationTurnIndexEntryVm[]>('get_conversation_turn_index', { projectId, taskId, runId, roundId, nodeId, attemptId, branchId: branchId ?? null, afterSeq: afterSeq ?? null, outerNodeId: outerNodeId ?? null, outerAttemptId: outerAttemptId ?? null });
+  },
   getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand<import('../types').AcpActivityDetailVm>('get_acp_activity_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
@@ -645,8 +648,20 @@ export const desktopApi: RuntimeApi = {
   saveDesktopWallpaperOpacity(colorScheme, opacityPercent) {
     return invokeCommand<PreferencesVm>('save_desktop_wallpaper_opacity', { input: { colorScheme, opacityPercent } }).then(withWallpaperAssetUrls);
   },
+  saveDesktopWallpaperFit(colorScheme, fit) {
+    return invokeCommand<PreferencesVm>('save_desktop_wallpaper_fit', { input: { colorScheme, fit } }).then(withWallpaperAssetUrls);
+  },
   restoreThemeDesktopWallpaper(colorScheme) {
     return invokeCommand<PreferencesVm>('restore_theme_desktop_wallpaper', { input: { colorScheme } }).then(withWallpaperAssetUrls);
+  },
+  clearDesktopWallpaper(colorScheme) {
+    return invokeCommand<PreferencesVm>('clear_desktop_wallpaper', { input: { colorScheme } }).then(withWallpaperAssetUrls);
+  },
+  deleteRecentDesktopWallpaper(wallpaperId) {
+    return invokeCommand<PreferencesVm>('delete_recent_desktop_wallpaper', { input: { wallpaperId } }).then(withWallpaperAssetUrls);
+  },
+  selectThemeDesktopWallpaper(colorScheme, assetId) {
+    return invokeCommand<PreferencesVm>('select_theme_desktop_wallpaper', { input: { colorScheme, assetId } }).then(withWallpaperAssetUrls);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;

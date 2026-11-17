@@ -1,0 +1,444 @@
+{
+  "windowSurface": {
+    "$type": "color",
+    "$value": "#0f0e10"
+  },
+  "semantic": {
+    "background": {
+      "$type": "color",
+      "$value": "#0f0e10"
+    },
+    "foreground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "title": {
+      "$type": "color",
+      "$value": "#f5f2ec"
+    },
+    "card": {
+      "$type": "color",
+      "$value": "#17161a"
+    },
+    "cardForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "popover": {
+      "$type": "color",
+      "$value": "#1a191d"
+    },
+    "popoverForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "primary": {
+      "$type": "color",
+      "$value": "#E8A54A"
+    },
+    "primaryForeground": {
+      "$type": "color",
+      "$value": "#221407"
+    },
+    "secondary": {
+      "$type": "color",
+      "$value": "#211f24"
+    },
+    "secondaryForeground": {
+      "$type": "color",
+      "$value": "#d8d3cb"
+    },
+    "muted": {
+      "$type": "color",
+      "$value": "#1a181c"
+    },
+    "mutedForeground": {
+      "$type": "color",
+      "$value": "#99938b"
+    },
+    "accent": {
+      "$type": "color",
+      "$value": "#2b2117"
+    },
+    "accentForeground": {
+      "$type": "color",
+      "$value": "#eecf9f"
+    },
+    "destructive": {
+      "$type": "color",
+      "$value": "#e0564c"
+    },
+    "border": {
+      "$type": "color",
+      "$value": "#26232a"
+    },
+    "input": {
+      "$type": "color",
+      "$value": "#38343d"
+    },
+    "ring": {
+      "$type": "color",
+      "$value": "#E8A54A"
+    },
+    "selection": {
+      "$type": "color",
+      "$value": "#3a2617"
+    },
+    "selectionForeground": {
+      "$type": "color",
+      "$value": "#f2e2cd"
+    },
+    "messageUser": {
+      "$type": "color",
+      "$value": "#292019"
+    },
+    "messageUserForeground": {
+      "$type": "color",
+      "$value": "#efe6d8"
+    },
+    "contentHeader": {
+      "$type": "color",
+      "$value": "#17161a"
+    },
+    "contentHeaderForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "conversationBackground": {
+      "$type": "color",
+      "$value": "#0f0e10"
+    },
+    "conversationForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "messageAssistant": {
+      "$type": "color",
+      "$value": "transparent"
+    },
+    "messageAssistantForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "composer": {
+      "$type": "color",
+      "$value": "#17161a"
+    },
+    "composerForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "activity": {
+      "$type": "color",
+      "$value": "#141317"
+    },
+    "activityForeground": {
+      "$type": "color",
+      "$value": "#d8d3cb"
+    },
+    "toolCard": {
+      "$type": "color",
+      "$value": "#17161a"
+    },
+    "toolCardForeground": {
+      "$type": "color",
+      "$value": "#d8d3cb"
+    },
+    "permissionCard": {
+      "$type": "color",
+      "$value": "#1c2130"
+    },
+    "permissionCardForeground": {
+      "$type": "color",
+      "$value": "#adc0e8"
+    },
+    "workspaceTab": {
+      "$type": "color",
+      "$value": "#141317"
+    },
+    "workspaceTabForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "resourceHeader": {
+      "$type": "color",
+      "$value": "#141317"
+    },
+    "resourceHeaderForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "fileTree": {
+      "$type": "color",
+      "$value": "#131215"
+    },
+    "fileTreeForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "editor": {
+      "$type": "color",
+      "$value": "#121114"
+    },
+    "editorForeground": {
+      "$type": "color",
+      "$value": "#ece9e4"
+    },
+    "diffAdded": {
+      "$type": "color",
+      "$value": "rgba(72,163,124,.16)"
+    },
+    "diffAddedForeground": {
+      "$type": "color",
+      "$value": "#8bd7b2"
+    },
+    "diffRemoved": {
+      "$type": "color",
+      "$value": "rgba(224,86,76,.16)"
+    },
+    "diffRemovedForeground": {
+      "$type": "color",
+      "$value": "#eb9a94"
+    },
+    "diffModified": {
+      "$type": "color",
+      "$value": "rgba(124,150,232,.16)"
+    },
+    "diffModifiedForeground": {
+      "$type": "color",
+      "$value": "#a8bcf0"
+    },
+    "sidebar": {
+      "$type": "color",
+      "$value": "#121114"
+    },
+    "sidebarForeground": {
+      "$type": "color",
+      "$value": "#d8d3cb"
+    },
+    "sidebarPrimary": {
+      "$type": "color",
+      "$value": "#E8A54A"
+    },
+    "sidebarPrimaryForeground": {
+      "$type": "color",
+      "$value": "#221407"
+    },
+    "sidebarAccent": {
+      "$type": "color",
+      "$value": "#241d15"
+    },
+    "sidebarAccentForeground": {
+      "$type": "color",
+      "$value": "#eecf9f"
+    },
+    "sidebarBorder": {
+      "$type": "color",
+      "$value": "#232026"
+    },
+    "sidebarRing": {
+      "$type": "color",
+      "$value": "#E8A54A"
+    },
+    "workspace": {
+      "$type": "color",
+      "$value": "#0f0e10"
+    },
+    "surfaceLow": {
+      "$type": "color",
+      "$value": "#131215"
+    },
+    "surfaceHigh": {
+      "$type": "color",
+      "$value": "#1c1a1f"
+    },
+    "lineSoft": {
+      "$type": "color",
+      "$value": "rgba(236,233,228,.07)"
+    },
+    "windowOutline": {
+      "$type": "color",
+      "$value": "rgba(236,233,228,.26)"
+    },
+    "windowEdgeShadow": {
+      "$type": "color",
+      "$value": "rgba(0,0,0,.4)"
+    },
+    "link": {
+      "$type": "color",
+      "$value": "#8aa3e8"
+    },
+    "running": {
+      "$type": "color",
+      "$value": "#7c96df"
+    },
+    "success": {
+      "$type": "color",
+      "$value": "#48a37c"
+    },
+    "warning": {
+      "$type": "color",
+      "$value": "#d99a3d"
+    },
+    "danger": {
+      "$type": "color",
+      "$value": "#e0564c"
+    },
+    "attention": {
+      "$type": "color",
+      "$value": "#6d8fe0"
+    },
+    "attentionForeground": {
+      "$type": "color",
+      "$value": "#10131f"
+    },
+    "emphasis": {
+      "$type": "color",
+      "$value": "#f2b878"
+    },
+    "statusRunningSurface": {
+      "$type": "color",
+      "$value": "rgba(124,150,223,.10)"
+    },
+    "statusRunningBorder": {
+      "$type": "color",
+      "$value": "rgba(124,150,223,.30)"
+    },
+    "statusSuccessSurface": {
+      "$type": "color",
+      "$value": "rgba(72,163,124,.10)"
+    },
+    "statusSuccessBorder": {
+      "$type": "color",
+      "$value": "rgba(72,163,124,.30)"
+    },
+    "statusWarningSurface": {
+      "$type": "color",
+      "$value": "rgba(217,154,61,.10)"
+    },
+    "statusWarningBorder": {
+      "$type": "color",
+      "$value": "rgba(217,154,61,.30)"
+    },
+    "statusDangerSurface": {
+      "$type": "color",
+      "$value": "rgba(224,86,76,.10)"
+    },
+    "statusDangerBorder": {
+      "$type": "color",
+      "$value": "rgba(224,86,76,.30)"
+    },
+    "permission": {
+      "$type": "color",
+      "$value": "#E8A54A"
+    },
+    "titlebar": {
+      "$type": "color",
+      "$value": "#121114"
+    },
+    "titlebarForeground": {
+      "$type": "color",
+      "$value": "#c9c4bb"
+    },
+    "titlebarMuted": {
+      "$type": "color",
+      "$value": "#8a847c"
+    },
+    "titlebarBorder": {
+      "$type": "color",
+      "$value": "rgba(236,233,228,.08)"
+    },
+    "titlebarHover": {
+      "$type": "color",
+      "$value": "rgba(236,233,228,.08)"
+    },
+    "scrollbarTrack": {
+      "$type": "color",
+      "$value": "rgba(236,236,236,.04)"
+    },
+    "scrollbarThumb": {
+      "$type": "color",
+      "$value": "rgba(236,236,236,.18)"
+    },
+    "scrollbarThumbHover": {
+      "$type": "color",
+      "$value": "rgba(236,236,236,.30)"
+    }
+  },
+  "material": {
+    "model": {
+      "$type": "string",
+      "$value": "solid"
+    },
+    "surfaceOpacity": {
+      "$type": "number",
+      "$value": 1
+    },
+    "borderHighlight": {
+      "$type": "string",
+      "$value": "transparent"
+    },
+    "surfaceOverlay": {
+      "$type": "string",
+      "$value": "none"
+    },
+    "blur": {
+      "$type": "number",
+      "$value": 0
+    },
+    "saturate": {
+      "$type": "number",
+      "$value": 100
+    },
+    "backdropBrightness": {
+      "$type": "number",
+      "$value": 100
+    },
+    "backdropContrast": {
+      "$type": "number",
+      "$value": 100
+    },
+    "specularHighlight": {
+      "$type": "string",
+      "$value": "none"
+    },
+    "edgeShadow": {
+      "$type": "string",
+      "$value": "0 0 0 transparent"
+    },
+    "backgroundImage": {
+      "$type": "string",
+      "$value": "none"
+    },
+    "textureOpacity": {
+      "$type": "number",
+      "$value": 0
+    }
+  },
+  "elevation": {
+    "none": {
+      "$type": "string",
+      "$value": "none"
+    },
+    "surface": {
+      "$type": "string",
+      "$value": "0 1px 2px rgba(0,0,0,.08)"
+    },
+    "overlay": {
+      "$type": "string",
+      "$value": "0 4px 16px rgba(0,0,0,.28)"
+    },
+    "floating": {
+      "$type": "string",
+      "$value": "0 4px 16px rgba(0,0,0,.28)"
+    },
+    "pressed": {
+      "$type": "string",
+      "$value": "none"
+    },
+    "pressOffset": {
+      "$type": "number",
+      "$value": 1
+    }
+  }
+}

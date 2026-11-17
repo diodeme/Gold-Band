@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationTurnIndexEntryVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
@@ -8,6 +8,7 @@ import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { boundedRecentWallpapers } from '@/lib/wallpaper';
+import { builtinThemes } from '@/themes/builtin-themes';
 import { readBrowserMemory, writeBrowserMemory } from './browserMemory';
 
 const browserFontCandidates = [
@@ -2505,6 +2506,40 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
+  getConversationTurnIndex(_projectId?: string | null, _taskId?: string, _runId?: string, _roundId?: string, _nodeId?: string, _attemptId?: string, _branchId?: string | null, afterSeq?: number | null): Promise<ConversationTurnIndexEntryVm[]> {
+    // Browser preview has no durable timeline; a long synthetic session (~90
+    // turns across several chapters and days) exercises the rail's grouping,
+    // coloring, centering growth and internal scroll affordances.
+    const kinds: ConversationTurnIndexEntryVm['kind'][] = [
+      'prompt', 'prompt', 'tool', 'prompt', 'tool', 'permission', 'prompt',
+      'tool', 'prompt', 'compaction', 'prompt', 'tool', 'prompt', 'permission', 'prompt',
+    ];
+    const topics = [
+      '梳理项目目录结构', '跑一下构建并贴出报错', '登录 504 排查思路整理',
+      '重构数据导入模块', '补充单元测试覆盖', '修复时间解析的边界问题',
+      '性能基线记录与对比', '更新接口文档', '排查 CI 偶发超时',
+      '压缩后继续验证导入', '整理发布清单', '评审 Diff 并留备注',
+    ];
+    const total = 92;
+    const entries: ConversationTurnIndexEntryVm[] = [];
+    for (let index = 0; index < total; index += 1) {
+      const seq = index + 1;
+      if (afterSeq != null && seq <= afterSeq) continue;
+      const dayOffset = Math.floor(index / 34);
+      const hour = 9 + (index % 8);
+      const timestamp = new Date(Date.UTC(2026, 10, 9 + dayOffset, hour, index * 7 % 60, 0)).toISOString();
+      const kind = index === 0 ? 'prompt' : kinds[index % kinds.length];
+      entries.push({
+        seq,
+        timestamp,
+        kind,
+        promptPreview: kind === 'prompt'
+          ? `第 ${seq} 轮：${topics[index % topics.length]}`
+          : null,
+      });
+    }
+    return Promise.resolve(entries);
+  },
   getAcpSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, query, fallback, _outerNodeId, _outerAttemptId) {
     const rerunPreview = runId === 'run-056' ? browserFailedWorkflowFixture() : browserConversationRuns.get(runId);
     if (_projectId === 'default' && _taskId === 'mock-task' && rerunPreview
@@ -2832,7 +2867,28 @@ export const browserApi: RuntimeApi = {
   },
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging, browser });
+    let effective = personalization;
+    if (current.appearance.themeId !== appearance.themeId) {
+      const collapsed = structuredClone(personalization);
+      const byScheme = collapsed.wallpaper.byColorScheme;
+      // Theme pins never cross themes; themes without declared wallpapers
+      // cannot hold the theme source at all. Capability comes from the theme
+      // manifest, so every wallpaper-capable builtin (gold-band, meadow,
+      // vista) keeps its pin instead of collapsing to none.
+      const targetTheme = builtinThemes.find((theme) => theme.id === appearance.themeId);
+      const themeHasWallpapers = (scheme: 'light' | 'dark') =>
+        Boolean(targetTheme?.wallpapers?.[scheme]
+          && Object.keys(targetTheme.wallpapers[scheme]!).length > 0);
+      for (const scheme of ['light', 'dark'] as const) {
+        if (byScheme[scheme].image.source === 'theme') {
+          byScheme[scheme].image = themeHasWallpapers(scheme)
+            ? { source: 'theme' }
+            : { source: 'none' };
+        }
+      }
+      effective = collapsed;
+    }
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization: effective, language, useLocalClaude, verboseLogging, browser });
     return Promise.resolve(preferences);
   },
   applyDesktopZoom(percent: number) {
@@ -3020,6 +3076,23 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
   },
+  saveDesktopWallpaperFit(colorScheme, fit) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            fit,
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
   restoreThemeDesktopWallpaper(colorScheme) {
     const current = browserPreviewState.getPreferences();
     const personalization = {
@@ -3031,6 +3104,64 @@ export const browserApi: RuntimeApi = {
           [colorScheme]: {
             ...current.personalization.wallpaper.byColorScheme[colorScheme],
             image: { source: 'theme' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  clearDesktopWallpaper(colorScheme) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'none' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  deleteRecentDesktopWallpaper(wallpaperId) {
+    const current = browserPreviewState.getPreferences();
+    const target = current.wallpapers.recentWallpapers.find((wallpaper) => wallpaper.id === wallpaperId);
+    if (!target) return Promise.reject({ code: 'wallpaper.recent-not-found', params: { wallpaperId } });
+    const wallpapers = {
+      recentWallpapers: current.wallpapers.recentWallpapers.filter((wallpaper) => wallpaper.id !== wallpaperId),
+    };
+    const byColorScheme = { ...current.personalization.wallpaper.byColorScheme };
+    for (const scheme of ['light', 'dark'] as const) {
+      const image = byColorScheme[scheme].image;
+      if (image.source === 'user' && image.assetId === wallpaperId) {
+        byColorScheme[scheme] = { ...byColorScheme[scheme], image: { source: 'theme' as const } };
+      }
+    }
+    const personalization = {
+      ...current.personalization,
+      wallpaper: { ...current.personalization.wallpaper, byColorScheme },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+  },
+  selectThemeDesktopWallpaper(colorScheme, assetId) {
+    const current = browserPreviewState.getPreferences();
+    const trimmed = assetId.trim();
+    if (!trimmed) {
+      return Promise.reject({ code: 'personalization.wallpaper-invalid', params: { assetId } });
+    }
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'theme' as const, assetId: trimmed },
           },
         },
       },

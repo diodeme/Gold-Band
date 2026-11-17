@@ -1027,6 +1027,7 @@
       "continue-launch-channel-closed": "A retomada do fluxo de trabalho não iniciou. Tente novamente."
     },
     "composer": {
+      "resizeHandle": "Arraste para ajustar a altura da caixa de entrada",
       "context-limit-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
       "referenceUnavailable": "Referência indisponível"
     },
@@ -1983,7 +1984,6 @@
     "loadFailed": "Não foi possível carregar as alterações de arquivo deste turno",
     "partial": "Algumas alterações de arquivo não puderam ser capturadas completamente",
     "showMore": "Mostrar {{count}} arquivos a mais",
-    "collapse": "Recolher lista de arquivos",
     "openDiff": "Ver diff de {{path}}",
     "openVersion": "Ver versão capturada de {{path}}",
     "deletedFile": "Excluído {{path}}",
@@ -2317,6 +2317,16 @@
     "scrollForHistory": "— Role para cima para ver histórico —",
     "returnToLatest": "Voltar ao mais recente",
     "rawSearchPlaceholder": "Pesquisar conteúdo de frame bruto…",
+    "turnRail": {
+      "label": "Navegação da conversa",
+      "jump": "Ir para: {{preview}}",
+      "kind": {
+        "prompt": "Pergunta do usuário",
+        "tool": "Chamada de ferramenta",
+        "compaction": "Compactação de contexto",
+        "permission": "Solicitação de permissão"
+      }
+    },
     "rawKindPlaceholder": "Tipo de evento",
     "rawKindAll": "Todos os eventos",
     "rawDirectionAll": "Todas as direções",
@@ -2884,16 +2894,26 @@
       }
     },
     "wallpaper": {
+    "deleteRecent": "Excluir este papel de parede",
       "title": "Papel de parede",
       "chooseTitle": "Papel de parede da área de trabalho",
       "description": "Um papel de parede personalizado substitui o do tema e se adapta ao tamanho do cliente.",
-      "choose": "Escolher papel de parede",
       "recent": "Usado recentemente",
       "useRecent": "Usar este papel de parede recente",
       "noRecent": "Nenhum papel de parede recente",
       "import": "Importar novo papel de parede",
-      "restoreTheme": "Restaurar papel de parede do tema",
+      "sourceTheme": "Papel de parede do tema",
+      "sourceCustom": "Personalizado",
+      "sourceDisable": "Desativar",
+      "themeUnavailable": "O tema atual não tem papel de parede",
+      "none": "Desativar papel de parede do tema",
+      "noneActive": "Desativado",
+      "themeGallery": "Papéis de parede do tema",
+      "useThemeWallpaper": "Usar este papel de parede do tema",
       "visibility": "Visibilidade do papel de parede",
+      "fitLabel": "Ajuste",
+      "fitCover": "Preencher",
+      "fitContain": "Ajustar",
       "previewTitle": "Pré-visualização do papel de parede",
       "expandPreview": "Expandir pré-visualização do papel de parede",
       "collapsePreview": "Recolher pré-visualização do papel de parede",

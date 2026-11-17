@@ -156,10 +156,12 @@ function clonePreferences(preferences: PreferencesVm): PreferencesVm {
           light: {
             image: { ...preferences.personalization.wallpaper.byColorScheme.light.image },
             opacityPercent: preferences.personalization.wallpaper.byColorScheme.light.opacityPercent,
+            fit: preferences.personalization.wallpaper.byColorScheme.light.fit,
           },
           dark: {
             image: { ...preferences.personalization.wallpaper.byColorScheme.dark.image },
             opacityPercent: preferences.personalization.wallpaper.byColorScheme.dark.opacityPercent,
+            fit: preferences.personalization.wallpaper.byColorScheme.dark.fit,
           },
         },
       },

@@ -14,7 +14,8 @@
       "tokens",
       "component-recipes",
       "fonts",
-      "avatars"
+      "avatars",
+      "wallpapers"
     ],
     "schemes": {
       "light": {
@@ -767,9 +768,33 @@
     },
     "assets": {
       "schemaVersion": 2,
-      "count": 2,
-      "totalBytes": 2663272,
+      "count": 4,
+      "totalBytes": 5442998,
       "records": [
+        {
+          "id": "goldband-stargaze-dark",
+          "kind": "wallpaper",
+          "mediaType": "image/webp",
+          "bytes": 1561740,
+          "sha256": "57b5f23f1f9246913e13e644e167382177b5c08099f90087f94badeb021979e0",
+          "outputUrl": "/theme-assets/builtin.gold-band/57b5f23f1f924691-goldband-stargaze-dark.webp",
+          "required": true,
+          "licenseId": "goldband-inhouse",
+          "width": 2048,
+          "height": 1280
+        },
+        {
+          "id": "goldband-study-light",
+          "kind": "wallpaper",
+          "mediaType": "image/webp",
+          "bytes": 1217986,
+          "sha256": "f91fee90a7193b9c16a5f1fca0c0afd67a6167a0bcf1a9e3b7e2bbb3783db05d",
+          "outputUrl": "/theme-assets/builtin.gold-band/f91fee90a7193b9c-goldband-study-light.webp",
+          "required": true,
+          "licenseId": "goldband-inhouse",
+          "width": 2048,
+          "height": 1280
+        },
         {
           "id": "inter-latin-variable",
           "kind": "font",
@@ -877,6 +902,888 @@
           ]
         }
       ]
+    },
+    "wallpapers": {
+      "light": {
+        "conversation": {
+          "assetId": "goldband-study-light",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.1
+        },
+        "settings": {
+          "assetId": "goldband-study-light",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.1
+        }
+      },
+      "dark": {
+        "conversation": {
+          "assetId": "goldband-stargaze-dark",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.08
+        },
+        "settings": {
+          "assetId": "goldband-stargaze-dark",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.08
+        }
+      }
+    }
+  },
+  {
+    "schemaVersion": 2,
+    "contractVersion": 2,
+    "id": "builtin.meadow",
+    "version": "1.0.0",
+    "source": "builtin",
+    "name": {
+      "zh-CN": "春野",
+      "en": "Meadow"
+    },
+    "author": "Gold Band",
+    "capabilities": [
+      "tokens",
+      "component-recipes",
+      "avatars",
+      "wallpapers"
+    ],
+    "schemes": {
+      "light": {
+        "windowSurface": "#E4EEDF",
+        "preview": {
+          "background": "#E4EEDF",
+          "surface": "#F2F7EE",
+          "border": "#DCE5D7",
+          "primary": "#358050",
+          "foreground": "#333A31",
+          "muted": "#5C665A",
+          "success": "#35714A",
+          "danger": "#973A31"
+        },
+        "semantic": {
+          "background": "#E4EEDF",
+          "foreground": "#333A31",
+          "title": "#2A322A",
+          "card": "#F2F7EE",
+          "cardForeground": "#333A31",
+          "popover": "#F5F9F2",
+          "popoverForeground": "#333A31",
+          "primary": "#358050",
+          "primaryForeground": "#FFFFFF",
+          "secondary": "#E5EDE0",
+          "secondaryForeground": "#333A31",
+          "muted": "#E9F0E4",
+          "mutedForeground": "#5C665A",
+          "accent": "#E3EDDE",
+          "accentForeground": "#2A322A",
+          "destructive": "#B0483F",
+          "border": "#DCE5D7",
+          "input": "#C2D2BC",
+          "ring": "#358050",
+          "selection": "#D8E8D4",
+          "selectionForeground": "#2A322A",
+          "messageUser": "#ECF3E7",
+          "messageUserForeground": "#333A31",
+          "contentHeader": "#EAF2E6",
+          "contentHeaderForeground": "#333A31",
+          "conversationBackground": "#E4EEDF",
+          "conversationForeground": "#333A31",
+          "messageAssistant": "transparent",
+          "messageAssistantForeground": "#333A31",
+          "composer": "#EFF5EB",
+          "composerForeground": "#333A31",
+          "activity": "#EAF2E6",
+          "activityForeground": "#333A31",
+          "toolCard": "#EDF4E9",
+          "toolCardForeground": "#333A31",
+          "permissionCard": "#E7F0E4",
+          "permissionCardForeground": "#2E6B44",
+          "workspaceTab": "#EAF2E6",
+          "workspaceTabForeground": "#333A31",
+          "resourceHeader": "#F2F7EE",
+          "resourceHeaderForeground": "#333A31",
+          "fileTree": "#EAF2E6",
+          "fileTreeForeground": "#333A31",
+          "editor": "#FDFEFC",
+          "editorForeground": "#333A31",
+          "diffAdded": "rgba(74,158,105,.14)",
+          "diffAddedForeground": "#2E6B44",
+          "diffRemoved": "rgba(183,76,66,.12)",
+          "diffRemovedForeground": "#973A31",
+          "diffModified": "rgba(56,97,143,.12)",
+          "diffModifiedForeground": "#38618F",
+          "sidebar": "#CFE2CD",
+          "sidebarForeground": "#333A31",
+          "sidebarPrimary": "#358050",
+          "sidebarPrimaryForeground": "#FFFFFF",
+          "sidebarAccent": "#C4D9C2",
+          "sidebarAccentForeground": "#333A31",
+          "sidebarBorder": "#BCCFB9",
+          "sidebarRing": "#358050",
+          "workspace": "#E4EEDF",
+          "surfaceLow": "#EAF2E6",
+          "surfaceHigh": "#F0F6EC",
+          "lineSoft": "rgba(51,58,49,.08)",
+          "windowOutline": "rgba(51,58,49,.26)",
+          "windowEdgeShadow": "rgba(51,58,49,.07)",
+          "link": "#38618F",
+          "running": "#335C82",
+          "success": "#35714A",
+          "warning": "#6D5526",
+          "danger": "#973A31",
+          "attention": "#335C82",
+          "attentionForeground": "#FFFFFF",
+          "emphasis": "#67552A",
+          "statusRunningSurface": "rgba(51,92,130,.10)",
+          "statusRunningBorder": "rgba(51,92,130,.30)",
+          "statusSuccessSurface": "rgba(53,113,74,.10)",
+          "statusSuccessBorder": "rgba(53,113,74,.30)",
+          "statusWarningSurface": "rgba(109,85,38,.10)",
+          "statusWarningBorder": "rgba(109,85,38,.30)",
+          "statusDangerSurface": "rgba(151,58,49,.10)",
+          "statusDangerBorder": "rgba(151,58,49,.30)",
+          "permission": "#67552A",
+          "titlebar": "#CFE2CD",
+          "titlebarForeground": "#47534A",
+          "titlebarMuted": "#576558",
+          "titlebarBorder": "rgba(51,58,49,.08)",
+          "titlebarHover": "#C6DBC4",
+          "scrollbarTrack": "rgba(51,58,49,.03)",
+          "scrollbarThumb": "rgba(51,58,49,.16)",
+          "scrollbarThumbHover": "rgba(51,58,49,.28)"
+        },
+        "material": {
+          "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
+          "backdropBrightness": 100,
+          "backdropContrast": 100,
+          "specularHighlight": "none",
+          "edgeShadow": "0 0 0 transparent",
+          "backgroundImage": "none",
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.75rem",
+          "radiusSurface": "0.75rem",
+          "radiusOverlay": "0.75rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 4px 16px rgba(20,28,22,.08)",
+          "floating": "0 4px 16px rgba(20,28,22,.08)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "180ms",
+          "durationSlow": "240ms",
+          "easingStandard": "cubic-bezier(.16,1,.3,1)",
+          "easingEnter": "cubic-bezier(.16,1,.3,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
+        },
+        "typography": {
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 13,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
+          }
+        },
+        "avatars": {
+          "agentShape": "circle",
+          "userShape": "circle",
+          "agentAsset": null,
+          "userAsset": null
+        }
+      },
+      "dark": {
+        "windowSurface": "#202624",
+        "preview": {
+          "background": "#202624",
+          "surface": "#282F2C",
+          "border": "#39443E",
+          "primary": "#7FC494",
+          "foreground": "#E4EBE2",
+          "muted": "#9FAFA0",
+          "success": "#7FC494",
+          "danger": "#DBA49E"
+        },
+        "semantic": {
+          "background": "#202624",
+          "foreground": "#E4EBE2",
+          "title": "#EEF3EC",
+          "card": "#282F2C",
+          "cardForeground": "#E4EBE2",
+          "popover": "#2B3330",
+          "popoverForeground": "#E4EBE2",
+          "primary": "#7FC494",
+          "primaryForeground": "#12251A",
+          "secondary": "#252C29",
+          "secondaryForeground": "#E4EBE2",
+          "muted": "#242B28",
+          "mutedForeground": "#9FAFA0",
+          "accent": "#2C3A31",
+          "accentForeground": "#DFE9DC",
+          "destructive": "#C9756E",
+          "border": "#39443E",
+          "input": "#49564F",
+          "ring": "#7FC494",
+          "selection": "#31463A",
+          "selectionForeground": "#EEF3EC",
+          "messageUser": "#2E3B33",
+          "messageUserForeground": "#E4EBE2",
+          "contentHeader": "#242B28",
+          "contentHeaderForeground": "#E4EBE2",
+          "conversationBackground": "#202624",
+          "conversationForeground": "#E4EBE2",
+          "messageAssistant": "transparent",
+          "messageAssistantForeground": "#E4EBE2",
+          "composer": "#29302D",
+          "composerForeground": "#E4EBE2",
+          "activity": "#282F2C",
+          "activityForeground": "#E4EBE2",
+          "toolCard": "#242B28",
+          "toolCardForeground": "#E4EBE2",
+          "permissionCard": "#293D31",
+          "permissionCardForeground": "#A9D6B6",
+          "workspaceTab": "#282F2C",
+          "workspaceTabForeground": "#E4EBE2",
+          "resourceHeader": "#282F2C",
+          "resourceHeaderForeground": "#E4EBE2",
+          "fileTree": "#242B28",
+          "fileTreeForeground": "#E4EBE2",
+          "editor": "#303A36",
+          "editorForeground": "#E4EBE2",
+          "diffAdded": "rgba(127,196,148,.15)",
+          "diffAddedForeground": "#A9D6B6",
+          "diffRemoved": "rgba(201,117,110,.14)",
+          "diffRemovedForeground": "#DBA49E",
+          "diffModified": "rgba(144,178,214,.13)",
+          "diffModifiedForeground": "#ACC8E2",
+          "sidebar": "#1B211F",
+          "sidebarForeground": "#E4EBE2",
+          "sidebarPrimary": "#7FC494",
+          "sidebarPrimaryForeground": "#12251A",
+          "sidebarAccent": "#252C29",
+          "sidebarAccentForeground": "#E4EBE2",
+          "sidebarBorder": "#303B36",
+          "sidebarRing": "#7FC494",
+          "workspace": "#202624",
+          "surfaceLow": "#242B28",
+          "surfaceHigh": "#2D3532",
+          "lineSoft": "rgba(228,235,226,.07)",
+          "windowOutline": "rgba(228,235,226,.20)",
+          "windowEdgeShadow": "rgba(0,0,0,.38)",
+          "link": "#90B2D6",
+          "running": "#90B2D6",
+          "success": "#7FC494",
+          "warning": "#C6A96C",
+          "danger": "#DBA49E",
+          "attention": "#90B2D6",
+          "attentionForeground": "#12251A",
+          "emphasis": "#C6A96C",
+          "statusRunningSurface": "rgba(144,178,214,.12)",
+          "statusRunningBorder": "rgba(144,178,214,.32)",
+          "statusSuccessSurface": "rgba(127,196,148,.12)",
+          "statusSuccessBorder": "rgba(127,196,148,.32)",
+          "statusWarningSurface": "rgba(198,169,108,.12)",
+          "statusWarningBorder": "rgba(198,169,108,.32)",
+          "statusDangerSurface": "rgba(219,164,158,.12)",
+          "statusDangerBorder": "rgba(219,164,158,.32)",
+          "permission": "#C6A96C",
+          "titlebar": "#1B211F",
+          "titlebarForeground": "#9FAFA0",
+          "titlebarMuted": "#748376",
+          "titlebarBorder": "rgba(228,235,226,.08)",
+          "titlebarHover": "#232A27",
+          "scrollbarTrack": "rgba(255,255,255,.03)",
+          "scrollbarThumb": "rgba(228,235,226,.17)",
+          "scrollbarThumbHover": "rgba(228,235,226,.28)"
+        },
+        "material": {
+          "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
+          "backdropBrightness": 100,
+          "backdropContrast": 100,
+          "specularHighlight": "none",
+          "edgeShadow": "0 0 0 transparent",
+          "backgroundImage": "none",
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.75rem",
+          "radiusSurface": "0.75rem",
+          "radiusOverlay": "0.75rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 4px 16px rgba(0,0,0,.28)",
+          "floating": "0 4px 16px rgba(0,0,0,.28)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "180ms",
+          "durationSlow": "240ms",
+          "easingStandard": "cubic-bezier(.16,1,.3,1)",
+          "easingEnter": "cubic-bezier(.16,1,.3,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
+        },
+        "typography": {
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 13,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
+          }
+        },
+        "avatars": {
+          "agentShape": "circle",
+          "userShape": "circle",
+          "agentAsset": null,
+          "userAsset": null
+        }
+      }
+    },
+    "recipes": {
+      "shell": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "none"
+      },
+      "titlebar": {
+        "background": "sidebar",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "sidebar": {
+        "background": "sidebar",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "navigation-item": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
+      },
+      "panel": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "card": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "composer": {
+        "background": "composer",
+        "foreground": "composer-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "elevated",
+        "motion": "surface",
+        "states": {
+          "focus": {
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "message-user": {
+        "background": "message-user",
+        "foreground": "message-user-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "message-assistant": {
+        "background": "message-assistant",
+        "foreground": "message-assistant-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "message-disclosure": {
+        "background": "activity",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "runtime-control": {
+        "background": "activity",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "activity": {
+        "background": "transparent",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "tool-card": {
+        "background": "tool-card",
+        "foreground": "tool-card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "permission-card": {
+        "background": "transparent",
+        "foreground": "permission-card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "dialog": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "floating",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "sheet": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "floating",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "popover": {
+        "background": "popover",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "input": {
+        "background": "surface-low",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-primary": {
+        "background": "primary",
+        "foreground": "primary-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "overlay"
+          },
+          "active": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-secondary": {
+        "background": "surface-high",
+        "foreground": "card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-ghost": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "editor": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "diff": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "workspace-tab": {
+        "background": "workspace-tab",
+        "foreground": "workspace-tab-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
+      },
+      "workflow-node": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "workflow-edge": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "foreground": "accent-foreground",
+            "border": "ring"
+          }
+        }
+      },
+      "scrollbar": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "pill",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      }
+    },
+    "assets": {
+      "schemaVersion": 2,
+      "count": 2,
+      "totalBytes": 3680142,
+      "records": [
+        {
+          "id": "meadow-bamboo-dark",
+          "kind": "wallpaper",
+          "mediaType": "image/webp",
+          "bytes": 2097758,
+          "sha256": "0aa70c707fa3fcdb8992fef96365bbf5c5ae7c01bc9cab356d1b2bfd3ed7ed30",
+          "outputUrl": "/theme-assets/builtin.meadow/0aa70c707fa3fcdb-meadow-bamboo-dark.webp",
+          "required": true,
+          "licenseId": "meadow-inhouse",
+          "width": 2048,
+          "height": 1280
+        },
+        {
+          "id": "meadow-kite-light",
+          "kind": "wallpaper",
+          "mediaType": "image/webp",
+          "bytes": 1582384,
+          "sha256": "9093305581d4d8d751be150d2560743a93e5530ca9206e22b16ff5be13c36894",
+          "outputUrl": "/theme-assets/builtin.meadow/9093305581d4d8d7-meadow-kite-light.webp",
+          "required": true,
+          "licenseId": "meadow-inhouse",
+          "width": 2048,
+          "height": 1280
+        }
+      ]
+    },
+    "wallpapers": {
+      "light": {
+        "conversation": {
+          "assetId": "meadow-kite-light",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.1
+        },
+        "settings": {
+          "assetId": "meadow-kite-light",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.1
+        }
+      },
+      "dark": {
+        "conversation": {
+          "assetId": "meadow-bamboo-dark",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.08
+        },
+        "settings": {
+          "assetId": "meadow-bamboo-dark",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.08
+        }
+      }
     }
   },
   {
@@ -1757,6 +2664,862 @@
           ]
         }
       ]
+    }
+  },
+  {
+    "schemaVersion": 2,
+    "contractVersion": 2,
+    "id": "builtin.vista",
+    "version": "1.0.0",
+    "source": "builtin",
+    "name": {
+      "zh-CN": "画境",
+      "en": "Vista"
+    },
+    "author": "Gold Band",
+    "capabilities": [
+      "tokens",
+      "component-recipes",
+      "avatars",
+      "wallpapers",
+      "visual-quality-profiles"
+    ],
+    "schemes": {
+      "light": {
+        "windowSurface": "#faf8f4",
+        "preview": {
+          "background": "#faf8f4",
+          "surface": "#ffffff",
+          "border": "#e6e1d8",
+          "primary": "#2F6157",
+          "foreground": "#211d1a",
+          "muted": "#6f685f",
+          "success": "#0a7a5e",
+          "danger": "#B0483F"
+        },
+        "semantic": {
+          "background": "#faf8f4",
+          "foreground": "#211d1a",
+          "title": "#17130f",
+          "card": "#ffffff",
+          "cardForeground": "#211d1a",
+          "popover": "#ffffff",
+          "popoverForeground": "#211d1a",
+          "primary": "#2F6157",
+          "primaryForeground": "#ffffff",
+          "secondary": "#f1ede7",
+          "secondaryForeground": "#35302b",
+          "muted": "#f1ede7",
+          "mutedForeground": "#6f685f",
+          "accent": "#f9eddd",
+          "accentForeground": "#7c5418",
+          "destructive": "#B0483F",
+          "border": "#e6e1d8",
+          "input": "#B6C2D8",
+          "ring": "#2F6157",
+          "selection": "#DFEDE9",
+          "selectionForeground": "#211d1a",
+          "messageUser": "#f1ece2",
+          "messageUserForeground": "#211d1a",
+          "contentHeader": "#ffffff",
+          "contentHeaderForeground": "#211d1a",
+          "conversationBackground": "#faf8f4",
+          "conversationForeground": "#211d1a",
+          "messageAssistant": "transparent",
+          "messageAssistantForeground": "#211d1a",
+          "composer": "#ffffff",
+          "composerForeground": "#211d1a",
+          "activity": "#f4f1ec",
+          "activityForeground": "#211d1a",
+          "toolCard": "#ffffff",
+          "toolCardForeground": "#211d1a",
+          "permissionCard": "#E3EEEA",
+          "permissionCardForeground": "#2F6157",
+          "workspaceTab": "#f4f1ec",
+          "workspaceTabForeground": "#211d1a",
+          "resourceHeader": "#ffffff",
+          "resourceHeaderForeground": "#211d1a",
+          "fileTree": "#f4f1ec",
+          "fileTreeForeground": "#211d1a",
+          "editor": "#fdfcfa",
+          "editorForeground": "#211d1a",
+          "diffAdded": "rgba(10,122,94,.12)",
+          "diffAddedForeground": "#0d6b52",
+          "diffRemoved": "rgba(176,72,63,.12)",
+          "diffRemovedForeground": "#9A3E36",
+          "diffModified": "rgba(47,97,87,.12)",
+          "diffModifiedForeground": "#27524A",
+          "sidebar": "#f4f1ec",
+          "sidebarForeground": "#211d1a",
+          "sidebarPrimary": "#2F6157",
+          "sidebarPrimaryForeground": "#ffffff",
+          "sidebarAccent": "#ece5d9",
+          "sidebarAccentForeground": "#211d1a",
+          "sidebarBorder": "#e6e1d8",
+          "sidebarRing": "#2F6157",
+          "workspace": "#faf8f4",
+          "surfaceLow": "#f4f1ec",
+          "surfaceHigh": "#efebe4",
+          "lineSoft": "rgba(33,29,26,.07)",
+          "windowOutline": "rgba(33,29,26,.26)",
+          "windowEdgeShadow": "rgba(33,29,26,.08)",
+          "link": "#2F6157",
+          "running": "#33708A",
+          "success": "#0a7a5e",
+          "warning": "#9d5f07",
+          "danger": "#B0483F",
+          "attention": "#33708A",
+          "attentionForeground": "#ffffff",
+          "emphasis": "#8a5a1f",
+          "statusRunningSurface": "rgba(51,112,138,.10)",
+          "statusRunningBorder": "rgba(51,112,138,.30)",
+          "statusSuccessSurface": "rgba(10,122,94,.10)",
+          "statusSuccessBorder": "rgba(10,122,94,.30)",
+          "statusWarningSurface": "rgba(157,95,7,.10)",
+          "statusWarningBorder": "rgba(157,95,7,.30)",
+          "statusDangerSurface": "rgba(176,72,63,.10)",
+          "statusDangerBorder": "rgba(176,72,63,.30)",
+          "permission": "#8a5a1f",
+          "titlebar": "#f4f1ec",
+          "titlebarForeground": "#57514a",
+          "titlebarMuted": "#8a847c",
+          "titlebarBorder": "rgba(33,29,26,.08)",
+          "titlebarHover": "#f1ede7",
+          "scrollbarTrack": "rgba(33,33,33,.03)",
+          "scrollbarThumb": "rgba(33,33,33,.16)",
+          "scrollbarThumbHover": "rgba(33,33,33,.28)"
+        },
+        "material": {
+          "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
+          "backdropBrightness": 100,
+          "backdropContrast": 100,
+          "specularHighlight": "none",
+          "edgeShadow": "0 0 0 transparent",
+          "backgroundImage": "none",
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.75rem",
+          "radiusSurface": "0.75rem",
+          "radiusOverlay": "0.75rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 4px 16px rgba(33,29,26,.06)",
+          "floating": "0 4px 16px rgba(33,29,26,.06)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "180ms",
+          "durationSlow": "240ms",
+          "easingStandard": "cubic-bezier(.16,1,.3,1)",
+          "easingEnter": "cubic-bezier(.16,1,.3,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
+        },
+        "typography": {
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 13,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
+          }
+        },
+        "avatars": {
+          "agentShape": "circle",
+          "userShape": "circle",
+          "agentAsset": null,
+          "userAsset": null
+        }
+      },
+      "dark": {
+        "windowSurface": "#0f0e10",
+        "preview": {
+          "background": "#0f0e10",
+          "surface": "#17161a",
+          "border": "#26232a",
+          "primary": "#E8A54A",
+          "foreground": "#ece9e4",
+          "muted": "#99938b",
+          "success": "#48a37c",
+          "danger": "#e0564c"
+        },
+        "semantic": {
+          "background": "#0f0e10",
+          "foreground": "#ece9e4",
+          "title": "#f5f2ec",
+          "card": "#17161a",
+          "cardForeground": "#ece9e4",
+          "popover": "#1a191d",
+          "popoverForeground": "#ece9e4",
+          "primary": "#E8A54A",
+          "primaryForeground": "#221407",
+          "secondary": "#211f24",
+          "secondaryForeground": "#d8d3cb",
+          "muted": "#1a181c",
+          "mutedForeground": "#99938b",
+          "accent": "#2b2117",
+          "accentForeground": "#eecf9f",
+          "destructive": "#e0564c",
+          "border": "#26232a",
+          "input": "#38343d",
+          "ring": "#E8A54A",
+          "selection": "#3a2617",
+          "selectionForeground": "#f2e2cd",
+          "messageUser": "#292019",
+          "messageUserForeground": "#efe6d8",
+          "contentHeader": "#17161a",
+          "contentHeaderForeground": "#ece9e4",
+          "conversationBackground": "#0f0e10",
+          "conversationForeground": "#ece9e4",
+          "messageAssistant": "transparent",
+          "messageAssistantForeground": "#ece9e4",
+          "composer": "#17161a",
+          "composerForeground": "#ece9e4",
+          "activity": "#141317",
+          "activityForeground": "#d8d3cb",
+          "toolCard": "#17161a",
+          "toolCardForeground": "#d8d3cb",
+          "permissionCard": "#1c2130",
+          "permissionCardForeground": "#adc0e8",
+          "workspaceTab": "#141317",
+          "workspaceTabForeground": "#ece9e4",
+          "resourceHeader": "#141317",
+          "resourceHeaderForeground": "#ece9e4",
+          "fileTree": "#131215",
+          "fileTreeForeground": "#ece9e4",
+          "editor": "#121114",
+          "editorForeground": "#ece9e4",
+          "diffAdded": "rgba(72,163,124,.16)",
+          "diffAddedForeground": "#8bd7b2",
+          "diffRemoved": "rgba(224,86,76,.16)",
+          "diffRemovedForeground": "#eb9a94",
+          "diffModified": "rgba(124,150,232,.16)",
+          "diffModifiedForeground": "#a8bcf0",
+          "sidebar": "#121114",
+          "sidebarForeground": "#d8d3cb",
+          "sidebarPrimary": "#E8A54A",
+          "sidebarPrimaryForeground": "#221407",
+          "sidebarAccent": "#241d15",
+          "sidebarAccentForeground": "#eecf9f",
+          "sidebarBorder": "#232026",
+          "sidebarRing": "#E8A54A",
+          "workspace": "#0f0e10",
+          "surfaceLow": "#131215",
+          "surfaceHigh": "#1c1a1f",
+          "lineSoft": "rgba(236,233,228,.07)",
+          "windowOutline": "rgba(236,233,228,.26)",
+          "windowEdgeShadow": "rgba(0,0,0,.4)",
+          "link": "#8aa3e8",
+          "running": "#7c96df",
+          "success": "#48a37c",
+          "warning": "#d99a3d",
+          "danger": "#e0564c",
+          "attention": "#6d8fe0",
+          "attentionForeground": "#10131f",
+          "emphasis": "#f2b878",
+          "statusRunningSurface": "rgba(124,150,223,.10)",
+          "statusRunningBorder": "rgba(124,150,223,.30)",
+          "statusSuccessSurface": "rgba(72,163,124,.10)",
+          "statusSuccessBorder": "rgba(72,163,124,.30)",
+          "statusWarningSurface": "rgba(217,154,61,.10)",
+          "statusWarningBorder": "rgba(217,154,61,.30)",
+          "statusDangerSurface": "rgba(224,86,76,.10)",
+          "statusDangerBorder": "rgba(224,86,76,.30)",
+          "permission": "#E8A54A",
+          "titlebar": "#121114",
+          "titlebarForeground": "#c9c4bb",
+          "titlebarMuted": "#8a847c",
+          "titlebarBorder": "rgba(236,233,228,.08)",
+          "titlebarHover": "rgba(236,233,228,.08)",
+          "scrollbarTrack": "rgba(236,236,236,.04)",
+          "scrollbarThumb": "rgba(236,236,236,.18)",
+          "scrollbarThumbHover": "rgba(236,236,236,.30)"
+        },
+        "material": {
+          "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
+          "backdropBrightness": 100,
+          "backdropContrast": 100,
+          "specularHighlight": "none",
+          "edgeShadow": "0 0 0 transparent",
+          "backgroundImage": "none",
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.75rem",
+          "radiusSurface": "0.75rem",
+          "radiusOverlay": "0.75rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 4px 16px rgba(0,0,0,.28)",
+          "floating": "0 4px 16px rgba(0,0,0,.28)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "180ms",
+          "durationSlow": "240ms",
+          "easingStandard": "cubic-bezier(.16,1,.3,1)",
+          "easingEnter": "cubic-bezier(.16,1,.3,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
+        },
+        "typography": {
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 13,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
+          }
+        },
+        "avatars": {
+          "agentShape": "circle",
+          "userShape": "circle",
+          "agentAsset": null,
+          "userAsset": null
+        }
+      }
+    },
+    "recipes": {
+      "shell": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "none"
+      },
+      "titlebar": {
+        "background": "sidebar",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "sidebar": {
+        "background": "sidebar",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "navigation-item": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
+      },
+      "panel": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "card": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "composer": {
+        "background": "composer",
+        "foreground": "composer-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "elevated",
+        "motion": "surface",
+        "states": {
+          "focus": {
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "message-user": {
+        "background": "message-user",
+        "foreground": "message-user-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "message-assistant": {
+        "background": "message-assistant",
+        "foreground": "message-assistant-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "message-disclosure": {
+        "background": "activity",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "runtime-control": {
+        "background": "activity",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "activity": {
+        "background": "transparent",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "tool-card": {
+        "background": "tool-card",
+        "foreground": "tool-card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "permission-card": {
+        "background": "transparent",
+        "foreground": "permission-card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "dialog": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "floating",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "sheet": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "floating",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "popover": {
+        "background": "popover",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "input": {
+        "background": "surface-low",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-primary": {
+        "background": "primary",
+        "foreground": "primary-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "overlay"
+          },
+          "active": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-secondary": {
+        "background": "surface-high",
+        "foreground": "card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-ghost": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "editor": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "diff": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "workspace-tab": {
+        "background": "workspace-tab",
+        "foreground": "workspace-tab-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
+      },
+      "workflow-node": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "workflow-edge": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "foreground": "accent-foreground",
+            "border": "ring"
+          }
+        }
+      },
+      "scrollbar": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "pill",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      }
+    },
+    "assets": {
+      "schemaVersion": 2,
+      "count": 2,
+      "totalBytes": 4679948,
+      "records": [
+        {
+          "id": "vista-inkwash-light",
+          "kind": "wallpaper",
+          "mediaType": "image/webp",
+          "bytes": 3150164,
+          "sha256": "6e2a1101278f6479217d021a1938fecddd79944cfb62d495d1c75c874cf8759f",
+          "outputUrl": "/theme-assets/builtin.vista/6e2a1101278f6479-vista-inkwash-light.webp",
+          "required": true,
+          "licenseId": "vista-inhouse",
+          "width": 2048,
+          "height": 1280
+        },
+        {
+          "id": "vista-summit-dark",
+          "kind": "wallpaper",
+          "mediaType": "image/webp",
+          "bytes": 1529784,
+          "sha256": "fdc204a9c07cb1a24352196e47bd220935274c7cf92e092650f4e07be8c4eb6a",
+          "outputUrl": "/theme-assets/builtin.vista/fdc204a9c07cb1a2-vista-summit-dark.webp",
+          "required": true,
+          "licenseId": "vista-inhouse",
+          "width": 2048,
+          "height": 1280
+        }
+      ]
+    },
+    "wallpapers": {
+      "light": {
+        "conversation": {
+          "assetId": "vista-inkwash-light",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.1
+        },
+        "settings": {
+          "assetId": "vista-inkwash-light",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.1
+        }
+      },
+      "dark": {
+        "conversation": {
+          "assetId": "vista-summit-dark",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.08
+        },
+        "settings": {
+          "assetId": "vista-summit-dark",
+          "fit": "cover",
+          "position": "center",
+          "repeat": "no-repeat",
+          "opacity": 0.9,
+          "overlayColor": "background",
+          "overlayOpacity": 0.08
+        }
+      }
+    },
+    "visualQualityProfiles": {
+      "default": "full",
+      "supported": [
+        "full",
+        "performance"
+      ],
+      "performance": {
+        "blur": 0,
+        "saturate": 100,
+        "textureOpacity": 0,
+        "wallpapers": {
+          "enabled": false
+        }
+      }
     }
   }
 ]

@@ -1027,6 +1027,7 @@
       "continue-launch-channel-closed": "The workflow resume did not start. Try again."
     },
     "composer": {
+      "resizeHandle": "Drag to resize the input box",
       "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
       "referenceUnavailable": "Reference unavailable"
     },
@@ -1983,7 +1984,6 @@
     "loadFailed": "Unable to load this turn's file changes",
     "partial": "Some file changes could not be captured completely",
     "showMore": "Show {{count}} more files",
-    "collapse": "Collapse file list",
     "openDiff": "View diff for {{path}}",
     "openVersion": "View this turn's version of {{path}}",
     "deletedFile": "Deleted {{path}}",
@@ -2317,6 +2317,16 @@
     "scrollForHistory": "— Scroll up for history —",
     "returnToLatest": "Back to latest",
     "rawSearchPlaceholder": "Search raw frame content…",
+    "turnRail": {
+      "label": "Conversation navigation",
+      "jump": "Jump to: {{preview}}",
+      "kind": {
+        "prompt": "User prompt",
+        "tool": "Tool call",
+        "compaction": "Context compaction",
+        "permission": "Permission request"
+      }
+    },
     "rawKindPlaceholder": "Event type",
     "rawKindAll": "All events",
     "rawDirectionAll": "All directions",
@@ -2887,13 +2897,23 @@
       "title": "Wallpaper",
       "chooseTitle": "Desktop wallpaper",
       "description": "A custom wallpaper overrides the theme wallpaper and adapts to the client size.",
-      "choose": "Choose wallpaper",
       "recent": "Recently used",
       "useRecent": "Use this recent wallpaper",
+      "deleteRecent": "Delete this wallpaper",
       "noRecent": "No recent wallpapers",
       "import": "Import new wallpaper",
-      "restoreTheme": "Restore theme wallpaper",
+      "sourceTheme": "Theme wallpaper",
+      "sourceCustom": "Custom",
+      "sourceDisable": "Disable",
+      "themeUnavailable": "The current theme has no wallpaper",
+      "none": "Disable theme wallpaper",
+      "noneActive": "Disabled",
+      "themeGallery": "Theme wallpapers",
+      "useThemeWallpaper": "Use this theme wallpaper",
       "visibility": "Wallpaper visibility",
+      "fitLabel": "Fit",
+      "fitCover": "Fill",
+      "fitContain": "Fit",
       "previewTitle": "Wallpaper preview",
       "expandPreview": "Expand wallpaper preview",
       "collapsePreview": "Collapse wallpaper preview",

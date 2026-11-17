@@ -60,7 +60,8 @@ use gold_band::config::{
     MAX_FONT_FAMILY_CHARS, MAX_FONT_STACK_FAMILIES, MAX_INTERFACE_ZOOM_PERCENT,
     MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, MIN_INTERFACE_ZOOM_PERCENT, ManagedAgentConfig,
     ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape, PersonalizationPreference,
-    WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
+    ResolvedColorScheme, WallpaperFitPreference, WallpaperImagePreference,
+    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
@@ -124,8 +125,10 @@ use crate::view_models_conversation::{
     conversation_session_successor,
 };
 use crate::wallpaper::{
-    ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
-    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput, import_wallpaper_image,
+    ClearDesktopWallpaperInput, DeleteRecentWallpaperInput, ImportDesktopWallpaperInput,
+    RestoreThemeDesktopWallpaperInput, SaveDesktopWallpaperFitInput,
+    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput,
+    SelectThemeDesktopWallpaperInput, delete_recent_wallpaper, import_wallpaper_image,
     load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
     select_recent_wallpaper,
 };
@@ -6801,6 +6804,76 @@ fn acp_live_event_context(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnIndexEntryVm {
+    pub seq: u64,
+    pub timestamp: String,
+    /// Dominant rail kind: prompt | tool | compaction | permission.
+    pub kind: gold_band::acp::events::ConversationTurnKind,
+    pub prompt_preview: Option<String>,
+}
+
+/// Session-level turn navigation index for the conversation turn rail: one
+/// entry per user prompt with the dominant event kind of the turn. Reads the
+/// durable branch timeline only; live in-flight turns appear once committed.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn get_conversation_turn_index(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: Option<String>,
+    after_seq: Option<u64>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<Vec<ConversationTurnIndexEntryVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
+    let branch_id =
+        branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    // The branch id feeds a filesystem path join; validate it exactly like the
+    // other timeline commands so a crafted id cannot escape the attempt dir.
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
+        .map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+            (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node,
+                outer_attempt,
+                &node_id,
+                &attempt_id,
+            ),
+            _ => app
+                .paths
+                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id),
+        };
+        let timeline_path =
+            gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+        // Navigation projections never render artifact bodies, so the read
+        // skips blob hydration and stays proportional to the turn index; the
+        // whole scan also runs off the main thread and only holds the file
+        // lock for the lean parse.
+        let events = gold_band::acp::events::load_timeline_items_without_hydration(&timeline_path)
+            .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
+        Ok(gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
+            .into_iter()
+            .map(|entry| ConversationTurnIndexEntryVm {
+                seq: entry.seq,
+                timestamp: entry.timestamp,
+                kind: entry.kind,
+                prompt_preview: entry.prompt_preview,
+            })
+            .collect::<Vec<_>>())
+    })
+    .await
+}
 #[tauri::command]
 pub async fn get_acp_session(
     state: State<'_, DesktopState>,
@@ -10012,6 +10085,20 @@ pub fn save_desktop_preferences(
     });
     let context = state.context().map_err(command_error)?;
     let app = context.app();
+    if context.config.appearance.theme_id != appearance.theme_id {
+        personalization.wallpaper.strip_theme_pins();
+        // A theme without declared wallpapers cannot hold the theme source;
+        // collapse it so the settings UI shows custom or disabled instead.
+        let target_supports_wallpapers = theme_catalog
+            .iter()
+            .find(|theme| theme.id == appearance.theme_id)
+            .is_some_and(|theme| theme.wallpapers.is_some());
+        if !target_supports_wallpapers {
+            personalization
+                .wallpaper
+                .collapse_theme_sources_when_unsupported();
+        }
+    }
     match reconcile_wallpaper_personalization(&app.paths.user_gold_band_dir(), &mut personalization)
     {
         Ok(_) => {}
@@ -10192,8 +10279,8 @@ fn normalize_personalization_preference(
         }
     }
     for wallpaper in [
-        &preference.wallpaper.by_color_scheme.light,
-        &preference.wallpaper.by_color_scheme.dark,
+        &mut preference.wallpaper.by_color_scheme.light,
+        &mut preference.wallpaper.by_color_scheme.dark,
     ] {
         if matches!(&wallpaper.image, WallpaperImagePreference::User { asset_id } if asset_id.trim().is_empty())
         {
@@ -10202,6 +10289,7 @@ fn normalize_personalization_preference(
                 serde_json::json!({}),
             ));
         }
+        wallpaper.image = wallpaper.image.clone().normalized_pin();
         if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
             .contains(&wallpaper.opacity_percent)
         {
@@ -10323,7 +10411,7 @@ pub async fn import_desktop_wallpaper(
     .into_iter()
     .filter_map(|image| match image {
         WallpaperImagePreference::User { asset_id } => Some(asset_id.clone()),
-        WallpaperImagePreference::Theme => None,
+        WallpaperImagePreference::Theme { .. } | WallpaperImagePreference::None => None,
     })
     .collect::<HashSet<_>>();
     let saved = spawn_blocking_command(move || {
@@ -10395,6 +10483,22 @@ pub fn save_desktop_wallpaper_opacity(
     persist_desktop_personalization(&state, &context, personalization)
 }
 
+/// Persists how a custom wallpaper fits its surface (`cover` crops to fill,
+/// `contain` letterboxes with the theme background).
+#[tauri::command]
+pub fn save_desktop_wallpaper_fit(
+    state: State<'_, DesktopState>,
+    input: SaveDesktopWallpaperFitInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .fit = input.fit;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
 #[tauri::command]
 pub fn restore_theme_desktop_wallpaper(
     state: State<'_, DesktopState>,
@@ -10405,7 +10509,116 @@ pub fn restore_theme_desktop_wallpaper(
     personalization
         .wallpaper
         .for_color_scheme_mut(input.color_scheme)
-        .image = WallpaperImagePreference::Theme;
+        .image = WallpaperImagePreference::Theme { asset_id: None };
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+/// Explicitly disables the wallpaper for one color scheme: surfaces fall
+/// back to the theme's plain background tokens.
+#[tauri::command]
+pub fn clear_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: ClearDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::None;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+/// Deletes one imported wallpaper from the recent list; a color scheme still
+/// selecting it falls back to the theme's default assignment.
+#[tauri::command]
+pub async fn delete_recent_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: DeleteRecentWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let root = context.app().paths.user_gold_band_dir();
+    // The blocking closure only removes the store record and files; the image
+    // fallback is re-applied to the LATEST preference snapshot afterwards so a
+    // concurrent settings change (opacity, fonts, zoom, source) made while the
+    // files were being deleted is never silently overwritten.
+    let deleted = spawn_blocking_command(move || {
+        let mut scratch = PersonalizationPreference::default();
+        delete_recent_wallpaper(&root, &input.wallpaper_id, &mut scratch)
+            .map_err(wallpaper_command_error)?;
+        Ok(input.wallpaper_id)
+    })
+    .await?;
+    let latest = state.context().map_err(command_error)?;
+    let mut personalization = latest.config.personalization.clone();
+    for scheme in [ResolvedColorScheme::Light, ResolvedColorScheme::Dark] {
+        let wallpaper = personalization.wallpaper.for_color_scheme_mut(scheme);
+        if matches!(
+            &wallpaper.image,
+            WallpaperImagePreference::User { asset_id } if *asset_id == deleted
+        ) {
+            wallpaper.image = WallpaperImagePreference::Theme { asset_id: None };
+        }
+    }
+    persist_desktop_personalization(&state, &latest, personalization)
+}
+
+/// A theme wallpaper pin must reference an asset the theme assigns to that
+/// color scheme's slots; anything else is not selectable.
+fn theme_scheme_wallpaper_asset_known(
+    theme: &gold_band::theme::ThemePackage,
+    color_scheme: ResolvedColorScheme,
+    asset_id: &str,
+) -> bool {
+    let scheme_slots = match color_scheme {
+        ResolvedColorScheme::Light => theme.wallpapers.as_ref().map(|maps| &maps.light),
+        ResolvedColorScheme::Dark => theme.wallpapers.as_ref().map(|maps| &maps.dark),
+    };
+    scheme_slots.is_some_and(|slots| slots.values().any(|slot| slot.asset_id == asset_id))
+}
+
+/// Pins one specific theme-declared wallpaper for one color scheme. The pin
+/// must reference an asset the active theme assigns to that scheme's slots;
+/// slot styling (fit / position / overlay) stays with the theme descriptor.
+#[tauri::command]
+pub fn select_theme_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: SelectThemeDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let asset_id = input.asset_id.trim().to_string();
+    if asset_id.is_empty() {
+        return Err(CommandErrorVm::new(
+            "personalization.wallpaper-invalid",
+            serde_json::json!({ "assetId": input.asset_id }),
+        ));
+    }
+    let theme_catalog = gold_band::theme::builtin_theme_catalog().map_err(|error| {
+        CommandErrorVm::new(error.code, serde_json::json!({ "detail": error.detail }))
+    })?;
+    let context = state.context().map_err(command_error)?;
+    let theme_id = context.config.appearance.theme_id.clone();
+    let theme = theme_catalog
+        .iter()
+        .find(|theme| theme.id == theme_id)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "theme.active-package-missing",
+                serde_json::json!({ "themeId": theme_id }),
+            )
+        })?;
+    if !theme_scheme_wallpaper_asset_known(theme, input.color_scheme, &asset_id) {
+        return Err(CommandErrorVm::new(
+            "personalization.wallpaper-invalid",
+            serde_json::json!({ "assetId": asset_id }),
+        ));
+    }
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::Theme {
+        asset_id: Some(asset_id),
+    };
     persist_desktop_personalization(&state, &context, personalization)
 }
 
@@ -14286,6 +14499,77 @@ mod tests {
                 "personalization.wallpaper-opacity-invalid"
             );
         }
+    }
+
+    #[test]
+    fn personalization_wallpaper_normalization_accepts_none_and_blanks_empty_pins() {
+        let mut preference = PersonalizationPreference::default();
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::None;
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("   ".to_string()),
+        };
+        let normalized = normalize_personalization_preference(preference).unwrap();
+        assert_eq!(
+            normalized
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            normalized
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+    }
+
+    #[test]
+    fn theme_wallpaper_pins_accept_only_scheme_declared_assets() {
+        let catalog = gold_band::theme::builtin_theme_catalog().unwrap();
+        let vista = catalog
+            .iter()
+            .find(|theme| theme.id == "builtin.vista")
+            .expect("builtin.vista present in catalog");
+        assert!(
+            theme_scheme_wallpaper_asset_known(
+                vista,
+                ResolvedColorScheme::Light,
+                "vista-inkwash-light"
+            ),
+            "the light scheme's slots declare the light band asset"
+        );
+        assert!(!theme_scheme_wallpaper_asset_known(
+            vista,
+            ResolvedColorScheme::Light,
+            "vista-summit-dark"
+        ));
+        assert!(!theme_scheme_wallpaper_asset_known(
+            vista,
+            ResolvedColorScheme::Dark,
+            "vista-inkwash-light"
+        ));
+        assert!(!theme_scheme_wallpaper_asset_known(
+            vista,
+            ResolvedColorScheme::Light,
+            "not-an-asset"
+        ));
+        let gold_band = catalog
+            .iter()
+            .find(|theme| theme.id == "builtin.gold-band")
+            .expect("builtin.gold-band present in catalog");
+        assert!(!theme_scheme_wallpaper_asset_known(
+            gold_band,
+            ResolvedColorScheme::Light,
+            "vista-inkwash-light"
+        ));
     }
 
     #[test]

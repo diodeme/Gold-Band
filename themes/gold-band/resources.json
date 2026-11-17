@@ -14,6 +14,20 @@
       "path": "assets/fonts/misans-vf.woff2",
       "licenseId": "misans-apache",
       "required": true
+    },
+    {
+      "id": "goldband-study-light",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/goldband-study-light.webp",
+      "licenseId": "goldband-inhouse",
+      "required": true
+    },
+    {
+      "id": "goldband-stargaze-dark",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/goldband-stargaze-dark.webp",
+      "licenseId": "goldband-inhouse",
+      "required": true
     }
   ]
 }

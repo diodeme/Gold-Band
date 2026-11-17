@@ -50,6 +50,10 @@ import {
   selectRecentDesktopAvatar,
   selectRecentDesktopWallpaper,
   restoreThemeDesktopWallpaper,
+  clearDesktopWallpaper,
+  deleteRecentDesktopWallpaper,
+  selectThemeDesktopWallpaper,
+  saveDesktopWallpaperFit,
   startRemoteConversationRun,
   startRun,
   unpinConversation,
@@ -308,6 +312,7 @@ import type {
   SaveDesktopAvatarInput,
   ResolvedColorScheme,
   WorkflowRepairTarget,
+  WallpaperFitPreference,
   WallpaperPreferencesVm,
   GitCapabilityVm,
 } from './types';
@@ -2476,6 +2481,54 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
+  const onClearWallpaper = useCallback(async (colorScheme: ResolvedColorScheme): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await clearDesktopWallpaper(colorScheme);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
+  const onDeleteRecentWallpaper = useCallback(async (wallpaperId: string): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await deleteRecentDesktopWallpaper(wallpaperId);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
+  const onSelectThemeWallpaper = useCallback(async (colorScheme: ResolvedColorScheme, assetId: string): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await selectThemeDesktopWallpaper(colorScheme, assetId);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
+  const onSaveWallpaperFit = useCallback(async (colorScheme: ResolvedColorScheme, fit: WallpaperFitPreference): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await saveDesktopWallpaperFit(colorScheme, fit);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);
     try {
@@ -2657,6 +2710,10 @@ export function App() {
           onSelectRecentWallpaper={onSelectRecentWallpaper}
           onSaveWallpaperOpacity={onSaveWallpaperOpacity}
           onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+          onClearWallpaper={onClearWallpaper}
+          onDeleteRecentWallpaper={onDeleteRecentWallpaper}
+          onSelectThemeWallpaper={onSelectThemeWallpaper}
+          onSaveWallpaperFit={onSaveWallpaperFit}
           onSaveUpdaterSettings={onSaveUpdaterSettings}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}
@@ -3014,6 +3071,10 @@ export function App() {
             onSelectRecentWallpaper={onSelectRecentWallpaper}
             onSaveWallpaperOpacity={onSaveWallpaperOpacity}
             onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+            onClearWallpaper={onClearWallpaper}
+            onDeleteRecentWallpaper={onDeleteRecentWallpaper}
+            onSelectThemeWallpaper={onSelectThemeWallpaper}
+            onSaveWallpaperFit={onSaveWallpaperFit}
             onSaveUpdaterSettings={onSaveUpdaterSettings}
             onCheckUpdate={onCheckUpdate}
             onInstallUpdate={onInstallUpdate}

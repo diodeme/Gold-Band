@@ -8,6 +8,8 @@ import {
   createDefaultWallpaperPreferences,
   normalizeWallpaperOpacityPercent,
   selectedWallpaper,
+  themeWallpaperOptions,
+  themeWallpaperPin,
 } from '../src/lib/wallpaper';
 
 describe('desktop wallpaper preferences', () => {
@@ -56,6 +58,67 @@ describe('desktop wallpaper preferences', () => {
     expect(preferences.wallpapers.recentWallpapers.map((wallpaper) => wallpaper.id)).toEqual(recentIds);
   });
 
+  it('persists an explicit no-wallpaper state and pinned theme wallpapers per scheme', async () => {
+    // Shared browser preview state carries over between tests; reset both
+    // schemes to the theme default before asserting the new sources.
+    await browserApi.restoreThemeDesktopWallpaper('light');
+    await browserApi.restoreThemeDesktopWallpaper('dark');
+    let preferences = await browserApi.clearDesktopWallpaper('light');
+    expect(preferences.personalization.wallpaper.byColorScheme.light.image).toEqual({ source: 'none' });
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'theme' });
+
+    preferences = await browserApi.selectThemeDesktopWallpaper('dark', 'vista-summit-dark');
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({
+      source: 'theme',
+      assetId: 'vista-summit-dark',
+    });
+    expect(preferences.personalization.wallpaper.byColorScheme.light.image).toEqual({ source: 'none' });
+
+    await expect(browserApi.selectThemeDesktopWallpaper('light', '   '))
+      .rejects.toMatchObject({ code: 'personalization.wallpaper-invalid' });
+
+    preferences = await browserApi.restoreThemeDesktopWallpaper('dark');
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'theme' });
+  });
+
+  it('derives distinct theme wallpaper options and pins from slot descriptors', () => {
+    expect(themeWallpaperOptions([
+      { assetId: 'band', url: 'band.png' },
+      { assetId: 'band', url: 'band.png' },
+      undefined,
+      { assetId: 'grid', url: 'grid.png' },
+    ])).toEqual([
+      { assetId: 'band', url: 'band.png' },
+      { assetId: 'grid', url: 'grid.png' },
+    ]);
+    expect(themeWallpaperOptions([])).toEqual([]);
+
+    expect(themeWallpaperPin({ source: 'theme' })).toBeNull();
+    expect(themeWallpaperPin({ source: 'theme', assetId: 'band' })).toBe('band');
+    expect(themeWallpaperPin({ source: 'theme', assetId: '  ' })).toBeNull();
+    expect(themeWallpaperPin({ source: 'user', assetId: 'recent' })).toBeNull();
+    expect(themeWallpaperPin({ source: 'none' })).toBeNull();
+  });
+
+  it('deletes an imported wallpaper and falls the selected scheme back to theme', async () => {
+    // Shared browser preview state carries earlier imports; assert relative
+    // to the count right before the deletion.
+    let preferences = (await browserApi.importDesktopWallpaper('light'))!;
+    const imported = preferences.wallpapers.recentWallpapers[0];
+    const beforeDelete = preferences.wallpapers.recentWallpapers.length;
+    await browserApi.selectRecentDesktopWallpaper('dark', imported.id);
+
+    // Delete the wallpaper the dark scheme is using: the scheme falls back to
+    // the theme default and the light scheme keeps its own selection.
+    preferences = (await browserApi.deleteRecentDesktopWallpaper(imported.id))!;
+    expect(preferences.wallpapers.recentWallpapers).toHaveLength(beforeDelete - 1);
+    expect(preferences.wallpapers.recentWallpapers.map((wallpaper) => wallpaper.id)).not.toContain(imported.id);
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'theme' });
+
+    await expect(browserApi.deleteRecentDesktopWallpaper(imported.id))
+      .rejects.toMatchObject({ code: 'wallpaper.recent-not-found' });
+  });
+
   it('keeps wallpaper protocol tokens in one Windows URL path segment', () => {
     Reflect.set(globalThis, 'window', {});
     mockConvertFileSrc('windows');
@@ -101,7 +164,7 @@ describe('desktop wallpaper preferences', () => {
     expect(acpChatSource).toContain('wallpaperSurface ? "bg-transparent" : "bg-background"');
     expect(acpChatSource).toContain('wallpaperSurface ? "bg-transparent" : "bg-background"');
     expect(acpChatSource).not.toContain('wallpaperSurface={wallpaperSurface}');
-    expect(composerSource).toContain("'bg-card !shadow-none transition-colors'");
+    expect(composerSource).toContain('bg-card !shadow-none transition-colors');
     expect(promptQueueSource).toContain("'overflow-hidden bg-card'");
     expect(promptQueueSource).toContain('ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName');
     expect(generatedThemeCss).toContain('::before{z-index:-2;background-image:var(--gb-wallpaper-image,none)');

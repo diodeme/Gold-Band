@@ -1027,6 +1027,7 @@
       "continue-launch-channel-closed": "工作流恢复未能启动，请重试。"
     },
     "composer": {
+      "resizeHandle": "拖动调整输入框高度",
       "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
       "referenceUnavailable": "引用已失效"
     },
@@ -1983,7 +1984,6 @@
     "loadFailed": "无法加载本轮文件变化",
     "partial": "部分文件变化无法完整捕获",
     "showMore": "再显示 {{count}} 个文件",
-    "collapse": "收起文件列表",
     "openDiff": "查看 {{path}} 的差异",
     "openVersion": "查看 {{path}} 的本轮版本",
     "deletedFile": "已删除 {{path}}",
@@ -2317,6 +2317,16 @@
     "scrollForHistory": "— 上滑查看历史信息 —",
     "returnToLatest": "回到最新",
     "rawSearchPlaceholder": "检索原始帧内容…",
+    "turnRail": {
+      "label": "会话导航",
+      "jump": "跳转到：{{preview}}",
+      "kind": {
+        "prompt": "用户提问",
+        "tool": "工具调用",
+        "compaction": "上下文压缩",
+        "permission": "权限请求"
+      }
+    },
     "rawKindPlaceholder": "事件类型",
     "rawKindAll": "全部事件",
     "rawDirectionAll": "全部方向",
@@ -2882,13 +2892,23 @@
       "title": "壁纸",
       "chooseTitle": "桌面壁纸",
       "description": "自定义壁纸会覆盖主题包壁纸，并随客户端尺寸自适应。",
-      "choose": "选择壁纸",
       "recent": "最近使用",
       "useRecent": "使用此最近壁纸",
+      "deleteRecent": "删除此壁纸",
       "noRecent": "暂无最近壁纸",
       "import": "导入新壁纸",
-      "restoreTheme": "恢复主题壁纸",
+      "sourceTheme": "主题壁纸",
+      "sourceCustom": "自定义",
+      "sourceDisable": "禁用",
+      "themeUnavailable": "当前主题未提供壁纸",
+      "none": "禁用主题壁纸",
+      "noneActive": "已禁用",
+      "themeGallery": "主题壁纸",
+      "useThemeWallpaper": "使用此主题壁纸",
       "visibility": "壁纸可见度",
+      "fitLabel": "显示方式",
+      "fitCover": "填充",
+      "fitContain": "适应",
       "previewTitle": "壁纸预览",
       "expandPreview": "放大壁纸预览",
       "collapsePreview": "缩小壁纸预览",

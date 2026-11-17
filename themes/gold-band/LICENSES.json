@@ -10,6 +10,11 @@
       "id": "misans-apache",
       "name": "MiSans",
       "license": "Apache-2.0"
+    },
+    {
+      "id": "goldband-inhouse",
+      "name": "Gold Band Wallpapers",
+      "license": "Proprietary (in-house illustration assets)"
     }
   ]
 }

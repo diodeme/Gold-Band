@@ -243,8 +243,32 @@ pub enum AvatarPreference {
     rename_all_fields = "camelCase"
 )]
 pub enum WallpaperImagePreference {
-    Theme,
-    User { asset_id: String },
+    /// Inherits the theme's default wallpaper slot assignment. `asset_id`
+    /// pins one specific theme-declared wallpaper across every declared slot;
+    /// slot styling still belongs to the theme descriptor.
+    Theme {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asset_id: Option<String>,
+    },
+    User {
+        asset_id: String,
+    },
+    /// Explicitly renders no wallpaper at all; surfaces fall back to the
+    /// theme's plain background tokens.
+    None,
+}
+
+impl WallpaperImagePreference {
+    /// A theme wallpaper pin that is empty or blank carries no meaning and is
+    /// normalized back to the theme's default assignment.
+    pub fn normalized_pin(self) -> Self {
+        match self {
+            Self::Theme { asset_id } => Self::Theme {
+                asset_id: asset_id.filter(|id| !id.trim().is_empty()),
+            },
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,11 +328,23 @@ pub const DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 60;
 pub const MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 20;
 pub const MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 100;
 
+/// How a custom wallpaper fits its surface: `cover` fills and crops, `contain`
+/// shows the whole image and letterboxes with the theme background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WallpaperFitPreference {
+    #[default]
+    Cover,
+    Contain,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WallpaperSchemePersonalization {
     pub image: WallpaperImagePreference,
     pub opacity_percent: u8,
+    #[serde(default)]
+    pub fit: WallpaperFitPreference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,6 +378,34 @@ impl WallpaperPersonalization {
         match color_scheme {
             ResolvedColorScheme::Light => &mut self.by_color_scheme.light,
             ResolvedColorScheme::Dark => &mut self.by_color_scheme.dark,
+        }
+    }
+
+    /// Theme wallpaper pins belong to the theme they were picked from;
+    /// switching themes resets both schemes to the new theme's default slot
+    /// assignment instead of carrying a stale asset reference.
+    pub fn strip_theme_pins(&mut self) {
+        for wallpaper in [
+            &mut self.by_color_scheme.light,
+            &mut self.by_color_scheme.dark,
+        ] {
+            if let WallpaperImagePreference::Theme { asset_id } = &mut wallpaper.image {
+                *asset_id = None;
+            }
+        }
+    }
+
+    /// Themes that declare no wallpapers cannot hold the theme source; both
+    /// schemes collapse it to an explicit none so the UI never shows a
+    /// selected-but-empty theme segment.
+    pub fn collapse_theme_sources_when_unsupported(&mut self) {
+        for wallpaper in [
+            &mut self.by_color_scheme.light,
+            &mut self.by_color_scheme.dark,
+        ] {
+            if matches!(wallpaper.image, WallpaperImagePreference::Theme { .. }) {
+                wallpaper.image = WallpaperImagePreference::None;
+            }
         }
     }
 }
@@ -389,8 +453,9 @@ impl Default for PersonalizationPreference {
             shape: AvatarShapePreference::Theme,
         };
         let wallpaper = || WallpaperSchemePersonalization {
-            image: WallpaperImagePreference::Theme,
+            image: WallpaperImagePreference::Theme { asset_id: None },
             opacity_percent: DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+            fit: WallpaperFitPreference::Cover,
         };
         Self {
             schema_version: 5,
@@ -430,6 +495,7 @@ impl PersonalizationPreference {
                 MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
                 MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
             );
+            wallpaper.image = wallpaper.image.clone().normalized_pin();
         }
         self
     }
@@ -2400,8 +2466,9 @@ mod tests {
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
         ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
         ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkflowGraphDirectionPreference,
+        ResolvedColorScheme, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        SystemPromptDelivery, TurnFilesConfig, VisualQuality, WallpaperFitPreference,
+        WallpaperImagePreference, WallpaperSchemePersonalization, WorkflowGraphDirectionPreference,
         WorkspaceLayoutConfig, catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::{builtin_agent, builtin_agent_catalog};
@@ -2666,11 +2733,11 @@ mod tests {
         );
         assert_eq!(
             personalization.wallpaper.by_color_scheme.light.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization.wallpaper.by_color_scheme.dark.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
     }
 
@@ -2693,11 +2760,11 @@ mod tests {
         assert_eq!(personalization.schema_version, 5);
         assert_eq!(
             personalization.wallpaper.by_color_scheme.light.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization.wallpaper.by_color_scheme.dark.image,
-            WallpaperImagePreference::Theme
+            WallpaperImagePreference::Theme { asset_id: None }
         );
         assert_eq!(
             personalization
@@ -2714,6 +2781,144 @@ mod tests {
                 .dark
                 .opacity_percent,
             DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
+        );
+    }
+
+    #[test]
+    fn wallpaper_image_preference_round_trips_none_and_theme_pins() {
+        let none = serde_json::json!({ "source": "none" });
+        assert_eq!(
+            serde_json::from_value::<WallpaperImagePreference>(none.clone()).unwrap(),
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperImagePreference::None).unwrap(),
+            none
+        );
+
+        let plain_theme = serde_json::json!({ "source": "theme" });
+        assert_eq!(
+            serde_json::from_value::<WallpaperImagePreference>(plain_theme.clone()).unwrap(),
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperImagePreference::Theme { asset_id: None }).unwrap(),
+            plain_theme
+        );
+
+        let pinned = serde_json::json!({ "source": "theme", "assetId": "mobius-band-light" });
+        assert_eq!(
+            serde_json::from_value::<WallpaperImagePreference>(pinned.clone()).unwrap(),
+            WallpaperImagePreference::Theme {
+                asset_id: Some("mobius-band-light".to_string()),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperImagePreference::Theme {
+                asset_id: Some("mobius-band-light".to_string()),
+            })
+            .unwrap(),
+            pinned
+        );
+
+        assert_eq!(
+            WallpaperImagePreference::Theme {
+                asset_id: Some("   ".to_string()),
+            }
+            .normalized_pin(),
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            WallpaperImagePreference::None.normalized_pin(),
+            WallpaperImagePreference::None
+        );
+    }
+
+    #[test]
+    fn wallpaper_fit_preference_round_trips_and_defaults_to_cover() {
+        let defaults = PersonalizationPreference::default();
+        assert_eq!(
+            defaults.wallpaper.by_color_scheme.light.fit,
+            WallpaperFitPreference::Cover
+        );
+
+        let contain = serde_json::json!("contain");
+        assert_eq!(
+            serde_json::from_value::<WallpaperFitPreference>(contain.clone()).unwrap(),
+            WallpaperFitPreference::Contain
+        );
+        assert_eq!(
+            serde_json::to_value(WallpaperFitPreference::Contain).unwrap(),
+            contain
+        );
+        // Legacy preference files carry no fit field and default to cover.
+        let legacy = serde_json::json!({
+            "image": { "source": "theme" },
+            "opacityPercent": 60
+        });
+        let scheme: WallpaperSchemePersonalization = serde_json::from_value(legacy).unwrap();
+        assert_eq!(scheme.fit, WallpaperFitPreference::Cover);
+    }
+
+    #[test]
+    fn wallpaper_theme_sources_collapse_to_none_for_wallpaperless_themes() {
+        let mut preference = PersonalizationPreference::default();
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("mobius-band-light".to_string()),
+        };
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::None;
+        preference
+            .wallpaper
+            .collapse_theme_sources_when_unsupported();
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::None
+        );
+    }
+
+    #[test]
+    fn wallpaper_theme_pins_are_stripped_without_touching_other_sources() {
+        let mut preference = PersonalizationPreference::default();
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("mobius-band-light".to_string()),
+        };
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::None;
+        preference.wallpaper.strip_theme_pins();
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+        assert_eq!(
+            preference
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::None
         );
     }
 

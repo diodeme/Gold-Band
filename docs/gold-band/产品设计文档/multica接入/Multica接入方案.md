@@ -486,9 +486,9 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **真实约束（写入设计、不掩盖）**：会话级续跑**依赖 ACP provider 的 session 在重启后仍可 `session/load`**。若 provider 不持久化 session（或已过期清理），`strict_continue` 必失败 → 码灵自动 fallback 到整 task rerun（新会话从头跑），不会卡死或静默丢上下文。该 fallback 用 `multica.session-resume-failed` 错误码上报。
 
-#### 3.2.8 执行记录（transcript）实时上报（M5-cy）
+#### 3.2.8 执行记录（transcript）实时上报（M5-cy；用户输入 M5-da）
 
-**目标**：执行远程任务期间把模型文本、工具调用/结果、运行期错误实时上报，让 multica **既有** Web UI 直接获得执行时间线、工具步骤行、产物与 diff——**multica 服务端与前端零改动**（协议核对结论见 §4.2 C3/C4）。
+**目标**：执行远程任务期间把模型文本、工具调用/结果、运行期错误、**用户输入**实时上报，让 multica **既有** Web UI 直接获得执行时间线、工具步骤行、产物与 diff，Transcript 弹窗完整回放会话（用户的话和 agent 的响应交替出现）——**multica 服务端零改动**（协议核对结论见 §4.2 C3/C4）。
 
 **何时上报**
 
@@ -498,7 +498,8 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **上报哪些**
 
-- `text`：assistant 文本。live 事件是**全量累积快照**，按「已见字符数」差量投影，每 500ms flush 成段（单条 ≤32k 字符，超出拆连续多条）。
+- `user`：用户原话，只填 `content`（`type` 固定英文小写 `user`，multica 前端针对该字符串做专门渲染）。两类来源：**初始输入**——reporter 构造期显式推入 outbox 最前部，保证任务开始执行前作为 seq=1 第一条上报；内容 = 用户需求原话（fresh 取 composer 提交文本，resume 取被续任务 requirement 文件），**不是**组装后的完整 prompt（拼系统指令/上下文注入是引擎内部机制，报了会把第一行变成几千字噪音）。**中途插话**——观测 userTextDelta 回声事件（码灵合成的 goldBandPrompt 事件），收到即投影进同一批队列、同频率 flush，seq 分配器照常给号，「用户说了什么 → agent 如何响应」的因果顺序自动成立；原样上报、不改写、不摘要、不拼接（超 32k 拆连续多条）。过滤：只认合成事件源（`source=="goldBandPrompt"`）、隐藏注入不报（`hiddenFromChat`）、`originalUserText==true`（composer 用户亲手输入；workflow/auto 节点驱动的 turn 不报——那是引擎组装的 prompt，用户没"说过"）；fresh 直发首拍回声与初始输入逐字相等且先于 agent 输出，去重跳过以免双报。
+- `text`：assistant 文本。live 事件是**全量累积快照**，按「已见字符数」差量投影，每 500ms flush 成段（单条 ≤32k 字符，超出拆连续多条）。用户消息入队前先收起进行中的文本段，保持时间线交替顺序。
 - `tool_use` / `tool_result`：按 `toolCallId` 配对；`use` 只发一次（`rawInput` 首次可用时；终态仍无输入则发 `{}`），`result` 只在终态发一次（输出取 `rawOutput.formatted_output` → agent transcript `toolOutput` → `toolCall.content`，≤8192 字符）。
 - 工具输入**形状优先**归一化为 multica 三种约定（不依赖工具名）：`changes[]` / `file_path+content` / `file_path+old_string+new_string`；`{edits[]}` 合成为 `changes[]`；Codex `apply_patch` 文本（`*** Begin Patch` / `*** Update File:` / `*** Add File:` / `*** Delete File:` / `*** Move to:`）解析为 `changes[]`；shell 用 `{command}`；都不命中则原样透传（单字段 ≤16k 字符、整体 ≤64KB）。
 - `error`：失败/取消终态一条（文本取 fail 上报的 error）。
@@ -520,7 +521,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - 有界：未发缓冲 512 条（溢出丢最旧文本行，工具行优先保留）、工具/文本流跟踪表 2048/64（超限淘汰最旧）；单批 200 条 / 256KB。内存不随任务产出行数无界增长。
 - 非 multica 本地会话零开销：一次类型判断 + 注册表查找即返回。
 
-**验收**：`GET /api/daemon/tasks/{taskId}/messages?since=N` 拉增量与本地 timeline 比对——seq 连续无重复、文本段落齐全、`tool_use`/`tool_result` 成对、输入形状命中 multica 渲染；usage 累计值与本地 token 统计一致。内网已按此方法跑通基本流程（2026-11-13，未见阻塞）；Codex `apply_patch` 解析仍待真实样本校准。
+**验收**：`GET /api/daemon/tasks/{taskId}/messages?since=N` 拉增量与本地 timeline 比对——seq 连续无重复、文本段落齐全、`tool_use`/`tool_result` 成对、输入形状命中 multica 渲染；**seq=1 是 `user` 类型且内容 = 用户需求原话（非组装 prompt），中途插话按因果顺序插在流中间、内容逐字原样**；usage 累计值与本地 token 统计一致。内网已按此方法跑通基本流程（2026-11-13，未见阻塞）；Codex `apply_patch` 解析仍待真实样本校准。
 
 ---
 

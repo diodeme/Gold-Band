@@ -55,11 +55,18 @@ pub(crate) struct Projector {
     tools: HashMap<String, ToolState>,
     tool_order: VecDeque<String>,
     dropped_messages: u64,
+    /// 初始需求原话（已 sanitize）。仅用于回声去重：fresh 直发模式下首拍回声与它逐字
+    /// 相等且先于任何 agent 输出，跳过以免与 seq=1 显式上报双报。
+    initial_user_text: Option<String>,
+    /// 是否已观测到 agent 产出（文本/工具）。回声去重只在该标志为假时生效。
+    agent_activity_seen: bool,
 }
 
 impl Projector {
-    pub(crate) fn new() -> Self {
-        Self {
+    /// `initial_user_text`：任务的初始需求原话（用户的话，非组装后 prompt）。构造时即推入
+    /// outbox 最前部 → drain 分配 seq=1，保证「任务开始执行前，初始输入是第一条消息」。
+    pub(crate) fn new(initial_user_text: Option<&str>) -> Self {
+        let mut projector = Self {
             outbox: VecDeque::new(),
             segment: None,
             streams: HashMap::new(),
@@ -67,7 +74,17 @@ impl Projector {
             tools: HashMap::new(),
             tool_order: VecDeque::new(),
             dropped_messages: 0,
+            initial_user_text: None,
+            agent_activity_seen: false,
+        };
+        if let Some(text) = initial_user_text {
+            let text = sanitize_text(text);
+            if !text.trim().is_empty() {
+                projector.initial_user_text = Some(text.clone());
+                projector.push_user(&text);
+            }
         }
+        projector
     }
 
     /// 观测一个 live 事件。非上报类型由调用方过滤，这里再兜一层。
@@ -76,6 +93,7 @@ impl Projector {
             "textDelta" => self.observe_text(event, TYPE_TEXT),
             "thoughtDelta" if REPORT_THINKING => self.observe_text(event, TYPE_THINKING),
             "toolCall" | "toolCallUpdate" => self.observe_tool(event),
+            "userTextDelta" => self.observe_user_echo(event),
             _ => {}
         }
     }
@@ -88,6 +106,58 @@ impl Projector {
         }
         self.close_segment();
         self.push(TranscriptMessage::error(content));
+    }
+
+    /// 用户中途插话：观测 `userTextDelta` 回声事件（`record_user_prompt_event` 合成的
+    /// goldBandPrompt 事件），原样上报用户原话——与 agent 事件混入同一批队列，收到即投影，
+    /// seq 分配器照常给号，「用户说了什么 → agent 如何响应」的因果顺序自动成立。
+    ///
+    /// 过滤（防把引擎内部 prompt 报成用户的话）：
+    /// - `raw.source == "goldBandPrompt"`：只认码灵合成的用户 prompt 事件（agent 回显的
+    ///   session/update 原生事件在 client 侧已抑制，这里双保险）；
+    /// - `hiddenFromChat != true`：隐藏注入不上报；
+    /// - `raw.originalUserText == true`：`prompt.display_text` 存在 = composer 里用户亲手
+    ///   输入的文本；workflow/auto 节点驱动的 turn（display_text 缺失 → 组装 prompt）不报。
+    fn observe_user_echo(&mut self, event: &AcpUiEvent) {
+        let Some(raw) = event.raw.as_ref() else {
+            return;
+        };
+        if raw.get("source").and_then(Value::as_str) != Some("goldBandPrompt") {
+            return;
+        }
+        if raw.get("hiddenFromChat").and_then(Value::as_bool) == Some(true) {
+            return;
+        }
+        if raw.get("originalUserText").and_then(Value::as_bool) != Some(true) {
+            return;
+        }
+        let Some(content) = event.content.as_deref() else {
+            return;
+        };
+        let content = sanitize_text(content);
+        if content.trim().is_empty() {
+            return;
+        }
+        // 初始输入的回声去重：fresh 直发场景 seq=1 已显式上报初始需求，而首拍回声与它逐字
+        // 相等且必然先于任何 agent 输出（回声在 prompt 发送给 agent 之前合成）——跳过以免
+        // 双报。agent 一旦有产出，之后所有 originalUserText 回声都是真实中途插话，照常上报。
+        if !self.agent_activity_seen && self.initial_user_text.as_deref() == Some(content.as_str())
+        {
+            return;
+        }
+        // 先收起进行中的 agent 文本段，用户消息排在其后，保持时间线因果顺序。
+        self.close_segment();
+        self.push_user(&content);
+    }
+
+    /// 用户原话入队：不改写、不摘要、不拼接；超 `MAX_TEXT_CHARS` 拆连续多条（seq 相邻）。
+    fn push_user(&mut self, content: &str) {
+        let mut rest = content;
+        while !rest.is_empty() {
+            let chunk = truncate_chars(rest, MAX_TEXT_CHARS);
+            self.push(TranscriptMessage::user(chunk.clone()));
+            rest = &rest[chunk.len()..];
+        }
     }
 
     /// 收起当前文本分段。每次 flush 前调用，让文本按 flush 节奏成为独立消息，
@@ -141,6 +211,8 @@ impl Projector {
         if content.is_empty() {
             return;
         }
+        // 非空文本 = agent 已有可见产出（回声去重从此失效，用户消息一律上报）。
+        self.agent_activity_seen = true;
         let content = sanitize_text(content);
         let total = content.chars().count();
         let seen = self.streams.get(&event.id).copied().unwrap_or(0);
@@ -190,6 +262,8 @@ impl Projector {
     }
 
     fn observe_tool(&mut self, event: &AcpUiEvent) {
+        // 工具事件本身就是 agent 活动（无论是否产出 use/result 行）。
+        self.agent_activity_seen = true;
         let key = event
             .tool_call_id
             .clone()
@@ -388,6 +462,7 @@ fn value_to_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::TYPE_USER;
     use super::*;
 
     fn event(id: &str, kind: &str) -> AcpUiEvent {
@@ -431,7 +506,7 @@ mod tests {
 
     #[test]
     fn live_text_snapshots_are_projected_as_increments() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         projector.observe(&text_chunk("item-1", "你"));
         projector.observe(&text_chunk("item-1", "你好"));
         projector.observe(&text_chunk("item-1", "你好，世界"));
@@ -445,7 +520,7 @@ mod tests {
 
     #[test]
     fn text_segments_split_on_flush_and_item_change() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         projector.observe(&text_chunk("item-1", "第一段"));
         projector.close_segment();
         projector.observe(&text_chunk("item-1", "第一段第二段"));
@@ -464,7 +539,7 @@ mod tests {
 
     #[test]
     fn shrinking_snapshot_reprojects_full_content() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         projector.observe(&text_chunk("item-1", "abcdef"));
         projector.close_segment();
         projector.observe(&text_chunk("item-1", "abc"));
@@ -476,7 +551,7 @@ mod tests {
 
     #[test]
     fn thinking_is_skipped_when_disabled() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         let mut event = event("thought-1", "thoughtDelta");
         event.content = Some("内部推理".to_string());
         projector.observe(&event);
@@ -486,7 +561,7 @@ mod tests {
 
     #[test]
     fn tool_use_is_emitted_once_then_result_pairs_by_tool_call_id() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         projector.observe(&tool_event(
             "call-1",
             "call-1",
@@ -516,7 +591,7 @@ mod tests {
 
     #[test]
     fn terminal_tool_without_input_still_emits_use_then_result() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         let mut done = event("call-9", "toolCallUpdate");
         done.tool_call_id = Some("call-9".to_string());
         done.status = Some("failed".to_string());
@@ -531,7 +606,7 @@ mod tests {
 
     #[test]
     fn tool_output_is_capped() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         let mut done = tool_event("call-1", "call-1", "completed", json!({"command": "x"}));
         done.raw = Some(json!({"output": "y".repeat(MAX_TOOL_OUTPUT_CHARS * 2)}));
         projector.observe(&done);
@@ -544,7 +619,7 @@ mod tests {
 
     #[test]
     fn outbox_overflow_drops_oldest_text_first() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         for index in 0..(MAX_OUTBOX_MESSAGES + 10) {
             projector.push(TranscriptMessage::body(TYPE_TEXT, format!("t{index}")));
         }
@@ -573,10 +648,160 @@ mod tests {
 
     #[test]
     fn error_line_is_sanitized_and_capped() {
-        let mut projector = Projector::new();
+        let mut projector = Projector::new(None);
         projector.push_error("boom\0");
         let batch = drain(&mut projector);
         assert_eq!(batch[0].message_type, super::super::model::TYPE_ERROR);
         assert_eq!(batch[0].content.as_deref(), Some("boom"));
+    }
+
+    /// 用户回声事件（`record_user_prompt_event` 合成的 goldBandPrompt 形状）。
+    fn user_echo(content: &str) -> AcpUiEvent {
+        let mut event = event("gold-band-user-prompt-1", "userTextDelta");
+        event.content = Some(content.to_string());
+        event.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "synthetic": true,
+            "originalUserText": true,
+        }));
+        event
+    }
+
+    #[test]
+    fn initial_user_text_is_seq_one_and_wire_shape_is_type_content_only() {
+        let mut projector = Projector::new(Some("帮我修这个 bug\0"));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].seq, 1);
+        assert_eq!(batch[0].message_type, TYPE_USER);
+        assert_eq!(batch[0].content.as_deref(), Some("帮我修这个 bug"));
+        // 线上形状：只有 seq/type/content（multica 约定 user 行不填 tool/input/output）。
+        let wire = serde_json::to_value(&batch[0]).expect("serialize");
+        assert_eq!(
+            wire,
+            json!({"seq": 1, "type": "user", "content": "帮我修这个 bug"})
+        );
+    }
+
+    #[test]
+    fn blank_initial_user_text_is_skipped() {
+        let mut projector = Projector::new(Some("  \n\0"));
+        assert!(drain(&mut projector).is_empty());
+    }
+
+    #[test]
+    fn mid_conversation_user_echo_interleaves_with_agent_text() {
+        let mut projector = Projector::new(Some("初始需求"));
+        projector.observe(&text_chunk("item-1", "第一轮回答"));
+        projector.close_segment();
+        projector.observe(&user_echo("中途插话：换个思路"));
+        projector.observe(&text_chunk("item-2", "好的，按新思路"));
+        projector.close_segment();
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 4);
+        let kinds: Vec<(&str, &str)> = batch
+            .iter()
+            .map(|m| (m.message_type, m.content.as_deref().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (TYPE_USER, "初始需求"),
+                (TYPE_TEXT, "第一轮回答"),
+                (TYPE_USER, "中途插话：换个思路"),
+                (TYPE_TEXT, "好的，按新思路"),
+            ]
+        );
+        // seq 顺序 = 事件顺序，用户消息天然插在流中间。
+        assert_eq!(
+            batch.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn initial_echo_before_agent_activity_is_deduplicated() {
+        let mut projector = Projector::new(Some("初始需求"));
+        // fresh 直发场景：首拍回声与初始需求逐字相等，且先于任何 agent 输出。
+        projector.observe(&user_echo("初始需求"));
+        projector.observe(&text_chunk("item-1", "开始处理"));
+        projector.close_segment();
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].message_type, TYPE_USER);
+        assert_eq!(batch[1].message_type, TYPE_TEXT);
+    }
+
+    #[test]
+    fn identical_user_message_after_agent_activity_is_reported() {
+        let mut projector = Projector::new(Some("同一段话"));
+        projector.observe(&text_chunk("item-1", "第一轮回答"));
+        projector.close_segment();
+        // agent 已产出 → 内容相同也是真实中途插话，照常上报。
+        projector.observe(&user_echo("同一段话"));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch[2].message_type, TYPE_USER);
+        assert_eq!(batch[2].content.as_deref(), Some("同一段话"));
+    }
+
+    #[test]
+    fn user_echo_rejects_non_user_prompt_events() {
+        let cases: Vec<Option<Value>> = vec![
+            // 非 goldBandPrompt 合成源（agent 回显的原生 user_message_chunk）。
+            Some(json!({"originalUserText": true})),
+            // 隐藏注入。
+            Some(json!({
+                "source": "goldBandPrompt",
+                "hiddenFromChat": true,
+                "originalUserText": true,
+            })),
+            // 无 display_text（引擎组装的 prompt，如 workflow 节点 turn / 隐藏 section 注入）。
+            Some(json!({"source": "goldBandPrompt", "originalUserText": false})),
+            // 有源但 originalUserText 缺失（保守跳过）。
+            Some(json!({"source": "goldBandPrompt"})),
+            // 无 raw。
+            None,
+        ];
+        for raw in cases {
+            let mut projector = Projector::new(None);
+            let mut echo = user_echo("内容");
+            echo.raw = raw;
+            projector.observe(&echo);
+            assert!(drain(&mut projector).is_empty(), "must skip: {echo:?}");
+        }
+        // 空白内容也不上报。
+        let mut projector = Projector::new(None);
+        projector.observe(&user_echo("  \n"));
+        assert!(drain(&mut projector).is_empty());
+    }
+
+    #[test]
+    fn user_message_closes_open_text_segment_preserving_order() {
+        let mut projector = Projector::new(None);
+        // agent 文本段未收起时用户插话：先落已积累文本，用户行排其后。
+        projector.observe(&text_chunk("item-1", "说到一半的内容"));
+        projector.observe(&user_echo("先停一下"));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].message_type, TYPE_TEXT);
+        assert_eq!(batch[0].content.as_deref(), Some("说到一半的内容"));
+        assert_eq!(batch[1].message_type, TYPE_USER);
+        assert_eq!(batch[1].content.as_deref(), Some("先停一下"));
+    }
+
+    #[test]
+    fn oversized_user_text_splits_into_consecutive_rows() {
+        let long = "长".repeat(MAX_TEXT_CHARS + 10);
+        let mut projector = Projector::new(Some(&long));
+        let batch = drain(&mut projector);
+        assert_eq!(batch.len(), 2);
+        assert!(batch.iter().all(|m| m.message_type == TYPE_USER));
+        assert_eq!(batch.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            batch[0].content.as_deref().map(|text| text.chars().count()),
+            Some(MAX_TEXT_CHARS)
+        );
+        assert_eq!(batch[1].content.as_deref(), Some("长".repeat(10).as_str()));
     }
 }

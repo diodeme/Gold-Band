@@ -1,7 +1,8 @@
 //! multica 执行记录上报的线上 DTO 与硬上限。
 //!
 //! 契约（multica 服务端逐条核对结论）：
-//! - 消息 `type` 只有五种；未知 type 会被入库/广播但前端只做 generic 兜底，故只用五种。
+//! - 消息 `type` 服务端无白名单；码灵只用六种（multica 前端对 `user` 已规划专门渲染，
+//!   其余未知 type 只做 generic 兜底）。
 //! - `seq` 由码灵自增，作用域 = `task_id`，严格递增、允许空洞；表上无唯一约束，
 //!   **重复 seq 会产生重复行**，绝不重发同一 seq（失败换新 seq）。
 //! - 批次原子且失败不重试；服务端无条数/大小限制，故由本端自律（见下方上限）。
@@ -17,6 +18,8 @@ pub(crate) const TYPE_THINKING: &str = "thinking";
 pub(crate) const TYPE_TOOL_USE: &str = "tool_use";
 pub(crate) const TYPE_TOOL_RESULT: &str = "tool_result";
 pub(crate) const TYPE_ERROR: &str = "error";
+/// 用户输入（multica 约定固定英文小写 `user`，前端按该字符串做专门渲染；只填 `content`）。
+pub(crate) const TYPE_USER: &str = "user";
 
 /// 是否上报模型思考过程。默认关闭：思考可能引用内部提示词/敏感推理，而 multica 的可见范围是
 /// 该需求的工作区成员（比本地操作者广）。multica 前端对完全没有 thinking 行的任务渲染完全正常，
@@ -98,6 +101,10 @@ impl TranscriptMessage {
 
     pub(crate) fn error(content: String) -> Self {
         Self::body(TYPE_ERROR, content)
+    }
+
+    pub(crate) fn user(content: String) -> Self {
+        Self::body(TYPE_USER, content)
     }
 }
 

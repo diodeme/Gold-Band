@@ -889,6 +889,17 @@ pub async fn start_remote_conversation_run(
             &context.app().paths.task_dir(&prior_task_id),
             &input.run_mode,
         );
+        // M5-da：初始输入 = 被续任务的需求原话（requirement 文件，创建时逐字写入）。
+        // resume 产生新 task_id（transcript 从 1 开始），把驱动续跑的原需求作为 seq=1 上报。
+        // 读文件失败（旧版本任务/文件缺失）→ None：无初始行，不影响后续上报。
+        let resume_initial_input = std::fs::read_to_string(
+            context
+                .app()
+                .paths
+                .requirement_file(&prior_task_id)
+                .as_std_path(),
+        )
+        .ok();
         // clone_for_background 保留全部字段（含 ACP emitter）→ 续跑事件仍流向前端；原 `app` 留给 Fresh 兜底。
         let resume_app = app.clone_for_background();
         let join = tauri::async_runtime::spawn_blocking(
@@ -960,11 +971,13 @@ pub async fn start_remote_conversation_run(
                     );
                 }
                 // 执行记录上报：run 已在执行，这里起开始观测（seq 从 1 开始，作用域 = 本次 task_id）。
+                // 初始输入 = 被续任务的需求原话，作为 seq=1 第一条 user 消息（M5-da）。
                 crate::multica::transcript::start_run(
                     &app_handle,
                     &remote_task_id,
                     &register_task_id,
                     &register_run_id,
+                    resume_initial_input.as_deref(),
                 );
                 // M5-cn 可观测性：claim 快照即定版的 DPMS 回写条件落日志——「为何没回写」
                 // 无需再靠日志往返反推（内网实例：dpms_required=false 导致回写休眠）。
@@ -1127,11 +1140,14 @@ pub async fn start_remote_conversation_run(
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
             }
             // 执行记录上报：run 已启动，立即开始观测（seq 从 1 开始，作用域 = 本次 task_id）。
+            // 初始输入 = composer 提交的需求原话（input.content，非组装后 prompt），作为
+            // seq=1 第一条 user 消息（M5-da）。
             crate::multica::transcript::start_run(
                 &transcript_app,
                 &remote,
                 &run.task_id,
                 &run.run_id,
+                Some(input.content.as_str()),
             );
             // M5-cn 可观测性：同续跑路径——claim 快照的 DPMS 回写条件落日志。
             info!(

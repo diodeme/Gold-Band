@@ -3267,6 +3267,26 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.97 改动九十五：transcript 上报用户输入——初始需求 seq=1 + 中途插话混批（M5-da，2026-11-16）
+
+**背景**：multica 侧需求——Transcript 弹窗完整回放会话，用户的话和 agent 的响应交替出现。契约：复用既有 `POST /api/daemon/tasks/{taskId}/messages` 批量上报，**零新增协议**；`type` 固定英文小写 `"user"`（multica 前端将针对该字符串加专门渲染，定死以后不用改数据），只填 `content`（tool/input/output 不填），服务端无 type 白名单、对 content 照常脱敏+NUL 清洗；时序上**初始输入必须在任务开始执行前作为 seq=1 第一条上报**，中途插话在收到用户消息的时刻进同一批队列（无独立用户输入通道）；内容规则——初始输入报**用户需求原话**而非组装后完整 prompt（拼系统指令/上下文注入的组装是引擎内部机制，报了会把第一行变成几千字噪音），中途消息原样上报、不改写不摘要不拼接。
+
+**实现**：
+
+- ① **model**：`TYPE_USER = "user"` + `TranscriptMessage::user(content)`（复用 body 模式，线上形状只有 `seq/type/content`）。
+- ② **初始输入——reporter 构造期显式推入**（保证 seq=1，不依赖事件观测、天然免疫 fresh 后台启动的首拍竞态）：`Projector::new(initial_user_text)` 构造时 sanitize → 非空则占住 outbox 最前部 → 首批 drain 分到 seq=1。内容来源：fresh = `input.content`（composer 提交的需求原话，`conversation_run.rs` 逐字克隆进 requirement_content，不裁剪）；resume = 被续任务 requirement 文件读原文（`resumed_run_mode` 同款同步小文件读，读失败 → None 无初始行）。resume 产生新 task_id、transcript 从空开始，把驱动续跑的原需求作为 seq=1 是忠实回放。
+- ③ **中途插话——观测 userTextDelta 回声**（`record_user_prompt_event` 合成的 goldBandPrompt 事件，在 prompt 发给 agent 之前合成、经既有观测点进同一批队列、同频率 flush）：`is_reported_event` 加 `"userTextDelta"`；`observe_user_echo` 四过滤——root 分支（既有）+ `raw.source=="goldBandPrompt"`（只认码灵合成事件，agent 回显的 session/update 原生事件 client 侧已抑制，双保险）+ `hiddenFromChat != true`（隐藏注入不报）+ `raw.originalUserText==true`（`prompt.display_text` 存在 = composer 用户亲手输入；workflow/auto 节点 turn 与带隐藏 section 的 direct 首 turn 均为 false，不会把引擎组装 prompt 报成用户的话）。入队前 `close_segment()` 收起进行中的 agent 文本段（与 `push_error` 同模式），保持「agent 说到哪 → 用户插了什么」因果顺序；超 32k 拆连续多条。
+- ④ **回声去重**：fresh 直发场景 seq=1 已显式上报初始需求，首拍回声与它逐字相等且必然先于任何 agent 输出 → 双报。规则：`!agent_activity_seen && initial_user_text == content` 跳过。等式链已验证：`input.content` → requirement_content（逐字克隆）→ `initial_prompt_display`（读 requirement 文件，`From<String>` 逐字包装）→ workflow 首 turn display_text，sanitize 幂等。`agent_activity_seen` 仅在非空文本/工具事件置位（空内容事件不算）；agent 一旦有产出，之后同内容回声都是真实插话，照常上报。极端角落（agent 开工前用户排队发逐字节相同消息）误跳过一次，概率趋零，不加状态。
+- ⑤ **接线**：`start_run` 增 `initial_user_text: Option<&str>`——resume 分支传 requirement 文件原文（先读后 move 进闭包）、fresh 分支传 `input.content`。
+
+**方案自评审**：过度设计——零新增协议/端点/队列/持久状态，复用既有批队列、观测点与 flush worker；Projector 新增两个内存字段（`Option<String>`+`bool`）是去重所需最小机制，无 canonical 数据复制。性能——每条用户回声 = 一次注册表查找 + 纯内存推送，无新 I/O；userTextDelta 频率 = 用户发言频率（极低），对 500ms 批影响可忽略；resume 的 requirement 读是一次小文件读（与 `resumed_run_mode` 同款同位置）。非 multica 本地会话依旧零开销。
+
+**验证结果**：`cargo test -p gold-band-desktop multica::transcript` **33 passed**（新增 8：初始 seq=1+线上形状仅 seq/type/content、空白初始跳过、插话与 agent 文本交替且 seq 连续、初始回声去重、agent 活动后同内容照报、四类非用户回声+无 raw+空白全拒、插话先收起开放文本段、超长拆连续两条；既有 25 回归全绿）；`cargo clippy -p gold-band-desktop --all-targets` 对 transcript/ 零告警。
+
+**文件**：`src-tauri/src/multica/transcript/{mod,model,projector,reporter}.rs`、`src-tauri/src/multica/commands.rs`（两处 start_run 调用点）；文档 `接入方案.md` §3.2.8（user 类型语义）、本条。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

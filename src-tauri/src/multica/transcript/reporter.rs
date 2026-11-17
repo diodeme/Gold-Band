@@ -94,12 +94,18 @@ struct ReporterState {
 }
 
 impl Reporter {
-    fn new(remote_task_id: String, client: ClientProvider) -> Self {
+    fn new(
+        remote_task_id: String,
+        client: ClientProvider,
+        initial_user_text: Option<&str>,
+    ) -> Self {
         Self {
             remote_task_id,
             client,
             state: Mutex::new(ReporterState {
-                project: Projector::new(),
+                // 初始需求原话在构造期即占据 outbox 最前部 → 首批 drain 分到 seq=1，
+                // 保证「任务开始执行前，初始输入是第一条消息」（multica 回放时序要求）。
+                project: Projector::new(initial_user_text),
                 // seq 作用域 = task_id；每个 task 的第一次上报从 1 开始，严格递增。
                 next_seq: 1,
                 usage: UsageAccumulator::default(),
@@ -174,11 +180,15 @@ impl Reporter {
 }
 
 /// 注册一个新的上报器并启动 flush worker。
+///
+/// `initial_user_text`：任务初始需求原话（用户的话，非组装后 prompt），作为 seq=1 的
+/// 第一条 `user` 消息上报。fresh 传 composer 提交文本；resume 传被续任务 requirement 文件。
 pub(crate) fn start_run(
     app: &AppHandle,
     remote_task_id: &str,
     local_task_id: &str,
     local_run_id: &str,
+    initial_user_text: Option<&str>,
 ) {
     let Some(registry) = app.try_state::<TranscriptRegistry>() else {
         return;
@@ -188,7 +198,11 @@ pub(crate) fn start_run(
         let context = crate::multica::bridge::desktop_context(&provider_app)?;
         crate::multica::bridge::multica_client(&context)
     });
-    let reporter = Arc::new(Reporter::new(remote_task_id.to_string(), client));
+    let reporter = Arc::new(Reporter::new(
+        remote_task_id.to_string(),
+        client,
+        initial_user_text,
+    ));
     registry.insert(local_task_id, local_run_id, reporter.clone());
     tauri::async_runtime::spawn(run_worker(reporter));
 }
@@ -219,7 +233,7 @@ pub(crate) fn observe(
 
 fn is_reported_event(event: &gold_band::acp::events::AcpUiEvent) -> bool {
     match event.kind.as_str() {
-        "textDelta" | "toolCall" | "toolCallUpdate" => true,
+        "textDelta" | "toolCall" | "toolCallUpdate" | "userTextDelta" => true,
         "thoughtDelta" => super::model::REPORT_THINKING,
         _ => false,
     }
@@ -485,7 +499,7 @@ mod tests {
     use super::*;
 
     fn reporter() -> Arc<Reporter> {
-        Arc::new(Reporter::new("task-1".to_string(), Arc::new(|| None)))
+        Arc::new(Reporter::new("task-1".to_string(), Arc::new(|| None), None))
     }
 
     #[test]

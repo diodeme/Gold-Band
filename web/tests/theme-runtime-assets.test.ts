@@ -336,6 +336,62 @@ describe('theme runtime asset projection', () => {
     expect(settingsSurface.properties.get('--gb-wallpaper-opacity')).toBe('0.6');
   });
 
+  it('suppresses all wallpapers for an explicit none preference and pins theme assets per scheme', () => {
+    const root = rootStub();
+    const appSurface = wallpaperSurface('app');
+    vi.stubGlobal('document', {
+      documentElement: root.element,
+      querySelectorAll: () => [appSurface.element],
+    });
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() });
+    vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
+
+    applyAppearance(preference());
+    FakeImage.instances[0].onload?.();
+    expect(appSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-light.png');
+
+    // source: 'none' clears every slot even though the theme declares wallpapers.
+    applyWallpaperPersonalization(
+      {
+        byColorScheme: {
+          light: { image: { source: 'none' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
+      { recentWallpapers: [] },
+    );
+    expect(appSurface.properties.has('--gb-wallpaper-image')).toBe(false);
+
+    // A valid pin swaps the image on every slot while keeping the slot's own styling.
+    applyWallpaperPersonalization(
+      {
+        byColorScheme: {
+          light: { image: { source: 'theme', assetId: 'wallpaper-dark' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
+      { recentWallpapers: [] },
+    );
+    const pinnedImage = FakeImage.instances.at(-1)!;
+    expect(pinnedImage.src).toContain('wallpaper-dark.png');
+    pinnedImage.onload?.();
+    expect(appSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-dark.png');
+    expect(appSurface.properties.get('--gb-wallpaper-opacity')).toBe('0.8');
+    expect(appSurface.properties.get('--gb-wallpaper-size')).toBe('cover');
+
+    // A pin the theme does not declare for the scheme falls back to the default assignment.
+    applyWallpaperPersonalization(
+      {
+        byColorScheme: {
+          light: { image: { source: 'theme', assetId: 'unknown-asset' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
+      { recentWallpapers: [] },
+    );
+    expect(appSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-light.png');
+  });
+
   it('loads a distinct theme surface once and reuses it after the first successful projection', () => {
     const root = rootStub();
     const appSurface = wallpaperSurface('app');

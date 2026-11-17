@@ -775,6 +775,12 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "Este Agent precisa de autenticação para continuar.",
+      "auth-required-missing-env": "Este Agent precisa de autenticação. Configure primeiro estas variáveis de ambiente: {{env}}.",
+      "auth-required-login": "Este Agent precisa de autenticação. Conclua a autenticação no provedor e verifique novamente."
+    },
+    "agent.launch-command-missing": "Este Agent está sem o comando de inicialização. Adicione o comando no gerenciamento de Agents e execute o diagnóstico novamente.",
     "npx-cache.busy": "Já há um reparo de cache em andamento. Tente novamente mais tarde.",
     "npx-cache.unavailable": "Não foi possível verificar um cache npx reparável. Execute o diagnóstico.",
     "npx-cache.changed": "O diagnóstico, a configuração ou o cache mudou. Feche o diálogo e tente novamente.",
@@ -923,6 +929,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} já existe.",
+      "unsupported-platform": "O Agent {{agentType}} não suporta a plataforma atual ({{os}}/{{arch}}).",
       "not-configured": "Agent {{agentType}} não está configurado.",
       "display-name-required": "Informe um nome de Agent.",
       "command-required": "Informe um comando de inicialização do Agent."
@@ -946,7 +953,7 @@
       "compaction-summary-query-failed": "Não foi possível carregar o resumo da compactação. Tente novamente.",
       "adapter-exited": "O processo Agent encerrou durante {{method}}. Verifique comando, argumentos, variáveis de ambiente, rede e autenticação.",
       "adapter-exited-with-code": "O processo Agent encerrou durante {{method}} (código de saída {{exitCode}}). Verifique comando, argumentos, variáveis de ambiente, rede e autenticação.",
-      "adapter-start-failed": "O Agent não pôde ser iniciado: {{osError}}",
+      "adapter-start-failed": "Não foi possível iniciar {{command}}: {{osError}}",
       "doctor-timeout": "A verificação de ambiente do Agent expirou durante {{method}}."
     },
     "app": {
@@ -1020,6 +1027,7 @@
       "continue-launch-channel-closed": "A retomada do fluxo de trabalho não iniciou. Tente novamente."
     },
     "composer": {
+      "resizeHandle": "Arraste para ajustar a altura da caixa de entrada",
       "context-limit-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
       "referenceUnavailable": "Referência indisponível"
     },
@@ -1090,6 +1098,24 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "O Workflow está em execução, então o nó atual não pode ser repetido.",
+        "run-terminal": "O Workflow terminou, então o nó atual não pode ser repetido.",
+        "node-not-retryable": "O nó atual não pode ser repetido no estado em que está.",
+        "error-blocked": "O Workflow está bloqueado por um erro, então o nó atual não pode ser repetido.",
+        "manual-check-pending": "O nó atual está aguardando confirmação manual e não pode ser repetido.",
+        "unsupported-node": "Este tipo de nó não oferece suporte à repetição.",
+        "stale-locator": "O nó atual foi alterado. Continue a partir do estado mais recente.",
+        "workflow-invalid": "A configuração do Workflow ou o ambiente de execução é inválido, então o nó atual não pode ser repetido.",
+        "invalid-locator": "A posição do nó é inválida. Atualize e tente novamente.",
+        "source-sealed": "Esta execução está selada. Não pode continuar nem receber mensagens.",
+        "inherited-attempt": "Este nó foi herdado. Veja sua sessão na execução de origem.",
+        "source-busy": "A sessão de origem ainda está parando. Tente novamente em instantes.",
+        "prefix-too-large": "O histórico necessário é grande demais. Inicie uma nova execução a partir do início da tarefa.",
+        "target-missing": "Este nó não existe mais no Workflow mais recente.",
+        "workspace-unavailable": "O espaço de trabalho de origem está indisponível. Restaure-o primeiro.",
+        "plan-changed": "A configuração do Workflow mudou. Atualize e tente novamente."
+      },
       "agent-doctor-failed": "Agent {{agentType}} não passou no doctor.",
       "agent-doctor-required": "Agent {{agentType}} deve passar no doctor primeiro.",
       "permission-mode-unsupported": "Agent {{agentType}} não suporta modo de permissão {{permissionMode}}.",
@@ -1248,6 +1274,9 @@
     "customAgentIdPlaceholder": "Por exemplo, my-agent",
     "pending": "Pendente",
     "configured": "Adicionado",
+    "integrationOrigin": {
+      "communityAdapter": "Adaptador da comunidade"
+    },
     "empty": "Nenhum agent configurado ainda",
     "createTitle": "Adicionar Agent",
     "createDescription": "Crie uma configuração de agent para execução de nós.",
@@ -1299,6 +1328,22 @@
     "diagnosing": "Diagnosticando",
     "savedAndDiagnosing": "Configuração salva. Diagnosticando em segundo plano.",
     "diagnosticComplete": "Verificação de ambiente concluída e o processo de diagnóstico encerrou.",
+    "connectionGuide": {
+      "title": "Requisitos de conexão",
+      "command": "Comando de inicialização",
+      "path": "PATH",
+      "pathRequirement": "{{command}} precisa ser resolvido no PATH efetivo do Gold Band, ou selecione um executável explícito abaixo.",
+      "fallback": "Alternativa",
+      "installedCli": "Um CLI local {{command}} pode acionar a preparação controlada do ACP adapter.",
+      "preparedFallback": "Somente um cache npx preparado é usado; ter npx disponível não significa que o Agent esteja instalado.",
+      "auth": "Autenticação",
+      "authRequirement": "Conclua o login do provedor ou configure credenciais compatíveis. Variáveis de ambiente são salvas na configuração local do Agent.",
+      "steps": "Etapas da verificação: resolver comando → iniciar ACP adapter → initialize → session/new → descobrir capacidades → encerrar o processo de diagnóstico.",
+      "result": "Resultado mais recente",
+      "checkNow": "Verificar agora",
+      "saveToCheck": "Ao salvar, a verificação de conexão é executada automaticamente; o resultado também aparece no cartão do Agent.",
+      "formChanged": "O formulário foi alterado. Salvar verificará a nova configuração."
+    },
     "diagnosticFailed": "A verificação de ambiente não passou: {{reason}}",
     "diagnosticFailedNoReason": "A verificação de ambiente não passou.",
     "diagnosticFailedFallback": "Verifique o comando do agent, rede e estado de autenticação.",
@@ -1315,7 +1360,8 @@
     "status": {
       "unknown": "Desconhecido",
       "healthy": "Saudável",
-      "unhealthy": "Não saudável"
+      "unhealthy": "Não saudável",
+      "stale": "Requer nova verificação"
     }
   },
   "contextManagement": {
@@ -1938,7 +1984,6 @@
     "loadFailed": "Não foi possível carregar as alterações de arquivo deste turno",
     "partial": "Algumas alterações de arquivo não puderam ser capturadas completamente",
     "showMore": "Mostrar {{count}} arquivos a mais",
-    "collapse": "Recolher lista de arquivos",
     "openDiff": "Ver diff de {{path}}",
     "openVersion": "Ver versão capturada de {{path}}",
     "deletedFile": "Excluído {{path}}",
@@ -2272,6 +2317,16 @@
     "scrollForHistory": "— Role para cima para ver histórico —",
     "returnToLatest": "Voltar ao mais recente",
     "rawSearchPlaceholder": "Pesquisar conteúdo de frame bruto…",
+    "turnRail": {
+      "label": "Navegação da conversa",
+      "jump": "Ir para: {{preview}}",
+      "kind": {
+        "prompt": "Pergunta do usuário",
+        "tool": "Chamada de ferramenta",
+        "compaction": "Compactação de contexto",
+        "permission": "Solicitação de permissão"
+      }
+    },
     "rawKindPlaceholder": "Tipo de evento",
     "rawKindAll": "Todos os eventos",
     "rawDirectionAll": "Todas as direções",
@@ -2548,9 +2603,11 @@
     "viewSession": "Ver sessão",
     "viewLog": "Ver log",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Tentar novamente a partir deste nó",
+    "retryCurrentNode": "Tentar o nó atual novamente",
     "layoutPending": "Organizando o grafo do fluxo de trabalho",
-    "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho"
+    "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho",
+    "rerunFailedNode": "Executar novamente a partir deste nó",
+    "rerunFailedAttempt": "Executar novamente a partir de {{attempt}}"
   },
   "settings": {
     "title": "Configurações",
@@ -2837,16 +2894,26 @@
       }
     },
     "wallpaper": {
+    "deleteRecent": "Excluir este papel de parede",
       "title": "Papel de parede",
       "chooseTitle": "Papel de parede da área de trabalho",
       "description": "Um papel de parede personalizado substitui o do tema e se adapta ao tamanho do cliente.",
-      "choose": "Escolher papel de parede",
       "recent": "Usado recentemente",
       "useRecent": "Usar este papel de parede recente",
       "noRecent": "Nenhum papel de parede recente",
       "import": "Importar novo papel de parede",
-      "restoreTheme": "Restaurar papel de parede do tema",
+      "sourceTheme": "Papel de parede do tema",
+      "sourceCustom": "Personalizado",
+      "sourceDisable": "Desativar",
+      "themeUnavailable": "O tema atual não tem papel de parede",
+      "none": "Desativar papel de parede do tema",
+      "noneActive": "Desativado",
+      "themeGallery": "Papéis de parede do tema",
+      "useThemeWallpaper": "Usar este papel de parede do tema",
       "visibility": "Visibilidade do papel de parede",
+      "fitLabel": "Ajuste",
+      "fitCover": "Preencher",
+      "fitContain": "Ajustar",
       "previewTitle": "Pré-visualização do papel de parede",
       "expandPreview": "Expandir pré-visualização do papel de parede",
       "collapsePreview": "Recolher pré-visualização do papel de parede",
@@ -3181,7 +3248,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "Esta sessão está sendo controlada pelo runtime, então a entrada está temporariamente indisponível",
       "composerStoppingPlaceholder": "Parando sessão atual…",
-      "composerStoppedPlaceholder": "Esta sessão parou. Você pode digitar qualquer mensagem para continuar a execução"
+      "composerStoppedPlaceholder": "Esta sessão parou. Você pode digitar qualquer mensagem para continuar a execução",
+      "nodeRerunConfirmTitle": "Executar novamente a partir de {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Interrompa a execução de origem, crie um novo Run com o Workflow mais recente e execute novamente este nó e os seguintes. Alterações existentes no espaço de trabalho e ações externas serão mantidas.",
+      "sourceSealed": "A execução de origem está selada. Seu histórico continua disponível.",
+      "rerunHistoryHint": "As sessões anteriores permanecem na execução de origem.",
+      "viewRerunSource": "Ver execução de origem"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git está desatualizado",
@@ -3347,7 +3419,7 @@
     "installGuide": "Guia oficial de instalação",
     "discovering": "Verificando Agents locais…",
     "discovered": "{{count}} Agents disponíveis detectados",
-    "noAgents": "Nenhum Agent disponível foi detectado. Instale ou entre em um Agent e verifique novamente.",
+    "noAgents": "Nenhum Agent instalado foi detectado. Instale qualquer Agent e verifique novamente.",
     "deferHint": "Você pode entrar no app agora e concluir a configuração do Agent depois em Configurações.",
     "defaultAgent": "Agent padrão",
     "chooseAgent": "Escolha um Agent disponível",
@@ -3376,6 +3448,16 @@
     "defaultsDescription": "Defina o Agent, o modelo e as permissões dos fluxos de trabalho integrados, sem alterar os personalizados.",
     "configureDefaults": "Configurar padrões",
     "rerun": "Executar configuração novamente",
+    "npxUnavailable": "Os Agents iniciados pelo npx estão indisponíveis no momento. Os demais Agents ainda podem ser detectados.",
+    "allUnavailable": "Os Agents detectados estão indisponíveis. Veja os motivos abaixo.",
+    "actualNode": "Node.js em uso {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Agents indisponíveis: {{count}}",
+      "runtimeRequired": "Requer npm/npx",
+      "doctorFailed": "O diagnóstico falhou: {{reason}}",
+      "nodeVersionHint": "O Node.js {{version}} está fora da faixa verificada. Recomendamos instalar o {{recommended}}.",
+      "runtimeHint": "O ambiente tem problemas que podem impedir este Agent de iniciar."
+    },
     "steps": {
       "git": "Git",
       "runtime": "Ambiente",
@@ -3383,12 +3465,12 @@
     },
     "titles": {
       "git": "Preparar Git",
-      "runtime": "Verificar o ambiente Node.js",
+      "runtime": "Verificar o ambiente",
       "agent": "Conecte um Agent e escolha o modelo padrão"
     },
     "descriptions": {
       "git": "Git fornece controle de versão. Você pode instalá-lo depois.",
-      "runtime": "Node.js, npm e npx precisam funcionar corretamente e ser compatíveis entre si. Versões estáveis fora das faixas verificadas exibem um aviso, mas não bloqueiam a configuração.",
+      "runtime": "Alguns Agents são iniciados pelo npx e precisam de Node.js, npm e npx. Os demais Agents não são afetados.",
       "agent": "Agents disponíveis são salvos automaticamente. Escolha o modelo padrão, revise e aplique aos workflows integrados."
     },
     "status": {
@@ -3402,14 +3484,14 @@
       "cancelled": "Cancelado",
       "skipped": "Ignorado",
       "pending": "Não verificado",
-      "checking": "Verificando"
+      "checking": "Verificando",
+      "warning": "Aviso"
     },
     "errors": {
       "setup": {
         "agent-preparation-required": "Siga o guia do provedor para instalar ou entrar e verifique novamente.",
         "probe-failed": "A verificação falhou. Verifique novamente.",
         "probe-cancelled": "A verificação foi cancelada. Verifique novamente para continuar.",
-        "runtime-incompatible": "Node.js, npm ou npx não atende aos requisitos. Verifique o ambiente de execução.",
         "environment-check-required": "Conclua primeiro a verificação do ambiente de execução.",
         "configuration-conflict": "A configuração mudou em outro lugar. Verifique os Agents novamente e revise as alterações atuais.",
         "preview-stale": "O modelo selecionado ou os Workflows integrados mudaram. Visualize as alterações novamente.",
@@ -3446,7 +3528,6 @@
       "probe-unavailable": "Não foi possível confirmar o ambiente realmente usado. Confira a instalação e tente novamente.",
       "node-mismatch": "Foi usada outra instalação de Node.js. Esperada: {{expectedNodePath}}; atual: {{actualNodePath}}.",
       "node-version-mismatch": "As versões de Node.js diferem. Esperada: {{expectedVersion}}; atual: {{actualVersion}}.",
-      "node-path-mismatch": "O caminho de inicialização de Node.js difere. Esperado: {{expectedNodePath}}; atual: {{actualNodePath}}.",
       "npm-metadata-missing": "Não foi possível confirmar os metadados de instalação de npm. Repare a instalação de Node.js/npm e verifique novamente.",
       "npm-engines-incompatible": "Este npm não suporta o Node.js atual. Requisito: {{nodeRange}}.",
       "npm-version-mismatch": "As informações de versão de npm diferem. Saída: {{expectedVersion}}; pacote: {{actualVersion}}.",

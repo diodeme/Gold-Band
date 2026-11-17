@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
@@ -60,6 +61,8 @@ type WorkflowNodeData = {
   direction: WorkflowLayoutDirection;
   currentLabel: string;
   runningLabel: string;
+  retryPendingLabel: string;
+  retryPending: boolean;
   displayStatusValue: string | null;
   displayTone: string;
   displayIcon: string;
@@ -77,6 +80,7 @@ interface GraphViewProps {
   onNodeOpenDetail?: (node: GraphNodeVm) => void;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
   onNodeOpenLog?: (node: GraphNodeVm) => void;
+  onNodeRetry?: (node: GraphNodeVm) => void | Promise<void>;
   onNodeContextMenuStart?: (node: GraphNodeVm) => number | void;
   variant?: 'grid' | 'workflow' | 'actual';
   /** Set on the nested fullscreen instance to avoid recursive fullscreen buttons. */
@@ -92,7 +96,7 @@ const edgeTypes = {
   runtimeEdge: memo(RuntimeEdge),
 };
 
-export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid', allowFullscreen = true }: GraphViewProps) {
+export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeRetry, onNodeContextMenuStart, variant = 'grid', allowFullscreen = true }: GraphViewProps) {
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
   const { preference: directionPreference, setPreference: setDirectionPreference } = useWorkflowGraphDirectionPreference();
@@ -104,6 +108,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
   const [fullscreen, setFullscreen] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; node: GraphNodeVm } | null>(null);
+  const [retryPendingKeys, setRetryPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [containerElement, setContainerElementState] = useState<HTMLDivElement | null>(null);
   // The ref callback runs synchronously at commit time, before layout effects:
   // measuring here lets the very first render resolve the `auto` direction
@@ -136,7 +141,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   // target: a flip must not swap handles and anchors while node positions
   // still come from the previous direction's layout (WorkflowEditor contract).
   const renderDirection = graphLayout?.direction ?? layoutDirection;
-  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, renderDirection, t), [activeNodeId, graph, graphLayout, mode, renderDirection, selectedNodeId, t]);
+  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, renderDirection, t, retryPendingKeys), [activeNodeId, graph, graphLayout, mode, renderDirection, retryPendingKeys, selectedNodeId, t]);
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   // `actual` anchors the entry side of the graph: left for a RIGHT flow, top for a DOWN flow.
   const viewportHorizontalAnchor = variant === 'actual' ? (renderDirection === 'DOWN' ? 0.5 : 0.40) : 0.5;
@@ -213,6 +218,26 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
     setMenu(nextMenu);
   }, [mode, onNodeContextMenuStart, onNodeSelect]);
 
+  const handleNodeRetry = useCallback((node: GraphNodeVm) => {
+    if (!node.retryable || !node.roundId || !node.nodeId || !node.attemptId || !onNodeRetry) return;
+    setMenu(null);
+    const key = graphNodeRetryPendingKey(node);
+    setRetryPendingKeys((current) => {
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+    void Promise.resolve(onNodeRetry(node)).catch(() => {}).finally(() => {
+      setRetryPendingKeys((current) => {
+        if (!current.has(key)) return current;
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    });
+  }, [onNodeRetry]);
+
   if (graph.nodes.length === 0) {
     return <EmptyState>{t('graph.emptyGraph')}</EmptyState>;
   }
@@ -263,6 +288,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
             onNodeOpenDetail={(node) => { setFullscreen(false); onNodeOpenDetail?.(node); }}
             onNodeOpenSession={(node) => { setFullscreen(false); onNodeOpenSession?.(node); }}
             onNodeOpenLog={(node) => { setFullscreen(false); onNodeOpenLog?.(node); }}
+            onNodeRetry={onNodeRetry}
             onNodeContextMenuStart={onNodeContextMenuStart}
             variant={variant}
             allowFullscreen={false}
@@ -284,7 +310,31 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
           <GraphMenuItem disabled={!onNodeOpenLog} onClick={() => onNodeOpenLog?.(menu.node)}>{t('graph.viewLog')}</GraphMenuItem>
           <GraphMenuItem disabled={!menu.node.attemptId} onClick={() => onNodeOpenSession?.(menu.node)}>{t('graph.viewSession')}</GraphMenuItem>
           <GraphMenuItem onClick={() => navigator.clipboard?.writeText(menu.node.nodeId ?? menu.node.id)}>{t('graph.copyNodeId')}</GraphMenuItem>
-          <GraphMenuItem disabled>{t('graph.retryFromNode')}</GraphMenuItem>
+          {menu.node.retryable && onNodeRetry ? (
+            <GraphMenuItem
+              disabled={retryPendingKeys.has(graphNodeRetryPendingKey(menu.node))}
+              onClick={() => handleNodeRetry(menu.node)}
+            >
+              {t(menu.node.status === 'completed' ? 'graph.rerunFailedNode' : 'graph.retryCurrentNode')}
+            </GraphMenuItem>
+          ) : null}
+          {onNodeRetry ? menu.node.attempts?.filter((attempt) => attempt.retryable && attempt.attemptId !== menu.node.attemptId).map((attempt) => (
+            <GraphMenuItem
+              key={attempt.attemptId}
+              disabled={retryPendingKeys.has(graphNodeRetryPendingKey({ ...menu.node, attemptId: attempt.attemptId }))}
+              onClick={() => handleNodeRetry({
+                ...menu.node,
+                attemptId: attempt.attemptId,
+                status: attempt.status,
+                outcome: attempt.outcome,
+                runtimeDisplay: attempt.runtimeDisplay,
+                current: attempt.current,
+                retryable: attempt.retryable,
+              })}
+            >
+              {t('graph.rerunFailedAttempt', { attempt: attempt.attemptId })}
+            </GraphMenuItem>
+          )) : null}
         </div>
       ) : null}
     </div>
@@ -293,7 +343,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
 
 type WorkflowGroupData = { label: string; width: number; height: number };
 
-function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, direction: WorkflowLayoutDirection, t: TFunction) {
+function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, direction: WorkflowLayoutDirection, t: TFunction, retryPendingKeys: ReadonlySet<string>) {
   const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));
   const runningActiveNode = activeNode?.runtimeDisplay?.tone === 'running';
   const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
@@ -329,6 +379,13 @@ function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, sele
         direction,
         currentLabel: t('graph.current'),
         runningLabel: displayStatus(t, 'running'),
+        retryPendingLabel: t(node.status === 'completed' || node.attempts?.some((attempt) => (
+          attempt.status === 'completed' && retryPendingKeys.has(graphNodeRetryPendingKey({ ...node, attemptId: attempt.attemptId }))
+        )) ? 'graph.rerunFailedNode' : 'graph.retryCurrentNode'),
+        retryPending: Boolean(node.roundId && node.attemptId) && (
+          retryPendingKeys.has(graphNodeRetryPendingKey(node))
+          || node.attempts?.some((attempt) => retryPendingKeys.has(graphNodeRetryPendingKey({ ...node, attemptId: attempt.attemptId })))
+        ) === true,
         displayStatusValue,
         displayTone,
         displayIcon,
@@ -413,8 +470,12 @@ function matchesNodeId(node: GraphNodeVm, id?: string | null) {
   return Boolean(id && (node.id === id || node.nodeId === id));
 }
 
+function graphNodeRetryPendingKey(node: Pick<GraphNodeVm, 'roundId' | 'nodeId' | 'id' | 'attemptId'>) {
+  return `${node.roundId ?? ''}/${node.nodeId ?? node.id}/${node.attemptId ?? ''}`;
+}
+
 function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
-  const { node, selected, active, running, mode, direction, currentLabel, runningLabel, displayStatusValue, displayTone, displayIcon, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
+  const { node, selected, active, running, mode, direction, currentLabel, runningLabel, retryPendingLabel, retryPending, displayStatusValue, displayTone, displayIcon, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
   const handlePositions = workflowHandlePositions(direction);
   const hasStatus = Boolean(displayStatusValue);
   const isDynamicNode = (node.nodeType ?? '').startsWith('dynamic-');
@@ -443,7 +504,7 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}
           {node.attachmentCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{attachmentLabel}:{node.attachmentCount}</Badge> : null}
         </div>
-        {running ? <Badge className="h-5 shrink-0 gap-1.5 bg-gold-running px-1.5 text-[10px] text-white"><span className="workflow-running-dot bg-white" />{runningLabel}</Badge> : node.current ? <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', displayStatusValue ? statusBadgeClass(displayStatusValue, displayTone) : 'border-primary/35 bg-primary/10 text-primary')}>{displayStatusValue ? statusLabel : currentLabel}</Badge> : null}
+        {retryPending ? <Badge variant="outline" className="h-5 shrink-0 gap-1.5 px-1.5 text-[10px] text-primary"><Loader2 className="size-3 animate-spin" />{retryPendingLabel}</Badge> : running ? <Badge className="h-5 shrink-0 gap-1.5 bg-gold-running px-1.5 text-[10px] text-white"><span className="workflow-running-dot bg-white" />{runningLabel}</Badge> : node.current ? <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', displayStatusValue ? statusBadgeClass(displayStatusValue, displayTone) : 'border-primary/35 bg-primary/10 text-primary')}>{displayStatusValue ? statusLabel : currentLabel}</Badge> : null}
       </div>
       <div className="flex min-h-0 flex-1 items-center gap-3 px-4 py-1">
         {hasStatus ? (

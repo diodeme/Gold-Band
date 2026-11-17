@@ -246,8 +246,12 @@ export function submitManualCheck(projectId: string | null | undefined, taskId: 
   return getRuntimeApi().submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome);
 }
 
-export function retryRun(taskId: string, runId: string) {
-  return getRuntimeApi().retryRun(taskId, runId);
+export function retryCurrentNode(request: Parameters<ReturnType<typeof getRuntimeApi>['retryCurrentNode']>[0]) {
+  return getRuntimeApi().retryCurrentNode(request);
+}
+
+export function rerunFailedNode(request: Parameters<ReturnType<typeof getRuntimeApi>['rerunFailedNode']>[0]) {
+  return getRuntimeApi().rerunFailedNode(request);
 }
 
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {
@@ -256,6 +260,10 @@ export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['g
 
 export function getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
+}
+
+export function getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, afterSeq?: number | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getConversationTurnIndex(projectId, taskId, runId, roundId, nodeId, attemptId, branchId, afterSeq, outerNodeId, outerAttemptId);
 }
 
 export function reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport) {
@@ -659,8 +667,24 @@ export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, op
   return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
 }
 
+export function saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('./types').WallpaperFitPreference) {
+  return getRuntimeApi().saveDesktopWallpaperFit(colorScheme, fit);
+}
+
 export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
   return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
+}
+
+export function clearDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().clearDesktopWallpaper(colorScheme);
+}
+
+export function deleteRecentDesktopWallpaper(wallpaperId: string) {
+  return getRuntimeApi().deleteRecentDesktopWallpaper(wallpaperId);
+}
+
+export function selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string) {
+  return getRuntimeApi().selectThemeDesktopWallpaper(colorScheme, assetId);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {

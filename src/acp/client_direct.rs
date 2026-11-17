@@ -562,6 +562,7 @@ fn consume(
         entry.connection_key.workspace_root.clone(),
         Some(entry.connection_key.clone()),
         connection_use,
+        BTreeMap::new(),
         AcpAttemptPaths::from_attempt_dir(entry.attempt_dir.clone()),
         control_registration.control(),
         raw_max,

@@ -48,14 +48,15 @@ use commands::{
     add_mcp_server, apply_desktop_zoom, cancel_git_operation, cancel_github_operation,
     cancel_multica_connect, change_git_branch, check_local_claude, check_mcp_server_health,
     check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
-    connect_multica, continue_conversation_runtime, continue_run, create_agent, create_profile,
-    create_task, delete_agent, delete_auto_template, delete_conversation_queued_prompt,
-    delete_mcp_server, delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
+    clear_desktop_wallpaper, connect_multica, continue_conversation_runtime, continue_run,
+    create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    delete_conversation_queued_prompt, delete_mcp_server, delete_profile,
+    delete_recent_desktop_wallpaper, delete_skill, delete_workflow_template, disconnect_multica,
     doctor_agent, execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail,
     get_acp_image, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
     get_agent_binding_usage, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
-    get_auto_templates, get_conversation_queued_prompt, get_file_comparison,
-    get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
+    get_auto_templates, get_conversation_queued_prompt, get_conversation_turn_index,
+    get_file_comparison, get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
     get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,
     get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
@@ -71,16 +72,18 @@ use commands::{
     read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
     release_conversation_queued_prompt_edit, remove_recent_workspace, renew_acp_session_lease,
     reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
-    respond_elicitation, restore_theme_desktop_wallpaper, retry_run, save_auto_template,
-    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    report_webview_environment, rerun_failed_node, resolve_turn_attachment_file,
+    respond_acp_permission, respond_elicitation, restore_theme_desktop_wallpaper,
+    retry_current_node, retry_run, save_auto_template, save_desktop_avatar,
+    save_desktop_avatar_shape, save_desktop_preferences, save_desktop_wallpaper_fit,
     save_desktop_wallpaper_opacity, save_interface_zoom_percent, save_metrics_settings,
     save_multica_connection_address, save_task_workflow, save_updater_settings,
-    save_workflow_graph_direction, save_workflow_template, search_acp_prompts, search_acp_sessions,
-    search_tasks, select_recent_desktop_avatar, select_recent_desktop_wallpaper,
-    select_recent_workspace, set_acp_session_auto_accept, set_acp_session_config_option,
-    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
-    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
+    save_workflow_graph_direction, save_workflow_template, search_acp_prompts,
+    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    select_recent_desktop_wallpaper, select_recent_workspace, select_theme_desktop_wallpaper,
+    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
     start_github_pull_request_create, start_run, start_update_install, stop_active_session,
     stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
     update_agent, update_auto_template, update_mcp_server, update_notification_attention,
@@ -256,11 +259,37 @@ pub(crate) fn start_business_runtime(handle: tauri::AppHandle) {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!(
-            "failed to start {} desktop: {error:?}",
-            channel::current_channel_config().app_name
+        let app_name = channel::current_channel_config().app_name;
+        let message = format!("failed to start {app_name} desktop: {error:?}");
+        eprintln!("{message}");
+        show_startup_failure(&app_name, &message);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_startup_failure(app_name: &str, message: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
+    use windows::core::PCWSTR;
+
+    let mut text: Vec<u16> = message.encode_utf16().collect();
+    text.push(0);
+    let mut title: Vec<u16> = app_name.encode_utf16().collect();
+    title.push(0);
+    // The Windows GUI subsystem has no console attached in release builds; this native
+    // dialog is the last visible boundary before process exit.
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_ICONERROR,
         );
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_startup_failure(_app_name: &str, message: &str) {
+    eprintln!("{message}");
 }
 
 fn run() -> anyhow::Result<()> {
@@ -548,6 +577,7 @@ fn run() -> anyhow::Result<()> {
             get_round_detail,
             get_log_page,
             get_acp_session,
+            get_conversation_turn_index,
             get_turn_file_change_set,
             get_file_comparison,
             resolve_turn_attachment_file,
@@ -620,7 +650,8 @@ fn run() -> anyhow::Result<()> {
             pause_run,
             stop_active_session,
             submit_manual_check,
-            retry_run,
+            retry_current_node,
+            rerun_failed_node,
             show_artifact,
             show_attachment,
             show_worker_ref,
@@ -635,7 +666,11 @@ fn run() -> anyhow::Result<()> {
             import_desktop_wallpaper,
             select_recent_desktop_wallpaper,
             save_desktop_wallpaper_opacity,
+            save_desktop_wallpaper_fit,
             restore_theme_desktop_wallpaper,
+            clear_desktop_wallpaper,
+            delete_recent_desktop_wallpaper,
+            select_theme_desktop_wallpaper,
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,

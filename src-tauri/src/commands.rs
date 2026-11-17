@@ -60,7 +60,8 @@ use gold_band::config::{
     MAX_FONT_FAMILY_CHARS, MAX_FONT_STACK_FAMILIES, MAX_INTERFACE_ZOOM_PERCENT,
     MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, MIN_INTERFACE_ZOOM_PERCENT, ManagedAgentConfig,
     ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape, PersonalizationPreference,
-    WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
+    ResolvedColorScheme, WallpaperFitPreference, WallpaperImagePreference,
+    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
@@ -108,12 +109,13 @@ use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
     AcpSessionConfigVm, AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput,
     AcpToolDetailVm, AgentRegistryVm, AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm,
-    LogQueryInput, McpServerVm, PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm,
-    RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm,
-    TaskListVm, UpdateBadgeStateVm, WorkflowVm, acp_activity_detail_vm_for_attempt,
-    acp_raw_frame_page_vm, acp_session_config_vm, acp_session_vm, acp_tool_detail_vm_for_attempt,
-    agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm,
-    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm,
+    LogQueryInput, McpServerVm, PreferencesVm, RetryCurrentNodeAcceptedVm, RoundDetailVm,
+    RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm,
+    SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
+    acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_config_vm,
+    acp_session_vm, acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm,
+    dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm,
+    retry_current_node_accepted_vm, round_detail_vm, run_detail_vm, run_summary_vm,
     session_metadata_from_attempt_dir, skill_content_vm, skill_list_vm, skill_meta_vm,
     task_detail_vm, task_list_vm, workflow_vm,
 };
@@ -123,8 +125,10 @@ use crate::view_models_conversation::{
     conversation_session_successor,
 };
 use crate::wallpaper::{
-    ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
-    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput, import_wallpaper_image,
+    ClearDesktopWallpaperInput, DeleteRecentWallpaperInput, ImportDesktopWallpaperInput,
+    RestoreThemeDesktopWallpaperInput, SaveDesktopWallpaperFitInput,
+    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput,
+    SelectThemeDesktopWallpaperInput, delete_recent_wallpaper, import_wallpaper_image,
     load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
     select_recent_wallpaper,
 };
@@ -560,6 +564,14 @@ fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> Command
 }
 
 fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> CommandResult<()> {
+    app.ensure_attempt_writable(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        locator.outer_node_id().unwrap_or(&locator.node_id),
+        locator.outer_attempt_id().unwrap_or(&locator.attempt_id),
+    )
+    .map_err(command_error)?;
     if let Some(target) = conversation_session_successor(
         app,
         &locator.task_id,
@@ -745,7 +757,11 @@ fn admit_conversation_prompt_turn(
     prompt_id: Option<String>,
     input: &ConversationPromptInput,
     attachment_paths: &[String],
-) -> CommandResult<gold_band::acp::events::AcpTurnAdmission> {
+) -> CommandResult<(gold_band::acp::events::AcpTurnAdmission, AcpAdapterConfig)> {
+    let executable_adapter = resolved_conversation_prompt_adapter(app, locator)?;
+    let _admission = app
+        .begin_run_write_admission(&locator.task_id, &locator.run_id)
+        .map_err(command_error)?;
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
@@ -759,7 +775,7 @@ fn admit_conversation_prompt_turn(
         gold_band::acp::events::inspect_session_turn(&lifecycle_path, &submission)
             .map_err(prompt_submission_admission_error)?
     {
-        return Ok(existing);
+        return Ok((existing, executable_adapter));
     }
     let preflight = ensure_conversation_prompt_available(app, locator);
     finish_acp_prompt_preflight(app, locator, &turn_id, &agent_label, preflight)?;
@@ -802,7 +818,7 @@ fn admit_conversation_prompt_turn(
         admission = if admission.started() { "started" } else { "existing" },
         "conversation prompt admitted"
     );
-    Ok(admission)
+    Ok((admission, executable_adapter))
 }
 
 fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
@@ -856,6 +872,16 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
         .filter(|label| !label.trim().is_empty())
         .or(provider)
         .unwrap_or_else(|| locator.node_id.clone())
+}
+
+fn resolved_conversation_prompt_adapter(
+    app: &App,
+    locator: &AttemptLocator,
+) -> CommandResult<AcpAdapterConfig> {
+    let provider = acp_turn_provider_id(app, locator)
+        .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
+    app.executable_agent_adapter(&provider)
+        .map_err(command_error)
 }
 
 fn emit_acp_turn_finished(
@@ -2684,6 +2710,32 @@ fn ensure_no_active_acp_prompts_for_provider(agent_id: &ManagedAgentId) -> Comma
     Ok(())
 }
 
+fn ensure_catalog_agent_supported(
+    agent_id: &ManagedAgentId,
+    entry: Option<&gold_band::agent_catalog::AgentCatalogEntry>,
+    platform: gold_band::platform::DesktopPlatform,
+) -> CommandResult<()> {
+    if entry.is_some_and(|entry| !entry.supports_platform(platform)) {
+        return Err(CommandErrorVm::new(
+            "agent.unsupported-platform",
+            serde_json::json!({
+                "agentType": agent_id.as_str(),
+                "os": platform.os.as_str(),
+                "arch": platform.arch.as_str(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_catalog_agent_supported_now(agent_id: &ManagedAgentId) -> CommandResult<()> {
+    ensure_catalog_agent_supported(
+        agent_id,
+        gold_band::agent_catalog::builtin_agent(agent_id.as_str()),
+        gold_band::platform::DesktopPlatform::current(),
+    )
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentInput {
@@ -2753,7 +2805,6 @@ impl ManagedAgentInput {
             let directory = directory.trim().to_string();
             if !directory.is_empty()
                 && primary_agent_dir.as_deref() != Some(directory.as_str())
-                && project_primary_agent_dir.as_deref() != Some(directory.as_str())
                 && !compatible_agent_dirs.contains(&directory)
             {
                 compatible_agent_dirs.push(directory);
@@ -2918,6 +2969,7 @@ pub fn create_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    ensure_catalog_agent_supported_now(&agent_id)?;
     if app.managed_agents().contains_key(&agent_id) {
         return Err(CommandErrorVm::new(
             "agent.already-exists",
@@ -5264,18 +5316,80 @@ pub async fn submit_manual_check(
 }
 
 #[tauri::command]
-pub fn retry_run(
+pub async fn retry_current_node(
     app_handle: AppHandle,
-    state: State<'_, DesktopState>,
+    project_id: String,
     task_id: String,
     run_id: String,
-) -> CommandResult<RunSummaryVm> {
-    let _ = state.record_heartbeat_activity();
-    let base_app = state.app().map_err(command_error)?;
-    let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
-    app.run_retry(&task_id, &run_id)
-        .map(run_summary_vm)
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    retry_current_node_command(
+        move || {
+            let state = app_handle.state::<DesktopState>();
+            let _ = state.record_heartbeat_activity();
+            resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))
+        },
+        task_id,
+        run_id,
+        expected_round_id,
+        expected_node_id,
+        expected_attempt_id,
+    )
+    .await
+}
+
+async fn retry_current_node_command(
+    prepare_app: impl FnOnce() -> CommandResult<ConfiguredConversationApp> + Send + 'static,
+    task_id: String,
+    run_id: String,
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    // Workspace resolution, executable preflight, lock waits and durable commit
+    // belong to one blocking job; only the accepted result returns to IPC.
+    spawn_blocking_command(move || {
+        let app = prepare_app()?;
+        app.retry_current_node(
+            &task_id,
+            &run_id,
+            &expected_round_id,
+            &expected_node_id,
+            &expected_attempt_id,
+        )
+        .map(retry_current_node_accepted_vm)
         .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rerun_failed_node(
+    app_handle: AppHandle,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    spawn_blocking_command(move || {
+        let state = app_handle.state::<DesktopState>();
+        let _ = state.record_heartbeat_activity();
+        let app = resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))?;
+        app.rerun_failed_node(
+            &task_id,
+            &run_id,
+            &expected_round_id,
+            &expected_node_id,
+            &expected_attempt_id,
+        )
+        .map(retry_current_node_accepted_vm)
+        .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -6693,6 +6807,76 @@ fn acp_live_event_context(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnIndexEntryVm {
+    pub seq: u64,
+    pub timestamp: String,
+    /// Dominant rail kind: prompt | tool | compaction | permission.
+    pub kind: gold_band::acp::events::ConversationTurnKind,
+    pub prompt_preview: Option<String>,
+}
+
+/// Session-level turn navigation index for the conversation turn rail: one
+/// entry per user prompt with the dominant event kind of the turn. Reads the
+/// durable branch timeline only; live in-flight turns appear once committed.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn get_conversation_turn_index(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: Option<String>,
+    after_seq: Option<u64>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<Vec<ConversationTurnIndexEntryVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
+    let branch_id =
+        branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    // The branch id feeds a filesystem path join; validate it exactly like the
+    // other timeline commands so a crafted id cannot escape the attempt dir.
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
+        .map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+            (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node,
+                outer_attempt,
+                &node_id,
+                &attempt_id,
+            ),
+            _ => app
+                .paths
+                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id),
+        };
+        let timeline_path =
+            gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+        // Navigation projections never render artifact bodies, so the read
+        // skips blob hydration and stays proportional to the turn index; the
+        // whole scan also runs off the main thread and only holds the file
+        // lock for the lean parse.
+        let events = gold_band::acp::events::load_timeline_items_without_hydration(&timeline_path)
+            .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
+        Ok(gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
+            .into_iter()
+            .map(|entry| ConversationTurnIndexEntryVm {
+                seq: entry.seq,
+                timestamp: entry.timestamp,
+                kind: entry.kind,
+                prompt_preview: entry.prompt_preview,
+            })
+            .collect::<Vec<_>>())
+    })
+    .await
+}
 #[tauri::command]
 pub async fn get_acp_session(
     state: State<'_, DesktopState>,
@@ -8367,6 +8551,7 @@ async fn submit_conversation_prompt_inner(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
+        resolved_conversation_prompt_adapter(&app, &locator)?;
         // Publishing attachment bytes is bounded file I/O; keep it off the
         // async runtime together with the durable queue write.
         let enqueue_attempt_dir = attempt_dir.clone();
@@ -8424,7 +8609,7 @@ async fn submit_conversation_prompt_inner(
             mark_user_priority(&attempt_dir).map_err(command_error)?;
         }
     }
-    let admission = admit_conversation_prompt_turn(
+    let (admission, executable_adapter) = admit_conversation_prompt_turn(
         &app_handle,
         &app,
         project_id.clone(),
@@ -8476,6 +8661,7 @@ async fn submit_conversation_prompt_inner(
             failure_operation_id,
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
+            executable_adapter.clone(),
         );
         tauri::async_runtime::spawn(async move {
             if let Err(error) = background.await {
@@ -8556,7 +8742,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    let admission = admit_conversation_prompt_turn(
+    let (admission, executable_adapter) = admit_conversation_prompt_turn(
         &app_handle,
         &app,
         project_id.clone(),
@@ -8587,6 +8773,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         admission.header().operation_id.clone(),
         outer_node_id,
         outer_attempt_id,
+        executable_adapter,
     )
     .await
 }
@@ -8606,6 +8793,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     expected_operation_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    executable_adapter: AcpAdapterConfig,
 ) -> CommandResult<()> {
     let app = app.into_inner();
     let locator = AttemptLocator::new(
@@ -8691,7 +8879,14 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let app_handle_for_task = app_handle.clone();
     let lifecycle_path_for_stop = lifecycle_path.clone();
     let turn_id_for_stop = turn_id.clone();
+    let locator_for_execution = locator.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        {
+            let _admission = app
+                .begin_run_write_admission(&task_id, &run_id)
+                .map_err(command_error)?;
+            ensure_conversation_prompt_available(&app, &locator_for_execution)?;
+        }
         let ConversationPromptInput {
             display_text,
             quotes,
@@ -8840,7 +9035,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             let config_options = current_acp_session_config_option_overrides(&attempt_dir);
             let prompt_run = client::run_prompt(
                 provider,
-                &agent_config.adapter,
+                &executable_adapter,
                 adapter_workspace_dir,
                 session_workspace_dir,
                 attempt_dir,
@@ -9027,7 +9222,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         let config_options = current_acp_session_config_option_overrides(&attempt_dir);
         let prompt_run = client::run_prompt(
             provider,
-            &agent_config.adapter,
+            &executable_adapter,
             adapter_workspace_dir,
             session_workspace_dir,
             attempt_dir,
@@ -9893,6 +10088,20 @@ pub fn save_desktop_preferences(
     });
     let context = state.context().map_err(command_error)?;
     let app = context.app();
+    if context.config.appearance.theme_id != appearance.theme_id {
+        personalization.wallpaper.strip_theme_pins();
+        // A theme without declared wallpapers cannot hold the theme source;
+        // collapse it so the settings UI shows custom or disabled instead.
+        let target_supports_wallpapers = theme_catalog
+            .iter()
+            .find(|theme| theme.id == appearance.theme_id)
+            .is_some_and(|theme| theme.wallpapers.is_some());
+        if !target_supports_wallpapers {
+            personalization
+                .wallpaper
+                .collapse_theme_sources_when_unsupported();
+        }
+    }
     match reconcile_wallpaper_personalization(&app.paths.user_gold_band_dir(), &mut personalization)
     {
         Ok(_) => {}
@@ -10073,8 +10282,8 @@ fn normalize_personalization_preference(
         }
     }
     for wallpaper in [
-        &preference.wallpaper.by_color_scheme.light,
-        &preference.wallpaper.by_color_scheme.dark,
+        &mut preference.wallpaper.by_color_scheme.light,
+        &mut preference.wallpaper.by_color_scheme.dark,
     ] {
         if matches!(&wallpaper.image, WallpaperImagePreference::User { asset_id } if asset_id.trim().is_empty())
         {
@@ -10083,6 +10292,7 @@ fn normalize_personalization_preference(
                 serde_json::json!({}),
             ));
         }
+        wallpaper.image = wallpaper.image.clone().normalized_pin();
         if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
             .contains(&wallpaper.opacity_percent)
         {
@@ -10204,7 +10414,7 @@ pub async fn import_desktop_wallpaper(
     .into_iter()
     .filter_map(|image| match image {
         WallpaperImagePreference::User { asset_id } => Some(asset_id.clone()),
-        WallpaperImagePreference::Theme => None,
+        WallpaperImagePreference::Theme { .. } | WallpaperImagePreference::None => None,
     })
     .collect::<HashSet<_>>();
     let saved = spawn_blocking_command(move || {
@@ -10276,6 +10486,22 @@ pub fn save_desktop_wallpaper_opacity(
     persist_desktop_personalization(&state, &context, personalization)
 }
 
+/// Persists how a custom wallpaper fits its surface (`cover` crops to fill,
+/// `contain` letterboxes with the theme background).
+#[tauri::command]
+pub fn save_desktop_wallpaper_fit(
+    state: State<'_, DesktopState>,
+    input: SaveDesktopWallpaperFitInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .fit = input.fit;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
 #[tauri::command]
 pub fn restore_theme_desktop_wallpaper(
     state: State<'_, DesktopState>,
@@ -10286,7 +10512,116 @@ pub fn restore_theme_desktop_wallpaper(
     personalization
         .wallpaper
         .for_color_scheme_mut(input.color_scheme)
-        .image = WallpaperImagePreference::Theme;
+        .image = WallpaperImagePreference::Theme { asset_id: None };
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+/// Explicitly disables the wallpaper for one color scheme: surfaces fall
+/// back to the theme's plain background tokens.
+#[tauri::command]
+pub fn clear_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: ClearDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::None;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+/// Deletes one imported wallpaper from the recent list; a color scheme still
+/// selecting it falls back to the theme's default assignment.
+#[tauri::command]
+pub async fn delete_recent_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: DeleteRecentWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let root = context.app().paths.user_gold_band_dir();
+    // The blocking closure only removes the store record and files; the image
+    // fallback is re-applied to the LATEST preference snapshot afterwards so a
+    // concurrent settings change (opacity, fonts, zoom, source) made while the
+    // files were being deleted is never silently overwritten.
+    let deleted = spawn_blocking_command(move || {
+        let mut scratch = PersonalizationPreference::default();
+        delete_recent_wallpaper(&root, &input.wallpaper_id, &mut scratch)
+            .map_err(wallpaper_command_error)?;
+        Ok(input.wallpaper_id)
+    })
+    .await?;
+    let latest = state.context().map_err(command_error)?;
+    let mut personalization = latest.config.personalization.clone();
+    for scheme in [ResolvedColorScheme::Light, ResolvedColorScheme::Dark] {
+        let wallpaper = personalization.wallpaper.for_color_scheme_mut(scheme);
+        if matches!(
+            &wallpaper.image,
+            WallpaperImagePreference::User { asset_id } if *asset_id == deleted
+        ) {
+            wallpaper.image = WallpaperImagePreference::Theme { asset_id: None };
+        }
+    }
+    persist_desktop_personalization(&state, &latest, personalization)
+}
+
+/// A theme wallpaper pin must reference an asset the theme assigns to that
+/// color scheme's slots; anything else is not selectable.
+fn theme_scheme_wallpaper_asset_known(
+    theme: &gold_band::theme::ThemePackage,
+    color_scheme: ResolvedColorScheme,
+    asset_id: &str,
+) -> bool {
+    let scheme_slots = match color_scheme {
+        ResolvedColorScheme::Light => theme.wallpapers.as_ref().map(|maps| &maps.light),
+        ResolvedColorScheme::Dark => theme.wallpapers.as_ref().map(|maps| &maps.dark),
+    };
+    scheme_slots.is_some_and(|slots| slots.values().any(|slot| slot.asset_id == asset_id))
+}
+
+/// Pins one specific theme-declared wallpaper for one color scheme. The pin
+/// must reference an asset the active theme assigns to that scheme's slots;
+/// slot styling (fit / position / overlay) stays with the theme descriptor.
+#[tauri::command]
+pub fn select_theme_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: SelectThemeDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let asset_id = input.asset_id.trim().to_string();
+    if asset_id.is_empty() {
+        return Err(CommandErrorVm::new(
+            "personalization.wallpaper-invalid",
+            serde_json::json!({ "assetId": input.asset_id }),
+        ));
+    }
+    let theme_catalog = gold_band::theme::builtin_theme_catalog().map_err(|error| {
+        CommandErrorVm::new(error.code, serde_json::json!({ "detail": error.detail }))
+    })?;
+    let context = state.context().map_err(command_error)?;
+    let theme_id = context.config.appearance.theme_id.clone();
+    let theme = theme_catalog
+        .iter()
+        .find(|theme| theme.id == theme_id)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "theme.active-package-missing",
+                serde_json::json!({ "themeId": theme_id }),
+            )
+        })?;
+    if !theme_scheme_wallpaper_asset_known(theme, input.color_scheme, &asset_id) {
+        return Err(CommandErrorVm::new(
+            "personalization.wallpaper-invalid",
+            serde_json::json!({ "assetId": asset_id }),
+        ));
+    }
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::Theme {
+        asset_id: Some(asset_id),
+    };
     persist_desktop_personalization(&state, &context, personalization)
 }
 
@@ -12834,6 +13169,73 @@ mod tests {
     }
 
     #[test]
+    fn invalid_prompt_adapter_fails_before_turn_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = gold_band::config::RuntimeConfig::default();
+        let agent_id = ManagedAgentId::from_str("codebuddy-code").expect("valid managed agent id");
+        let agent = config.agents.get(&agent_id).cloned().unwrap_or_else(|| {
+            gold_band::config::catalog_agent_default_config(agent_id.as_str())
+                .expect("CodeBuddy catalog config")
+        });
+        config.agents.insert(agent_id.clone(), agent);
+        config.agents.get_mut(&agent_id).unwrap().executable_path = Some(
+            temp.path()
+                .join("missing-codebuddy.exe")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+            config,
+        );
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let mut resolved_config = gold_band::domain::ResolvedConfig::new();
+        resolved_config.insert("provider".to_string(), serde_json::json!(agent_id.as_str()));
+        write_json(
+            &app.paths.node_file(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: locator.node_id.clone(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: locator.run_id.clone(),
+                round_id: locator.round_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "2026-11-16T00:00:00Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config,
+                uuid: None,
+            },
+        )
+        .unwrap();
+
+        let error = resolved_conversation_prompt_adapter(&app, &locator).unwrap_err();
+
+        assert_eq!(error.code, "setup.executable-path-invalid");
+        assert!(!acp_lifecycle_path(&attempt_dir).exists());
+    }
+
+    #[test]
     fn frontend_error_report_normalization_enforces_unicode_safe_bounds() {
         let mut input = frontend_error_input("错".repeat(FRONTEND_ERROR_MESSAGE_MAX_CHARS + 5));
         input.source = Some("app://localhost/main.js?token=secret".to_string());
@@ -13531,6 +13933,87 @@ mod tests {
     }
 
     #[test]
+    fn current_node_retry_command_yields_until_preparation_finishes() {
+        let caller_thread = std::thread::current().id();
+        let (entered, preparation) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (yielded, after_poll) = std::sync::mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            let preparation_thread = preparation.recv().unwrap();
+            if preparation_thread != caller_thread {
+                after_poll.recv().unwrap();
+            }
+            release.send(()).unwrap();
+            preparation_thread
+        });
+
+        let mut command = std::pin::pin!(retry_current_node_command(
+            move || {
+                entered.send(std::thread::current().id()).unwrap();
+                released.recv().unwrap();
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": "retry-project" }),
+                ))
+            },
+            "task-1".into(),
+            "run-1".into(),
+            "round-1".into(),
+            "worker".into(),
+            "attempt-001".into(),
+        ));
+        let first_poll = std::future::Future::poll(
+            command.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        );
+        let returned_pending = first_poll.is_pending();
+        let _ = yielded.send(());
+        let preparation_thread = observer.join().unwrap();
+        let result = match first_poll {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => tauri::async_runtime::block_on(command),
+        };
+        let error = result.unwrap_err();
+
+        assert_ne!(
+            preparation_thread, caller_thread,
+            "retry preparation must not run on the command caller thread"
+        );
+        assert!(
+            returned_pending,
+            "retry command must yield before blocked preparation finishes"
+        );
+        assert_eq!(error.code, "workspace.not-found");
+        assert_eq!(
+            error.params,
+            serde_json::json!({ "projectId": "retry-project" })
+        );
+    }
+
+    #[test]
+    fn current_node_retry_command_preserves_admission_error_locator() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let error = tauri::async_runtime::block_on(retry_current_node_command(
+            move || Ok(ConfiguredConversationApp(App::new(repo_root))),
+            "task-1".into(),
+            "run-1".into(),
+            "round-1".into(),
+            "worker".into(),
+            "attempt-001".into(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, "workflow.retry.node-not-retryable");
+        assert_eq!(error.params["taskId"], "task-1");
+        assert_eq!(error.params["runId"], "run-1");
+        assert_eq!(
+            error.params["causeCode"],
+            "conversation.run-mode-unavailable"
+        );
+    }
+
+    #[test]
     fn runtime_workspace_validation_runs_outside_the_caller_thread() {
         let caller_thread = std::thread::current().id();
 
@@ -14019,6 +14502,77 @@ mod tests {
                 "personalization.wallpaper-opacity-invalid"
             );
         }
+    }
+
+    #[test]
+    fn personalization_wallpaper_normalization_accepts_none_and_blanks_empty_pins() {
+        let mut preference = PersonalizationPreference::default();
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::None;
+        preference
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::Theme {
+            asset_id: Some("   ".to_string()),
+        };
+        let normalized = normalize_personalization_preference(preference).unwrap();
+        assert_eq!(
+            normalized
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
+            WallpaperImagePreference::None
+        );
+        assert_eq!(
+            normalized
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::Theme { asset_id: None }
+        );
+    }
+
+    #[test]
+    fn theme_wallpaper_pins_accept_only_scheme_declared_assets() {
+        let catalog = gold_band::theme::builtin_theme_catalog().unwrap();
+        let vista = catalog
+            .iter()
+            .find(|theme| theme.id == "builtin.vista")
+            .expect("builtin.vista present in catalog");
+        assert!(
+            theme_scheme_wallpaper_asset_known(
+                vista,
+                ResolvedColorScheme::Light,
+                "vista-inkwash-light"
+            ),
+            "the light scheme's slots declare the light band asset"
+        );
+        assert!(!theme_scheme_wallpaper_asset_known(
+            vista,
+            ResolvedColorScheme::Light,
+            "vista-summit-dark"
+        ));
+        assert!(!theme_scheme_wallpaper_asset_known(
+            vista,
+            ResolvedColorScheme::Dark,
+            "vista-inkwash-light"
+        ));
+        assert!(!theme_scheme_wallpaper_asset_known(
+            vista,
+            ResolvedColorScheme::Light,
+            "not-an-asset"
+        ));
+        let gold_band = catalog
+            .iter()
+            .find(|theme| theme.id == "builtin.gold-band")
+            .expect("builtin.gold-band present in catalog");
+        assert!(!theme_scheme_wallpaper_asset_known(
+            gold_band,
+            ResolvedColorScheme::Light,
+            "vista-inkwash-light"
+        ));
     }
 
     #[test]
@@ -14852,6 +15406,77 @@ mod tests {
         assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
         assert!(config.supports_system_prompt());
         assert!(!config.external_session_sync_enabled);
+    }
+
+    #[test]
+    fn managed_agent_input_keeps_global_compatible_directory_used_by_project_scope() {
+        let input = ManagedAgentInput {
+            display_name: "ZCode".to_string(),
+            icon: String::new(),
+            command: "zcode-acp-server".to_string(),
+            primary_agent_dir: ".zcode".to_string(),
+            project_primary_agent_dir: Some(".agents".to_string()),
+            compatible_agent_dirs: vec![".agents".to_string()],
+            ..serde_json::from_value(serde_json::json!({
+                "displayName": "fixture",
+                "command": "fixture"
+            }))
+            .unwrap()
+        };
+
+        let config = input
+            .into_config(
+                gold_band::config::SystemPromptDelivery::None,
+                DEFAULT_CUSTOM_AGENT_ICON,
+            )
+            .unwrap();
+        let policy = config.skill_directory_policy();
+
+        assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
+        assert_eq!(policy.global.read_dir_names, vec![".zcode", ".agents"]);
+        assert_eq!(policy.project.read_dir_names, vec![".agents"]);
+    }
+
+    #[test]
+    fn create_agent_catalog_platform_contract_is_structured() {
+        let mut entry: gold_band::agent_catalog::AgentCatalogEntry = serde_json::from_str(
+            r#"{
+              "id": "qoder",
+              "label": "Qoder",
+              "version": "0.2.14",
+              "provenance": {
+                "sourceKind": "official-registry",
+                "integrationOrigin": "official",
+                "validatedVersion": "0.2.14"
+              },
+              "description": "fixture",
+              "repository": null,
+              "website": null,
+              "iconKey": "qoder",
+              "command": "npx",
+              "args": ["-y", "@qoder-ai/qodercli@0.2.14", "--acp"],
+              "excludedPlatforms": [{"os": "windows", "arch": "aarch64"}]
+            }"#,
+        )
+        .unwrap();
+        let agent_id = ManagedAgentId::from_str("qoder").unwrap();
+        let unsupported_platform = gold_band::platform::DesktopPlatform::new(
+            gold_band::platform::DesktopOperatingSystem::Windows,
+            gold_band::platform::DesktopArchitecture::Aarch64,
+        );
+        let error = ensure_catalog_agent_supported(&agent_id, Some(&entry), unsupported_platform)
+            .unwrap_err();
+        assert_eq!(error.code, "agent.unsupported-platform");
+        assert_eq!(error.params["agentType"], "qoder");
+        assert_eq!(error.params["os"], "windows");
+        assert_eq!(error.params["arch"], "aarch64");
+
+        entry.excluded_platforms.clear();
+        let supported_platform = gold_band::platform::DesktopPlatform::new(
+            gold_band::platform::DesktopOperatingSystem::Windows,
+            gold_band::platform::DesktopArchitecture::X86_64,
+        );
+        ensure_catalog_agent_supported(&agent_id, Some(&entry), supported_platform).unwrap();
     }
 
     #[test]
@@ -15902,10 +16527,8 @@ mod tests {
 
     #[test]
     fn composer_draft_save_publishes_attachments_into_task_storage() {
-        let root = std::env::temp_dir().join(format!(
-            "gold-band-draft-attachment-publish-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
         let task_dir = app.paths.task_dir("task-1");
         std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
@@ -15967,12 +16590,10 @@ mod tests {
         // resolve against the relocated root.
         let project_root = task_dir.ancestors().nth(2).unwrap().to_path_buf();
         let task_suffix = task_dir.strip_prefix(&project_root).unwrap().to_path_buf();
-        let moved_parent = std::env::temp_dir().join(format!(
-            "gold-band-draft-attachment-moved-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&moved_parent).unwrap();
-        let moved_project_root = moved_parent.join(project_root.file_name().unwrap_or_default());
+        let moved_parent = tempfile::tempdir().unwrap();
+        let moved_project_root = moved_parent
+            .path()
+            .join(project_root.file_name().unwrap_or_default());
         std::fs::rename(&project_root, &moved_project_root).unwrap();
         let moved_task_dir =
             Utf8PathBuf::from_path_buf(moved_project_root.join(&task_suffix)).unwrap();
@@ -16298,6 +16919,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16395,7 +17017,14 @@ mod tests {
                 "outcome": null,
                 "trigger": "initial",
                 "started_at": "2026-08-12T00:00:00Z",
-                "trace": []
+                "trace": [{
+                    "sequence": 1,
+                    "node_id": locator.node_id,
+                    "attempt_id": locator.attempt_id,
+                    "from_node_id": null,
+                    "edge_outcome": null,
+                    "entered_at": "2026-08-12T00:00:00Z"
+                }]
             }),
         )
         .unwrap();
@@ -16415,11 +17044,13 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
         };
 
+        write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
         assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
@@ -16502,6 +17133,56 @@ mod tests {
             }),
         )
         .unwrap();
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Success),
+            started_at: "2026-08-16T00:00:00Z".to_string(),
+            updated_at: "2026-08-16T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-002".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            rerun: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        for (attempt_id, outcome) in [
+            ("attempt-001", NodeOutcome::Failure),
+            ("attempt-002", NodeOutcome::Success),
+        ] {
+            let node = NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "review".to_string(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(outcome),
+                started_at: "2026-08-16T00:00:00Z".to_string(),
+                finished_at: Some("2026-08-16T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            };
+            write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, "review", attempt_id),
+                &node,
+            )
+            .unwrap();
+        }
         write_json(
             &app.paths
                 .worker_ref_file(task_id, run_id, round_id, "review", "attempt-001"),
@@ -16587,10 +17268,13 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
         };
+
+        write_json(&app.paths.run_file(&run.task_id, &run.id), &run).unwrap();
 
         assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
@@ -16635,6 +17319,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16859,6 +17544,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -17372,6 +18058,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(PauseReason::WaitingForUserInput),
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -17859,6 +18546,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid.clone()),
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -18023,6 +18711,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid),
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),

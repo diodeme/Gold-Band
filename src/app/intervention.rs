@@ -2158,6 +2158,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::PermissionRequested),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -2670,6 +2671,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -2687,7 +2689,14 @@ mod tests {
             outcome: None,
             trigger: crate::domain::RoundTrigger::Initial,
             started_at: "2026-09-02T00:00:00Z".into(),
-            trace: Vec::new(),
+            trace: vec![crate::runtime::RoundTraceStep {
+                sequence: 1,
+                node_id: locator.node_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                from_node_id: None,
+                edge_outcome: None,
+                entered_at: "2026-09-02T00:00:00Z".into(),
+            }],
             uuid: None,
         };
         let node = NodeState {

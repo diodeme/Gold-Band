@@ -216,6 +216,37 @@ pub struct RunWorktreeState {
     pub fork_commit: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRerunOrigin {
+    pub source_run_id: String,
+    pub source_run_uuid: Option<String>,
+    pub source_round_id: String,
+    pub source_round_index: u32,
+    pub source_node_id: String,
+    pub source_attempt_id: String,
+    pub operation_id: String,
+    pub inherited_trace_sequence: u32,
+    pub source_authoring_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRerunSeal {
+    pub operation_id: String,
+    pub successor_run_id: String,
+    pub sealed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRerunMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RunRerunOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_by: Option<RunRerunSeal>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
     pub version: String,
@@ -242,6 +273,10 @@ pub struct RunState {
     /// means the run executes in the project's main workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<RunWorktreeState>,
+    /// Cross-run retry provenance and the source run's immutable handoff fact.
+    /// This is optional for legacy runs and does not add a lifecycle state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun: Option<RunRerunMetadata>,
     /// Authoritative Workflow Runtime phase. ACP session/turn state must never
     /// infer or mutate this aggregate.
     #[serde(default)]
@@ -249,6 +284,21 @@ pub struct RunState {
 }
 
 impl RunState {
+    pub fn is_sealed(&self) -> bool {
+        self.rerun
+            .as_ref()
+            .is_some_and(|rerun| rerun.sealed_by.is_some())
+    }
+
+    pub fn is_inherited_step(&self, round: &RoundState, step: &RoundTraceStep) -> bool {
+        let Some(origin) = self.rerun.as_ref().and_then(|rerun| rerun.origin.as_ref()) else {
+            return false;
+        };
+        round.index < origin.source_round_index
+            || (round.id == origin.source_round_id
+                && step.sequence <= origin.inherited_trace_sequence)
+    }
+
     pub fn current_execution_locator(&self) -> Option<RuntimeAttemptLocator> {
         Some(RuntimeAttemptLocator {
             round_id: self.current_round.clone()?,
@@ -321,6 +371,191 @@ pub struct RoundTraceStep {
     pub from_node_id: Option<String>,
     pub edge_outcome: Option<String>,
     pub entered_at: String,
+}
+
+/// Lifecycle-only admission result for retrying the canonical current node.
+///
+/// This deliberately does not include executable preflight (provider/profile,
+/// workflow snapshot or Git/worktree checks). Those checks belong to the
+/// command boundary after lifecycle admission has succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentNodeRetryReadiness {
+    Ready,
+    RunActive,
+    RunTerminal,
+    RunNotRetryable,
+    AttemptNotRetryable,
+    ErrorBlocked,
+    ManualCheckPending,
+    UnsupportedNode,
+}
+
+/// Decides whether a conversation Workflow's canonical current attempt may
+/// create a same-node retry attempt. Callers must pass the resolved
+/// conversation run mode because it is authoring metadata, not part of
+/// `RunState`.
+pub fn current_node_retry_readiness(
+    run: &RunState,
+    node: &NodeState,
+    workflow_mode: bool,
+) -> CurrentNodeRetryReadiness {
+    if !workflow_mode || run.is_sealed() {
+        return CurrentNodeRetryReadiness::RunNotRetryable;
+    }
+    if run.status == RunStatus::Running || node.runtime_execution_id.is_some() {
+        return CurrentNodeRetryReadiness::RunActive;
+    }
+    if run.status == RunStatus::Completed {
+        return CurrentNodeRetryReadiness::RunTerminal;
+    }
+    if run.pause_reason == Some(PauseReason::ErrorBlocked) {
+        return CurrentNodeRetryReadiness::ErrorBlocked;
+    }
+    if node.manual_check_pending {
+        return CurrentNodeRetryReadiness::ManualCheckPending;
+    }
+    if node.node_type != NodeType::Worker {
+        return CurrentNodeRetryReadiness::UnsupportedNode;
+    }
+    if run.status != RunStatus::Paused
+        || run.pause_reason != Some(PauseReason::RuntimeAbnormal)
+        || node.status != RunStatus::Paused
+        || node.outcome.is_some()
+        || run.current_round.as_deref() != Some(node.round_id.as_str())
+        || run.current_node.as_deref() != Some(node.node_id.as_str())
+        || run.current_attempt.as_deref() != Some(node.attempt_id.as_str())
+    {
+        return CurrentNodeRetryReadiness::AttemptNotRetryable;
+    }
+    CurrentNodeRetryReadiness::Ready
+}
+
+/// Completed failures fork a successor run; they must never re-open this run.
+/// Inherited prefix attempts are historical projections of an earlier Run and
+/// are therefore read-only for new handoffs.
+pub fn can_rerun_failed_attempt(
+    run: &RunState,
+    round: &RoundState,
+    step: &RoundTraceStep,
+    node: &NodeState,
+    workflow_mode: bool,
+) -> bool {
+    workflow_mode
+        && run.pause_reason != Some(PauseReason::ErrorBlocked)
+        && !run.is_inherited_step(round, step)
+        && node.run_id == run.id
+        && node.round_id == round.id
+        && node.node_id == step.node_id
+        && node.attempt_id == step.attempt_id
+        && node.node_type == NodeType::Worker
+        && node.status == RunStatus::Completed
+        && matches!(
+            node.outcome,
+            Some(crate::domain::NodeOutcome::Failure | crate::domain::NodeOutcome::Invalid)
+        )
+        && !node.manual_check_pending
+}
+
+/// Returns the canonical trace projection for one round.
+///
+/// The current round is truncated at the unique `RunState.current*` locator;
+/// earlier completed rounds expose their complete validated trace; later
+/// rounds are uncommitted and therefore ignored. This function is intentionally
+/// pure so every reader (runtime, recovery and view-model projection) can use
+/// the same crash-consistency rule.
+pub fn canonical_trace_for_round(
+    run: &RunState,
+    rounds: &[RoundState],
+    target_round: &RoundState,
+) -> Result<Vec<RoundTraceStep>> {
+    ensure!(target_round.run_id == run.id, "runtime.round-run-mismatch");
+    let current_round_id = run
+        .current_round
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("runtime.current-round-missing"))?;
+    let current_round = rounds
+        .iter()
+        .find(|round| round.id == current_round_id)
+        .or_else(|| (target_round.id == current_round_id).then_some(target_round))
+        .ok_or_else(|| anyhow::anyhow!("runtime.current-round-missing"))?;
+    ensure!(
+        !rounds
+            .iter()
+            .any(|round| round.index == current_round.index && round.id != current_round.id),
+        "runtime.round-identity-conflict"
+    );
+    ensure!(
+        target_round.index != current_round.index || target_round.id == current_round.id,
+        "runtime.round-identity-conflict"
+    );
+
+    let mut trace = target_round.trace.clone();
+    trace.sort_by_key(|step| step.sequence);
+    let mut previous_sequence = 0_u32;
+    for step in &trace {
+        ensure!(
+            step.sequence > previous_sequence,
+            "runtime.round-trace-sequence-invalid"
+        );
+        previous_sequence = step.sequence;
+    }
+
+    if target_round.index > current_round.index {
+        return Ok(Vec::new());
+    }
+    if target_round.index < current_round.index {
+        ensure!(
+            target_round.status == RunStatus::Completed && target_round.outcome.is_some(),
+            "runtime.previous-round-not-completed"
+        );
+        return Ok(trace);
+    }
+
+    let (current_node_id, current_attempt_id) = (
+        run.current_node
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("runtime.current-node-missing"))?,
+        run.current_attempt
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("runtime.current-attempt-missing"))?,
+    );
+    let mut matches = trace
+        .iter()
+        .filter(|step| step.node_id == current_node_id && step.attempt_id == current_attempt_id);
+    let Some(current_index) = matches.next().map(|step| {
+        trace
+            .iter()
+            .position(|candidate| candidate.sequence == step.sequence)
+            .expect("trace step came from trace")
+    }) else {
+        return Err(anyhow::anyhow!("runtime.current-trace-locator-missing"));
+    };
+    ensure!(
+        matches.next().is_none(),
+        "runtime.current-trace-locator-duplicate"
+    );
+    Ok(trace.into_iter().take(current_index + 1).collect())
+}
+
+/// Finds the direct same-node retry successor in a canonical trace.
+pub fn direct_retry_successor(
+    trace: &[RoundTraceStep],
+    expected_node_id: &str,
+    expected_attempt_id: &str,
+    current_node_id: &str,
+    current_attempt_id: &str,
+) -> Option<String> {
+    trace.windows(2).find_map(|pair| {
+        let previous = &pair[0];
+        let current = &pair[1];
+        (previous.node_id == expected_node_id
+            && previous.attempt_id == expected_attempt_id
+            && current.node_id == current_node_id
+            && current.attempt_id == current_attempt_id
+            && current.from_node_id.as_deref() == Some(expected_node_id)
+            && current.edge_outcome.as_deref() == Some("retry"))
+        .then(|| current.attempt_id.clone())
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,6 +664,40 @@ pub fn validate_task_state(state: &TaskState) -> Result<()> {
 }
 
 pub fn validate_run_state(state: &RunState) -> Result<()> {
+    ensure!(
+        !state.is_sealed() || state.status != RunStatus::Running,
+        "sealed run cannot be running"
+    );
+    if let Some(origin) = state.rerun.as_ref().and_then(|rerun| rerun.origin.as_ref()) {
+        ensure!(
+            origin.source_run_id != state.id && !origin.source_run_id.is_empty(),
+            "rerun source must be a different run"
+        );
+        ensure!(
+            origin.source_round_index > 0 && origin.inherited_trace_sequence > 0,
+            "rerun inheritance boundary must be positive"
+        );
+        ensure!(
+            !origin.operation_id.is_empty()
+                && !origin.source_round_id.is_empty()
+                && !origin.source_node_id.is_empty()
+                && !origin.source_attempt_id.is_empty(),
+            "rerun origin must contain a complete locator"
+        );
+    }
+    if let Some(seal) = state
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.sealed_by.as_ref())
+    {
+        ensure!(
+            seal.successor_run_id != state.id
+                && !seal.successor_run_id.is_empty()
+                && !seal.operation_id.is_empty()
+                && !seal.sealed_at.is_empty(),
+            "rerun seal must identify its successor"
+        );
+    }
     ensure!(state.version == VERSION, "unsupported run state version");
     ensure!(
         !(state.status != RunStatus::Completed && state.outcome.is_some()),
@@ -584,6 +853,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -746,5 +1016,172 @@ mod tests {
 
         run.execution.recovery_candidate_token = Some("  ".to_string());
         assert!(validate_run_state(&run).is_err());
+    }
+
+    #[test]
+    fn retry_readiness_accepts_only_paused_runtime_abnormal_worker() {
+        let mut run = test_run(RunStatus::Paused, RuntimeExecutionPhase::Paused);
+        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        let mut node = test_node(CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        node.status = RunStatus::Paused;
+        node.runtime_execution_id = None;
+        node.finished_at = Some("t1".to_string());
+
+        assert_eq!(
+            current_node_retry_readiness(&run, &node, true),
+            CurrentNodeRetryReadiness::Ready
+        );
+
+        run.status = RunStatus::Running;
+        assert_eq!(
+            current_node_retry_readiness(&run, &node, true),
+            CurrentNodeRetryReadiness::RunActive
+        );
+        run.status = RunStatus::Completed;
+        run.outcome = Some(RunOutcome::Failure);
+        assert_eq!(
+            current_node_retry_readiness(&run, &node, true),
+            CurrentNodeRetryReadiness::RunTerminal
+        );
+    }
+
+    #[test]
+    fn retry_readiness_rejects_blocked_manual_check_and_dynamic_nodes() {
+        let mut run = test_run(RunStatus::Paused, RuntimeExecutionPhase::Paused);
+        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        let mut node = test_node(CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        node.status = RunStatus::Paused;
+        node.runtime_execution_id = None;
+        node.finished_at = Some("t1".to_string());
+
+        node.manual_check_pending = true;
+        assert_eq!(
+            current_node_retry_readiness(&run, &node, true),
+            CurrentNodeRetryReadiness::ManualCheckPending
+        );
+        node.manual_check_pending = false;
+        node.node_type = NodeType::AiDynamic;
+        assert_eq!(
+            current_node_retry_readiness(&run, &node, true),
+            CurrentNodeRetryReadiness::UnsupportedNode
+        );
+        node.node_type = NodeType::Worker;
+        run.pause_reason = Some(PauseReason::ErrorBlocked);
+        assert_eq!(
+            current_node_retry_readiness(&run, &node, true),
+            CurrentNodeRetryReadiness::ErrorBlocked
+        );
+    }
+
+    fn trace_step(
+        sequence: u32,
+        node_id: &str,
+        attempt_id: &str,
+        from_node_id: Option<&str>,
+        edge_outcome: Option<&str>,
+    ) -> RoundTraceStep {
+        RoundTraceStep {
+            sequence,
+            node_id: node_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            from_node_id: from_node_id.map(str::to_string),
+            edge_outcome: edge_outcome.map(str::to_string),
+            entered_at: format!("t{sequence}"),
+        }
+    }
+
+    fn current_round(trace: Vec<RoundTraceStep>) -> RoundState {
+        RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "t0".to_string(),
+            trace,
+            uuid: None,
+        }
+    }
+
+    #[test]
+    fn canonical_trace_truncates_uncommitted_tail_and_finds_retry_successor() {
+        let mut run = test_run(RunStatus::Paused, RuntimeExecutionPhase::Paused);
+        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        let round = current_round(vec![
+            trace_step(1, "node-a", "attempt-001", None, None),
+            trace_step(2, "node-a", "attempt-002", Some("node-a"), Some("retry")),
+            trace_step(3, "orphan", "attempt-001", Some("node-a"), Some("success")),
+        ]);
+        run.current_attempt = Some("attempt-002".to_string());
+        let canonical = canonical_trace_for_round(&run, std::slice::from_ref(&round), &round)
+            .expect("canonical trace should truncate after current locator");
+        assert_eq!(canonical.len(), 2);
+        assert_eq!(
+            direct_retry_successor(&canonical, "node-a", "attempt-001", "node-a", "attempt-002"),
+            Some("attempt-002".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_attempt_rerun_rejects_inherited_prefix() {
+        let mut run = test_run(RunStatus::Completed, RuntimeExecutionPhase::Terminal);
+        run.outcome = Some(RunOutcome::Failure);
+        let round = current_round(vec![trace_step(1, "node-a", "attempt-001", None, None)]);
+        let mut node = test_node(CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Failure);
+        node.runtime_execution_id = None;
+        assert!(can_rerun_failed_attempt(
+            &run,
+            &round,
+            &round.trace[0],
+            &node,
+            true
+        ));
+
+        run.rerun = Some(RunRerunMetadata {
+            origin: Some(RunRerunOrigin {
+                source_run_id: "run-source".to_string(),
+                source_run_uuid: None,
+                source_round_id: round.id.clone(),
+                source_round_index: round.index,
+                source_node_id: "node-a".to_string(),
+                source_attempt_id: "attempt-001".to_string(),
+                operation_id: "rerun-001".to_string(),
+                inherited_trace_sequence: 1,
+                source_authoring_revision: 1,
+            }),
+            sealed_by: None,
+        });
+        assert!(!can_rerun_failed_attempt(
+            &run,
+            &round,
+            &round.trace[0],
+            &node,
+            true
+        ));
+    }
+
+    #[test]
+    fn canonical_trace_rejects_duplicate_current_locator_and_stale_locator() {
+        let mut run = test_run(RunStatus::Paused, RuntimeExecutionPhase::Paused);
+        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        let duplicate = current_round(vec![
+            trace_step(1, "node-a", "attempt-001", None, None),
+            trace_step(2, "node-a", "attempt-001", Some("node-a"), Some("retry")),
+        ]);
+        let error = canonical_trace_for_round(&run, std::slice::from_ref(&duplicate), &duplicate)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("current-trace-locator-duplicate")
+        );
+
+        run.current_attempt = Some("attempt-999".to_string());
+        let error = canonical_trace_for_round(&run, &[duplicate.clone()], &duplicate).unwrap_err();
+        assert!(error.to_string().contains("current-trace-locator-missing"));
     }
 }

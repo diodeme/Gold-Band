@@ -13,12 +13,14 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { getRuntimeApi } from '@/api/client';
 import { useComposerHistory } from '@/hooks/useComposerHistory';
+import { useComposerResize } from '@/hooks/use-composer-resize';
 import type { ComposerHistoryLocator } from '@/lib/composer-history';
 import { Trans, useTranslation } from 'react-i18next';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
+import { ComposerResizeHandle } from '@/components/conversation/ComposerResizeHandle';
 
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
@@ -205,6 +207,10 @@ function AcpConversationComposerContent({
     onCommitHistory: onHistoryTextCommit,
   });
   const effectiveCanSubmit = history.browsing ? canSubmitHistory && Boolean(history.value.trim()) : canSubmit;
+  const inputScrollRef = useRef<HTMLDivElement | null>(null);
+  const resize = useComposerResize({
+    getBaseHeight: () => inputScrollRef.current?.getBoundingClientRect().height ?? 0,
+  });
   const submit = () => {
     if (effectiveCanSubmit) onSubmit(history.commitHistory() ?? undefined);
   };
@@ -245,15 +251,16 @@ function AcpConversationComposerContent({
           onValueChange={history.onChange}
           onSubmit={submit}
           isLoading={sending}
-          maxHeight={320}
+          maxHeight={resize.promptInputMaxHeight === null ? null : (resize.promptInputMaxHeight ?? 320)}
           className={cn(
-            'bg-card !shadow-none transition-colors',
+            'group/composer relative bg-card !shadow-none transition-colors',
             ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
             ACP_SESSION_COMPOSER_LAYOUT.promptInputClassName,
             attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
             integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}
         >
+          {!inputDisabled && !attachedPanelVisible ? <ComposerResizeHandle resize={resize} /> : null}
           <ComposerContextArea
             quotes={history.browsing ? [] : quotes}
             workspaceFiles={history.browsing ? [] : workspaceFiles}
@@ -296,6 +303,11 @@ function AcpConversationComposerContent({
               />
             </div>
           ) : (
+            <div
+              ref={inputScrollRef}
+              className="relative min-w-0 overflow-y-auto"
+              style={resize.inputContainerStyle ?? undefined}
+            >
             <PromptInputTextarea
               ref={textareaRef}
               className={ACP_SESSION_COMPOSER_LAYOUT.textareaClassName}
@@ -327,6 +339,7 @@ function AcpConversationComposerContent({
               onDrop={inputDisabled ? undefined : onDrop}
               onPaste={inputDisabled ? undefined : onPaste}
             />
+            </div>
           )}
           {history.error ? <div role="alert" className="px-2.5 text-xs text-destructive">{t('acp.composerHistoryError')}</div> : null}
           <div className={ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName} data-acp-composer-command-bar="true">

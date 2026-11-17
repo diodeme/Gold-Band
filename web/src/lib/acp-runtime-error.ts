@@ -1,4 +1,5 @@
 import type { RuntimeErrorInfoVm } from '@/types';
+import { AUTH_REQUIRED_ERROR_CODE, authRequiredCopy } from '@/lib/auth-required-copy';
 
 export const ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE = 'acp.session-config-value-unavailable';
 export const ACP_THOUGHT_LEVEL_CATEGORY = 'thought_level';
@@ -50,6 +51,9 @@ function localizedRuntimeErrorSummary(
 ): string | null {
   if (!runtimeError) {
     return null;
+  }
+  if (runtimeError.code?.code === AUTH_REQUIRED_ERROR_CODE) {
+    return authRequiredCopy(t, runtimeError.params);
   }
   if (runtimeError.code?.code?.startsWith('memory.')) {
     const message = t(`memory.errors.${runtimeError.code.code.slice('memory.'.length)}`);

@@ -507,9 +507,11 @@ export interface RuntimeApi {
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("../types").DirectBackgroundControl | null, expectedTurnId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
-  retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  retryCurrentNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
+  rerunFailedNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  getConversationTurnIndex(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, branchId?: string | null, afterSeq?: number | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').ConversationTurnIndexEntryVm[]>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
   getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
   getAcpCompactionSummary(locator: import('../types').TurnFileLocatorVm, query: import('../types').AcpCompactionSummaryQueryInput): Promise<import('../types').AcpCompactionSummaryVm>;
@@ -588,7 +590,11 @@ export interface RuntimeApi {
   importDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm | null>;
   selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string): Promise<PreferencesVm>;
   saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number): Promise<PreferencesVm>;
+  saveDesktopWallpaperFit(colorScheme: ResolvedColorScheme, fit: import('../types').WallpaperFitPreference): Promise<PreferencesVm>;
   restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
+  clearDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
+  deleteRecentDesktopWallpaper(wallpaperId: string): Promise<PreferencesVm>;
+  selectThemeDesktopWallpaper(colorScheme: ResolvedColorScheme, assetId: string): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;

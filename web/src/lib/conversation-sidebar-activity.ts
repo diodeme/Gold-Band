@@ -337,8 +337,16 @@ export function applyConversationSidebarRunStateUpdate(
     const runs = task.runs.map(updateRun);
     const latestRun = task.latestRun ? updateRun(task.latestRun) : task.latestRun;
     const runsChanged = runs.some((run, index) => run !== task.runs[index]);
-    if (!runsChanged && latestRun === task.latestRun) return task;
-    return { ...task, runs, latestRun };
+    // A terminal run settles every execution of that run: any live-activity
+    // sample still pinned on the row is stale (the last session update may
+    // have arrived before the runner finished) and must stop the spinner.
+    // Background facts keep their own grace-window lifecycle and may re-arm
+    // through later events.
+    const terminal = isTerminalConversationRunStatus(event.status)
+      && task.activity != null
+      && task.activity.phase !== 'background';
+    if (!runsChanged && latestRun === task.latestRun && !terminal) return task;
+    return { ...task, runs, latestRun, activity: terminal ? null : task.activity };
   };
 
   return projectConversationSidebarRunRows(sidebar, event.projectId, updateTask);

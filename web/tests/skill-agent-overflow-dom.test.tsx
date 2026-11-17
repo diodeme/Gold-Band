@@ -22,6 +22,7 @@ function makeAgent(index: number): AgentCatalogEntryVm {
     label: `Agent ${index}`,
     iconKey: 'gold-band',
     version: '1',
+    provenance: { sourceKind: 'official-registry', integrationOrigin: 'official', validatedVersion: '1' },
     description: '',
     repository: null,
     website: null,

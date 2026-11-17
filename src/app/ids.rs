@@ -75,36 +75,34 @@ pub(crate) fn next_dynamic_resume_request_id() -> String {
     format!("dynamic-resume-{}", generate_uuid())
 }
 
-pub(crate) fn next_attempt_id(node_dir: &Utf8Path) -> Result<String> {
-    let next = latest_attempt_id(node_dir)?
-        .and_then(|value| {
-            value
-                .strip_prefix("attempt-")
-                .and_then(|v| v.parse::<u32>().ok())
-        })
-        .unwrap_or(0)
-        + 1;
-    Ok(format!("attempt-{next:03}"))
-}
-
-pub(crate) fn latest_attempt_id(node_dir: &Utf8Path) -> Result<Option<String>> {
-    if !node_dir.exists() {
-        return Ok(None);
-    }
-    let mut max_id = 0_u32;
-    for entry in fs::read_dir(node_dir.as_std_path())? {
-        let entry = entry?;
-        if let Some(name) = entry.file_name().to_str()
-            && let Some(number) = name.strip_prefix("attempt-")
-            && let Ok(parsed) = number.parse::<u32>()
-        {
-            max_id = max_id.max(parsed);
+/// Atomically reserves the next attempt directory for a node.
+///
+/// The committed target attempt is the normal starting point, or `None` for
+/// a node's first execution. A leftover directory
+/// from a crashed submission is skipped by the filesystem's exclusive
+/// `create_dir` operation, so numbering holes are harmless and no directory
+/// scan is needed on the uncontended path.
+pub(crate) fn reserve_next_attempt_dir(
+    node_dir: &Utf8Path,
+    current_attempt_id: Option<&str>,
+) -> Result<(String, Utf8PathBuf)> {
+    fs::create_dir_all(node_dir.as_std_path())?;
+    let mut next = current_attempt_id
+        .and_then(|attempt_id| attempt_id.strip_prefix("attempt-"))
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_default()
+        .saturating_add(1)
+        .max(1);
+    loop {
+        let attempt_id = format!("attempt-{next:03}");
+        let attempt_dir = node_dir.join(&attempt_id);
+        match fs::create_dir(attempt_dir.as_std_path()) {
+            Ok(()) => return Ok((attempt_id, attempt_dir)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                next = next.saturating_add(1);
+            }
+            Err(error) => return Err(error.into()),
         }
-    }
-    if max_id == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(format!("attempt-{max_id:03}")))
     }
 }
 
@@ -211,6 +209,64 @@ mod tests {
                 "run-008".to_string(),
                 "run-009".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn reserve_first_attempt_dir_uses_the_target_node_sequence() {
+        let dir = TempDir::new().unwrap();
+        let node_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        std::fs::create_dir_all(node_dir.join("attempt-999")).unwrap();
+
+        let (attempt_id, attempt_dir) = reserve_next_attempt_dir(node_dir, None).unwrap();
+
+        assert_eq!(attempt_id, "attempt-001");
+        assert!(attempt_dir.exists());
+    }
+
+    #[test]
+    fn reserve_next_attempt_dir_skips_crash_leftovers_without_scanning_maximum() {
+        let dir = TempDir::new().unwrap();
+        let node_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        std::fs::create_dir_all(node_dir.join("attempt-002")).unwrap();
+
+        let (attempt_id, attempt_dir) =
+            reserve_next_attempt_dir(node_dir, Some("attempt-001")).unwrap();
+
+        assert_eq!(attempt_id, "attempt-003");
+        assert!(attempt_dir.exists());
+    }
+
+    #[test]
+    fn reserve_next_attempt_dir_allocates_unique_owned_dirs_concurrently() {
+        let dir = TempDir::new().unwrap();
+        let node_dir = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .to_path_buf();
+        std::fs::create_dir_all(node_dir.join("attempt-001")).unwrap();
+        let allocated = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let workers = (0..8)
+            .map(|_| {
+                let node_dir = node_dir.clone();
+                let allocated = allocated.clone();
+                std::thread::spawn(move || {
+                    let (attempt_id, attempt_dir) =
+                        reserve_next_attempt_dir(&node_dir, Some("attempt-001")).unwrap();
+                    assert!(attempt_dir.exists());
+                    allocated.lock().unwrap().push(attempt_id);
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let mut attempt_ids = allocated.lock().unwrap().clone();
+        attempt_ids.sort();
+        assert_eq!(
+            attempt_ids,
+            (0..8)
+                .map(|index| format!("attempt-{:03}", index + 2))
+                .collect::<Vec<_>>()
         );
     }
 

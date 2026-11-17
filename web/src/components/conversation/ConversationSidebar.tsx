@@ -694,7 +694,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 data-conversation-workspace-group={ws.projectId}
                 className="mb-2"
               >
-                <div data-conversation-workspace-header className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 rounded-lg bg-sidebar py-1 pl-5 pr-1 hover:bg-sidebar-accent">
+                <div data-conversation-workspace-header className="group sticky top-7 z-[1] flex w-full items-center gap-1.5 rounded-lg bg-sidebar py-1 pl-5 pr-1 hover:bg-sidebar-accent">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button

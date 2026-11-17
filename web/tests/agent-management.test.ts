@@ -95,7 +95,7 @@ describe('Agent management input mapping', () => {
     expect(input.externalSessionSyncEnabled).toBe(false);
   });
 
-  it('preserves split global and project primary directories as one directory policy', () => {
+  it('preserves project primary directories that are also global compatible reads', () => {
     const input = buildAgentInput(agentInput({
       primaryAgentDir: ' .pi/agent ',
       projectPrimaryAgentDir: ' .pi ',
@@ -103,13 +103,26 @@ describe('Agent management input mapping', () => {
 
     expect(input.primaryAgentDir).toBe('.pi/agent');
     expect(input.projectPrimaryAgentDir).toBe('.pi');
-    expect(input.compatibleAgentDirs).toEqual(['.agents']);
+    expect(input.compatibleAgentDirs).toEqual(['.agents', '.pi']);
     expect(hasManagedAgentInputChanged(input, {
       ...input,
       projectPrimaryAgentDir: null,
     })).toBe(true);
     expect(i18n.t('agentManagement.splitPrimaryAgentDirs', { lng: 'zh-CN' }))
       .toBe('拆分全局/项目主目录');
+  });
+
+  it('keeps a global compatible directory when it is also the project primary directory', () => {
+    const input = buildAgentInput(agentInput({
+      primaryAgentDir: '.zcode',
+      projectPrimaryAgentDir: '.agents',
+    }), '', '', '.agents');
+
+    expect(input.compatibleAgentDirs).toEqual(['.agents']);
+    expect(hasManagedAgentInputChanged(input, {
+      ...input,
+      compatibleAgentDirs: [],
+    })).toBe(true);
   });
 
   it('uses the default icon and allows an Agent without a Skills directory', () => {
@@ -169,6 +182,18 @@ describe('Agent management input mapping', () => {
     expect(isAgentIdEditable({ mode: 'create', source: 'catalog' })).toBe(false);
     expect(isAgentIdEditable({ mode: 'edit', source: 'catalog' })).toBe(false);
     expect(isAgentIdEditable({ mode: 'edit', source: 'custom' })).toBe(false);
+  });
+
+  it('uses localized structured provenance and platform rejection copy', () => {
+    expect(agentManagementSource).toContain("agentType.provenance.integrationOrigin === 'community-adapter'");
+    expect(agentManagementSource).not.toContain('community adapter');
+    expect(i18n.t('agentManagement.integrationOrigin.communityAdapter', { lng: 'zh-CN' })).toBe('社区适配');
+    expect(i18n.t('errors.agent.unsupported-platform', {
+      lng: 'zh-CN',
+      agentType: 'qoder',
+      os: 'windows',
+      arch: 'aarch64',
+    })).toContain('不支持');
   });
 
   it('keeps the current Agent draft intact while the Sheet exit animation is running', () => {

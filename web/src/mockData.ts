@@ -2,6 +2,7 @@ import type {
   AcpSessionVm,
   AgentRegistryVm,
   AgentCatalogEntryVm,
+  AgentConnectionRequirementsVm,
   AppBootstrapVm,
   ContentVm,
   LogPageVm,
@@ -197,11 +198,11 @@ const task = {
 
 const graph = {
   nodes: [
-    { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
-    { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
-    { id: 'test', label: 'Checking output result...', nodeType: 'worker', status: 'running', outcome: null, runtimeDisplay: runtimeDisplay('running', null, true), attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
-    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'finalize', label: 'Finalize result', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', retryable: false, status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', retryable: false, status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
+    { id: 'test', label: 'Checking output result...', nodeType: 'worker', retryable: false, status: 'running', outcome: null, runtimeDisplay: runtimeDisplay('running', null, true), attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
+    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', retryable: false, status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'finalize', label: 'Finalize result', nodeType: 'worker', retryable: false, status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'prepare', to: 'plan', label: 'success' },
@@ -214,8 +215,8 @@ const graph = {
 
 const failedAcceptanceGraph = {
   nodes: [
-    { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', status: 'completed', outcome: 'success', runtimeDisplay: runtimeDisplay('completed', 'success'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'completed', outcome: 'failure', runtimeDisplay: runtimeDisplay('completed', 'failure'), attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', retryable: false, status: 'completed', outcome: 'success', runtimeDisplay: runtimeDisplay('completed', 'success'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'accept', label: 'accept', nodeType: 'worker', retryable: false, status: 'completed', outcome: 'failure', runtimeDisplay: runtimeDisplay('completed', 'failure'), attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'observed' },
@@ -225,8 +226,8 @@ const failedAcceptanceGraph = {
 
 const errorBlockedGraph = {
   nodes: [
-    { id: 'dev', label: 'dev', nodeType: 'worker', status: 'paused', outcome: null, runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
-    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'dev', label: 'dev', nodeType: 'worker', retryable: false, status: 'paused', outcome: null, runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
+    { id: 'accept', label: 'accept', nodeType: 'worker', retryable: false, status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
@@ -281,6 +282,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
 export const mockErrorBlockedConversationRun: ConversationRunVm = {
   projectId: 'default',
   taskId: 'mock-task',
+  taskUuid: 'browser-mock-task-uuid',
   runId: 'run-051',
   runMode: 'workflow',
   workflowTemplateId: 'default',
@@ -518,6 +520,53 @@ export const mockBootstrap: AppBootstrapVm = {
   needsWorkspace: false,
 };
 
+const MOCK_LOCAL_LAUNCHES: Record<string, { command: string; args: string[]; installedCli?: string }> = {
+  'claude-acp': { command: 'claude-agent-acp', args: [], installedCli: 'claude' },
+  'codebuddy-code': { command: 'codebuddy', args: ['--acp'] },
+  'codex-acp': { command: 'codex-acp', args: [], installedCli: 'codex' },
+  'pi-acp': { command: 'pi-acp', args: [], installedCli: 'pi' },
+  qoder: { command: 'qodercli', args: ['--acp'], installedCli: 'qodercli' },
+  gemini: { command: 'gemini', args: ['--acp'] },
+  'qwen-code': { command: 'qwen', args: ['--acp', '--experimental-skills'] },
+};
+
+function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
+  const local = MOCK_LOCAL_LAUNCHES[input.agentType];
+  const defaultArgs = input.defaultArgs ?? [];
+  const defaultCommand = input.defaultCommand ?? 'npx';
+  const npxFallback = defaultCommand === 'npx' ? { command: 'npx', args: defaultArgs } : null;
+  const connectionRequirements: AgentConnectionRequirementsVm = {
+    pathCommand: local?.command ?? defaultCommand,
+    pathArgs: local?.args ?? defaultArgs,
+    installedCli: local?.installedCli ?? null,
+    npxFallback,
+    npxRequiresPreparedPackage: Boolean(npxFallback) && (!local?.installedCli || local.installedCli === local.command),
+  };
+  return {
+    version: '1.0.0',
+    provenance: {
+      sourceKind: 'official-registry',
+      integrationOrigin: 'official',
+      validatedVersion: '1.0.0',
+    },
+    description: '',
+    repository: null,
+    website: null,
+    primaryAgentDir: '',
+    projectPrimaryAgentDir: null,
+    compatibleAgentDirs: [],
+    configured: false,
+    supportsSystemPrompt: false,
+    supportsExternalSessionSync: false,
+    defaultDisplayName: input.label,
+    defaultCommand: 'npx',
+    defaultArgs: [],
+    defaultEnv: [],
+    ...input,
+    connectionRequirements: input.connectionRequirements ?? connectionRequirements,
+  };
+}
+
 export const mockAgentRegistry: AgentRegistryVm = {
   agents: [
     {
@@ -616,38 +665,21 @@ export const mockAgentRegistry: AgentRegistryVm = {
   ],
   catalog: [
     mockCatalogEntry({ agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', configured: true, supportsSystemPrompt: true, defaultDisplayName: 'Claude', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@0.65.0'] }),
+    mockCatalogEntry({ agentType: 'codebuddy-code', label: 'WorkBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', defaultDisplayName: 'WorkBuddy', defaultArgs: ['-y', '@tencent-ai/codebuddy-code@2.106.7', '--acp'] }),
     mockCatalogEntry({ agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Codex', defaultArgs: ['-y', '@agentclientprotocol/codex-acp@1.1.13'] }),
+    mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
+    mockCatalogEntry({ agentType: 'deepseek-harness', label: 'DeepSeek Harness', iconKey: 'deepseek-harness', primaryAgentDir: '.dsh', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'DeepSeek Harness', defaultCommand: 'dsh', defaultArgs: ['--profile', 'acp'] }),
+    mockCatalogEntry({ agentType: 'zcode-acp', label: 'ZCode', iconKey: 'zcode-acp', primaryAgentDir: '.zcode', projectPrimaryAgentDir: '.agents', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'ZCode', defaultCommand: 'zcode-acp-server', defaultArgs: [] }),
+    mockCatalogEntry({ agentType: 'qoder', label: 'Qoder', iconKey: 'qoder', primaryAgentDir: '.qoder', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Qoder', defaultArgs: ['-y', '@qoder-ai/qodercli@1.1.86', '--acp'] }),
+    mockCatalogEntry({ agentType: 'kimi', label: 'Kimi Code', iconKey: 'kimi', primaryAgentDir: '.kimi-code', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Kimi Code', defaultCommand: 'kimi', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', primaryAgentDir: '.cursor', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Cursor', defaultCommand: 'cursor-agent', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Gemini', defaultArgs: ['-y', '@google/gemini-cli@0.54.4', '--acp'] }),
-    mockCatalogEntry({ agentType: 'codebuddy-code', label: 'CodeBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', defaultDisplayName: 'CodeBuddy', defaultArgs: ['-y', '@tencent-ai/codebuddy-code@2.106.7', '--acp'] }),
     mockCatalogEntry({ agentType: 'goose', label: 'Goose', iconKey: 'goose', primaryAgentDir: '.goose', defaultDisplayName: 'Goose', defaultCommand: 'goose', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'qwen-code', label: 'Qwen Code', iconKey: 'qwen-code', primaryAgentDir: '.qwen', defaultDisplayName: 'Qwen Code', defaultArgs: ['-y', '@qwen-code/qwen-code@0.21.7', '--acp', '--experimental-skills'] }),
     mockCatalogEntry({ agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'OpenCode', defaultCommand: 'opencode', defaultArgs: ['acp'] }),
-    mockCatalogEntry({ agentType: 'kimi', label: 'Kimi Code', iconKey: 'kimi', primaryAgentDir: '.kimi-code', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Kimi Code', defaultCommand: 'kimi', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'amp-acp', label: 'Amp', iconKey: 'amp-acp', primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'], defaultDisplayName: 'Amp', defaultCommand: 'amp-acp' }),
-    mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
   ],
 };
-
-function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
-  return {
-    version: '1.0.0',
-    description: '',
-    repository: null,
-    website: null,
-    primaryAgentDir: '',
-    projectPrimaryAgentDir: null,
-    compatibleAgentDirs: [],
-    configured: false,
-    supportsSystemPrompt: false,
-    supportsExternalSessionSync: false,
-    defaultDisplayName: input.label,
-    defaultCommand: 'npx',
-    defaultArgs: [],
-    defaultEnv: [],
-    ...input,
-  };
-}
 
 export const mockTaskList: TaskListVm = {
   cards: [

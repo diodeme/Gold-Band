@@ -11,10 +11,30 @@ export type FontStackPreference = { source: 'theme' } | { source: 'custom'; fami
 export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
-export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
+/**
+ * Wallpaper source per color scheme. `theme` inherits the theme's default
+ * slot assignment; an optional `assetId` pins one theme-declared wallpaper
+ * across all slots (slot styling stays with the theme). `user` references an
+ * imported asset; `none` explicitly renders no wallpaper at all.
+ */
+export type WallpaperImagePreference =
+  | { source: 'theme'; assetId?: string }
+  | { source: 'user'; assetId: string }
+  | { source: 'none' };
+/** `cover` fills and crops, `contain` letterboxes with the theme background. */
+export type WallpaperFitPreference = 'cover' | 'contain';
+/** Session-level turn navigation index entry for the conversation turn rail. */
+export interface ConversationTurnIndexEntryVm {
+  seq: number;
+  timestamp: string;
+  /** prompt | tool | compaction | permission */
+  kind: 'prompt' | 'tool' | 'compaction' | 'permission';
+  promptPreview: string | null;
+}
 export interface WallpaperSchemePersonalization {
   image: WallpaperImagePreference;
   opacityPercent: number;
+  fit?: WallpaperFitPreference;
 }
 export type WorkflowGraphDirectionPreference = 'auto' | 'horizontal' | 'vertical';
 export interface PersonalizationPreference {
@@ -692,6 +712,7 @@ export interface AgentCatalogEntryVm {
   label: string;
   iconKey: string;
   version: string;
+  provenance: AgentCatalogProvenanceVm;
   description: string;
   repository?: string | null;
   website?: string | null;
@@ -705,6 +726,29 @@ export interface AgentCatalogEntryVm {
   defaultCommand: string;
   defaultArgs: string[];
   defaultEnv: AgentEnvEntryVm[];
+  connectionRequirements: AgentConnectionRequirementsVm;
+}
+
+export interface AgentExecutableVm {
+  command: string;
+  args: string[];
+}
+
+export interface AgentConnectionRequirementsVm {
+  pathCommand: string;
+  pathArgs: string[];
+  installedCli: string | null;
+  npxFallback: AgentExecutableVm | null;
+  npxRequiresPreparedPackage: boolean;
+}
+
+export type AgentCatalogSourceKind = 'official-registry' | 'local-supplement';
+export type AgentIntegrationOrigin = 'official' | 'community-adapter';
+
+export interface AgentCatalogProvenanceVm {
+  sourceKind: AgentCatalogSourceKind;
+  integrationOrigin: AgentIntegrationOrigin;
+  validatedVersion: string;
 }
 
 export interface ManagedAgentInput {
@@ -1776,6 +1820,30 @@ export interface RunSummaryVm {
   pauseReason?: string | null;
 }
 
+export interface RetryCurrentNodeRequest {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  expectedRoundId: string;
+  expectedNodeId: string;
+  expectedAttemptId: string;
+}
+
+export interface RetryCurrentNodeLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+}
+
+export interface RetryCurrentNodeAcceptedVm {
+  operationId: string;
+  locator: RetryCurrentNodeLocatorVm;
+  run: RunSummaryVm;
+}
+
 export interface RoundSummaryVm {
   id: string;
   runId: string;
@@ -1813,6 +1881,7 @@ export interface RuntimeDisplayVm {
 
 export interface GraphNodeVm {
   id: string;
+  roundId?: string | null;
   nodeId?: string | null;
   sequence?: number | null;
   label: string;
@@ -1828,6 +1897,7 @@ export interface GraphNodeVm {
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
+  retryable: boolean;
   iconKey?: string | null;
   sessionMode?: string | null;
   continueFromNodeId?: string | null;
@@ -1844,6 +1914,7 @@ export interface GraphAttemptVm {
   sessionMode?: string | null;
   acpSessionId?: string | null;
   current: boolean;
+  retryable: boolean;
 }
 
 export interface GraphEdgeVm {
@@ -3098,6 +3169,7 @@ export interface ConversationSessionLeafVm {
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
+  inherited?: boolean;
   manualCheckPending: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -3235,6 +3307,19 @@ export interface ConversationRunVm {
   runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+  sealed?: boolean;
+  rerunSuccessorRunId?: string | null;
+  rerunOrigin?: {
+    sourceRunId: string;
+    sourceRunUuid?: string | null;
+    sourceRoundId: string;
+    sourceRoundIndex: number;
+    sourceNodeId: string;
+    sourceAttemptId: string;
+    operationId: string;
+    inheritedTraceSequence: number;
+    sourceAuthoringRevision: number;
+  } | null;
 }
 
 export interface ScheduledTaskConfig {

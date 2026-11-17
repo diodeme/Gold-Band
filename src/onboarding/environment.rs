@@ -116,6 +116,13 @@ impl EnvironmentStatus {
     fn is_runtime_usable(self) -> bool {
         matches!(self, Self::Ready | Self::Unverified)
     }
+
+    fn is_launched(self) -> bool {
+        matches!(
+            self,
+            Self::Ready | Self::Unverified | Self::Unsupported | Self::Incompatible
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +133,8 @@ pub struct EnvironmentCheck {
     pub version: Option<String>,
     pub executable_path: Option<PathBuf>,
     pub node_executable_path: Option<PathBuf>,
+    #[serde(default)]
+    pub node_version: Option<String>,
     pub error: Option<EnvironmentError>,
 }
 
@@ -140,20 +149,33 @@ pub struct EnvironmentError {
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentReport {
     pub checks: Vec<EnvironmentCheck>,
-    pub runtime_ready: bool,
+    pub npx_launchable: bool,
 }
 
 impl EnvironmentReport {
-    /// All setup entry points use this gate and preserve the same diagnostic report.
-    pub fn require_runtime(&self) -> Result<(), super::model::SetupError> {
-        if self.runtime_ready {
-            Ok(())
-        } else {
-            Err(super::model::SetupError {
-                code: "setup.runtime-incompatible",
-                params: serde_json::json!({ "environment": self }),
-            })
+    pub fn from_checks(checks: Vec<EnvironmentCheck>) -> Self {
+        let npx_launchable = checks
+            .iter()
+            .any(|check| check.tool == EnvironmentTool::Npx && check.status.is_launched());
+        Self {
+            checks,
+            npx_launchable,
         }
+    }
+
+    #[cfg(test)]
+    fn runtime_ready(&self) -> bool {
+        [
+            EnvironmentTool::Node,
+            EnvironmentTool::Npm,
+            EnvironmentTool::Npx,
+        ]
+        .into_iter()
+        .all(|tool| {
+            self.checks
+                .iter()
+                .any(|check| check.tool == tool && check.status.is_runtime_usable())
+        })
     }
 }
 
@@ -163,7 +185,6 @@ enum EnvironmentIncompatibility {
     ProbeUnavailable,
     NodeMismatch,
     NodeVersionMismatch,
-    NodePathMismatch,
     NpmMetadataMissing,
     NpmEnginesIncompatible,
     NpmVersionMismatch,
@@ -447,6 +468,7 @@ pub fn check_environment(
                     version: None,
                     executable_path: runner.resolve(tool),
                     node_executable_path: None,
+                    node_version: None,
                     error: None,
                 };
                 let mut observation = None;
@@ -495,6 +517,8 @@ pub fn check_environment(
                                     });
                                 check.node_executable_path =
                                     observation.as_ref().map(|o| o.node_path.clone());
+                                check.node_version =
+                                    observation.as_ref().map(|o| o.node_version.clone());
                                 if let Some(version) = version {
                                     check.version = Some(version.to_string());
                                     let (ranges, verified_majors) = if tool == EnvironmentTool::Node
@@ -553,7 +577,9 @@ pub fn check_environment(
                         serde_json::json!({"expectedVersion": checks[1].version, "actualVersion": observed.node_version}),
                     ))
                 } else if index == 1 {
-                    (!checks[1].executable_path.as_ref().is_some_and(|p| same_path(p, &node.node_path))).then(|| (Reason::NodePathMismatch, serde_json::json!({"expectedNodePath": checks[1].executable_path, "actualNodePath": node.node_path})))
+                    // `node` may be a launcher/shim that executes a different process path.
+                    // Node/npm/npx runtime identity is established by the observed process paths above.
+                    None
                 } else if let Some(package) = observed.npm.as_ref() {
                     if package.node_range.is_none() {
                         Some((Reason::NpmMetadataMissing, serde_json::json!({})))
@@ -589,12 +615,7 @@ pub fn check_environment(
             incompatible(&mut checks[index], reason, params);
         }
     }
-    EnvironmentReport {
-        runtime_ready: checks[1..]
-            .iter()
-            .all(|check| check.status.is_runtime_usable()),
-        checks,
-    }
+    EnvironmentReport::from_checks(checks)
 }
 
 #[cfg(test)]

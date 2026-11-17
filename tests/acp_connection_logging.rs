@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use gold_band::acp::connection::{
-    AdapterConnectionKey, AdapterConnectionManager, AdapterShutdownReason,
+    AdapterConnectionKey, AdapterConnectionManager, AdapterInitializationData,
+    AdapterShutdownReason,
 };
 use gold_band::config::AcpAdapterConfig;
 use serde_json::json;
@@ -41,7 +42,14 @@ fn acquired_connection_survives_idle_cleanup_before_resume() {
     let initial = manager
         .get_or_spawn("lease-regression", &config, workspace.clone(), false, false)
         .unwrap();
-    initial.initialize_once(|| Ok(json!({}))).unwrap();
+    initial
+        .initialize_once(|| {
+            Ok(AdapterInitializationData {
+                capabilities: json!({}),
+                auth_methods: Vec::new(),
+            })
+        })
+        .unwrap();
     let observer = Arc::clone(&initial);
     drop(initial);
     let resolution = manager

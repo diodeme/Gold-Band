@@ -60,8 +60,8 @@ import type { GraphVm } from '@/types';
 
 const graph: GraphVm = {
   nodes: [
-    { id: 'n1', label: 'Step one', nodeId: 'node-1', nodeType: 'agent', artifactCount: 0, attachmentCount: 0, current: false, runtimeDisplay: { code: '', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false } },
-    { id: 'n2', label: 'Step two', nodeId: 'node-2', nodeType: 'agent', artifactCount: 0, attachmentCount: 0, current: false, runtimeDisplay: { code: '', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false } },
+    { id: 'n1', label: 'Step one', nodeId: 'node-1', nodeType: 'agent', retryable: false, artifactCount: 0, attachmentCount: 0, current: false, runtimeDisplay: { code: '', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false } },
+    { id: 'n2', label: 'Step two', nodeId: 'node-2', nodeType: 'agent', retryable: false, artifactCount: 0, attachmentCount: 0, current: false, runtimeDisplay: { code: '', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false } },
   ],
   edges: [{ from: 'n1', to: 'n2', label: 'success' }],
   groups: [],

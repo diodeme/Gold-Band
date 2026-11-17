@@ -13,7 +13,8 @@
     "tokens",
     "component-recipes",
     "fonts",
-    "avatars"
+    "avatars",
+    "wallpapers"
   ],
   "schemes": {
     "light": {
@@ -766,9 +767,33 @@
   },
   "assets": {
     "schemaVersion": 2,
-    "count": 2,
-    "totalBytes": 2663272,
+    "count": 4,
+    "totalBytes": 5442998,
     "records": [
+      {
+        "id": "goldband-stargaze-dark",
+        "kind": "wallpaper",
+        "mediaType": "image/webp",
+        "bytes": 1561740,
+        "sha256": "57b5f23f1f9246913e13e644e167382177b5c08099f90087f94badeb021979e0",
+        "outputUrl": "/theme-assets/builtin.gold-band/57b5f23f1f924691-goldband-stargaze-dark.webp",
+        "required": true,
+        "licenseId": "goldband-inhouse",
+        "width": 2048,
+        "height": 1280
+      },
+      {
+        "id": "goldband-study-light",
+        "kind": "wallpaper",
+        "mediaType": "image/webp",
+        "bytes": 1217986,
+        "sha256": "f91fee90a7193b9c16a5f1fca0c0afd67a6167a0bcf1a9e3b7e2bbb3783db05d",
+        "outputUrl": "/theme-assets/builtin.gold-band/f91fee90a7193b9c-goldband-study-light.webp",
+        "required": true,
+        "licenseId": "goldband-inhouse",
+        "width": 2048,
+        "height": 1280
+      },
       {
         "id": "inter-latin-variable",
         "kind": "font",
@@ -876,5 +901,47 @@
         ]
       }
     ]
+  },
+  "wallpapers": {
+    "light": {
+      "conversation": {
+        "assetId": "goldband-study-light",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.1
+      },
+      "settings": {
+        "assetId": "goldband-study-light",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.1
+      }
+    },
+    "dark": {
+      "conversation": {
+        "assetId": "goldband-stargaze-dark",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.08
+      },
+      "settings": {
+        "assetId": "goldband-stargaze-dark",
+        "fit": "cover",
+        "position": "center",
+        "repeat": "no-repeat",
+        "opacity": 0.9,
+        "overlayColor": "background",
+        "overlayOpacity": 0.08
+      }
+    }
   }
 }

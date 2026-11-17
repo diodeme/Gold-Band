@@ -15,6 +15,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 
 它整体负责：
 - 调起 provider，优先启动 ACP-compatible adapter
+- Direct、Workflow、AI-DYNAMIC 与个人分析等正式执行入口必须消费同一个 Agent 执行配置解析结果；用户显式选择的本机 executable 只能解析为本机 ACP launch 命令，调用方不得透传 catalog/npm 原始配置，避免同一 workspace 的 ACP 连接在多轮之间发生启动签名漂移
 - 接收 runtime 传来的外层调用请求
 - 在 A() 内部选择热数据与冷数据
 - 在 A() 内部把调用请求整理成 prompt bundle

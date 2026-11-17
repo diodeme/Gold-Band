@@ -106,6 +106,38 @@ describe('conversation sidebar recent tasks', () => {
     expect(updated.recentTasks[0].workspaceName).toBe('Workspace A');
   });
 
+  it('settles a stale live-activity sample when the run reaches a terminal status', () => {
+    // The last session update raced the runner: the row still pins a running
+    // activity sample while the run has already completed. The terminal run
+    // state must stop the spinner in the same projection.
+    const row = recentRow({
+      runMode: 'workflow',
+      taskId: 'task-1',
+      latestRun: { runId: 'run-1', status: 'running', updatedAt: '2026-01-01T00:00:00Z' } as never,
+      activity: { phase: 'running', stopping: false },
+    });
+    const sidebar = sidebarWithRecent([row]);
+    const updated = applyConversationSidebarRunStateUpdate(sidebar, {
+      projectId: 'a', taskId: 'task-1', taskUuid: 'uuid-1', runId: 'run-1', status: 'completed', outcome: 'success',
+    } as never);
+    expect(updated.recentTasks[0].latestRun?.status).toBe('completed');
+    expect(updated.recentTasks[0].activity ?? null).toBeNull();
+  });
+
+  it('keeps background facts alive across a terminal run state', () => {
+    const row = recentRow({
+      runMode: 'workflow',
+      taskId: 'task-1',
+      latestRun: { runId: 'run-1', status: 'running', updatedAt: '2026-01-01T00:00:00Z' } as never,
+      activity: { phase: 'background', stopping: false },
+    });
+    const sidebar = sidebarWithRecent([row]);
+    const updated = applyConversationSidebarRunStateUpdate(sidebar, {
+      projectId: 'a', taskId: 'task-1', taskUuid: 'uuid-1', runId: 'run-1', status: 'completed', outcome: 'success',
+    } as never);
+    expect(updated.recentTasks[0].activity?.phase).toBe('background');
+  });
+
   it('projects an active run lifecycle into recent rows of unloaded workspaces', () => {
     // The task lives only in the cross-workspace recent list: its workspace page
     // is not loaded, so the lifecycle event is the only projection available.

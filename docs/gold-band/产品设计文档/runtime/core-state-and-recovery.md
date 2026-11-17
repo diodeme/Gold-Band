@@ -29,6 +29,8 @@ Gold Band 为此维护一个用户级核心数据库：
 
 ## 3. 写入顺序
 
+已有 Run 的固定 Workflow Continue、completed-attempt recovery 和 retry 必须先获取相同 expected attempt 的 runtime state lock，复核 canonical current locator、生命周期状态以及各入口要求的 execution revision。校验通过后才可登记新 candidate，并持锁到 canonical Running 提交完成。失败或迟到请求不得先 upsert 再撤销，因为候选按 Run 唯一，这会覆盖并删除其他已接受执行的候选；清理时 token fencing 不能替代登记前的状态校验。
+
 run 进入 `Running` 的顺序固定为：
 
 1. 在 `core.db` 原子 upsert 新一代候选并获得 `candidate_token`。
@@ -70,6 +72,7 @@ run 持久化为 `Paused / Completed` 后，使用该 run 中的 token 条件删
 - `core.db` 的 Runtime recovery 与 Scheduler 连接统一使用 WAL、foreign keys、`synchronous=FULL`、短事务和 3 秒 busy timeout。
 - registry mutex 内只检查 phase、token 和内存 map；不得在锁内执行 SQLite、文件、provider 或 scheduler I/O，也不得持锁跨 `await`。
 - 单实例互斥在任何 Runtime 恢复和 scheduler setup 前完成；第二进程不得触发候选消费。
+- retry 同时使用 execution-plan dispatch read lock 与 attempt lock 时，固定先取 plan lock，再取 attempt lock；计划版本必须与锁外预检一致，锁保持到 node → round → run 提交完成。Agent/Git/profile 预检和 provider 执行均在锁外。
 - `core.db` 整体无法列出候选时，无法证明恢复全集，保持全局 `Recovering`，scheduler 不启动。
 - 单条候选或单 workspace 读取、收敛、删除失败时，只把该 `project_id` 加入 blocked set；其它 workspace 完成恢复并启动 scheduler。失败候选保留供下一次恢复，不静默丢失可能仍为 Running 的 canonical run。
 
@@ -84,3 +87,5 @@ run 持久化为 `Paused / Completed` 后，使用该 run 中的 token 条件删
 ## 8. 回归验收
 
 持久化与启动清理必须使用生产入口做进程边界等价测试：第一个 `DesktopState` 将候选写入隔离的物理 `core.db` 并持久化 token 匹配的 Running `run.json` 后销毁；第二个 `DesktopState` 重新打开同一路径，只通过 `recover_interrupted_conversation_workspaces` 将 run 收敛为 `Paused + ProcessInterrupted` 并删除候选；第三个 `DesktopState` 再次打开时必须读取到零候选，且不得再次改写 run。该测试同时固定“SQLite durable、启动消费、用完即删、后续启动 no-op”四个接口不变量，不使用进程内 mock 表替代数据库。
+
+并发 admission 必须覆盖 Continue 先提交、retry 先提交和迟到 completed recovery：失败请求被拒绝后，canonical Run token、物理 `core.db` 候选及退出时 active registry 快照仍须指向同一已接受执行。两个并发 retry 只能创建一个新 attempt、启动一次 provider，并返回同一 accepted identity。

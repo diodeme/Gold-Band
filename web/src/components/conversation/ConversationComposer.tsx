@@ -18,6 +18,7 @@ import { useConversationComposerDraft, type ConversationComposerMulticaBinding }
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
+import { ConversationHomeAttach } from '@/components/conversation/ConversationConnectionRefs';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useComposerMenuCatalog } from '@/hooks/useComposerMenuCatalog';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -93,6 +94,12 @@ interface ConversationComposerProps {
   onWorkspaceChange: (projectId: string) => void;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
+  /** Home-composer connection attach (pre-first-turn). Draft state lives in the
+   *  parent; the run binding happens after creation. Omit to hide the entry. */
+  connectionAttach?: {
+    selectedId: string | null;
+    onSelect: (connectionId: string | null) => void;
+  };
 }
 
 interface ConversationWorkspaceControlProps {
@@ -471,6 +478,7 @@ export function ConversationComposer({
   onWorkspaceChange,
   onWorkLocationChange,
   onScheduledModeExit,
+  connectionAttach,
 }: ConversationComposerProps) {
   const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
@@ -1261,6 +1269,13 @@ export function ConversationComposer({
               >
                 <Paperclip className="size-3.5" />
               </Button>
+              {connectionAttach ? (
+                <ConversationHomeAttach
+                  selectedId={connectionAttach.selectedId}
+                  onSelect={connectionAttach.onSelect}
+                  disabled={busy}
+                />
+              ) : null}
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"

@@ -134,6 +134,10 @@ pub struct CreateConversationTaskCommand {
     pub role: Option<UserPromptRole>,
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
     pub quotes: Vec<UserPromptQuote>,
+    /// Pre-attached server connection ids (home composer 阶段4). Resolved onto
+    /// the accepted run BEFORE the background first turn launches — a
+    /// post-launch bind races the first turn's run-state read and loses.
+    pub connection_ids: Vec<String>,
 }
 
 impl CreateConversationTaskCommand {
@@ -155,6 +159,7 @@ impl CreateConversationTaskCommand {
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
+            connection_ids: Vec::new(),
         }
     }
 }
@@ -397,7 +402,26 @@ impl App {
             }
             (None, None) => self.prepare_run(&task_id, None)?,
         };
-        let accepted_run = prepared_run.accept();
+        let mut accepted_run = prepared_run.accept();
+        // Pre-attached connections MUST be set on the accepted run BEFORE launch:
+        // the background first turn reads the run state to build its prompt
+        // (hidden context) and any post-launch bind races it — and gets wiped
+        // when the turn persists run state it loaded before the bind.
+        if !command.connection_ids.is_empty() {
+            let mut specs = Vec::new();
+            for connection_id in &command.connection_ids {
+                match self.get_server_connection(connection_id) {
+                    Ok(connection) => specs.push(connection.spec()),
+                    Err(error) => tracing::warn!(
+                        task_id = %task_id,
+                        connection_id = %connection_id,
+                        error = %error,
+                        "failed to resolve pre-attached connection; run starts without it"
+                    ),
+                }
+            }
+            accepted_run.set_connection_specs(specs);
+        }
         let (run, (task_id, task_uuid, title)) = match launch {
             ConversationRunLaunch::Background => {
                 let run = self.launch_prepared_run_background(&task_id, accepted_run)?;

@@ -1,0 +1,8 @@
+Using these connections (gold-band-connections MCP tools):
+- Open a remote shell with the `open_connection` tool (pass the connection id). Credentials are resolved by the application; you never need (and never receive) any password, passphrase, or private-key material.
+- Interact with the session via `send_input` and `read_output`. Close it with `close_connection` when done. Input sent via send_input is executed as a line (a carriage return is appended automatically when missing). Each read_output chunk carries the session status: `awaiting-auth` means the one-time passphrase input box has already been surfaced to the user by Gold Band (in the conversation, or over the terminal panel) — tell the user a passphrase is required, do NOT ask them to paste it to you, and do NOT send it via send_input. Keep polling read_output until the status is `connected`.
+- Corporate bastions (e.g. QiZhi 齐治) may auto-connect to a default target or show a text menu after login. Read the screen with read_output: if it shows a menu, send the option number via send_input; once you see a shell prompt, run the requested commands and collect output via read_output.
+- Do NOT run `ssh`, `scp`, `expect`, `sshpass`, or any other shell-based remote login for these connections. Direct shell SSH will hang on interactive prompts you cannot answer and is not supported.
+- Tool fidelity: call these tools exactly as exposed (`mcp__gold-band-connections__*`). If they are NOT in your available tools this turn, do NOT substitute other tools, do NOT guess or invent tool calls. End the turn with the single stable marker line below so the application can re-register the tools, and tell the user to re-send the request after you stop:
+
+[gold-band:connection-tools-missing]

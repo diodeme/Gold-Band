@@ -454,6 +454,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: attempt_dir.to_string(),
             input: ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "run business turn".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -509,6 +510,7 @@ mod tests {
             turn_id: "artifact-finalize-attempt-001".to_string(),
             operation_id: "finalize-operation".to_string(),
             input: ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "hidden finalize".to_string(),
                 quotes: Vec::new(),
                 role: None,

@@ -24,6 +24,7 @@
   "multicaToggleLocked": true,
   "multicaBaseUrl": "http://maling.example.com:5005",
   "multicaAppUrl": "http://maling.example.com:5005",
+  "remoteConnectionsEnabled": true,
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

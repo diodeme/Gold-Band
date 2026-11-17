@@ -2,6 +2,7 @@ pub(crate) mod cicd;
 pub mod quotes;
 pub mod workspace_files;
 use crate::acp::{client, events::AcpUiEvent};
+use crate::app::ConnectionSpec;
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
     AcpAdapterConfig, DesktopLanguage, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
@@ -47,8 +48,8 @@ use crate::acp::events::AttachmentMeta;
 
 pub use quotes::{
     DiffQuoteOrigin, DiffQuoteScope, MAX_USER_PROMPT_DIFF_QUOTE_BYTES, MAX_USER_PROMPT_QUOTE_CHARS,
-    MAX_USER_PROMPT_QUOTES, UserPromptQuote, UserPromptQuoteError, UserPromptQuoteSource,
-    conversation_prompt_text, validate_user_prompt_quotes,
+    MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote, UserPromptQuoteError,
+    UserPromptQuoteSource, conversation_prompt_text, validate_user_prompt_quotes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +90,12 @@ pub struct ConversationPromptInput {
     pub role: Option<UserPromptRole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
+    /// Non-secret connection specs attached to the conversation (the agent drives
+    /// them via app-exposed tools; secrets never leave the app). Populated on
+    /// create / rebind; the runtime persists them on the run and injects them
+    /// into the agent's hidden context every turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_connections: Vec<ConnectionSpec>,
 }
 
 impl From<String> for ConversationPromptInput {
@@ -98,6 +105,7 @@ impl From<String> for ConversationPromptInput {
             quotes: Vec::new(),
             role: None,
             workspace_files: Vec::new(),
+            context_connections: Vec::new(),
         }
     }
 }
@@ -500,6 +508,54 @@ pub struct PromptHiddenSection {
     pub title: String,
     pub content: String,
 }
+
+/// Builds the hidden-context section carrying the non-secret connection specs
+/// attached to a conversation. Empty when there are none, so the agent's
+/// per-turn context only mentions connections that were actually bound. The
+/// content includes an explicit tool-usage contract: without it agents improvise
+/// their own SSH via Bash (observed in the field — the agent tried `wessh`,
+/// `expect` scripts and raw `ssh`, then hung on interactive password prompts)
+/// instead of driving the app-exposed connection tools.
+pub fn connection_hidden_sections(
+    specs: &[ConnectionSpec],
+    language: crate::config::DesktopLanguage,
+) -> Vec<PromptHiddenSection> {
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let specs_text = specs
+        .iter()
+        .map(|spec| spec.describe())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let content = format!(
+        "{specs_text}\n\n{}",
+        connection_tool_usage_instructions(language)
+    );
+    let title = if specs.len() == 1 {
+        format!("连接：{}", specs[0].name)
+    } else {
+        format!("连接（{}）", specs.len())
+    };
+    vec![PromptHiddenSection { title, content }]
+}
+
+/// The connection tool contract handed to the agent alongside the bound specs.
+/// Managed under `src/prompts/{zh-CN,en}/connections/tool-usage.md` with the
+/// project's other built-in prompts; behavioral text for the model, not
+/// user-facing copy.
+pub fn connection_tool_usage_instructions(
+    language: crate::config::DesktopLanguage,
+) -> &'static str {
+    crate::prompts::prompt_by_language(language, crate::prompts::CONNECTION_TOOL_USAGE)
+}
+
+/// The agent emits this single stable marker line (per the connection tool
+/// contract) when the `gold-band-connections` tools are missing from its
+/// available toolset — e.g. after an in-session model switch rebuilt the agent's
+/// tool list without the ACP-injected MCP servers. The turn pipeline scans for
+/// it and detaches the attached session so the next turn re-registers the tools.
+pub const CONNECTION_TOOLS_MISSING_MARKER: &str = "[gold-band:connection-tools-missing]";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptPredecessorContext {
@@ -1727,6 +1783,7 @@ impl AcpProvider {
                         relative_path: reference.relative_path.clone(),
                     })
                     .collect(),
+                context_connections: Vec::new(),
             },
             attachment_paths: req
                 .task_input_attachment_paths
@@ -3364,6 +3421,29 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn connection_tool_usage_instructions_cover_bastion_and_execution_semantics() {
+        // 现场阻断点的契约回归：执行语义（自动回车）、堡垒机菜单驱动指引、
+        // OTP 输入框已由应用给出的指引、工具失联标记协议都必须在隐藏上下文里，
+        // agent 才能自行驱动齐治堡垒机并在工具丢失时给出可检测的稳定信号。
+        let instructions = connection_tool_usage_instructions(crate::config::DesktopLanguage::En);
+        assert!(instructions.contains("carriage return is appended automatically"));
+        assert!(instructions.contains("text menu"));
+        assert!(instructions.contains("awaiting-auth"));
+        assert!(instructions.contains("Do NOT run `ssh`"));
+        assert!(instructions.contains(CONNECTION_TOOLS_MISSING_MARKER));
+        // 双语版本必须同步维护：标记行与关键契约在中英文里都存在。
+        for language in [
+            crate::config::DesktopLanguage::ZhCn,
+            crate::config::DesktopLanguage::En,
+        ] {
+            let localized = connection_tool_usage_instructions(language);
+            assert!(localized.contains(CONNECTION_TOOLS_MISSING_MARKER));
+            assert!(localized.contains("mcp__gold-band-connections__*"));
+        }
+    }
+
     use super::*;
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
@@ -3385,6 +3465,7 @@ mod tests {
     fn conversation_agent_prompt_text_wraps_user_specified_role() {
         let wrapped = conversation_agent_prompt_text(
             &ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "帮我改这段代码".to_string(),
                 quotes: Vec::new(),
                 role: Some(UserPromptRole {
@@ -3407,6 +3488,7 @@ mod tests {
     fn conversation_agent_prompt_text_keeps_plain_user_input_without_role() {
         let text = conversation_agent_prompt_text(
             &ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "继续".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -3438,6 +3520,7 @@ mod tests {
         ));
         let wrapped = conversation_agent_prompt_text(
             &ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: Some(role),
@@ -3713,6 +3796,7 @@ mod tests {
         req.requirement_text = Some("ORIGINAL_SCHEDULED_INSTRUCTION".to_string());
         req.task_instruction = None;
         req.prompt_display = Some(ConversationPromptInput {
+            context_connections: Vec::new(),
             display_text: "检查主分支状态".to_string(),
             quotes: Vec::new(),
             role: None,
@@ -5246,6 +5330,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: attempt_dir.to_string(),
             input: ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
                 role: None,

@@ -177,6 +177,9 @@ pub struct AppInfoVm {
     pub app_name: String,
     pub app_key: String,
     pub config_dir_name: String,
+    /// Remote server-connection + remote SSH is intranet-only; external/public
+    /// channels disable it (the local terminal is available everywhere).
+    pub remote_connections_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1380,6 +1383,7 @@ pub fn bootstrap_vm(
             app_name: channel_config.app_name.to_string(),
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
+            remote_connections_enabled: channel_config.remote_connections_enabled,
         },
         app_config: app_config_vm(&app.config),
         remote_image_trust: crate::remote_image_trust::load_remote_image_trust(app),
@@ -8191,6 +8195,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),

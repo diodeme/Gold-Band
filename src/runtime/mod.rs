@@ -1,3 +1,4 @@
+use crate::app::ConnectionSpec;
 use crate::domain::{
     NodeOutcome, NodeType, PauseReason, ResolvedConfig, RoundTrigger, RunOutcome, RunStatus,
     SessionMode, VERSION,
@@ -246,6 +247,11 @@ pub struct RunState {
     /// infer or mutate this aggregate.
     #[serde(default)]
     pub execution: RuntimeExecutionState,
+    /// Non-secret connection specs attached to this conversation run. Injected
+    /// into the agent's hidden context every turn (the agent drives the
+    /// connection through app-exposed tools; secrets stay in the app).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connection_specs: Vec<ConnectionSpec>,
 }
 
 impl RunState {
@@ -569,6 +575,7 @@ mod tests {
 
     fn test_run(status: RunStatus, phase: RuntimeExecutionPhase) -> RunState {
         RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),

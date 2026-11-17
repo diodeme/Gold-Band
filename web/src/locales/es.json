@@ -734,7 +734,9 @@
         }
       },
       "remoteMarkdownImages": "Este documento contiene {{count}} imágenes web de {{hosts}}",
-      "remoteMarkdownImageHostSeparator": ", "
+      "remoteMarkdownImageHostSeparator": ", ",
+      "resetImage": "Restablecer imagen",
+      "draftPreviewUnavailable": "Este adjunto se podrá previsualizar en el espacio de trabajo después de enviarlo"
     },
     "discardWorkflowChanges": "Este flujo de trabajo tiene cambios sin guardar. ¿Descartarlos y cerrar la pestaña?",
     "rootUnavailable": {
@@ -1079,7 +1081,8 @@
         "validation-failed": "El plan de ejecución no superó la validación.",
         "partial-commit": "Solo se publicó una parte. Revise cada destino de guardado.",
         "recovery-required": "Este guardado debe recuperarse antes de continuar."
-      }
+      },
+      "session-restore-reference-missing": "Esta sesión no tiene una referencia de sesión del Provider."
     },
     "workflow": {
       "agent-doctor-failed": "El Agent {{agentType}} no ha superado doctor.",
@@ -1144,6 +1147,18 @@
       "completion": {
         "repair-exhausted": "La salida del nodo sigue sin cumplir el protocolo tras {{repairAttempts}} intentos de corrección. El flujo de trabajo está en pausa."
       }
+    },
+    "connection": {
+      "not-found": "Conexión no encontrada.",
+      "name-conflict": "Ya existe una conexión con este nombre. Prueba con otro nombre.",
+      "invalid-input": "La configuración de conexión no es válida. Revisa los datos introducidos.",
+      "jump-cycle": "La cadena de saltos contiene un ciclo. Ajusta la configuración de salto.",
+      "jump-missing": "El host de salto no existe: {{jumpRef}}.",
+      "jump-referenced": "Esta conexión se usa como host de salto por otras conexiones y no se puede eliminar: {{referents}}."
+    },
+    "credential": {
+      "store-failed": "No se pudo guardar la credencial en el llavero del sistema: {{reason}}.",
+      "missing": "No hay credencial guardada para esta conexión. Se te pedirá en tiempo real al conectar y no se persiste nada."
     }
   },
   "status": {
@@ -2341,7 +2356,8 @@
       "interruptConfirmTitle": "¿Enviar este mensaje ahora?",
       "interruptConfirmDescription": "La respuesta actual se detendrá antes de enviar este mensaje.",
       "interruptConfirmSkip": "No volver a preguntar",
-      "interruptConfirmAction": "Detener y enviar"
+      "interruptConfirmAction": "Detener y enviar",
+      "use": "Usar"
     },
     "composerDrafts": {
       "title": "Borradores",
@@ -2472,7 +2488,14 @@
       "cacheWrite": "Escritura en caché",
       "total": "Total",
       "excludesBackground": "No incluye el uso de activaciones en segundo plano"
-    }
+    },
+    "slashModelMissingValue": "Especifica un modelo después de /model o elige uno en la barra de configuración de la sesión.",
+    "slashModelUnknown": "El modelo «{{requested}}» no se encontró — elige uno en la barra de configuración de la sesión.",
+    "connectionToolsRecoveryNotice": "Las herramientas de conexión estuvieron brevemente indisponibles y se han vuelto a registrar. Reintenta el último mensaje para continuar.",
+    "connectionToolsRecoveryRetry": "Reintentar el último mensaje",
+    "userQuoteLabel": "Cita {{index}}",
+    "launchingClaude": "Iniciando Agent",
+    "subAgentRunning": "Sub-Agent en ejecución"
   },
   "graph": {
     "emptyGraph": "Sin gráfico de trabajo",
@@ -2865,6 +2888,16 @@
         "empty": "Esta versión no tiene notas de la versión.",
         "loadFailed": "No se pudieron cargar las notas de la versión.",
         "more": "Más"
+      },
+      "install": "Descargar e instalar",
+      "announcement": {
+        "title": "Nueva versión {{version}} disponible",
+        "description": "Ve a Configuración → Avanzado → Actualizaciones para revisarla e instalarla.",
+        "dismiss": "Cerrar",
+        "view": "Ver actualización",
+        "dialogTitle": "Nueva versión {{version}} disponible",
+        "dialogDescription": "Se ha detectado una nueva versión del cliente. Ve a Configuración → Avanzado → Actualizaciones para descargarla e instalarla.",
+        "goToSettings": "Ir a Configuración"
       }
     },
     "remoteImages": {
@@ -2881,7 +2914,8 @@
       "title": "Mensajes pendientes",
       "description": "Mientras una respuesta está en curso, \"Enviar ahora\" detiene primero la respuesta actual.",
       "confirmInterrupt": "Confirmar antes de que \"Enviar ahora\" interrumpa una respuesta"
-    }
+    },
+    "advanced": "Avanzado"
   },
   "multica": {
     "taskManagement": {
@@ -3028,7 +3062,8 @@
       "releaseResident": "Permitir liberar la sesión",
       "keepResidentHint": "Mantén la sesión activa cuando el Agent tenga tareas programadas u otros trabajos largos, para que no se cierre al quedar inactiva",
       "releaseResidentHint": "La sesión se mantiene activa y no se cerrará al quedar inactiva. Haz clic para permitir liberarla",
-      "resident": "Sesión mantenida activa"
+      "resident": "Sesión mantenida activa",
+      "connectionsTerminal": "Conexiones"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "Añada un espacio de trabajo local antes de ejecutar un requisito",
@@ -3215,5 +3250,127 @@
     "validationPositiveNumber": "{{field}} debe ser mayor que 0",
     "validationTemplateNameRequired": "El nombre de la plantilla es obligatorio",
     "validationTemplateNameDuplicated": "El nombre de plantilla {{name}} ya existe"
+  },
+  "connections": {
+    "management": {
+      "title": "Conexiones",
+      "create": "Nueva conexión",
+      "refresh": "Actualizar conexiones",
+      "loading": "Cargando",
+      "loadFailed": "No se pudieron cargar las conexiones",
+      "actionFailed": "La acción falló. Inténtalo de nuevo.",
+      "empty": "Sin conexiones",
+      "disableNotice": "Las conexiones remotas son una función exclusiva de la intranet y no están habilitadas en esta versión. Usa el terminal local desde el panel «Terminal» del espacio de trabajo.",
+      "columns": {
+        "name": "Nombre",
+        "host": "Host",
+        "username": "Usuario",
+        "env": "Entorno",
+        "credential": "Credencial",
+        "lastConnected": "Última conexión",
+        "jump": "Salto"
+      },
+      "more": "Más acciones",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "credentialSaved": "Guardado",
+      "credentialMissing": "Sin guardar",
+      "jumpMarker": "Vía salto",
+      "jumpMissing": "Falta el salto",
+      "keyAuth": "Clave",
+      "passwordAuth": "Contraseña",
+      "deleteTitle": "¿Eliminar conexión?",
+      "deleteDescription": "Esto no se puede deshacer. También se eliminará cualquier credencial guardada en el llavero del sistema para esta conexión.",
+      "cancel": "Cancelar",
+      "confirmDelete": "Eliminar"
+    },
+    "dialog": {
+      "createTitle": "Nueva conexión",
+      "editTitle": "Editar conexión",
+      "name": "Nombre",
+      "host": "Host",
+      "port": "Puerto",
+      "username": "Usuario",
+      "authMethod": "Autenticación",
+      "authPassword": "Contraseña",
+      "authPublicKey": "Clave SSH",
+      "keyPath": "Ruta de la clave",
+      "keyPathPlaceholder": "p. ej., ~/.ssh/id_ed25519",
+      "secret": "Contraseña",
+      "keyPassphrase": "Frase de contraseña de la clave",
+      "saveSecret": "Guardar en el llavero del sistema",
+      "saveSecretHint": "Se introduce automáticamente al conectar, sin preguntar.",
+      "dynamicPasswordHint": "Si la contraseña es dinámica o de un solo uso, déjala en blanco sin guardar: se te pedirá en tiempo real en cada conexión y no se persiste nada. Si el menú del propio host de salto vuelve a pedir la contraseña tras establecerse la conexión, es entrada normal del terminal: escríbela directamente en el terminal.",
+      "dismissError": "Descartar error",
+      "clearSecret": "Quitar credencial guardada",
+      "jump": "Host de salto",
+      "jumpNone": "Ninguno (directo)",
+      "env": "Entorno",
+      "envTest": "Pruebas",
+      "envStage": "Preproducción",
+      "envProd": "Producción",
+      "prodWarning": "La producción está fuera del alcance admitido; se muestra solo como demostración.",
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "namePlaceholder": "p. ej., Servidor de registros",
+      "hostPlaceholder": "p. ej., 10.0.0.5"
+    },
+    "recent": {
+      "title": "Conexiones recientes",
+      "empty": "Sin conexiones recientes",
+      "reconnect": "Reconectar",
+      "notReconnectable": "Conexión eliminada"
+    },
+    "reference": {
+      "groupLabel": "Referencias de conexión",
+      "remove": "Quitar",
+      "removing": "Quitando…",
+      "removeFailed": "No se pudo quitar. Inténtalo de nuevo.",
+      "spec": "Detalles de la conexión",
+      "attach": "Adjuntar conexión",
+      "attachFailed": "No se pudo adjuntar. Inténtalo de nuevo."
+    }
+  },
+  "terminal": {
+    "panelTitle": "Sesiones de terminal",
+    "panelDescription": "Abre un terminal local o remoto",
+    "newLocal": "Nuevo terminal local",
+    "close": "Cerrar sesión",
+    "empty": "Sin sesiones de terminal",
+    "error": "No se pudo abrir el terminal. Inténtalo de nuevo.",
+    "loading": "Creando terminal",
+    "localLabel": "Terminal local",
+    "sessionLabel": "Sesión {{index}}",
+    "limitReached": "Límite de sesiones alcanzado ({{max}})",
+    "connect": "Conectar terminal remoto",
+    "connecting": "Conectando",
+    "awaitingAuth": "Esperando autenticación",
+    "openTerminalTab": "Abrir terminal (⌘/Ctrl+T)",
+    "dismissError": "Descartar error",
+    "openInNewWindow": "Abrir en una ventana nueva",
+    "returnToMain": "Volver a la ventana principal",
+    "detachedSessionNotFound": "Esta sesión de terminal terminó o ya no existe.",
+    "authPromptPlaceholder": "Introduce la frase de contraseña / código de un solo uso",
+    "authPromptSubmit": "Enviar",
+    "authPending": "Una sesión espera la frase de contraseña de un solo uso — escríbela abajo para continuar",
+    "otpDialogTitle": "Se requiere una frase de contraseña de un solo uso",
+    "otpDialogTitleNamed": "{{name}} necesita la frase de contraseña de un solo uso",
+    "otpSubmitFailed": "No se pudo enviar la frase de contraseña. Inténtalo de nuevo.",
+    "quoteToConversation": "Citar en la conversación",
+    "failed": {
+      "sessionNotFound": "Sesión no encontrada o ya cerrada",
+      "sessionLimit": "Límite de sesiones alcanzado — cierra una pestaña primero",
+      "jumpForwardFailed": "Fallo al reenviar al destino a través del host de salto — comprueba la accesibilidad del host de salto y del destino",
+      "authRequired": "Tiempo de espera agotado para la frase de contraseña de un solo uso — reintenta e introdúcela rápidamente",
+      "credentialMissing": "No hay credencial guardada — edita la conexión y guarda la frase de contraseña",
+      "authFailed": "La autenticación falló; comprueba la cuenta y la frase de contraseña",
+      "hostKeyMismatch": "La clave del host difiere de la registrada — conexión rechazada por seguridad",
+      "connectTimeout": "Tiempo de espera de conexión agotado; comprueba la red y la dirección",
+      "connectionLost": "Conexión perdida",
+      "channelFailed": "No se pudo abrir un canal de terminal remoto",
+      "io": "Error de E/S del terminal; inténtalo de nuevo",
+      "localStartFailed": "No se pudo iniciar el terminal local. Inténtalo de nuevo.",
+      "invalidCwd": "Directorio de trabajo no válido"
+    }
   }
 }

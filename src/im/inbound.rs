@@ -590,6 +590,7 @@ mod tests {
         write_json(
             &app.paths.run_file(&locator.task_id, &locator.run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.into(),
                 id: locator.run_id.clone(),
                 task_id: locator.task_id.clone(),

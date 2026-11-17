@@ -636,6 +636,7 @@ fn render_runtime_resume_with_message_keeps_internal_prompt_out_of_display_proje
     );
     req.resume_prompt_visibility = PromptVisibility::Visible;
     req.prompt_display = Some(ConversationPromptInput {
+        context_connections: Vec::new(),
         display_text: "请继续检查".to_string(),
         quotes: vec![UserPromptQuote {
             id: "quote-1".to_string(),

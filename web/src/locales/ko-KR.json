@@ -734,7 +734,9 @@
         }
       },
       "remoteMarkdownImages": "이 문서에는 {{hosts}}의 웹 이미지 {{count}}개가 있습니다",
-      "remoteMarkdownImageHostSeparator": ", "
+      "remoteMarkdownImageHostSeparator": ", ",
+      "resetImage": "이미지 초기화",
+      "draftPreviewUnavailable": "이 첨부 파일은 전송 후 워크스페이스에서 미리 볼 수 있습니다"
     },
     "discardWorkflowChanges": "이 워크플로에 저장하지 않은 변경이 있습니다. 변경을 버리고 닫을까요?",
     "rootUnavailable": {
@@ -1079,7 +1081,8 @@
         "validation-failed": "실행 계획이 검증을 통과하지 못했습니다.",
         "partial-commit": "일부만 게시되었습니다. 각 저장 대상을 확인하세요.",
         "recovery-required": "이 저장은 복구한 뒤에 계속할 수 있습니다."
-      }
+      },
+      "session-restore-reference-missing": "이 세션에는 복원에 필요한 Provider 세션 참조가 없습니다."
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}}가 doctor를 통과하지 못했습니다.",
@@ -1144,6 +1147,18 @@
       "completion": {
         "repair-exhausted": "노드 출력이 {{repairAttempts}}회 수정 후에도 프로토콜에 맞지 않아 워크플로를 일시 정지했습니다."
       }
+    },
+    "connection": {
+      "not-found": "해당 연결을 찾을 수 없습니다.",
+      "name-conflict": "같은 이름의 연결이 이미 있습니다. 다른 이름을 사용하세요.",
+      "invalid-input": "연결 설정이 잘못되었습니다. 입력을 확인하세요.",
+      "jump-cycle": "점프 체인에 순환이 있습니다. 점프 설정을 조정하세요.",
+      "jump-missing": "점프 호스트가 존재하지 않습니다: {{jumpRef}}.",
+      "jump-referenced": "이 연결은 다른 연결의 점프 호스트로 사용 중이므로 삭제할 수 없습니다: {{referents}}."
+    },
+    "credential": {
+      "store-failed": "자격 증명을 시스템 키체인에 저장하지 못했습니다: {{reason}}.",
+      "missing": "이 연결에는 저장된 자격 증명이 없습니다. 연결할 때 실시간으로 물어보며 저장되지 않습니다."
     }
   },
   "status": {
@@ -2341,7 +2356,8 @@
       "interruptConfirmTitle": "이 내용을 지금 보낼까요?",
       "interruptConfirmDescription": "현재 답변을 중지한 뒤 이 내용을 보냅니다.",
       "interruptConfirmSkip": "다시 묻지 않기",
-      "interruptConfirmAction": "중지하고 보내기"
+      "interruptConfirmAction": "중지하고 보내기",
+      "use": "사용"
     },
     "composerDrafts": {
       "title": "임시 보관함",
@@ -2472,7 +2488,14 @@
       "cacheWrite": "캐시 쓰기",
       "total": "합계",
       "excludesBackground": "백그라운드 실행으로 사용된 양은 포함되지 않습니다"
-    }
+    },
+    "slashModelMissingValue": "/model 뒤에 모델을 지정하거나, 세션 설정 바에서 선택하세요.",
+    "slashModelUnknown": "모델 \"{{requested}}\"을(를) 찾을 수 없습니다 — 세션 설정 바에서 선택하세요.",
+    "connectionToolsRecoveryNotice": "연결 도구가 잠시 사용 불가 상태였다가 다시 등록되었습니다. 마지막 메시지를 다시 시도하면 계속할 수 있습니다.",
+    "connectionToolsRecoveryRetry": "마지막 메시지 다시 시도",
+    "userQuoteLabel": "인용 {{index}}",
+    "launchingClaude": "Agent 시작 중",
+    "subAgentRunning": "하위 Agent 실행 중"
   },
   "graph": {
     "emptyGraph": "작업 그래프 없음",
@@ -2865,6 +2888,16 @@
         "empty": "이 버전의 릴리스 노트가 없습니다.",
         "loadFailed": "릴리스 노트를 불러오지 못했습니다.",
         "more": "더 보기"
+      },
+      "install": "다운로드 및 설치",
+      "announcement": {
+        "title": "새 버전 {{version}} 사용 가능",
+        "description": "설정 → 고급 → 업데이트에서 확인하고 설치할 수 있습니다.",
+        "dismiss": "닫기",
+        "view": "업데이트 보기",
+        "dialogTitle": "새 버전 {{version}} 사용 가능",
+        "dialogDescription": "새 클라이언트 버전이 감지되었습니다. 설정 → 고급 → 업데이트에서 다운로드하고 설치하세요.",
+        "goToSettings": "설정으로 이동"
       }
     },
     "remoteImages": {
@@ -2881,7 +2914,8 @@
       "title": "대기 중",
       "description": "답변이 진행 중일 때 \"지금 보내기\"는 현재 답변을 먼저 중지합니다.",
       "confirmInterrupt": "\"지금 보내기\"로 답변을 중단하기 전에 확인"
-    }
+    },
+    "advanced": "고급"
   },
   "multica": {
     "taskManagement": {
@@ -3028,7 +3062,8 @@
       "releaseResident": "상주 해제",
       "keepResidentHint": "Agent에 예약 작업 등 오래 실행되는 작업이 있으면 유휴 상태에서 회수되지 않도록 세션을 상주시키세요",
       "releaseResidentHint": "상주 중이므로 유휴 상태에서도 회수되지 않습니다. 클릭하여 상주 해제",
-      "resident": "상주 세션"
+      "resident": "상주 세션",
+      "connectionsTerminal": "연결"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "요구사항을 실행하기 전에 로컬 워크스페이스를 추가해 주세요",
@@ -3215,5 +3250,127 @@
     "validationPositiveNumber": "{{field}}은(는) 0보다 커야 합니다",
     "validationTemplateNameRequired": "템플릿 이름이 필요합니다",
     "validationTemplateNameDuplicated": "템플릿 이름 {{name}}이(가) 이미 존재합니다"
+  },
+  "connections": {
+    "management": {
+      "title": "연결",
+      "create": "새 연결",
+      "refresh": "연결 새로 고침",
+      "loading": "불러오는 중",
+      "loadFailed": "연결을 불러오지 못했습니다",
+      "actionFailed": "작업에 실패했습니다. 다시 시도하세요.",
+      "empty": "연결 없음",
+      "disableNotice": "원격 연결은 인트라넷 전용 기능으로, 이 빌드에서는 사용할 수 없습니다. 워크스페이스의 '터미널' 패널에서 로컬 터미널을 사용하세요.",
+      "columns": {
+        "name": "이름",
+        "host": "호스트",
+        "username": "사용자",
+        "env": "환경",
+        "credential": "자격 증명",
+        "lastConnected": "마지막 연결",
+        "jump": "점프"
+      },
+      "more": "더 보기",
+      "edit": "편집",
+      "delete": "삭제",
+      "credentialSaved": "저장됨",
+      "credentialMissing": "저장 안 됨",
+      "jumpMarker": "점프 경유",
+      "jumpMissing": "점프 호스트 없음",
+      "keyAuth": "키",
+      "passwordAuth": "비밀번호",
+      "deleteTitle": "연결을 삭제할까요?",
+      "deleteDescription": "이 작업은 되돌릴 수 없습니다. 이 연결을 위해 시스템 키체인에 저장한 자격 증명도 함께 삭제됩니다.",
+      "cancel": "취소",
+      "confirmDelete": "삭제"
+    },
+    "dialog": {
+      "createTitle": "새 연결",
+      "editTitle": "연결 편집",
+      "name": "이름",
+      "host": "호스트",
+      "port": "포트",
+      "username": "사용자",
+      "authMethod": "인증 방식",
+      "authPassword": "비밀번호",
+      "authPublicKey": "SSH 키",
+      "keyPath": "키 경로",
+      "keyPathPlaceholder": "예: ~/.ssh/id_ed25519",
+      "secret": "비밀번호",
+      "keyPassphrase": "키 암호 문구",
+      "saveSecret": "시스템 키체인에 저장",
+      "saveSecretHint": "연결 시 자동으로 입력됩니다. 별도로 묻지 않습니다.",
+      "dynamicPasswordHint": "비밀번호가 동적이거나 일회용인 경우 비워 둔 채 저장하지 않을 수 있습니다. 매번 연결할 때 실시간으로 입력을 요청하며 저장되지 않습니다. 연결 성공 후 점프 호스트 내부 메뉴에서 다시 비밀번호를 요구하면 일반적인 터미널 입력이므로 터미널에 직접 입력하면 됩니다.",
+      "dismissError": "오류 닫기",
+      "clearSecret": "저장된 자격 증명 제거",
+      "jump": "점프 호스트",
+      "jumpNone": "없음(직접 연결)",
+      "env": "환경",
+      "envTest": "테스트",
+      "envStage": "스테이징",
+      "envProd": "운영",
+      "prodWarning": "운영 환경은 지원 범위가 아니며 데모용으로만 표시됩니다.",
+      "save": "저장",
+      "cancel": "취소",
+      "namePlaceholder": "예: 로그 서버",
+      "hostPlaceholder": "예: 10.0.0.5"
+    },
+    "recent": {
+      "title": "최근 연결",
+      "empty": "최근 연결 없음",
+      "reconnect": "다시 연결",
+      "notReconnectable": "연결이 삭제됨"
+    },
+    "reference": {
+      "groupLabel": "연결 참조",
+      "remove": "제거",
+      "removing": "제거 중…",
+      "removeFailed": "제거에 실패했습니다. 다시 시도하세요.",
+      "spec": "연결 세부 정보",
+      "attach": "연결 첨부",
+      "attachFailed": "첨부에 실패했습니다. 다시 시도하세요."
+    }
+  },
+  "terminal": {
+    "panelTitle": "터미널 세션",
+    "panelDescription": "로컬 또는 원격 터미널 열기",
+    "newLocal": "새 로컬 터미널",
+    "close": "세션 닫기",
+    "empty": "터미널 세션 없음",
+    "error": "터미널을 열지 못했습니다. 다시 시도하세요.",
+    "loading": "터미널 생성 중",
+    "localLabel": "로컬 터미널",
+    "sessionLabel": "세션 {{index}}",
+    "limitReached": "세션 한도에 도달했습니다({{max}})",
+    "connect": "원격 터미널 연결",
+    "connecting": "연결 중",
+    "awaitingAuth": "인증 대기 중",
+    "openTerminalTab": "터미널 열기(⌘/Ctrl+T)",
+    "dismissError": "오류 닫기",
+    "openInNewWindow": "새 창으로 열기",
+    "returnToMain": "메인 창으로 돌아가기",
+    "detachedSessionNotFound": "이 터미널 세션은 종료되었거나 더 이상 존재하지 않습니다.",
+    "authPromptPlaceholder": "암호 문구 / 일회용 코드 입력",
+    "authPromptSubmit": "제출",
+    "authPending": "세션에서 일회용 암호 문구를 기다리는 중입니다 — 아래에 입력해 계속하세요",
+    "otpDialogTitle": "일회용 암호 문구가 필요합니다",
+    "otpDialogTitleNamed": "{{name}}에 일회용 암호 문구가 필요합니다",
+    "otpSubmitFailed": "암호 문구 제출에 실패했습니다. 다시 시도하세요.",
+    "quoteToConversation": "대화에 인용",
+    "failed": {
+      "sessionNotFound": "세션이 없거나 이미 닫혔습니다",
+      "sessionLimit": "세션 한도에 도달했습니다 — 먼저 탭을 닫으세요",
+      "jumpForwardFailed": "점프 호스트를 경유해 대상으로 전달하는 데 실패했습니다 — 점프 호스트와 대상의 연결 가능 여부를 확인하세요",
+      "authRequired": "일회용 암호 문구 대기 시간이 초과되었습니다 — 다시 시도하고 즉시 입력하세요",
+      "credentialMissing": "저장된 자격 증명이 없습니다 — 연결을 편집해 암호 문구를 저장하세요",
+      "authFailed": "인증에 실패했습니다. 계정과 암호 문구를 확인하세요",
+      "hostKeyMismatch": "호스트 키가 기존 기록과 일치하지 않아 안전을 위해 연결을 거부했습니다",
+      "connectTimeout": "연결 시간이 초과되었습니다. 네트워크와 주소를 확인하세요",
+      "connectionLost": "연결이 끊겼습니다",
+      "channelFailed": "원격 터미널 채널을 열 수 없습니다",
+      "io": "터미널 IO 오류입니다. 다시 시도하세요",
+      "localStartFailed": "로컬 터미널을 시작하지 못했습니다. 다시 시도하세요.",
+      "invalidCwd": "잘못된 작업 디렉터리"
+    }
   }
 }

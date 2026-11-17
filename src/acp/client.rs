@@ -2998,6 +2998,108 @@ fn retain_bounded_doctor_acp_failure_bundle(dir: &Utf8Path) {
     }
 }
 
+/// 连接工具失联信号判定：仅当回合正常完成、无终态失败且可见文本包含稳定标记
+/// 时成立（标记由连接工具契约要求 agent 在「工具不在可用列表」时输出）。
+fn plan_connection_tools_reload(
+    visible_text: &str,
+    status: &str,
+    has_terminal_failure: bool,
+) -> bool {
+    status == "completed"
+        && !has_terminal_failure
+        && visible_text.contains(crate::provider::CONNECTION_TOOLS_MISSING_MARKER)
+}
+
+/// 连接工具重注册 epoch 文件（attempt 目录内）：每检测到一次失联 +1。下一轮
+/// session/resume 的连接 MCP URL 携带 `?reload=<epoch>`，会话定义参数随之变化。
+///
+/// 为什么必须改参数：适配器的 `getOrCreateSession` 对 resume 有活会话快速路径
+/// ——会话定义指纹（含 mcpServers）一致时**直接复用现有 Query 进程，不重建**。
+/// `/model` 等会话内重建把 agent 侧连接工具销毁后，参数不变的重发永远命中快速
+/// 路径，工具永远回不来（现场事故 cb3ff6e1：重试轮 `outcome=reused`、再次失联）。
+/// 让指纹变化是唯一能触发适配器 teardown + 带 resume 重建的杠杆；重建保留对话
+/// 历史并重新注册 MCP 工具。
+const CONNECTION_TOOLS_RELOAD_EPOCH_FILE: &str = "connection-tools-reload.json";
+
+fn connection_tools_reload_epoch_path(attempt_dir: &Utf8Path) -> Utf8PathBuf {
+    attempt_dir.join(CONNECTION_TOOLS_RELOAD_EPOCH_FILE)
+}
+
+/// 当前重注册 epoch；文件缺失或损坏按 0（未失联）处理。
+fn connection_tools_reload_epoch(attempt_dir: &Utf8Path) -> u64 {
+    crate::storage::read_json::<u64>(&connection_tools_reload_epoch_path(attempt_dir)).unwrap_or(0)
+}
+
+/// 失联后递增 epoch（原子写），返回新值。
+fn bump_connection_tools_reload_epoch(attempt_dir: &Utf8Path) -> u64 {
+    let next = connection_tools_reload_epoch(attempt_dir) + 1;
+    if let Err(error) =
+        crate::storage::write_json(&connection_tools_reload_epoch_path(attempt_dir), &next)
+    {
+        // 写失败仅损失一次自愈机会：下一轮参数不变会再次失联并再次尝试。
+        tracing::warn!(
+            target: "gold_band::perf",
+            attempt_dir = %attempt_dir,
+            %error,
+            "failed to persist connection tools reload epoch"
+        );
+    }
+    next
+}
+
+/// 把当前 epoch 写入连接 MCP server 的 URL query（`?reload=<epoch>`）。仅改
+/// gold-band-connections 条目；epoch 为 0（未失联）时原样保留——正常轮次的
+/// 参数保持稳定，不触发任何重建。
+fn apply_connection_tools_reload_epoch(mcp_servers: &mut [Value], epoch: u64) {
+    if epoch == 0 {
+        return;
+    }
+    for server in mcp_servers.iter_mut() {
+        if server.get("name").and_then(Value::as_str)
+            != Some(crate::app::CONNECTION_MCP_SERVER_NAME)
+        {
+            continue;
+        }
+        let Some(url) = server.get("url").and_then(Value::as_str) else {
+            continue;
+        };
+        server["url"] = Value::String(set_url_query_param(url, "reload", &epoch.to_string()));
+    }
+}
+
+/// 在 URL query 中插入或替换 `key=value`，保留其余参数与顺序。
+fn set_url_query_param(url: &str, key: &str, value: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (url, None),
+    };
+    let mut saw_key = false;
+    let mut pairs = query
+        .map(|query| {
+            query
+                .split('&')
+                .filter(|pair| !pair.is_empty())
+                .map(|pair| {
+                    if pair.split_once('=').map_or(pair, |(name, _)| name) == key {
+                        saw_key = true;
+                        format!("{key}={value}")
+                    } else {
+                        pair.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !saw_key {
+        pairs.push(format!("{key}={value}"));
+    }
+    if pairs.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", pairs.join("&"))
+    }
+}
+
 pub fn run_prompt(
     provider_id: &str,
     config: &AcpAdapterConfig,
@@ -3114,6 +3216,8 @@ fn run_prompt_inner(
         .and_then(Value::as_str)
         .filter(|session_id| !session_id.trim().is_empty())
         .map(str::to_string);
+    // attempt_dir 在 AcpRuntime::start 中被消费；epoch 先读。
+    let connection_tools_reload_epoch = connection_tools_reload_epoch(&attempt_dir);
     let mut runtime = AcpRuntime::start(
         provider_id,
         config,
@@ -3187,7 +3291,14 @@ fn run_prompt_inner(
         }
         Err(error) => return Err(error),
     };
-    let mcp_preparation = prepare_acp_mcp_servers(mcp_servers, Some(&capabilities));
+    let mut mcp_preparation = prepare_acp_mcp_servers(mcp_servers, Some(&capabilities));
+    // 连接工具重注册：失联标记触发过 epoch 递增后，本轮（通常为 resume）把
+    // `?reload=<epoch>` 写入连接 MCP URL，使适配器侧会话定义指纹必然变化 →
+    // teardown 活会话并带 resume 重建 → 工具重新注册。epoch 为 0 时原样透传。
+    apply_connection_tools_reload_epoch(
+        &mut mcp_preparation.accepted,
+        connection_tools_reload_epoch,
+    );
     let strict_continue = requires_existing_session;
     let restored = match runtime.setup_session(
         provider_id,
@@ -3405,6 +3516,39 @@ fn run_prompt_inner(
     runtime.control.mark_stopped();
     runtime.settle_foreground_turn_tools();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
+    // 连接工具失联自愈（连接→对话）：agent 按工具契约在「工具不在可用列表」时
+    // 输出稳定标记（现场事故：/model 会话内重建后 ACP 注入的连接 MCP 工具消失，
+    // 模型改抓 context7 幻觉调用）。这里扫描当轮可见文本，命中即递增重注册 epoch
+    // ——下一轮 resume 的连接 MCP URL 携带 `?reload=<epoch>`，会话定义指纹变化，
+    // 适配器 teardown 后带 resume 重建 Query，工具重新注册且对话历史保留。
+    // 注意：不能在这里 detach attached session——本函数末尾的
+    // `release_managed_session` 会把会话原样插回注册表（现场事故 cb3ff6e1：
+    // detach 被回插抵消，重试轮复用同一个损坏的活会话，标记死循环）。
+    if plan_connection_tools_reload(
+        &runtime.prompt_output.output.visible_text,
+        status,
+        terminal_failure.is_some(),
+    ) {
+        let reload_epoch = bump_connection_tools_reload_epoch(&runtime.paths.attempt_dir);
+        append_diagnostic_best_effort(
+            &runtime.paths.diagnostics,
+            "warn",
+            "connection tools missing from the agent toolset; reload epoch bumped for re-registration",
+            Some(json!({
+                "event": "connection_tools_missing",
+                "providerId": provider_id,
+                "sessionId": session_id,
+                "reloadEpoch": reload_epoch,
+            })),
+        );
+        info!(
+            target: "gold_band::perf",
+            provider_id,
+            session_id,
+            reload_epoch,
+            "connection tools missing detected; reload epoch bumped for re-registration"
+        );
+    }
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
@@ -4573,6 +4717,15 @@ impl<'a> AcpRuntime<'a> {
                 }
             };
             let restore = self.request(restore_method.rpc_method(), restore_params);
+            info!(
+                target: "gold_band::perf",
+                provider_id,
+                workspace_root = cwd.as_str(),
+                restore_method = restore_method.rpc_method(),
+                mcp_server_count = mcp_servers.len(),
+                status = if restore.is_ok() { "ok" } else { "error" },
+                "ACP session restore completed"
+            );
             let required_sync = restore_intent == SessionRestoreIntent::SyncHistory;
             match restore {
                 Ok(result) => {
@@ -9701,16 +9854,18 @@ mod tests {
         acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
         active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
         append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
-        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
+        apply_connection_tools_reload_epoch, attached_sync_required,
+        bump_connection_tools_reload_epoch, cancel_attempt_prompt, canonical_prompt_event_identity,
         catalog_observation_is_newer, cleanup_doctor_acp_dir_after_success,
-        confirmed_context_usage_update, dispatch_attempt_prompt_cancel,
-        drain_available_frames_bounded, drain_available_frames_with_budget,
-        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
-        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
-        is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
-        latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
-        next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
-        plan_attached_session_reuse, plan_session_restore,
+        confirmed_context_usage_update, connection_tools_reload_epoch,
+        dispatch_attempt_prompt_cancel, drain_available_frames_bounded,
+        drain_available_frames_with_budget, drain_frames_until_quiet,
+        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
+        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
+        is_streaming_timeline_update, is_transport_interruption, latest_visible_turn_id,
+        map_prompt_terminal_drain_error, merge_tool_revision, next_prompt_retry_attempt,
+        parse_agent_capabilities, permission_decision_timeline_event, plan_attached_session_reuse,
+        plan_connection_tools_reload, plan_session_restore,
         prepare_attempt_usage_after_reuse_decision, preserve_interrupted_session_identity,
         prompt_activity, prompt_cancel_terminal_timeout, prompt_cancellation_outcome,
         prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
@@ -9718,7 +9873,7 @@ mod tests {
         retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
         scheduled_trigger_for_prompt, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_attempt_prompt_interactions, settle_prompt_event,
+        set_url_query_param, settle_attempt_prompt_interactions, settle_prompt_event,
         should_suppress_attached_session_update, should_suppress_session_update,
         stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
         timeline_position_for_live_event, turn_file_change_set_event, unregister_provider_control,
@@ -11063,6 +11218,131 @@ mod tests {
     }
 
     #[test]
+    fn connection_tools_reload_epoch_bumps_persistently() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let attempt_dir =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        // 缺失文件按 0（未失联）处理。
+        assert_eq!(connection_tools_reload_epoch(&attempt_dir), 0);
+        assert_eq!(bump_connection_tools_reload_epoch(&attempt_dir), 1);
+        assert_eq!(bump_connection_tools_reload_epoch(&attempt_dir), 2);
+        assert_eq!(connection_tools_reload_epoch(&attempt_dir), 2);
+    }
+
+    #[test]
+    fn set_url_query_param_inserts_replaces_and_preserves_order() {
+        assert_eq!(
+            set_url_query_param(
+                "http://127.0.0.1:9/mcp?projectId=p&taskId=t&runId=r",
+                "reload",
+                "1"
+            ),
+            "http://127.0.0.1:9/mcp?projectId=p&taskId=t&runId=r&reload=1"
+        );
+        assert_eq!(
+            set_url_query_param(
+                "http://127.0.0.1:9/mcp?projectId=p&reload=1&runId=r",
+                "reload",
+                "2"
+            ),
+            "http://127.0.0.1:9/mcp?projectId=p&reload=2&runId=r"
+        );
+        assert_eq!(
+            set_url_query_param("http://127.0.0.1:9/mcp", "reload", "3"),
+            "http://127.0.0.1:9/mcp?reload=3"
+        );
+    }
+
+    #[test]
+    fn apply_connection_tools_reload_epoch_rewrites_only_the_connection_server_url() {
+        let connection = serde_json::json!({
+            "type": "http",
+            "name": "gold-band-connections",
+            "url": "http://127.0.0.1:9/mcp?projectId=p&taskId=t&runId=r",
+            "headers": []
+        });
+        let other = serde_json::json!({
+            "type": "http",
+            "name": "other-tools",
+            "url": "http://127.0.0.1:10/mcp",
+            "headers": []
+        });
+        // epoch 0：原样透传，正常轮次参数保持稳定。
+        let mut servers = vec![connection.clone(), other.clone()];
+        apply_connection_tools_reload_epoch(&mut servers, 0);
+        assert_eq!(servers[0]["url"], connection["url"]);
+        // epoch>0：仅改连接 server 的 URL，其余参数原样保留。
+        apply_connection_tools_reload_epoch(&mut servers, 2);
+        assert_eq!(
+            servers[0]["url"],
+            "http://127.0.0.1:9/mcp?projectId=p&taskId=t&runId=r&reload=2"
+        );
+        assert_eq!(servers[1]["url"], other["url"]);
+    }
+
+    #[test]
+    fn reload_epoch_url_changes_the_session_config_fingerprint() {
+        // 指纹必须随 URL 变化——这是触发适配器 teardown + 重建的杠杆。
+        let original = serde_json::json!({
+            "type": "http",
+            "name": "gold-band-connections",
+            "url": "http://127.0.0.1:9/mcp?projectId=p&taskId=t&runId=r",
+            "headers": []
+        });
+        let mut reloaded = original.clone();
+        reloaded["url"] = serde_json::Value::String(set_url_query_param(
+            original["url"].as_str().unwrap(),
+            "reload",
+            "1",
+        ));
+        let left = session_config_fingerprint(
+            "claude-acp",
+            &Utf8PathBuf::from("/w"),
+            "",
+            std::slice::from_ref(&original),
+        )
+        .expect("fingerprint");
+        let right = session_config_fingerprint(
+            "claude-acp",
+            &Utf8PathBuf::from("/w"),
+            "",
+            std::slice::from_ref(&reloaded),
+        )
+        .expect("fingerprint");
+        assert_ne!(
+            left, right,
+            "reload epoch must change the session fingerprint"
+        );
+    }
+
+    #[test]
+    fn connection_tools_reload_requires_completed_turn_with_marker() {
+        // 连接工具失联自愈的判定契约：标记 + 正常完成才触发；取消、失败、或
+        // 未含标记的普通回合都不触发（避免把复述契约文本误判为失联）。
+        let marker_line = "done\n[gold-band:connection-tools-missing]\n";
+        assert!(plan_connection_tools_reload(
+            marker_line,
+            "completed",
+            false
+        ));
+        assert!(!plan_connection_tools_reload(
+            marker_line,
+            "cancelled",
+            false
+        ));
+        assert!(!plan_connection_tools_reload(
+            marker_line,
+            "completed",
+            true
+        ));
+        assert!(!plan_connection_tools_reload(
+            "normal answer",
+            "completed",
+            false
+        ));
+    }
+
+    #[test]
     fn timeline_patch_deadline_is_not_expired_by_the_previous_slow_write() {
         let started_at = Instant::now();
         let mut deadline = None;
@@ -11374,6 +11654,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -11481,6 +11762,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -13331,6 +13613,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -13431,6 +13714,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -13774,6 +14058,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -13992,6 +14277,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -14205,6 +14491,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -14299,6 +14586,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -14431,6 +14719,7 @@ mod tests {
             adapter_display_name: "Fixture".into(),
             cwd: cwd.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
@@ -14544,6 +14833,7 @@ mod tests {
                 adapter_display_name: "Fixture".into(),
                 cwd: cwd.to_string(),
                 input: crate::provider::ConversationPromptInput {
+                    context_connections: Vec::new(),
                     display_text: "test".into(),
                     quotes: vec![],
                     role: None,
@@ -14662,6 +14952,7 @@ do {
                 adapter_display_name: "Fixture".into(),
                 cwd: cwd.to_string(),
                 input: crate::provider::ConversationPromptInput {
+                    context_connections: Vec::new(),
                     display_text: "test".into(),
                     quotes: vec![],
                     role: None,
@@ -14800,6 +15091,7 @@ do {
                     adapter_display_name: "Fixture".into(),
                     cwd: cwd.to_string(),
                     input: crate::provider::ConversationPromptInput {
+                        context_connections: Vec::new(),
                         display_text: "test".into(),
                         quotes: vec![],
                         role: None,

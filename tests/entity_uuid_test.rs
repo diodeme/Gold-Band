@@ -32,6 +32,7 @@ fn task_state_missing_uuid_deserializes_as_none() {
 #[test]
 fn run_state_with_uuid_fields() {
     let run = RunState {
+        connection_specs: Vec::new(),
         version: "1".into(),
         id: "run-001".into(),
         task_id: "task-001".into(),
@@ -61,6 +62,7 @@ fn run_state_with_uuid_fields() {
 #[test]
 fn run_state_with_last_executed_node_serde() {
     let run = RunState {
+        connection_specs: Vec::new(),
         version: "1".into(),
         id: "run-001".into(),
         task_id: "task-001".into(),

@@ -734,7 +734,9 @@
         }
       },
       "remoteMarkdownImages": "This document contains {{count}} web images from {{hosts}}",
-      "remoteMarkdownImageHostSeparator": ", "
+      "remoteMarkdownImageHostSeparator": ", ",
+      "resetImage": "Reset image",
+      "draftPreviewUnavailable": "This attachment can be previewed in the workspace after sending"
     },
     "discardWorkflowChanges": "This workflow has unsaved changes. Discard them and close the tab?",
     "rootUnavailable": {
@@ -1079,7 +1081,8 @@
         "validation-failed": "The execution plan is not valid.",
         "partial-commit": "Only part of the save was published. Review each target.",
         "recovery-required": "The save needs recovery before it can continue."
-      }
+      },
+      "session-restore-reference-missing": "This session is missing its Provider session reference."
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} has not passed doctor.",
@@ -1144,6 +1147,18 @@
       "completion": {
         "repair-exhausted": "Node output still breaks the protocol after {{repairAttempts}} repair attempts. The workflow is paused."
       }
+    },
+    "connection": {
+      "not-found": "Connection not found.",
+      "name-conflict": "A connection with this name already exists. Try a different name.",
+      "invalid-input": "Invalid connection configuration. Please review your input.",
+      "jump-cycle": "The jump chain contains a cycle. Please adjust the jump settings.",
+      "jump-missing": "The jump gateway does not exist: {{jumpRef}}.",
+      "jump-referenced": "This connection is used as a jump gateway by other connections and cannot be deleted: {{referents}}."
+    },
+    "credential": {
+      "store-failed": "Failed to save the credential to the system keychain: {{reason}}.",
+      "missing": "No saved credential for this connection. You'll be prompted live when connecting, and nothing is persisted."
     }
   },
   "status": {
@@ -2341,7 +2356,8 @@
       "interruptConfirmTitle": "Send this message now?",
       "interruptConfirmDescription": "The current reply will be stopped before this message is sent.",
       "interruptConfirmSkip": "Don't ask again",
-      "interruptConfirmAction": "Stop and send"
+      "interruptConfirmAction": "Stop and send",
+      "use": "Use"
     },
     "composerDrafts": {
       "title": "Drafts",
@@ -2472,7 +2488,14 @@
       "cacheWrite": "Cache Write",
       "total": "Total",
       "excludesBackground": "Excludes usage from background wake-ups"
-    }
+    },
+    "slashModelMissingValue": "Specify a model after /model, or pick one in the session config bar.",
+    "slashModelUnknown": "Model \"{{requested}}\" was not found — pick one from the session config bar.",
+    "connectionToolsRecoveryNotice": "Connection tools were briefly unavailable and have been re-registered. Retry the last message to continue.",
+    "connectionToolsRecoveryRetry": "Retry last message",
+    "userQuoteLabel": "Quote {{index}}",
+    "launchingClaude": "Launching agent",
+    "subAgentRunning": "Sub-agent running"
   },
   "graph": {
     "emptyGraph": "No work graph",
@@ -2865,6 +2888,16 @@
         "empty": "There are no release notes for this version.",
         "loadFailed": "Couldn't load the release notes.",
         "more": "More"
+      },
+      "install": "Download and install",
+      "announcement": {
+        "title": "New version {{version}} available",
+        "description": "Go to Settings → Advanced → Updates to review and install it.",
+        "dismiss": "Close",
+        "view": "View update",
+        "dialogTitle": "New version {{version}} available",
+        "dialogDescription": "A new client version has been detected. Go to Settings → Advanced → Updates to download and install it.",
+        "goToSettings": "Go to Settings"
       }
     },
     "remoteImages": {
@@ -2881,7 +2914,8 @@
       "title": "Pending messages",
       "description": "While a reply is in progress, \"Send now\" stops the current reply first.",
       "confirmInterrupt": "Confirm before \"Send now\" interrupts a reply"
-    }
+    },
+    "advanced": "Advanced"
   },
   "multica": {
     "taskManagement": {
@@ -3028,7 +3062,8 @@
       "releaseResident": "Allow session eviction",
       "keepResidentHint": "Keep this session running when the Agent has scheduled tasks or other long-running work, so it is not closed while idle",
       "releaseResidentHint": "Session is kept running and will not be closed while idle. Click to allow eviction",
-      "resident": "Kept running"
+      "resident": "Kept running",
+      "connectionsTerminal": "Connections"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "Add a local workspace before running a requirement",
@@ -3215,5 +3250,127 @@
     "validationPositiveNumber": "{{field}} must be greater than 0",
     "validationTemplateNameRequired": "Template name is required",
     "validationTemplateNameDuplicated": "Template name {{name}} already exists"
+  },
+  "connections": {
+    "management": {
+      "title": "Connections",
+      "create": "New connection",
+      "refresh": "Refresh connections",
+      "loading": "Loading",
+      "loadFailed": "Failed to load connections",
+      "actionFailed": "Action failed. Please retry.",
+      "empty": "No connections",
+      "disableNotice": "Remote connections are an intranet-only capability, not enabled in this build. Use the local terminal from the 'Terminal' panel in the workspace.",
+      "columns": {
+        "name": "Name",
+        "host": "Host",
+        "username": "User",
+        "env": "Environment",
+        "credential": "Credential",
+        "lastConnected": "Last connected",
+        "jump": "Jump"
+      },
+      "more": "More actions",
+      "edit": "Edit",
+      "delete": "Delete",
+      "credentialSaved": "Saved",
+      "credentialMissing": "Not saved",
+      "jumpMarker": "Via jump",
+      "jumpMissing": "Jump missing",
+      "keyAuth": "Key",
+      "passwordAuth": "Password",
+      "deleteTitle": "Delete connection?",
+      "deleteDescription": "This cannot be undone. Any credential saved to the system keychain for this connection will also be removed.",
+      "cancel": "Cancel",
+      "confirmDelete": "Delete"
+    },
+    "dialog": {
+      "createTitle": "New connection",
+      "editTitle": "Edit connection",
+      "name": "Name",
+      "host": "Host",
+      "port": "Port",
+      "username": "User",
+      "authMethod": "Authentication",
+      "authPassword": "Password",
+      "authPublicKey": "SSH key",
+      "keyPath": "Key path",
+      "keyPathPlaceholder": "e.g. ~/.ssh/id_ed25519",
+      "secret": "Password",
+      "keyPassphrase": "Key passphrase",
+      "saveSecret": "Save to system keychain",
+      "saveSecretHint": "Feeds in automatically on connect. No prompt.",
+      "dynamicPasswordHint": "If the password is dynamic or one-time, leave it blank and unsaved: you'll be prompted live on every connect, and nothing is persisted. If a bastion's own menu asks for a password again after the connection succeeds, that's normal terminal input — just type it in the terminal.",
+      "dismissError": "Dismiss error",
+      "clearSecret": "Remove saved credential",
+      "jump": "Jump host",
+      "jumpNone": "None (direct)",
+      "env": "Environment",
+      "envTest": "Test",
+      "envStage": "Stage",
+      "envProd": "Prod",
+      "prodWarning": "Production is outside the supported scope; shown for demo purposes only.",
+      "save": "Save",
+      "cancel": "Cancel",
+      "namePlaceholder": "e.g. Log server",
+      "hostPlaceholder": "e.g. 10.0.0.5"
+    },
+    "recent": {
+      "title": "Recent connections",
+      "empty": "No recent connections",
+      "reconnect": "Reconnect",
+      "notReconnectable": "Connection deleted"
+    },
+    "reference": {
+      "groupLabel": "Connection references",
+      "remove": "Remove",
+      "removing": "Removing…",
+      "removeFailed": "Failed to remove. Please retry.",
+      "spec": "Connection details",
+      "attach": "Attach connection",
+      "attachFailed": "Failed to attach. Please retry."
+    }
+  },
+  "terminal": {
+    "panelTitle": "Terminal sessions",
+    "panelDescription": "Open a local or remote terminal",
+    "newLocal": "New local terminal",
+    "close": "Close session",
+    "empty": "No terminal sessions",
+    "error": "Failed to open terminal. Please retry.",
+    "loading": "Creating terminal",
+    "localLabel": "Local terminal",
+    "sessionLabel": "Session {{index}}",
+    "limitReached": "Session limit reached ({{max}})",
+    "connect": "Connect remote terminal",
+    "connecting": "Connecting",
+    "awaitingAuth": "Awaiting auth",
+    "openTerminalTab": "Open terminal (⌘/Ctrl+T)",
+    "dismissError": "Dismiss error",
+    "openInNewWindow": "Open in new window",
+    "returnToMain": "Return to main window",
+    "detachedSessionNotFound": "This terminal session has ended or no longer exists.",
+    "authPromptPlaceholder": "Enter passphrase / one-time code",
+    "authPromptSubmit": "Submit",
+    "authPending": "A session is waiting for the one-time passphrase — type it below to continue.",
+    "otpDialogTitle": "One-time passphrase required",
+    "otpDialogTitleNamed": "{{name}} needs the one-time passphrase",
+    "otpSubmitFailed": "Failed to submit the passphrase. Please retry.",
+    "quoteToConversation": "Quote to conversation",
+    "failed": {
+      "sessionNotFound": "Session not found or already closed",
+      "sessionLimit": "Session limit reached — close a tab first",
+      "jumpForwardFailed": "Forwarding to the target through the bastion failed — check reachability of the bastion and the target",
+      "authRequired": "Timed out waiting for the one-time passphrase — please retry and enter it promptly",
+      "credentialMissing": "No saved credential found — edit the connection and save the passphrase",
+      "authFailed": "Authentication failed, please check the account and passphrase",
+      "hostKeyMismatch": "Host key differs from the recorded one — connection rejected for safety",
+      "connectTimeout": "Connection timed out, check the network and address",
+      "connectionLost": "Connection lost",
+      "channelFailed": "Could not open a remote terminal channel",
+      "io": "Terminal IO error, please retry",
+      "localStartFailed": "Failed to start the local terminal. Please retry.",
+      "invalidCwd": "Invalid working directory"
+    }
   }
 }

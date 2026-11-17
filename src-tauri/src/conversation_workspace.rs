@@ -42,10 +42,14 @@ pub(crate) fn app_for_workspace(
     context: &DesktopContext,
     workspace_path: &str,
 ) -> anyhow::Result<App> {
-    Ok(App::with_config(
-        Utf8PathBuf::from(workspace_path),
-        context.config.clone(),
-    ))
+    let mut app = App::with_config(Utf8PathBuf::from(workspace_path), context.config.clone());
+    // The connection MCP endpoint port rides on the shared context so
+    // workspace-scoped apps — the ones that build conversation run invocations —
+    // can inject the connection tools into agent sessions too.
+    if let Some(port) = context.connection_mcp_endpoint_port {
+        app = app.with_connection_mcp_endpoint_port(port);
+    }
+    Ok(app)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1052,6 +1056,44 @@ mod tests {
         let workspace_path = directory.path().to_string_lossy();
 
         assert!(validate_runtime_workspace_access("project-1", &workspace_path).is_ok());
+    }
+
+    #[test]
+    fn app_for_workspace_carries_the_connection_mcp_endpoint_port() {
+        // Conversation run invocations are built from workspace-scoped apps; the
+        // endpoint port must ride on the shared context into them, or the agent
+        // never receives the connection tools (observed in the field: the run
+        // got the connection hidden context but `mcpServers: []`).
+        let directory = tempdir().unwrap();
+        let context = DesktopContext {
+            repo_root: camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap(),
+            config: gold_band::config::RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+            connection_mcp_endpoint_port: Some(9123),
+        };
+        let workspace_path = directory.path().to_string_lossy().into_owned();
+
+        let app = app_for_workspace(&context, &workspace_path).unwrap();
+
+        assert_eq!(app.connection_mcp_endpoint_port(), Some(9123));
+    }
+
+    #[test]
+    fn app_for_workspace_without_an_endpoint_stays_none() {
+        let directory = tempdir().unwrap();
+        let context = DesktopContext {
+            repo_root: camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap(),
+            config: gold_band::config::RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+            connection_mcp_endpoint_port: None,
+        };
+        let workspace_path = directory.path().to_string_lossy().into_owned();
+
+        let app = app_for_workspace(&context, &workspace_path).unwrap();
+
+        assert_eq!(app.connection_mcp_endpoint_port(), None);
     }
 
     #[test]

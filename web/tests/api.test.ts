@@ -7,12 +7,19 @@ vi.mock('../src/api/client', () => ({
 import { getRuntimeApi } from '../src/api/client';
 import {
   changeGitBranch,
+  closeTerminalSession,
   deleteProfile,
   getGitBranchPickerSnapshot,
+  listTerminalSessions,
   materializeConversationAttachments,
+  openLocalTerminal,
   pauseRun,
+  pickDirectory,
   removeRecentWorkspace,
+  resizeTerminal,
   stopActiveSession,
+  subscribeTerminalEvents,
+  writeTerminalInput,
 } from '../src/api';
 
 describe('api facade', () => {
@@ -104,5 +111,42 @@ describe('api facade', () => {
 
     expect(getSnapshotImpl).toHaveBeenCalledWith('project-1', 'D:/repo');
     expect(changeBranchImpl).toHaveBeenCalledWith('project-1', 'D:/repo', input);
+  });
+
+  it('routes terminal session reads and mutations through the selected runtime API', async () => {
+    const session = { sessionId: 'sess-1', kind: 'local' as const, cwd: null, status: 'Connected' as const };
+    const listImpl = vi.fn().mockResolvedValue([session]);
+    const pickDirImpl = vi.fn().mockResolvedValue('/picked/dir');
+    const openImpl = vi.fn().mockResolvedValue(session);
+    const writeImpl = vi.fn().mockResolvedValue(undefined);
+    const resizeImpl = vi.fn().mockResolvedValue(undefined);
+    const closeImpl = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getRuntimeApi).mockReturnValue({
+      listTerminalSessions: listImpl,
+      pickDirectory: pickDirImpl,
+      openLocalTerminal: openImpl,
+      writeTerminalInput: writeImpl,
+      resizeTerminal: resizeImpl,
+      closeTerminalSession: closeImpl,
+    } as never);
+
+    await listTerminalSessions();
+    await pickDirectory();
+    await openLocalTerminal('/app');
+    await writeTerminalInput('sess-1', 'aGVsbG8=');
+    await resizeTerminal('sess-1', 24, 80);
+    await closeTerminalSession('sess-1');
+
+    expect(listImpl).toHaveBeenCalledWith();
+    expect(pickDirImpl).toHaveBeenCalledWith();
+    expect(openImpl).toHaveBeenCalledWith('/app');
+    expect(writeImpl).toHaveBeenCalledWith('sess-1', 'aGVsbG8=');
+    expect(resizeImpl).toHaveBeenCalledWith('sess-1', 24, 80);
+    expect(closeImpl).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('defaults subscribeTerminalEvents to a no-op when the runtime does not stream', async () => {
+    vi.mocked(getRuntimeApi).mockReturnValue({} as never);
+    await expect(subscribeTerminalEvents(() => {})).resolves.toBeTypeOf('function');
   });
 });

@@ -21,5 +21,6 @@
   "multicaEnabled": true,
   "multicaToggleLocked": false,
   "multicaBaseUrl": "http://localhost:8080",
-  "multicaAppUrl": "http://localhost:3000"
+  "multicaAppUrl": "http://localhost:3000",
+  "remoteConnectionsEnabled": false
 }

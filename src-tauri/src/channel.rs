@@ -25,6 +25,9 @@ pub struct DesktopChannelConfig {
     pub multica_toggle_locked: bool,
     pub multica_base_url: &'static str,
     pub multica_app_url: &'static str,
+    /// Remote server-connection + remote SSH is intranet-only. Both channels get
+    /// the local terminal; only intranet channels enable remote connections.
+    pub remote_connections_enabled: bool,
 }
 
 pub fn current_channel_config() -> DesktopChannelConfig {
@@ -51,6 +54,7 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         multica_toggle_locked: option_env!("GOLD_BAND_MULTICA_TOGGLE_LOCKED") == Some("true"),
         multica_base_url: option_env!("GOLD_BAND_MULTICA_BASE_URL").unwrap_or(""),
         multica_app_url: option_env!("GOLD_BAND_MULTICA_APP_URL").unwrap_or(""),
+        remote_connections_enabled: option_env!("GOLD_BAND_REMOTE_CONNECTIONS_ENABLED") == Some("true"),
     };
     config
 }

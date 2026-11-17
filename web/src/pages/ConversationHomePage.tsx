@@ -31,6 +31,10 @@ interface ConversationHomePageProps {
   onWorkspaceChange: (projectId: string) => void;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
+  connectionAttach?: {
+    selectedId: string | null;
+    onSelect: (connectionId: string | null) => void;
+  };
 }
 
 export function ConversationHomePage({
@@ -58,6 +62,7 @@ export function ConversationHomePage({
   onWorkspaceChange,
   onWorkLocationChange,
   onScheduledModeExit,
+  connectionAttach,
 }: ConversationHomePageProps) {
   useThemeWallpaperSurface();
   return (
@@ -94,6 +99,7 @@ export function ConversationHomePage({
           onWorkspaceChange={onWorkspaceChange}
           onWorkLocationChange={onWorkLocationChange}
           onScheduledModeExit={onScheduledModeExit}
+          connectionAttach={connectionAttach}
         />
       </div>
     </div>

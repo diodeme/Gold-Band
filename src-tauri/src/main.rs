@@ -15,6 +15,7 @@ mod commands_conversation;
 mod conversation_attention;
 mod conversation_workspace;
 mod desktop_lifecycle;
+mod detached_window;
 mod feedback;
 mod git_state_monitor;
 mod i18n;
@@ -44,50 +45,54 @@ use anyhow::Context;
 use commands::{
     add_mcp_server, cancel_git_operation, cancel_github_operation, cancel_multica_connect,
     change_git_branch, check_local_claude, check_mcp_server_health, check_skill_name_conflict,
-    check_update_manual, choose_workspace, clear_desktop_avatar, connect_multica,
-    continue_conversation_runtime, continue_run, create_agent, create_profile, create_task,
-    delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, disconnect_multica, doctor_agent,
-    execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail, get_acp_image,
-    get_acp_raw_frames, get_acp_session, get_acp_tool_detail, get_agent_binding_usage,
-    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_file_comparison, get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
+    check_update_manual, choose_workspace, clear_desktop_avatar, close_terminal_session,
+    connect_multica, continue_conversation_runtime, continue_run, create_agent, create_profile,
+    create_server_connection, create_task, delete_agent, delete_auto_template,
+    delete_conversation_queued_prompt, delete_mcp_server, delete_profile, delete_server_connection,
+    delete_skill, delete_workflow_template, disconnect_multica, doctor_agent, execute_git_mutation,
+    fetch_agent_model_config, get_acp_activity_detail, get_acp_image, get_acp_raw_frames,
+    get_acp_session, get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog,
+    get_agent_registry, get_app_bootstrap, get_auto_templates, get_file_comparison,
+    get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
     get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,
     get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
     get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
-    get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
-    get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
-    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
-    initialize_git_repository, list_conversation_directory, list_github_issues,
-    list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen,
-    open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
-    preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
-    recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
-    reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
-    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
-    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
-    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
-    save_multica_connection_address, save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
-    select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
-    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
-    start_git_operation, start_git_state_monitor, start_github_login,
-    start_github_pull_request_create, start_run, start_update_install, stop_active_session,
-    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template,
-    use_conversation_queued_prompt, write_skill,
+    get_run_detail, get_server_connection, get_skill_sync_status, get_source_control_snapshot,
+    get_system_fonts, get_task_detail, get_task_list, get_terminal_history,
+    get_turn_file_change_set, get_update_status, get_workflow, get_workflow_templates,
+    import_desktop_wallpaper, import_profiles_from_folder, initialize_git_repository,
+    list_conversation_directory, list_github_issues, list_github_pull_requests, list_mcp_servers,
+    list_mcp_tools, list_project_skills, list_recent_connections, list_server_connections,
+    list_skills, list_terminal_sessions, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, open_local_terminal, open_remote_terminal, pause_run,
+    preflight_github_pull_request, provide_terminal_auth, read_conversation_directory_file,
+    read_skill, record_activity, recover_conversation_runtime, remove_recent_workspace,
+    renew_acp_session_lease, reorder_conversation_queued_prompts, replace_auto_templates,
+    report_frontend_error, report_webview_environment, resize_terminal,
+    resolve_turn_attachment_file, respond_acp_permission, respond_elicitation,
+    restore_conversation_queued_prompt, restore_theme_desktop_wallpaper, retry_run,
+    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    save_desktop_wallpaper_opacity, save_metrics_settings, save_multica_connection_address,
+    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
+    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_auto_accept,
+    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
+    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
+    start_github_login, start_github_pull_request_create, start_run, start_update_install,
+    stop_active_session, stop_git_state_monitor, submit_conversation_prompt, submit_manual_check,
+    toggle_mcp_server, update_agent, update_auto_template, update_mcp_server,
+    update_notification_attention, update_profile, update_server_connection,
+    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
+    write_skill, write_terminal_input,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
-    choose_conversation_workspace, create_conversation_run, create_scheduled_task,
-    delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
-    get_conversation_execution_plan, get_conversation_pinned_task_page, get_conversation_run,
-    get_conversation_run_mode, get_conversation_run_summary_page,
+    bind_conversation_connection, choose_conversation_workspace, create_conversation_run,
+    create_scheduled_task, delete_conversation_task, delete_scheduled_execution_history,
+    delete_scheduled_task, get_conversation_execution_plan, get_conversation_pinned_task_page,
+    get_conversation_run, get_conversation_run_mode, get_conversation_run_summary_page,
     get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
@@ -98,8 +103,8 @@ use commands_conversation::{
     save_desktop_ui_mode, save_last_conversation_workspace, save_scheduled_runtime_settings,
     search_conversation_tasks, set_conversation_resident, set_scheduled_task_enabled,
     show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
-    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
-    validate_conversation_create,
+    sync_conversation_workspace, unbind_conversation_connection, unpin_conversation,
+    update_scheduled_task, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -112,7 +117,7 @@ use multica::commands::{
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
 use notifications::send_scheduled_native_notification;
-use state::{DesktopContext, DesktopState};
+use state::{DesktopContext, DesktopState, TerminalHistoryStore, TerminalSessionState};
 use tauri::Manager;
 use tracing::{debug, info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
@@ -197,7 +202,8 @@ fn run() -> anyhow::Result<()> {
         .manage(browser_bookmarks::BrowserBookmarkHost::default())
         .manage(multica::shared_state())
         .manage(multica::MulticaConnectCancel::default())
-        .manage(wallpaper_runtime);
+        .manage(wallpaper_runtime)
+        .manage(detached_window::DetachedWindowRegistry::default());
     #[cfg(all(debug_assertions, target_os = "windows"))]
     let builder = builder.manage(webview_heap_diagnostics);
     builder
@@ -257,6 +263,14 @@ fn run() -> anyhow::Result<()> {
             }
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            // The known-hosts file lives under the user context dir (`~/.gold-band/context`),
+            // which is global per OS user, so any workspace root resolves to the same path.
+            let known_hosts =
+                GoldBandPaths::new(state.context()?.repo_root.clone()).known_hosts_file();
+            app.manage(commands::terminal_session_state_for(
+                app.handle(),
+                known_hosts.into(),
+            ));
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
                 touch_log_file_best_effort(&paths);
@@ -375,6 +389,35 @@ fn run() -> anyhow::Result<()> {
                     needs_workspace = ctx.needs_workspace,
                     "desktop runtime initialized"
                 );
+                // 连接→对话 阶段4：起连接 MCP 工具 server（复用刚 manage 的
+                // TerminalSessionState/TerminalHistoryStore，与用户终端 UI 共享会话）。
+                // 必须在 `init_tracing` 之后：启动成功/失败的日志在 tracing 初始化前
+                // 会被静默丢弃（现场排查事故时踩过这个观测盲区）。
+                // 启动失败不阻塞应用其余功能——只是这次进程内没有连接工具可用。
+                match state.app() {
+                    Ok(runtime_app) => {
+                        let terminal_state = app.state::<TerminalSessionState>();
+                        let history_state = app.state::<TerminalHistoryStore>();
+                        match commands::spawn_connection_mcp_endpoint(
+                            app.handle(),
+                            runtime_app,
+                            &terminal_state,
+                            &history_state,
+                        ) {
+                            Ok(port) => {
+                                if let Err(error) = state.set_connection_mcp_endpoint_port(port) {
+                                    warn!(%error, "failed to record connection MCP endpoint port");
+                                }
+                            }
+                            Err(error) => {
+                                warn!(%error, "failed to start connection MCP endpoint");
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to build App for connection MCP endpoint startup");
+                    }
+                }
                 builtin_mcp::inject_builtin_mcp_servers(&state);
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
@@ -438,6 +481,10 @@ fn run() -> anyhow::Result<()> {
             im_runtime::delete_im_channel,
             desktop_lifecycle::complete_main_window_close,
             desktop_lifecycle::resolve_app_exit,
+            detached_window::open_detached_window,
+            detached_window::close_detached_window,
+            detached_window::list_detached_windows,
+            get_terminal_history,
             notifications::take_pending_intervention_navigations,
             copy_image_to_clipboard,
             save_image_as,
@@ -485,6 +532,19 @@ fn run() -> anyhow::Result<()> {
             update_auto_template,
             delete_auto_template,
             replace_auto_templates,
+            list_server_connections,
+            get_server_connection,
+            create_server_connection,
+            update_server_connection,
+            delete_server_connection,
+            list_recent_connections,
+            list_terminal_sessions,
+            open_local_terminal,
+            open_remote_terminal,
+            provide_terminal_auth,
+            write_terminal_input,
+            resize_terminal,
+            close_terminal_session,
             get_run_detail,
             get_round_detail,
             get_log_page,
@@ -626,6 +686,8 @@ fn run() -> anyhow::Result<()> {
             get_conversation_run,
             validate_conversation_create,
             create_conversation_run,
+            bind_conversation_connection,
+            unbind_conversation_connection,
             rerun_conversation_task,
             stat_attachment_files,
             materialize_conversation_attachments,

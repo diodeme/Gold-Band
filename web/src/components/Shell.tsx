@@ -99,6 +99,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, s
         workspaceRevealRequest={workspaceRevealRequest}
         conversationTaskUuid={conversationTaskUuid}
         workLocation={workLocation}
+        repoRoot={repoRoot}
         conversationWorkspaceStore={conversationWorkspaceStore}
       >
         {children}

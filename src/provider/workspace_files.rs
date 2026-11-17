@@ -382,6 +382,7 @@ mod tests {
 
     fn input(project_id: &str, path: &str) -> ConversationPromptInput {
         ConversationPromptInput {
+            context_connections: Vec::new(),
             display_text: String::new(),
             quotes: Vec::new(),
             role: None,

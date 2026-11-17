@@ -1,4 +1,4 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, TriangleAlert, Workflow, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, Terminal, TriangleAlert, Workflow, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ErrorBoundary, type FallbackProps } from 'react-error-boundary';
 import { useTranslation } from 'react-i18next';
@@ -145,7 +145,7 @@ function RightWorkspacePanelFallback({ resetErrorBoundary }: FallbackProps) {
 }
 
 type WorkspaceEntryOption = {
-  id: 'file-browser' | 'source-control' | 'conversation-directory' | 'browser';
+  id: 'file-browser' | 'source-control' | 'conversation-directory' | 'browser' | 'terminal';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -208,6 +208,21 @@ function WorkspaceEntryOptions({ presentation }: {
           scopeKey,
           title: t('workspace.browser.title'),
           description: t('workspace.browser.description'),
+          attention: false,
+        });
+      },
+    }, {
+      id: 'terminal',
+      label: t('terminal.panelTitle'),
+      description: t('terminal.panelDescription'),
+      icon: Terminal,
+      open: () => {
+        void openResource({
+          kind: 'terminal',
+          key: 'terminal',
+          scopeKey,
+          title: t('terminal.panelTitle'),
+          description: t('terminal.panelDescription'),
           attention: false,
         });
       },
@@ -351,6 +366,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
               ? <FileDiff className="size-3.5 shrink-0" />
             : tab.kind === 'mermaid-diagram'
               ? <Workflow className="size-3.5 shrink-0" />
+            : tab.kind === 'terminal'
+              ? <Terminal className="size-3.5 shrink-0" />
               : <FileText className="size-3.5 shrink-0" />;
 }
 

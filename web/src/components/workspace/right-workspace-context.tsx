@@ -201,6 +201,10 @@ export type MermaidDiagramWorkspaceResource = RightWorkspaceResourceBase & {
   source: string;
 };
 
+export type TerminalWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'terminal';
+};
+
 export type RightWorkspaceResource =
   | AcpImageWorkspaceResource
   | MermaidDiagramWorkspaceResource
@@ -222,7 +226,8 @@ export type RightWorkspaceResource =
   | CompactionSummaryWorkspaceResource
   | RawFramesWorkspaceResource
   | ScheduledTaskConfigWorkspaceResource
-  | BrowserWorkspaceResource;
+  | BrowserWorkspaceResource
+  | TerminalWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];

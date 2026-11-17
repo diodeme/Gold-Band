@@ -423,6 +423,37 @@ export function unwrapSelectedSlashCommand(
   );
 }
 
+/**
+ * CC 内建的「会话内改配置」local 命令：由 CLI 本地执行、不经模型。其中 /model
+ * 会重建 agent 侧工具集，导致 ACP session/new 注入的 MCP 服务器（如
+ * gold-band-connections）从可用工具中消失（现场事故）。这类命令不能转发原始
+ * 文本，须由产品路由到等价的原生设置（session/set_config_option）。
+ */
+const SESSION_MUTATING_LOCAL_SLASH_COMMANDS: ReadonlySet<string> = new Set(['model']);
+
+export function isSessionMutatingLocalSlashCommand(name: string): boolean {
+  return SESSION_MUTATING_LOCAL_SLASH_COMMANDS.has(name.toLowerCase());
+}
+
+/**
+ * /model 是 CC 内建 local 命令（固定知识），识别不得依赖动态 agent 命令目录：
+ * 目录加载失败或未收录时，`/model sonnet` 会原样转发给 agent 触发工具集重建
+ * （现场事故 d596d1c9）。这里直接对原始输入做固定模式匹配。
+ * @returns 命令参数（`/model` 后的剩余文本，已 trim）；非 /model 输入返回 null。
+ */
+export function parseModelSlashInput(input: string): string | null {
+  const match = input.trimStart().match(/^\/model(?:\s+(.*))?$/i);
+  if (!match) return null;
+  return (match[1] ?? '').trim();
+}
+
+/**
+ * 连接工具失联标记（连接→对话工具契约，见 src/prompts 下 connections/tool-usage.md）：
+ * agent 在可用工具里找不到 gold-band-connections 工具时以该标记结束本轮。前端
+ * 据此在时间线里派生恢复态并给出一键重试（后端已同步重注册工具）。
+ */
+export const CONNECTION_TOOLS_MISSING_MARKER = '[gold-band:connection-tools-missing]';
+
 export function parseCommittedSlashCommand(
   input: string,
   commands: readonly AcpCommandItemVm[],

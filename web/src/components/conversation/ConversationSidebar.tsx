@@ -1,5 +1,5 @@
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Plug, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
@@ -20,6 +20,7 @@ import { formatCompactRelativeTime } from '@/lib/datetime';
 import { useConversationTaskActive } from '@/lib/conversation-sidebar-activity';
 import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
 import { ResidentPin } from '@/components/conversation/ResidentPin';
+import { useFeatureAvailability } from '@/lib/feature-availability';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
@@ -38,6 +39,7 @@ export type ConversationSidebarNavigationKey =
   | 'contexts'
   | 'run-mode-management'
   | 'scheduled-tasks'
+  | 'connections-terminal'
   | null;
 
 export function conversationSidebarNavigationKey(page: ConversationPage): ConversationSidebarNavigationKey {
@@ -49,6 +51,7 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'contexts':
     case 'run-mode-management':
     case 'scheduled-tasks':
+    case 'connections-terminal':
       return page.kind;
     case 'scheduled-task-detail':
       return 'scheduled-tasks';
@@ -117,6 +120,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 }: ConversationSidebarProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
+  const { remoteConnectionsEnabled } = useFeatureAvailability();
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
   const [activeRunListScope, setActiveRunListScope] = useState<ConversationSidebarRunListScope>('workspace');
@@ -347,6 +351,15 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
+          {remoteConnectionsEnabled ? (
+            <SidebarButton
+              compact
+              active={activeNavigationKey === 'connections-terminal'}
+              icon={<Plug />}
+              label={t('conversation.sidebar.connectionsTerminal')}
+              onClick={() => onSelect({ kind: 'connections-terminal' })}
+            />
+          ) : null}
           <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
             <CollapsibleTrigger asChild>
               <Button

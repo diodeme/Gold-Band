@@ -392,6 +392,9 @@ fn emit_frontend_exit_request(
 
 fn spawn_cleanup(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // Detached windows are lifecycle children; close them before the app's
+        // own cleanup so no OS window outlives the main one.
+        crate::detached_window::close_all_detached(&app_handle);
         let cleanup =
             prepare_app_exit_inner(&app_handle, app_handle.state::<DesktopState>().inner());
         match tokio::time::timeout(APP_EXIT_CLEANUP_TIMEOUT, cleanup).await {

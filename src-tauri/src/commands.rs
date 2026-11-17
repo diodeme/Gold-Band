@@ -1,3 +1,5 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use gold_band::acp::client;
 use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::ElicitationAction;
@@ -28,7 +30,10 @@ use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
     AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent, DirectTurnLifecycleTransition,
     ImportProfilesInput, ImportProfilesResult, MetricsInterventionSourceEvent, ProfileCommandError,
-    ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
+    ProfileEntry, ProfileInput, ProfileList, RecentConnectionSummary, RuntimeInterventionKind,
+    RuntimeLifecycleEvent, ServerConnection, ServerConnectionCommandError, ServerConnectionInput,
+    ServerConnectionSummary, SshSessionCommandError, TerminalEvent, TerminalEventSink,
+    TerminalSessionCommandError, TerminalSessionManager, TerminalSessionView,
     WorkflowTemplateStore,
 };
 use gold_band::domain::{
@@ -47,7 +52,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -84,7 +89,7 @@ use crate::conversation_attention::{
 };
 use crate::conversation_workspace::{
     RuntimeWorkspaceAccessError, app_for_workspace, conversation_workspace_entry_for_project,
-    validate_runtime_workspace_access,
+    validate_runtime_workspace_access, workspace_entry_for_project,
 };
 use crate::i18n::Translator;
 use crate::im_runtime::InterventionResolution;
@@ -97,7 +102,8 @@ use crate::multica::{
     multica_base_url_for_settings, multica_settings,
 };
 use crate::state::{
-    DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
+    DesktopState, NotificationAttentionInput, RecoveredConversationRun, TerminalHistoryStore,
+    TerminalSessionState, UpdateBadgeSeenTarget,
 };
 use crate::updater::{
     UpdateStatusVm, UpdaterError, UpdaterSettingsVm, check_update, install_pending_update,
@@ -130,6 +136,10 @@ use crate::wallpaper::{
 use tokio_util::sync::CancellationToken;
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
+const TERMINAL_OUTPUT_EVENT: &str = "gold-band://terminal-output";
+const TERMINAL_EXITED_EVENT: &str = "gold-band://terminal-exited";
+const TERMINAL_AUTH_PROMPT_EVENT: &str = "gold-band://terminal-auth-prompt";
+const TERMINAL_FAILED_EVENT: &str = "gold-band://terminal-failed";
 const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
 const AGENT_COMMANDS_UPDATED_EVENT: &str = "gold-band://agent-commands-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
@@ -3472,6 +3482,354 @@ pub fn delete_profile(
             }
         }
     }
+}
+
+#[tauri::command]
+pub fn list_server_connections(
+    state: State<'_, DesktopState>,
+) -> CommandResult<Vec<ServerConnectionSummary>> {
+    ensure_remote_connections_enabled()?;
+    let app = state.app().map_err(command_error)?;
+    app.server_connections().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_server_connection(
+    state: State<'_, DesktopState>,
+    id: String,
+) -> CommandResult<ServerConnection> {
+    ensure_remote_connections_enabled()?;
+    let app = state.app().map_err(command_error)?;
+    app.get_server_connection(&id).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn create_server_connection(
+    state: State<'_, DesktopState>,
+    input: ServerConnectionInput,
+) -> CommandResult<ServerConnection> {
+    ensure_remote_connections_enabled()?;
+    let app = state.app().map_err(command_error)?;
+    app.create_server_connection(input).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn update_server_connection(
+    state: State<'_, DesktopState>,
+    id: String,
+    input: ServerConnectionInput,
+) -> CommandResult<ServerConnection> {
+    ensure_remote_connections_enabled()?;
+    let app = state.app().map_err(command_error)?;
+    app.update_server_connection(&id, input)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn delete_server_connection(
+    state: State<'_, DesktopState>,
+    id: String,
+) -> CommandResult<Vec<ServerConnectionSummary>> {
+    ensure_remote_connections_enabled()?;
+    let app = state.app().map_err(command_error)?;
+    app.delete_server_connection(&id).map_err(command_error)?;
+    app.server_connections().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn list_recent_connections(
+    state: State<'_, DesktopState>,
+) -> CommandResult<Vec<RecentConnectionSummary>> {
+    ensure_remote_connections_enabled()?;
+    let app = state.app().map_err(command_error)?;
+    app.recent_connections().map_err(command_error)
+}
+
+/// Builds the Tauri-managed terminal session state, wiring the manager's event
+/// sink to `app.emit` so pty output, auth prompts, failures and session exits
+/// reach the frontend. `known_hosts_path` is the module's own host-key trust
+/// file (never the user's real `~/.ssh/known_hosts`).
+pub fn terminal_session_state_for(
+    handle: &AppHandle,
+    known_hosts_path: std::path::PathBuf,
+) -> TerminalSessionState {
+    let event_handle = handle.clone();
+
+    // Backend-held per-session output buffer, shared by all windows (the main
+    // window and any detached pop-out). The sink accumulates decoded bytes so a
+    // session's history survives window detach / reattach.
+    let history = Arc::new(Mutex::new(
+        std::collections::HashMap::<String, Vec<u8>>::new(),
+    ));
+    handle.manage(TerminalHistoryStore(Arc::clone(&history)));
+
+    let history_for_sink = Arc::clone(&history);
+    let sink: TerminalEventSink = Arc::new(move |event| {
+        match &event {
+            TerminalEvent::Output { session_id, base64 } => {
+                if let Ok(bytes) = STANDARD.decode(base64) {
+                    append_terminal_history(&history_for_sink, session_id, &bytes);
+                }
+            }
+            // A session that exited/failed is gone for good; drop its buffered
+            // history so a closed session doesn't leak.
+            TerminalEvent::Exited { session_id, .. } | TerminalEvent::Failed { session_id, .. } => {
+                if let Ok(mut map) = history_for_sink.lock() {
+                    map.remove(session_id);
+                }
+            }
+            TerminalEvent::AuthPrompt { .. } => {}
+        }
+        let event_name = match &event {
+            TerminalEvent::Output { .. } => TERMINAL_OUTPUT_EVENT,
+            TerminalEvent::Exited { .. } => TERMINAL_EXITED_EVENT,
+            TerminalEvent::AuthPrompt { .. } => TERMINAL_AUTH_PROMPT_EVENT,
+            TerminalEvent::Failed { .. } => TERMINAL_FAILED_EVENT,
+        };
+        let _ = event_handle.emit(event_name, event);
+    });
+    TerminalSessionState(Arc::new(Mutex::new(TerminalSessionManager::new(
+        sink,
+        known_hosts_path,
+    ))))
+}
+
+/// Starts the connection MCP tools server (连接→对话 阶段4): binds a localhost
+/// TCP listener on an OS-assigned port and spawns the accept loop on a
+/// dedicated thread, sharing the same `TerminalSessionManager` and history
+/// buffer as the user-facing terminal UI (opened sessions are reviewable /
+/// take-over-able, per the design). Returns the bound port so the caller can
+/// record it on `App` via `DesktopState::set_connection_mcp_endpoint_port` —
+/// `build_worker_invocation` only injects `mcp_servers` once that's set.
+///
+/// The listener never accepts a connection from outside 127.0.0.1 (bound to
+/// loopback only), so this does not expose the connection tools beyond the
+/// local machine.
+pub fn spawn_connection_mcp_endpoint(
+    app_handle: &AppHandle,
+    app: gold_band::app::App,
+    terminal_state: &TerminalSessionState,
+    history_state: &TerminalHistoryStore,
+) -> std::io::Result<u16> {
+    let handle_for_resolver = app_handle.clone();
+    let workspace_paths_resolver = std::sync::Arc::new(
+        move |project_id: &str| -> anyhow::Result<gold_band::storage::GoldBandPaths> {
+            let state = handle_for_resolver.state::<DesktopState>();
+            let global_app = state
+                .app()
+                .map_err(|e| anyhow::anyhow!("desktop app unavailable: {e:#}"))?;
+            let app_state = global_app
+                .load_state()
+                .map_err(|e| anyhow::anyhow!("workspace state unavailable: {e:#}"))?;
+            let (workspace_path, _) = workspace_entry_for_project(&app_state, project_id)
+                .ok_or_else(|| anyhow::anyhow!("workspace not found for project `{project_id}`"))?;
+            Ok(gold_band::storage::GoldBandPaths::new(Utf8PathBuf::from(
+                workspace_path,
+            )))
+        },
+    );
+    spawn_connection_mcp_endpoint_with_resolver(
+        app,
+        terminal_state,
+        history_state,
+        workspace_paths_resolver,
+    )
+}
+
+/// Core spawn with an explicit workspace-paths resolver (tests pass a direct
+/// one; the desktop wrapper resolves through the `DesktopState`).
+pub fn spawn_connection_mcp_endpoint_with_resolver(
+    app: gold_band::app::App,
+    terminal_state: &TerminalSessionState,
+    history_state: &TerminalHistoryStore,
+    workspace_paths_resolver: std::sync::Arc<
+        dyn Fn(&str) -> anyhow::Result<gold_band::storage::GoldBandPaths> + Send + Sync,
+    >,
+) -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let factory = std::sync::Arc::new(gold_band::app::ConnectionMcpRuntimeFactory::new(
+        app,
+        Arc::clone(&terminal_state.0),
+        Arc::clone(&history_state.0),
+        workspace_paths_resolver,
+    ));
+    // No shutdown hook yet: the endpoint lives for the process lifetime, same
+    // as the terminal session manager it shares state with. If a clean
+    // shutdown becomes necessary (tests, hot-reload), thread this through a
+    // `DesktopLifecycleCoordinator`-owned `AtomicBool` the way other
+    // background loops do.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    std::thread::spawn(move || gold_band::app::serve(listener, factory, stop));
+    // Success is logged (the failure warns are on the caller): the endpoint
+    // being up is the precondition for `mcp_servers` injection, and diagnosing
+    // "agent had no connection tools" needs this line in the runtime log.
+    tracing::info!(
+        port,
+        "connection MCP endpoint listening on 127.0.0.1 (connection tools available to agents)"
+    );
+    Ok(port)
+}
+
+/// Bounds the per-session history buffer so a long-lived shell can't grow it
+/// without bound.
+const MAX_TERMINAL_HISTORY_BYTES: usize = 512 * 1024;
+
+fn append_terminal_history(
+    store: &Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    session_id: &str,
+    bytes: &[u8],
+) {
+    if let Ok(mut map) = store.lock() {
+        let buf = map.entry(session_id.to_string()).or_default();
+        buf.extend_from_slice(bytes);
+        if buf.len() > MAX_TERMINAL_HISTORY_BYTES {
+            let excess = buf.len() - MAX_TERMINAL_HISTORY_BYTES;
+            buf.drain(..excess);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_terminal_history(
+    state: State<'_, TerminalHistoryStore>,
+    session_id: String,
+) -> CommandResult<String> {
+    let bytes = {
+        let store = state
+            .0
+            .lock()
+            .map_err(|_| CommandErrorVm::new("app.state-lock-poisoned", serde_json::json!({})))?;
+        store.get(&session_id).cloned().unwrap_or_default()
+    };
+    Ok(STANDARD.encode(bytes))
+}
+
+fn terminal_lock_poisoned(
+    _: std::sync::PoisonError<std::sync::MutexGuard<'_, TerminalSessionManager>>,
+) -> CommandErrorVm {
+    CommandErrorVm::new("app.state-lock-poisoned", serde_json::json!({}))
+}
+
+/// Remote server-connections + remote SSH are an intranet-only capability. The
+/// local terminal is available in every channel; these commands are used only by
+/// the remote-connection surface, which the external/public channel disables.
+/// Guard them at the command layer (defense in depth) so a disabled channel
+/// cannot operate remote connections even if a stale client calls them.
+pub(crate) fn ensure_remote_connections_enabled() -> CommandResult<()> {
+    if crate::channel::current_channel_config().remote_connections_enabled {
+        Ok(())
+    } else {
+        Err(CommandErrorVm::new(
+            "connection.channel-not-supported",
+            serde_json::json!({ "channel": crate::channel::current_channel_config().channel }),
+        ))
+    }
+}
+
+#[tauri::command]
+pub async fn list_terminal_sessions(
+    state: State<'_, TerminalSessionState>,
+) -> CommandResult<Vec<TerminalSessionView>> {
+    let manager = Arc::clone(&state.0);
+    spawn_blocking_command(move || {
+        let guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        Ok(guard.list())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_local_terminal(
+    state: State<'_, TerminalSessionState>,
+    cwd: Option<String>,
+) -> CommandResult<TerminalSessionView> {
+    let manager = Arc::clone(&state.0);
+    spawn_blocking_command(move || {
+        let mut guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        guard.open_local(cwd).map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn write_terminal_input(
+    state: State<'_, TerminalSessionState>,
+    session_id: String,
+    base64: String,
+) -> CommandResult<()> {
+    let manager = Arc::clone(&state.0);
+    spawn_blocking_command(move || {
+        let mut guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        guard.write(&session_id, &base64).map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn resize_terminal(
+    state: State<'_, TerminalSessionState>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> CommandResult<()> {
+    let manager = Arc::clone(&state.0);
+    spawn_blocking_command(move || {
+        let guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        guard.resize(&session_id, rows, cols).map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn close_terminal_session(
+    state: State<'_, TerminalSessionState>,
+    session_id: String,
+) -> CommandResult<()> {
+    let manager = Arc::clone(&state.0);
+    spawn_blocking_command(move || {
+        let mut guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        guard.close(&session_id).map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_remote_terminal(
+    state: State<'_, DesktopState>,
+    terminal_state: State<'_, TerminalSessionState>,
+    connection_id: String,
+) -> CommandResult<TerminalSessionView> {
+    ensure_remote_connections_enabled()?;
+    // Resolve the connection + its credential (from the OS keyring) into a
+    // request, then open non-blocking. Credentials never cross IPC as plaintext.
+    let request = {
+        let app = state.app().map_err(command_error)?;
+        app.resolve_ssh_request(&connection_id)
+            .map_err(command_error)?
+    };
+    let manager = Arc::clone(&terminal_state.0);
+    spawn_blocking_command(move || {
+        let guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        guard.open_remote(request).map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn provide_terminal_auth(
+    state: State<'_, TerminalSessionState>,
+    session_id: String,
+    answer: String,
+) -> CommandResult<()> {
+    let manager = Arc::clone(&state.0);
+    spawn_blocking_command(move || {
+        let guard = manager.lock().map_err(terminal_lock_poisoned)?;
+        guard
+            .provide_auth(&session_id, &answer)
+            .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -8472,6 +8830,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             quotes,
             role,
             workspace_files,
+            ..
         } = input;
         let prompt = conversation_agent_prompt_text(
             &ConversationPromptInput {
@@ -8479,6 +8838,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 quotes: quotes.clone(),
                 role: role.clone(),
                 workspace_files: workspace_files.clone(),
+                context_connections: Vec::new(),
             },
             app.config.desktop_language,
         );
@@ -10169,6 +10529,15 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<gold_band::app::WorkflowTemplateCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<ServerConnectionCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<TerminalSessionCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<SshSessionCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) =
@@ -12418,6 +12787,7 @@ mod tests {
             adapter_display_name: "Test".to_string(),
             cwd: attempt_dir.to_string(),
             input: gold_band::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "test".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -12959,6 +13329,7 @@ mod tests {
         text: &str,
     ) -> ConversationPromptInput {
         ConversationPromptInput {
+            context_connections: Vec::new(),
             display_text: "继续".to_string(),
             quotes: vec![gold_band::provider::UserPromptQuote {
                 id: "quote-1".to_string(),
@@ -12974,6 +13345,7 @@ mod tests {
     fn prompt_quote_validation_returns_structured_errors_without_loading_sources() {
         use gold_band::provider::{
             DiffQuoteOrigin, DiffQuoteScope, MAX_USER_PROMPT_DIFF_QUOTE_BYTES,
+            MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTES,
             UserPromptQuoteSource,
         };
         let agent = UserPromptQuoteSource::AgentMessage {
@@ -13011,6 +13383,51 @@ mod tests {
             serde_json::json!(MAX_USER_PROMPT_DIFF_QUOTE_BYTES)
         );
 
+        let over_limit =
+            prompt_with_quote(agent.clone(), &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1));
+        assert_eq!(
+            validate_conversation_prompt_input(&over_limit, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-limit-exceeded"
+        );
+        let mut too_many = valid.clone();
+        too_many.quotes = (0..=MAX_USER_PROMPT_QUOTES)
+            .map(|index| gold_band::provider::UserPromptQuote {
+                id: format!("quote-{index}"),
+                text: "x".to_string(),
+                source: gold_band::provider::UserPromptQuoteSource::AgentMessage {
+                    message_key: format!("source-{index}"),
+                },
+            })
+            .collect();
+        assert_eq!(
+            validate_conversation_prompt_input(&too_many, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-count-exceeded"
+        );
+
+        let too_long_id = ConversationPromptInput {
+            context_connections: Vec::new(),
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "x".repeat(MAX_USER_PROMPT_QUOTE_ID_BYTES + 1),
+                text: "用户提供的任意引用内容".to_string(),
+                source: gold_band::provider::UserPromptQuoteSource::AgentMessage {
+                    message_key: "arbitrary-source".to_string(),
+                },
+            }],
+            role: None,
+            workspace_files: Vec::new(),
+        };
+        assert_eq!(
+            validate_conversation_prompt_input(&too_long_id, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-metadata-too-long"
+        );
+
         let file = UserPromptQuoteSource::File {
             label: "outside/any.txt".to_string(),
             start_line: 1,
@@ -13029,6 +13446,7 @@ mod tests {
         std::fs::write(&attachment, "attachment content").unwrap();
         let attachment = attachment.to_string_lossy().to_string();
         let mut input = ConversationPromptInput {
+            context_connections: Vec::new(),
             display_text: String::new(),
             quotes: Vec::new(),
             role: None,
@@ -13140,6 +13558,7 @@ mod tests {
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
             needs_workspace: false,
+            connection_mcp_endpoint_port: None,
         };
         let workspaces = vec![
             ConversationWorkspaceEntry {
@@ -14195,6 +14614,7 @@ mod tests {
             adapter_display_name: "Test".to_string(),
             cwd: attempt_dir.to_string(),
             input: gold_band::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "next".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -15523,6 +15943,7 @@ mod tests {
             None,
         );
         let mut run = RunState {
+            connection_specs: Vec::new(),
             version: gold_band::domain::VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -15640,6 +16061,7 @@ mod tests {
         )
         .unwrap();
         let run = RunState {
+            connection_specs: Vec::new(),
             version: gold_band::domain::VERSION.to_string(),
             id: locator.run_id.clone(),
             task_id: locator.task_id.clone(),
@@ -15812,6 +16234,7 @@ mod tests {
             None,
         );
         let run = RunState {
+            connection_specs: Vec::new(),
             version: gold_band::domain::VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -15860,6 +16283,7 @@ mod tests {
         let dynamic_node_id = "bootstrap";
         let dynamic_attempt_id = "attempt-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: gold_band::domain::VERSION.to_string(),
             id: run_id.to_string(),
             task_id: task_id.to_string(),
@@ -16084,6 +16508,7 @@ mod tests {
         let dynamic_node_id = "bootstrap";
         let dynamic_attempt_id = "attempt-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: gold_band::domain::VERSION.to_string(),
             id: run_id.to_string(),
             task_id: task_id.to_string(),
@@ -16672,6 +17097,7 @@ mod tests {
         write_json(
             &app.paths.run_file(&locator.task_id, &locator.run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: gold_band::domain::VERSION.to_string(),
                 id: locator.run_id.clone(),
                 task_id: locator.task_id.clone(),
@@ -16792,6 +17218,7 @@ mod tests {
             expires_at_ms: snapshot.expires_at_ms,
         };
         let state = DesktopState::new(crate::state::DesktopContext {
+            connection_mcp_endpoint_port: None,
             repo_root,
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
@@ -16841,6 +17268,7 @@ mod tests {
             adapter_display_name: "Claude".into(),
             cwd: attempt_dir.to_string(),
             input: gold_band::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "continue".into(),
                 quotes: Vec::new(),
                 role: None,
@@ -17207,6 +17635,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: gold_band::domain::VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),
@@ -17371,6 +17800,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: gold_band::domain::VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),
@@ -17564,5 +17994,158 @@ mod tests {
         assert_eq!(*unit_kind, gold_band::app::observability::UnitKind::Worker);
         drop(facts);
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn terminal_history_accumulates_and_round_trips_base64() {
+        // The backend buffer is what makes a session's history survive a detach
+        // to a pop-out window and back (JS module state is per-webview, not
+        // shared). Verify append → read as base64, and that exiting clears it.
+        let store: Mutex<std::collections::HashMap<String, Vec<u8>>> =
+            Mutex::new(std::collections::HashMap::new());
+
+        append_terminal_history(&store, "sess-a", b"hello ");
+        append_terminal_history(&store, "sess-a", b"world\n");
+
+        let decoded = {
+            let map = store.lock().unwrap();
+            map["sess-a"].clone()
+        };
+        assert_eq!(decoded, b"hello world\n");
+
+        // get_terminal_history-style read returns the base64 of the buffer.
+        let reencoded = STANDARD.encode(&map_get_for_test(&store, "sess-a"));
+        assert_eq!(STANDARD.decode(&reencoded).unwrap(), b"hello world\n");
+
+        // Exiting a session drops its buffered history.
+        {
+            let mut map = store.lock().unwrap();
+            map.remove("sess-a");
+        }
+        assert!(map_get_for_test(&store, "sess-a").is_empty());
+    }
+
+    #[test]
+    fn terminal_history_is_bounded_to_max_bytes() {
+        let store: Mutex<std::collections::HashMap<String, Vec<u8>>> =
+            Mutex::new(std::collections::HashMap::new());
+        let big = vec![b'x'; MAX_TERMINAL_HISTORY_BYTES + 1000];
+        append_terminal_history(&store, "sess-b", &big);
+        let len = {
+            let map = store.lock().unwrap();
+            map["sess-b"].len()
+        };
+        assert!(len <= MAX_TERMINAL_HISTORY_BYTES);
+    }
+
+    fn map_get_for_test(
+        store: &Mutex<std::collections::HashMap<String, Vec<u8>>>,
+        session_id: &str,
+    ) -> Vec<u8> {
+        store
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn spawn_connection_mcp_endpoint_serves_bound_run_connections_over_real_tcp() {
+        use gold_band::app::{
+            App, ConnectionAuthMethod, ConnectionEnvironment, ConnectionSpec,
+            TerminalSessionManager,
+        };
+        use gold_band::storage::StoragePathConfig;
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 path");
+        let home_env_var: &'static str = "GOLD_BAND_TEST_HOME_SPAWN_CONNECTION_MCP_ENDPOINT";
+        // SAFETY: this test runs alone against this specific env var name; it
+        // must never touch the real user's `~/.gold-band`.
+        unsafe {
+            std::env::set_var(home_env_var, temp.path().join("home"));
+        }
+        let path_config = StoragePathConfig {
+            app_key: "gold-band",
+            config_dir_name: ".gold-band",
+            home_env_var,
+        };
+        let app =
+            App::with_config_and_path_config(repo_root, RuntimeConfig::default(), path_config);
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-09-09T00:00:00Z".to_string(),
+            updated_at: "2026-09-09T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+            connection_specs: vec![ConnectionSpec {
+                id: "conn-1".to_string(),
+                name: "wb-desktop".to_string(),
+                host: "10.0.0.5".to_string(),
+                port: 22,
+                username: "ops".to_string(),
+                auth_method: ConnectionAuthMethod::PublicKey,
+                env: ConnectionEnvironment::Prod,
+                jump_ref: None,
+            }],
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+
+        let terminal_state = TerminalSessionState(Arc::new(Mutex::new(
+            TerminalSessionManager::new(Arc::new(|_| {}), temp.path().join("known_hosts")),
+        )));
+        let history_state =
+            TerminalHistoryStore(Arc::new(Mutex::new(std::collections::HashMap::new())));
+
+        let project_id = app.paths.project_id.clone();
+        let resolver_paths = app.paths.clone();
+        let port = spawn_connection_mcp_endpoint_with_resolver(
+            app,
+            &terminal_state,
+            &history_state,
+            std::sync::Arc::new(move |_| Ok(resolver_paths.clone())),
+        )
+        .expect("endpoint should bind and start serving");
+
+        // `.no_proxy()`: see the analogous lib-side test in
+        // `src/app/connection_mcp_http.rs` — a corporate/system HTTP proxy can
+        // otherwise intercept loopback requests.
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build http client");
+        let url = format!(
+            "http://127.0.0.1:{port}/mcp?projectId={project_id}&taskId=task-001&runId=run-001"
+        );
+
+        let resp = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "list_connections", "arguments": {} },
+            }))
+            .send()
+            .expect("tools/call request over real TCP");
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().expect("json body");
+        let text = body["result"]["content"][0]["text"].as_str().unwrap();
+        let specs: Vec<ConnectionSpec> = serde_json::from_str(text).unwrap();
+        assert_eq!(specs[0].name, "wb-desktop");
     }
 }

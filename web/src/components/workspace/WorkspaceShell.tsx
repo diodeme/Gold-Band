@@ -34,8 +34,10 @@ import { BrowserNativeLifecycle, notifyBrowserLayoutFrame, resolveBrowserResourc
 import { revokeAttachmentPreviewUrls } from '@/lib/attachment-service';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
+import { worktreePathOfLocation } from '@/lib/workspace-root';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
 import { WorkspaceFileReferencePresentationProvider } from './workspace-file-reference-bridge';
+import { TerminalAuthAutoOpen } from '@/components/terminal/TerminalAuthAutoOpen';
 import {
   conversationPageHasDraftWorkspaceScope,
   reduceWorkspaceAutoCollapse,
@@ -96,6 +98,7 @@ interface WorkspaceShellProps {
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
   workLocation?: SessionWorkLocationVm | null;
+  repoRoot?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
@@ -159,6 +162,7 @@ const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttach
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
 const LazyBrowserWorkspacePanel = lazy(() => import('./browser/BrowserWorkspacePanel').then((module) => ({ default: module.BrowserWorkspacePanel })));
+const LazyTerminalPanel = lazy(() => import('../terminal/TerminalPanel').then((module) => ({ default: module.TerminalPanel })));
 const workspaceLayoutDiagnosticsEnabled = isWorkspaceLayoutDiagnosticsEnabled();
 
 function FileWorkspaceIntegration({
@@ -295,6 +299,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         store={props.conversationWorkspaceStore}
       >
         <WorkspaceFileLinkProvider browserPreferences={props.browserPreferences}>
+          <TerminalAuthAutoOpen />
           <WorkspaceShellLayout {...props} />
         </WorkspaceFileLinkProvider>
       </RightWorkspaceProvider>
@@ -337,6 +342,8 @@ function WorkspaceShellLayout({
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
+  workLocation,
+  repoRoot: repoRootProp,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -363,6 +370,43 @@ function WorkspaceShellLayout({
   const diagnosticContextRef = useRef<Record<string, unknown>>({});
   const handledOpenRevisionRef = useRef(workspace.openRevision);
   const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
+  // Concrete project root for a local terminal: the session worktree path when
+  // the session works in one, else the global repo root (Q10/A1 fallback). The
+  // terminal tab is a self-contained dock resource that owns the shared session
+  // model.
+  const repoRoot = repoRootProp ?? null;
+  const activeWorkspacePath = worktreePathOfLocation(workLocation) ?? repoRoot;
+  const openTerminalResource = useCallback(() => {
+    const scopeKey = workspace.scopeKey;
+    if (!scopeKey) return;
+    void workspace.openResource({
+      kind: 'terminal',
+      key: 'terminal',
+      scopeKey,
+      title: t('terminal.panelTitle'),
+      attention: false,
+    });
+  }, [workspace, t]);
+
+  useEffect(() => workspace.registerResourceRenderer('terminal', (resource) => (
+    resource.kind === 'terminal'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyTerminalPanel workspaceRoot={repoRoot} activeWorkspacePath={activeWorkspacePath} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer, repoRoot, activeWorkspacePath]);
+
+  // Global Cmd/Ctrl+T opens the terminal dock tab (Q6), unless focus is in a
+  // text field where the browser/terminal owns the keystroke.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 't')) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      event.preventDefault();
+      void openTerminalResource();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [openTerminalResource]);
   const [compactSheetOpen, setCompactSheetOpen] = useState(false);
   const [memoryWorkspace, setMemoryWorkspace] = useState<{ projectId: string; name: string } | null>(null);
   const openProjectMemory = useCallback((workspace: { projectId: string; name: string }) => {
@@ -752,6 +796,7 @@ function WorkspaceShellLayout({
         onOpenReleaseNotes={onOpenReleaseNotes}
         rightWorkspaceOpen={rightWorkspacePresented}
         onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
+        onOpenTerminal={() => void openTerminalResource()}
       />
       <ResizablePanelGroup
         elementRef={panelGroupElementRef}

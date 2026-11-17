@@ -16,7 +16,9 @@ export type ConversationRunSnapshotSource =
   | 'workflow-save'
   | 'session-stopped'
   | 'continue'
-  | 'rerun';
+  | 'rerun'
+  | 'connection-unbind'
+  | 'connection-bind';
 
 export function conversationSessionKeyFromParts(parts: {
   roundId: string;

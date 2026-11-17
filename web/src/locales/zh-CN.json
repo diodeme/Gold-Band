@@ -734,7 +734,9 @@
         }
       },
       "remoteMarkdownImages": "此文档包含 {{count}} 张来自 {{hosts}} 的网络图片",
-      "remoteMarkdownImageHostSeparator": "、"
+      "remoteMarkdownImageHostSeparator": "、",
+      "resetImage": "重置图片",
+      "draftPreviewUnavailable": "此附件将在发送后提供工作区预览"
     },
     "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
     "rootUnavailable": {
@@ -1079,7 +1081,8 @@
         "validation-failed": "执行计划未通过校验。",
         "partial-commit": "只发布了一部分。请查看每个保存目标。",
         "recovery-required": "这次保存需要先恢复，才能继续。"
-      }
+      },
+      "session-restore-reference-missing": "当前会话缺少可恢复的 Provider 会话引用。"
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} 未通过 doctor。",
@@ -1144,6 +1147,18 @@
       "completion": {
         "repair-exhausted": "节点输出经 {{repairAttempts}} 次修复仍不符合协议，工作流已暂停。"
       }
+    },
+    "connection": {
+      "not-found": "未找到该连接。",
+      "name-conflict": "已存在同名连接，请更换名称。",
+      "invalid-input": "连接配置无效，请检查输入。",
+      "jump-cycle": "跳板链存在环路，请调整跳板设置。",
+      "jump-missing": "跳板连接不存在：{{jumpRef}}。",
+      "jump-referenced": "该连接正被其他连接用作跳板，无法删除：{{referents}}。"
+    },
+    "credential": {
+      "store-failed": "无法保存凭据到系统钥匙串：{{reason}}。",
+      "missing": "该连接未保存凭据，连接时将实时询问口令，不落盘。"
     }
   },
   "status": {
@@ -2341,7 +2356,8 @@
       "interruptConfirmTitle": "立即发送这条内容？",
       "interruptConfirmDescription": "当前回复会被停止，然后发送这条内容。",
       "interruptConfirmSkip": "后续不再提示",
-      "interruptConfirmAction": "停止并发送"
+      "interruptConfirmAction": "停止并发送",
+      "use": "使用"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2472,7 +2488,14 @@
       "cacheWrite": "缓存写入",
       "total": "总计",
       "excludesBackground": "不含后台唤醒的消耗"
-    }
+    },
+    "slashModelMissingValue": "请在 /model 后指定要切换的模型，或使用会话配置栏选择。",
+    "slashModelUnknown": "未找到模型「{{requested}}」，请使用会话配置栏从可用模型中选择。",
+    "connectionToolsRecoveryNotice": "连接工具一度失联，已自动重新注册。可重试上一条消息继续。",
+    "connectionToolsRecoveryRetry": "重试上一条消息",
+    "userQuoteLabel": "引用 {{index}}",
+    "launchingClaude": "Agent 调起中",
+    "subAgentRunning": "子 Agent 运行中"
   },
   "graph": {
     "emptyGraph": "暂无工作图",
@@ -2865,6 +2888,16 @@
         "empty": "当前版本暂无更新日志。",
         "loadFailed": "更新日志加载失败。",
         "more": "更多"
+      },
+      "install": "下载并安装",
+      "announcement": {
+        "title": "发现新版本 {{version}}",
+        "description": "可前往 设置 → 高级 → 更新 查看并安装。",
+        "dismiss": "关闭",
+        "view": "查看更新",
+        "dialogTitle": "发现新版本 {{version}}",
+        "dialogDescription": "检测到新的客户端版本。请前往 设置 → 高级 → 更新 完成下载和安装。",
+        "goToSettings": "前往设置更新"
       }
     },
     "remoteImages": {
@@ -2881,7 +2914,8 @@
       "title": "待发送",
       "description": "回复进行中时“立即发送”会先停止当前回复。",
       "confirmInterrupt": "立即发送前确认打断当前回复"
-    }
+    },
+    "advanced": "高级"
   },
   "multica": {
     "taskManagement": {
@@ -3028,7 +3062,8 @@
       "releaseResident": "解除常驻",
       "keepResidentHint": "Agent 有定时任务等需要长时间运行的工作时，请开启常驻，避免会话空闲后被回收",
       "releaseResidentHint": "已常驻，空闲时不会被回收。点击解除常驻",
-      "resident": "常驻会话"
+      "resident": "常驻会话",
+      "connectionsTerminal": "连接"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
@@ -3215,5 +3250,127 @@
     "validationPositiveNumber": "{{field}} 必须大于 0",
     "validationTemplateNameRequired": "模板名称不能为空",
     "validationTemplateNameDuplicated": "模板名称 {{name}} 已存在"
+  },
+  "connections": {
+    "management": {
+      "title": "连接",
+      "create": "新建连接",
+      "refresh": "刷新连接",
+      "loading": "正在加载",
+      "loadFailed": "无法加载连接",
+      "actionFailed": "操作失败，请重试",
+      "empty": "暂无连接",
+      "disableNotice": "远程连接为内网版专属能力，当前版本未启用。本地终端可在右侧工作区「终端」面板使用。",
+      "columns": {
+        "name": "名称",
+        "host": "主机",
+        "username": "账号",
+        "env": "环境",
+        "credential": "凭据",
+        "lastConnected": "最近连接",
+        "jump": "跳板"
+      },
+      "more": "更多操作",
+      "edit": "编辑",
+      "delete": "删除",
+      "credentialSaved": "已保存",
+      "credentialMissing": "未保存",
+      "jumpMarker": "经跳板",
+      "jumpMissing": "跳板缺失",
+      "keyAuth": "密钥",
+      "passwordAuth": "口令",
+      "deleteTitle": "删除连接？",
+      "deleteDescription": "删除后不可恢复，并将同时删除该连接已保存到系统钥匙串的凭据。",
+      "cancel": "取消",
+      "confirmDelete": "删除"
+    },
+    "dialog": {
+      "createTitle": "新建连接",
+      "editTitle": "编辑连接",
+      "name": "名称",
+      "host": "主机",
+      "port": "端口",
+      "username": "账号",
+      "authMethod": "认证方式",
+      "authPassword": "口令",
+      "authPublicKey": "SSH 密钥",
+      "keyPath": "密钥路径",
+      "keyPathPlaceholder": "如：~/.ssh/id_ed25519",
+      "secret": "口令",
+      "keyPassphrase": "密钥口令",
+      "saveSecret": "保存到系统钥匙串",
+      "saveSecretHint": "连接时自动喂入，不再提示输入。",
+      "dynamicPasswordHint": "口令为动态 / 一次性密码时可留空不保存：每次连接会实时弹窗询问，不落盘。若连接成功后跳板机内部菜单再次要求输入密码，那是普通终端交互，直接在终端里输入即可。",
+      "dismissError": "关闭错误提示",
+      "clearSecret": "移除已保存凭据",
+      "jump": "跳板",
+      "jumpNone": "无（直连）",
+      "env": "环境",
+      "envTest": "测试",
+      "envStage": "预发",
+      "envProd": "生产",
+      "prodWarning": "生产环境不在支持范围，仅作演示。",
+      "save": "保存",
+      "cancel": "取消",
+      "namePlaceholder": "如：日志服务器",
+      "hostPlaceholder": "如：10.0.0.5"
+    },
+    "recent": {
+      "title": "最近连接",
+      "empty": "暂无最近连接",
+      "reconnect": "重连",
+      "notReconnectable": "连接已删除"
+    },
+    "reference": {
+      "groupLabel": "连接参考",
+      "remove": "移除",
+      "removing": "移除中…",
+      "removeFailed": "移除失败，请重试",
+      "spec": "连接详情",
+      "attach": "附连接",
+      "attachFailed": "附加失败，请重试"
+    }
+  },
+  "terminal": {
+    "panelTitle": "终端会话",
+    "panelDescription": "打开本地或远程终端",
+    "newLocal": "新建本地终端",
+    "close": "关闭会话",
+    "empty": "暂无终端会话",
+    "error": "无法打开终端，请重试",
+    "loading": "正在创建终端",
+    "localLabel": "本地终端",
+    "sessionLabel": "会话 {{index}}",
+    "limitReached": "已达到会话上限（{{max}}）",
+    "connect": "直连远程终端",
+    "connecting": "连接中",
+    "awaitingAuth": "等待验证",
+    "openTerminalTab": "打开终端（⌘/Ctrl+T）",
+    "dismissError": "关闭错误提示",
+    "openInNewWindow": "在新窗口打开",
+    "returnToMain": "收回到主窗口",
+    "detachedSessionNotFound": "该终端会话已结束或不存在。",
+    "authPromptPlaceholder": "输入口令 / 一次性验证码",
+    "authPromptSubmit": "提交",
+    "authPending": "有会话正在等待动态口令 — 请在下方输入以继续",
+    "otpDialogTitle": "需要输入动态口令",
+    "otpDialogTitleNamed": "{{name}} 需要输入动态口令",
+    "otpSubmitFailed": "口令提交失败，请重试",
+    "quoteToConversation": "引用到对话",
+    "failed": {
+      "sessionNotFound": "会话不存在或已关闭",
+      "sessionLimit": "已达会话上限，请先关闭标签",
+      "jumpForwardFailed": "经跳板转发到目标机失败，请检查跳板与目标机的可达性",
+      "authRequired": "等待输入动态口令超时，请重试并及时输入口令",
+      "credentialMissing": "未找到已保存的凭据，请编辑连接并保存口令或密钥口令",
+      "authFailed": "登录认证失败，请检查账号与口令",
+      "hostKeyMismatch": "主机指纹与之前记录不一致，已拒绝连接以保障安全",
+      "connectTimeout": "连接目标超时，请检查网络与地址",
+      "connectionLost": "连接已断开",
+      "channelFailed": "无法建立远程终端通道",
+      "io": "连接 IO 出错，请重试",
+      "localStartFailed": "本地终端启动失败，请重试",
+      "invalidCwd": "工作目录无效"
+    }
   }
 }

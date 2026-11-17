@@ -1588,6 +1588,7 @@ mod tests {
                 adapter_display_name: "Test".to_string(),
                 cwd: attempt_dir.to_string(),
                 input: crate::provider::ConversationPromptInput {
+                    context_connections: Vec::new(),
                     display_text: "stale prompt".to_string(),
                     quotes: Vec::new(),
                     role: None,

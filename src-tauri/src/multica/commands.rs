@@ -1301,6 +1301,7 @@ mod tests {
         with_locator: bool,
     ) -> RunState {
         RunState {
+            connection_specs: Vec::new(),
             version: "1".into(),
             id: "run-1".into(),
             task_id: "local-task".into(),
@@ -1520,6 +1521,7 @@ mod tests {
         write_json(
             &workspace_app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),

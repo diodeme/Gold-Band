@@ -8,6 +8,7 @@ Gold Band 当前文档按目录式结构整理为 6 个主板块：
 ## 2. 交互层
 - [交互层概览](interaction/cli/overview.md)
 - [定时任务交互设计](interaction/app/scheduled-task-management.md)
+- [连接与终端（受管终端与跳板机）](interaction/app/terminal-and-connections.md)
 - [CLI 规范](interaction/cli/cli.md)
 - [Progress 规范](interaction/cli/progress.md)
 - [右侧工作区文件浏览与编辑](interaction/app/workspace-files.md)

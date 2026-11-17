@@ -734,7 +734,9 @@
         }
       },
       "remoteMarkdownImages": "此文件包含 {{count}} 張來自 {{hosts}} 的網路圖片",
-      "remoteMarkdownImageHostSeparator": "、"
+      "remoteMarkdownImageHostSeparator": "、",
+      "resetImage": "重設圖片",
+      "draftPreviewUnavailable": "此附件將在傳送後提供工作區預覽"
     },
     "discardWorkflowChanges": "工作流還有未儲存的修改。確定要放棄這些修改並關閉嗎？",
     "rootUnavailable": {
@@ -1079,7 +1081,8 @@
         "validation-failed": "執行計畫未通過驗證。",
         "partial-commit": "只發布了一部分。請查看每個儲存目標。",
         "recovery-required": "這次儲存需要先恢復，才能繼續。"
-      }
+      },
+      "session-restore-reference-missing": "目前工作階段缺少可還原的 Provider 工作階段引用。"
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} 未通過 doctor。",
@@ -1144,6 +1147,18 @@
       "completion": {
         "repair-exhausted": "節點輸出經 {{repairAttempts}} 次修復仍不符合協定，工作流已暫停。"
       }
+    },
+    "connection": {
+      "not-found": "找不到該連線。",
+      "name-conflict": "已存在同名連線，請更換名稱。",
+      "invalid-input": "連線設定無效，請檢查輸入內容。",
+      "jump-cycle": "跳板鏈存在循環，請調整跳板設定。",
+      "jump-missing": "跳板連線不存在：{{jumpRef}}。",
+      "jump-referenced": "該連線正被其他連線用作跳板，無法刪除：{{referents}}。"
+    },
+    "credential": {
+      "store-failed": "無法將憑證儲存到系統鑰匙圈：{{reason}}。",
+      "missing": "該連線未儲存憑證，連線時會即時詢問密碼，不會儲存到磁碟。"
     }
   },
   "status": {
@@ -2341,7 +2356,8 @@
       "interruptConfirmTitle": "要立即傳送這則內容嗎？",
       "interruptConfirmDescription": "目前的回覆會先停止，接著傳送這則內容。",
       "interruptConfirmSkip": "之後不再提示",
-      "interruptConfirmAction": "停止並傳送"
+      "interruptConfirmAction": "停止並傳送",
+      "use": "使用"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2472,7 +2488,14 @@
       "cacheWrite": "快取寫入",
       "total": "總計",
       "excludesBackground": "不含背景喚醒的用量"
-    }
+    },
+    "slashModelMissingValue": "請在 /model 後指定要切換的模型，或使用工作階段設定列選擇。",
+    "slashModelUnknown": "找不到模型「{{requested}}」，請使用工作階段設定列從可用模型中選擇。",
+    "connectionToolsRecoveryNotice": "連線工具一度失聯，已自動重新註冊。可重試上一則訊息繼續。",
+    "connectionToolsRecoveryRetry": "重試上一則訊息",
+    "userQuoteLabel": "引用 {{index}}",
+    "launchingClaude": "Agent 啟動中",
+    "subAgentRunning": "子 Agent 執行中"
   },
   "graph": {
     "emptyGraph": "沒有工作圖",
@@ -2865,6 +2888,16 @@
         "empty": "目前版本沒有更新日誌。",
         "loadFailed": "更新日誌載入失敗。",
         "more": "更多"
+      },
+      "install": "下載並安裝",
+      "announcement": {
+        "title": "發現新版本 {{version}}",
+        "description": "可前往 設定 → 進階 → 更新 查看並安裝。",
+        "dismiss": "關閉",
+        "view": "查看更新",
+        "dialogTitle": "發現新版本 {{version}}",
+        "dialogDescription": "偵測到新的用戶端版本。請前往 設定 → 進階 → 更新 完成下載和安裝。",
+        "goToSettings": "前往設定更新"
       }
     },
     "remoteImages": {
@@ -2881,7 +2914,8 @@
       "title": "待傳送",
       "description": "回覆進行中時，「立即傳送」會先停止目前的回覆。",
       "confirmInterrupt": "立即傳送前確認中斷目前回覆"
-    }
+    },
+    "advanced": "進階"
   },
   "multica": {
     "taskManagement": {
@@ -3028,7 +3062,8 @@
       "releaseResident": "解除常駐",
       "keepResidentHint": "Agent 有排程任務等需要長時間執行的工作時，請開啟常駐，避免對話閒置後被回收",
       "releaseResidentHint": "已常駐，閒置時不會被回收。點擊解除常駐",
-      "resident": "常駐對話"
+      "resident": "常駐對話",
+      "connectionsTerminal": "連線"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
@@ -3215,5 +3250,127 @@
     "validationPositiveNumber": "{{field}} 必須大於 0",
     "validationTemplateNameRequired": "範本名稱不能為空",
     "validationTemplateNameDuplicated": "範本名稱 {{name}} 已存在"
+  },
+  "connections": {
+    "management": {
+      "title": "連線",
+      "create": "新增連線",
+      "refresh": "重新整理連線",
+      "loading": "正在載入",
+      "loadFailed": "無法載入連線",
+      "actionFailed": "操作失敗，請重試",
+      "empty": "尚無連線",
+      "disableNotice": "遠端連線為內網版專屬能力，目前版本未啟用。本地終端機可在右側工作區「終端機」面板使用。",
+      "columns": {
+        "name": "名稱",
+        "host": "主機",
+        "username": "帳號",
+        "env": "環境",
+        "credential": "憑證",
+        "lastConnected": "最近連線",
+        "jump": "跳板"
+      },
+      "more": "更多操作",
+      "edit": "編輯",
+      "delete": "刪除",
+      "credentialSaved": "已儲存",
+      "credentialMissing": "未儲存",
+      "jumpMarker": "經跳板",
+      "jumpMissing": "跳板缺失",
+      "keyAuth": "金鑰",
+      "passwordAuth": "密碼",
+      "deleteTitle": "刪除連線？",
+      "deleteDescription": "刪除後無法復原，並會同時刪除該連線已儲存到系統鑰匙圈的憑證。",
+      "cancel": "取消",
+      "confirmDelete": "刪除"
+    },
+    "dialog": {
+      "createTitle": "新增連線",
+      "editTitle": "編輯連線",
+      "name": "名稱",
+      "host": "主機",
+      "port": "連接埠",
+      "username": "帳號",
+      "authMethod": "驗證方式",
+      "authPassword": "密碼",
+      "authPublicKey": "SSH 金鑰",
+      "keyPath": "金鑰路徑",
+      "keyPathPlaceholder": "例如：~/.ssh/id_ed25519",
+      "secret": "密碼",
+      "keyPassphrase": "金鑰通關密語",
+      "saveSecret": "儲存到系統鑰匙圈",
+      "saveSecretHint": "連線時自動帶入，不再提示輸入。",
+      "dynamicPasswordHint": "若密碼為動態 / 一次性密碼，可留空不儲存：每次連線會即時彈出視窗詢問，不會儲存到磁碟。若連線成功後跳板機內部選單再次要求輸入密碼，那是一般的終端機互動，直接在終端機輸入即可。",
+      "dismissError": "關閉錯誤提示",
+      "clearSecret": "移除已儲存憑證",
+      "jump": "跳板",
+      "jumpNone": "無（直連）",
+      "env": "環境",
+      "envTest": "測試",
+      "envStage": "預備",
+      "envProd": "正式",
+      "prodWarning": "正式環境不在支援範圍，僅供示範。",
+      "save": "儲存",
+      "cancel": "取消",
+      "namePlaceholder": "例如：日誌伺服器",
+      "hostPlaceholder": "例如：10.0.0.5"
+    },
+    "recent": {
+      "title": "最近連線",
+      "empty": "尚無最近連線",
+      "reconnect": "重新連線",
+      "notReconnectable": "連線已刪除"
+    },
+    "reference": {
+      "groupLabel": "連線參考",
+      "remove": "移除",
+      "removing": "移除中…",
+      "removeFailed": "移除失敗，請重試",
+      "spec": "連線詳情",
+      "attach": "附加連線",
+      "attachFailed": "附加失敗，請重試"
+    }
+  },
+  "terminal": {
+    "panelTitle": "終端機工作階段",
+    "panelDescription": "開啟本地或遠端終端機",
+    "newLocal": "新增本地終端機",
+    "close": "關閉工作階段",
+    "empty": "尚無終端機工作階段",
+    "error": "無法開啟終端機，請重試",
+    "loading": "正在建立終端機",
+    "localLabel": "本地終端機",
+    "sessionLabel": "工作階段 {{index}}",
+    "limitReached": "已達工作階段上限（{{max}}）",
+    "connect": "直連遠端終端機",
+    "connecting": "連線中",
+    "awaitingAuth": "等待驗證",
+    "openTerminalTab": "開啟終端機（⌘/Ctrl+T）",
+    "dismissError": "關閉錯誤提示",
+    "openInNewWindow": "在新視窗開啟",
+    "returnToMain": "收回到主視窗",
+    "detachedSessionNotFound": "此終端機工作階段已結束或不存在。",
+    "authPromptPlaceholder": "輸入密碼 / 一次性驗證碼",
+    "authPromptSubmit": "提交",
+    "authPending": "有工作階段正在等待動態密碼 — 請在下方輸入以繼續",
+    "otpDialogTitle": "需要輸入動態密碼",
+    "otpDialogTitleNamed": "{{name}} 需要輸入動態密碼",
+    "otpSubmitFailed": "密碼提交失敗，請重試",
+    "quoteToConversation": "引用到對話",
+    "failed": {
+      "sessionNotFound": "工作階段不存在或已關閉",
+      "sessionLimit": "已達工作階段上限，請先關閉分頁",
+      "jumpForwardFailed": "經跳板轉送到目標機失敗，請檢查跳板與目標機的可達性",
+      "authRequired": "等待輸入動態密碼逾時，請重試並及時輸入密碼",
+      "credentialMissing": "未找到已儲存的憑證，請編輯連線並儲存密碼或金鑰通關密語",
+      "authFailed": "登入驗證失敗，請檢查帳號與密碼",
+      "hostKeyMismatch": "主機指紋與先前記錄不一致，已拒絕連線以保障安全",
+      "connectTimeout": "連線目標逾時，請檢查網路與位址",
+      "connectionLost": "連線已中斷",
+      "channelFailed": "無法建立遠端終端機通道",
+      "io": "連線 IO 發生錯誤，請重試",
+      "localStartFailed": "本地終端機啟動失敗，請重試",
+      "invalidCwd": "工作目錄無效"
+    }
   }
 }

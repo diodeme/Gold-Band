@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "detached",
+  "description": "Permissions for pop-out detached windows (terminal sessions / connections page). These windows host the same backend session state as the main window but render an isolated UI, so they need at least the default IPC + event-listening set plus the ability to create/close windows.",
+  "windows": ["detached-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-create",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-show",
+    "core:webview:allow-create-webview-window"
+  ]
+}

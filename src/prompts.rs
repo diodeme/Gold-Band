@@ -112,6 +112,8 @@ pub const RUNTIME_CONTROL_RESUME: LocalizedText =
 pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE: LocalizedText =
     localized_prompt!("runtime/runtime_control_resume_with_message.md");
 pub const RUNTIME_WORKFLOW_RESUME: LocalizedText = localized_prompt!("runtime/workflow_resume.md");
+pub const CONNECTION_TOOL_USAGE: LocalizedText =
+    localized_prompt_zh_en!("connections/tool-usage.md");
 pub const RUNTIME_USER_ROLE_MESSAGE: LocalizedText =
     localized_prompt!("runtime/user_role_message.md");
 pub const RUNTIME_USER_QUOTE: LocalizedText = localized_prompt!("runtime/user_quote.md");
@@ -187,6 +189,8 @@ pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
 pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str = RUNTIME_CONTROL_RESUME_WITH_MESSAGE.en;
 pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str = RUNTIME_WORKFLOW_RESUME.zh_cn;
 pub const RUNTIME_WORKFLOW_RESUME_EN: &str = RUNTIME_WORKFLOW_RESUME.en;
+pub const CONNECTION_TOOL_USAGE_ZH_CN: &str = CONNECTION_TOOL_USAGE.zh_cn;
+pub const CONNECTION_TOOL_USAGE_EN: &str = CONNECTION_TOOL_USAGE.en;
 pub const RUNTIME_USER_ROLE_MESSAGE_ZH_CN: &str = RUNTIME_USER_ROLE_MESSAGE.zh_cn;
 pub const RUNTIME_USER_ROLE_MESSAGE_EN: &str = RUNTIME_USER_ROLE_MESSAGE.en;
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str = AI_DYNAMIC_PROPOSAL_REPAIR.zh_cn;
@@ -253,6 +257,7 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
         RUNTIME_CONTROL_RESUME_WITH_MESSAGE,
     ),
     ("runtime/workflow_resume.md", RUNTIME_WORKFLOW_RESUME),
+    ("connections/tool-usage.md", CONNECTION_TOOL_USAGE),
     ("runtime/user_role_message.md", RUNTIME_USER_ROLE_MESSAGE),
     ("runtime/user_quote.md", RUNTIME_USER_QUOTE),
     ("runtime/user_files.md", RUNTIME_USER_FILES),

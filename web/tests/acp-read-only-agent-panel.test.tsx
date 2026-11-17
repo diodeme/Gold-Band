@@ -106,6 +106,27 @@ function session(branchId: string, withPermission = false): AcpSessionVm {
   };
 }
 
+// The return-to-latest affordance is scroll-detachment driven (see
+// `RETURN_TO_LATEST_SHOW_DISTANCE_PX` in ACPChatDialog): simulate the viewport
+// leaving the bottom, matching the current product semantics enforced by
+// acp-session-reentry-reconciliation.test.tsx.
+async function detachConversationViewport(container: HTMLElement) {
+  const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+    .find((element) => element.classList.contains('h-full')
+      && element.classList.contains('overflow-y-auto'));
+  expect(scroller).toBeDefined();
+  Object.defineProperties(scroller!, {
+    clientHeight: { configurable: true, value: 100 },
+    scrollHeight: { configurable: true, value: 1_000 },
+    scrollTop: { configurable: true, value: 500, writable: true },
+  });
+  await act(async () => {
+    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 }));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+  return scroller!;
+}
+
 async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
   const container = document.createElement('div');
   document.body.append(container);

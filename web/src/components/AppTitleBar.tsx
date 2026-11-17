@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BarChart3, Copy, MessageSquareWarning, Minus, NotebookText, PanelLeft, PanelRight, Square, X } from 'lucide-react';
+import { BarChart3, Copy, MessageSquareWarning, Minus, NotebookText, PanelLeft, PanelRight, Square, Terminal, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import type { DesktopPlatform } from '../types';
@@ -24,6 +24,7 @@ interface AppTitleBarProps {
   onToggleRightWorkspace?: () => void;
   onOpenPersonalAnalytics?: () => void;
   onOpenReleaseNotes?: () => void;
+  onOpenTerminal?: () => void;
 }
 
 export const APP_TITLE_BAR_LAYOUT = {
@@ -45,6 +46,7 @@ export function AppTitleBar({
   onToggleRightWorkspace,
   onOpenPersonalAnalytics,
   onOpenReleaseNotes,
+  onOpenTerminal,
 }: AppTitleBarProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
@@ -166,7 +168,7 @@ export function AppTitleBar({
       />
 
       {trailingContent}
-      {hasHelpMenu || onToggleRightWorkspace || updateAction ? (
+      {hasHelpMenu || onToggleRightWorkspace || updateAction || onOpenTerminal ? (
         <div
           className={cn(
             'app-titlebar-no-drag flex h-full flex-none items-center gap-0.5',
@@ -175,6 +177,23 @@ export function AppTitleBar({
           data-titlebar-no-drag="true"
           data-titlebar-trailing-actions="true"
         >
+          {onOpenTerminal ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground"
+                  onClick={onOpenTerminal}
+                  aria-label={t('terminal.openTerminalTab')}
+                  data-titlebar-terminal-open="true"
+                >
+                  <Terminal className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('terminal.openTerminalTab')}</TooltipContent>
+            </Tooltip>
+          ) : null}
           {!readOnly && hasHelpMenu ? (
             <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
               <DropdownMenuTrigger asChild>

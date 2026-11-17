@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, RemoteImageTrustVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppBootstrapVm, AppearancePreference, AppExitRequestVm, AutoTemplate, ConnectionRefVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImportProfilesResult, ImSettingsVm, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
@@ -380,6 +380,86 @@ export const desktopApi: RuntimeApi = {
   },
   replaceAutoTemplates(templates: AutoTemplate[]) {
     return invokeCommand('replace_auto_templates', { input: { templates } });
+  },
+  listServerConnections() {
+    return invokeCommand('list_server_connections');
+  },
+  getServerConnection(id: string) {
+    return invokeCommand('get_server_connection', { id });
+  },
+  createServerConnection(input) {
+    return invokeCommand('create_server_connection', { input });
+  },
+  updateServerConnection(id: string, input) {
+    return invokeCommand('update_server_connection', { id, input });
+  },
+  deleteServerConnection(id: string) {
+    return invokeCommand('delete_server_connection', { id });
+  },
+  listRecentConnections() {
+    return invokeCommand('list_recent_connections');
+  },
+  listTerminalSessions() {
+    return invokeCommand('list_terminal_sessions');
+  },
+  async pickDirectory() {
+    if (!isTauriRuntime()) return null;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    return await open({ directory: true }) ?? null;
+  },
+  openLocalTerminal(cwd?: string | null) {
+    return invokeCommand('open_local_terminal', { cwd: cwd ?? null });
+  },
+  openRemoteTerminal(connectionId: string) {
+    return invokeCommand('open_remote_terminal', { connectionId });
+  },
+  provideTerminalAuth(sessionId: string, answer: string) {
+    return invokeCommand('provide_terminal_auth', { sessionId, answer });
+  },
+  openDetachedWindow(kind: import('../types').DetachedWindowKind, sessionId?: string | null) {
+    return invokeCommand('open_detached_window', { kind, sessionId: sessionId ?? null });
+  },
+  closeDetachedWindow(label: string) {
+    return invokeCommand('close_detached_window', { label });
+  },
+  listDetachedWindows() {
+    return invokeCommand('list_detached_windows');
+  },
+  getTerminalHistory(sessionId: string) {
+    return invokeCommand('get_terminal_history', { sessionId });
+  },
+  writeTerminalInput(sessionId: string, base64: string) {
+    return invokeCommand('write_terminal_input', { sessionId, base64 });
+  },
+  resizeTerminal(sessionId: string, rows: number, cols: number) {
+    return invokeCommand('resize_terminal', { sessionId, rows, cols });
+  },
+  closeTerminalSession(sessionId: string) {
+    return invokeCommand('close_terminal_session', { sessionId });
+  },
+  async subscribeTerminalEvents(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const listenOn = (channel: string) =>
+      listen<import('../types').TerminalEventVm>(channel, (event) => {
+        if (event.payload) listener(event.payload);
+      });
+    const unlistenOutput = await listenOn('gold-band://terminal-output');
+    const unlistenExited = await listenOn('gold-band://terminal-exited');
+    const unlistenAuthPrompt = await listenOn('gold-band://terminal-auth-prompt');
+    const unlistenFailed = await listenOn('gold-band://terminal-failed');
+    return () => {
+      unlistenOutput();
+      unlistenExited();
+      unlistenAuthPrompt();
+      unlistenFailed();
+    };
+  },
+  async subscribeDetachedWindowClosed(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten = await listen<import('../types').DetachedWindowVm>('gold-band://detached-window-closed', () => {
+      listener();
+    });
+    return unlisten;
   },
   getRunDetail(taskId: string, runId: string) {
     return invokeCommand('get_run_detail', { taskId, runId });
@@ -780,6 +860,14 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationRun(projectId, taskId, runId, selectedSessionKey) {
     return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });
+  },
+  /** Binds a connection to the conversation run; resolves with the non-secret spec. */
+  bindConversationConnection(projectId, taskId, runId, connectionId) {
+    return invokeCommand<ConnectionRefVm>('bind_conversation_connection', { projectId, taskId, runId, connectionId });
+  },
+  /** Removes a connection from the conversation run; resolves whether it was bound. */
+  unbindConversationConnection(projectId, taskId, runId, connectionId) {
+    return invokeCommand<boolean>('unbind_conversation_connection', { projectId, taskId, runId, connectionId });
   },
   validateConversationCreate(input) {
     return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });

@@ -9,6 +9,7 @@ fn parse_workflow(json: &str) -> WorkflowDsl {
 
 fn sample_run() -> RunState {
     RunState {
+        connection_specs: Vec::new(),
         version: VERSION.to_string(),
         id: "run-001".to_string(),
         task_id: "task-001".to_string(),

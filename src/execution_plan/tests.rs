@@ -103,6 +103,7 @@ fn auto_config(agent: &str, fanout: u32) -> ConversationAutoConfig {
 
 fn running_run(task_id: &str, run_id: &str, execution_revision: u64) -> RunState {
     let mut run = RunState {
+        connection_specs: Vec::new(),
         version: "0.1".to_string(),
         id: run_id.to_string(),
         task_id: task_id.to_string(),

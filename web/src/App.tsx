@@ -2,6 +2,15 @@ import { listen } from '@tauri-apps/api/event';
 import { applyAgentDiagnosticUpdate, applyAgentModelConfigUpdate, AGENT_MODEL_CONFIG_UPDATED_EVENT, type AgentModelConfigUpdate } from '@/lib/agent-diagnostic-update';
 import { setChannelAppName } from '@/lib/channel-app-name';
 import { revalidateProfileCatalog, useProfileCatalog } from '@/lib/profile-catalog';
+import { provideTerminalAuth, subscribeTerminalEvents, listTerminalSessions } from './api';
+import { TerminalOtpDialog } from '@/components/terminal/TerminalOtpDialog';
+import {
+  dismissTerminalOtpRequest,
+  reconcileTerminalOtpRequests,
+  resolveTerminalOtpRequest,
+  upsertTerminalOtpRequest,
+  useTerminalOtpRequests,
+} from '@/lib/terminal-otp-bus';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
@@ -16,6 +25,8 @@ import {
   getAgentRegistry,
   getConversationRun,
   getConversationRunMode,
+  unbindConversationConnection,
+  bindConversationConnection,
   getConversationPinnedTaskPage,
   getConversationRunSummaryPage,
   getConversationSidebarBootstrap,
@@ -139,6 +150,7 @@ import {
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
+import { ConnectionsTerminalPage } from './pages/ConnectionsTerminalPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { scheduledTriggerTarget } from './lib/scheduled-task-navigation';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
@@ -182,6 +194,7 @@ import {
 import { createDefaultAvatarPreferences } from '@/lib/avatar';
 import { createDefaultWallpaperPreferences } from '@/lib/wallpaper';
 import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
+import { FeatureAvailabilityProvider } from '@/lib/feature-availability';
 import {
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
@@ -359,6 +372,7 @@ const defaultAppInfo: AppInfoVm = {
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
+  remoteConnectionsEnabled: false,
 };
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
@@ -954,6 +968,63 @@ export function App() {
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
   }, [conversationRun]);
 
+  // 口令输入路由（连接→对话）：壳层是 terminal 事件的唯一订阅者，把 authPrompt
+  // 写入口令请求桥——会话驱动的连接由 ACPChatDialog 在 composer 上方渲染输入卡片，
+  // 手动连接（或发起对话不在屏幕上）由壳层弹窗兜底。事件只做加速器；webview
+  // 重载 / 错过事件时用会话状态 reconcile 恢复（AwaitingAuth 是持续状态）。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void subscribeTerminalEvents(async (event) => {
+      if (event.event === 'authPrompt') {
+        let label: string | null = null;
+        try {
+          const sessions = await listTerminalSessions();
+          label = sessions.find((session) => session.sessionId === event.sessionId)?.label ?? null;
+        } catch {
+          // 标签解析失败不阻塞输入框
+        }
+        if (disposed) return;
+        upsertTerminalOtpRequest({
+          sessionId: event.sessionId,
+          message: event.message,
+          label,
+          origin: event.origin ?? null,
+        });
+        return;
+      }
+      if (event.event === 'failed' || event.event === 'exited') {
+        // 会话已终结（认证超时 / 连接失败 / 用户关闭）：输入请求随之消失。
+        resolveTerminalOtpRequest(event.sessionId);
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 状态兜底：挂载（webview 重载）与切入某个对话 run 时，用后端会话状态恢复
+  // 错过事件的口令输入请求。
+  const presentedOtpRun = presentedConversationPage.kind === 'conversation-run'
+    ? {
+      projectId: presentedConversationPage.projectId,
+      taskId: presentedConversationPage.taskId,
+      runId: presentedConversationPage.runId,
+    }
+    : null;
+  const presentedOtpRunKey = presentedOtpRun
+    ? `${presentedOtpRun.projectId}:${presentedOtpRun.taskId}:${presentedOtpRun.runId}`
+    : null;
+  useEffect(() => {
+    void listTerminalSessions()
+      .then((sessions) => reconcileTerminalOtpRequests(sessions))
+      .catch(() => {});
+  }, [presentedConversationPage.kind, presentedOtpRunKey]);
+
   const handleConversationAutoFollowChange = useCallback((enabled: boolean) => {
     if (conversationPage.kind !== 'conversation-run') return;
     const mode: ConversationSessionFollowMode = enabled ? 'auto' : 'manual';
@@ -978,6 +1049,17 @@ export function App() {
   const showSettingsAdvancedUpdateDot = availableUpdateVersion !== null && updateBadges.settingsAdvancedSeenVersion !== availableUpdateVersion;
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
+  // Home-composer pre-attach draft (低频单字符串；run 创建成功后绑定并清空).
+  const [homeAttachConnectionId, setHomeAttachConnectionId] = useState<string | null>(null);
+  // OTP 代输弹窗（连接→对话）：authPrompt 事件在壳层触发，与终端面板挂载状态解耦。
+  // 会话驱动的连接：口令输入卡片由该对话的 ACPChatDialog 承接；壳层弹窗只兜底
+  // 手动连接（无 origin）和发起对话不在屏幕上的请求。
+  const terminalOtpRequests = useTerminalOtpRequests();
+  const shellTerminalOtp = terminalOtpRequests.find((request) => !request.origin
+    || !presentedOtpRun
+    || request.origin.projectId !== presentedOtpRun.projectId
+    || request.origin.taskId !== presentedOtpRun.taskId
+    || request.origin.runId !== presentedOtpRun.runId) ?? null;
   const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
   useEffect(() => {
     setChannelAppName(appInfo.appName);
@@ -2487,6 +2569,7 @@ export function App() {
   });
 
   return (
+    <FeatureAvailabilityProvider remoteConnectionsEnabled={appInfo.remoteConnectionsEnabled}>
     <AvatarPreferencesProvider preferences={preferences.avatars}>
     <GitBranchPickerSnapshotProvider>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
@@ -2582,6 +2665,7 @@ export function App() {
     </ConversationComposerDraftBoundary>
     </GitBranchPickerSnapshotProvider>
     </AvatarPreferencesProvider>
+    </FeatureAvailabilityProvider>
   );
 
   function renderConversationContent() {
@@ -2689,7 +2773,11 @@ export function App() {
               setWorkflowRepairTarget(null);
               const { task, run } = multica
                 ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
-                : await createConversationRun(input);
+                : await createConversationRun(
+                    homeAttachConnectionId
+                      ? { ...input, connectionId: homeAttachConnectionId }
+                      : input,
+                  );
               applyConversationTask(task);
               const conversationScope = createConversationWorkspaceScope({
                 projectId: run.projectId,
@@ -2739,6 +2827,11 @@ export function App() {
                 taskUuid: run.taskUuid,
                 runId: run.runId,
               });
+              // The backend binds `input.connectionId` before the first turn
+              // launches (a post-create bind races the background launch and
+              // loses — observed in the field), so the agent's first session
+              // already carries the connection spec. Clear the draft.
+              setHomeAttachConnectionId(null);
               return null;
             } catch (err) {
               const gitRequirementDetailsValue = gitRequirementDetails(err);
@@ -2776,7 +2869,21 @@ export function App() {
             void loadConversationRunMode(projectId);
           }}
           onWorkLocationChange={selectConversationWorkLocation}
+          connectionAttach={appInfo.remoteConnectionsEnabled ? {
+            selectedId: homeAttachConnectionId,
+            onSelect: setHomeAttachConnectionId,
+          } : undefined}
         />
+        {shellTerminalOtp ? (
+          <TerminalOtpDialog
+            otp={shellTerminalOtp}
+            onSubmit={async (sessionId, answer) => {
+              await provideTerminalAuth(sessionId, answer);
+              resolveTerminalOtpRequest(sessionId);
+            }}
+            onClose={() => dismissTerminalOtpRequest(shellTerminalOtp.sessionId)}
+          />
+        ) : null}
         {gitRequirement ? (
           <GitRequirementDialog
             key={`${gitRequirement.projectId ?? 'default'}:${gitRequirement.runKind}:${gitRequirement.status}`}
@@ -2818,6 +2925,9 @@ export function App() {
     }
     if (conversationPage.kind === 'scheduled-task-detail') {
       return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} taskId={conversationPage.taskId} runId={conversationPage.runId} occurrenceId={conversationPage.occurrenceId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
+    }
+    if (conversationPage.kind === 'connections-terminal') {
+      return <ConnectionsTerminalPage workspaceRoot={bootstrap?.repoRoot ?? null} />;
     }
     if (conversationPage.kind === 'run-mode-management') {
       return (
@@ -2936,6 +3046,40 @@ export function App() {
             });
             void loadConversationRunMode(conversationPage.projectId);
           }}
+          onRemoveConnection={async (connectionId) => {
+            await unbindConversationConnection(
+              conversationRun.projectId,
+              conversationRun.taskId,
+              conversationRun.runId,
+              connectionId,
+            );
+            const refreshed = await getConversationRun(
+              conversationRun.projectId,
+              conversationRun.taskId,
+              conversationRun.runId,
+            );
+            applyConversationRunSnapshot(refreshed, 'connection-unbind', {
+              selectedSessionKey: conversationSelectedSessionKeyRef.current,
+              preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
+            });
+          }}
+          onAttachConnection={appInfo.remoteConnectionsEnabled ? async (connectionId) => {
+            await bindConversationConnection(
+              conversationRun.projectId,
+              conversationRun.taskId,
+              conversationRun.runId,
+              connectionId,
+            );
+            const refreshed = await getConversationRun(
+              conversationRun.projectId,
+              conversationRun.taskId,
+              conversationRun.runId,
+            );
+            applyConversationRunSnapshot(refreshed, 'connection-bind', {
+              selectedSessionKey: conversationSelectedSessionKeyRef.current,
+              preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
+            });
+          } : undefined}
           onSelectSession={(leaf, followActive) => {
             const key = leaf.outerNodeId
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`

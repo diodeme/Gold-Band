@@ -678,6 +678,11 @@ pub struct ConversationRunVm {
     pub runtime_error: Option<RuntimeErrorInfo>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
+    /// Non-secret connections bound to this conversation run (`RunState.connection_specs`).
+    /// Drives the conversation's "connection reference" card; the agent's hidden
+    /// context and connection MCP tool scope read the same specs. Never carries a
+    /// key path or credential.
+    pub connections: Vec<gold_band::app::ConnectionSpec>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -977,6 +982,12 @@ pub struct ConversationCreateInputVm {
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
     #[serde(default)]
     pub quotes: Vec<gold_band::provider::UserPromptQuote>,
+    /// Pre-attached connection from the home composer (阶段4). Bound onto the
+    /// run BEFORE its first turn launches, so the agent's first session has the
+    /// connection in its hidden context from turn 1 (a post-create bind races
+    /// the background launch and loses — observed in the field).
+    #[serde(default)]
+    pub connection_id: Option<String>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -4264,6 +4275,7 @@ pub fn conversation_run_vm(
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
         worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+        connections: run.connection_specs.clone(),
     })
 }
 
@@ -4630,6 +4642,12 @@ fn conversation_create_command(
     command.role = input.role.clone();
     command.workspace_files = input.workspace_files.clone();
     command.quotes = input.quotes.clone();
+    command.connection_ids = input
+        .connection_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .into_iter()
+        .collect();
     Ok(command)
 }
 
@@ -4697,6 +4715,7 @@ pub fn create_conversation_run_vm(
                 runtime_error: None,
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+                connections: run.connection_specs.clone(),
             }
         });
     let task = conversation_task_row_vm(app, &input.project_id, &task_id, false, None)?;
@@ -4782,6 +4801,7 @@ pub fn rerun_conversation_task_vm(
             runtime_error: None,
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+            connections: run.connection_specs.clone(),
         })
     })
 }
@@ -6851,6 +6871,7 @@ mod tests {
     fn scheduled_auto_snapshot_preserves_agent_and_strategy_identity() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this automatically".to_string(),
             run_mode: ConversationRunMode::Auto.as_str().to_string(),
@@ -6991,6 +7012,7 @@ mod tests {
             }
         }));
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "start a direct conversation".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7037,6 +7059,7 @@ mod tests {
     fn worktree_validation_preserves_the_non_git_preflight_error_code() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run in an isolated worktree".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7064,6 +7087,7 @@ mod tests {
     fn a_role_is_accepted_only_for_direct_conversations() {
         let app = App::new(temp_repo_root());
         let input_for = |run_mode: ConversationRunMode| ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "改一下这个函数".to_string(),
             run_mode: run_mode.as_str().to_string(),
@@ -7103,6 +7127,7 @@ mod tests {
     fn scheduled_task_materialization_creates_task_without_starting_run() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this later".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7137,6 +7162,7 @@ mod tests {
     fn task_metadata_update_returns_the_authoritative_task_projection() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "h".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7183,6 +7209,7 @@ mod tests {
         let attachment = app.paths.repo_root.join("context.txt");
         fs::write(attachment.as_std_path(), "attachment content").unwrap();
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: String::new(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7228,6 +7255,7 @@ mod tests {
     fn conversation_task_creation_rolls_back_when_attachment_copy_fails() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "task must roll back".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7719,6 +7747,7 @@ mod tests {
         enqueue_prompt(
             &attempt_dir,
             gold_band::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "persist after stop".to_string(),
                 quotes: Vec::new(),
                 role: None,

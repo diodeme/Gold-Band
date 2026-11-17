@@ -734,7 +734,9 @@
         }
       },
       "remoteMarkdownImages": "このドキュメントには {{hosts}} の Web 画像が {{count}} 件含まれています",
-      "remoteMarkdownImageHostSeparator": "、"
+      "remoteMarkdownImageHostSeparator": "、",
+      "resetImage": "画像をリセット",
+      "draftPreviewUnavailable": "この添付ファイルは送信後にワークスペースでプレビューできます"
     },
     "discardWorkflowChanges": "このワークフローには保存されていない変更があります。それらを破棄してタブを閉じますか?",
     "rootUnavailable": {
@@ -1079,7 +1081,8 @@
         "validation-failed": "実行計画が検証を通過しませんでした。",
         "partial-commit": "一部だけ保存されました。保存先を確認してください。",
         "recovery-required": "この保存は復旧してから続行してください。"
-      }
+      },
+      "session-restore-reference-missing": "このセッションには Provider セッション参照がありません。"
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} は doctor を通過していません。",
@@ -1144,6 +1147,18 @@
       "completion": {
         "repair-exhausted": "ノードの出力は {{repairAttempts}} 回修復してもプロトコルに適合しないため、ワークフローを一時停止しました。"
       }
+    },
+    "connection": {
+      "not-found": "接続が見つかりません。",
+      "name-conflict": "同名の接続がすでに存在します。別の名前を指定してください。",
+      "invalid-input": "接続設定が無効です。入力内容を確認してください。",
+      "jump-cycle": "踏み台の経路に循環があります。踏み台の設定を調整してください。",
+      "jump-missing": "踏み台が存在しません: {{jumpRef}}。",
+      "jump-referenced": "この接続は他の接続の踏み台として使用されているため削除できません: {{referents}}。"
+    },
+    "credential": {
+      "store-failed": "認証情報をシステムキーチェーンに保存できませんでした: {{reason}}。",
+      "missing": "この接続には保存済みの認証情報がありません。接続時にその場で入力を求められ、保存はされません。"
     }
   },
   "status": {
@@ -2341,7 +2356,8 @@
       "interruptConfirmTitle": "この内容を今すぐ送信しますか？",
       "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
       "interruptConfirmSkip": "今後表示しない",
-      "interruptConfirmAction": "停止して送信"
+      "interruptConfirmAction": "停止して送信",
+      "use": "使用"
     },
     "composerDrafts": {
       "title": "下書きボックス",
@@ -2472,7 +2488,14 @@
       "cacheWrite": "キャッシュ書き込み",
       "total": "合計",
       "excludesBackground": "バックグラウンド起動による使用量は含まれません"
-    }
+    },
+    "slashModelMissingValue": "/model の後にモデルを指定するか、セッション設定バーから選択してください。",
+    "slashModelUnknown": "モデル「{{requested}}」が見つかりません — セッション設定バーから選択してください。",
+    "connectionToolsRecoveryNotice": "接続ツールが一時的に利用できなくなっていましたが、再登録されました。最後のメッセージを再試行すると続行できます。",
+    "connectionToolsRecoveryRetry": "最後のメッセージを再試行",
+    "userQuoteLabel": "引用 {{index}}",
+    "launchingClaude": "Agent を起動中",
+    "subAgentRunning": "サブ Agent 実行中"
   },
   "graph": {
     "emptyGraph": "作業グラフがありません",
@@ -2865,6 +2888,16 @@
         "empty": "このバージョンのリリースノートはありません。",
         "loadFailed": "リリースノートを読み込めませんでした。",
         "more": "もっと見る"
+      },
+      "install": "ダウンロードしてインストール",
+      "announcement": {
+        "title": "新しいバージョン {{version}} があります",
+        "description": "設定 → 詳細 → アップデートから確認とインストールができます。",
+        "dismiss": "閉じる",
+        "view": "更新を表示",
+        "dialogTitle": "新しいバージョン {{version}} があります",
+        "dialogDescription": "新しいクライアントのバージョンを検出しました。設定 → 詳細 → アップデートからダウンロードしてインストールしてください。",
+        "goToSettings": "設定に移動"
       }
     },
     "remoteImages": {
@@ -2881,7 +2914,8 @@
       "title": "送信待ち",
       "description": "返信中に「今すぐ送信」を使うと、現在の返信を先に停止します。",
       "confirmInterrupt": "「今すぐ送信」で返信を中断する前に確認する"
-    }
+    },
+    "advanced": "詳細"
   },
   "multica": {
     "taskManagement": {
@@ -3028,7 +3062,8 @@
       "releaseResident": "常駐を解除",
       "keepResidentHint": "Agent にスケジュールタスクなど長時間実行される処理がある場合は、アイドル時に回収されないよう常駐させてください",
       "releaseResidentHint": "常駐中のため、アイドル時も回収されません。クリックで常駐を解除",
-      "resident": "常駐セッション"
+      "resident": "常駐セッション",
+      "connectionsTerminal": "接続"
     },
     "composer": {
       "multicaNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
@@ -3215,5 +3250,127 @@
     "validationPositiveNumber": "{{field}} は 0 より大きい必要があります",
     "validationTemplateNameRequired": "テンプレート名は必須です",
     "validationTemplateNameDuplicated": "テンプレート名 {{name}} は既に存在します"
+  },
+  "connections": {
+    "management": {
+      "title": "接続",
+      "create": "新規接続",
+      "refresh": "接続を更新",
+      "loading": "読み込み中",
+      "loadFailed": "接続を読み込めませんでした",
+      "actionFailed": "操作に失敗しました。もう一度やり直してください。",
+      "empty": "接続はありません",
+      "disableNotice": "リモート接続はイントラネット専用の機能で、このビルドでは無効です。ワークスペースの「ターミナル」パネルからローカルターミナルを利用できます。",
+      "columns": {
+        "name": "名前",
+        "host": "ホスト",
+        "username": "ユーザー",
+        "env": "環境",
+        "credential": "認証情報",
+        "lastConnected": "最終接続",
+        "jump": "踏み台"
+      },
+      "more": "その他の操作",
+      "edit": "編集",
+      "delete": "削除",
+      "credentialSaved": "保存済み",
+      "credentialMissing": "未保存",
+      "jumpMarker": "踏み台経由",
+      "jumpMissing": "踏み台なし",
+      "keyAuth": "鍵",
+      "passwordAuth": "パスワード",
+      "deleteTitle": "接続を削除しますか？",
+      "deleteDescription": "この操作は元に戻せません。この接続のためにシステムキーチェーンに保存した認証情報も削除されます。",
+      "cancel": "キャンセル",
+      "confirmDelete": "削除"
+    },
+    "dialog": {
+      "createTitle": "新規接続",
+      "editTitle": "接続を編集",
+      "name": "名前",
+      "host": "ホスト",
+      "port": "ポート",
+      "username": "ユーザー",
+      "authMethod": "認証方式",
+      "authPassword": "パスワード",
+      "authPublicKey": "SSH 鍵",
+      "keyPath": "鍵のパス",
+      "keyPathPlaceholder": "例: ~/.ssh/id_ed25519",
+      "secret": "パスワード",
+      "keyPassphrase": "鍵のパスフレーズ",
+      "saveSecret": "システムキーチェーンに保存",
+      "saveSecretHint": "接続時に自動入力されます。入力を求められません。",
+      "dynamicPasswordHint": "パスワードが動的またはワンタイムの場合は、空欄のまま保存しないでください。接続のたびにその場で入力を求められ、どこにも保存されません。接続成功後に踏み台自身のメニューが再度パスワードを求めてきた場合は、通常のターミナル入力なので、そのままターミナルに入力してください。",
+      "dismissError": "エラーを閉じる",
+      "clearSecret": "保存済みの認証情報を削除",
+      "jump": "踏み台ホスト",
+      "jumpNone": "なし（直接接続）",
+      "env": "環境",
+      "envTest": "テスト",
+      "envStage": "ステージング",
+      "envProd": "本番",
+      "prodWarning": "本番環境はサポート対象外です。デモ表示専用です。",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "namePlaceholder": "例: ログサーバー",
+      "hostPlaceholder": "例: 10.0.0.5"
+    },
+    "recent": {
+      "title": "最近の接続",
+      "empty": "最近の接続はありません",
+      "reconnect": "再接続",
+      "notReconnectable": "接続は削除済みです"
+    },
+    "reference": {
+      "groupLabel": "接続参照",
+      "remove": "削除",
+      "removing": "削除中…",
+      "removeFailed": "削除に失敗しました。もう一度やり直してください。",
+      "spec": "接続の詳細",
+      "attach": "接続を添付",
+      "attachFailed": "添付に失敗しました。もう一度やり直してください。"
+    }
+  },
+  "terminal": {
+    "panelTitle": "ターミナルセッション",
+    "panelDescription": "ローカルまたはリモートのターミナルを開く",
+    "newLocal": "新規ローカルターミナル",
+    "close": "セッションを閉じる",
+    "empty": "ターミナルセッションはありません",
+    "error": "ターミナルを開けませんでした。もう一度やり直してください。",
+    "loading": "ターミナルを作成中",
+    "localLabel": "ローカルターミナル",
+    "sessionLabel": "セッション {{index}}",
+    "limitReached": "セッション数が上限（{{max}}）に達しました",
+    "connect": "リモートターミナルに接続",
+    "connecting": "接続中",
+    "awaitingAuth": "認証待ち",
+    "openTerminalTab": "ターミナルを開く（⌘/Ctrl+T）",
+    "dismissError": "エラーを閉じる",
+    "openInNewWindow": "新しいウィンドウで開く",
+    "returnToMain": "メインウィンドウに戻す",
+    "detachedSessionNotFound": "このターミナルセッションは終了したか、すでに存在しません。",
+    "authPromptPlaceholder": "パスフレーズ / ワンタイムコードを入力",
+    "authPromptSubmit": "送信",
+    "authPending": "セッションがワンタイムパスフレーズを待っています。続行するには以下に入力してください",
+    "otpDialogTitle": "ワンタイムパスフレーズが必要です",
+    "otpDialogTitleNamed": "{{name}} にワンタイムパスフレーズが必要です",
+    "otpSubmitFailed": "パスフレーズの送信に失敗しました。もう一度やり直してください。",
+    "quoteToConversation": "会話に引用",
+    "failed": {
+      "sessionNotFound": "セッションが見つからないか、すでに閉じられています",
+      "sessionLimit": "セッション数が上限に達しました。先にタブを閉じてください",
+      "jumpForwardFailed": "踏み台経由で接続先への転送に失敗しました。踏み台と接続先の到達性を確認してください",
+      "authRequired": "ワンタイムパスフレーズの入力待ちがタイムアウトしました。再試行して、すぐに入力してください",
+      "credentialMissing": "保存済みの認証情報が見つかりません。接続を編集してパスフレーズを保存してください",
+      "authFailed": "認証に失敗しました。アカウントとパスフレーズを確認してください",
+      "hostKeyMismatch": "ホストキーが記録済みのものと一致しません。安全のため接続を拒否しました",
+      "connectTimeout": "接続がタイムアウトしました。ネットワークとアドレスを確認してください",
+      "connectionLost": "接続が切断されました",
+      "channelFailed": "リモートターミナルのチャネルを開けませんでした",
+      "io": "ターミナルの IO エラーです。もう一度やり直してください",
+      "localStartFailed": "ローカルターミナルの起動に失敗しました。もう一度やり直してください。",
+      "invalidCwd": "作業ディレクトリが無効です"
+    }
   }
 }

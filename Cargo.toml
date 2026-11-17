@@ -53,9 +53,12 @@ prost = "0.14"
 pulldown-cmark = "0.13"
 thiserror = "2"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util", "signal"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "net", "sync", "time", "test-util", "signal"] }
 tokio-util = { version = "0.7", features = ["time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+bytes = "1"
+russh = { version = "0.63.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+ssh-key = "0.7.0-rc.11"
 uuid = { version = "1", features = ["v4", "v5"] }
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -71,6 +74,10 @@ rmcp = { version = "3.2", default-features = false, features = ["server", "trans
 blake3 = "1"
 similar = "3.1"
 unicode-properties = { version = "0.1", features = ["general-category"] }
+portable-pty = "0.9.0"
+ratatui = "0.29"
+crossterm = "0.28"
+figlet-rs = "1.0.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
@@ -97,3 +104,4 @@ test-isolated-home = []
 
 [dev-dependencies]
 gold-band = { path = ".", features = ["test-isolated-home"] }
+rand = { version = "0.10", features = ["thread_rng"] }

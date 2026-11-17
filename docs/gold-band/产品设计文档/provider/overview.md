@@ -48,7 +48,7 @@ Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，
 
 `session/prompt` 返回 ACP `AuthRequired`（`-32000`）时，按协议错误码映射到既有 `provider.auth-required`，保留原始错误与诊断，不依赖错误消息语言。失败按现有生命周期结束当前轮次，释放发送状态；认证问题由用户处理后手动再次发送，不自动重发或新增应用内登录流程。
 
-正式 build 继续在线刷新 Registry，再应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略，基于本地 snapshot 应用相同规则。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。
+正式 build 继续在线刷新 Registry，再合并受控 `local supplement`、应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略、已提交 snapshot 和 local supplement，基于同一规则重复生成。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。当前发布为 14 项：DeepSeek Harness 来自 local supplement（官方来源，固定 `0.2.1-rc.2`），Qoder 来自官方 Registry（固定 `1.1.86`，本机优先 `qodercli`，排除 Windows aarch64），ZCode 来自 local supplement（社区桥接器 `0.84.1`，全局 `.zcode`、项目 `.agents`）。其余平台按发布矩阵逐项标注。
 
 版本 pin 仅适用于实际使用 Registry npx 分发的模板；未知 ID、非法版本、错误策略字段或 PATH 可执行文件模板的 pin 均报错。解析复用 `npm-package-arg`，不自行拆解 scoped 包名。
 
@@ -60,7 +60,13 @@ Settings schema 11 不再持久化内置 Agent 的 `adapter.command` / `adapter.
 
 保存接口、RuntimeConfig 合并和 Provider 构造统一复用 Catalog 启动配置投影，不能通过直接调用接口覆盖内置命令。复用现有 ID、Catalog 和 settings 生命周期，不新增身份、缓存或后台更新任务；仅在小型 Agent 配置读写与启动时进行内存查找，无新增网络或历史扫描。
 
-策略仅由构建脚本消费，每次生成读取一次，对精选十一项做线性处理；没有新增运行时 I/O、状态、缓存或队列。
+每个 Catalog 条目同时携带 `sourceKind: official-registry | local-supplement`、`integrationOrigin: official | community-adapter` 与真实验收的 `validatedVersion`。这些字段用于来源和信任投影，不成为 `SettingsConfig.agents` 的第二事实源；UI 通过本地化 key 展示来源，不把上游英文 description 当作风险说明。
+
+Catalog 平台限制使用类型化 `{ os: windows | macos | linux, arch: x86_64 | aarch64 }`，不保存 `win32-arm64` 拼接字符串。Rust 统一完成当前平台规范化和 `supports_platform` 判定，onboarding、Agent 管理 Catalog 投影与创建接口共用；Web 不自行推断。限制只阻止新建不受支持的内置条目，既有实例、workflow 引用和诊断仍可见。
+
+Catalog 生成必须先在 staging 中完成 snapshot、Catalog、图标、schema、来源、版本、平台和 SVG 校验，再通过有界 recovery journal 与逐文件原子替换发布；普通失败时正式产物逐字节保持不变，进程中断后下次运行先恢复到完整旧版或完整新版。该事务只发生在构建/发版阶段，不进入运行时。
+
+策略仅由构建脚本消费，每次生成读取一次，对 11/13/14 项做线性处理；没有新增运行时 I/O、状态、缓存或队列。
 
 用户开启“使用本地 Claude”时，桌面端只负责为 ACP adapter 注入 `CLAUDE_CODE_EXECUTABLE`，不改变 adapter 命令本身。Windows 下必须避免把 npm 暴露的 extensionless `claude` shell shim 传给 adapter：优先使用 PATH 中的原生 `claude.exe`；若 PATH 目录暴露了 `claude.cmd`，则读取 `.cmd` wrapper 内容并解析其实际指向的 native `.exe`，例如 npm 生成的 `%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe`；若无法从 `.cmd` 解析并验证 native binary，则不注入该环境变量，让 adapter 使用自身 fallback。macOS / Linux 继续按 PATH 查找可执行 `claude`；Unix npm shim 本身是可执行脚本，不需要像 Windows 一样解析 `.cmd` wrapper。
 

@@ -1,9 +1,13 @@
-use super::model::{SetupError, fingerprint};
+use super::{
+    environment::EnvironmentTool,
+    model::{SetupError, fingerprint},
+};
 use crate::{
     config::{
-        AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot,
-        SettingsConfig,
+        AcpAdapterConfig, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
+        ProviderDiagnosticSnapshot, SettingsConfig,
     },
+    platform::DesktopPlatform,
     process::{find_executable_in_paths, resolved_child_path},
     storage::{
         GoldBandPaths, configuration::with_configuration, load_settings_file, read_json,
@@ -11,6 +15,7 @@ use crate::{
     },
 };
 use anyhow::Result;
+use serde::Serialize;
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
@@ -30,7 +35,42 @@ pub struct SetupCandidate {
 pub enum CandidateDetection<'a> {
     Reuse(&'a ProviderDiagnosticSnapshot),
     Probe,
-    Unavailable,
+    Unavailable(Option<&'a ProviderDiagnosticSnapshot>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SetupLaunchKind {
+    Npx,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SetupUnavailableReason {
+    NotInstalled,
+    RuntimeRequired {
+        tool: EnvironmentTool,
+    },
+    DoctorFailed {
+        launch: SetupLaunchKind,
+        error: Option<DiagnosticError>,
+    },
+}
+
+pub enum PreparedAdapter {
+    Ready(AcpAdapterConfig),
+    Unavailable(SetupUnavailableReason),
+}
+
+pub fn launch_kind(candidate: &SetupCandidate) -> Result<SetupLaunchKind> {
+    Ok(
+        if crate::npx_cache::is_npx(&candidate.config.executable_adapter(&candidate.id)?) {
+            SetupLaunchKind::Npx
+        } else {
+            SetupLaunchKind::Local
+        },
+    )
 }
 
 /// Configured Agents reuse the Agent management domain's canonical Doctor snapshot.
@@ -39,17 +79,22 @@ pub fn candidate_detection<'a>(
     candidate: &SetupCandidate,
     diagnostics: &'a BTreeMap<ManagedAgentId, ProviderDiagnosticSnapshot>,
 ) -> CandidateDetection<'a> {
-    let Some(expected_fingerprint) = candidate.expected_fingerprint.as_deref() else {
+    if candidate.expected_fingerprint.is_none() {
         return CandidateDetection::Probe;
-    };
+    }
+    let expected_fingerprint = candidate.config.diagnostic_fingerprint().ok();
     match diagnostics.get(&candidate.id) {
         Some(diagnostic)
             if diagnostic.available
-                && diagnostic.config_fingerprint.as_deref() == Some(expected_fingerprint) =>
+                && expected_fingerprint.is_some()
+                && diagnostic.config_fingerprint == expected_fingerprint =>
         {
             CandidateDetection::Reuse(diagnostic)
         }
-        _ => CandidateDetection::Unavailable,
+        // A previous successful Doctor result without the current config fingerprint is
+        // stale, not a failed Agent. Setup may refresh it without overwriting that result.
+        Some(diagnostic) if diagnostic.available => CandidateDetection::Probe,
+        diagnostic => CandidateDetection::Unavailable(diagnostic),
     }
 }
 
@@ -61,7 +106,11 @@ pub fn candidates(
     let configured = settings.agents.as_ref().unwrap_or(&empty);
     let mut candidates = Vec::new();
     if after.is_none() {
+        let platform = DesktopPlatform::current();
         for entry in &crate::agent_catalog::builtin_agent_catalog().agents {
+            if !entry.supports_platform(platform) {
+                continue;
+            }
             let id: ManagedAgentId = entry.id.parse()?;
             let existing = configured.get(&id);
             candidates.push(SetupCandidate {
@@ -98,7 +147,13 @@ pub fn candidates(
 pub fn prepared_adapter(
     candidate: &SetupCandidate,
     cwd: &Path,
-) -> Result<Option<AcpAdapterConfig>> {
+    npx_launchable: bool,
+) -> Result<PreparedAdapter> {
+    let not_installed = || {
+        Ok(PreparedAdapter::Unavailable(
+            SetupUnavailableReason::NotInstalled,
+        ))
+    };
     let mut adapter = candidate.config.executable_adapter(&candidate.id)?;
     let path = resolved_child_path(adapter.env.get("PATH").map(OsStr::new));
     if let Some(path) = path.as_ref() {
@@ -114,13 +169,20 @@ pub fn prepared_adapter(
             adapter.args = std::iter::once(launch.script.to_string_lossy().into_owned())
                 .chain(launch.args)
                 .collect();
-            return Ok(Some(adapter));
+            return Ok(PreparedAdapter::Ready(adapter));
         }
         let installed = crate::agent_catalog::builtin_agent(candidate.id.as_str())
             .and_then(|entry| entry.installed_command.as_deref())
             .and_then(|command| find_executable_in_paths(command, path.as_deref()));
         if installed.is_none() {
-            return Ok(None);
+            return not_installed();
+        }
+        if !npx_launchable {
+            return Ok(PreparedAdapter::Unavailable(
+                SetupUnavailableReason::RuntimeRequired {
+                    tool: EnvironmentTool::Npx,
+                },
+            ));
         }
     }
     let executable = PathBuf::from(&adapter.command);
@@ -128,7 +190,7 @@ pub fn prepared_adapter(
         executable.file_stem().and_then(OsStr::to_str),
         Some("uv" | "uvx" | "bunx" | "pnpm" | "yarn")
     ) {
-        return Ok(None);
+        return not_installed();
     }
     let executable = if executable.is_absolute() {
         executable.is_file().then_some(executable)
@@ -136,10 +198,10 @@ pub fn prepared_adapter(
         find_executable_in_paths(&adapter.command, path.as_deref())
     };
     let Some(executable) = executable else {
-        return Ok(None);
+        return not_installed();
     };
     adapter.command = executable.to_string_lossy().into_owned();
-    Ok(Some(adapter))
+    Ok(PreparedAdapter::Ready(adapter))
 }
 
 /// The caller also holds the existing per-Agent/diagnostic commit guard. A failed write is never ready.
@@ -167,7 +229,7 @@ pub fn register_success(
         }
         if !diagnostic.available
             || diagnostic.config_fingerprint.as_deref()
-                != Some(fingerprint(&candidate.config)?.as_str())
+                != Some(candidate.config.diagnostic_fingerprint()?.as_str())
         {
             return Err(SetupError::new("setup.agent-unavailable").into());
         }

@@ -2707,6 +2707,32 @@ fn ensure_no_active_acp_prompts_for_provider(agent_id: &ManagedAgentId) -> Comma
     Ok(())
 }
 
+fn ensure_catalog_agent_supported(
+    agent_id: &ManagedAgentId,
+    entry: Option<&gold_band::agent_catalog::AgentCatalogEntry>,
+    platform: gold_band::platform::DesktopPlatform,
+) -> CommandResult<()> {
+    if entry.is_some_and(|entry| !entry.supports_platform(platform)) {
+        return Err(CommandErrorVm::new(
+            "agent.unsupported-platform",
+            serde_json::json!({
+                "agentType": agent_id.as_str(),
+                "os": platform.os.as_str(),
+                "arch": platform.arch.as_str(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_catalog_agent_supported_now(agent_id: &ManagedAgentId) -> CommandResult<()> {
+    ensure_catalog_agent_supported(
+        agent_id,
+        gold_band::agent_catalog::builtin_agent(agent_id.as_str()),
+        gold_band::platform::DesktopPlatform::current(),
+    )
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentInput {
@@ -2776,7 +2802,6 @@ impl ManagedAgentInput {
             let directory = directory.trim().to_string();
             if !directory.is_empty()
                 && primary_agent_dir.as_deref() != Some(directory.as_str())
-                && project_primary_agent_dir.as_deref() != Some(directory.as_str())
                 && !compatible_agent_dirs.contains(&directory)
             {
                 compatible_agent_dirs.push(directory);
@@ -2941,6 +2966,7 @@ pub fn create_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    ensure_catalog_agent_supported_now(&agent_id)?;
     if app.managed_agents().contains_key(&agent_id) {
         return Err(CommandErrorVm::new(
             "agent.already-exists",
@@ -15093,6 +15119,77 @@ mod tests {
         assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
         assert!(config.supports_system_prompt());
         assert!(!config.external_session_sync_enabled);
+    }
+
+    #[test]
+    fn managed_agent_input_keeps_global_compatible_directory_used_by_project_scope() {
+        let input = ManagedAgentInput {
+            display_name: "ZCode".to_string(),
+            icon: String::new(),
+            command: "zcode-acp-server".to_string(),
+            primary_agent_dir: ".zcode".to_string(),
+            project_primary_agent_dir: Some(".agents".to_string()),
+            compatible_agent_dirs: vec![".agents".to_string()],
+            ..serde_json::from_value(serde_json::json!({
+                "displayName": "fixture",
+                "command": "fixture"
+            }))
+            .unwrap()
+        };
+
+        let config = input
+            .into_config(
+                gold_band::config::SystemPromptDelivery::None,
+                DEFAULT_CUSTOM_AGENT_ICON,
+            )
+            .unwrap();
+        let policy = config.skill_directory_policy();
+
+        assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
+        assert_eq!(policy.global.read_dir_names, vec![".zcode", ".agents"]);
+        assert_eq!(policy.project.read_dir_names, vec![".agents"]);
+    }
+
+    #[test]
+    fn create_agent_catalog_platform_contract_is_structured() {
+        let mut entry: gold_band::agent_catalog::AgentCatalogEntry = serde_json::from_str(
+            r#"{
+              "id": "qoder",
+              "label": "Qoder",
+              "version": "0.2.14",
+              "provenance": {
+                "sourceKind": "official-registry",
+                "integrationOrigin": "official",
+                "validatedVersion": "0.2.14"
+              },
+              "description": "fixture",
+              "repository": null,
+              "website": null,
+              "iconKey": "qoder",
+              "command": "npx",
+              "args": ["-y", "@qoder-ai/qodercli@0.2.14", "--acp"],
+              "excludedPlatforms": [{"os": "windows", "arch": "aarch64"}]
+            }"#,
+        )
+        .unwrap();
+        let agent_id = ManagedAgentId::from_str("qoder").unwrap();
+        let unsupported_platform = gold_band::platform::DesktopPlatform::new(
+            gold_band::platform::DesktopOperatingSystem::Windows,
+            gold_band::platform::DesktopArchitecture::Aarch64,
+        );
+        let error = ensure_catalog_agent_supported(&agent_id, Some(&entry), unsupported_platform)
+            .unwrap_err();
+        assert_eq!(error.code, "agent.unsupported-platform");
+        assert_eq!(error.params["agentType"], "qoder");
+        assert_eq!(error.params["os"], "windows");
+        assert_eq!(error.params["arch"], "aarch64");
+
+        entry.excluded_platforms.clear();
+        let supported_platform = gold_band::platform::DesktopPlatform::new(
+            gold_band::platform::DesktopOperatingSystem::Windows,
+            gold_band::platform::DesktopArchitecture::X86_64,
+        );
+        ensure_catalog_agent_supported(&agent_id, Some(&entry), supported_platform).unwrap();
     }
 
     #[test]

@@ -64,7 +64,8 @@ fn ready_agent<'a>(
         .and_then(|agents| agents.get(&profile.agent_id))
         .ok_or_else(|| SetupError::new("setup.agent-unavailable"))?;
     if !diagnostic.available
-        || diagnostic.config_fingerprint.as_deref() != Some(fingerprint(config)?.as_str())
+        || diagnostic.config_fingerprint.as_deref()
+            != Some(config.diagnostic_fingerprint()?.as_str())
     {
         return Err(SetupError::new("setup.agent-unavailable").into());
     }
@@ -329,7 +330,6 @@ pub fn apply(
     let request_fingerprint = fingerprint(request)?;
     // The setup controller owns this invocation's completed environment report.
     // Applying defaults does not launch a second round of external probes.
-    environment.require_runtime()?;
     with_configuration(&app.paths.user_gold_band_dir(), || {
         let mut settings = app.load_settings()?;
         if already_applied(&settings, request)? {

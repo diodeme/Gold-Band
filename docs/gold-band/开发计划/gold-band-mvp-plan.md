@@ -1,5 +1,20 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-16 ACP 认证错误与缺失环境变量修复
+
+- 根因：`authenticate` 返回的任何错误都被改写成 `provider.auth-required`，导致超时、取消和 transport 中断丢失原始结构化原因；认证方法选择忽略 ACP `AuthEnvVar.optional`；前端未消费 `methods/missingEnv`，用户看不到需要配置的具体变量。
+- 实现：只为结构化认证失败生成 `provider.auth-required` 并保留原始 raw；取消、Doctor 超时、transport 中断和 adapter 退出原样上抛。必填变量过滤 `optional`。共享连接按修订号实现认证 single-flight：并发实例只执行一次认证，成功后等待者直接重试 `session/new`，认证失败则释放等待者。新增七语言认证摘要，Agent 管理与首次引导按 `missingEnv` 展示环境变量名；会话错误横幅复用同一投影。同步修正验收脚本。
+- 验收：Rust ACP client 全量 193 项通过、6 项按设计忽略；认证定向回归 8 项通过（含共享连接 single-flight）；agent-catalog 45 项通过；前端相关回归 116 项通过，fixture 对齐后 onboarding/auth/DOM 87 项再次通过；`npm run web:build` 与 `cargo fmt --check` 通过。内置浏览器 all-unavailable fixture 可见“诊断未通过：此 Agent 需要认证。请先配置环境变量：QWEN_API_KEY。”。
+- 评审：不新增认证状态机、持久字段或连接身份；只扩展既有结构化错误消费，环境变量列表规模有界，前端投影为常数级映射。
+
+## 2026-11-16 启动保护页误报与 Windows 指引修复
+
+- 根因：`web/src/mockData.ts` 的 Agent 目录在模块顶层调用 `mockCatalogEntry()`，但该函数依赖的 `MOCK_LOCAL_LAUNCHES` 声明在其后。`c176c2cd` 新增连接条件时打破初始化顺序，生产压缩后抛出 `Cannot access 'i$' before initialization`，导致整个 main chunk 失败并被启动保护显示为 WebView 问题。属于正确启动边界下 mock 数据初始化顺序错误，不是能力探测或 WebView 兼容设计缺陷。
+- 实现：将本地启动表与目录构造函数前置，并统一以 `input.defaultCommand ?? 'npx'` 派生 PATH 命令与 npx fallback，避免目录条件在不同入口产生不一致。启动保护页按 Windows / macOS / 其他平台投影能力缺失指引；`webview.app_chunk.load_failed` 使用与平台无关的重装与反馈指引，不再在 Windows 显示 macOS 升级说明。
+- 红绿证据：`web/tests/mock-agent-catalog.test.ts` 与既有 `agent-card-layout.test.tsx` 在修复前均以同一 `MOCK_LOCAL_LAUNCHES before initialization` 失败，修复后通过；新增目录断言覆盖 Claude 的本地 CLI、npx fallback 与 Amp 的原生命令。`webview-bootstrap.test.ts` 新增平台识别、Windows WebView2 指引和 chunk 失败通用指引，修复前 Windows 断言失败，修复后通过。
+- 验收：WebView 6 个文件 / 28 项、Agent 17 个文件 / 64 项通过；Web TypeScript 与 `npm run web:build` 通过。生产构建的 `main` chunk 已确认本地启动表先于目录构造；内置浏览器加载生产产物进入 `/chat`，Agent 管理页正常，控制台无 warning/error，并用 unsupported fixture 确认 Windows 页面显示 WebView2 Runtime 指引且无 macOS 文案。Web 全量回归为 3400 项通过、10 个既有文件共 126 项失败，失败集中在 ACP 重入时序、Marketing 资源超时和既有 DOM 契约，与本次改动文件无关。
+- 性能与过度设计评审：修复只恢复常量初始化顺序，平台判断为一次 UA 正则匹配，不增加持久状态、监听器、缓存、异步链路或依赖；错误页仍是启动路径上的最小 DOM 投影。无需引入新的启动状态机或平台版本矩阵。
+
 ## 2026-11-13 CodeBuddy 多轮执行配置统一
 
 - 根因：首轮执行通过 `ManagedAgentConfig::executable_adapter()` 把用户选择的 CodeBuddy executable 解析为本机 ACP launch；Direct 后续轮、AI-DYNAMIC 与个人分析直接透传 `ManagedAgentConfig.adapter` 的 npm catalog 配置。同一 workspace 连接签名漂移导致健康 ACP 连接被按 `ConfigChanged` 替换，形成首轮成功、二轮失败。

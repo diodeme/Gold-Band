@@ -2,9 +2,11 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  appChunkLoadError,
   renderWebviewStartupError,
   startWebviewBootstrap,
   unsupportedWebviewError,
+  webviewStartupPlatform,
 } from '@/lib/webview-bootstrap-core';
 import {
   createWebviewEnvironmentSnapshot,
@@ -81,7 +83,7 @@ describe('WebView bootstrap', () => {
 
   it('renders a localized boot-safe error without React or application styles', () => {
     const snapshot = createWebviewEnvironmentSnapshot(unsupportedWebviewCapabilityProfile);
-    renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, 'zh-CN');
+    renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, 'zh-CN', 'macos');
 
     const shell = document.querySelector('[data-webview-startup-error]');
     expect(shell?.getAttribute('data-webview-startup-error')).toBe('webview.capability.unsupported');
@@ -97,6 +99,25 @@ describe('WebView bootstrap', () => {
     renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, 'pt-PT');
     expect(document.querySelector('[data-webview-startup-error]')?.textContent).toContain('Gold Band cannot start in this WebView');
     expect(document.documentElement.lang).toBe('en');
+  });
+
+  it('detects supported desktop WebView platforms from the user agent', () => {
+    expect(webviewStartupPlatform('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')).toBe('windows');
+    expect(webviewStartupPlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15')).toBe('macos');
+    expect(webviewStartupPlatform('Mozilla/5.0 (X11; Linux x86_64)')).toBe('other');
+  });
+
+  it('uses Windows WebView2 guidance and keeps chunk failures platform-neutral', () => {
+    const snapshot = createWebviewEnvironmentSnapshot(unsupportedWebviewCapabilityProfile);
+
+    renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, 'zh-CN', 'windows');
+    expect(document.querySelector('[data-webview-startup-error]')?.textContent).toContain('WebView2');
+    expect(document.querySelector('[data-webview-startup-error]')?.textContent).not.toContain('macOS');
+
+    renderWebviewStartupError(appChunkLoadError(new Error('chunk failed'), snapshot), undefined, 'zh-CN', 'windows');
+    const shellText = document.querySelector('[data-webview-startup-error]')?.textContent;
+    expect(shellText).toContain('重新安装最新版 Gold Band');
+    expect(shellText).not.toContain('macOS');
   });
 
   it.each([

@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "この Agent を続行するには認証が必要です。",
+      "auth-required-missing-env": "この Agent には認証が必要です。先に次の環境変数を設定してください：{{env}}。",
+      "auth-required-login": "この Agent には認証が必要です。プロバイダーの認証を完了してから、もう一度確認してください。"
+    },
     "agent.launch-command-missing": "この Agent には起動コマンドがありません。Agent 管理でコマンドを入力し、もう一度診断してください。",
     "npx-cache.busy": "キャッシュの修復中です。しばらくしてから再試行してください。",
     "npx-cache.unavailable": "修復可能な npx キャッシュを確認できません。診断を再実行してください。",
@@ -924,6 +929,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} は既に存在します。",
+      "unsupported-platform": "Agent {{agentType}} は現在のプラットフォーム（{{os}}/{{arch}}）に対応していません。",
       "not-configured": "Agent {{agentType}} は設定されていません。",
       "display-name-required": "Agent 名を入力してください。",
       "command-required": "Agent の起動コマンドを入力してください。"
@@ -947,7 +953,7 @@
       "compaction-summary-query-failed": "圧縮の要約を読み込めませんでした。もう一度お試しください。",
       "adapter-exited": "Agent プロセスは {{method}} 中に終了しました。コマンド、引数、環境変数、ネットワーク、認証を確認してください。",
       "adapter-exited-with-code": "Agent プロセスは {{method}} 中に終了しました (終了コード {{exitCode}})。コマンド、引数、環境変数、ネットワーク、認証を確認してください。",
-      "adapter-start-failed": "Agentを開始できませんでした: {{osError}}",
+      "adapter-start-failed": "{{command}} を起動できませんでした: {{osError}}",
       "doctor-timeout": "Agent環境のチェックが {{method}} 中にタイムアウトしました。"
     },
     "app": {
@@ -1267,6 +1273,9 @@
     "customAgentIdPlaceholder": "たとえば my-agent",
     "pending": "保留中",
     "configured": "追加した",
+    "integrationOrigin": {
+      "communityAdapter": "コミュニティアダプター"
+    },
     "empty": "構成済みの Agent はまだありません",
     "createTitle": "Agentの追加",
     "createDescription": "ノード実行に使う Agent 構成を作成します。",
@@ -1318,6 +1327,22 @@
     "diagnosing": "診断中",
     "savedAndDiagnosing": "設定が保存されました。バックグラウンドで診断しています。",
     "diagnosticComplete": "環境チェックが完了し、診断プロセスが終了しました。",
+    "connectionGuide": {
+      "title": "接続要件",
+      "command": "起動コマンド",
+      "path": "PATH",
+      "pathRequirement": "{{command}} は Gold Band の有効な PATH から解決できるか、下で実行ファイルを明示してください。",
+      "fallback": "代替方法",
+      "installedCli": "ローカルの {{command}} CLI から ACP adapter の制御された準備を開始できます。",
+      "preparedFallback": "準備済みの npx キャッシュのみを使用します。npx が使えるだけでは Agent がインストール済みとは限りません。",
+      "auth": "認証",
+      "authRequirement": "プロバイダーのログインを完了するか、対応する認証情報を設定してください。環境変数はローカルの Agent 設定に保存されます。",
+      "steps": "確認手順：コマンド解決 → ACP adapter 起動 → initialize → session/new → 能力取得 → 診断プロセス終了。",
+      "result": "最新の結果",
+      "checkNow": "今すぐ確認",
+      "saveToCheck": "保存後に接続確認が自動実行され、結果は Agent カードにも表示されます。",
+      "formChanged": "フォームが変更されています。保存後に新しい設定で確認します。"
+    },
     "diagnosticFailed": "環境チェックに合格しませんでした: {{reason}}",
     "diagnosticFailedNoReason": "環境チェックに合格しませんでした。",
     "diagnosticFailedFallback": "Agent のコマンド、ネットワーク、認証状態を確認してください。",
@@ -1334,7 +1359,8 @@
     "status": {
       "unknown": "未知",
       "healthy": "正常",
-      "unhealthy": "異常"
+      "unhealthy": "異常",
+      "stale": "再診断が必要"
     }
   },
   "contextManagement": {
@@ -3373,7 +3399,7 @@
     "installGuide": "公式インストールガイド",
     "discovering": "ローカル Agent を確認中…",
     "discovered": "利用可能な Agent を {{count}} 件検出しました",
-    "noAgents": "利用可能な Agent が見つかりません。Agent のインストールまたはログインを完了してから、再度確認してください。",
+    "noAgents": "インストール済みの Agent が見つかりません。いずれかの Agent をインストールしてから再検出してください。",
     "deferHint": "アプリには先に進めます。Agent の設定は後で設定画面から完了できます。",
     "defaultAgent": "既定の Agent",
     "chooseAgent": "利用可能な Agent を選択",
@@ -3402,6 +3428,16 @@
     "defaultsDescription": "組み込みワークフローの Agent、モデル、権限をまとめて設定します。カスタムワークフローは変更しません。",
     "configureDefaults": "既定値を設定",
     "rerun": "セットアップを再実行",
+    "npxUnavailable": "npx で起動する Agent は現在利用できません。他の Agent の検出は続行できます。",
+    "allUnavailable": "検出された Agent は現在利用できません。下の理由を確認してください。",
+    "actualNode": "実際に使用している Node.js {{version}}: {{path}}",
+    "unavailable": {
+      "title": "利用できない Agent: {{count}} 件",
+      "runtimeRequired": "npm/npx が必要です",
+      "doctorFailed": "診断に失敗しました: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} は検証済みの範囲外です。{{recommended}} のインストールをおすすめします。",
+      "runtimeHint": "実行環境に問題があるため、この Agent を起動できない可能性があります。"
+    },
     "steps": {
       "git": "Git",
       "runtime": "実行環境",
@@ -3409,12 +3445,12 @@
     },
     "titles": {
       "git": "Git の準備",
-      "runtime": "Node.js 実行環境の確認",
+      "runtime": "実行環境の確認",
       "agent": "Agent を接続して既定モデルを選択"
     },
     "descriptions": {
       "git": "Git はバージョン管理に使用します。後でインストールすることもできます。",
-      "runtime": "Node.js、npm、npx が正常に動作し、組み合わせに互換性がある必要があります。未検証の安定版は警告を表示しますが、続行を妨げません。",
+      "runtime": "一部の Agent は npx で起動するため、Node.js、npm、npx が必要です。他の Agent には影響しません。",
       "agent": "利用可能な Agent は自動保存されます。既定モデルを選択し、すべての組み込みワークフローへの適用を確認してください。"
     },
     "status": {
@@ -3428,14 +3464,14 @@
       "cancelled": "キャンセル済み",
       "skipped": "スキップ済み",
       "pending": "未確認",
-      "checking": "確認中"
+      "checking": "確認中",
+      "warning": "警告"
     },
     "errors": {
       "setup": {
         "agent-preparation-required": "プロバイダーのガイドに従ってインストールまたはログインし、再確認してください。",
         "probe-failed": "確認に失敗しました。再確認してください。",
         "probe-cancelled": "確認をキャンセルしました。続行するには再確認してください。",
-        "runtime-incompatible": "Node.js、npm、npx のいずれかが要件を満たしていません。実行環境を確認してください。",
         "environment-check-required": "先に実行環境の確認を完了してください。",
         "configuration-conflict": "設定が別の場所で変更されました。Agent を再確認し、最新の変更をプレビューしてください。",
         "preview-stale": "選択したモデルまたは組み込み Workflow が変更されました。再度プレビューしてください。",
@@ -3472,7 +3508,6 @@
       "probe-unavailable": "実際に使用された実行環境を確認できませんでした。インストール状態を確認して再試行してください。",
       "node-mismatch": "別の Node.js が使用されています。想定：{{expectedNodePath}}、実際：{{actualNodePath}}。",
       "node-version-mismatch": "Node.js のバージョンが一致しません。想定：{{expectedVersion}}、実際：{{actualVersion}}。",
-      "node-path-mismatch": "Node.js の起動パスが一致しません。想定：{{expectedNodePath}}、実際：{{actualNodePath}}。",
       "npm-metadata-missing": "npm のインストール情報を確認できません。Node.js/npm のインストールを修復して再確認してください。",
       "npm-engines-incompatible": "この npm は現在の Node.js に対応していません。必要な条件：{{nodeRange}}。",
       "npm-version-mismatch": "npm のバージョン情報が一致しません。出力：{{expectedVersion}}、パッケージ：{{actualVersion}}。",

@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "Este Agent precisa de autenticação para continuar.",
+      "auth-required-missing-env": "Este Agent precisa de autenticação. Configure primeiro estas variáveis de ambiente: {{env}}.",
+      "auth-required-login": "Este Agent precisa de autenticação. Conclua a autenticação no provedor e verifique novamente."
+    },
     "agent.launch-command-missing": "Este Agent está sem o comando de inicialização. Adicione o comando no gerenciamento de Agents e execute o diagnóstico novamente.",
     "npx-cache.busy": "Já há um reparo de cache em andamento. Tente novamente mais tarde.",
     "npx-cache.unavailable": "Não foi possível verificar um cache npx reparável. Execute o diagnóstico.",
@@ -924,6 +929,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} já existe.",
+      "unsupported-platform": "O Agent {{agentType}} não suporta a plataforma atual ({{os}}/{{arch}}).",
       "not-configured": "Agent {{agentType}} não está configurado.",
       "display-name-required": "Informe um nome de Agent.",
       "command-required": "Informe um comando de inicialização do Agent."
@@ -947,7 +953,7 @@
       "compaction-summary-query-failed": "Não foi possível carregar o resumo da compactação. Tente novamente.",
       "adapter-exited": "O processo Agent encerrou durante {{method}}. Verifique comando, argumentos, variáveis de ambiente, rede e autenticação.",
       "adapter-exited-with-code": "O processo Agent encerrou durante {{method}} (código de saída {{exitCode}}). Verifique comando, argumentos, variáveis de ambiente, rede e autenticação.",
-      "adapter-start-failed": "O Agent não pôde ser iniciado: {{osError}}",
+      "adapter-start-failed": "Não foi possível iniciar {{command}}: {{osError}}",
       "doctor-timeout": "A verificação de ambiente do Agent expirou durante {{method}}."
     },
     "app": {
@@ -1267,6 +1273,9 @@
     "customAgentIdPlaceholder": "Por exemplo, my-agent",
     "pending": "Pendente",
     "configured": "Adicionado",
+    "integrationOrigin": {
+      "communityAdapter": "Adaptador da comunidade"
+    },
     "empty": "Nenhum agent configurado ainda",
     "createTitle": "Adicionar Agent",
     "createDescription": "Crie uma configuração de agent para execução de nós.",
@@ -1318,6 +1327,22 @@
     "diagnosing": "Diagnosticando",
     "savedAndDiagnosing": "Configuração salva. Diagnosticando em segundo plano.",
     "diagnosticComplete": "Verificação de ambiente concluída e o processo de diagnóstico encerrou.",
+    "connectionGuide": {
+      "title": "Requisitos de conexão",
+      "command": "Comando de inicialização",
+      "path": "PATH",
+      "pathRequirement": "{{command}} precisa ser resolvido no PATH efetivo do Gold Band, ou selecione um executável explícito abaixo.",
+      "fallback": "Alternativa",
+      "installedCli": "Um CLI local {{command}} pode acionar a preparação controlada do ACP adapter.",
+      "preparedFallback": "Somente um cache npx preparado é usado; ter npx disponível não significa que o Agent esteja instalado.",
+      "auth": "Autenticação",
+      "authRequirement": "Conclua o login do provedor ou configure credenciais compatíveis. Variáveis de ambiente são salvas na configuração local do Agent.",
+      "steps": "Etapas da verificação: resolver comando → iniciar ACP adapter → initialize → session/new → descobrir capacidades → encerrar o processo de diagnóstico.",
+      "result": "Resultado mais recente",
+      "checkNow": "Verificar agora",
+      "saveToCheck": "Ao salvar, a verificação de conexão é executada automaticamente; o resultado também aparece no cartão do Agent.",
+      "formChanged": "O formulário foi alterado. Salvar verificará a nova configuração."
+    },
     "diagnosticFailed": "A verificação de ambiente não passou: {{reason}}",
     "diagnosticFailedNoReason": "A verificação de ambiente não passou.",
     "diagnosticFailedFallback": "Verifique o comando do agent, rede e estado de autenticação.",
@@ -1334,7 +1359,8 @@
     "status": {
       "unknown": "Desconhecido",
       "healthy": "Saudável",
-      "unhealthy": "Não saudável"
+      "unhealthy": "Não saudável",
+      "stale": "Requer nova verificação"
     }
   },
   "contextManagement": {
@@ -3373,7 +3399,7 @@
     "installGuide": "Guia oficial de instalação",
     "discovering": "Verificando Agents locais…",
     "discovered": "{{count}} Agents disponíveis detectados",
-    "noAgents": "Nenhum Agent disponível foi detectado. Instale ou entre em um Agent e verifique novamente.",
+    "noAgents": "Nenhum Agent instalado foi detectado. Instale qualquer Agent e verifique novamente.",
     "deferHint": "Você pode entrar no app agora e concluir a configuração do Agent depois em Configurações.",
     "defaultAgent": "Agent padrão",
     "chooseAgent": "Escolha um Agent disponível",
@@ -3402,6 +3428,16 @@
     "defaultsDescription": "Defina o Agent, o modelo e as permissões dos fluxos de trabalho integrados, sem alterar os personalizados.",
     "configureDefaults": "Configurar padrões",
     "rerun": "Executar configuração novamente",
+    "npxUnavailable": "Os Agents iniciados pelo npx estão indisponíveis no momento. Os demais Agents ainda podem ser detectados.",
+    "allUnavailable": "Os Agents detectados estão indisponíveis. Veja os motivos abaixo.",
+    "actualNode": "Node.js em uso {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Agents indisponíveis: {{count}}",
+      "runtimeRequired": "Requer npm/npx",
+      "doctorFailed": "O diagnóstico falhou: {{reason}}",
+      "nodeVersionHint": "O Node.js {{version}} está fora da faixa verificada. Recomendamos instalar o {{recommended}}.",
+      "runtimeHint": "O ambiente tem problemas que podem impedir este Agent de iniciar."
+    },
     "steps": {
       "git": "Git",
       "runtime": "Ambiente",
@@ -3409,12 +3445,12 @@
     },
     "titles": {
       "git": "Preparar Git",
-      "runtime": "Verificar o ambiente Node.js",
+      "runtime": "Verificar o ambiente",
       "agent": "Conecte um Agent e escolha o modelo padrão"
     },
     "descriptions": {
       "git": "Git fornece controle de versão. Você pode instalá-lo depois.",
-      "runtime": "Node.js, npm e npx precisam funcionar corretamente e ser compatíveis entre si. Versões estáveis fora das faixas verificadas exibem um aviso, mas não bloqueiam a configuração.",
+      "runtime": "Alguns Agents são iniciados pelo npx e precisam de Node.js, npm e npx. Os demais Agents não são afetados.",
       "agent": "Agents disponíveis são salvos automaticamente. Escolha o modelo padrão, revise e aplique aos workflows integrados."
     },
     "status": {
@@ -3428,14 +3464,14 @@
       "cancelled": "Cancelado",
       "skipped": "Ignorado",
       "pending": "Não verificado",
-      "checking": "Verificando"
+      "checking": "Verificando",
+      "warning": "Aviso"
     },
     "errors": {
       "setup": {
         "agent-preparation-required": "Siga o guia do provedor para instalar ou entrar e verifique novamente.",
         "probe-failed": "A verificação falhou. Verifique novamente.",
         "probe-cancelled": "A verificação foi cancelada. Verifique novamente para continuar.",
-        "runtime-incompatible": "Node.js, npm ou npx não atende aos requisitos. Verifique o ambiente de execução.",
         "environment-check-required": "Conclua primeiro a verificação do ambiente de execução.",
         "configuration-conflict": "A configuração mudou em outro lugar. Verifique os Agents novamente e revise as alterações atuais.",
         "preview-stale": "O modelo selecionado ou os Workflows integrados mudaram. Visualize as alterações novamente.",
@@ -3472,7 +3508,6 @@
       "probe-unavailable": "Não foi possível confirmar o ambiente realmente usado. Confira a instalação e tente novamente.",
       "node-mismatch": "Foi usada outra instalação de Node.js. Esperada: {{expectedNodePath}}; atual: {{actualNodePath}}.",
       "node-version-mismatch": "As versões de Node.js diferem. Esperada: {{expectedVersion}}; atual: {{actualVersion}}.",
-      "node-path-mismatch": "O caminho de inicialização de Node.js difere. Esperado: {{expectedNodePath}}; atual: {{actualNodePath}}.",
       "npm-metadata-missing": "Não foi possível confirmar os metadados de instalação de npm. Repare a instalação de Node.js/npm e verifique novamente.",
       "npm-engines-incompatible": "Este npm não suporta o Node.js atual. Requisito: {{nodeRange}}.",
       "npm-version-mismatch": "As informações de versão de npm diferem. Saída: {{expectedVersion}}; pacote: {{actualVersion}}.",

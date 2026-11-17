@@ -8,8 +8,9 @@ use gold_band::{
     onboarding::{
         defaults::{ApplyDefaultSetup, DefaultSetupPreview, DefaultSetupSelection},
         discovery::{
-            CandidateDetection, IsolatedProbeDirectory, SetupCandidate, candidate_detection,
-            candidates, prepared_adapter,
+            CandidateDetection, IsolatedProbeDirectory, PreparedAdapter, SetupCandidate,
+            SetupLaunchKind, SetupUnavailableReason, candidate_detection, candidates, launch_kind,
+            prepared_adapter,
         },
         environment::{
             EnvironmentCheck, EnvironmentPolicy, EnvironmentReport, LocalEnvironmentRunner,
@@ -43,6 +44,7 @@ struct SetupEnvironment {
 pub struct SetupRun {
     pub generation: String,
     pub cancelled: Arc<AtomicBool>,
+    npx_launchable: bool,
     suppressed: Mutex<BTreeSet<ManagedAgentId>>,
     channel: Channel<SetupEvent>,
 }
@@ -100,7 +102,6 @@ impl SetupController {
             .filter(|current| !current.cancelled.load(Ordering::Acquire))
             .and_then(|current| current.report.as_ref())
             .ok_or_else(|| SetupError::new("setup.environment-check-required"))?;
-        report.require_runtime()?;
         Ok(report.clone())
     }
 
@@ -139,7 +140,7 @@ impl SetupController {
             publish(
                 run,
                 &run.channel,
-                SetupEvent::Unavailable {
+                SetupEvent::Withdrawn {
                     generation: run.generation.clone(),
                     agent_id: id.as_str().into(),
                 },
@@ -229,6 +230,13 @@ pub enum SetupEvent {
         agent: SetupAgentVm,
     },
     Unavailable {
+        generation: String,
+        agent_id: String,
+        label: String,
+        icon_key: String,
+        reason: SetupUnavailableReason,
+    },
+    Withdrawn {
         generation: String,
         agent_id: String,
     },
@@ -328,8 +336,7 @@ pub async fn defer_setup(handle: AppHandle) -> CommandResult<()> {
     // Configuration writes and runtime startup touch disk; keep them off the IPC thread.
     tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<DesktopState>();
-        // Deferring is only valid after the current environment report has passed.
-        // Reuse the same controller boundary as apply so npm cannot be bypassed.
+        // Deferring is only valid once the current environment check has completed.
         handle
             .state::<SetupController>()
             .checked_environment()
@@ -364,7 +371,7 @@ mod tests {
             available: true,
             checked_at: "2026-11-02T00:00:00Z".into(),
             error: None,
-            config_fingerprint: Some(fingerprint(&config).unwrap()),
+            config_fingerprint: Some(config.diagnostic_fingerprint().unwrap()),
             capabilities: Some(serde_json::json!({
                 "models": {
                     "currentModelId": "legacy-model",
@@ -384,10 +391,15 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_agent_event_contains_no_repair_details() {
+    fn unavailable_agent_event_carries_identity_and_a_structured_reason() {
         let payload = serde_json::to_value(SetupEvent::Unavailable {
             generation: "test-generation".into(),
-            agent_id: "codex-acp".into(),
+            agent_id: "claude-acp".into(),
+            label: "Claude".into(),
+            icon_key: "claude".into(),
+            reason: SetupUnavailableReason::RuntimeRequired {
+                tool: EnvironmentTool::Npx,
+            },
         })
         .unwrap();
         assert_eq!(
@@ -395,45 +407,94 @@ mod tests {
             serde_json::json!({
                 "type": "unavailable",
                 "generation": "test-generation",
+                "agentId": "claude-acp",
+                "label": "Claude",
+                "iconKey": "claude",
+                "reason": {"kind": "runtime-required", "tool": "npx"}
+            })
+        );
+
+        let payload = serde_json::to_value(SetupEvent::Unavailable {
+            generation: "test-generation".into(),
+            agent_id: "qwen-code".into(),
+            label: "Qwen Code".into(),
+            icon_key: "qwen-code".into(),
+            reason: SetupUnavailableReason::DoctorFailed {
+                launch: SetupLaunchKind::Npx,
+                error: Some(gold_band::config::DiagnosticError {
+                    code: "acp.session-request-failed".into(),
+                    params: serde_json::json!({"method": "session/new"}),
+                    raw: Some(serde_json::json!({"message": "Authentication required"})),
+                }),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            payload["reason"],
+            serde_json::json!({
+                "kind": "doctor-failed",
+                "launch": "npx",
+                "error": {
+                    "code": "acp.session-request-failed",
+                    "params": {"method": "session/new"},
+                    "raw": {"message": "Authentication required"}
+                }
+            })
+        );
+
+        assert_eq!(
+            serde_json::to_value(SetupEvent::Withdrawn {
+                generation: "test-generation".into(),
+                agent_id: "codex-acp".into(),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type": "withdrawn",
+                "generation": "test-generation",
                 "agentId": "codex-acp"
             })
         );
     }
 
     #[test]
-    fn runtime_gate_failure_keeps_diagnostics_across_command_and_channel_serialization() {
-        let report = EnvironmentReport {
-            runtime_ready: false,
-            checks: vec![EnvironmentCheck {
-                tool: EnvironmentTool::Npm,
+    fn environment_failures_do_not_block_detection_and_keep_the_report() {
+        let report = EnvironmentReport::from_checks(vec![
+            EnvironmentCheck {
+                tool: EnvironmentTool::Node,
                 status: EnvironmentStatus::Timeout,
                 version: None,
-                executable_path: Some("fixture with spaces/npm.cmd".into()),
+                executable_path: Some("fixture with spaces/node.exe".into()),
                 node_executable_path: None,
+                node_version: None,
                 error: Some(EnvironmentError {
                     code: "setup.probe-timeout".into(),
-                    params: serde_json::json!({"tool": "npm"}),
+                    params: serde_json::json!({"tool": "node"}),
                 }),
-            }],
-        };
+            },
+            EnvironmentCheck {
+                tool: EnvironmentTool::Npx,
+                status: EnvironmentStatus::Missing,
+                version: None,
+                executable_path: None,
+                node_executable_path: None,
+                node_version: None,
+                error: Some(EnvironmentError {
+                    code: "setup.runtime-missing".into(),
+                    params: serde_json::json!({"tool": "npx"}),
+                }),
+            },
+        ]);
+        assert!(!report.npx_launchable);
         let controller = SetupController::default();
-        controller.begin_environment("environment".into()).unwrap();
+        controller.begin_environment("limited".into()).unwrap();
         controller
-            .complete_environment("environment", report.clone())
+            .complete_environment("limited", report.clone())
             .unwrap();
-        let error = command_error(controller.checked_environment().unwrap_err());
-        let command = serde_json::to_value(&error).unwrap();
-        let channel = serde_json::to_value(SetupEvent::Failed {
-            generation: "test-generation".into(),
-            code: error.code,
-            params: error.params,
-        })
-        .unwrap();
-        assert_eq!(channel["type"], "failed");
-        assert_eq!(channel["generation"], "test-generation");
-        assert_eq!(channel["params"], command["params"]);
+
+        let checked = controller.checked_environment().unwrap();
+
         assert_eq!(
-            channel["params"]["environment"],
+            serde_json::to_value(checked).unwrap(),
             serde_json::to_value(report).unwrap()
         );
     }
@@ -451,7 +512,7 @@ mod tests {
         let first = controller.begin_environment("first".into()).unwrap();
         assert!(controller.checked_environment().is_err());
         let report = EnvironmentReport {
-            runtime_ready: true,
+            npx_launchable: true,
             checks: vec![],
         };
         controller
@@ -472,7 +533,7 @@ mod tests {
         assert!(controller.checked_environment().is_err());
         controller.complete_environment("second", report).unwrap();
         controller.cancel_environment("first").unwrap();
-        assert!(controller.checked_environment().unwrap().runtime_ready);
+        assert!(controller.checked_environment().unwrap().npx_launchable);
         controller.cancel_environment("second").unwrap();
         assert!(second.load(Ordering::Acquire));
         assert!(controller.checked_environment().is_err());
@@ -487,7 +548,7 @@ mod tests {
             .complete_environment(
                 "cancelled",
                 EnvironmentReport {
-                    runtime_ready: true,
+                    npx_launchable: true,
                     checks: vec![],
                 },
             )
@@ -504,7 +565,7 @@ mod tests {
             .complete_environment(
                 "passed",
                 EnvironmentReport {
-                    runtime_ready: true,
+                    npx_launchable: true,
                     checks: vec![],
                 },
             )
@@ -514,16 +575,12 @@ mod tests {
             .complete_environment(
                 "failed",
                 EnvironmentReport {
-                    runtime_ready: false,
+                    npx_launchable: false,
                     checks: vec![],
                 },
             )
             .unwrap();
-        let error = controller.checked_environment().unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<SetupError>().unwrap().params["environment"]["runtimeReady"],
-            false
-        );
+        assert!(!controller.checked_environment().unwrap().npx_launchable);
         controller.cancel_all();
         assert!(
             controller
@@ -546,6 +603,14 @@ fn probe_candidate(
     if !run.allows(&candidate.id) {
         return Err(SetupError::new("setup.probe-cancelled").into());
     }
+    let cwd = IsolatedProbeDirectory::new()?;
+    let adapter = match prepared_adapter(candidate, cwd.0.as_std_path(), run.npx_launchable)? {
+        PreparedAdapter::Ready(adapter) => adapter,
+        PreparedAdapter::Unavailable(reason) => {
+            publish_candidate_unavailable(run, candidate, on_event, reason);
+            return Ok(());
+        }
+    };
     publish(
         run,
         on_event,
@@ -555,29 +620,21 @@ fn probe_candidate(
             label: candidate.config.adapter.display_name.clone(),
         },
     );
-    let cwd = IsolatedProbeDirectory::new()?;
     let app = state.app()?;
-    let result = (|| {
-        let adapter = prepared_adapter(candidate, cwd.0.as_std_path())?
-            .ok_or_else(|| SetupError::new("setup.agent-preparation-required"))?;
-        gold_band::acp::client::doctor_prepared_with_control(
-            &candidate.id,
-            &adapter,
-            cwd.0.clone(),
-            app.paths.doctor_acp_dir(&candidate.id),
-            run.cancelled.clone(),
-        )
-    })();
+    let result = gold_band::acp::client::doctor_prepared_with_control(
+        &candidate.id,
+        &adapter,
+        cwd.0.clone(),
+        app.paths.doctor_acp_dir(&candidate.id),
+        run.cancelled.clone(),
+    );
     let _commit = state.agent_config_diagnostic_commit_guard()?;
     if !run.allows(&candidate.id) {
         return Err(SetupError::new("setup.probe-cancelled").into());
     }
-    let probe = match result {
-        Ok(probe) => probe,
-        Err(error) => return Err(error),
-    };
+    let probe = result?;
     let diagnostic = ProviderDiagnosticSnapshot {
-        config_fingerprint: Some(fingerprint(&candidate.config)?),
+        config_fingerprint: Some(candidate.config.diagnostic_fingerprint()?),
         available: true,
         error: None,
         checked_at: chrono::Utc::now().to_rfc3339(),
@@ -607,6 +664,7 @@ fn publish_candidate_unavailable(
     run: &SetupRun,
     candidate: &SetupCandidate,
     channel: &Channel<SetupEvent>,
+    reason: SetupUnavailableReason,
 ) {
     if !run.allows(&candidate.id) {
         return;
@@ -617,8 +675,53 @@ fn publish_candidate_unavailable(
         SetupEvent::Unavailable {
             generation: run.generation.clone(),
             agent_id: candidate.id.as_str().into(),
+            label: candidate.config.adapter.display_name.clone(),
+            icon_key: candidate.config.icon.clone(),
+            reason,
         },
     );
+}
+
+fn doctor_failed(
+    candidate: &SetupCandidate,
+    error: Option<gold_band::config::DiagnosticError>,
+) -> SetupUnavailableReason {
+    SetupUnavailableReason::DoctorFailed {
+        launch: launch_kind(candidate).unwrap_or(SetupLaunchKind::Local),
+        error,
+    }
+}
+
+fn publish_candidate_failure(
+    run: &SetupRun,
+    candidate: &SetupCandidate,
+    channel: &Channel<SetupEvent>,
+    error: &anyhow::Error,
+) {
+    let error = gold_band::acp::client::doctor_diagnostic_error(error);
+    publish_candidate_unavailable(
+        run,
+        candidate,
+        channel,
+        doctor_failed(candidate, Some(error)),
+    );
+}
+
+fn publish_candidate_withdrawn(
+    run: &SetupRun,
+    candidate: &SetupCandidate,
+    channel: &Channel<SetupEvent>,
+) {
+    if run.allows(&candidate.id) {
+        publish(
+            run,
+            channel,
+            SetupEvent::Withdrawn {
+                generation: run.generation.clone(),
+                agent_id: candidate.id.as_str().into(),
+            },
+        );
+    }
 }
 
 fn publish_configured_candidate(
@@ -640,22 +743,37 @@ fn publish_configured_candidate(
     let current = app.managed_agents().get(&candidate.id);
     let current_matches = current.map(fingerprint).transpose()?.as_deref()
         == candidate.expected_fingerprint.as_deref();
-    if current_matches
-        && let Some(config) = current
-        && let CandidateDetection::Reuse(diagnostic) = candidate_detection(candidate, &diagnostics)
-    {
-        publish(
-            run,
-            channel,
-            SetupEvent::Ready {
-                generation: run.generation.clone(),
-                agent: managed_agent_vm(&candidate.id, config, Some(diagnostic)).into(),
-            },
-        );
-    } else {
-        publish_candidate_unavailable(run, candidate, channel);
+    if !current_matches {
+        publish_candidate_withdrawn(run, candidate, channel);
+        return Ok(true);
     }
-    Ok(true)
+    match candidate_detection(candidate, &diagnostics) {
+        CandidateDetection::Reuse(diagnostic) => {
+            let Some(config) = current else {
+                publish_candidate_withdrawn(run, candidate, channel);
+                return Ok(true);
+            };
+            publish(
+                run,
+                channel,
+                SetupEvent::Ready {
+                    generation: run.generation.clone(),
+                    agent: managed_agent_vm(&candidate.id, config, Some(diagnostic)).into(),
+                },
+            );
+            Ok(true)
+        }
+        CandidateDetection::Probe => Ok(false),
+        CandidateDetection::Unavailable(diagnostic) => {
+            publish_candidate_unavailable(
+                run,
+                candidate,
+                channel,
+                doctor_failed(candidate, diagnostic.and_then(|d| d.error.clone())),
+            );
+            Ok(true)
+        }
+    }
 }
 
 #[tauri::command]
@@ -665,18 +783,19 @@ pub fn start_setup_agent_detection(
     after: Option<String>,
     on_event: Channel<SetupEvent>,
 ) -> CommandResult<String> {
-    let run = Arc::new(SetupRun {
-        generation: uuid::Uuid::new_v4().to_string(),
-        cancelled: Arc::new(AtomicBool::new(false)),
-        suppressed: Mutex::new(BTreeSet::new()),
-        channel: on_event.clone(),
-    });
-    {
+    let run = {
         let state = handle.state::<DesktopState>();
         let _guard = state
             .agent_config_diagnostic_commit_guard()
             .map_err(command_error)?;
-        controller.checked_environment().map_err(command_error)?;
+        let environment = controller.checked_environment().map_err(command_error)?;
+        let run = Arc::new(SetupRun {
+            generation: uuid::Uuid::new_v4().to_string(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            npx_launchable: environment.npx_launchable,
+            suppressed: Mutex::new(BTreeSet::new()),
+            channel: on_event.clone(),
+        });
         let mut active = controller
             .active
             .lock()
@@ -685,7 +804,8 @@ pub fn start_setup_agent_detection(
             previous.cancelled.store(true, Ordering::Release);
         }
         state.setup_active.store(true, Ordering::Release);
-    }
+        run
+    };
     let generation = run.generation.clone();
     let rollback_handle = handle.clone();
     let worker = std::thread::Builder::new()
@@ -708,11 +828,12 @@ pub fn start_setup_agent_detection(
                     match publish_configured_candidate(&handle, &run, candidate, &on_event) {
                         Ok(true) => {}
                         Ok(false) => {
-                            if probe_candidate(&handle, &run, candidate, &on_event).is_err() {
-                                publish_candidate_unavailable(&run, candidate, &on_event);
+                            if let Err(error) = probe_candidate(&handle, &run, candidate, &on_event)
+                            {
+                                publish_candidate_failure(&run, candidate, &on_event, &error);
                             }
                         }
-                        Err(_) => publish_candidate_unavailable(&run, candidate, &on_event),
+                        Err(error) => publish_candidate_failure(&run, candidate, &on_event, &error),
                     }
                 });
                 publish(
@@ -802,11 +923,11 @@ pub async fn probe_setup_model(
             .cloned()
             .ok_or_else(|| command_error(SetupError::new("setup.agent-unavailable").into()))?;
         let expected = fingerprint(&config).map_err(command_error)?;
+        let diagnostic_fingerprint = config.diagnostic_fingerprint().map_err(command_error)?;
         let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-        if !diagnostics
-            .get(&id)
-            .is_some_and(|d| d.available && d.config_fingerprint.as_deref() == Some(&expected))
-        {
+        if !diagnostics.get(&id).is_some_and(|d| {
+            d.available && d.config_fingerprint.as_deref() == Some(&diagnostic_fingerprint)
+        }) {
             return Err(command_error(
                 SetupError::new("setup.agent-unavailable").into(),
             ));
@@ -817,11 +938,14 @@ pub async fn probe_setup_model(
             expected_fingerprint: Some(expected.clone()),
         };
         let cwd = IsolatedProbeDirectory::new().map_err(command_error)?;
-        let adapter = prepared_adapter(&candidate, cwd.0.as_std_path())
-            .map_err(command_error)?
-            .ok_or_else(|| {
-                command_error(SetupError::new("setup.agent-preparation-required").into())
-            })?;
+        let PreparedAdapter::Ready(adapter) =
+            prepared_adapter(&candidate, cwd.0.as_std_path(), run.npx_launchable)
+                .map_err(command_error)?
+        else {
+            return Err(command_error(
+                SetupError::new("setup.agent-preparation-required").into(),
+            ));
+        };
         let options = gold_band::acp::client::probe_prepared_model_with_control(
             &id,
             &adapter,

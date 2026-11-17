@@ -612,6 +612,15 @@ impl AgentSkillDirectoryPolicy {
 }
 
 impl ManagedAgentConfig {
+    pub fn diagnostic_fingerprint(&self) -> anyhow::Result<String> {
+        crate::onboarding::model::fingerprint(&serde_json::json!({
+            "command": self.adapter.command,
+            "args": self.adapter.args,
+            "env": self.adapter.env,
+            "executablePath": self.executable_path,
+        }))
+    }
+
     pub fn new(
         adapter: AcpAdapterConfig,
         primary_agent_dir: impl Into<String>,
@@ -3223,16 +3232,24 @@ mod tests {
             defaults,
             vec![
                 ("claude-acp", Some(".claude"), None, vec![]),
+                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
                 ("codex-acp", Some(".codex"), None, vec![".agents"]),
+                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
+                ("deepseek-harness", Some(".dsh"), None, vec![".agents"]),
+                (
+                    "zcode-acp",
+                    Some(".zcode"),
+                    Some(".agents"),
+                    vec![".agents"]
+                ),
+                ("qoder", Some(".qoder"), None, vec![".agents"]),
+                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
                 ("cursor", Some(".cursor"), None, vec![".agents"]),
                 ("gemini", Some(".gemini"), None, vec![".agents"]),
-                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
                 ("goose", Some(".goose"), None, vec![]),
                 ("qwen-code", Some(".qwen"), None, vec![]),
                 ("opencode", Some(".opencode"), None, vec![".agents"]),
-                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
                 ("amp-acp", Some(".agents"), None, vec![".claude"]),
-                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
             ]
         );
     }
@@ -3805,7 +3822,11 @@ mod tests {
             } else {
                 assert!(policy.project.write_dir_names.is_empty());
             }
-            expected_project_reads.extend(entry.compatible_agent_dirs.iter().cloned());
+            for directory in &entry.compatible_agent_dirs {
+                if !expected_project_reads.contains(directory) {
+                    expected_project_reads.push(directory.clone());
+                }
+            }
             assert_eq!(policy.project.read_dir_names, expected_project_reads);
         }
     }

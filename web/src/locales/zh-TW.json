@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "此 Agent 需要完成驗證後才能繼續。",
+      "auth-required-missing-env": "此 Agent 需要驗證。請先設定環境變數：{{env}}。",
+      "auth-required-login": "此 Agent 需要驗證。請完成供應商驗證後重新檢查。"
+    },
     "agent.launch-command-missing": "此 Agent 缺少啟動命令，請在 Agent 管理中補充命令後重新診斷。",
     "npx-cache.busy": "已有快取修復正在進行，請稍後重試。",
     "npx-cache.unavailable": "無法確認可修復的 npx 快取目錄，請重新執行環境診斷。",
@@ -924,6 +929,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} 已存在。",
+      "unsupported-platform": "Agent {{agentType}} 不支援目前平台（{{os}}/{{arch}}）。",
       "not-configured": "Agent {{agentType}} 尚未設定。",
       "display-name-required": "請填寫 Agent 名稱。",
       "command-required": "請填寫 Agent 啟動命令。"
@@ -947,7 +953,7 @@
       "compaction-summary-query-failed": "無法載入壓縮摘要，請重試。",
       "adapter-exited": "Agent 程式在 {{method}} 階段退出。請檢查命令、參數、環境變數、網路和認證狀態。",
       "adapter-exited-with-code": "Agent 程式在 {{method}} 階段退出（退出碼 {{exitCode}}）。請檢查命令、參數、環境變數、網路和認證狀態。",
-      "adapter-start-failed": "無法啟動 Agent：{{osError}}",
+      "adapter-start-failed": "無法啟動 {{command}}：{{osError}}",
       "doctor-timeout": "Agent 環境診斷在 {{method}} 階段逾時。"
     },
     "app": {
@@ -1267,6 +1273,9 @@
     "customAgentIdPlaceholder": "例如 my-agent",
     "pending": "待支援",
     "configured": "已新增",
+    "integrationOrigin": {
+      "communityAdapter": "社群橋接"
+    },
     "empty": "目前還沒有已設定的 agent",
     "createTitle": "新增 Agent",
     "createDescription": "建立一個可用於節點執行的 agent 設定。",
@@ -1318,6 +1327,22 @@
     "diagnosing": "診斷中",
     "savedAndDiagnosing": "設定已儲存，正在背景診斷。",
     "diagnosticComplete": "環境診斷完成，診斷程式已退出。",
+    "connectionGuide": {
+      "title": "接入條件",
+      "command": "啟動命令",
+      "path": "PATH",
+      "pathRequirement": "{{command}} 需要能被 Gold Band 的有效 PATH 解析，或在下方填寫明確的可執行檔路徑。",
+      "fallback": "相容方式",
+      "installedCli": "本機 {{command}} CLI 可觸發 ACP adapter 的受控準備。",
+      "preparedFallback": "僅使用已準備的 npx 快取；npx 可用本身不代表 Agent 已安裝。",
+      "auth": "認證",
+      "authRequirement": "需完成供應商登入或設定其支援的憑據；環境變數會儲存到本機 Agent 設定。",
+      "steps": "檢查步驟：解析啟動命令 → 啟動 ACP adapter → initialize → session/new → 讀取能力 → 清理診斷程序。",
+      "result": "最近結果",
+      "checkNow": "立即檢查",
+      "saveToCheck": "儲存後會自動執行接入檢查，結果也會顯示在 Agent 卡片。",
+      "formChanged": "目前表單已修改，儲存後將依新設定重新檢查。"
+    },
     "diagnosticFailed": "環境診斷未通過：{{reason}}",
     "diagnosticFailedNoReason": "環境診斷未通過。",
     "diagnosticFailedFallback": "請檢查 agent 命令、網路和認證狀態。",
@@ -1334,7 +1359,8 @@
     "status": {
       "unknown": "未檢測",
       "healthy": "正常",
-      "unhealthy": "異常"
+      "unhealthy": "異常",
+      "stale": "需重新診斷"
     }
   },
   "contextManagement": {
@@ -3373,7 +3399,7 @@
     "installGuide": "官方安裝指引",
     "discovering": "正在偵測本機 Agent…",
     "discovered": "偵測到 {{count}} 個可用 Agent",
-    "noAgents": "尚未偵測到可用 Agent。請完成 Agent 安裝或登入後重新偵測。",
+    "noAgents": "尚未偵測到已安裝的 Agent。安裝任一 Agent 後重新偵測。",
     "deferHint": "你可以先進入應用程式，稍後在設定中完成 Agent 設定。",
     "defaultAgent": "預設 Agent",
     "chooseAgent": "選擇可用 Agent",
@@ -3402,6 +3428,16 @@
     "defaultsDescription": "統一設定內建工作流程的 Agent、模型和權限，不影響自訂工作流程。",
     "configureDefaults": "設定預設值",
     "rerun": "重新執行引導",
+    "npxUnavailable": "透過 npx 啟動的 Agent 暫時無法使用，其他 Agent 仍可繼續偵測。",
+    "allUnavailable": "偵測到的 Agent 暫時無法使用，請查看下方原因。",
+    "actualNode": "實際使用的 Node.js {{version}}：{{path}}",
+    "unavailable": {
+      "title": "{{count}} 個 Agent 暫時無法使用",
+      "runtimeRequired": "需要 npm/npx",
+      "doctorFailed": "診斷未通過：{{reason}}",
+      "nodeVersionHint": "目前的 Node.js {{version}} 不在已驗證範圍內，建議安裝 {{recommended}}。",
+      "runtimeHint": "執行環境有異常，可能導致此 Agent 無法啟動。"
+    },
     "steps": {
       "git": "Git",
       "runtime": "執行環境",
@@ -3409,12 +3445,12 @@
     },
     "titles": {
       "git": "準備 Git",
-      "runtime": "檢查 Node.js 執行環境",
+      "runtime": "檢查執行環境",
       "agent": "連接 Agent，設定預設模型"
     },
     "descriptions": {
       "git": "Git 用於版本管理，也可以稍後安裝。",
-      "runtime": "Node.js、npm 與 npx 必須可正常執行且組合相容；未驗證的穩定版本會提示風險，但不會阻止繼續。",
+      "runtime": "部分 Agent 透過 npx 啟動，需要 Node.js、npm 與 npx。其他 Agent 不受影響。",
       "agent": "可用 Agent 會自動儲存。選擇預設模型後，預覽並套用至所有內建工作流程。"
     },
     "status": {
@@ -3428,14 +3464,14 @@
       "cancelled": "已取消",
       "skipped": "已略過",
       "pending": "尚未檢測",
-      "checking": "檢測中"
+      "checking": "檢測中",
+      "warning": "警告"
     },
     "errors": {
       "setup": {
         "agent-preparation-required": "請依供應商指引完成安裝或登入，再重新偵測。",
         "probe-failed": "檢測失敗，請重新檢測。",
         "probe-cancelled": "檢測已取消，請重新檢測以繼續。",
-        "runtime-incompatible": "Node.js、npm 或 npx 不符合要求，請檢查執行環境。",
         "environment-check-required": "請先完成執行環境檢測。",
         "configuration-conflict": "設定已在其他位置變更，請重新檢測 Agent 並預覽最新修改。",
         "preview-stale": "所選模型或內建工作流程已變更，請重新預覽。",
@@ -3472,7 +3508,6 @@
       "probe-unavailable": "無法確認實際使用的執行環境，請檢查安裝狀態後重新檢測。",
       "node-mismatch": "使用了不同的 Node.js。預期：{{expectedNodePath}}；實際：{{actualNodePath}}。",
       "node-version-mismatch": "Node.js 版本不一致。預期：{{expectedVersion}}；實際：{{actualVersion}}。",
-      "node-path-mismatch": "Node.js 啟動路徑不一致。預期：{{expectedNodePath}}；實際：{{actualNodePath}}。",
       "npm-metadata-missing": "無法確認 npm 的安裝資訊，請修復 Node.js/npm 安裝後重新檢測。",
       "npm-engines-incompatible": "此 npm 不支援目前的 Node.js，要求：{{nodeRange}}。",
       "npm-version-mismatch": "npm 版本資訊不一致。輸出：{{expectedVersion}}；套件：{{actualVersion}}。",

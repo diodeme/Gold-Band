@@ -2,7 +2,9 @@ use std::io::{BufRead, Write};
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
-use gold_band::acp::connection::{AdapterConnection, AdapterShutdownReason};
+use gold_band::acp::connection::{
+    AdapterConnection, AdapterInitializationData, AdapterShutdownReason,
+};
 use gold_band::config::AcpAdapterConfig;
 use serde_json::{Value, json};
 
@@ -16,13 +18,16 @@ fn summarized_thinking() -> Value {
 fn initialize(connection: &AdapterConnection) {
     connection
         .initialize_once(|| {
-            Ok(request(
-                connection,
-                "initialize",
-                json!({"protocolVersion": 1, "clientCapabilities": {},
-                "clientInfo": {"name": "policy-test", "version": "1"}}),
-            )["agentCapabilities"]
-                .clone())
+            Ok(AdapterInitializationData {
+                capabilities: request(
+                    connection,
+                    "initialize",
+                    json!({"protocolVersion": 1, "clientCapabilities": {},
+                    "clientInfo": {"name": "policy-test", "version": "1"}}),
+                )["agentCapabilities"]
+                    .clone(),
+                auth_methods: Vec::new(),
+            })
         })
         .unwrap();
 }

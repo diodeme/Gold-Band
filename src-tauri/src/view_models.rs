@@ -37,6 +37,7 @@ use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, persisted_update_info, updater_settings};
 use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
+use gold_band::platform::DesktopPlatform;
 use gold_band::storage::read_json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -318,6 +319,7 @@ pub struct AgentCatalogEntryVm {
     pub label: String,
     pub icon_key: String,
     pub version: String,
+    pub provenance: AgentCatalogProvenanceVm,
     pub description: String,
     pub repository: Option<String>,
     pub website: Option<String>,
@@ -331,6 +333,32 @@ pub struct AgentCatalogEntryVm {
     pub default_command: String,
     pub default_args: Vec<String>,
     pub default_env: Vec<AgentEnvEntryVm>,
+    pub connection_requirements: AgentConnectionRequirementsVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExecutableVm {
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConnectionRequirementsVm {
+    pub path_command: String,
+    pub path_args: Vec<String>,
+    pub installed_cli: Option<String>,
+    pub npx_fallback: Option<AgentExecutableVm>,
+    pub npx_requires_prepared_package: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCatalogProvenanceVm {
+    pub source_kind: gold_band::agent_catalog::AgentCatalogSourceKind,
+    pub integration_origin: gold_band::agent_catalog::AgentIntegrationOrigin,
+    pub validated_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1417,6 +1445,14 @@ pub fn agent_registry_vm(
     app: &App,
     diagnostics: &std::collections::BTreeMap<ManagedAgentId, AgentDiagnosticState>,
 ) -> AgentRegistryVm {
+    agent_registry_vm_for_platform(app, diagnostics, DesktopPlatform::current())
+}
+
+pub fn agent_registry_vm_for_platform(
+    app: &App,
+    diagnostics: &std::collections::BTreeMap<ManagedAgentId, AgentDiagnosticState>,
+    platform: DesktopPlatform,
+) -> AgentRegistryVm {
     let agents = app
         .managed_agents()
         .iter()
@@ -1427,6 +1463,7 @@ pub fn agent_registry_vm(
     let catalog = gold_band::agent_catalog::builtin_agent_catalog()
         .agents
         .iter()
+        .filter(|entry| entry.supports_platform(platform))
         .map(|entry| {
             let agent_id =
                 ManagedAgentId::from_str(&entry.id).expect("built-in Agent catalog ids are valid");
@@ -1436,6 +1473,11 @@ pub fn agent_registry_vm(
                 label: entry.label.clone(),
                 icon_key: entry.icon_key.clone(),
                 version: entry.version.clone(),
+                provenance: AgentCatalogProvenanceVm {
+                    source_kind: entry.provenance.source_kind,
+                    integration_origin: entry.provenance.integration_origin,
+                    validated_version: entry.provenance.validated_version.clone(),
+                },
                 description: entry.description.clone(),
                 repository: entry.repository.clone(),
                 website: entry.website.clone(),
@@ -1454,10 +1496,40 @@ pub fn agent_registry_vm(
                     .into_iter()
                     .map(|(key, value)| AgentEnvEntryVm { key, value })
                     .collect(),
+                connection_requirements: agent_connection_requirements(entry),
             }
         })
         .collect();
     AgentRegistryVm { agents, catalog }
+}
+
+fn agent_connection_requirements(
+    entry: &gold_band::agent_catalog::AgentCatalogEntry,
+) -> AgentConnectionRequirementsVm {
+    let (path_command, path_args) = entry
+        .local_launch
+        .as_ref()
+        .map(|launch| (launch.command.clone(), launch.args.clone()))
+        .unwrap_or_else(|| (entry.command.clone(), entry.args.clone()));
+    let npx_fallback = entry
+        .command
+        .eq_ignore_ascii_case("npx")
+        .then(|| AgentExecutableVm {
+            command: entry.command.clone(),
+            args: entry.args.clone(),
+        });
+    let installed_cli = entry.installed_command.clone();
+    let npx_requires_prepared_package = npx_fallback.is_some()
+        && installed_cli
+            .as_deref()
+            .is_none_or(|command| command == path_command);
+    AgentConnectionRequirementsVm {
+        path_command,
+        path_args,
+        installed_cli,
+        npx_fallback,
+        npx_requires_prepared_package,
+    }
 }
 
 fn select_config_option_vms(capabilities: Option<&Value>) -> Vec<AcpSelectConfigOptionVm> {
@@ -1524,16 +1596,28 @@ pub(crate) fn managed_agent_vm(
         supports_system_prompt: config.supports_system_prompt(),
         external_session_sync_supported: config.external_session_sync_supported,
         external_session_sync_enabled: config.external_session_sync_enabled,
-        diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
-            status: if diagnostic.available {
-                "healthy"
-            } else {
-                "unhealthy"
+        diagnostic: diagnostic.map(|diagnostic| {
+            let fingerprint_matches =
+                diagnostic
+                    .config_fingerprint
+                    .as_deref()
+                    .is_some_and(|expected| {
+                        config.diagnostic_fingerprint().ok().as_deref() == Some(expected)
+                    });
+            let available = diagnostic.available && fingerprint_matches;
+            ManagedAgentDiagnosticVm {
+                status: if available {
+                    "healthy"
+                } else if diagnostic.available {
+                    "stale"
+                } else {
+                    "unhealthy"
+                }
+                .to_string(),
+                available,
+                error: diagnostic.error.clone(),
+                checked_at: diagnostic.checked_at.clone(),
             }
-            .to_string(),
-            available: diagnostic.available,
-            error: diagnostic.error.clone(),
-            checked_at: diagnostic.checked_at.clone(),
         }),
         supported_modes: diagnostic.and_then(|diagnostic| {
             let modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref())
@@ -8338,6 +8422,51 @@ mod tests {
             "task-handoff",
             &source
         ));
+    }
+
+    #[test]
+    fn agent_connection_requirements_cover_direct_and_npx_fallback_modes() {
+        let deepseek = agent_connection_requirements(
+            gold_band::agent_catalog::builtin_agent("deepseek-harness").unwrap(),
+        );
+        assert_eq!(deepseek.path_command, "dsh");
+        assert_eq!(deepseek.path_args, ["--profile", "acp"]);
+        assert!(deepseek.npx_fallback.is_none());
+
+        let claude = agent_connection_requirements(
+            gold_band::agent_catalog::builtin_agent("claude-acp").unwrap(),
+        );
+        assert_eq!(claude.path_command, "claude-agent-acp");
+        assert_eq!(claude.installed_cli.as_deref(), Some("claude"));
+        assert_eq!(claude.npx_fallback.as_ref().unwrap().command, "npx");
+        assert!(!claude.npx_requires_prepared_package);
+
+        let codebuddy = agent_connection_requirements(
+            gold_band::agent_catalog::builtin_agent("codebuddy-code").unwrap(),
+        );
+        assert_eq!(codebuddy.path_command, "codebuddy");
+        assert!(codebuddy.npx_requires_prepared_package);
+    }
+
+    #[test]
+    fn stale_agent_diagnostic_is_not_projected_as_healthy() {
+        let id: ManagedAgentId = "codebuddy-code".parse().unwrap();
+        let config = ManagedAgentConfig::from_catalog(
+            gold_band::agent_catalog::builtin_agent("codebuddy-code").unwrap(),
+        );
+        let diagnostic = gold_band::config::ProviderDiagnosticSnapshot {
+            available: true,
+            checked_at: "2026-11-12T00:00:00Z".to_string(),
+            error: None,
+            config_fingerprint: Some("previous-config".to_string()),
+            capabilities: None,
+        };
+
+        let vm = managed_agent_vm(&id, &config, Some(&diagnostic));
+        let projected = vm.diagnostic.unwrap();
+
+        assert_eq!(projected.status, "stale");
+        assert!(!projected.available);
     }
 
     #[test]

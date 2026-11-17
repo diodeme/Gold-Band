@@ -46,6 +46,19 @@ describe('agent diagnostic copy', () => {
     expect(agentDiagnosticHelpReason(t, stderrDiagnostic)).not.toBe(message);
   });
 
+  it('names the launch command in the compact reason when the Agent cannot start', async () => {
+    await i18n.changeLanguage('en');
+    const t = i18n.t.bind(i18n);
+    const diagnostic: ManagedAgentDiagnosticVm = {
+      status: 'unhealthy',
+      available: false,
+      checkedAt: '2026-11-14T00:00:00Z',
+      error: { code: 'acp.adapter-start-failed', params: { command: 'npx', osError: 'program not found' } },
+    };
+    expect(agentDiagnosticShortReason(t, diagnostic)).toBe('Could not start npx: program not found');
+    expect(agentDiagnosticHelpReason(t, diagnostic)).toBe('program not found');
+  });
+
   it('surfaces ACP session/new raw message instead of the generic localized sentence', () => {
     const t = i18n.t.bind(i18n);
     const diagnostic: ManagedAgentDiagnosticVm = {

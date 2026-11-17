@@ -1317,7 +1317,7 @@ impl DesktopState {
         diagnostic.config_fingerprint = app
             .managed_agents()
             .get(agent_id)
-            .map(gold_band::onboarding::model::fingerprint)
+            .map(gold_band::config::ManagedAgentConfig::diagnostic_fingerprint)
             .transpose()?;
         // Only a successful probe can prove a model is gone; failures leave the catalogs alone.
         let catalogs = match diagnostic.capabilities.as_ref() {

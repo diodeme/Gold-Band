@@ -17,8 +17,8 @@ export interface SetupStatus {
   appearance: AppearancePreference;
 }
 export interface EnvironmentReport {
-  runtimeReady: boolean;
-  checks: Array<{ tool: 'git' | 'node' | 'npm' | 'npx'; status: 'ready' | 'missing' | 'unsupported' | 'unverified' | 'incompatible' | 'failed' | 'timeout' | 'cancelled'; version: string | null; executablePath: string | null; nodeExecutablePath?: string | null; error?: AppErrorVm | null }>;
+  npxLaunchable: boolean;
+  checks: Array<{ tool: 'git' | 'node' | 'npm' | 'npx'; status: 'ready' | 'missing' | 'unsupported' | 'unverified' | 'incompatible' | 'failed' | 'timeout' | 'cancelled'; version: string | null; executablePath: string | null; nodeExecutablePath?: string | null; nodeVersion?: string | null; error?: AppErrorVm | null }>;
 }
 export type EnvironmentCheck = EnvironmentReport['checks'][number];
 export interface SetupAgent {
@@ -30,10 +30,21 @@ export interface SetupAgent {
   configOptions?: AcpSelectConfigOptionVm[] | null;
   modelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null;
 }
+export type SetupUnavailableReason =
+  | { kind: 'not-installed' }
+  | { kind: 'runtime-required'; tool: 'npx' }
+  | { kind: 'doctor-failed'; launch: 'npx' | 'local'; error: AppErrorVm | null };
+export interface SetupUnavailableAgent {
+  agentType: string;
+  displayName: string;
+  iconKey: string;
+  reason: Exclude<SetupUnavailableReason, { kind: 'not-installed' }>;
+}
 export type SetupEvent =
   | { type: 'checking'; generation: string; agentId: string; label: string }
   | { type: 'ready'; generation: string; agent: SetupAgent }
-  | { type: 'unavailable'; generation: string; agentId: string }
+  | { type: 'unavailable'; generation: string; agentId: string; label: string; iconKey: string; reason: SetupUnavailableReason }
+  | { type: 'withdrawn'; generation: string; agentId: string }
   | { type: 'finished'; generation: string; nextCursor: string | null }
   | ({ type: 'failed'; generation: string } & AppErrorVm);
 export interface SetupSelection { profile: DefaultExecutionProfile; permissionModeId: string | null }

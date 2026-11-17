@@ -775,6 +775,11 @@
     }
   },
   "errors": {
+    "provider": {
+      "auth-required": "This Agent requires authentication before it can continue.",
+      "auth-required-missing-env": "This Agent requires authentication. Configure these environment variables first: {{env}}.",
+      "auth-required-login": "This Agent requires authentication. Complete authentication with the provider, then check again."
+    },
     "agent.launch-command-missing": "This Agent is missing its launch command. Add the command in Agent management, then run diagnostics again.",
     "npx-cache.busy": "A cache repair is already in progress. Try again later.",
     "npx-cache.unavailable": "No repairable npx cache directory could be verified. Run diagnostics again.",
@@ -924,6 +929,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} already exists.",
+      "unsupported-platform": "Agent {{agentType}} does not support the current platform ({{os}}/{{arch}}).",
       "not-configured": "Agent {{agentType}} is not configured.",
       "display-name-required": "Enter an Agent name.",
       "command-required": "Enter an Agent launch command."
@@ -947,7 +953,7 @@
       "compaction-summary-query-failed": "Could not load the compaction summary. Try again.",
       "adapter-exited": "The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.",
       "adapter-exited-with-code": "The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.",
-      "adapter-start-failed": "The Agent could not be started: {{osError}}",
+      "adapter-start-failed": "Could not start {{command}}: {{osError}}",
       "doctor-timeout": "Agent environment check timed out during {{method}}."
     },
     "app": {
@@ -1267,6 +1273,9 @@
     "customAgentIdPlaceholder": "For example, my-agent",
     "pending": "Pending",
     "configured": "Added",
+    "integrationOrigin": {
+      "communityAdapter": "Community adapter"
+    },
     "empty": "No configured agents yet",
     "createTitle": "Add Agent",
     "createDescription": "Create an agent configuration for node execution.",
@@ -1318,6 +1327,22 @@
     "diagnosing": "Diagnosing",
     "savedAndDiagnosing": "Configuration saved. Diagnosing in the background.",
     "diagnosticComplete": "Environment check completed and the diagnostic process has exited.",
+    "connectionGuide": {
+      "title": "Connection requirements",
+      "command": "Launch command",
+      "path": "PATH",
+      "pathRequirement": "{{command}} must resolve in Gold Band’s effective PATH, or select an explicit executable below.",
+      "fallback": "Fallback",
+      "installedCli": "A local {{command}} CLI can trigger controlled preparation of the ACP adapter.",
+      "preparedFallback": "Only a prepared npx cache is used; having npx available does not mean the Agent is installed.",
+      "auth": "Authentication",
+      "authRequirement": "Complete the provider login or configure supported credentials. Environment variables are saved in the local Agent configuration.",
+      "steps": "Check steps: resolve command → start ACP adapter → initialize → session/new → discover capabilities → clean up diagnostic process.",
+      "result": "Latest result",
+      "checkNow": "Check now",
+      "saveToCheck": "Saving runs the connection check automatically; the result also appears on the Agent card.",
+      "formChanged": "The form has changed. Saving will check the new configuration."
+    },
     "diagnosticFailed": "Environment check didn’t pass: {{reason}}",
     "diagnosticFailedNoReason": "Environment check didn’t pass.",
     "diagnosticFailedFallback": "Check the agent command, network, and authentication state.",
@@ -1334,7 +1359,8 @@
     "status": {
       "unknown": "Not checked",
       "healthy": "Healthy",
-      "unhealthy": "Unhealthy"
+      "unhealthy": "Unhealthy",
+      "stale": "Needs recheck"
     }
   },
   "contextManagement": {
@@ -3373,7 +3399,7 @@
     "installGuide": "Official installation guide",
     "discovering": "Checking local Agents…",
     "discovered": "{{count}} available Agents detected",
-    "noAgents": "No available Agent was detected. Install or sign in to an Agent, then check again.",
+    "noAgents": "No installed Agent was detected. Install any Agent, then check again.",
     "deferHint": "You can enter the app now and finish Agent setup later in Settings.",
     "defaultAgent": "Default Agent",
     "chooseAgent": "Choose an available Agent",
@@ -3402,6 +3428,16 @@
     "defaultsDescription": "Set the Agent, model, and permissions for built-in workflows. Custom workflows stay unchanged.",
     "configureDefaults": "Configure defaults",
     "rerun": "Run setup again",
+    "npxUnavailable": "Agents launched through npx are unavailable for now. Other Agents can still be detected.",
+    "allUnavailable": "The detected Agents are unavailable. See the reasons below.",
+    "actualNode": "Node.js in use {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Unavailable Agents: {{count}}",
+      "runtimeRequired": "Requires npm/npx",
+      "doctorFailed": "Diagnosis failed: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} is outside the verified range. Install {{recommended}} instead.",
+      "runtimeHint": "The runtime has issues that may prevent this Agent from starting."
+    },
     "steps": {
       "git": "Git",
       "runtime": "Runtime",
@@ -3409,12 +3445,12 @@
     },
     "titles": {
       "git": "Prepare Git",
-      "runtime": "Check the Node.js runtime",
+      "runtime": "Check the runtime",
       "agent": "Connect an Agent and choose your default model"
     },
     "descriptions": {
       "git": "Git provides version control. You can install it later.",
-      "runtime": "Node.js, npm, and npx must run correctly and be mutually compatible. Stable versions outside the verified ranges show a warning but do not block setup.",
+      "runtime": "Some Agents launch through npx and need Node.js, npm, and npx. Other Agents are not affected.",
       "agent": "Ready Agents are saved automatically. Choose your default model, then review and apply it to all built-in workflows."
     },
     "status": {
@@ -3428,14 +3464,14 @@
       "cancelled": "Cancelled",
       "skipped": "Skipped",
       "pending": "Not checked",
-      "checking": "Checking"
+      "checking": "Checking",
+      "warning": "Warning"
     },
     "errors": {
       "setup": {
         "agent-preparation-required": "Follow the provider’s installation or sign-in guide, then check again.",
         "probe-failed": "The check failed. Check again to retry.",
         "probe-cancelled": "The check was cancelled. Check again to continue.",
-        "runtime-incompatible": "Node.js, npm or npx does not meet the requirements. Check the runtime environment.",
         "environment-check-required": "Complete the runtime environment check first.",
         "configuration-conflict": "This configuration changed elsewhere. Check Agents again and review the latest changes.",
         "preview-stale": "The selected model or built-in workflows changed. Preview the changes again.",
@@ -3472,7 +3508,6 @@
       "probe-unavailable": "The runtime actually used could not be confirmed. Check the installation and try again.",
       "node-mismatch": "A different Node.js installation was used. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
       "node-version-mismatch": "Node.js versions differ. Expected: {{expectedVersion}}; actual: {{actualVersion}}.",
-      "node-path-mismatch": "The Node.js launch path differs. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
       "npm-metadata-missing": "The npm installation metadata could not be confirmed. Repair the Node.js/npm installation and check again.",
       "npm-engines-incompatible": "This npm does not support the current Node.js. Required: {{nodeRange}}.",
       "npm-version-mismatch": "npm version information differs. Output: {{expectedVersion}}; package: {{actualVersion}}.",

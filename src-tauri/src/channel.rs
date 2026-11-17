@@ -19,6 +19,9 @@ pub struct DesktopChannelConfig {
     pub metrics_api_key: &'static str,
     pub silent_update_enabled: bool,
     pub builtin_mcp_servers_json: &'static str,
+    /// Remote server-connection + remote SSH is intranet-only. Both channels get
+    /// the local terminal; only intranet channels enable remote connections.
+    pub remote_connections_enabled: bool,
 }
 
 pub fn current_channel_config() -> DesktopChannelConfig {
@@ -39,6 +42,7 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         metrics_api_key: option_env!("GOLD_BAND_METRICS_API_KEY").unwrap_or(""),
         silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
         builtin_mcp_servers_json: option_env!("GOLD_BAND_BUILTIN_MCP_SERVERS").unwrap_or("[]"),
+        remote_connections_enabled: option_env!("GOLD_BAND_REMOTE_CONNECTIONS_ENABLED") == Some("true"),
     };
     config
 }

@@ -154,6 +154,10 @@ export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & 
   kind: 'scheduled-task-config';
 };
 
+export type TerminalWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'terminal';
+};
+
 export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
@@ -170,7 +174,8 @@ export type RightWorkspaceResource =
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
   | RawFramesWorkspaceResource
-  | ScheduledTaskConfigWorkspaceResource;
+  | ScheduledTaskConfigWorkspaceResource
+  | TerminalWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];

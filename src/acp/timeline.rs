@@ -770,12 +770,11 @@ impl TimelineStore {
             {
                 let existing = if let Some(locator) = self.index.item_locators.get(&storage_item.id)
                 {
-                    Some(read_event_from_file_at_locator(
-                        existing_reader
-                            .as_mut()
-                            .expect("reader exists when an indexed item is present"),
-                        locator,
-                    )?)
+                    existing_reader
+                        .as_mut()
+                        .map(|reader| read_event_at_locator_tolerantly(reader, locator))
+                        .transpose()?
+                        .flatten()
                 } else {
                     None
                 };
@@ -1151,10 +1150,27 @@ fn timeline_prefix_fingerprint(path: &Utf8Path, covered_offset: u64) -> Result<u
     }
     const SAMPLE_BYTES: u64 = 4096;
     let mut file = File::open(path.as_std_path())?;
-    let start = covered_offset.saturating_sub(SAMPLE_BYTES);
+    let file_len = file.metadata()?.len();
+    // The index is a hint reconciled on every open via its fingerprint. Under
+    // concurrent atomic rewrites the live JSONL can transiently be shorter than
+    // the covered offset recorded by a still-fresh index; a full-buffer read
+    // would then fail with "failed to fill whole buffer". Sampling the bytes
+    // that actually exist keeps the fingerprint a pure function of the on-disk
+    // prefix (a short read only changes the fingerprint, which the caller
+    // reconciles by rebuilding the index) instead of crashing.
+    let end = covered_offset.min(file_len);
+    let start = end.saturating_sub(SAMPLE_BYTES);
     file.seek(SeekFrom::Start(start))?;
-    let mut sample = vec![0u8; (covered_offset - start) as usize];
-    file.read_exact(&mut sample)?;
+    let mut sample = vec![0u8; (end - start) as usize];
+    let mut read = 0;
+    while read < sample.len() {
+        let n = file.read(&mut sample[read..])?;
+        if n == 0 {
+            break;
+        }
+        read += n;
+    }
+    sample.truncate(read);
     let mut hasher = DefaultHasher::new();
     covered_offset.hash(&mut hasher);
     sample.hash(&mut hasher);
@@ -2007,6 +2023,38 @@ fn read_event_from_file_at_locator(
     parse_timeline_record(line)
         .map(|(_, item, _)| item)
         .ok_or_else(|| anyhow::anyhow!("acp.timeline-index-locator-corrupt"))
+}
+
+/// Like [`read_event_from_file_at_locator`], but tolerant of a stale locator.
+/// A concurrent atomic rewrite can shorten the JSONL after the in-memory index
+/// was built, so a recorded locator's `offset + line_length` may now fall past
+/// EOF. Reading exactly `line_length` bytes would then crash with "failed to
+/// fill whole buffer"; instead the record is reported as gone (`None`) so the
+/// upsert inserts a fresh record — the rewritten-away content is recovered, not
+/// silently dropped, and the index is reconciled on the next checkpoint.
+fn read_event_at_locator_tolerantly(
+    file: &mut File,
+    locator: &TimelineItemLocator,
+) -> Result<Option<AcpUiEvent>> {
+    file.seek(SeekFrom::Start(locator.offset))?;
+    let file_len = file.metadata()?.len();
+    if locator.offset.saturating_add(locator.line_length) > file_len {
+        // The in-memory index predates a concurrent atomic rewrite that
+        // shortened the JSONL; the recorded record is gone.
+        return Ok(None);
+    }
+    let mut bytes = vec![0u8; locator.line_length as usize];
+    if file.read_exact(&mut bytes).is_err() {
+        return Ok(None);
+    }
+    let Ok(line) = std::str::from_utf8(&bytes) else {
+        return Ok(None);
+    };
+    // A record that no longer parses at a recorded locator means the index is
+    // stale (a concurrent rewrite replaced the bytes there); treat it as gone so
+    // the upsert writes a fresh record instead of surfacing a transient
+    // corrupt-index error.
+    Ok(parse_timeline_record(line).map(|(_, item, _)| item))
 }
 
 pub fn read_indexed_timeline_page(

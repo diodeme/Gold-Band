@@ -24,6 +24,11 @@ struct ChannelConfig {
     metrics_api_key: String,
     #[serde(default)]
     builtin_mcp_servers: Vec<serde_json::Value>,
+    /// Remote server-connection + remote SSH is an **intranet-only** capability.
+    /// Terminal (local) is available in every channel; remote connections are
+    /// gated on this flag (external/public channels leave it false).
+    #[serde(default)]
+    remote_connections_enabled: bool,
 }
 
 fn main() {
@@ -122,6 +127,10 @@ fn main() {
     );
     let builtin_mcp_json = serde_json::to_string(&config.builtin_mcp_servers).unwrap_or_default();
     println!("cargo:rustc-env=GOLD_BAND_BUILTIN_MCP_SERVERS={builtin_mcp_json}");
+    println!(
+        "cargo:rustc-env=GOLD_BAND_REMOTE_CONNECTIONS_ENABLED={}",
+        config.remote_connections_enabled
+    );
 
     tauri_build::build()
 }

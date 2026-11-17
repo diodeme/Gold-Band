@@ -715,6 +715,7 @@ mod tests {
         let queued = enqueue_prompt(
             &dir,
             ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: String::new(),
                 quotes: Vec::new(),
             },
@@ -743,6 +744,7 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
+                context_connections: Vec::new(),
             },
             Vec::new(),
         )
@@ -763,6 +765,7 @@ mod tests {
         let first = enqueue_prompt(
             &dir,
             ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "first".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),
@@ -844,6 +847,7 @@ mod tests {
         let queued = enqueue_prompt(
             &dir,
             ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "restore me".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),

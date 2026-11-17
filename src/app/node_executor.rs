@@ -578,12 +578,23 @@ pub(crate) fn build_worker_invocation(
         SessionMode::Continue => (Vec::new(), resume_input_attachment_paths),
     };
 
+    let run: crate::runtime::RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+
     let mcp_resolution_started_at = Instant::now();
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
-    let mcp_servers = mcp_mgr.configured_acp_mcp_servers().unwrap_or_else(|e| {
+    let mut mcp_servers = mcp_mgr.configured_acp_mcp_servers().unwrap_or_else(|e| {
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
         Vec::new()
     });
+    // 连接→对话 阶段4：桌面层已起监听即注入连接 MCP 工具 server。**不**以
+    // `run.connection_specs` 非空为条件——MCP 工具集在 ACP 会话创建时固化，若按
+    // 绑定状态注入，会话中途绑定连接永远无法生效（现场事故：先开会话后附连接，
+    // agent 的 `open_connection` 报 No such tool available）。工具作用域由 URL 里
+    // 的 runId 按请求现读（未绑定时 list 返回空、open 拒绝），无条件注入无害。
+    if let Some(port) = app.connection_mcp_endpoint_port() {
+        let url = super::connection_mcp_url(port, &app.paths.project_id, task_id, run_id);
+        mcp_servers.push(super::connection_mcp_server_config(&url));
+    }
     info!(
         target: "gold_band::perf",
         task_id,
@@ -632,7 +643,10 @@ pub(crate) fn build_worker_invocation(
         predecessors,
         new_round_trigger,
         extra_system_sections: Vec::new(),
-        extra_hidden_sections: Vec::new(),
+        extra_hidden_sections: crate::provider::connection_hidden_sections(
+            &run.connection_specs,
+            app.config.desktop_language,
+        ),
         task_instruction,
         user_tips_instruction: None,
         resume_task_instruction: None,
@@ -1519,6 +1533,7 @@ mod tests {
 
     fn write_attachment_test_run(app: &App) {
         let run = crate::runtime::RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -1700,6 +1715,262 @@ mod tests {
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled
         );
+    }
+
+    #[test]
+    fn worker_invocation_injects_bound_connection_sections() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let run_file = app.paths.run_file("task-001", "run-001");
+        let mut run: crate::runtime::RunState = crate::storage::read_json(&run_file).unwrap();
+        run.connection_specs = vec![crate::app::ConnectionSpec {
+            id: "conn-001".to_string(),
+            name: "wb-prod-db".to_string(),
+            host: "10.0.0.5".to_string(),
+            port: 22,
+            username: "app".to_string(),
+            auth_method: crate::app::ConnectionAuthMethod::PublicKey,
+            env: crate::app::ConnectionEnvironment::Prod,
+            jump_ref: Some("jump-001".to_string()),
+        }];
+        crate::storage::write_json(&run_file, &run).unwrap();
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert!(!invocation.extra_hidden_sections.is_empty());
+        let joined = invocation
+            .extra_hidden_sections
+            .iter()
+            .map(|section| format!("{} {}", section.title, section.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("wb-prod-db"), "spec name in hidden title: {joined}");
+        assert!(joined.contains("via-jump=jump-001"), "jump ref in hidden content: {joined}");
+        // The tool-usage contract must ride along with the specs: without it the
+        // agent improvises its own shell SSH and hangs on interactive prompts
+        // (observed in the field). Assertions stay language-agnostic — the
+        // contract is bilingual (src/prompts/{zh-CN,en}/connections) and the
+        // config default language picks one.
+        assert!(
+            joined.contains("open_connection") && joined.contains("`ssh`"),
+            "tool-usage instructions present in hidden context: {joined}"
+        );
+        assert!(
+            joined.contains(crate::provider::CONNECTION_TOOLS_MISSING_MARKER),
+            "tool-missing marker protocol present in hidden context: {joined}"
+        );
+        assert!(
+            !joined.contains("s3cret") && !joined.contains("id_ed25519"),
+            "hidden context stays non-secret: {joined}"
+        );
+    }
+
+    #[test]
+    fn worker_invocation_emits_no_connection_sections_when_none_bound() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert!(
+            invocation.extra_hidden_sections.is_empty(),
+            "no hidden sections when no connections bound"
+        );
+    }
+
+    #[test]
+    fn worker_invocation_injects_connection_mcp_server_when_bound_and_endpoint_listening() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_connection_mcp_endpoint_port(9123);
+        write_attachment_test_run(&app);
+        let run_file = app.paths.run_file("task-001", "run-001");
+        let mut run: crate::runtime::RunState = crate::storage::read_json(&run_file).unwrap();
+        run.connection_specs = vec![crate::app::ConnectionSpec {
+            id: "conn-001".to_string(),
+            name: "wb-prod-db".to_string(),
+            host: "10.0.0.5".to_string(),
+            port: 22,
+            username: "app".to_string(),
+            auth_method: crate::app::ConnectionAuthMethod::PublicKey,
+            env: crate::app::ConnectionEnvironment::Prod,
+            jump_ref: None,
+        }];
+        crate::storage::write_json(&run_file, &run).unwrap();
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        let connection_server = invocation
+            .mcp_servers
+            .iter()
+            .find(|server| server["name"] == "gold-band-connections")
+            .expect("connection MCP server injected");
+        assert_eq!(connection_server["type"], "http");
+        let url = connection_server["url"].as_str().unwrap();
+        assert!(url.starts_with("http://127.0.0.1:9123/mcp?projectId="), "url: {url}");
+        assert!(url.ends_with("&taskId=task-001&runId=run-001"), "url: {url}");
+    }
+
+    #[test]
+    fn worker_invocation_omits_connection_mcp_server_without_a_listening_endpoint() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        // No `.with_connection_mcp_endpoint_port(..)`: the desktop layer has not
+        // started the HTTP endpoint, so injecting a URL would point nowhere.
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let run_file = app.paths.run_file("task-001", "run-001");
+        let mut run: crate::runtime::RunState = crate::storage::read_json(&run_file).unwrap();
+        run.connection_specs = vec![crate::app::ConnectionSpec {
+            id: "conn-001".to_string(),
+            name: "wb-prod-db".to_string(),
+            host: "10.0.0.5".to_string(),
+            port: 22,
+            username: "app".to_string(),
+            auth_method: crate::app::ConnectionAuthMethod::PublicKey,
+            env: crate::app::ConnectionEnvironment::Prod,
+            jump_ref: None,
+        }];
+        crate::storage::write_json(&run_file, &run).unwrap();
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert!(
+            !invocation
+                .mcp_servers
+                .iter()
+                .any(|server| server["name"] == "gold-band-connections"),
+            "no endpoint listening, so no connection MCP server url would be reachable"
+        );
+    }
+
+    #[test]
+    fn worker_invocation_injects_connection_mcp_server_even_when_no_connections_bound() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_connection_mcp_endpoint_port(9123);
+        write_attachment_test_run(&app);
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        // Unconditionally injected: the tool set is fixed at ACP session
+        // creation, so a mid-session binding must already find the tools
+        // registered. Scoping (what the agent may open) is enforced per request
+        // by the run-scoped factory, not by injection presence.
+        let connection_server = invocation
+            .mcp_servers
+            .iter()
+            .find(|server| server["name"] == "gold-band-connections")
+            .expect("connection MCP server injected even with no bindings");
+        let url = connection_server["url"].as_str().unwrap();
+        assert!(url.starts_with("http://127.0.0.1:9123/mcp?projectId="), "url: {url}");
+        assert!(url.ends_with("&taskId=task-001&runId=run-001"), "url: {url}");
     }
 
     #[test]

@@ -35,8 +35,11 @@ jsonschema = { version = "0.17", default-features = false }
 minijinja = "2"
 parking_lot = "0.12"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "net", "sync", "time", "test-util"] }
 tokio-util = { version = "0.7", features = ["time"] }
+bytes = "1"
+russh = { version = "0.63.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+ssh-key = "0.7.0-rc.11"
 uuid = { version = "1", features = ["v4", "v5"] }
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -53,6 +56,9 @@ atomic-write-file = "0.2"
 blake3 = "1"
 similar = "3.1"
 unicode-properties = { version = "0.1", features = ["general-category"] }
+keyring = "4"
+portable-pty = "0.9.0"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
@@ -64,3 +70,4 @@ uzers = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+rand = { version = "0.10", features = ["thread_rng"] }

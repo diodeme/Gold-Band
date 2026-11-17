@@ -10,7 +10,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 它不是：
 - CLI / TUI 的图形皮肤
 - 聊天应用
-- 终端模拟器
+- 通用终端模拟器（桌面端保留受管的「连接与终端」隔离模块，只面向受控测试环境的本地 shell 与 SSH 接入，不构成通用终端仿真，见 [连接与终端](terminal-and-connections.md)）
 - 单页运行态大仪表盘
 
 它是：
@@ -84,6 +84,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [Agent 管理页](agent-management.md)
 - [上下文管理与角色批量导入](context-management.md)
 - [设置页](settings.md)
+- [连接与终端](terminal-and-connections.md)
 - [WebView 兼容能力与分级降级](webview-compatibility.md)
 
 ---
@@ -110,6 +111,8 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - terminal 输入区
 - chat input
 - 自然语言命令解析
+
+上述「不使用」适用于任务编排 / 会话等主路径。桌面端另有独立的受管「连接与终端」模块，提供本地 shell 与 SSH 终端用于受控测试环境排障，与主路径命令心智隔离，见 [连接与终端](terminal-and-connections.md)。
 
 ### 5.3 Canonical state 与观测信息分层
 桌面端展示运行过程时必须区分：
@@ -161,7 +164,7 @@ MVP 范围：
 - Agent 管理负责维护已配置 agent type、执行命令、环境变量与诊断状态。
 - Worker / Verify 节点必须显式声明 `provider`，当前语义为 managed agent type；运行时不提供默认 Claude 兜底。
 - 知识库、模型管理保持一级导航占位。
-- 不提供 command bar、slash command、terminal input 或 chat input。
+- 任务编排主路径不提供 command bar、slash command、terminal input 或 chat input；受管「连接与终端」作为独立模块承载测试环境终端排障（见 [连接与终端](terminal-and-connections.md)）。
 
 ---
 

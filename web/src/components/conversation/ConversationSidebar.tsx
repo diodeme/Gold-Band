@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Plug, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/conversation-run-identity';
 import { formatCompactRelativeTime } from '@/lib/datetime';
+import { useFeatureAvailability } from '@/lib/feature-availability';
 
 export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
 
@@ -30,6 +31,7 @@ export type ConversationSidebarNavigationKey =
   | 'contexts'
   | 'run-mode-management'
   | 'scheduled-tasks'
+  | 'connections-terminal'
   | null;
 
 export function conversationSidebarNavigationKey(page: ConversationPage): ConversationSidebarNavigationKey {
@@ -41,6 +43,7 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'contexts':
     case 'run-mode-management':
     case 'scheduled-tasks':
+    case 'connections-terminal':
       return page.kind;
     case 'scheduled-task-detail':
       return 'scheduled-tasks';
@@ -95,6 +98,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onRequestTaskRuns,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
+  const { remoteConnectionsEnabled } = useFeatureAvailability();
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
   const [activeRunListScope, setActiveRunListScope] = useState<ConversationSidebarRunListScope>('workspace');
@@ -303,6 +307,15 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
+          {remoteConnectionsEnabled ? (
+            <SidebarButton
+              compact
+              active={activeNavigationKey === 'connections-terminal'}
+              icon={<Plug />}
+              label={t('conversation.sidebar.connectionsTerminal')}
+              onClick={() => onSelect({ kind: 'connections-terminal' })}
+            />
+          ) : null}
           <SidebarButton
             compact
             active={activeNavigationKey === 'scheduled-tasks'}

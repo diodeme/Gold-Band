@@ -140,7 +140,7 @@ Agent 管理
 - 用户始终知道自己处于哪个一级模块。
 
 ### 6.2 避免终端心智
-应用壳不提供：
+应用壳主路径不提供：
 - command bar
 - slash command
 - terminal input
@@ -152,6 +152,8 @@ Agent 管理
 - 右键菜单
 - 设置页
 - 快捷键
+
+主路径约束不覆盖独立的受管「连接与终端」模块：该模块以受管子进程承载本地 shell 与 SSH 终端，只面向受控测试环境排障，入口、数据与主路径命令心智隔离，见 [连接与终端](terminal-and-connections.md)。
 
 ### 6.3 适配桌面窗口
 功能区应支持：
@@ -217,7 +219,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
 - Tauri window 默认逻辑尺寸为 1280×720，并使用宿主原生 `center` 定位；`src-tauri/tauri.conf.json` 只管理默认尺寸、初始位置与 chrome 属性，页面最小尺寸唯一来自 `configs/app-config.toml` 的 `workspaceLayout`。渠道构建 overlay 只能完整继承基础 window config 并覆盖渠道属性，不能独立硬编码宽高、位置或最小尺寸。
-- 应用壳不提供命令输入、slash command、terminal input 或 chat input。
+- 应用壳主路径不提供命令输入、slash command、terminal input 或 chat input；受管「连接与终端」是独立模块，见 [连接与终端](terminal-and-connections.md)。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
 - 2026-06-19 起桌面 bootstrap 暴露 `platform` 作为前端唯一平台事实源：macOS 启用原生 traffic lights + overlay 标题栏并隐藏系统标题文本；Windows/Linux 继续关闭整窗 decorations，由共享顶栏右侧自定义窗口控制接管最小化、最大化/还原和关闭。
@@ -259,6 +261,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-16：Gold Band 浅色主题的共享顶栏与侧栏统一使用 `#fafafa` sidebar surface，消除顶栏白色条带与导航区之间的色阶断层；深色 Gold Band 和技术中性主题维持各自已有声明。该视觉由主题 token/recipe 投影，禁止在共享 `AppTitleBar` 中按主题特判。
 - 2026-08-15：共享顶栏从 44px 收紧为 36px，品牌图标容器同步收紧为 24×36px，应用标题由 14px 提升为 16px，并使用独立 700 字重而不是全局映射为 520 的 `font-bold`；帮助入口为 28px 高，左右栏开关保持 28px，Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。改动只调整共享 `AppTitleBar` 的静态布局 token，不改变拖拽区、平台控制策略和窗口生命周期。
 - 2026-08-20：用户反馈紧凑顶栏中的品牌标识视觉权重偏低。共享 `AppTitleBar` 的品牌图标容器由 24×36px 提升为 28×36px，标题、操作按钮、拖拽区和平台窗口控制策略保持不变；尺寸作为单一 layout token，由所有页面共同消费。
+- 2026-09-02：会话模式侧栏固定导航区新增「连接」入口（`ConversationPage.kind = 'connections-terminal'`，deep link `/chat/connections`），与 Agent / 上下文 / 运行模式 / 定时任务同级，属不绑定 workspace 的用户级页面；受管连接与终端是有意保留的隔离能力，主路径仍不提供 command bar / slash command / terminal input / chat input。页面定位、数据模型与安全边界见 [连接与终端](terminal-and-connections.md)。
 
 ---
 

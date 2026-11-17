@@ -15,5 +15,6 @@
   "feedbackEnabled": false,
   "metricsToggleLocked": false,
   "metricsBaseUrl": "",
-  "metricsApiKey": ""
+  "metricsApiKey": "",
+  "remoteConnectionsEnabled": false
 }

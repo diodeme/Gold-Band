@@ -26,6 +26,7 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
+  PlugZap,
   Search,
   ShieldQuestion,
   Terminal,
@@ -83,6 +84,7 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { onTerminalQuote } from "@/lib/terminal-quote-bus";
 import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
@@ -163,7 +165,12 @@ import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelect
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { UserMessageQuotes } from "@/components/conversation/UserMessageQuotes";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
-import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
+import {
+  CONNECTION_TOOLS_MISSING_MARKER,
+  parseCommittedSlashCommand,
+  parseModelSlashInput,
+  restoreSlashCommandInputFocus,
+} from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -258,8 +265,15 @@ import {
   showConversationMessageAttachment,
   stopActiveSession,
   submitManualCheck,
+  provideTerminalAuth,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import { ConversationOtpCard } from '@/components/terminal/ConversationOtpCard';
+import {
+  dismissTerminalOtpRequest,
+  resolveTerminalOtpRequest,
+  useTerminalOtpRequests,
+} from '@/lib/terminal-otp-bus';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import {
   ACP_SESSION_COMPOSER_BORDER_STYLE,
@@ -2320,6 +2334,21 @@ export function ACPChatDialog(
   });
   const stopInProgress = composerState.stopInProgress;
   const composerInputDisabled = composerState.inputDisabled;
+  // 会话驱动的连接进入口令等待：输入卡片出现在发起它的对话 composer 上方
+  // （AskUserQuestion 式，非阻塞）。请求来自口令桥，与本对话 run 精确匹配。
+  const conversationOtpRequest = useTerminalOtpRequests().find((request) => request.origin
+    && request.origin.projectId === projectId
+    && request.origin.taskId === taskId
+    && request.origin.runId === runId) ?? null;
+  // 连接工具失联恢复（连接→对话）：agent 按工具契约以失联标记结束本轮后，应用
+  // 已自动重注册工具（detach → 下一轮 resume/new 携带完整 mcpServers）。恢复态
+  // 从时间线派生：最新一条消息是含标记的 agent 消息（其后无新用户轮次）时给出
+  // 一键重试，消除「需要用户手动重发」的死路（现场事故 d596d1c9）。用户重发后
+  // 最新消息回到 userTextDelta，横幅随之消失。
+  const connectionToolsRecovery = useMemo(
+    () => deriveConnectionToolsRecovery(timeline),
+    [timeline],
+    );
   const composerSessionSeconds = useSessionTimingSeconds(
     effective?.timing,
     effective?.sessionElapsedSeconds ?? null,
@@ -5183,11 +5212,40 @@ export function ACPChatDialog(
 
   const send = async () => {
     if (!canSubmitPrompt) return;
+    // CC 内建 /model（会话内切换模型）会重建 agent 侧工具集，导致 ACP 注入的
+    // 连接 MCP 工具从可用列表消失（现场事故）。这类 local 命令不转发原始文本，
+    // 改路由到产品的模型切换（session/set_config_option，同一会话内安全生效）。
+    // 识别用固定模式而非命令目录：目录未加载/未收录时 `/model <args>` 曾原样
+    // 转发（现场事故 d596d1c9）。
+    const modelSlashArg = parseModelSlashInput(prompt);
+    if (modelSlashArg !== null) {
+      handleModelSlashCommand(modelSlashArg);
+      return;
+    }
     const draftSnapshot = composerDraft.draft;
     const submission = createUserPromptSubmission(prompt, quotes);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
+  };
+
+  const handleModelSlashCommand = (requested: string) => {
+    if (!requested) {
+      setComposerContextError(t('acp.slashModelMissingValue'));
+      return;
+    }
+    const requestedLower = requested.toLowerCase();
+    const available = sessionConfigViewModel.availableModels;
+    const match = available.find((option) => option.id.toLowerCase() === requestedLower
+      || (option.name ?? '').toLowerCase() === requestedLower)
+      ?? available.find((option) => (option.name ?? '').toLowerCase().includes(requestedLower));
+    if (!match) {
+      setComposerContextError(t('acp.slashModelUnknown', { requested }));
+      return;
+    }
+    setComposerContextError(null);
+    composerDraft.setContent('');
+    handleAcpSessionModelChange(match.id);
   };
 
   const addSelectedQuote = useCallback((selection: AgentMessageSelection) => {
@@ -5210,6 +5268,32 @@ export function ACPChatDialog(
       setComposerContextError(null);
       requestAnimationFrame(() => composerTextareaRef.current?.focus());
       return result.quotes;
+    });
+  }, [setQuotes, t]);
+
+  // 终端选区 → 对话引用（连接→对话）：终端面板（右侧工作区）选中文本后通过
+  // 引用桥跨树注入到本会话 composer 的引用列表。
+  useEffect(() => {
+    return onTerminalQuote(({ text }) => {
+      setQuotes((current) => {
+        const result = addComposerQuote(current, {
+          id: crypto.randomUUID(),
+          sourceKey: `terminal:${Date.now()}`,
+          text,
+        });
+        if (!result.ok) {
+          setComposerContextError(
+            result.code === 'composer.quote.limit-exceeded'
+              ? t('acp.quoteLimitExceeded', { max: result.maxChars.toLocaleString() })
+              : result.code === 'composer.quote.count-exceeded'
+                ? t('acp.quoteCountExceeded', { max: result.maxQuotes })
+                : t('acp.quoteDuplicate'),
+          );
+          return current;
+        }
+        setComposerContextError(null);
+        return result.quotes;
+      });
     });
   }, [setQuotes, t]);
 
@@ -5883,6 +5967,42 @@ export function ACPChatDialog(
                 onReorder={reorderQueuedPrompts}
                 onUse={useQueuedPrompt}
                 onDelete={deleteQueuedPrompt}
+              />
+            ) : null}
+            {readOnly ? null : connectionToolsRecovery.markerDetected ? (
+              <div
+                data-connection-tools-recovery="true"
+                className="mx-2 mb-2 flex items-center gap-2 rounded-lg border border-amber-500/40 px-3 py-2"
+              >
+                <PlugZap aria-hidden className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {t('acp.connectionToolsRecoveryNotice')}
+                </p>
+                {connectionToolsRecovery.retryText ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0"
+                    disabled={!composerState.canSubmit || sending}
+                    onClick={() => {
+                      void submitPrompt(
+                        createUserPromptSubmission(connectionToolsRecovery.retryText, []),
+                      );
+                    }}
+                  >
+                    {t('acp.connectionToolsRecoveryRetry')}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {readOnly ? null : conversationOtpRequest ? (
+              <ConversationOtpCard
+                request={conversationOtpRequest}
+                onSubmit={async (sessionId, answer) => {
+                  await provideTerminalAuth(sessionId, answer);
+                  resolveTerminalOtpRequest(sessionId);
+                }}
+                onDismiss={dismissTerminalOtpRequest}
               />
             ) : null}
             {readOnly ? null : composerState.externalKind ? (
@@ -9405,6 +9525,32 @@ export function promptRetryFooterKind(event: AcpUiEventVm) {
   if (event.status === "failed") return "failed";
   if (event.status === "cancelled") return "cancelled";
   return "retrying";
+}
+
+/**
+ * 连接工具失联恢复态（纯派生，便于回归测试）：扫描时间线消息，仅当**最新一条
+ * 消息**是含失联标记的 agent 消息时判定恢复待重试，并带出最近一条用户消息文本
+ * 作为重试内容。工具调用、活动批、agent 链接等非消息项不参与判定。
+ */
+export function deriveConnectionToolsRecovery(
+  items: readonly { kind: string; content?: string | null }[],
+): { markerDetected: boolean; retryText: string } {
+  let lastMessage: { kind: string; content?: string | null } | null = null;
+  let lastUserText: string | null = null;
+  for (const item of items) {
+    if (item.kind === 'userTextDelta') {
+      lastMessage = item;
+      lastUserText = item.content ?? null;
+    } else if (item.kind === 'textDelta') {
+      lastMessage = item;
+    }
+  }
+  const markerDetected = lastMessage?.kind === 'textDelta'
+    && (lastMessage.content ?? '').includes(CONNECTION_TOOLS_MISSING_MARKER);
+  return {
+    markerDetected,
+    retryText: markerDetected ? (lastUserText ?? '').trim() : '',
+  };
 }
 
 function isGoldBandUserPrompt(event: AcpUiEventVm) {

@@ -602,6 +602,11 @@ pub struct ConversationRunVm {
     pub runtime_error: Option<RuntimeErrorInfo>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
+    /// Non-secret connections bound to this conversation run (`RunState.connection_specs`).
+    /// Drives the conversation's "connection reference" card; the agent's hidden
+    /// context and connection MCP tool scope read the same specs. Never carries a
+    /// key path or credential.
+    pub connections: Vec<gold_band::app::ConnectionSpec>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -893,6 +898,12 @@ pub struct ConversationCreateInputVm {
     pub scheduled_content_fingerprint: Option<String>,
     #[serde(default)]
     pub workflow_authoring: Option<TaskAuthoringWorkflow>,
+    /// Pre-attached connection from the home composer (阶段4). Bound onto the
+    /// run BEFORE its first turn launches, so the agent's first session has the
+    /// connection in its hidden context from turn 1 (a post-create bind races
+    /// the background launch and loses — observed in the field).
+    #[serde(default)]
+    pub connection_id: Option<String>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -4124,6 +4135,7 @@ pub fn conversation_run_vm(
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
         worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+        connections: run.connection_specs.clone(),
     })
 }
 
@@ -4818,7 +4830,23 @@ pub fn create_conversation_run_vm(
     } else {
         app.prepare_run(&task_id, None)?
     };
-    let run = app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
+    // Pre-attached connection MUST be set on the accepted run BEFORE launch: the
+    // background first turn reads the run state to build its prompt (hidden
+    // context) and any post-launch bind races it — and gets wiped when the turn
+    // persists run state it loaded before the bind (both observed in the field).
+    let mut accepted = prepared_run.accept();
+    if let Some(connection_id) = input.connection_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        match app.get_server_connection(connection_id) {
+            Ok(connection) => accepted.set_connection_specs(vec![connection.spec()]),
+            Err(error) => tracing::warn!(
+                task_id = %task_id,
+                connection_id = %connection_id,
+                error = %error,
+                "failed to resolve pre-attached connection; run starts without it"
+            ),
+        }
+    }
+    let run = app.launch_prepared_run_background(&task_id, accepted)?;
     prepared_task.accept();
     if let Some(run_mode) = conversation_run_mode_from_label(&input.run_mode) {
         emit_conversation_run_started(app, &input.project_id, &task_id, &run.id, run_mode);
@@ -4863,6 +4891,7 @@ pub fn create_conversation_run_vm(
                 runtime_error: None,
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+                connections: run.connection_specs.clone(),
             }
         });
     let task = conversation_task_row_vm(app, &input.project_id, &task_id, false, None)?;
@@ -4945,6 +4974,7 @@ pub fn rerun_conversation_task_vm(
             runtime_error: None,
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+            connections: run.connection_specs.clone(),
         })
     })
 }
@@ -6876,6 +6906,7 @@ mod tests {
     fn scheduled_auto_snapshot_preserves_agent_and_strategy_identity() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this automatically".to_string(),
             run_mode: ConversationRunMode::Auto.as_str().to_string(),
@@ -7003,6 +7034,7 @@ mod tests {
             }
         }));
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "start a direct conversation".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7044,6 +7076,7 @@ mod tests {
     fn worktree_validation_preserves_the_non_git_preflight_error_code() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run in an isolated worktree".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7068,6 +7101,7 @@ mod tests {
     fn scheduled_task_materialization_creates_task_without_starting_run() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this later".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7097,6 +7131,7 @@ mod tests {
     fn task_metadata_update_returns_the_authoritative_task_projection() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "h".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7138,6 +7173,7 @@ mod tests {
         let attachment = app.paths.repo_root.join("context.txt");
         fs::write(attachment.as_std_path(), "attachment content").unwrap();
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: String::new(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7178,6 +7214,7 @@ mod tests {
     fn conversation_task_creation_rolls_back_when_attachment_copy_fails() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            connection_id: None,
             project_id: app.paths.project_id.clone(),
             content: "task must roll back".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),

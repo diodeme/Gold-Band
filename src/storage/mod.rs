@@ -313,6 +313,18 @@ impl GoldBandPaths {
         self.user_context_dir().join("auto-templates.json")
     }
 
+    pub fn server_connections_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("server-connections.json")
+    }
+
+    pub fn recent_connections_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("recent-connections.json")
+    }
+
+    pub fn known_hosts_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("known_hosts")
+    }
+
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
         self.user_gold_band_root
             .join("desktop/agent-diagnostics.json")

@@ -381,6 +381,7 @@ impl ScheduledTaskService {
             selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            connection_id: None,
             workflow_authoring: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
@@ -549,6 +550,7 @@ impl ScheduledTaskService {
             selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            connection_id: None,
             workflow_authoring: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)

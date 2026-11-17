@@ -1,6 +1,6 @@
 import { getRuntimeApi } from './api/client';
 import type { RuntimeApi } from './api/client';
-import type { ResolvedColorScheme } from './types';
+import type { DetachedWindowKind, DetachedWindowVm, ResolvedColorScheme, ServerConnectionInput, ServerConnectionVm, RecentConnectionVm, TerminalSessionVm, TerminalEventVm } from './types';
 
 export { isTauriRuntime } from './api/shared';
 
@@ -614,8 +614,97 @@ export function runScheduledTaskNow(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().runScheduledTaskNow(projectId, scheduledTaskId);
 }
 
+// ── Server Connections & Terminal ──
+export function listServerConnections(): Promise<ServerConnectionVm[]> {
+  return getRuntimeApi().listServerConnections();
+}
+
+export function getServerConnection(id: string): Promise<ServerConnectionVm> {
+  return getRuntimeApi().getServerConnection(id);
+}
+
+export function createServerConnection(input: ServerConnectionInput): Promise<ServerConnectionVm> {
+  return getRuntimeApi().createServerConnection(input);
+}
+
+export function updateServerConnection(id: string, input: ServerConnectionInput): Promise<ServerConnectionVm> {
+  return getRuntimeApi().updateServerConnection(id, input);
+}
+
+export function deleteServerConnection(id: string): Promise<ServerConnectionVm[]> {
+  return getRuntimeApi().deleteServerConnection(id);
+}
+
+export function listRecentConnections(): Promise<RecentConnectionVm[]> {
+  return getRuntimeApi().listRecentConnections();
+}
+
+export function openLocalTerminal(cwd?: string | null): Promise<TerminalSessionVm> {
+  return getRuntimeApi().openLocalTerminal(cwd);
+}
+
+export function openRemoteTerminal(connectionId: string): Promise<TerminalSessionVm> {
+  return getRuntimeApi().openRemoteTerminal(connectionId);
+}
+
+export function provideTerminalAuth(sessionId: string, answer: string): Promise<void> {
+  return getRuntimeApi().provideTerminalAuth(sessionId, answer);
+}
+
+export function openDetachedWindow(kind: DetachedWindowKind, sessionId?: string | null): Promise<DetachedWindowVm> {
+  return getRuntimeApi().openDetachedWindow(kind, sessionId);
+}
+
+export function closeDetachedWindow(label: string): Promise<void> {
+  return getRuntimeApi().closeDetachedWindow(label);
+}
+
+export function listDetachedWindows(): Promise<DetachedWindowVm[]> {
+  return getRuntimeApi().listDetachedWindows();
+}
+
+export function subscribeDetachedWindowClosed(listener: () => void): Promise<() => void> {
+  return getRuntimeApi().subscribeDetachedWindowClosed?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function getTerminalHistory(sessionId: string): Promise<string> {
+  return getRuntimeApi().getTerminalHistory(sessionId);
+}
+
+export function pickDirectory(): Promise<string | null> {
+  return getRuntimeApi().pickDirectory();
+}
+
+export function listTerminalSessions(): Promise<TerminalSessionVm[]> {
+  return getRuntimeApi().listTerminalSessions();
+}
+
+export function writeTerminalInput(sessionId: string, base64: string): Promise<void> {
+  return getRuntimeApi().writeTerminalInput(sessionId, base64);
+}
+
+export function resizeTerminal(sessionId: string, rows: number, cols: number): Promise<void> {
+  return getRuntimeApi().resizeTerminal(sessionId, rows, cols);
+}
+
+export function closeTerminalSession(sessionId: string): Promise<void> {
+  return getRuntimeApi().closeTerminalSession(sessionId);
+}
+
+export function subscribeTerminalEvents(listener: (event: TerminalEventVm) => void): Promise<() => void> {
+  return getRuntimeApi().subscribeTerminalEvents?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {
   return getRuntimeApi().getConversationRun(projectId, taskId, runId, selectedSessionKey);
+}
+
+export function bindConversationConnection(projectId: string, taskId: string, runId: string, connectionId: string) {
+  return getRuntimeApi().bindConversationConnection(projectId, taskId, runId, connectionId);
+}
+
+export function unbindConversationConnection(projectId: string, taskId: string, runId: string, connectionId: string) {
+  return getRuntimeApi().unbindConversationConnection(projectId, taskId, runId, connectionId);
 }
 
 export function validateConversationCreate(input: Parameters<ReturnType<typeof getRuntimeApi>['validateConversationCreate']>[0]) {

@@ -13,6 +13,7 @@ import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForA
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
+import { ConversationHomeAttach } from '@/components/conversation/ConversationConnectionRefs';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
@@ -72,6 +73,12 @@ interface ConversationComposerProps {
   onWorkspaceChange: (projectId: string) => void;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
+  /** Home-composer connection attach (pre-first-turn). Draft state lives in the
+   *  parent; the run binding happens after creation. Omit to hide the entry. */
+  connectionAttach?: {
+    selectedId: string | null;
+    onSelect: (connectionId: string | null) => void;
+  };
 }
 
 interface ConversationWorkspaceControlProps {
@@ -428,6 +435,7 @@ export function ConversationComposer({
   onWorkspaceChange,
   onWorkLocationChange,
   onScheduledModeExit,
+  connectionAttach,
 }: ConversationComposerProps) {
   const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
@@ -987,6 +995,13 @@ export function ConversationComposer({
               >
                 <Paperclip className="size-3.5" />
               </Button>
+              {connectionAttach ? (
+                <ConversationHomeAttach
+                  selectedId={connectionAttach.selectedId}
+                  onSelect={connectionAttach.onSelect}
+                  disabled={busy}
+                />
+              ) : null}
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"

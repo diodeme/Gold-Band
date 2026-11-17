@@ -12,6 +12,7 @@ import type {
   AutoTemplate,
   AutoTemplateStore,
   ContentVm,
+  ConnectionRefVm,
   ConversationAutoConfigVm,
   ConversationCreateResultVm,
   ConversationCreateInput,
@@ -53,6 +54,13 @@ import type {
   ProfileInput,
   ProfileListVm,
   ProfileVm,
+  RecentConnectionVm,
+  ServerConnectionInput,
+  ServerConnectionVm,
+  TerminalSessionVm,
+  TerminalEventVm,
+  ConnectionEnvironment,
+  ConnectionAuthMethod,
   RoundDetailVm,
   RoundSelection,
   RunDetailVm,
@@ -330,6 +338,24 @@ export interface RuntimeApi {
   updateAutoTemplate(templateId: string, name: string, config: ConversationAutoConfigVm): Promise<AutoTemplateStore>;
   deleteAutoTemplate(templateId: string): Promise<AutoTemplateStore>;
   replaceAutoTemplates(templates: AutoTemplate[]): Promise<AutoTemplateStore>;
+  listServerConnections(): Promise<ServerConnectionVm[]>;
+  getServerConnection(id: string): Promise<ServerConnectionVm>;
+  createServerConnection(input: ServerConnectionInput): Promise<ServerConnectionVm>;
+  updateServerConnection(id: string, input: ServerConnectionInput): Promise<ServerConnectionVm>;
+  deleteServerConnection(id: string): Promise<ServerConnectionVm[]>;
+  listRecentConnections(): Promise<RecentConnectionVm[]>;
+  listTerminalSessions(): Promise<TerminalSessionVm[]>;
+  pickDirectory(): Promise<string | null>;
+  openLocalTerminal(cwd?: string | null): Promise<TerminalSessionVm>;
+  openRemoteTerminal(connectionId: string): Promise<TerminalSessionVm>;
+  provideTerminalAuth(sessionId: string, answer: string): Promise<void>;
+  openDetachedWindow(kind: import('../types').DetachedWindowKind, sessionId?: string | null): Promise<import('../types').DetachedWindowVm>;
+  closeDetachedWindow(label: string): Promise<void>;
+  listDetachedWindows(): Promise<import('../types').DetachedWindowVm[]>;
+  getTerminalHistory(sessionId: string): Promise<string>;
+  writeTerminalInput(sessionId: string, base64: string): Promise<void>;
+  resizeTerminal(sessionId: string, rows: number, cols: number): Promise<void>;
+  closeTerminalSession(sessionId: string): Promise<void>;
   getRunDetail(taskId: string, runId: string): Promise<RunDetailVm>;
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
   startRun(taskId: string): Promise<RunSummaryVm>;
@@ -354,6 +380,8 @@ export interface RuntimeApi {
   subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledNotifications?(listener: (event: ScheduledNotificationEventVm) => void): Promise<() => void>;
+  subscribeTerminalEvents?(listener: (event: TerminalEventVm) => void): Promise<() => void>;
+  subscribeDetachedWindowClosed?(listener: () => void): Promise<() => void>;
   sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm): Promise<void>;
   getScheduledRuntimeSettings(): Promise<ScheduledRuntimeSettingsVm>;
   saveScheduledRuntimeSettings(input: ScheduledRuntimeSettingsInputVm): Promise<ScheduledRuntimeSettingsVm>;
@@ -416,6 +444,8 @@ export interface RuntimeApi {
   runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
+  bindConversationConnection(projectId: string, taskId: string, runId: string, connectionId: string): Promise<ConnectionRefVm>;
+  unbindConversationConnection(projectId: string, taskId: string, runId: string, connectionId: string): Promise<boolean>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;

@@ -158,6 +158,13 @@ impl AcceptedRun {
     pub fn run(&self) -> &RunState {
         &self.data.run
     }
+
+    /// 生来自带连接绑定（连接→对话 阶段4/6）：必须在 launch **之前**调用——后台
+    /// 首轮线程会读 run.json 构建 prompt 与会话，launch 后再绑定既输掉首轮的隐藏
+    /// 上下文，也会被后台线程回写的 run 状态冲掉（两者都在现场发生过）。
+    pub fn set_connection_specs(&mut self, specs: Vec<crate::app::ConnectionSpec>) {
+        self.data.run.connection_specs = specs;
+    }
 }
 
 struct NextExecution {
@@ -1190,6 +1197,7 @@ fn prepare_run_from_workflow(
         uuid: Some(run_uuid),
         last_executed_node: None,
         worktree,
+        connection_specs: Vec::new(),
         execution: RuntimeExecutionState::new(
             if creating_worktree {
                 RuntimeExecutionPhase::PreparingWorkspace
@@ -12304,6 +12312,20 @@ pub(crate) fn run_continue_with_prompt_input(
     )
 }
 
+/// 连接→对话 阶段4：桌面层已起监听即注入连接 MCP 工具 server（与
+/// `build_worker_invocation` 同规则）。**不**以 `run.connection_specs` 为条件——
+/// MCP 工具集在会话创建时固化，按绑定状态注入会让会话中途绑定永远不生效；
+/// 作用域由 URL 的 runId 按请求现读。外层 run 缺失不再影响注入（无需读 run）。
+fn dynamic_connection_mcp_servers(ctx: &DynamicExecutionContext<'_>) -> Vec<serde_json::Value> {
+    match ctx.app.connection_mcp_endpoint_port() {
+        Some(port) => {
+            let url = crate::app::connection_mcp_url(port, &ctx.app.paths.project_id, ctx.task_id, ctx.run_id);
+            vec![crate::app::connection_mcp_server_config(&url)]
+        }
+        None => Vec::new(),
+    }
+}
+
 fn build_dynamic_worker_invocation(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -12588,7 +12610,9 @@ fn build_dynamic_worker_invocation(
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &ctx.app.config,
         ),
-        mcp_servers: Vec::new(),
+        // 连接→对话 阶段4：与 `build_worker_invocation` 同规则——只有该外层 run 绑定了
+        // 连接、且桌面层已起监听时才追加连接 MCP 工具 server。
+        mcp_servers: dynamic_connection_mcp_servers(ctx),
         scheduled_context: None,
     };
     dynamic_invocation_build_step_end(
@@ -15629,6 +15653,7 @@ mod tests {
         let run_uuid = generate_uuid();
         let node_uuid = generate_uuid();
         let run = RunState {
+            connection_specs: Vec::new(),
             version: crate::domain::VERSION.into(),
             id: run_id.into(),
             task_id: task_id.into(),
@@ -15895,6 +15920,7 @@ mod tests {
     #[test]
     fn runtime_continue_with_message_separates_visible_input_from_hidden_control_prompt() {
         let input = ConversationPromptInput {
+            context_connections: Vec::new(),
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
         };
@@ -15937,6 +15963,7 @@ mod tests {
             serde_json::json!({ "acpSessionId": "session-1" }),
             Some(OutputEmissionMode::PostTurnProjection),
             Some(ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
             }),
@@ -16023,6 +16050,7 @@ mod tests {
             serde_json::json!({ "acpSessionId": "session-1" }),
             None,
             Some(ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: String::new(),
                 quotes: Vec::new(),
             }),
@@ -16102,6 +16130,7 @@ mod tests {
         )
         .unwrap();
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: run_id.to_string(),
             task_id: task_id.to_string(),
@@ -16476,6 +16505,18 @@ mod tests {
         assert_eq!(invocation.adapter_workspace_dir, repo_root);
         assert_eq!(invocation.workspace_dir, durable_worktree.path);
 
+        run.connection_specs = vec![crate::app::ConnectionSpec {
+            id: "conn-follow-up".to_string(),
+            name: "wb-follow-up".to_string(),
+            host: "10.0.0.7".to_string(),
+            port: 22,
+            username: "app".to_string(),
+            auth_method: crate::app::ConnectionAuthMethod::PublicKey,
+            env: crate::app::ConnectionEnvironment::Prod,
+            jump_ref: None,
+        }];
+        write_json(&app.paths.run_file(&task_id, &run.id), &run).unwrap();
+
         let prepared_follow_up = app
             .prepare_acp_prompt_for_attempt(
                 &task_id,
@@ -16495,6 +16536,13 @@ mod tests {
         assert_eq!(
             prepared_follow_up.session_workspace_dir,
             durable_worktree.path
+        );
+        assert!(
+            prepared_follow_up
+                .prompt
+                .user_prompt
+                .contains("wb-follow-up"),
+            "follow-up prompt must re-inject bound connection sections after clear"
         );
 
         let mut tampered = durable.clone();
@@ -16716,6 +16764,7 @@ mod tests {
         }));
         let task_id = "task-001";
         let mut run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -16828,6 +16877,7 @@ mod tests {
             }));
         let task_id = "task-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -16978,6 +17028,7 @@ mod tests {
             }));
         let task_id = "task-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -17123,6 +17174,7 @@ mod tests {
         let app = App::new(repo_root);
         let task_id = "task-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: crate::domain::VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -17205,6 +17257,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = App::new(repo_root);
         let run = RunState {
+            connection_specs: Vec::new(),
             version: crate::domain::VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -17266,6 +17319,7 @@ mod tests {
         let app = App::new(repo_root);
         let task_id = "task-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -17395,6 +17449,7 @@ mod tests {
             }));
         let task_id = "task-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -17508,6 +17563,7 @@ mod tests {
             }));
         let task_id = "task-001";
         let original_run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -17655,6 +17711,7 @@ mod tests {
             }));
         let task_id = "task-001";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: task_id.to_string(),
@@ -17788,6 +17845,7 @@ mod tests {
         let now = "2026-06-16T00:00:00Z".to_string();
         let outcome = None;
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-006".to_string(),
@@ -18594,12 +18652,25 @@ mod tests {
         write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
+        // The group creator must live in the parent scope (real creation rule:
+        // `parent_group_id = source.group_id`). bootstrap is the root-scoped
+        // dispatcher that launches the top-level `python-classes` group; it is
+        // *not* a member of the group it creates.
         let mut source = test_worktree_node("bootstrap");
         source.status = DynamicNodeStatus::Completed;
         source.outcome = Some(NodeOutcome::Success);
-        source.group_id = Some("python-classes".to_string());
+        source.depth = 0;
+        source.group_id = None;
         source.chain_id = "bootstrap".to_string();
-        let mut graph = test_dynamic_graph_at(repo_root, vec![source]);
+        source.depends_on = Vec::new();
+        // The group's member node drives readiness (completed worker that belongs
+        // to `python-classes` and has an accepted completion).
+        let mut member = test_worktree_node("python-classes-dev");
+        member.group_id = Some("python-classes".to_string());
+        member.chain_id = "python-classes-dev".to_string();
+        member.status = DynamicNodeStatus::Completed;
+        member.outcome = Some(NodeOutcome::Success);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![source, member.clone()]);
         let child_workspace_id = fork_dynamic_workspace(
             &ctx,
             &mut graph,
@@ -18608,7 +18679,12 @@ mod tests {
             "bootstrap",
         )
         .unwrap();
-        graph.nodes[0].workspace_id = child_workspace_id.clone();
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "python-classes-dev")
+            .expect("member node in graph")
+            .workspace_id = child_workspace_id.clone();
         graph.groups.push(DynamicGroupState {
             version: VERSION.to_string(),
             id: "python-classes".to_string(),
@@ -18616,8 +18692,8 @@ mod tests {
             status: DynamicGroupStatus::Open,
             depth: 1,
             parent_group_id: None,
-            root_node_ids: vec!["bootstrap".to_string()],
-            terminal_node_ids: vec!["bootstrap".to_string()],
+            root_node_ids: vec!["python-classes-dev".to_string()],
+            terminal_node_ids: vec!["python-classes-dev".to_string()],
             target_workspace_id: "workspace-main".to_string(),
             child_workspace_ids: vec![child_workspace_id],
             merge_node_id: None,
@@ -18628,6 +18704,10 @@ mod tests {
             created_at: "2026-06-16T00:00:00Z".to_string(),
             updated_at: "2026-06-16T00:00:00Z".to_string(),
         });
+        graph.proposals.push(accepted_proposal(
+            "python-classes-dev",
+            serde_json::from_str(&test_end_completion("python-classes work complete")).unwrap(),
+        ));
         graph.proposals.push(accepted_proposal(
             "bootstrap",
             serde_json::from_str(&test_end_completion("bootstrap completed")).unwrap(),
@@ -18700,6 +18780,157 @@ mod tests {
 
         assert_eq!(invocation.adapter_workspace_dir, repo_root);
         assert_eq!(invocation.workspace_dir, worktree_dir);
+    }
+
+    #[test]
+    fn dynamic_worker_invocation_injects_connection_mcp_server_when_bound_and_endpoint_listening() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default())
+            .with_connection_mcp_endpoint_port(9124);
+        write_test_outer_run(&app);
+        let mut run: RunState =
+            read_json(&app.paths.run_file("task-006", "run-001")).unwrap();
+        run.connection_specs = vec![crate::app::ConnectionSpec {
+            id: "conn-001".to_string(),
+            name: "wb-prod-db".to_string(),
+            host: "10.0.0.5".to_string(),
+            port: 22,
+            username: "app".to_string(),
+            auth_method: crate::app::ConnectionAuthMethod::PublicKey,
+            env: crate::app::ConnectionEnvironment::Prod,
+            jump_ref: None,
+        }];
+        write_json(&app.paths.run_file("task-006", "run-001"), &run).unwrap();
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let connection_server = invocation
+            .mcp_servers
+            .iter()
+            .find(|server| server["name"] == "gold-band-connections")
+            .expect("connection MCP server injected");
+        let url = connection_server["url"].as_str().unwrap();
+        assert!(url.starts_with("http://127.0.0.1:9124/mcp?projectId="), "url: {url}");
+        assert!(url.ends_with("&taskId=task-006&runId=run-001"), "url: {url}");
+    }
+
+    #[test]
+    fn dynamic_worker_invocation_omits_connection_mcp_server_without_a_listening_endpoint() {
+        let (_temp, repo_root) = init_repo();
+        // No `.with_connection_mcp_endpoint_port(..)`.
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let mut run: RunState =
+            read_json(&app.paths.run_file("task-006", "run-001")).unwrap();
+        run.connection_specs = vec![crate::app::ConnectionSpec {
+            id: "conn-001".to_string(),
+            name: "wb-prod-db".to_string(),
+            host: "10.0.0.5".to_string(),
+            port: 22,
+            username: "app".to_string(),
+            auth_method: crate::app::ConnectionAuthMethod::PublicKey,
+            env: crate::app::ConnectionEnvironment::Prod,
+            jump_ref: None,
+        }];
+        write_json(&app.paths.run_file("task-006", "run-001"), &run).unwrap();
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !invocation
+                .mcp_servers
+                .iter()
+                .any(|server| server["name"] == "gold-band-connections")
+        );
+    }
+
+    #[test]
+    fn dynamic_worker_invocation_tolerates_a_missing_outer_run_when_injecting_connection_mcp_server() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default())
+            .with_connection_mcp_endpoint_port(9124);
+        // Deliberately do NOT write the outer run — some fixtures build a
+        // dynamic invocation without it (see `dynamic_prompt_moves_runtime_facts_to_hidden_context`),
+        // and this must not turn into a hard invocation-build failure.
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build even when the outer run file is missing");
+
+        // Injection no longer depends on reading the run: the endpoint being up
+        // is enough (scoping is per-request via the URL's runId).
+        let connection_server = invocation
+            .mcp_servers
+            .iter()
+            .find(|server| server["name"] == "gold-band-connections")
+            .expect("connection MCP server injected without reading the run");
+        let url = connection_server["url"].as_str().unwrap();
+        assert!(url.starts_with("http://127.0.0.1:9124/mcp?projectId="), "url: {url}");
+        assert!(url.ends_with("&taskId=task-006&runId=run-001"), "url: {url}");
     }
 
     #[test]

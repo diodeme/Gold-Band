@@ -35,11 +35,15 @@ import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from './lib/acp-chat-resourc
 
 const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
-  channel: 'default',
+  channel: 'wb',
   feedbackEnabled: false,
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
+  // The browser preview is a dev harness: it fakes the full capability surface
+  // (intranet channel) so connection→conversation flows are previewable. The
+  // real flag comes from the channel config at compile time in the desktop app.
+  remoteConnectionsEnabled: true,
 };
 
 export const mockUpdaterSettings: UpdaterSettingsVm = {
@@ -328,6 +332,16 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
   resumable: false,
   pauseReason: 'error-blocked',
   runtimeErrorMessage: 'ACP prompt cancelled',
+  connections: [{
+    id: 'conn-mock-1',
+    name: 'wb-prod-db',
+    host: '10.0.0.5',
+    port: 22,
+    username: 'ops',
+    authMethod: 'publicKey',
+    env: 'prod',
+    jumpRef: null,
+  }],
 };
 
 const mockNodeDetail: NodeDetailVm = {

@@ -13,6 +13,7 @@ import {
 } from '@/components/acp/ACPChatDialog';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
+import { ConversationConnectionRefsRow } from '@/components/conversation/ConversationConnectionRefs';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
@@ -101,6 +102,11 @@ interface ConversationRunPageProps {
   initialSessionTreeExpansion: ConversationSessionTreeExpansion;
   onSessionTreeExpansionChange: (expansion: ConversationSessionTreeExpansion) => void;
   onTitleChange?: (title: string) => void;
+  /** Unbinds a connection from this conversation (drops it from the agent's
+   *  context) and refreshes the run. */
+  onRemoveConnection?: (connectionId: string) => Promise<void>;
+  /** Binds a connection to this conversation and refreshes the run. */
+  onAttachConnection?: (connectionId: string) => Promise<void>;
 }
 
 export function ConversationRunPage({
@@ -118,6 +124,8 @@ export function ConversationRunPage({
   initialSessionTreeExpansion,
   onSessionTreeExpansionChange,
   onTitleChange,
+  onRemoveConnection,
+  onAttachConnection,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
   useThemeWallpaperSurface();
@@ -535,6 +543,17 @@ export function ConversationRunPage({
             onTitleChange={onTitleChange}
           /> : null}
         </div>
+
+      {/* Connection references bound to this conversation (agent-visible specs).
+          Page-level so Direct conversations — which swap the run header for
+          their own title — keep the attach/remove entry too. */}
+      {(onRemoveConnection || onAttachConnection) ? (
+        <ConversationConnectionRefsRow
+          connections={run.connections}
+          onRemove={onRemoveConnection}
+          onAttach={onAttachConnection}
+        />
+      ) : null}
 
       {/* Active sessions indicator */}
       {!isDirect && run.activeSessions.length > 1 ? (

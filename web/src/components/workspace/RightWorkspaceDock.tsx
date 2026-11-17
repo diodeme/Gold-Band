@@ -1,4 +1,4 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, Terminal, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -133,7 +133,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
 });
 
 type WorkspaceEntryOption = {
-  id: 'file-browser' | 'source-control' | 'conversation-directory';
+  id: 'file-browser' | 'source-control' | 'conversation-directory' | 'terminal';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -178,6 +178,20 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
           workspacePath: sourceControlWorkspacePath,
           title: t('sourceControl.title'),
           description: t('sourceControl.description'),
+          attention: false,
+        });
+      },
+    }, {
+      id: 'terminal',
+      label: t('terminal.panelTitle'),
+      description: t('terminal.panelDescription'),
+      icon: Terminal,
+      open: () => {
+        void openResource({
+          kind: 'terminal',
+          key: 'terminal',
+          scopeKey,
+          title: t('terminal.panelTitle'),
           attention: false,
         });
       },
@@ -315,7 +329,9 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
             ? <FolderOpen className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'
               ? <FileDiff className="size-3.5 shrink-0" />
-              : <FileText className="size-3.5 shrink-0" />;
+              : tab.kind === 'terminal'
+                ? <Terminal className="size-3.5 shrink-0" />
+                : <FileText className="size-3.5 shrink-0" />;
 }
 
 const AgentWorkspaceTab = memo(function AgentWorkspaceTab({

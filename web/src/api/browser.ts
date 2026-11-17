@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ConnectionRefVm, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RecentConnectionVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, ServerConnectionInput, ServerConnectionVm, TaskDetailVm, TaskListVm, TerminalEventVm, TerminalSessionVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -26,6 +26,8 @@ function imageActionBlob(input: ImageActionInput): Blob {
 }
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+/** In-memory connection bindings per run for the browser preview. */
+const browserRunConnections = new Map<string, ConnectionRefVm[]>();
 const browserConversationTasks = new Map<string, ConversationTaskRowVm>();
 const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
@@ -767,6 +769,21 @@ function browserSvgDataUrl(content: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
 }
 
+let browserServerConnections: ServerConnectionVm[] = [];
+function getBrowserConnections() {
+  return browserServerConnections;
+}
+function setBrowserConnections(next: ServerConnectionVm[]) {
+  browserServerConnections = next;
+}
+let browserRecentConnections: RecentConnectionVm[] = [];
+let browserTerminalSessions: TerminalSessionVm[] = [];
+const browserTerminalSessionMap = new Map<string, TerminalSessionVm>();
+const browserTerminalEventListeners = new Set<(event: TerminalEventVm) => void>();
+function emitBrowserTerminalEvent(event: TerminalEventVm) {
+  browserTerminalEventListeners.forEach((listener) => listener(event));
+}
+
 export const browserApi: RuntimeApi = {
   async subscribeScheduledNotifications() {
     return () => {};
@@ -1448,6 +1465,147 @@ export const browserApi: RuntimeApi = {
   },
   replaceAutoTemplates(templates: AutoTemplate[]) {
     return Promise.resolve(browserPreviewState.setAutoTemplates({ version: '0.1', templates }));
+  },
+  listServerConnections() {
+    return Promise.resolve(getBrowserConnections());
+  },
+  getServerConnection(id: string) {
+    const found = getBrowserConnections().find((connection) => connection.id === id);
+    return found
+      ? Promise.resolve(found)
+      : Promise.reject(new Error(`connection.not-found: ${id}`));
+  },
+  createServerConnection(input: ServerConnectionInput) {
+    const id = `conn-${crypto.randomUUID().replaceAll('-', '')}`;
+    const now = new Date().toISOString();
+    const connection: ServerConnectionVm = {
+      id,
+      name: input.name,
+      host: input.host,
+      port: input.port,
+      username: input.username,
+      authMethod: input.authMethod,
+      keyPath: input.keyPath ?? null,
+      jumpRef: input.jumpRef ?? null,
+      env: input.env,
+      createdAt: now,
+      updatedAt: now,
+      credentialRef: Boolean(input.secret),
+      jumpLabel: null,
+      jumpMissing: false,
+    };
+    setBrowserConnections([...getBrowserConnections(), connection]);
+    return Promise.resolve(connection);
+  },
+  updateServerConnection(id: string, input: ServerConnectionInput) {
+    const list = getBrowserConnections();
+    const index = list.findIndex((connection) => connection.id === id);
+    if (index < 0) {
+      return Promise.reject(new Error(`connection.not-found: ${id}`));
+    }
+    const updated: ServerConnectionVm = {
+      ...list[index],
+      name: input.name,
+      host: input.host,
+      port: input.port,
+      username: input.username,
+      authMethod: input.authMethod,
+      keyPath: input.keyPath ?? null,
+      jumpRef: input.jumpRef ?? null,
+      env: input.env,
+      updatedAt: new Date().toISOString(),
+      credentialRef: input.clearSecret ? false : input.secret ? true : list[index].credentialRef,
+    };
+    const next = [...list];
+    next[index] = updated;
+    setBrowserConnections(next);
+    return Promise.resolve(updated);
+  },
+  deleteServerConnection(id: string) {
+    setBrowserConnections(getBrowserConnections().filter((connection) => connection.id !== id));
+    return Promise.resolve(getBrowserConnections());
+  },
+  listRecentConnections() {
+    return Promise.resolve(browserRecentConnections);
+  },
+  listTerminalSessions() {
+    return Promise.resolve(browserTerminalSessions);
+  },
+  pickDirectory() {
+    // Browser preview has no OS directory picker; the page falls back to home.
+    return Promise.resolve(null);
+  },
+  openLocalTerminal(cwd?: string | null) {
+    const sessionId = `sess-${crypto.randomUUID().replaceAll('-', '')}`;
+    const session: TerminalSessionVm = { sessionId, kind: 'local', cwd: cwd ?? null, status: 'Connected' };
+    browserTerminalSessions.push(session);
+    browserTerminalSessionMap.set(sessionId, session);
+    if (cwd) {
+      const now = new Date().toISOString();
+      browserRecentConnections.unshift({
+        host: 'localhost',
+        username: 'local',
+        env: 'test',
+        lastConnectedAt: now,
+        reconnectable: true,
+      });
+    }
+    const banner = `Gold Band browser preview shell\r\n$ `;
+    emitBrowserTerminalEvent({ event: 'output', sessionId, base64: btoa(banner) });
+    return Promise.resolve(session);
+  },
+  openRemoteTerminal(connectionId: string) {
+    const sessionId = `sess-${crypto.randomUUID().replaceAll('-', '')}`;
+    const connection = browserServerConnections.find((entry) => entry.id === connectionId);
+    const label = connection
+      ? `${connection.name} (${connection.host}:${connection.port})`
+      : `connection ${connectionId}`;
+    const session: TerminalSessionVm = { sessionId, kind: 'remote', label, status: 'Connected' };
+    browserTerminalSessions.push(session);
+    browserTerminalSessionMap.set(sessionId, session);
+    emitBrowserTerminalEvent({ event: 'output', sessionId, base64: btoa(`${label}\r\nConnected (browser preview)\r\n$ `) });
+    return Promise.resolve(session);
+  },
+  provideTerminalAuth(_sessionId: string, _answer: string) {
+    // Browser preview never raises an auth prompt.
+    return Promise.resolve();
+  },
+  openDetachedWindow(_kind: import('../types').DetachedWindowKind, _sessionId?: string | null) {
+    // Browser preview cannot create a separate OS window.
+    return Promise.resolve({ label: 'detached-preview' });
+  },
+  closeDetachedWindow(_label: string) {
+    return Promise.resolve();
+  },
+  listDetachedWindows() {
+    return Promise.resolve([]);
+  },
+  getTerminalHistory(_sessionId: string) {
+    return Promise.resolve('');
+  },
+  subscribeDetachedWindowClosed() {
+    return Promise.resolve(() => {});
+  },
+  writeTerminalInput(_sessionId: string, _base64: string) {
+    return Promise.resolve();
+  },
+  resizeTerminal(_sessionId: string, _rows: number, _cols: number) {
+    return Promise.resolve();
+  },
+  closeTerminalSession(sessionId: string) {
+    const index = browserTerminalSessions.findIndex((session) => session.sessionId === sessionId);
+    if (index >= 0) {
+      browserTerminalSessions.splice(index, 1);
+      emitBrowserTerminalEvent({ event: 'exited', sessionId, exitCode: 0, status: 'Closed' });
+    }
+    browserTerminalSessionMap.delete(sessionId);
+    return Promise.resolve();
+  },
+  async subscribeTerminalEvents(listener) {
+    browserTerminalEventListeners.add(listener);
+    return () => {
+      browserTerminalEventListeners.delete(listener);
+    };
   },
   getRunDetail(taskId: string, runId: string) {
     return Promise.resolve({ ...mockRunDetail, run: { ...mockRunDetail.run, id: runId, taskId } });
@@ -2179,11 +2337,33 @@ export const browserApi: RuntimeApi = {
       resumable: false,
       runtimeErrorMessage: null,
       worktree: null,
+      connections: browserRunConnections.get(runId) ?? [],
     };
     return Promise.resolve(run);
   },
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });
+  },
+  bindConversationConnection(_projectId, _taskId, runId, connectionId) {
+    const spec: ConnectionRefVm = {
+      id: connectionId,
+      name: connectionId,
+      host: '127.0.0.1',
+      port: 22,
+      username: 'mock',
+      authMethod: 'password',
+      env: 'test',
+      jumpRef: null,
+    };
+    const bound = browserRunConnections.get(runId) ?? [];
+    browserRunConnections.set(runId, [...bound.filter((c) => c.id !== connectionId), spec]);
+    return Promise.resolve(spec);
+  },
+  unbindConversationConnection(_projectId, _taskId, runId, connectionId) {
+    const bound = browserRunConnections.get(runId) ?? [];
+    const next = bound.filter((c) => c.id !== connectionId);
+    browserRunConnections.set(runId, next);
+    return Promise.resolve(next.length !== bound.length);
   },
   createConversationRun(input) {
     const timestamp = new Date().toISOString();
@@ -2212,6 +2392,7 @@ export const browserApi: RuntimeApi = {
           forkCommit: 'preview-head',
         }
         : null,
+      connections: [],
     };
     const task: ConversationTaskRowVm = {
       projectId: run.projectId,

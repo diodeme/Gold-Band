@@ -1374,6 +1374,7 @@ fn claim_agent_prompt_lifecycle(
         input: ConversationPromptInput {
             display_text: display_text.to_string(),
             quotes: Vec::new(),
+            context_connections: Vec::new(),
         },
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),

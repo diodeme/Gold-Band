@@ -52,6 +52,9 @@ pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str =
 pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/workflow_resume.md");
 pub const RUNTIME_WORKFLOW_RESUME_EN: &str = include_str!("prompts/en/runtime/workflow_resume.md");
+pub const CONNECTION_TOOL_USAGE_ZH_CN: &str =
+    include_str!("prompts/zh-CN/connections/tool-usage.md");
+pub const CONNECTION_TOOL_USAGE_EN: &str = include_str!("prompts/en/connections/tool-usage.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/proposal_repair.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_EN: &str =

@@ -427,6 +427,7 @@ mod tests {
             config,
             recent_workspaces: Vec::new(),
             needs_workspace: false,
+            connection_mcp_endpoint_port: None,
         };
         let mut tauri_context = tauri::test::mock_context(tauri::test::noop_assets());
         tauri_context.config_mut().plugins.0.insert(

@@ -359,6 +359,9 @@ export interface AppInfoVm {
   appName: string;
   appKey: string;
   configDirName: string;
+  /** Remote server-connections + remote SSH are intranet-only; external/public
+   *  channels disable them (the local terminal is available everywhere). */
+  remoteConnectionsEnabled: boolean;
 }
 
 export interface AgentRegistryVm {
@@ -2142,7 +2145,94 @@ export type ConversationPage =
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
   | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
+  | { kind: 'connections-terminal' }
   | { kind: 'settings' };
+
+// Connections & Terminal (managed user-level module)
+
+export type ConnectionAuthMethod = 'password' | 'publicKey';
+export type ConnectionEnvironment = 'test' | 'stage' | 'prod';
+
+/** Flat list summary: the connection entity plus the display / integrity signals
+ *  the list needs. Secrets are never present. */
+export interface ServerConnectionVm {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: ConnectionAuthMethod;
+  keyPath?: string | null;
+  jumpRef?: string | null;
+  env: ConnectionEnvironment;
+  createdAt: string;
+  updatedAt: string;
+  credentialRef: boolean;
+  jumpLabel?: string | null;
+  jumpMissing: boolean;
+}
+
+/** Write model for create / update. `secret` carries the credential to persist to
+ *  the OS store (when present); `clearSecret` removes a previously saved one. */
+export interface ServerConnectionInput {
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: ConnectionAuthMethod;
+  keyPath?: string | null;
+  jumpRef?: string | null;
+  env: ConnectionEnvironment;
+  secret?: string | null;
+  clearSecret?: boolean;
+}
+
+export interface RecentConnectionVm {
+  connectionRef?: string | null;
+  host: string;
+  username: string;
+  env: ConnectionEnvironment;
+  lastConnectedAt: string;
+  reconnectable: boolean;
+}
+
+// Terminal sessions (transient, in-memory; local in Phase B + remote in Phase C)
+
+export type TerminalSessionKind = 'local' | 'remote';
+
+/** What a pop-out detached window hosts. */
+export type DetachedWindowKind = 'terminal' | 'connections';
+
+export interface DetachedWindowVm {
+  label: string;
+}
+export type TerminalSessionStatus = 'Connecting' | 'AwaitingAuth' | 'Connected' | 'Closed';
+
+/** 发起终端会话的对话 run 定位（连接 MCP 工具路径；手动打开时缺省）。 */
+export interface ConnectionRunLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+}
+
+/** Read model of a live terminal session for the tab bar. */
+export interface TerminalSessionVm {
+  sessionId: string;
+  kind: TerminalSessionKind;
+  cwd?: string | null;
+  /** Free-form tab title override (remote sessions: `连接名 (host:port)`). */
+  label?: string | null;
+  status: TerminalSessionStatus;
+  /** 发起该会话的对话 run；口令输入据此路由回会话内输入框。 */
+  origin?: ConnectionRunLocatorVm | null;
+}
+
+/** Event payload pushed over the pty output / exit / auth channels. */
+export type TerminalEventVm =
+  | { event: 'output'; sessionId: string; base64: string }
+  | { event: 'exited'; sessionId: string; exitCode: number; status: TerminalSessionStatus }
+  | { event: 'authPrompt'; sessionId: string; message: string; origin?: ConnectionRunLocatorVm | null }
+  | { event: 'failed'; sessionId: string; code: string; params: Record<string, unknown> };
 
 export interface ScheduledTaskVm {
   id: string;
@@ -2499,6 +2589,20 @@ export interface UserPromptQuote {
   text: string;
 }
 
+/** Non-secret, agent-visible spec for a server connection attached to a
+ *  conversation. Matches the backend `ConnectionSpec` (never carries a private
+ *  key path or any credential). */
+export interface ConnectionRefVm {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: ConnectionAuthMethod;
+  env: ConnectionEnvironment;
+  jumpRef?: string | null;
+}
+
 export interface ConversationPromptInput {
   displayText: string;
   quotes: UserPromptQuote[];
@@ -2595,6 +2699,10 @@ export interface ConversationRunVm {
   runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+  /** Non-secret connections bound to this conversation run. Drives the
+   *  "connection reference" card; the agent's hidden context and connection MCP
+   *  tool scope read the same specs. Never carries a key path or credential. */
+  connections: ConnectionRefVm[];
 }
 
 export interface ScheduledTaskConfig {
@@ -2703,6 +2811,10 @@ export interface ConversationCreateInput {
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
   selectedBranch?: string | null;
+  /** Pre-attached connection (home composer): bound onto the run BEFORE its
+   *  first turn launches, so the agent's first session carries the connection
+   *  in its hidden context from turn 1. */
+  connectionId?: string | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

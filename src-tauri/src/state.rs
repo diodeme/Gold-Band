@@ -18,6 +18,7 @@ use gold_band::app::ActiveMetricTurn;
 use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
 use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
+    TerminalSessionManager,
 };
 use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
@@ -42,6 +43,11 @@ pub struct DesktopContext {
     pub config: RuntimeConfig,
     pub recent_workspaces: Vec<String>,
     pub needs_workspace: bool,
+    /// localhost port the connection MCP tools server (连接→对话 阶段4) listens
+    /// on. Lives on the context — which every request clones — so workspace-
+    /// scoped apps built by `app_for_workspace` can inject `mcp_servers` too,
+    /// not just the global `DesktopState::app()`. Set once at setup.
+    pub connection_mcp_endpoint_port: Option<u16>,
 }
 
 static PROJECT_MANIFEST_IO_FAILURES: AtomicU64 = AtomicU64::new(0);
@@ -108,6 +114,7 @@ impl DesktopContext {
             config,
             recent_workspaces,
             needs_workspace,
+            connection_mcp_endpoint_port: None,
         })
     }
 
@@ -258,6 +265,24 @@ impl NotificationAttentionState {
             || self.attempt_id.as_deref() != Some(target.attempt_id)
     }
 }
+
+/// Tauri-managed holder for the in-memory terminal session manager.
+///
+/// The manager is transient (no persistence) and must outlive individual Tauri
+/// command calls, so it lives here rather than on the ephemeral `App`. The
+/// event sink is wired to `app.emit` at setup time, when the `AppHandle` is
+/// available.
+pub struct TerminalSessionState(pub Arc<Mutex<TerminalSessionManager>>);
+
+/// Bounded per-session output buffer accumulated by the terminal event sink.
+///
+/// `TerminalHistory` is a JS module in each webview, so it is NOT shared across
+/// the main window and a detached pop-out window: the detached webview's copy is
+/// destroyed when that window closes, losing anything produced while detached.
+/// This backend store is the single source of truth. Every output chunk the sink
+/// sees is appended here (decoded), and any window replays it on `TerminalView`
+/// mount — so a session's history survives window detach/reattach.
+pub struct TerminalHistoryStore(pub Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>);
 
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
@@ -426,12 +451,17 @@ impl DesktopState {
             .clone();
         let diagnostics = self.agent_diagnostics.clone();
         let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
-        Ok(App::with_config(context.repo_root, context.config)
+        let connection_mcp_endpoint_port = context.connection_mcp_endpoint_port;
+        let mut app = App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
             .with_observability_states(self.observability_states.clone())
             .with_active_metric_turns(self.active_metric_turns.clone())
             .with_runtime_recovery(self.runtime_recovery.clone())
-            .with_metrics_collection_enabled(metrics_enabled)
+            .with_metrics_collection_enabled(metrics_enabled);
+        if let Some(port) = connection_mcp_endpoint_port {
+            app = app.with_connection_mcp_endpoint_port(port);
+        }
+        Ok(app
             .with_provider_diagnostics_source(Arc::new(move || {
                 Ok(diagnostics
                     .lock()
@@ -606,6 +636,20 @@ impl DesktopState {
             .scheduled_service
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))? = Some(service);
+        Ok(())
+    }
+
+    /// Records the localhost port the connection MCP tools server (连接→对话 阶段4)
+    /// bound to, once `setup` has started it. Lives on the shared context so
+    /// every request-scoped clone — and every workspace app built from it —
+    /// can inject `mcp_servers`. Mutates the guarded context in place: `context()`
+    /// hands out a clone, so writing through it would be silently discarded.
+    pub fn set_connection_mcp_endpoint_port(&self, port: u16) -> Result<()> {
+        let mut context = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        context.connection_mcp_endpoint_port = Some(port);
         Ok(())
     }
 
@@ -1450,6 +1494,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn set_connection_mcp_endpoint_port_persists_into_new_apps() {
+        // The setter must mutate the guarded context in place — `context()`
+        // returns a clone, so a write through it is silently discarded (this
+        // exact bug shipped: the endpoint listened but no app ever saw the
+        // port, so agents never received the connection tools).
+        let (_root, state) = desktop_state();
+        assert!(state.set_connection_mcp_endpoint_port(9123).is_ok());
+
+        let context = state.context().unwrap();
+        assert_eq!(context.connection_mcp_endpoint_port, Some(9123));
+
+        let app = state.app().unwrap();
+        assert_eq!(app.connection_mcp_endpoint_port(), Some(9123));
+    }
+
     fn desktop_state() -> (tempfile::TempDir, DesktopState) {
         let root = tempfile::tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
@@ -1458,6 +1518,7 @@ mod tests {
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
             needs_workspace: false,
+            connection_mcp_endpoint_port: None,
         };
         (root, DesktopState::new(context))
     }
@@ -1604,6 +1665,7 @@ mod tests {
         );
         execution.recovery_candidate_token = candidate_token;
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -1747,6 +1809,7 @@ mod tests {
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
             needs_workspace: false,
+            connection_mcp_endpoint_port: None,
         };
 
         let persisted_candidate = {

@@ -18,6 +18,7 @@
   "metricsToggleLocked": true,
   "metricsBaseUrl": "http://maling.weoa.com",
   "metricsApiKey": "",
+  "remoteConnectionsEnabled": true,
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

@@ -204,14 +204,14 @@ ZCode 第二阶段发布门槛：
 snapshot、Catalog 和图标由单一发布函数管理同一事务；恢复判断以整批目标为单位，不能逐文件接受旧版或新版：
 
 1. 在仓库外或系统临时目录创建本次 staging 目录，不直接写正式路径。
-2. 在 staging 中生成 snapshot、Catalog 和完整图标集合；offline 模式复制并校验已有图标，不访问网络。
+2. 在 staging 中生成 snapshot、Catalog 和完整图标集合；offline 模式复制并校验已有图标，不访问网络。online 模式逐项下载图标，沿用单次 15 秒、最多 3 次的有界请求；下载失败后读取 `web/public/agent-icons/<iconKey>.svg` 中同一 Agent 的本地图标，使用相同 SVG 校验，并记录 Agent ID、本地路径和原始下载错误。本地图标缺失或无效时返回 `AGENT_CATALOG_ICON_UNAVAILABLE`，保留下载错误和本地错误，整批不发布；下载成功但内容不是 SVG 时仍拒绝发布，不掩盖内容校验失败。
 3. 对 staging 执行全部校验：schema、ID/顺序、provenance、固定版本、平台枚举、目录字段、HTTPS SVG、文件名、内容摘要和预期数量。
 4. 所有校验通过后，为每个正式目标准备同目录临时文件与旧内容备份，再原子写入 schema 2 recovery journal。每条记录显式区分 `originalExists` / `newExists`，分别记录旧、新摘要、目标、临时文件和备份；事务阶段为 `publishing` 或 `rolling-back`。
 5. 使用原子 rename/replace 发布；旧 Catalog 管理、但新版不再使用的图标也作为删除记录参与事务。提交前普通失败必须先记录 `rolling-back`，再恢复整个旧集合，即使异常发生在最后一个替换之后也必须回滚。恢复使用备份副本加原子替换，验证完整旧集合前不消耗备份，保证恢复过程可以重复执行。
 6. 进程中断后，下次生成先校验全部 journal 记录、路径和目标状态：只有 `publishing` 且全部目标符合新存在状态与摘要时才确认整批新版；其他状态先校验所有必需备份，再整批恢复旧版。备份缺失、摘要不符或 journal 无效时停止，保留 journal、备份和临时文件，不在不可判定状态上继续生成。整批旧版或新版验证后才清理；清理中断后重复恢复继续收敛。online snapshot 属于同一次提交，不能先写 snapshot 再下载图标。
 7. 失败或取消后清理 staging；不得修改 local supplement。
 
-测试必须提供失败注入点，至少覆盖 registry fetch、npm pin 校验、图标下载、SVG 校验、Catalog 校验和正式替换失败。fixture 的新旧 snapshot、Catalog 与图标必须真实不同；分别在第 1、2、首个图标和末尾替换点验证普通失败整批回滚与中断恢复。覆盖首次生成原文件不存在、旧图标删除、新图标创建、无关图标保留、完整新版确认、备份损坏/缺失、无效 journal 和重复恢复；普通提交前失败后正式文件逐字节一致。
+测试必须提供失败注入点，至少覆盖 registry fetch、npm pin 校验、图标下载、SVG 校验、Catalog 校验和正式替换失败。图标下载失败需分别验证单个和全部 Agent 复用本地 SVG，其他图标与元数据仍正常刷新；本地 SVG 缺失或损坏时验证结构化错误包含两次失败原因，正式产物逐字节不变。fixture 的新旧 snapshot、Catalog 与图标必须真实不同；分别在第 1、2、首个图标和末尾替换点验证普通失败整批回滚与中断恢复。覆盖首次生成原文件不存在、旧图标删除、新图标创建、无关图标保留、完整新版确认、备份损坏/缺失、无效 journal 和重复恢复；普通提交前失败后正式文件逐字节一致。
 
 ## 6. Catalog 模板
 
@@ -428,3 +428,12 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 - `cargo test --lib acp::connection::tests -- --nocapture`：49 项通过；`cargo test --lib agent_catalog -- --nocapture`：3 项通过；`cargo test --lib platform -- --nocapture`：13 项通过。
 - `cargo test --lib acp::client::tests -- --test-threads=1`：191 项通过、6 项按设计忽略；覆盖共享连接认证方法、并发 single-flight 和 AuthRequired 重试。默认并行运行曾命中一次既有时序测试 `prompt_terminal_quiet_drain_promotes_late_system_error`，该测试单独重跑及串行全量重跑均通过。
 - `cargo fmt --all -- --check`、`git diff --check`：通过。
+
+## 17. 2026-11-17 图标下载失败复用本地资源
+
+- 根因：在线刷新把单项图标网络失败视为整个 Catalog 不可生成，即使同一 `iconKey` 的本地 SVG 已存在也不读取。属于下载失败边界实现不完整；沿用在线刷新与 staging 发布设计。
+- 修复：下载在现有有界重试后失败时，读取并校验同一 Agent 的本地 SVG；有效时记录警告并继续刷新其余图标和元数据，无效或缺失时用 `AGENT_CATALOG_ICON_UNAVAILABLE` 同时保留下载、本地失败原因并停止发布。Registry、固定 npm 版本和 SVG 内容校验仍保持严格失败。
+- 红绿证据：新增 5 项接口断言在旧实现上全部失败；单项、全部下载失败仍抛出 `AGENT_CATALOG_FETCH_FAILED`，本地缺失／损坏用例也只收到下载错误。修复后同一测试全部通过，完整 `node --test scripts/prepare-agent-catalog.test.mjs` 为 50 项通过，覆盖部分替换回滚、崩溃恢复和原文件逐字节保留。
+- 真实配置验收：在临时目录复制仓库的 Registry snapshot、local supplement、policy 和图标，模拟 ZCode 实际图标地址连续 3 次超时；14 项 Catalog 完整发布，ZCode SVG 与原本地图标逐字节一致。验证后已清理临时目录，未刷新或改写仓库中的资源快照。
+- 过度设计与性能复核：复用 Node 内置文件读取、已有超时／重试、SVG 校验与发布事务，不新增依赖、缓存、队列或持久状态。Catalog 为固定 14 项，下载次数和顺序不变，每个失败图标只多一次本地读取和一次校验，仍为 O(Agent 数 + 图标总字节数)，不增加客户端运行时 I/O。
+- 既有规则已覆盖局部失败隔离、结构化错误与红绿回归，不新增经验规则。

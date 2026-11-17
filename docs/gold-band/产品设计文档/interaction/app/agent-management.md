@@ -83,7 +83,7 @@ Agent Cards
 - Catalog 条目必须携带结构化 `sourceKind: official-registry | local-supplement`、`integrationOrigin: official | community-adapter` 和完成真实验收的 `validatedVersion`。来源标签通过七语言 key 展示；不得只在英文 description 中标注社区风险
 - 官方条目的 `validatedVersions` 映射必须逐项完整；本地补充条目只使用自身 provenance，policy 不得重复声明。`validatedVersion` 必须为非空、精确 SemVer，缺失、无效或与本地条目版本不一致时，在下载图标和发布前终止生成
 - Catalog 对当前平台的限制使用 `{ os: windows | macos | linux, arch: x86_64 | aarch64 }`，由后端统一过滤并在创建接口再次校验。Web 不拼接 `win32-arm64` 等平台字符串；不支持时返回 `agent.unsupported-platform`。既有实例不因新限制被删除或隐藏
-- 构建与发版脚本合并官方 Registry 与受控 local supplement。第一阶段必须完整生成 13 项，第二阶段准入后完整生成 14 项；ID 冲突、缺项、无效 provenance／平台、固定版本或图标失败均终止
+- 构建与发版脚本合并官方 Registry 与受控 local supplement。第一阶段必须完整生成 13 项，第二阶段准入后完整生成 14 项；ID 冲突、缺项、无效 provenance／平台或固定版本校验失败均终止。在线刷新逐项下载图标，下载在有界重试后仍失败时，使用 `web/public/agent-icons/<iconKey>.svg` 中该 Agent 的本地图标，并记录 Agent ID、本地路径和原始下载原因；本地图标必须通过同一 SVG 校验，不使用其他 Agent 或通用图标替代。只有下载和本地图标均不可用时才因该图标中止整批生成；下载成功但内容不合法时仍拒绝发布
 - snapshot、Catalog 和图标先在 staging 中完整生成并校验，全部成功后通过有界 recovery journal 与逐文件原子替换发布；提交前普通失败整批回滚，正式产物必须与执行前逐字节一致。进程中断后，只有全部目标存在状态与摘要均符合新版才确认整批新版，否则整批恢复旧版，包括删除本次新建文件、恢复本次删除文件；恢复所需 journal 或备份无效时停止并保留恢复证据，不能接受新旧混合结果。离线维护使用已提交 snapshot、local supplement 与图标，不访问网络
 - Kimi Code 的主 Skills 根目录为 `.kimi-code`，兼容读取通用 `.agents`；Gold Band 在这些根目录下统一追加 `skills`
 - Pi 的官方 Skills 根目录按作用域不同：全局为 `~/.pi/agent/skills`，项目为 `<project>/.pi/skills`，两端兼容读取 `.agents/skills`；Pi 模板因此默认开启主目录拆分，全局主目录为 `.pi/agent`、项目主目录为 `.pi`

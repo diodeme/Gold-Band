@@ -482,6 +482,110 @@ async function initializeGenerationRoot(policy = officialPolicy()) {
   return root;
 }
 
+test('icon download failures reuse the matching local icon and refresh the remaining catalog', async (t) => {
+  const root = await initializeGenerationRoot();
+  const warnings = t.mock.method(console, 'warn', () => {});
+  const attempts = new Map();
+  const registry = registryFixture('0.75.1');
+  const fetchers = generationFetchers(registry);
+  const failedUrl = 'https://icons.example/zcode-acp.svg';
+  try {
+    const before = await officialState(root);
+    const catalog = await generateAgentCatalog({
+      repoRoot: root,
+      ...fetchers,
+      retrySleep: async () => {},
+      fetchIcon: async (url) => {
+        attempts.set(url, (attempts.get(url) ?? 0) + 1);
+        if (url === failedUrl) throw new DOMException('icon request timed out', 'TimeoutError');
+        return fetchers.fetchIcon(url);
+      },
+    });
+    const after = await officialState(root);
+    assert.equal(catalog.agents.length, BUILTIN_AGENT_IDS.length);
+    assert.equal(attempts.get(failedUrl), 3);
+    assert.equal(attempts.size, BUILTIN_AGENT_IDS.length);
+    assert.notEqual(after.snapshot, before.snapshot);
+    for (const [name, content] of after.icons) {
+      if (name === 'zcode-acp.svg') {
+        assert.equal(content, before.icons.find(([previousName]) => previousName === name)[1]);
+      } else {
+        assert.match(content, /0\.75\.1/);
+      }
+    }
+    assert.equal(warnings.mock.callCount(), 1);
+    assert.match(warnings.mock.calls[0].arguments[0], /zcode-acp.*local icon.*timed out/i);
+    assert.match(warnings.mock.calls[0].arguments[0], /web\/public\/agent-icons\/zcode-acp\.svg/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('all icon download failures preserve local icons while publishing refreshed metadata', async (t) => {
+  const root = await initializeGenerationRoot();
+  const warnings = t.mock.method(console, 'warn', () => {});
+  let attempts = 0;
+  try {
+    const before = await officialState(root);
+    await generateAgentCatalog({
+      repoRoot: root,
+      ...generationFetchers(registryFixture('0.75.1')),
+      retrySleep: async () => {},
+      fetchIcon: async () => {
+        attempts += 1;
+        throw new TypeError('icon download unavailable');
+      },
+    });
+    const after = await officialState(root);
+    assert.deepEqual(after.icons, before.icons);
+    assert.notEqual(after.snapshot, before.snapshot);
+    assert.notEqual(after.catalog, before.catalog);
+    assert.equal(attempts, BUILTIN_AGENT_IDS.length * 3);
+    assert.equal(warnings.mock.callCount(), BUILTIN_AGENT_IDS.length);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('unavailable local icons after download failure leave published outputs unchanged', async (t) => {
+  for (const localState of ['missing', 'invalid']) {
+    await t.test(localState, async () => {
+      const root = await initializeGenerationRoot();
+      const iconPath = join(root, 'web', 'public', 'agent-icons', 'zcode-acp.svg');
+      const fetchers = generationFetchers(registryFixture('0.75.1'));
+      try {
+        if (localState === 'missing') await rm(iconPath);
+        else await writeFile(iconPath, '<html>invalid local icon</html>');
+        const before = await officialState(root);
+        await assert.rejects(
+          () => generateAgentCatalog({
+            repoRoot: root,
+            ...fetchers,
+            retrySleep: async () => {},
+            fetchIcon: async (url) => {
+              if (url.endsWith('/zcode-acp.svg')) throw new TypeError('icon download unavailable');
+              return fetchers.fetchIcon(url);
+            },
+          }),
+          (error) => {
+            assert.equal(error.code, 'AGENT_CATALOG_ICON_UNAVAILABLE');
+            assert.equal(error.agentId, 'zcode-acp');
+            assert.equal(error.iconPath, iconPath);
+            assert.ok(error.cause instanceof AgentCatalogFetchError);
+            assert.equal(error.cause.attempts, 3);
+            assert.match(error.message, /icon download unavailable/);
+            assert.match(error.localError.message, localState === 'missing' ? /ENOENT/ : /not SVG/);
+            return true;
+          },
+        );
+        assert.deepEqual(await officialState(root), before);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test('catalog publication removes only icons managed by the previous catalog', async () => {
   const root = await initializeGenerationRoot();
   try {
@@ -506,7 +610,6 @@ test('ordinary catalog generation failures leave official outputs byte-for-byte 
   const scenarios = [
     ['registry-fetch', { fetchJson: async () => { throw new Error('offline'); } }],
     ['npm-pin-validation', { hooks: { beforeNpmPinValidation: () => { throw new Error('pin unavailable'); } } }],
-    ['icon-download', { fetchIcon: async () => { throw new Error('icon unavailable'); } }],
     ['icon-html-response', { fetchIcon: async () => '<!DOCTYPE html><svg xmlns="https://www.w3.org/2000/svg"></svg>' }],
     ['icon-validation', { hooks: { beforeIconValidation: () => { throw new Error('invalid icon'); } } }],
     ['catalog-validation', { hooks: { beforeCatalogValidation: () => { throw new Error('invalid catalog'); } } }],

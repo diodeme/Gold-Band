@@ -486,7 +486,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **真实约束（写入设计、不掩盖）**：会话级续跑**依赖 ACP provider 的 session 在重启后仍可 `session/load`**。若 provider 不持久化 session（或已过期清理），`strict_continue` 必失败 → 码灵自动 fallback 到整 task rerun（新会话从头跑），不会卡死或静默丢上下文。该 fallback 用 `multica.session-resume-failed` 错误码上报。
 
-#### 3.2.8 执行记录（transcript）实时上报（M5-cy；用户输入 M5-da）
+#### 3.2.8 执行记录（transcript）实时上报（M5-cy；用户输入 M5-da；usage 对齐 M5-db）
 
 **目标**：执行远程任务期间把模型文本、工具调用/结果、运行期错误、**用户输入**实时上报，让 multica **既有** Web UI 直接获得执行时间线、工具步骤行、产物与 diff，Transcript 弹窗完整回放会话（用户的话和 agent 的响应交替出现）——**multica 服务端零改动**（协议核对结论见 §4.2 C3/C4）。
 
@@ -512,7 +512,11 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `seq` 由客户端从 1 自增，顺序 = 事件顺序；**作用域 = 服务端 task_id**。每次 retry/rerun 服务端都产生新 task_id，因此不需要任何跨进程 seq 水位持久化。
 - 失败即丢、**不重试**（批次原子；服务端表上 seq 无唯一约束，重发同 seq 会产生重复行）。404（任务已删除/无权）→ 本 run 停止上报。
 - 终态前排空（waitForDrain，5s 上限；取消路径 3s）：完成 / 失败 / 取消 / 启动失败四条路径都先落 `error`（失败类）并排空，再写 multica 终态，保证「执行记录完整 → 任务终态」的观察顺序。取消检测（remote 已被取消/404）走后台排空，不阻塞 3s 心跳 tick。
-- 用量：节点成功边界与每个 turn 收尾只做一次内存登记（lifecycle 回调是热路径），由 worker 在 blocking 线程池读取该 attempt 的 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总，上报**累计总量**（服务端按 `(task_id, provider, model)` 整体替换，不是累加）；`cost_usd_ticks` 恒 0 → 服务端按费率估算。`POST /api/daemon/tasks/{id}/usage`，body `{usage:[7 字段]}`。
+- 用量：**专用端点** `POST /api/daemon/tasks/{id}/usage`，body `{usage:[7 字段]}`（token 不得塞进 messages 请求——服务端只认 messages 字段，塞了会被忽略、进不了 task_usage 展示链路）。节点成功边界与每个 turn 收尾只做一次内存登记（lifecycle 回调是热路径），由 worker 在 blocking 线程池读取该 attempt 的 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总。
+  - **每次上报从任务开始的累计总量**（服务端按 `(task_id, provider, model)` UPSERT 替换，重复上报是覆盖不是累加）；一个任务用了多个模型就报多条 entries。
+  - **终态必报一次**：complete/fail/取消/启动失败回滚（release 或 fail）**之前**都先排空上报，与「执行记录完整 → 任务终态」顺序一致——该端点独立于 complete/fail 存在，失败/取消的任务也要有账。中途在每个节点/turn 边界随 dirty 上报（协议称中途可选、无实时消费方；边界触发天然有界，不额外节流）。
+  - `provider` 上报前 trim + 小写归一化（服务端自动小写并按 `(task_id, provider, model)` 替换，本端聚合键必须先归一化，否则大小写漂移会被拆成多条 entry、服务端同 key 后写胜 → 少算 token）；provider 缺失/空串由服务端从任务 runtime 回填。
+  - `cost_usd_ticks` 单位 1e-10 USD，本端无权威成本 → 恒 0（服务端存 NULL 后按费率估算），不传估算值。
 - 进度（progress）：**不做**。multica 侧核对——该接口仅 WS 广播、不持久化、Web 端无消费方。
 
 **性能与有界性**

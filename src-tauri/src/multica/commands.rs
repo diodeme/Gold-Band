@@ -1005,6 +1005,16 @@ pub async fn start_remote_conversation_run(
                         crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                         return Ok(vm);
                     }
+                    // 启动失败（未生效/无法确认）→ 先排空执行记录与累计用量，再回滚 server。
+                    // multica 硬要求 usage 在 complete/fail 之前送达（失败/取消任务也要有账），
+                    // 与 complete/fail/取消路径的「执行记录完整 → 任务终态」顺序一致。
+                    crate::multica::transcript::finish_run(
+                        &app_handle,
+                        &register_task_id,
+                        &register_run_id,
+                        crate::multica::transcript::DRAIN_TIMEOUT,
+                    )
+                    .await;
                     // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
                     match action {
                         StartFailureAction::RollbackRelease => {
@@ -1019,14 +1029,7 @@ pub async fn start_remote_conversation_run(
                     let home_app = context.app();
                     let workspace_app = home_app
                         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-                    // 启动失败 → 先排空已产生的执行记录，再本地收尾（避免残留 reporter 悬挂）。
-                    crate::multica::transcript::finish_run(
-                        &app_handle,
-                        &register_task_id,
-                        &register_run_id,
-                        crate::multica::transcript::DRAIN_TIMEOUT,
-                    )
-                    .await;
+                    // 本地收尾（reporter 已排空摘除，避免残留悬挂）。
                     crate::multica::bridge::teardown_active_run(
                         &workspace_app,
                         shared.inner(),
@@ -1220,6 +1223,16 @@ pub async fn start_remote_conversation_run(
                     crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
                     return Ok(created);
                 }
+                // 启动失败（未生效/无法确认）→ 先排空执行记录与累计用量，再回滚 server。
+                // multica 硬要求 usage 在 complete/fail 之前送达（失败/取消任务也要有账），
+                // 与 complete/fail/取消路径的「执行记录完整 → 任务终态」顺序一致。
+                crate::multica::transcript::finish_run(
+                    &app_handle,
+                    &created.run.task_id,
+                    &created.run.run_id,
+                    crate::multica::transcript::DRAIN_TIMEOUT,
+                )
+                .await;
                 // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
                 match action {
                     StartFailureAction::RollbackRelease => {
@@ -1233,14 +1246,7 @@ pub async fn start_remote_conversation_run(
                 let home_app = context.app();
                 let workspace_app = home_app
                     .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-                // 启动失败 → 先排空已产生的执行记录，再本地收尾（避免残留 reporter 悬挂）。
-                crate::multica::transcript::finish_run(
-                    &app_handle,
-                    &created.run.task_id,
-                    &created.run.run_id,
-                    crate::multica::transcript::DRAIN_TIMEOUT,
-                )
-                .await;
+                // 本地收尾（reporter 已排空摘除，避免残留悬挂）。
                 crate::multica::bridge::teardown_active_run(
                     &workspace_app,
                     shared.inner(),

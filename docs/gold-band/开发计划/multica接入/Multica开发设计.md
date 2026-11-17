@@ -3287,6 +3287,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.98 改动九十六：token 用量上报对齐 multica usage 规范——终态顺序 + provider 归一化（M5-db，2026-11-17）
+
+**背景**：multica 补充 usage 上报规范：专用端点 `POST /api/daemon/tasks/{taskId}/usage`（token 不得塞 messages——服务端只认 messages 字段，塞了会被忽略、进不了 task_usage 展示链路）；终态必报一次（complete/fail 之前、任何提前退出含取消路径之前，「失败/取消任务也要有账」）；每次传累计值（UPSERT 按 `(task_id, provider, model)` 替换）；`cost_usd_ticks` 单位 1e-10 USD、拿不到精确成本传 0 或不传（服务端 NULL → 费率估算）；多模型多条 entries；中途可选周期上报（无实时消费方）。服务端容忍项：provider 空串自动从任务 runtime 回填、provider 自动小写、单条 entry 失败只告警不影响整批。
+
+**审计（M5-cy 既有实现逐条对照）**：已符合 7 项——端点/七字段形状、累计值语义（`UsageAccumulator` 从任务开始累计、每次报总量）、`cost_usd_ticks` 恒 0、多模型分桶、provider 空串透传待回填、无 `X-Workspace-ID`、单次尝试失败丢弃（服务端侧单条容错）。真实差异 2 项：
+
+- ① **终态顺序**：complete、fail、手动取消、远端失效四条路径已「先排空再终态」；但续跑/新建两条**启动失败**路径先 `fail_task`/`release` 才 `finish_run`（usage 晚于 fail）。按「usage 必须先于 complete/fail」硬要求，将 `finish_run` 前移到回滚动作之前。teardown 总耗时不变（仅顺序调整，排空上限 5s 本来就发生）。
+- ② **provider 聚合键大小写漂移**：`UsageAccumulator` 按原始 provider 字符串分桶，而服务端按 `(task_id, provider, model)` UPSERT 且自动小写——`"Anthropic"`/`"anthropic"` 会被拆成两条 entry，服务端同 key 后写胜 → **少算一半 token**。聚合键改为 `trim().to_ascii_lowercase()`，与服务端归一化一致；model 保持原样（服务端不归一化模型）。
+
+**保持项（评估后不改）**：中途上报沿用节点/turn 边界 dirty 即报——协议称中途可选且无实时消费方，边界频率天然有界（每节点/turn 至多一拍），额外计时器节流无收益；空 provider 继续透传空串（服务端回填，本端不猜测）；`cost_usd_ticks` 继续恒 0（协议允许 0 或缺失）。
+
+**方案自评审**：过度设计——无新端点/字段/状态/持久化；归一化是聚合键一行代码，顺序调整是移动既有调用；不引入中途节流/重试/缓存。性能——归一化每 turn 边界一次短字符串转换，顺序调整不增加 I/O 次数与请求量。
+
+**验证结果**：`cargo test -p gold-band-desktop multica::transcript` **35 passed**（+2：`usage_provider_case_and_space_drift_collapses_into_one_row`——"Anthropic "/"ANTHROPIC"/"anthropic" 合并单行、provider 上报小写、token 相加，漂移先红；`usage_without_provider_is_reported_empty_for_server_backfill`——provider 缺失仍产出空串 entry、靠服务端回填）；`multica::` 全量 **305 passed**；`cargo clippy` 对 transcript/ 零告警；`cargo fmt` 通过。接口级既有 `post_task_usage_sends_cumulative_rows`（mock TCP 断言端点/七字段形状/无 workspace 头）保持绿。
+
+**文件**：`src-tauri/src/multica/transcript/reporter.rs`（聚合键归一化 + 测试）、`src-tauri/src/multica/commands.rs`（两条启动失败路径顺序）；文档 `接入方案.md` §3.2.8（usage 段落重写：专用端点/累计/终态必报/provider 归一化/cost 语义/中途节奏）、本条。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

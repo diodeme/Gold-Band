@@ -460,8 +460,15 @@ impl UsageAccumulator {
             {
                 continue;
             }
+            // provider 归一化为 trim+小写：服务端按 (task_id, provider, model) UPSERT 且自动小写
+            // provider，若本端按原始大小写分桶，"Anthropic"/"anthropic" 会在服务端落到同一行
+            // 先后覆盖 → 少算 token。聚合键必须与服务端归一化一致；model 服务端不归一化，保持原样。
+            // provider 为空串 → 服务端从任务 runtime 回填（协议约定），无需本端兜底。
             let key = (
-                segment.provider.unwrap_or_default(),
+                segment
+                    .provider
+                    .map(|provider| provider.trim().to_ascii_lowercase())
+                    .unwrap_or_default(),
                 segment.model.unwrap_or_default(),
             );
             let totals = self.totals.entry(key).or_default();
@@ -575,6 +582,61 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].provider, "a");
         assert_eq!(rows[1].provider, "b");
+    }
+
+    /// 服务端按 `(task_id, provider, model)` UPSERT 且自动小写 provider：本端聚合键必须先
+    /// 归一化，否则大小写/空白漂移会被拆成多条 entry，服务端同 key 后写胜 → 少算 token。
+    #[test]
+    fn usage_provider_case_and_space_drift_collapses_into_one_row() {
+        let mut accumulator = UsageAccumulator::default();
+        let segment = |turn_seq: u64, provider: &str, input: u64| {
+            gold_band::acp::usage::AcpPromptUsageSegment {
+                turn_id: format!("turn-{turn_seq}"),
+                turn_seq,
+                elapsed_ms: None,
+                provider: Some(provider.to_string()),
+                model: Some("claude-sonnet-5-5".to_string()),
+                usage: gold_band::acp::usage::AcpPromptTokenUsage {
+                    input_tokens: Some(input),
+                    output_tokens: None,
+                    cached_read_tokens: None,
+                    cached_write_tokens: None,
+                    total_tokens: None,
+                },
+            }
+        };
+        accumulator.merge("attempt-1", vec![segment(1, "Anthropic ", 10)]);
+        accumulator.merge("attempt-2", vec![segment(2, "ANTHROPIC", 20)]);
+        accumulator.merge("attempt-3", vec![segment(3, "anthropic", 30)]);
+        let rows = accumulator.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "anthropic");
+        assert_eq!(rows[0].input_tokens, 60);
+    }
+
+    /// provider 缺失 → 空串上报，服务端从任务 runtime 回填（协议约定，本端不做兜底猜测）。
+    #[test]
+    fn usage_without_provider_is_reported_empty_for_server_backfill() {
+        let mut accumulator = UsageAccumulator::default();
+        let segment = gold_band::acp::usage::AcpPromptUsageSegment {
+            turn_id: "turn".to_string(),
+            turn_seq: 1,
+            elapsed_ms: None,
+            provider: None,
+            model: Some("claude-sonnet-5-5".to_string()),
+            usage: gold_band::acp::usage::AcpPromptTokenUsage {
+                input_tokens: Some(5),
+                output_tokens: None,
+                cached_read_tokens: None,
+                cached_write_tokens: None,
+                total_tokens: None,
+            },
+        };
+        assert!(accumulator.merge("attempt-1", vec![segment]));
+        let rows = accumulator.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "");
+        assert_eq!(rows[0].input_tokens, 5);
     }
 
     /// finish 协议：closing 后 worker 必须排空退出并回 done 信号（客户端不可用时也不许卡住）。

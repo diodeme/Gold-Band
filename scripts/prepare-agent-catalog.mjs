@@ -386,6 +386,20 @@ export class AgentCatalogFetchError extends Error {
   }
 }
 
+class AgentCatalogIconError extends Error {
+  constructor({ agentId, iconPath, downloadError, localError }) {
+    super(
+      `Agent ${agentId} icon unavailable: ${describeError(downloadError)}; local icon ${iconPath}: ${describeError(localError)}`,
+      { cause: downloadError },
+    );
+    this.name = 'AgentCatalogIconError';
+    this.code = 'AGENT_CATALOG_ICON_UNAVAILABLE';
+    this.agentId = agentId;
+    this.iconPath = iconPath;
+    this.localError = localError;
+  }
+}
+
 async function fetchJson(url, { signal } = {}) {
   const response = await fetch(url, { headers: { accept: 'application/json' }, signal });
   if (!response.ok) throw new CatalogHttpError(url, response.status);
@@ -534,23 +548,39 @@ async function stageIcons(root, staging, catalog, offline, fetchIconImpl, hooks,
     if (!agent.iconUrl?.startsWith('https://')) {
       throw new Error(`Agent ${agent.id} does not provide an HTTPS icon URL.`);
     }
-    const svg = offline
-      ? await readFile(join(sourceDir, `${agent.iconKey}.svg`), 'utf8')
-      : await (async () => {
+    const iconPath = join(sourceDir, `${agent.iconKey}.svg`);
+    let svg;
+    let downloadError;
+    try {
+      if (offline) {
+        svg = await readFile(iconPath, 'utf8');
+      } else {
         await hooks.beforeIconDownload?.();
-        return requestWithRetry(
-          agent.iconUrl,
-          `icon for ${agent.id}`,
-          ({ signal }) => fetchIconImpl(agent.iconUrl, { signal }),
-          networkOptions,
-        );
-      })();
-    await hooks.beforeIconValidation?.();
-    const trimmed = svg.trimStart();
-    const svgDocument = trimmed.startsWith('<svg')
-      || trimmed.startsWith('<?xml')
-      || trimmed.startsWith('<!DOCTYPE svg');
-    if (!svgDocument || !svg.includes('<svg')) throw new Error(`Agent ${agent.id} icon is not SVG.`);
+        try {
+          svg = await requestWithRetry(
+            agent.iconUrl,
+            `icon for ${agent.id}`,
+            ({ signal }) => fetchIconImpl(agent.iconUrl, { signal }),
+            networkOptions,
+          );
+        } catch (error) {
+          downloadError = error;
+          svg = await readFile(iconPath, 'utf8');
+        }
+      }
+      await hooks.beforeIconValidation?.();
+      const trimmed = svg.trimStart();
+      const svgDocument = trimmed.startsWith('<svg')
+        || trimmed.startsWith('<?xml')
+        || trimmed.startsWith('<!DOCTYPE svg');
+      if (!svgDocument || !svg.includes('<svg')) throw new Error(`Agent ${agent.id} icon is not SVG.`);
+    } catch (localError) {
+      if (!downloadError) throw localError;
+      throw new AgentCatalogIconError({ agentId: agent.id, iconPath, downloadError, localError });
+    }
+    if (downloadError) {
+      console.warn(`Agent ${agent.id} using local icon ${relativeTarget(root, iconPath)}: ${describeError(downloadError)}`);
+    }
     await writeFile(join(targetDir, `${agent.iconKey}.svg`), svg, 'utf8');
   }
 }

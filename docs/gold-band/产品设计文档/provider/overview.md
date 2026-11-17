@@ -50,6 +50,8 @@ Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，
 
 正式 build 继续在线刷新 Registry，再合并受控 `local supplement`、应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略、已提交 snapshot 和 local supplement，基于同一规则重复生成。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。当前发布为 14 项：DeepSeek Harness 来自 local supplement（官方来源，固定 `0.2.1-rc.2`），Qoder 来自官方 Registry（固定 `1.1.86`，本机优先 `qodercli`，排除 Windows aarch64），ZCode 来自 local supplement（社区桥接器 `0.84.1`，全局 `.zcode`、项目 `.agents`）。其余平台按发布矩阵逐项标注。
 
+在线图标下载在有界重试后仍失败时，复用 `web/public/agent-icons/<iconKey>.svg` 中同一 Agent 的本地 SVG，并记录下载原因；本地 SVG 与其他下载成功的图标一起进入本次 staging、校验和事务发布。下载与本地图标均不可用、下载内容不是合法 SVG，或其他 Catalog 校验失败时仍终止整批生成；Registry 与固定 npm 版本校验失败的行为不变。
+
 版本 pin 仅适用于实际使用 Registry npx 分发的模板；未知 ID、非法版本、错误策略字段或 PATH 可执行文件模板的 pin 均报错。解析复用 `npm-package-arg`，不自行拆解 scoped 包名。
 
 ### Agent 启动配置归属
